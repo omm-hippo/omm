@@ -39,12 +39,15 @@ def _list_repo_files(repo_id: str, timeout: float = 15) -> list[dict]:
         raise ModelResolutionError(
             f"ModelScope API request failed for '{repo_id}' ({status})."
         ) from e
-    except requests.RequestException as e:
-        raise ModelResolutionError(f"Could not reach ModelScope for '{repo_id}': {e}") from e
     except ValueError as e:
+        # requests.exceptions.JSONDecodeError subclasses both RequestException
+        # and ValueError - this branch must come first or a non-JSON body
+        # gets the misleading "could not reach" message instead of this one.
         raise ModelResolutionError(
             f"ModelScope API response was not valid JSON for '{repo_id}': {e}"
         ) from e
+    except requests.RequestException as e:
+        raise ModelResolutionError(f"Could not reach ModelScope for '{repo_id}': {e}") from e
 
     return (payload.get("Data") or {}).get("Files", [])
 
