@@ -1,19 +1,22 @@
 """Resolve a model name into a downloadable URL + filename.
 
-Accepts three forms for `omm install <model_name>`:
+Accepts these forms for `omm install <model_name>`:
   1. A curated short name (see CURATED_INDEX below), e.g. "tinyllama-1.1b-q4"
-  2. An explicit HuggingFace ref "org/repo:filename.gguf"
-  3. A direct https:// URL to a .gguf file
+  2. A direct https:// URL to a .gguf file
+  3. An explicit provider ref: "hf:org/repo:file.gguf", "ms:org/repo:file.gguf"
+  4. A bare "org/repo[:filename]" - tried against every known provider;
+     resolves automatically if only one provider has it
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 
 from omm.featurize import is_mmproj_filename, parse_param_count_billions, parse_quant_bits
+from omm.providers.base import AmbiguousModelError, AmbiguousProviderError, ModelResolutionError
 
 HF_API = "https://huggingface.co/api/models/{repo_id}"
 HF_DOWNLOAD = "https://huggingface.co/{repo_id}/resolve/main/{filename}"
@@ -35,25 +38,6 @@ CURATED_INDEX: dict[str, tuple[str, str]] = {
         "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
     ),
 }
-
-
-class ModelResolutionError(Exception):
-    pass
-
-
-class AmbiguousModelError(ModelResolutionError):
-    """Raised when a bare `org/repo` resolves to more than one .gguf file,
-    so the caller can offer a quantization-level choice instead of just
-    failing (see `rank_quant_variants`)."""
-
-    def __init__(self, repo_id: str, candidates: list[str], param_count_b: float | None = None):
-        self.repo_id = repo_id
-        self.candidates = candidates
-        self.param_count_b = param_count_b
-        super().__init__(
-            f"Repo '{repo_id}' has multiple .gguf files, specify one: "
-            f"{repo_id}:<filename>\nOptions: {', '.join(candidates)}"
-        )
 
 
 @dataclass
