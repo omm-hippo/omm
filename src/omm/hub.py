@@ -37,9 +37,12 @@ CURATED_INDEX: dict[str, tuple[str, str]] = {
     ),
 }
 
-from omm.providers import huggingface
+from omm.providers import huggingface, modelscope
 
-_PROVIDER_MODULES: dict[str, object] = {"huggingface": huggingface}
+_PROVIDER_MODULES: dict[str, object] = {
+    "huggingface": huggingface,
+    "modelscope": modelscope,
+}
 
 
 @dataclass
@@ -151,6 +154,8 @@ _URL_HOST_PROVIDER = {
 _PREFIXES = {
     "hf": "huggingface",
     "huggingface": "huggingface",
+    "ms": "modelscope",
+    "modelscope": "modelscope",
 }
 
 

@@ -2,7 +2,7 @@ import pytest
 
 from omm import hub
 from omm.hub import AmbiguousModelError, ModelResolutionError, resolve_model
-from omm.providers import huggingface
+from omm.providers import huggingface, modelscope
 
 
 class _FakeResponse:
@@ -20,7 +20,19 @@ class _FakeResponse:
         return payload
 
 
+def _stub_modelscope_not_found(monkeypatch):
+    """Stub modelscope.fetch_repo_files to raise ModelResolutionError for all repos.
+    This prevents modelscope from interfering with tests that only want to test
+    huggingface behavior with bare org/repo lookups."""
+    monkeypatch.setattr(
+        modelscope,
+        "fetch_repo_files",
+        lambda repo_id: (_ for _ in ()).throw(ModelResolutionError(f"not found: {repo_id}")),
+    )
+
+
 def test_resolve_model_raises_ambiguous_error_with_repo_and_candidates(monkeypatch):
+    _stub_modelscope_not_found(monkeypatch)
     monkeypatch.setattr(
         huggingface.requests,
         "get",
@@ -84,6 +96,7 @@ def test_resolve_model_skips_mmproj_when_repo_has_single_real_model(monkeypatch)
     # Regression: a repo whose sole *non-mmproj* .gguf is the real model, but
     # which also ships an mmproj file, must not let the mmproj file win the
     # "only one candidate" auto-select shortcut just because it's listed too.
+    _stub_modelscope_not_found(monkeypatch)
     monkeypatch.setattr(
         huggingface.requests,
         "get",
@@ -103,6 +116,7 @@ def test_resolve_model_skips_mmproj_when_repo_has_single_real_model(monkeypatch)
 def test_resolve_model_raises_when_repo_only_has_mmproj_files(monkeypatch):
     # Regression: a repo (or mirror) that only publishes the mmproj file
     # must not be silently installed as if it were a standalone model.
+    _stub_modelscope_not_found(monkeypatch)
     monkeypatch.setattr(
         huggingface.requests,
         "get",
@@ -117,6 +131,7 @@ def test_resolve_model_excludes_mmproj_from_ambiguous_candidates(monkeypatch):
     # Regression: when multiple real quants exist alongside an mmproj file,
     # the mmproj file must not appear in the quant picker at all - it isn't
     # a quant of the model.
+    _stub_modelscope_not_found(monkeypatch)
     monkeypatch.setattr(
         huggingface.requests,
         "get",
@@ -139,6 +154,7 @@ def test_resolve_model_excludes_mmproj_from_ambiguous_candidates(monkeypatch):
 
 
 def test_resolve_model_ambiguous_error_carries_repo_level_param_count(monkeypatch):
+    _stub_modelscope_not_found(monkeypatch)
     monkeypatch.setattr(
         huggingface.requests,
         "get",
