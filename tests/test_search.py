@@ -200,6 +200,21 @@ def test_install_ref_falls_back_to_repo_id_when_filename_missing():
     assert search_mod.install_ref({"name": "x", "repo_id": "org/repo"}) == "org/repo"
 
 
+def test_install_ref_prefixes_modelscope_candidates():
+    candidate = {"name": "org/repo", "repo_id": "org/repo", "provider": "modelscope"}
+    assert search_mod.install_ref(candidate) == "ms:org/repo"
+
+
+def test_install_ref_leaves_huggingface_candidates_unprefixed():
+    candidate = {"name": "org/repo", "repo_id": "org/repo", "provider": "huggingface"}
+    assert search_mod.install_ref(candidate) == "org/repo"
+
+
+def test_install_ref_leaves_curated_names_unprefixed():
+    candidate = {"name": "tinyllama-1.1b-q4", "repo_id": "TheBloke/x", "provider": "huggingface"}
+    assert search_mod.install_ref(candidate) == "tinyllama-1.1b-q4"
+
+
 def test_match_candidates_prefers_substring_match():
     pool = [
         {"name": "mistral-7b-instruct-q4", "repo_id": "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"},

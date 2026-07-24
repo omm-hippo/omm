@@ -1991,8 +1991,13 @@ def search(
         for c in search_mod.search_huggingface(query)
         if c.get("repo_id") not in local_repo_ids
     ]
+    ms_matches = [
+        c
+        for c in search_mod.search_modelscope(query)
+        if c.get("repo_id") not in local_repo_ids
+    ]
 
-    combined = search_mod.dedupe_by_base_repo(local_matches + hf_matches)
+    combined = search_mod.dedupe_by_base_repo(local_matches + hf_matches + ms_matches)
     if not combined:
         err_console.print(f"[yellow]No models found matching '{query}'.[/yellow]")
         raise typer.Exit(1)

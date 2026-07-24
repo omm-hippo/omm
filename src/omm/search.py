@@ -85,15 +85,23 @@ def install_ref(candidate: dict) -> str:
     """The string a user can actually pass to `omm install`, as opposed to
     the human-readable label. A curated short name only resolves if it's a
     literal CURATED_INDEX key. Everything else is left as a bare 'org/repo'
-    - repos almost always ship several quants under one name, and `omm
-    install org/repo` already walks the user through picking one (see
-    hub.AmbiguousModelError), so there's no need to hardcode a filename here
-    and print what looks like a distinct result per quant.
+    (or 'ms:org/repo' for a non-HuggingFace provider) - repos almost always
+    ship several quants under one name, and `omm install org/repo` already
+    walks the user through picking one (see hub.AmbiguousModelError), so
+    there's no need to hardcode a filename here and print what looks like a
+    distinct result per quant.
     """
     name = candidate.get("name")
     if name and name in hub.CURATED_INDEX:
         return name
-    return candidate.get("repo_id") or name or ""
+    repo_id = candidate.get("repo_id") or name or ""
+    provider = candidate.get("provider") or "huggingface"
+    if provider == "huggingface" or not repo_id:
+        return repo_id
+    return f"{_PROVIDER_PREFIX[provider]}:{repo_id}"
+
+
+_PROVIDER_PREFIX = {"modelscope": "ms"}
 
 
 # Matches a quant token as its own hyphen-delimited path segment (e.g. the

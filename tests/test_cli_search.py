@@ -26,6 +26,7 @@ def test_search_groups_results_by_family(monkeypatch):
         ],
     )
     monkeypatch.setattr(search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(search_mod, "search_modelscope", lambda query, **kwargs: [])
 
     result = runner.invoke(cli.app, ["search", "q4"])
 
@@ -50,6 +51,7 @@ def test_search_prints_numbered_refs_and_records_session(monkeypatch):
         ],
     )
     monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
     recorded = []
     monkeypatch.setattr(cli.session_cache, "record_results", lambda refs: recorded.append(refs))
 
@@ -74,6 +76,7 @@ def test_search_json_is_parseable_and_has_expected_fields(monkeypatch):
         ],
     )
     monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
 
     result = runner.invoke(cli.app, ["search", "tiny", "--json"])
@@ -91,10 +94,38 @@ def test_search_json_is_parseable_and_has_expected_fields(monkeypatch):
     ]
 
 
+def test_search_command_includes_modelscope_results(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(cli.search_mod, "local_candidate_pool", lambda model_url: [])
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(
+        cli.search_mod,
+        "search_modelscope",
+        lambda query, **kwargs: [
+            {
+                "name": "org/repo",
+                "repo_id": "org/repo",
+                "filename": "model.gguf",
+                "description": "1,000 downloads on ModelScope",
+                "provider": "modelscope",
+            }
+        ],
+    )
+    recorded = []
+    monkeypatch.setattr(cli.session_cache, "record_results", lambda refs: recorded.append(refs))
+
+    result = runner.invoke(cli.app, ["search", "repo"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "[1] ms:org/repo" in result.stdout
+    assert recorded == [["ms:org/repo"]]
+
+
 def test_search_exits_nonzero_when_nothing_matches(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
     monkeypatch.setattr(search_mod, "local_candidate_pool", lambda model_url: [])
     monkeypatch.setattr(search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(search_mod, "search_modelscope", lambda query, **kwargs: [])
 
     result = runner.invoke(cli.app, ["search", "nonexistent-xyz"])
 
