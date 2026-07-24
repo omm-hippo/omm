@@ -2372,6 +2372,7 @@ def benchmark_cmd(
                     engine_version=report.get("environment", {}).get("engine_version"),
                     model_filename=(entry or {}).get("filename") or model["tag"],
                     model_digest=model.get("digest"),
+                    provider=entry.get("provider") if entry else None,
                 )
             for entry in model_unfit + performance_unfit + transient:
                 _report_failure_telemetry(entry, report.get("environment", {}))

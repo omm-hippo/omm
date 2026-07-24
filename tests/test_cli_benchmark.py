@@ -89,6 +89,53 @@ def test_benchmark_uploads_when_confirmed(isolated_omm_home, monkeypatch):
     assert event["quality_accuracy"] == 0.75
 
 
+def test_benchmark_reports_model_provider_from_registry_entry(isolated_omm_home, monkeypatch):
+    """Verify that benchmark telemetry includes the model's actual provider from registry,
+    not a hardcoded huggingface default."""
+    # Set up a registry entry with a non-huggingface provider
+    registry.save_registry({
+        "small.gguf": {
+            "ollama_name": "small:latest",
+            "repo_id": "org/small",
+            "provider": "modelscope",
+            "linked": {}
+        }
+    })
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    sent = []
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
+
+    result = runner.invoke(cli.app, ["benchmark", "small:latest"])
+
+    assert result.exit_code == 0, result.stdout
+    assert len(sent) == 1
+    event = sent[0]
+    # The provider should come from the registry entry, not default to huggingface
+    assert event["model_provider"] == "modelscope"
+
+
+def test_benchmark_defaults_provider_to_huggingface_when_entry_not_found(isolated_omm_home, monkeypatch):
+    """When a model is not found in registry, provider should default to huggingface."""
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    sent = []
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
+
+    # Don't set up any registry entry - model won't be found
+    result = runner.invoke(cli.app, ["benchmark", "small:latest"])
+
+    assert result.exit_code == 0, result.stdout
+    assert len(sent) == 1
+    event = sent[0]
+    # Should default to huggingface when entry is not found
+    assert event["model_provider"] == "huggingface"
+
+
 def test_benchmark_never_uploads_when_policy_never(isolated_omm_home, monkeypatch):
     config.update_config(telemetry_send_policy="never")
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
