@@ -1206,6 +1206,7 @@ def _install_impl(
         installed_at=datetime.now(timezone.utc).isoformat(),
         ollama_name=ollama_tag,
         repo_id=repo_id,
+        provider=resolved.provider or "huggingface",
         linked=linked,
     )
 
@@ -1486,6 +1487,7 @@ def info(
             data={
                 "filename": filename,
                 "repo_id": entry.get("repo_id"),
+                "provider": entry.get("provider") or ("huggingface" if entry.get("repo_id") else None),
                 "version": _entry_version(entry),
                 "size_bytes": entry.get("size_bytes", 0),
                 "installed_at": entry.get("installed_at", "unknown"),
@@ -1501,7 +1503,11 @@ def info(
     table = Table(title=filename, show_header=False)
     table.add_column("Field", style="cyan")
     table.add_column("Value")
-    table.add_row("Repo", entry.get("repo_id") or "(direct URL install)")
+    repo_label = entry.get("repo_id") or "(direct URL install)"
+    provider = entry.get("provider")
+    if entry.get("repo_id") and provider and provider != "huggingface":
+        repo_label = f"{repo_label} [{provider}]"
+    table.add_row("Repo", repo_label)
     table.add_row("Version", _entry_version(entry))
     table.add_row("Size", f"{size_gb:.2f} GB")
     table.add_row("Installed at", entry.get("installed_at", "unknown"))
@@ -1526,10 +1532,10 @@ def _update_one(filename: str, entry: dict) -> str:
     before swapping it in."""
     dest = MODELS_DIR / filename
     repo_id = entry.get("repo_id")
+    provider = entry.get("provider") or "huggingface"
     old_sha256 = entry.get("sha256")
 
     if repo_id:
-        provider = entry.get("provider") or "huggingface"
         remote_sha256 = remote_file_sha256(provider, repo_id, filename)
         if remote_sha256 is None:
             err_console.print(
@@ -1577,6 +1583,7 @@ def _update_one(filename: str, entry: dict) -> str:
         size_bytes=dest.stat().st_size,
         installed_at=datetime.now(timezone.utc).isoformat(),
         ollama_name=ollama_tag,
+        provider=provider,
         linked=linked,
     )
     return "updated"
