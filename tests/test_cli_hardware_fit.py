@@ -17,6 +17,7 @@ def test_search_marks_hardware_unfit_candidates_in_red(monkeypatch):
         ],
     )
     monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(
@@ -44,6 +45,7 @@ def test_search_skip_unfit_hides_unfit_candidates(monkeypatch):
         ],
     )
     monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(
@@ -71,6 +73,7 @@ def test_search_skip_unfit_omits_header_for_all_unfit_family(monkeypatch):
         ],
     )
     monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(
@@ -97,6 +100,7 @@ def test_search_skip_unfit_json_omits_unfit_rows(monkeypatch):
         ],
     )
     monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(
@@ -124,6 +128,7 @@ def test_search_skips_hardware_fit_check_without_cached_model(monkeypatch):
         lambda model_url: [{"name": "some-model", "repo_id": "org/some", "description": "d"}],
     )
     monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
 
     result = runner.invoke(cli.app, ["search", "model"])
