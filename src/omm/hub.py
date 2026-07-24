@@ -177,6 +177,14 @@ def resolve_model(model_name: str) -> ResolvedModel:
             repo_id, filename = model_name.split(":", 1)
         else:
             repo_id, filename = model_name, None
+        if filename is not None:
+            # No provider prefix but the filename is already known - preserve
+            # the pre-multi-provider behavior exactly (zero network calls,
+            # HuggingFace's specific error messages via _resolve_repo_ref).
+            # Installing a fully-specified ModelScope file without
+            # disambiguation needs an explicit "ms:org/repo:file.gguf" prefix.
+            return _resolve_repo_ref("huggingface", repo_id, filename)
+
         matches: list[str] = []
         for provider in _PROVIDER_MODULES:
             try:
@@ -188,7 +196,7 @@ def resolve_model(model_name: str) -> ResolvedModel:
         if len(matches) > 1:
             raise AmbiguousProviderError(repo_id, matches)
         if len(matches) == 1:
-            return _resolve_repo_ref(matches[0], repo_id, filename)
+            return _resolve_repo_ref(matches[0], repo_id, None)
         raise ModelResolutionError(
             f"'{repo_id}' was not found on HuggingFace or ModelScope."
         )
