@@ -153,14 +153,19 @@ def test_probe_range_support_accepts_200_with_matching_content_length(monkeypatc
     assert supports_ranges is True
 
 
-def test_probe_range_support_rejects_200_with_full_content_length(monkeypatch):
-    """A server that ignores the Range header and returns the whole file
-    with status 200 must NOT be treated as Range-capable, or a "parallel"
-    download would just refetch the entire file once per thread."""
+def test_probe_range_support_rejects_200_with_mismatched_content_length(monkeypatch):
+    """A 200 response with a Content-Range header present (clearing the
+    first guard) but whose Content-Length doesn't match the requested
+    1-byte probe must still be rejected - this isolates the Content-Length
+    equality check itself, not just the "no Content-Range at all" case
+    already covered by test_probe_range_support_not_capable_on_200."""
 
     class _FakeResp:
         status_code = 200
-        headers = {"Content-Length": "491400032"}
+        headers = {
+            "Content-Range": "bytes 0-491400031/491400032",
+            "Content-Length": "491400032",  # full file, not the 1 byte requested
+        }
 
         def close(self):
             pass
