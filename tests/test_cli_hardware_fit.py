@@ -33,6 +33,89 @@ def test_search_marks_hardware_unfit_candidates_in_red(monkeypatch):
     assert "org/fits" in result.stdout
 
 
+def test_search_skip_unfit_hides_unfit_candidates(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url: [
+            {"name": "llama-fits-model", "repo_id": "org/fits", "description": "d"},
+            {"name": "llama-too-big-model", "repo_id": "org/big", "description": "d"},
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(
+        cli.predictor,
+        "predict_speed",
+        lambda trees, hw, candidate: 0.0 if candidate["name"] == "llama-too-big-model" else 20.0,
+    )
+
+    result = runner.invoke(cli.app, ["search", "model", "--skip-unfit"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "org/big" not in result.stdout
+    assert "org/fits" in result.stdout
+    assert "[1] org/fits" in result.stdout
+
+
+def test_search_skip_unfit_omits_header_for_all_unfit_family(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url: [
+            {"name": "llama-too-big-model", "repo_id": "org/big", "description": "d"},
+            {"name": "qwen-fits-model", "repo_id": "org/fits", "description": "d"},
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(
+        cli.predictor,
+        "predict_speed",
+        lambda trees, hw, candidate: 0.0 if candidate["name"] == "llama-too-big-model" else 20.0,
+    )
+
+    result = runner.invoke(cli.app, ["search", "model", "--skip-unfit"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Llama" not in result.stdout
+    assert "==> Qwen" in result.stdout
+
+
+def test_search_skip_unfit_json_omits_unfit_rows(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url: [
+            {"name": "llama-fits-model", "repo_id": "org/fits", "description": "d"},
+            {"name": "llama-too-big-model", "repo_id": "org/big", "description": "d"},
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(
+        cli.predictor,
+        "predict_speed",
+        lambda trees, hw, candidate: 0.0 if candidate["name"] == "llama-too-big-model" else 20.0,
+    )
+
+    result = runner.invoke(cli.app, ["search", "model", "--skip-unfit", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    import json
+
+    rows = json.loads(result.stdout)
+    assert len(rows) == 1
+    assert rows[0]["ref"].endswith("org/fits") or "org/fits" in rows[0]["ref"]
+    assert rows[0]["fits_hardware"] is True
+
+
 def test_search_skips_hardware_fit_check_without_cached_model(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
     monkeypatch.setattr(

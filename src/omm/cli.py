@@ -1949,6 +1949,12 @@ def setting_menu(ctx: typer.Context) -> None:
 def search(
     query: str,
     json_output: bool = typer.Option(False, "--json", help="Print results as JSON instead of a table."),
+    skip_unfit: bool = typer.Option(
+        False,
+        "--skip-unfit",
+        help="If this hardware is predicted not to run a model, omit it "
+        "from the results instead of listing it.",
+    ),
 ) -> None:
     """Search curated models, cached candidates, and HuggingFace by name."""
     config = load_config()
@@ -1979,14 +1985,11 @@ def search(
     seen_refs: set[str] = set()
     rows: list[dict] = []
     for family in sorted(groups):
-        if not json_output:
-            console.print(f"[bold cyan]==> {family}[/bold cyan]")
+        header_printed = False
         for c in groups[family]:
             ref = search_mod.install_ref(c)
             if ref in seen_refs:
                 continue
-            seen_refs.add(ref)
-            refs.append(ref)
             desc = c.get("description") or ""
             candidate = c
             if (
@@ -2005,6 +2008,10 @@ def search(
             fits_hardware = not (
                 trees is not None and predictor.predict_speed(trees, hw, candidate) <= 0
             )
+            if skip_unfit and not fits_hardware:
+                continue
+            seen_refs.add(ref)
+            refs.append(ref)
             if json_output:
                 rows.append(
                     {
@@ -2015,11 +2022,15 @@ def search(
                         "fits_hardware": fits_hardware,
                     }
                 )
-            elif fits_hardware:
-                console.print(f"  [{len(refs)}] {ref}  [dim]{desc}[/dim]")
             else:
-                console.print(f"  [{len(refs)}] [red]{ref}  (predicted not to run on this hardware)[/red]")
-        if not json_output:
+                if not header_printed:
+                    console.print(f"[bold cyan]==> {family}[/bold cyan]")
+                    header_printed = True
+                if fits_hardware:
+                    console.print(f"  [{len(refs)}] {ref}  [dim]{desc}[/dim]")
+                else:
+                    console.print(f"  [{len(refs)}] [red]{ref}  (predicted not to run on this hardware)[/red]")
+        if not json_output and header_printed:
             console.print()
 
     session_cache.record_results(refs)
