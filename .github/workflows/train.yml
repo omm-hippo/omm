@@ -35,7 +35,7 @@ jobs:
           cp published/recommend-model.json "$RUNNER_TEMP/localfit-incumbent.json"
 
       - name: Fetch HuggingFace candidate pool
-        run: python scripts/fetch_hf_candidates.py
+        run: python scripts/fetch_candidates.py
 
       - name: Train and quality-gate candidate model
         env:

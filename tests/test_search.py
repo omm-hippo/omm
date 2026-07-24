@@ -181,7 +181,7 @@ def test_install_ref_uses_short_name_for_curated_models():
 
 def test_install_ref_uses_bare_repo_id_for_non_curated_candidates():
     # Regression: cached-candidate "name" is a sanitized ollama tag
-    # (e.g. from scripts/fetch_hf_candidates.py), never a valid
+    # (e.g. from scripts/fetch_candidates.py), never a valid
     # `omm install` argument on its own - it has no "/" and isn't a
     # curated key, so resolve_model() rejects it outright. And the
     # filename is dropped: repos ship several quants under one name,

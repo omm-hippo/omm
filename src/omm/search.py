@@ -65,7 +65,7 @@ _PREFERRED_QUANT_RE = re.compile(r"Q4_K_M", re.IGNORECASE)
 
 def pick_gguf_file(siblings: list[dict]) -> str | None:
     """Pick one concrete .gguf filename out of a repo's file listing, same
-    quant preference as scripts/fetch_hf_candidates.py. Repos almost always
+    quant preference as scripts/fetch_candidates.py. Repos almost always
     ship multiple quants, and `omm install org/repo` (no filename) refuses to
     guess - so any name we print for the user to copy-paste needs a concrete
     filename attached or it just fails with "specify one".
