@@ -54,7 +54,7 @@ def test_install_with_repo_only_prompts_quant_and_recurses_with_choice(isolated_
     result = runner.invoke(cli.app, ["install", repo_id])
 
     assert result.exit_code == 0, result.stdout
-    assert calls == [repo_id, f"{repo_id}:{chosen_filename}"]
+    assert calls == [repo_id, f"huggingface:{repo_id}:{chosen_filename}"]
     assert "Installed" in result.stdout
 
 

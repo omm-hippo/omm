@@ -63,6 +63,7 @@ from omm.featurize import (
 )
 from omm.hub import (
     AmbiguousModelError,
+    AmbiguousProviderError,
     ModelResolutionError,
     QuantVariant,
     ResolvedModel,
@@ -1345,7 +1346,19 @@ def install(
         if chosen is None:
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
-        install(f"{e.repo_id}:{chosen}", skip_unfit=skip_unfit, upload=upload)
+        install(f"{e.provider}:{e.repo_id}:{chosen}", skip_unfit=skip_unfit, upload=upload)
+        return
+    except AmbiguousProviderError as e:
+        choices = [
+            questionary.Choice(title=provider, value=provider) for provider in e.providers
+        ]
+        chosen_provider = _ask_select(
+            questionary.select(f"'{e.repo_id}' found on multiple providers, pick one:", choices=choices)
+        )
+        if chosen_provider is None:
+            err_console.print("[yellow]Cancelled.[/yellow]")
+            raise typer.Exit(0)
+        install(f"{chosen_provider}:{e.repo_id}", skip_unfit=skip_unfit, upload=upload)
         return
     except ModelResolutionError as e:
         err_console.print(f"[red]{e}[/red]")
