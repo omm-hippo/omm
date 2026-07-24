@@ -781,7 +781,7 @@ def recommend() -> None:
             err_console.print("[red]No model is predicted to run on this hardware.[/red]")
             raise typer.Exit(1)
 
-        refs = [f"{c['repo_id']}:{c['filename']}" for c, speed in viable]
+        refs = [search_mod.install_ref(c) for c, speed in viable]
         session_cache.record_seen(refs)
         choices = [
             questionary.Choice(
