@@ -69,7 +69,14 @@ def download_url(repo_id: str, filename: str) -> str:
 
 
 def remote_file_size(repo_id: str, filename: str) -> int | None:
-    for f in _list_repo_files(repo_id):
+    """Best-effort file size lookup via repo listing. Returns None on any
+    failure (404, network error, gated repo, etc.) - never raises. Matches
+    the HuggingFace provider's contract for best-effort metadata."""
+    try:
+        files = _list_repo_files(repo_id)
+    except ModelResolutionError:
+        return None
+    for f in files:
         if f.get("Path") == filename:
             size = f.get("Size")
             return int(size) if size else None
@@ -77,7 +84,14 @@ def remote_file_size(repo_id: str, filename: str) -> int | None:
 
 
 def remote_file_sha256(repo_id: str, filename: str) -> str | None:
-    for f in _list_repo_files(repo_id):
+    """Best-effort SHA256 lookup via repo listing. Returns None on any
+    failure (404, network error, gated repo, etc.) - never raises. Matches
+    the HuggingFace provider's contract for best-effort metadata."""
+    try:
+        files = _list_repo_files(repo_id)
+    except ModelResolutionError:
+        return None
+    for f in files:
         if f.get("Path") == filename:
             sha = f.get("Sha256")
             return sha.lower() if sha else None

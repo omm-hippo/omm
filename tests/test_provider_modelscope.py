@@ -85,11 +85,25 @@ def test_remote_file_size_returns_none_for_missing_file(monkeypatch):
     assert modelscope.remote_file_size("org/repo", "does-not-exist.gguf") is None
 
 
+def test_remote_file_size_returns_none_on_404(monkeypatch):
+    """remote_file_size never raises - 404/network errors return None for
+    best-effort behavior, matching HuggingFace provider contract."""
+    monkeypatch.setattr(modelscope.requests, "get", lambda *a, **k: _FakeResponse(404, {}))
+    assert modelscope.remote_file_size("org/does-not-exist", "model.gguf") is None
+
+
 def test_remote_file_sha256_finds_matching_file(monkeypatch):
     monkeypatch.setattr(
         modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, _FILES_PAYLOAD)
     )
     assert modelscope.remote_file_sha256("org/repo", "model-q8_0.gguf") == "def456"
+
+
+def test_remote_file_sha256_returns_none_on_404(monkeypatch):
+    """remote_file_sha256 never raises - 404/network errors return None for
+    best-effort behavior, matching HuggingFace provider contract."""
+    monkeypatch.setattr(modelscope.requests, "get", lambda *a, **k: _FakeResponse(404, {}))
+    assert modelscope.remote_file_sha256("org/does-not-exist", "model.gguf") is None
 
 
 def test_fetch_repo_param_count_b_is_always_none():
