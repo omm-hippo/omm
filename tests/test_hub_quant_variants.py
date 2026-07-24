@@ -2,6 +2,7 @@ import pytest
 
 from omm import hub
 from omm.hub import AmbiguousModelError, ModelResolutionError, resolve_model
+from omm.providers import huggingface
 
 
 class _FakeResponse:
@@ -21,7 +22,7 @@ class _FakeResponse:
 
 def test_resolve_model_raises_ambiguous_error_with_repo_and_candidates(monkeypatch):
     monkeypatch.setattr(
-        hub.requests,
+        huggingface.requests,
         "get",
         lambda url, timeout: _FakeResponse(
             [
@@ -84,7 +85,7 @@ def test_resolve_model_skips_mmproj_when_repo_has_single_real_model(monkeypatch)
     # which also ships an mmproj file, must not let the mmproj file win the
     # "only one candidate" auto-select shortcut just because it's listed too.
     monkeypatch.setattr(
-        hub.requests,
+        huggingface.requests,
         "get",
         lambda url, timeout: _FakeResponse(
             [
@@ -103,7 +104,7 @@ def test_resolve_model_raises_when_repo_only_has_mmproj_files(monkeypatch):
     # Regression: a repo (or mirror) that only publishes the mmproj file
     # must not be silently installed as if it were a standalone model.
     monkeypatch.setattr(
-        hub.requests,
+        huggingface.requests,
         "get",
         lambda url, timeout: _FakeResponse([{"rfilename": "mmproj-model-f16.gguf"}]),
     )
@@ -117,7 +118,7 @@ def test_resolve_model_excludes_mmproj_from_ambiguous_candidates(monkeypatch):
     # the mmproj file must not appear in the quant picker at all - it isn't
     # a quant of the model.
     monkeypatch.setattr(
-        hub.requests,
+        huggingface.requests,
         "get",
         lambda url, timeout: _FakeResponse(
             [
@@ -139,7 +140,7 @@ def test_resolve_model_excludes_mmproj_from_ambiguous_candidates(monkeypatch):
 
 def test_resolve_model_ambiguous_error_carries_repo_level_param_count(monkeypatch):
     monkeypatch.setattr(
-        hub.requests,
+        huggingface.requests,
         "get",
         lambda url, timeout: _FakeResponse(
             [

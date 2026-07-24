@@ -11,16 +11,10 @@ Accepts these forms for `omm install <model_name>`:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import quote, urlparse
-
-import requests
+from urllib.parse import urlparse
 
 from omm.featurize import is_mmproj_filename, parse_param_count_billions, parse_quant_bits
 from omm.providers.base import AmbiguousModelError, AmbiguousProviderError, ModelResolutionError
-
-HF_API = "https://huggingface.co/api/models/{repo_id}"
-HF_DOWNLOAD = "https://huggingface.co/{repo_id}/resolve/main/{filename}"
-HF_PATHS_INFO = "https://huggingface.co/api/models/{repo_id}/paths-info/main"
 
 # Small curated index of popular GGUF models. Not exhaustive - `omm search`
 # and `omm recommend` pull from a larger hosted candidate list instead.
@@ -39,12 +33,17 @@ CURATED_INDEX: dict[str, tuple[str, str]] = {
     ),
 }
 
+from omm.providers import huggingface
+
+_PROVIDER_MODULES: dict[str, object] = {"huggingface": huggingface}
+
 
 @dataclass
 class ResolvedModel:
     url: str
     filename: str
-    repo_id: str | None  # None when installed from a direct URL (no HF repo)
+    repo_id: str | None  # None when installed from a direct URL (no known repo)
+    provider: str | None = None  # None when the source provider is unknown
 
 
 @dataclass
@@ -62,14 +61,7 @@ def rank_quant_variants(
     candidates: list[str], available_gb: float, param_count_b: float | None = None
 ) -> list[QuantVariant]:
     """Rank a repo's .gguf files by hardware fit, best-fitting-and-highest-
-    quality first, so the CLI can default the picker's cursor there.
-
-    `param_count_b` is a repo-level fallback (from HF's own parsed GGUF
-    metadata) for filenames that don't spell out a param count, e.g.
-    "ID_Legal_Assistant_Q8_0.gguf" - the quant is still parseable per file,
-    but nothing in the name says "8B", so without a fallback every variant
-    of a repo like that shows "fit unknown" regardless of quant.
-    """
+    quality first, so the CLI can default the picker's cursor there."""
     variants = []
     for filename in candidates:
         quant_bits = parse_quant_bits(filename)
@@ -89,15 +81,8 @@ def rank_quant_variants(
 def best_filenames_by_tier(
     variants: list[QuantVariant], predicted_speed: dict[str, float]
 ) -> set[str]:
-    """Fastest filename per quant_bits tier, using only the (repo_id,
-    filename) pairs the caller already resolved a predicted speed for -
-    every other variant (didn't fit, speed unresolvable) is left out of
-    consideration entirely rather than guessed at.
-
-    Ties keep whichever filename appears first in `variants` (already
-    sorted fits-desc/quant_bits-desc by `rank_quant_variants`), via the
-    strict `>` below.
-    """
+    """Fastest filename per quant_bits tier, using only the filenames the
+    caller already resolved a predicted speed for."""
     best_for_tier: dict[float, tuple[str, float]] = {}
     for variant in variants:
         if variant.quant_bits is None:
@@ -111,134 +96,105 @@ def best_filenames_by_tier(
     return {filename for filename, _ in best_for_tier.values()}
 
 
-def _fetch_repo_gguf_info(repo_id: str) -> tuple[list[str], float | None]:
-    """List of .gguf filenames plus a repo-level param count fallback, in
-    billions - HF parses this straight out of the GGUF header itself
-    (response key "gguf.total") whether or not the filename spells it out,
-    so it covers names like "ID_Legal_Assistant_Q8_0.gguf" that carry a
-    quant tag but no param count."""
-    try:
-        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15)
-        resp.raise_for_status()
-    except requests.HTTPError as e:
-        status = e.response.status_code if e.response is not None else None
-        if status in (401, 403):
-            raise ModelResolutionError(
-                f"HF repo '{repo_id}' is private or gated - requires an access token."
-            ) from e
-        if status == 404:
-            raise ModelResolutionError(f"HF repo '{repo_id}' not found.") from e
-        raise ModelResolutionError(f"HF API request failed for '{repo_id}' ({status}).") from e
-    except requests.RequestException as e:
-        raise ModelResolutionError(f"Could not reach Hugging Face for '{repo_id}': {e}") from e
-
-    payload = resp.json()
-    siblings = payload.get("siblings", [])
-    files = [s["rfilename"] for s in siblings if s["rfilename"].endswith(".gguf")]
-    param_count_b = _parse_gguf_total_params(payload)
-    return files, param_count_b
+def download_url(provider: str, repo_id: str, filename: str) -> str:
+    return _PROVIDER_MODULES[provider].download_url(repo_id, filename)
 
 
-def _parse_gguf_total_params(payload: dict) -> float | None:
-    total_params = payload.get("gguf", {}).get("total")
-    return total_params / 1e9 if total_params else None
+def remote_file_size(provider: str, repo_id: str, filename: str) -> int | None:
+    return _PROVIDER_MODULES[provider].remote_file_size(repo_id, filename)
 
 
-def fetch_repo_param_count_b(repo_id: str) -> float | None:
-    """Best-effort repo-level parameter count (billions), for callers that
-    only have a repo id and filename - not the full listing `resolve_model`
-    fetches - and whose filename doesn't spell out the count (e.g. repos
-    branded like "DeepSeek-V4-Flash" instead of "...-70B"). Unlike
-    `_fetch_repo_gguf_info`, this never raises: it's used to decide whether
-    to flag a search result as unviable, not to resolve an install, so a
-    failed lookup should just leave that decision unmade."""
-    try:
-        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15)
-        resp.raise_for_status()
-    except requests.RequestException:
-        return None
-    try:
-        return _parse_gguf_total_params(resp.json())
-    except ValueError:
-        return None
+def remote_file_sha256(provider: str, repo_id: str, filename: str) -> str | None:
+    return _PROVIDER_MODULES[provider].remote_file_sha256(repo_id, filename)
 
 
-def remote_file_sha256(repo_id: str, filename: str) -> str | None:
-    """Current LFS sha256 of `filename` in `repo_id`'s main branch, via HF's
-    paths-info API - no need to download the file to check it. Returns None
-    if the request fails, the file isn't listed, or it isn't stored as LFS
-    (gguf files always are in practice, so this covers "can't verify")."""
-    try:
-        resp = requests.post(
-            HF_PATHS_INFO.format(repo_id=repo_id),
-            json={"paths": [filename]},
-            timeout=15,
+def fetch_repo_param_count_b(provider: str, repo_id: str) -> float | None:
+    return _PROVIDER_MODULES[provider].fetch_repo_param_count_b(repo_id)
+
+
+def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> ResolvedModel:
+    """Shared org/repo[:filename] resolution logic for a single provider -
+    filename given -> just build the URL; filename omitted -> list the
+    repo's .gguf files and either pick the lone candidate or raise
+    AmbiguousModelError."""
+    module = _PROVIDER_MODULES[provider]
+    if filename is not None:
+        if not filename.lower().endswith(".gguf"):
+            filename = f"{filename}.gguf"
+        url = module.download_url(repo_id, filename)
+        return ResolvedModel(url=url, filename=filename, repo_id=repo_id, provider=provider)
+
+    candidates, param_count_b = module.fetch_repo_files(repo_id)
+    if not candidates:
+        raise ModelResolutionError(f"No .gguf files found in {provider} repo '{repo_id}'.")
+    model_candidates = [c for c in candidates if not is_mmproj_filename(c)]
+    if not model_candidates:
+        raise ModelResolutionError(
+            f"{provider} repo '{repo_id}' only contains a multimodal projector "
+            "(mmproj) file, not a standalone model GGUF - nothing to install."
         )
-        resp.raise_for_status()
-    except requests.RequestException:
-        return None
-
-    entries = resp.json()
-    if not entries:
-        return None
-    return entries[0].get("lfs", {}).get("sha256")
+    if len(model_candidates) > 1:
+        raise AmbiguousModelError(repo_id, model_candidates, param_count_b, provider=provider)
+    filename = model_candidates[0]
+    url = module.download_url(repo_id, filename)
+    return ResolvedModel(url=url, filename=filename, repo_id=repo_id, provider=provider)
 
 
-def remote_file_size(repo_id: str, filename: str) -> int | None:
-    """Best-effort Hub file size without downloading the GGUF."""
-    url = HF_DOWNLOAD.format(repo_id=repo_id, filename=quote(filename, safe="/"))
-    try:
-        response = requests.head(url, timeout=15, allow_redirects=False)
-        response.raise_for_status()
-    except requests.RequestException:
-        return None
-    raw_size = response.headers.get("X-Linked-Size")
-    if raw_size is None and response.status_code == 200:
-        raw_size = response.headers.get("Content-Length")
-    try:
-        size = int(raw_size)
-    except (TypeError, ValueError):
-        return None
-    return size if size > 0 else None
+_URL_HOST_PROVIDER = {
+    "huggingface.co": "huggingface",
+}
+
+_PREFIXES = {
+    "hf": "huggingface",
+    "huggingface": "huggingface",
+}
 
 
 def resolve_model(model_name: str) -> ResolvedModel:
     if model_name in CURATED_INDEX:
         repo_id, filename = CURATED_INDEX[model_name]
-        url = HF_DOWNLOAD.format(repo_id=repo_id, filename=filename)
-        return ResolvedModel(url=url, filename=filename, repo_id=repo_id)
+        url = huggingface.download_url(repo_id, filename)
+        return ResolvedModel(url=url, filename=filename, repo_id=repo_id, provider="huggingface")
 
     if model_name.startswith("http://") or model_name.startswith("https://"):
         filename = model_name.rsplit("/", 1)[-1].split("?", 1)[0]
-        return ResolvedModel(url=model_name, filename=filename, repo_id=None)
+        host = urlparse(model_name).hostname or ""
+        provider = _URL_HOST_PROVIDER.get(host.removeprefix("www."))
+        return ResolvedModel(url=model_name, filename=filename, repo_id=None, provider=provider)
+
+    if ":" in model_name:
+        prefix, rest = model_name.split(":", 1)
+        provider = _PREFIXES.get(prefix.lower())
+        if provider is not None:
+            if ":" in rest:
+                repo_id, filename = rest.split(":", 1)
+            else:
+                repo_id, filename = rest, None
+            return _resolve_repo_ref(provider, repo_id, filename)
 
     if "/" in model_name:
         if ":" in model_name:
             repo_id, filename = model_name.split(":", 1)
-            if not filename.lower().endswith(".gguf"):
-                filename = f"{filename}.gguf"
         else:
             repo_id, filename = model_name, None
-            candidates, param_count_b = _fetch_repo_gguf_info(repo_id)
-            if not candidates:
-                raise ModelResolutionError(f"No .gguf files found in HF repo '{repo_id}'.")
-            # mmproj files aren't standalone models - excluded here so a repo
-            # that ships one alongside the real model doesn't get the mmproj
-            # auto-selected (single-candidate shortcut) or offered in the
-            # quant picker (ambiguous case) as if it were a quant choice.
-            model_candidates = [c for c in candidates if not is_mmproj_filename(c)]
-            if not model_candidates:
-                raise ModelResolutionError(
-                    f"HF repo '{repo_id}' only contains a multimodal projector "
-                    "(mmproj) file, not a standalone model GGUF - nothing to install."
-                )
-            if len(model_candidates) > 1:
-                raise AmbiguousModelError(repo_id, model_candidates, param_count_b)
-            filename = model_candidates[0]
-        url = HF_DOWNLOAD.format(repo_id=repo_id, filename=filename)
-        return ResolvedModel(url=url, filename=filename, repo_id=repo_id)
+        matches: list[str] = []
+        for provider in _PROVIDER_MODULES:
+            try:
+                candidates, _ = _PROVIDER_MODULES[provider].fetch_repo_files(repo_id)
+            except ModelResolutionError:
+                continue
+            if candidates:
+                matches.append(provider)
+        if len(matches) > 1:
+            raise AmbiguousProviderError(repo_id, matches)
+        if len(matches) == 1:
+            return _resolve_repo_ref(matches[0], repo_id, filename)
+        raise ModelResolutionError(
+            f"'{repo_id}' was not found on HuggingFace or ModelScope."
+        )
 
     raise ModelResolutionError(
         f"Unknown model '{model_name}'. Use a curated name "
-        f"({', '.join(CURATED_INDEX)}), an 'org/repo:file.gguf' ref, or a direct URL."
+        f"({', '.join(CURATED_INDEX)}), an 'org/repo:file.gguf' ref (optionally "
+        "prefixed 'hf:' or 'ms:'), or a direct URL."
     )

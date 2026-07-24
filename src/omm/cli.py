@@ -62,12 +62,12 @@ from omm.featurize import (
     parse_quant_bits,
 )
 from omm.hub import (
-    HF_DOWNLOAD,
     AmbiguousModelError,
     ModelResolutionError,
     QuantVariant,
     ResolvedModel,
     best_filenames_by_tier,
+    download_url,
     fetch_repo_param_count_b,
     rank_quant_variants,
     remote_file_size,
@@ -972,7 +972,7 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
         if variant.required_gb is not None:
             resolved_variants.append(variant)
             continue
-        size_bytes = remote_file_size(error.repo_id, variant.filename)
+        size_bytes = remote_file_size(error.provider, error.repo_id, variant.filename)
         if size_bytes is None:
             resolved_variants.append(variant)
             continue
@@ -1516,7 +1516,8 @@ def _update_one(filename: str, entry: dict) -> str:
     old_sha256 = entry.get("sha256")
 
     if repo_id:
-        remote_sha256 = remote_file_sha256(repo_id, filename)
+        provider = entry.get("provider") or "huggingface"
+        remote_sha256 = remote_file_sha256(provider, repo_id, filename)
         if remote_sha256 is None:
             err_console.print(
                 f"[yellow]{filename}: could not check for updates "
@@ -1526,7 +1527,7 @@ def _update_one(filename: str, entry: dict) -> str:
         if remote_sha256 == old_sha256:
             return "up_to_date"
 
-        url = HF_DOWNLOAD.format(repo_id=repo_id, filename=filename)
+        url = download_url(provider, repo_id, filename)
         try:
             download_file(url, dest)
         except DownloadError as e:
@@ -2002,7 +2003,9 @@ def search(
                 # this, estimate_required_memory_gb can't tell "fits" from
                 # "unknown", and the "predicted not to run" warning silently
                 # never fires for exactly the huge models that most need it.
-                param_count_b = fetch_repo_param_count_b(c["repo_id"])
+                param_count_b = fetch_repo_param_count_b(
+                    c.get("provider") or "huggingface", c["repo_id"]
+                )
                 if param_count_b is not None:
                     candidate = {**c, "parameter_count_b": param_count_b}
             fits_hardware = not (
@@ -2734,10 +2737,12 @@ def _run_contribution_loop(
             console.print("[dim]No more candidates available for this hardware.[/dim]")
             break
 
+        provider = candidate.get("provider") or "huggingface"
         resolved = ResolvedModel(
-            url=HF_DOWNLOAD.format(repo_id=candidate["repo_id"], filename=candidate["filename"]),
+            url=download_url(provider, candidate["repo_id"], candidate["filename"]),
             filename=candidate["filename"],
             repo_id=candidate["repo_id"],
+            provider=provider,
         )
         display_name = candidate.get("name", candidate["filename"])
         console.print(f"[cyan]Trying {display_name}...[/cyan]")

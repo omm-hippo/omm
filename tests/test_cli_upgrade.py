@@ -31,7 +31,7 @@ def test_upgrade_single_repo_model_up_to_date(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
     (cli.MODELS_DIR / "model.gguf").write_bytes(b"old-bytes")
     registry.save_registry({"model.gguf": _entry(sha256="same-hash")})
-    monkeypatch.setattr(cli, "remote_file_sha256", lambda repo_id, filename: "same-hash")
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "same-hash")
 
     result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
 
@@ -43,7 +43,7 @@ def test_upgrade_single_repo_model_redownloads_on_hash_mismatch(isolated_omm_hom
     _no_engines(monkeypatch)
     (cli.MODELS_DIR / "model.gguf").write_bytes(b"old-bytes")
     registry.save_registry({"model.gguf": _entry(sha256="old-hash")})
-    monkeypatch.setattr(cli, "remote_file_sha256", lambda repo_id, filename: "new-hash")
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "new-hash")
 
     def fake_download(url, dest):
         Path(dest).write_bytes(b"new-bytes-from-upstream")
@@ -64,7 +64,7 @@ def test_upgrade_skips_when_remote_hash_unknown(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
     (cli.MODELS_DIR / "model.gguf").write_bytes(b"old-bytes")
     registry.save_registry({"model.gguf": _entry()})
-    monkeypatch.setattr(cli, "remote_file_sha256", lambda repo_id, filename: None)
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: None)
     monkeypatch.setattr(
         cli, "download_file", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not download"))
     )
@@ -135,7 +135,7 @@ def test_upgrade_all_confirmation_cancelled_leaves_registry_untouched(isolated_o
 def test_upgrade_all_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
     registry.save_registry({"model.gguf": _entry(sha256="same-hash")})
-    monkeypatch.setattr(cli, "remote_file_sha256", lambda repo_id, filename: "same-hash")
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "same-hash")
 
     result = runner.invoke(cli.app, ["upgrade", "--yes"])
 
@@ -164,7 +164,7 @@ def test_upgrade_all_reports_summary_counts(isolated_omm_home, monkeypatch):
     )
     monkeypatch.setattr(cli, "_ask_confirm", lambda message, default=False: True)
 
-    def fake_remote_hash(repo_id, filename):
+    def fake_remote_hash(provider, repo_id, filename):
         return "same-hash" if repo_id == "org/same" else "new-hash"
 
     monkeypatch.setattr(cli, "remote_file_sha256", fake_remote_hash)
