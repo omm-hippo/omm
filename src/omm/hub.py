@@ -4,8 +4,12 @@ Accepts these forms for `omm install <model_name>`:
   1. A curated short name (see CURATED_INDEX below), e.g. "tinyllama-1.1b-q4"
   2. A direct https:// URL to a .gguf file
   3. An explicit provider ref: "hf:org/repo:file.gguf", "ms:org/repo:file.gguf"
-  4. A bare "org/repo[:filename]" - tried against every known provider;
-     resolves automatically if only one provider has it
+  4. A bare "org/repo" (no filename) - tried against every known provider;
+     resolves automatically if only one provider has it. A bare
+     "org/repo:filename" (filename already known, no prefix) always
+     resolves against HuggingFace with zero network calls, matching
+     pre-multi-provider behavior - use an explicit "ms:" prefix to install
+     a fully-specified ModelScope file.
 """
 
 from __future__ import annotations
