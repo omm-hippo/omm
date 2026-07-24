@@ -10,3 +10,4 @@ build/
 .claude/
 .firebase/
 *-debug.log
+.worktrees/
