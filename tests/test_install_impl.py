@@ -10,8 +10,10 @@ from omm.downloader import DownloadCancelled
 from omm.hub import ResolvedModel
 
 
-def _resolved(filename="tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"):
-    return ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo")
+def _resolved(filename="tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf", provider=None):
+    return ResolvedModel(
+        url="https://example.com/x.gguf", filename=filename, repo_id="org/repo", provider=provider
+    )
 
 
 def _stub_common(monkeypatch, ollama=True, lmstudio=False):
@@ -53,6 +55,42 @@ def test_auto_upload_skips_confirm_prompt_and_sends_telemetry(isolated_omm_home,
 
     assert outcome.tokens_per_sec == 55.0
     assert outcome.telemetry_sent is True
+
+
+def test_install_impl_telemetry_includes_model_provider(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 55.0)
+    captured = {}
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: captured.update(event) or True
+    )
+
+    cli._install_impl(_resolved(provider="modelscope"), auto_upload=True)
+
+    assert captured["model_provider"] == "modelscope"
+
+
+def test_install_impl_telemetry_defaults_provider_to_huggingface(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 55.0)
+    captured = {}
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: captured.update(event) or True
+    )
+
+    cli._install_impl(_resolved(), auto_upload=True)
+
+    assert captured["model_provider"] == "huggingface"
 
 
 def test_no_upload_skips_confirm_prompt_and_does_not_send_telemetry(isolated_omm_home, monkeypatch):

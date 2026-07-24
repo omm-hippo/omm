@@ -1308,11 +1308,14 @@ def _install_impl(
                     engine_version=engine_version,
                     model_filename=filename,
                     model_digest=sha256,
+                    provider=resolved.provider,
                 )
             else:
                 telemetry.log_attempt("declined_by_user", filename)
         else:
-            telemetry_sent = _report_telemetry(filename, repo_id, tokens_per_sec)
+            telemetry_sent = _report_telemetry(
+                filename, repo_id, tokens_per_sec, provider=resolved.provider
+            )
     else:
         telemetry.log_attempt("not_attempted_no_ollama_link", filename)
 
@@ -2403,6 +2406,7 @@ def _report_telemetry(
     engine_version: str | None = None,
     model_filename: str | None = None,
     model_digest: str | None = None,
+    provider: str | None = None,
 ) -> bool:
     if tokens_per_sec is None:
         # Ollama daemon wasn't reachable - not a real "it doesn't run" signal,
@@ -2423,6 +2427,7 @@ def _report_telemetry(
         "gpu_tflops": info.gpu_tflops,
         "model_installed": filename,
         "model_repo_id": repo_id,
+        "model_provider": provider or "huggingface",
         "model_size_bytes": size_bytes,
         "engine": "ollama",
         "benchmark_version": 4,
