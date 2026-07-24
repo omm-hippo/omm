@@ -11,6 +11,7 @@ import re
 import requests
 
 from omm import hub, predictor
+from omm.providers import modelscope
 
 HF_SEARCH_API = "https://huggingface.co/api/models"
 
@@ -198,6 +199,49 @@ def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> lis
                 "repo_id": repo_id,
                 "filename": filename,
                 "description": "HuggingFace",
+                "provider": "huggingface",
+            }
+        )
+    return results
+
+
+MS_SEARCH_API = "https://modelscope.cn/openapi/v1/models"
+
+
+def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list[dict]:
+    try:
+        resp = requests.get(
+            MS_SEARCH_API,
+            params={"search": query, "page_size": limit},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except (requests.RequestException, ValueError):
+        return []
+
+    models = payload.get("data", {}).get("models", [])
+    gguf_tagged = [m for m in models if "library:gguf" in m.get("tags", [])]
+
+    results = []
+    for item in gguf_tagged[:15]:
+        repo_id = item.get("id")
+        if not repo_id or _claims_fake_provenance(repo_id):
+            continue
+        try:
+            files, _ = modelscope.fetch_repo_files(repo_id)
+        except Exception:  # noqa: BLE001 - a single bad repo shouldn't kill the search
+            continue
+        filename = pick_gguf_file([{"rfilename": f} for f in files])
+        if filename is None:
+            continue
+        results.append(
+            {
+                "name": repo_id,
+                "repo_id": repo_id,
+                "filename": filename,
+                "description": f"{item.get('downloads', 0):,} downloads on ModelScope",
+                "provider": "modelscope",
             }
         )
     return results

@@ -1,6 +1,22 @@
 from omm import search as search_mod
 
 
+class _Resp:
+    """Shared fake-response fixture for tests that just need `.json()` to
+    return a fixed payload (the file's other tests define this class inline
+    per-test when they need custom `raise_for_status`/`json` behavior; this
+    module-level version is for the common "just return a payload" case)."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
 def test_guess_family_tinyllama():
     assert search_mod.guess_family("tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf") == "TinyLlama"
 
@@ -226,3 +242,64 @@ def test_group_by_family_buckets_by_parsed_family():
 
     assert set(groups.keys()) == {"TinyLlama", "Mistral"}
     assert groups["TinyLlama"][0]["name"] == "tinyllama-1.1b-q4"
+
+
+_MS_SEARCH_PAYLOAD = {
+    "success": True,
+    "data": {
+        "models": [
+            {
+                "id": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+                "downloads": 50622,
+                "tags": ["library:gguf", "task:text-generation"],
+            },
+            {
+                "id": "some-org/not-gguf-model",
+                "downloads": 10,
+                "tags": ["task:text-generation"],
+            },
+        ]
+    },
+}
+
+
+def test_search_modelscope_filters_to_gguf_tagged_repos_and_picks_a_file(monkeypatch):
+    monkeypatch.setattr(
+        search_mod.requests, "get", lambda *a, **k: _Resp(_MS_SEARCH_PAYLOAD)
+    )
+    monkeypatch.setattr(
+        search_mod.modelscope,
+        "fetch_repo_files",
+        lambda repo_id: (["qwen2.5-0.5b-instruct-q4_k_m.gguf"], None),
+    )
+    results = search_mod.search_modelscope("qwen2.5")
+    assert len(results) == 1
+    assert results[0]["repo_id"] == "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+    assert results[0]["filename"] == "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+    assert results[0]["provider"] == "modelscope"
+
+
+def test_search_modelscope_skips_fake_provenance_repos(monkeypatch):
+    payload = {
+        "success": True,
+        "data": {
+            "models": [
+                {"id": "someone/claude-4-opus-gguf", "downloads": 1, "tags": ["library:gguf"]}
+            ]
+        },
+    }
+    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp(payload))
+    results = search_mod.search_modelscope("claude")
+    assert results == []
+
+
+def test_search_huggingface_results_are_tagged_huggingface(monkeypatch):
+    payload = [
+        {
+            "id": "org/repo",
+            "siblings": [{"rfilename": "model.Q4_K_M.gguf"}],
+        }
+    ]
+    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp(payload))
+    results = search_mod.search_huggingface("query")
+    assert results[0]["provider"] == "huggingface"
