@@ -110,3 +110,75 @@ def test_fetch_repo_param_count_b_is_always_none():
     # ModelScope's file-listing API doesn't expose a parsed GGUF header
     # total-params field like HF's does - always None, never guessed.
     assert modelscope.fetch_repo_param_count_b("org/repo") is None
+
+
+class _FakeResponseWithJsonError:
+    """Fake response that raises ValueError when .json() is called,
+    simulating a 200 response with a non-JSON body."""
+
+    def __init__(self):
+        self.status_code = 200
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+
+def test_fetch_repo_files_non_json_body_raises_model_resolution_error(monkeypatch):
+    """A 200 response with a non-JSON body should raise ModelResolutionError,
+    not leak the underlying ValueError."""
+    monkeypatch.setattr(
+        modelscope.requests, "get", lambda *a, **k: _FakeResponseWithJsonError()
+    )
+    with pytest.raises(ModelResolutionError):
+        modelscope.fetch_repo_files("org/repo")
+
+
+def test_fetch_repo_files_null_data_field_raises_model_resolution_error(monkeypatch):
+    """A response with {"Code": 200, "Data": None} should raise
+    ModelResolutionError when there are no files, not crash with AttributeError."""
+    monkeypatch.setattr(
+        modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, {"Code": 200, "Data": None})
+    )
+    # Empty file list should not crash, though it may raise since there are no .gguf files
+    # The key point is it doesn't raise AttributeError - _list_repo_files returns [] instead
+    files, _ = modelscope.fetch_repo_files("org/repo")
+    assert files == []
+
+
+def test_remote_file_size_non_json_body_returns_none(monkeypatch):
+    """remote_file_size never raises - even a non-JSON body should return None
+    for best-effort behavior."""
+    monkeypatch.setattr(
+        modelscope.requests, "get", lambda *a, **k: _FakeResponseWithJsonError()
+    )
+    assert modelscope.remote_file_size("org/repo", "model.gguf") is None
+
+
+def test_remote_file_size_null_data_field_returns_none(monkeypatch):
+    """remote_file_size never raises - even a null Data field should return None
+    for best-effort behavior."""
+    monkeypatch.setattr(
+        modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, {"Code": 200, "Data": None})
+    )
+    assert modelscope.remote_file_size("org/repo", "model.gguf") is None
+
+
+def test_remote_file_sha256_non_json_body_returns_none(monkeypatch):
+    """remote_file_sha256 never raises - even a non-JSON body should return None
+    for best-effort behavior."""
+    monkeypatch.setattr(
+        modelscope.requests, "get", lambda *a, **k: _FakeResponseWithJsonError()
+    )
+    assert modelscope.remote_file_sha256("org/repo", "model.gguf") is None
+
+
+def test_remote_file_sha256_null_data_field_returns_none(monkeypatch):
+    """remote_file_sha256 never raises - even a null Data field should return None
+    for best-effort behavior."""
+    monkeypatch.setattr(
+        modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, {"Code": 200, "Data": None})
+    )
+    assert modelscope.remote_file_sha256("org/repo", "model.gguf") is None

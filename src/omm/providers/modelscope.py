@@ -27,6 +27,7 @@ def _list_repo_files(repo_id: str, timeout: float = 15) -> list[dict]:
             timeout=timeout,
         )
         resp.raise_for_status()
+        payload = resp.json()
     except requests.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
@@ -40,9 +41,12 @@ def _list_repo_files(repo_id: str, timeout: float = 15) -> list[dict]:
         ) from e
     except requests.RequestException as e:
         raise ModelResolutionError(f"Could not reach ModelScope for '{repo_id}': {e}") from e
+    except ValueError as e:
+        raise ModelResolutionError(
+            f"ModelScope API response was not valid JSON for '{repo_id}': {e}"
+        ) from e
 
-    payload = resp.json()
-    return payload.get("Data", {}).get("Files", [])
+    return (payload.get("Data") or {}).get("Files", [])
 
 
 def fetch_repo_files(repo_id: str, timeout: float = 15) -> tuple[list[str], float | None]:
