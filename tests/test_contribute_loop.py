@@ -17,8 +17,8 @@ class _FakeQueue:
         self.marked_seen.append(ref)
 
 
-def _candidate(repo_id="org/repo", filename="model.gguf", name="model"):
-    return {"repo_id": repo_id, "filename": filename, "name": name}
+def _candidate(repo_id="org/repo", filename="model.gguf", name="model", provider="huggingface"):
+    return {"repo_id": repo_id, "filename": filename, "name": name, "provider": provider}
 
 
 def _seed_registry_entry(filename, sha256="deadbeef"):
@@ -210,3 +210,31 @@ def test_contribution_stopped_cleans_up_and_breaks(isolated_omm_home, monkeypatc
     assert cleaned == ["model.gguf"]
     assert removed == ["model.gguf"]
     assert stats.benchmarked == []
+
+
+def test_run_contribution_loop_builds_url_via_provider_dispatch(isolated_omm_home, monkeypatch):
+    seen_urls = []
+    stop_event = threading.Event()
+
+    def fake_install_impl(resolved, **kwargs):
+        seen_urls.append(resolved.url)
+        stop_event.set()  # stop the loop after this one iteration
+        return cli.InstallOutcome(
+            resolved.filename, resolved.repo_id, {}, None, 5.0, True, sha256="x"
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli.registry, "load_registry", lambda: {})
+    monkeypatch.setattr(cli, "_lookup_entry", lambda filename, reg: (None, None))
+    monkeypatch.setattr(
+        cli.benchmark_history, "record_benchmarked", lambda *a, **k: None
+    )
+
+    candidate = _candidate(repo_id="org/repo", filename="model.gguf", provider="modelscope")
+    queue = _FakeQueue([candidate])
+
+    cli._run_contribution_loop(queue, stop_event, refetch=lambda: (None, False))
+
+    assert seen_urls == [
+        "https://modelscope.cn/api/v1/models/org/repo/repo?Revision=master&FilePath=model.gguf"
+    ]
