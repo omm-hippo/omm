@@ -77,8 +77,8 @@ def test_successful_benchmark_records_history_and_deletes_model(isolated_omm_hom
 
     assert stats.benchmarked == [("model", 42.0)]
     assert removed == ["model.gguf"]
-    assert benchmark_history.has_been_benchmarked("org/repo:model.gguf")
-    assert queue.marked_seen == ["org/repo:model.gguf"]
+    assert benchmark_history.has_been_benchmarked("huggingface:org/repo:model.gguf")
+    assert queue.marked_seen == ["huggingface:org/repo:model.gguf"]
 
 
 def test_skipped_unfit_candidate_counted_and_not_deleted(isolated_omm_home, monkeypatch):
@@ -129,7 +129,7 @@ def test_upload_failure_counts_as_not_uploaded_and_does_not_mark_seen(isolated_o
     assert stats.attempted_not_uploaded == 1
     assert removed == ["model.gguf"]
     assert queue.marked_seen == []
-    assert not benchmark_history.has_been_benchmarked("org/repo:model.gguf")
+    assert not benchmark_history.has_been_benchmarked("huggingface:org/repo:model.gguf")
 
 
 def test_ollama_unreachable_mid_loop_counts_as_not_uploaded(isolated_omm_home, monkeypatch):

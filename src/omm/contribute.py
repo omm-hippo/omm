@@ -23,7 +23,22 @@ from omm.hardware import HardwareInfo
 
 
 def ref(candidate: dict) -> str:
-    return f"{candidate['repo_id']}:{candidate['filename']}"
+    provider = candidate.get("provider") or "huggingface"
+    return f"{provider}:{candidate['repo_id']}:{candidate['filename']}"
+
+
+def matches_history(candidate: dict, history_refs: set[str]) -> bool:
+    """True if `candidate` is already in `history_refs`, accepting both the
+    current provider-prefixed ref format and the legacy bare
+    "repo_id:filename" format that pre-dates provider support (always
+    HuggingFace, since it was the only provider back then)."""
+    if ref(candidate) in history_refs:
+        return True
+    provider = candidate.get("provider") or "huggingface"
+    if provider != "huggingface":
+        return False
+    legacy_ref = f"{candidate['repo_id']}:{candidate['filename']}"
+    return legacy_ref in history_refs
 
 
 def _next_unseen(
@@ -37,7 +52,7 @@ def _next_unseen(
     for step in range(n):
         idx = (cursor + step) % n
         candidate, _ = pool[idx]
-        if ref(candidate) not in history_refs:
+        if not matches_history(candidate, history_refs):
             return candidate, idx + 1
     return None, cursor
 
@@ -53,7 +68,7 @@ class ContributionQueue:
         ranked = predictor.rank_candidates(self.artifact, self.hw)
         viable = [(c, s) for c, s in ranked if s > 0]
         unviable = [(c, s) for c, s in ranked if s <= 0]
-        self._phase_a_queue = [c for c, s in viable if ref(c) not in self.history_refs]
+        self._phase_a_queue = [c for c, s in viable if not matches_history(c, self.history_refs)]
         self._below_pool = list(reversed(viable))
         self._above_pool = unviable
         self._below_cursor = 0
@@ -68,7 +83,7 @@ class ContributionQueue:
     ) -> dict | None:
         while self._phase_a_queue:
             candidate = self._phase_a_queue.pop(0)
-            if ref(candidate) not in self.history_refs:
+            if not matches_history(candidate, self.history_refs):
                 return candidate
 
         for _ in range(2):  # try both sides at most once before giving up

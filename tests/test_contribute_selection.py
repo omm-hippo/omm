@@ -11,7 +11,7 @@ def _candidate(repo_id, filename):
 
 def test_ref_formats_as_repo_id_colon_filename():
     c = _candidate("org/repo", "model.gguf")
-    assert contribute.ref(c) == "org/repo:model.gguf"
+    assert contribute.ref(c) == "huggingface:org/repo:model.gguf"
 
 
 def test_phase_a_yields_full_viable_pool_in_ranked_order(monkeypatch):
@@ -117,3 +117,25 @@ def test_refetch_returns_none_when_no_change_reported(monkeypatch):
     result = queue.next_candidate(refetch=lambda: ({}, False))
 
     assert result is None
+
+
+def test_ref_includes_provider_prefix():
+    candidate = {"repo_id": "org/repo", "filename": "model.gguf", "provider": "modelscope"}
+    assert contribute.ref(candidate) == "modelscope:org/repo:model.gguf"
+
+
+def test_ref_defaults_to_huggingface_when_provider_missing():
+    candidate = {"repo_id": "org/repo", "filename": "model.gguf"}
+    assert contribute.ref(candidate) == "huggingface:org/repo:model.gguf"
+
+
+def test_matches_history_accepts_legacy_unprefixed_hf_ref():
+    candidate = {"repo_id": "org/repo", "filename": "model.gguf", "provider": "huggingface"}
+    legacy_history = {"org/repo:model.gguf"}
+    assert contribute.matches_history(candidate, legacy_history) is True
+
+
+def test_matches_history_rejects_legacy_ref_for_non_hf_provider():
+    candidate = {"repo_id": "org/repo", "filename": "model.gguf", "provider": "modelscope"}
+    legacy_history = {"org/repo:model.gguf"}
+    assert contribute.matches_history(candidate, legacy_history) is False
