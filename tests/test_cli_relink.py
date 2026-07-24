@@ -22,6 +22,8 @@ def test_relink_repairs_entry_missing_lmstudio_link(isolated_omm_home, monkeypat
 
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: True)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
+    for key in ("jan", "anythingllm", "mstystudio", "textgenwebui", "koboldcpp"):
+        monkeypatch.setattr(linker, f"is_{key}_installed", lambda: False)
 
     lmstudio_calls = []
     monkeypatch.setattr(
@@ -60,6 +62,8 @@ def test_relink_reverifies_entry_already_marked_linked(isolated_omm_home, monkey
 
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: True)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
+    for key in ("jan", "anythingllm", "mstystudio", "textgenwebui", "koboldcpp"):
+        monkeypatch.setattr(linker, f"is_{key}_installed", lambda: False)
 
     lmstudio_calls = []
     ollama_calls = []
@@ -87,6 +91,8 @@ def test_relink_skips_entry_whose_source_file_is_missing(isolated_omm_home, monk
 
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: True)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
+    for key in ("jan", "anythingllm", "mstystudio", "textgenwebui", "koboldcpp"):
+        monkeypatch.setattr(linker, f"is_{key}_installed", lambda: False)
 
     result = runner.invoke(cli.app, ["relink"])
 

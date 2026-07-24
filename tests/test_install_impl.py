@@ -18,7 +18,12 @@ def _stub_common(monkeypatch, ollama=True, lmstudio=False):
     monkeypatch.setattr(cli, "sha256_file", lambda dest: "deadbeef")
     monkeypatch.setattr(cli.linker, "is_lmstudio_installed", lambda: lmstudio)
     monkeypatch.setattr(cli.linker, "is_ollama_installed", lambda: ollama)
-    monkeypatch.setattr(cli.linker, "link_ollama", lambda dest, tag: ollama)
+    monkeypatch.setattr(cli.linker, "is_jan_installed", lambda: False)
+    monkeypatch.setattr(cli.linker, "is_anythingllm_installed", lambda: False)
+    monkeypatch.setattr(cli.linker, "is_mstystudio_installed", lambda: False)
+    monkeypatch.setattr(cli.linker, "is_textgenwebui_installed", lambda: False)
+    monkeypatch.setattr(cli.linker, "is_koboldcpp_installed", lambda: False)
+    monkeypatch.setattr(cli.linker, "link_ollama", lambda dest, tag, models_dir=None: ollama)
     monkeypatch.setattr(cli.linker, "sanitize_ollama_tag", lambda filename: "tinyllama")
 
 

@@ -2,9 +2,15 @@ import json
 
 from typer.testing import CliRunner
 
-from omm import cli, registry
+from omm import cli, linker, registry
 
 runner = CliRunner()
+
+
+def _all_linked(**overrides) -> dict:
+    linked = {spec.key: False for spec in linker.ENGINES}
+    linked.update(overrides)
+    return linked
 
 
 def _entry(**overrides):
@@ -65,7 +71,7 @@ def test_info_json_is_parseable_and_has_expected_fields(isolated_omm_home):
     assert data["filename"] == "model.gguf"
     assert data["version"] == "abc1234"
     assert data["size_bytes"] == 2 * 1024**3
-    assert data["linked"] == {"lmstudio": True, "ollama": True}
+    assert data["linked"] == _all_linked(lmstudio=True, ollama=True)
     assert data["ollama_run_command"] == "ollama run repo-q4"
 
 
