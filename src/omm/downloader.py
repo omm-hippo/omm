@@ -76,14 +76,23 @@ def _probe_range_support(url: str) -> tuple[int, bool]:
     """Probe with a 1-byte Range request. Returns (total_size, supports_ranges).
     A 206 with a parseable `Content-Range` means the server (and by
     extension its CDN) honors Range requests, so a full download can be
-    safely split across threads."""
+    safely split across threads. Some servers (confirmed: ModelScope's
+    download endpoint) honor the Range header - returning exactly the
+    requested byte(s) with a correct Content-Range - but reply with status
+    200 instead of the RFC-correct 206; a 200 only counts as Range support
+    when Content-Length matches the single byte we asked for, so a server
+    that ignores Range and dumps the whole file with status 200 isn't
+    mistaken for one that sliced it."""
     try:
         resp = requests.get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=30)
     except requests.RequestException:
         return 0, False
     resp.close()
-    if resp.status_code == 206:
-        content_range = resp.headers.get("Content-Range", "")
+    content_range = resp.headers.get("Content-Range", "")
+    honored = resp.status_code == 206 or (
+        resp.status_code == 200 and resp.headers.get("Content-Length") == "1"
+    )
+    if honored and content_range:
         try:
             total = int(content_range.rsplit("/", 1)[-1])
         except (ValueError, IndexError):
@@ -105,8 +114,17 @@ def _download_range_worker(
 ) -> None:
     try:
         resp = requests.get(url, headers={"Range": f"bytes={start}-{end}"}, stream=True, timeout=30)
-        if resp.status_code != 206:
-            raise DownloadError(f"Expected 206 for a range request, got {resp.status_code}")
+        expected_len = end - start + 1
+        honored = resp.status_code == 206 or (
+            resp.status_code == 200
+            and resp.headers.get("Content-Length") == str(expected_len)
+        )
+        if not honored:
+            raise DownloadError(
+                f"Expected a Range response for bytes={start}-{end}, got "
+                f"status {resp.status_code} with Content-Length "
+                f"{resp.headers.get('Content-Length')}"
+            )
         with part_path.open("r+b") as f:
             f.seek(start)
             for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):

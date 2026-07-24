@@ -134,6 +134,42 @@ def test_probe_range_support_handles_network_error(monkeypatch):
     assert capable is False
 
 
+def test_probe_range_support_accepts_200_with_matching_content_length(monkeypatch):
+    """ModelScope's download endpoint honors Range but replies 200, not 206
+    - confirmed live (see docs/superpowers/specs/2026-07-24-multi-provider-hub-design.md).
+    A single byte requested and exactly one byte returned, with a Content-Range
+    header proving the server sliced correctly, must count as Range support."""
+
+    class _FakeResp:
+        status_code = 200
+        headers = {"Content-Range": "bytes 0-0/491400032", "Content-Length": "1"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(downloader.requests, "get", lambda *a, **k: _FakeResp())
+    total, supports_ranges = downloader._probe_range_support("https://example.com/f.gguf")
+    assert total == 491400032
+    assert supports_ranges is True
+
+
+def test_probe_range_support_rejects_200_with_full_content_length(monkeypatch):
+    """A server that ignores the Range header and returns the whole file
+    with status 200 must NOT be treated as Range-capable, or a "parallel"
+    download would just refetch the entire file once per thread."""
+
+    class _FakeResp:
+        status_code = 200
+        headers = {"Content-Length": "491400032"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(downloader.requests, "get", lambda *a, **k: _FakeResp())
+    total, supports_ranges = downloader._probe_range_support("https://example.com/f.gguf")
+    assert supports_ranges is False
+
+
 # --- end-to-end dispatcher behavior -----------------------------------------
 
 
