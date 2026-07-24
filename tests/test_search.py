@@ -270,7 +270,7 @@ def test_search_modelscope_filters_to_gguf_tagged_repos_and_picks_a_file(monkeyp
     monkeypatch.setattr(
         search_mod.modelscope,
         "fetch_repo_files",
-        lambda repo_id: (["qwen2.5-0.5b-instruct-q4_k_m.gguf"], None),
+        lambda repo_id, **kwargs: (["qwen2.5-0.5b-instruct-q4_k_m.gguf"], None),
     )
     results = search_mod.search_modelscope("qwen2.5")
     assert len(results) == 1
@@ -284,13 +284,68 @@ def test_search_modelscope_skips_fake_provenance_repos(monkeypatch):
         "success": True,
         "data": {
             "models": [
-                {"id": "someone/claude-4-opus-gguf", "downloads": 1, "tags": ["library:gguf"]}
+                {"id": "someone/claude-4-opus-gguf", "downloads": 1, "tags": ["library:gguf"]},
+                {
+                    "id": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+                    "downloads": 50622,
+                    "tags": ["library:gguf"],
+                },
             ]
         },
     }
     monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp(payload))
+    monkeypatch.setattr(
+        search_mod.modelscope,
+        "fetch_repo_files",
+        lambda repo_id, **kwargs: ([f"{repo_id.split('/')[-1]}-Q4_K_M.gguf"], None),
+    )
+
     results = search_mod.search_modelscope("claude")
-    assert results == []
+
+    repo_ids = [c["repo_id"] for c in results]
+    assert "someone/claude-4-opus-gguf" not in repo_ids
+    assert "Qwen/Qwen2.5-0.5B-Instruct-GGUF" in repo_ids
+
+
+def test_search_modelscope_returns_empty_list_on_malformed_top_level_response(monkeypatch):
+    # Regression: {"success": True, "data": None} is a plausible
+    # empty/error ModelScope response. `.get("data", {})` doesn't guard
+    # against an explicit `None` value, so `.get("models", [])` on it used
+    # to crash with AttributeError instead of degrading gracefully.
+    payload = {"success": True, "data": None}
+    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp(payload))
+
+    assert search_mod.search_modelscope("query") == []
+
+
+def test_search_modelscope_skips_single_failing_repo_and_keeps_others(monkeypatch):
+    payload = {
+        "success": True,
+        "data": {
+            "models": [
+                {"id": "org/broken-repo-GGUF", "downloads": 5, "tags": ["library:gguf"]},
+                {
+                    "id": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+                    "downloads": 50622,
+                    "tags": ["library:gguf"],
+                },
+            ]
+        },
+    }
+    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp(payload))
+
+    def _fake_fetch_repo_files(repo_id, **kwargs):
+        if repo_id == "org/broken-repo-GGUF":
+            raise search_mod.requests.RequestException("boom")
+        return ["qwen2.5-0.5b-instruct-q4_k_m.gguf"], None
+
+    monkeypatch.setattr(search_mod.modelscope, "fetch_repo_files", _fake_fetch_repo_files)
+
+    results = search_mod.search_modelscope("qwen2.5")
+
+    repo_ids = [c["repo_id"] for c in results]
+    assert "org/broken-repo-GGUF" not in repo_ids
+    assert "Qwen/Qwen2.5-0.5B-Instruct-GGUF" in repo_ids
 
 
 def test_search_huggingface_results_are_tagged_huggingface(monkeypatch):

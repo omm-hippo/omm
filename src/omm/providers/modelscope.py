@@ -19,12 +19,12 @@ MS_REPO_FILES = "https://modelscope.cn/api/v1/models/{repo_id}/repo/files"
 MS_DOWNLOAD = "https://modelscope.cn/api/v1/models/{repo_id}/repo"
 
 
-def _list_repo_files(repo_id: str) -> list[dict]:
+def _list_repo_files(repo_id: str, timeout: float = 15) -> list[dict]:
     try:
         resp = requests.get(
             MS_REPO_FILES.format(repo_id=repo_id),
             params={"Revision": "master", "Recursive": "True"},
-            timeout=15,
+            timeout=timeout,
         )
         resp.raise_for_status()
     except requests.HTTPError as e:
@@ -45,10 +45,10 @@ def _list_repo_files(repo_id: str) -> list[dict]:
     return payload.get("Data", {}).get("Files", [])
 
 
-def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
+def fetch_repo_files(repo_id: str, timeout: float = 15) -> tuple[list[str], float | None]:
     files = [
         f["Path"]
-        for f in _list_repo_files(repo_id)
+        for f in _list_repo_files(repo_id, timeout=timeout)
         if str(f.get("Path", "")).lower().endswith(".gguf")
     ]
     return files, None

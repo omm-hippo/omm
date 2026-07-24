@@ -220,7 +220,9 @@ def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list
     except (requests.RequestException, ValueError):
         return []
 
-    models = payload.get("data", {}).get("models", [])
+    if not isinstance(payload, dict):
+        return []
+    models = (payload.get("data") or {}).get("models", [])
     gguf_tagged = [m for m in models if "library:gguf" in m.get("tags", [])]
 
     results = []
@@ -229,7 +231,7 @@ def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list
         if not repo_id or _claims_fake_provenance(repo_id):
             continue
         try:
-            files, _ = modelscope.fetch_repo_files(repo_id)
+            files, _ = modelscope.fetch_repo_files(repo_id, timeout=timeout)
         except Exception:  # noqa: BLE001 - a single bad repo shouldn't kill the search
             continue
         filename = pick_gguf_file([{"rfilename": f} for f in files])
