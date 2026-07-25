@@ -1,3 +1,5 @@
+import requests
+
 from omm import search as search_mod
 
 
@@ -50,9 +52,9 @@ def test_local_candidate_pool_merges_curated_and_cached_and_dedupes(monkeypatch)
 
 def test_search_huggingface_returns_empty_list_on_request_error(monkeypatch):
     def _raise(*args, **kwargs):
-        raise search_mod.requests.RequestException("boom")
+        raise requests.RequestException("boom")
 
-    monkeypatch.setattr(search_mod.requests, "get", _raise)
+    monkeypatch.setattr(requests, "get", _raise)
 
     assert search_mod.search_huggingface("qwen") == []
 
@@ -74,7 +76,7 @@ def test_search_huggingface_filters_out_fake_provenance_repos(monkeypatch):
                 },
             ]
 
-    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
 
     results = search_mod.search_huggingface("mistral")
 
@@ -112,7 +114,7 @@ def test_search_huggingface_picks_a_concrete_filename_for_multi_quant_repos(monk
                 },
             ]
 
-    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
 
     results = search_mod.search_huggingface("granite")
 
@@ -127,7 +129,7 @@ def test_search_huggingface_skips_repos_with_no_matching_gguf_file(monkeypatch):
         def json(self):
             return [{"id": "some-org/no-gguf-here", "siblings": [{"rfilename": "README.md"}]}]
 
-    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
 
     assert search_mod.search_huggingface("something") == []
 

@@ -1,3 +1,4 @@
+import questionary
 from typer.testing import CliRunner
 
 from omm import catalog, cli, config
@@ -94,7 +95,7 @@ def test_setting_bare_cancel_exits_cleanly(isolated_omm_home, monkeypatch):
     # questionary.select(...) is evaluated eagerly as an argument to
     # _ask_select, so it must be stubbed too - constructing a real Question
     # probes the console and blows up on Windows CI runners.
-    monkeypatch.setattr(cli.questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: None)
 
     result = runner.invoke(cli.app, ["setting"])
@@ -104,7 +105,7 @@ def test_setting_bare_cancel_exits_cleanly(isolated_omm_home, monkeypatch):
 
 def test_setting_bare_menu_can_change_ui_mode(isolated_omm_home, monkeypatch):
     answers = iter(["ui", "detailed", None])
-    monkeypatch.setattr(cli.questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
 
     result = runner.invoke(cli.app, ["setting"])

@@ -17,7 +17,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
-import requests
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -77,6 +76,8 @@ def _probe_range_support(url: str) -> tuple[int, bool]:
     A 206 with a parseable `Content-Range` means the server (and by
     extension its CDN) honors Range requests, so a full download can be
     safely split across threads."""
+    import requests
+
     try:
         resp = requests.get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=30)
     except requests.RequestException:
@@ -103,6 +104,8 @@ def _download_range_worker(
     errors: list[Exception],
     stop_check: Callable[[], bool] | None,
 ) -> None:
+    import requests
+
     try:
         resp = requests.get(url, headers={"Range": f"bytes={start}-{end}"}, stream=True, timeout=30)
         if resp.status_code != 206:
@@ -170,6 +173,8 @@ def _download_parallel(
 def _download_single_stream(
     url: str, dest: Path, part_path: Path, stop_check: Callable[[], bool] | None
 ) -> None:
+    import requests
+
     dest.parent.mkdir(parents=True, exist_ok=True)
     resume_pos = part_path.stat().st_size if part_path.exists() else 0
 

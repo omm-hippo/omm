@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import json
 
-import requests
-
 from omm.config import RULES_PATH
 
 DEFAULT_RULES: list[dict] = [
@@ -41,6 +39,8 @@ def load_rules() -> list[dict]:
 
 
 def fetch_rules(url: str) -> list[dict]:
+    import requests
+
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
     rules = resp.json()

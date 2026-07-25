@@ -1,3 +1,4 @@
+import requests
 from typer.testing import CliRunner
 
 from omm import cli, config
@@ -116,9 +117,9 @@ def test_contribute_without_yes_errors_without_a_tty(isolated_omm_home):
 
 def test_telemetry_row_count_returns_none_on_network_error(monkeypatch):
     monkeypatch.setattr(
-        cli.requests,
+        requests,
         "get",
-        lambda *a, **k: (_ for _ in ()).throw(cli.requests.RequestException("boom")),
+        lambda *a, **k: (_ for _ in ()).throw(requests.RequestException("boom")),
     )
 
     assert cli._telemetry_row_count("https://example.com/telemetry.json") is None
@@ -132,7 +133,7 @@ def test_telemetry_row_count_counts_dict_entries(monkeypatch):
         def json(self):
             return {"a": {}, "b": {}, "c": {}}
 
-    monkeypatch.setattr(cli.requests, "get", lambda *a, **k: _FakeResp())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp())
 
     assert cli._telemetry_row_count("https://example.com/telemetry.json") == 3
 

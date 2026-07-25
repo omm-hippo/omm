@@ -1,6 +1,7 @@
 """omm CLI entry point (apt/brew-style command routing)."""
 
-import importlib.metadata
+from __future__ import annotations
+
 import json
 import math
 import platform
@@ -15,8 +16,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import click
-import questionary
-import requests
 import typer
 from prompt_toolkit.keys import Keys
 from rich.console import Console
@@ -125,6 +124,8 @@ def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bo
 
 
 def _omm_version() -> str:
+    import importlib.metadata
+
     try:
         return importlib.metadata.version("omm")
     except importlib.metadata.PackageNotFoundError:
@@ -289,6 +290,8 @@ def scan() -> None:
 def _refresh_data() -> None:
     """Unconditionally re-fetch rules.json and recommend-model.json from
     their configured URLs (used by `omm update` for a full data sync)."""
+    import requests
+
     config = load_config()
 
     rules_url = config.get("rules_url")
@@ -349,6 +352,8 @@ def _installed_commit() -> str | None:
     editable clone (SRC_DIR) first, then falls back to pip's PEP 610
     direct_url.json vcs_info - present for not-yet-migrated installs that
     still used a plain `pipx install <git-URL>` VCS snapshot."""
+    import importlib.metadata
+
     src_commit = _src_head_commit()
     if src_commit:
         return src_commit
@@ -454,6 +459,8 @@ def _maybe_auto_import(ctx: typer.Context) -> None:
 
 
 def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> None:
+    import questionary
+
     found = scan_import.find_external_models(extra_path)
     groups = scan_import.group_by_hash(found)
     if not groups:
@@ -581,6 +588,8 @@ def _deps_satisfied() -> bool:
     already-installed packages) can't see a dependency that was newly
     added to source since then - it always reports satisfied, so
     `omm update` would silently skip installing it."""
+    import importlib.metadata
+
     names = _declared_dependency_names()
     if names is None:
         return False
@@ -743,6 +752,8 @@ def _ask_confirm(message: str, default: bool = False) -> bool:
     key bindings are already merged by the time we get the Question object,
     so (unlike _ask_select) we can't bolt an Escape binding on here -
     Ctrl+C/Ctrl+Q still cancel via questionary's own bindings."""
+    import questionary
+
     _require_tty(message)
     answer = questionary.confirm(message, default=default, auto_enter=True).ask()
     return bool(answer)
@@ -762,6 +773,9 @@ def recommend() -> None:
     """Scan hardware and suggest a model to install, ranked by a model
     trained on real install telemetry (falls back to static rules if the
     trained model can't be fetched)."""
+    import questionary
+    import requests
+
     info = scan_hardware()
     config = load_config()
 
@@ -958,6 +972,8 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
     quality option. The predicted-fastest variant in each quant-bits tier is
     highlighted in green, per the cached ML speed model (skipped entirely if
     no model is cached)."""
+    import questionary
+
     info = scan_hardware()
     available_gb = calculate_memory_budget(info).install_budget_gb
 
@@ -1856,6 +1872,8 @@ def catalog_rollback() -> None:
 @setting_app.callback(invoke_without_command=True)
 def setting_menu(ctx: typer.Context) -> None:
     """Bare `omm setting` opens an interactive menu; a subcommand skips it."""
+    import questionary
+
     if ctx.invoked_subcommand is not None:
         return
     while True:
@@ -2641,6 +2659,8 @@ class _ContributionStats:
 def _telemetry_row_count(endpoint: str) -> int | None:
     """Best-effort read of how many rows exist in the (read-open) Firebase
     telemetry endpoint, for `omm contribute`'s before/after summary."""
+    import requests
+
     try:
         resp = requests.get(f"{endpoint}?shallow=true", timeout=10)
         resp.raise_for_status()

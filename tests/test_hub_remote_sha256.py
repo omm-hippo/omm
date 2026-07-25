@@ -17,7 +17,7 @@ class _FakeResponse:
 
 def test_remote_file_sha256_returns_lfs_hash(monkeypatch):
     monkeypatch.setattr(
-        hub.requests,
+        requests,
         "post",
         lambda url, json, timeout: _FakeResponse(
             [{"path": "model.gguf", "lfs": {"sha256": "deadbeef"}}]
@@ -29,7 +29,7 @@ def test_remote_file_sha256_returns_lfs_hash(monkeypatch):
 
 def test_remote_file_sha256_returns_none_when_not_lfs(monkeypatch):
     monkeypatch.setattr(
-        hub.requests,
+        requests,
         "post",
         lambda url, json, timeout: _FakeResponse([{"path": "model.gguf"}]),
     )
@@ -38,7 +38,7 @@ def test_remote_file_sha256_returns_none_when_not_lfs(monkeypatch):
 
 
 def test_remote_file_sha256_returns_none_when_path_missing(monkeypatch):
-    monkeypatch.setattr(hub.requests, "post", lambda url, json, timeout: _FakeResponse([]))
+    monkeypatch.setattr(requests, "post", lambda url, json, timeout: _FakeResponse([]))
 
     assert remote_file_sha256("org/repo", "model.gguf") is None
 
@@ -47,6 +47,6 @@ def test_remote_file_sha256_returns_none_on_request_error(monkeypatch):
     def _raise(url, json, timeout):
         raise requests.RequestException("boom")
 
-    monkeypatch.setattr(hub.requests, "post", _raise)
+    monkeypatch.setattr(requests, "post", _raise)
 
     assert remote_file_sha256("org/repo", "model.gguf") is None

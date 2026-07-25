@@ -8,8 +8,6 @@ from __future__ import annotations
 import difflib
 import re
 
-import requests
-
 from omm import hub, predictor
 
 HF_SEARCH_API = "https://huggingface.co/api/models"
@@ -171,6 +169,8 @@ def local_candidate_pool(model_url: str | None) -> list[dict]:
 
 
 def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> list[dict]:
+    import requests
+
     try:
         resp = requests.get(
             HF_SEARCH_API,

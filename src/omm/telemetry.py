@@ -15,8 +15,6 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-import requests
-
 from omm import config
 from omm.config import load_config
 
@@ -81,6 +79,8 @@ def _post_event(event: dict[str, Any]) -> bool:
     """Actually attempt the HTTP POST and log the outcome. Returns True on
     a 2xx response, False otherwise (network error, bad status, or no
     endpoint configured)."""
+    import requests
+
     endpoint = load_config().get("telemetry_endpoint")
     if not isinstance(endpoint, str) or not secure_endpoint(endpoint):
         log_attempt("skipped_no_endpoint")

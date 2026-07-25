@@ -1,5 +1,7 @@
 import threading
 
+import requests
+
 from omm import downloader
 
 
@@ -23,7 +25,7 @@ def test_download_file_completes_normally_without_stop_check(tmp_path, monkeypat
     dest = tmp_path / "model.gguf"
     monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
     monkeypatch.setattr(
-        downloader.requests, "get", lambda *a, **k: _FakeResp(200, [b"hello", b"world"])
+        requests, "get", lambda *a, **k: _FakeResp(200, [b"hello", b"world"])
     )
 
     downloader.download_file("https://example.com/model.gguf", dest)
@@ -36,7 +38,7 @@ def test_download_file_raises_cancelled_and_keeps_part_file_when_stop_check_fire
     dest = tmp_path / "model.gguf"
     monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
     monkeypatch.setattr(
-        downloader.requests, "get", lambda *a, **k: _FakeResp(200, [b"hello", b"world", b"!!!"])
+        requests, "get", lambda *a, **k: _FakeResp(200, [b"hello", b"world", b"!!!"])
     )
     calls = []
 
@@ -99,7 +101,7 @@ def test_choose_thread_count_scales_with_size_between_bounds():
 
 def test_probe_range_support_parses_content_range_on_206(monkeypatch):
     monkeypatch.setattr(
-        downloader.requests,
+        requests,
         "get",
         lambda *a, **k: _FakeResp(206, [b"x"], headers={"Content-Range": "bytes 0-0/5000000"}),
     )
@@ -112,7 +114,7 @@ def test_probe_range_support_parses_content_range_on_206(monkeypatch):
 
 def test_probe_range_support_not_capable_on_200(monkeypatch):
     monkeypatch.setattr(
-        downloader.requests,
+        requests,
         "get",
         lambda *a, **k: _FakeResp(200, [b"x"], headers={"Content-Length": "5000000"}),
     )
@@ -124,9 +126,9 @@ def test_probe_range_support_not_capable_on_200(monkeypatch):
 
 def test_probe_range_support_handles_network_error(monkeypatch):
     def _raise(*a, **k):
-        raise downloader.requests.RequestException("boom")
+        raise requests.RequestException("boom")
 
-    monkeypatch.setattr(downloader.requests, "get", _raise)
+    monkeypatch.setattr(requests, "get", _raise)
 
     total, capable = downloader._probe_range_support("https://example.com/m.gguf")
 
@@ -163,7 +165,7 @@ def test_download_file_uses_parallel_path_and_produces_correct_bytes(tmp_path, m
     monkeypatch.setattr(downloader, "_MIN_CHUNK_SIZE", 5)
     payload = bytes(range(40)) * 1  # 40 distinct-ish bytes
     server = _FakeRangeServer(payload)
-    monkeypatch.setattr(downloader.requests, "get", server)
+    monkeypatch.setattr(requests, "get", server)
     dest = tmp_path / "model.gguf"
 
     downloader.download_file("https://example.com/model.gguf", dest)
@@ -183,7 +185,7 @@ def test_download_file_falls_back_to_single_stream_when_range_unsupported(tmp_pa
         # server ignores Range entirely, always returns the full body as 200
         return _FakeResp(200, [payload], headers={"Content-Length": str(len(payload))})
 
-    monkeypatch.setattr(downloader.requests, "get", fake_get)
+    monkeypatch.setattr(requests, "get", fake_get)
     dest = tmp_path / "model.gguf"
 
     downloader.download_file("https://example.com/model.gguf", dest)
@@ -201,7 +203,7 @@ def test_download_file_resumes_existing_part_file_via_single_stream(tmp_path, mo
         calls.append((headers or {}).get("Range"))
         return _FakeResp(206, [b"world"])
 
-    monkeypatch.setattr(downloader.requests, "get", fake_get)
+    monkeypatch.setattr(requests, "get", fake_get)
 
     downloader.download_file("https://example.com/model.gguf", dest)
 
@@ -220,7 +222,7 @@ def test_download_file_parallel_path_honors_stop_check(tmp_path, monkeypatch):
             return _FakeResp(206, [payload[:1]], headers={"Content-Range": f"bytes 0-0/{len(payload)}"})
         return _FakeResp(206, [payload[i : i + 5] for i in range(0, len(payload), 5)])
 
-    monkeypatch.setattr(downloader.requests, "get", fake_get)
+    monkeypatch.setattr(requests, "get", fake_get)
     dest = tmp_path / "model.gguf"
     calls = []
 

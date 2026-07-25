@@ -10,8 +10,6 @@ import statistics
 import subprocess
 import time
 
-import requests
-
 OLLAMA_HOST = "http://localhost:11434"
 _BENCHMARK_PROMPT = "Explain what an operating system is."
 _NUM_PREDICT = 32
@@ -19,6 +17,8 @@ _DAEMON_START_TIMEOUT = 15.0
 
 
 def ollama_daemon_reachable() -> bool:
+    import requests
+
     try:
         requests.get(f"{OLLAMA_HOST}/api/tags", timeout=2)
         return True
@@ -72,6 +72,8 @@ def benchmark_ollama(tag: str, options: dict | None = None) -> float | None:
     """Return tokens/sec, 0.0 if generation was attempted and failed, or
     None if the daemon wasn't reachable at all (untestable, not a failure).
     """
+    import requests
+
     if not ollama_daemon_reachable():
         return None
 

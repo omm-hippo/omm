@@ -1,3 +1,4 @@
+import questionary
 from typer.testing import CliRunner
 
 from omm import cli, linker
@@ -48,7 +49,7 @@ def test_install_with_repo_only_prompts_quant_and_recurses_with_choice(isolated_
     # questionary.select(...) is evaluated eagerly as an argument to
     # _ask_select, so it must be stubbed too - constructing a real Question
     # tries to open a console, which CI runners (esp. Windows) don't have.
-    monkeypatch.setattr(cli.questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: chosen_filename)
 
     result = runner.invoke(cli.app, ["install", repo_id])
@@ -67,7 +68,7 @@ def test_install_cancels_cleanly_when_quant_prompt_is_escaped(isolated_omm_home,
 
     monkeypatch.setattr(cli, "resolve_model", fake_resolve)
     monkeypatch.setattr(cli, "scan_hardware", lambda: _HARDWARE)
-    monkeypatch.setattr(cli.questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: None)
 
     result = runner.invoke(cli.app, ["install", repo_id])
@@ -105,7 +106,7 @@ def test_quant_picker_marks_predicted_fastest_variant_green(isolated_omm_home, m
         captured_choices["choices"] = choices
         return None
 
-    monkeypatch.setattr(cli.questionary, "select", fake_select)
+    monkeypatch.setattr(questionary, "select", fake_select)
     monkeypatch.setattr(cli, "_ask_select", lambda question: None)
 
     result = runner.invoke(cli.app, ["install", repo_id])
@@ -139,7 +140,7 @@ def test_quant_picker_passes_repo_parameter_count_to_predictor(isolated_omm_home
         "predict_speed",
         lambda trees, hw, candidate: received_candidates.append(candidate) or 1.0,
     )
-    monkeypatch.setattr(cli.questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: None)
 
     result = runner.invoke(cli.app, ["install", repo_id])
@@ -167,7 +168,7 @@ def test_quant_picker_no_green_marks_when_predictor_model_uncached(isolated_omm_
         captured_choices["choices"] = choices
         return None
 
-    monkeypatch.setattr(cli.questionary, "select", fake_select)
+    monkeypatch.setattr(questionary, "select", fake_select)
     monkeypatch.setattr(cli, "_ask_select", lambda question: None)
 
     result = runner.invoke(cli.app, ["install", repo_id])

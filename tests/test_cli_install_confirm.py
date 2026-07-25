@@ -1,3 +1,4 @@
+import questionary
 from typer.testing import CliRunner
 
 from omm import cli, linker
@@ -102,7 +103,7 @@ def test_ask_confirm_uses_questionary_with_auto_enter(monkeypatch):
         captured["auto_enter"] = auto_enter
         return FakeQuestion()
 
-    monkeypatch.setattr(cli.questionary, "confirm", fake_confirm)
+    monkeypatch.setattr(questionary, "confirm", fake_confirm)
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
 
     result = cli._ask_confirm("질문?", default=False)

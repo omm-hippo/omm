@@ -9,8 +9,6 @@ from __future__ import annotations
 import json
 import math
 
-import requests
-
 from omm import calibration, catalog
 from omm.atomic import atomic_write_text, locked
 from omm.config import RECOMMEND_MODEL_PATH
@@ -147,6 +145,8 @@ def fetch_and_cache_model(
     manifest_url: str | None = None,
     public_key: str | None = None,
 ) -> dict:
+    import requests
+
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
     artifact = resp.json()
@@ -186,6 +186,8 @@ def load_model(
     public_key: str | None = None,
 ) -> dict | None:
     """Live fetch first, falling back to the last cached copy."""
+    import requests
+
     if bool(manifest_url) != bool(public_key):
         return load_cached_model()
     if url:
