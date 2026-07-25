@@ -470,7 +470,12 @@ def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):
 
     def fake_run(args, **kwargs):
         run_calls.append(args)
-        stdout = "newcommit\n" if args[-2:] == ["rev-parse", "origin/main"] else ""
+        if args[-2:] == ["rev-parse", "origin/main"]:
+            stdout = "newcommit\n"
+        elif args[-2:] == ["get-url", "origin"]:
+            stdout = cli._BARE_REPO_URL + "\n"
+        else:
+            stdout = ""
         return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
@@ -485,6 +490,7 @@ def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):
 
     assert result.returncode == 0
     assert run_calls == [
+        ["git", "-C", str(src), "remote", "get-url", "origin"],
         ["git", "-C", str(src), "fetch", "--quiet", "origin", "main"],
         ["git", "-C", str(src), "rev-parse", "origin/main"],
         ["git", "-C", str(src), "reset", "--hard", "--quiet", "origin/main"],
@@ -519,6 +525,8 @@ def test_git_update_src_stops_after_fetch_failure(monkeypatch, tmp_path):
 
     def fake_run(args, **kwargs):
         run_calls.append(args)
+        if args[-2:] == ["get-url", "origin"]:
+            return subprocess.CompletedProcess(args, 0, stdout=cli._BARE_REPO_URL + "\n", stderr="")
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="fetch failed")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
@@ -526,7 +534,10 @@ def test_git_update_src_stops_after_fetch_failure(monkeypatch, tmp_path):
     result = cli._git_update_src()
 
     assert result.returncode == 1
-    assert len(run_calls) == 1
+    assert run_calls == [
+        ["git", "-C", str(src), "remote", "get-url", "origin"],
+        ["git", "-C", str(src), "fetch", "--quiet", "origin", "main"],
+    ]
 
 
 def test_run_pipx_install_advances_progress_on_known_stage_lines(monkeypatch):
