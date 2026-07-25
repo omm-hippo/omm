@@ -30,7 +30,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "telemetry_endpoint": LEGACY_FIREBASE_ENDPOINT,
     "telemetry_backend": "firebase_legacy",
     "rules_url": None,
-    "model_url": "https://raw.githubusercontent.com/minigu5/Omm/main/published/recommend-model.json",
+    "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.json",
     "default_engine": None,
     "external_scan_done": False,
     "catalog_manifest_url": None,

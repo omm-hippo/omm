@@ -6,7 +6,7 @@ what to check before opening a PR, and how the project is organized.
 ## Getting started
 
 ```sh
-git clone https://github.com/minigu5/Omm.git
+git clone https://github.com/omm-hippo/omm.git
 cd Omm
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"

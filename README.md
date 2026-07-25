@@ -5,7 +5,7 @@
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/minigu5/Omm/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
 ```
 
 This bootstraps `python3`, `git`, and `pipx` if missing (Debian/Ubuntu via `apt`, or Homebrew on macOS), then installs `omm` as an isolated CLI via `pipx`. Open a new shell afterward so your `PATH` picks up `omm`.
