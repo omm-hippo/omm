@@ -111,7 +111,7 @@ app.add_typer(setting_app)
 console = Console()
 err_console = Console(stderr=True)
 
-REPO_URL = "git+https://github.com/minigu5/Localfit.git"
+REPO_URL = "git+https://github.com/minigu5/Omm.git"
 
 
 def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bool]:
@@ -701,7 +701,7 @@ def update() -> None:
     except FileNotFoundError:
         err_console.print(
             "[red]git or pipx not found. Install them first, or rerun the installer:[/red]\n"
-            "  curl -fsSL https://raw.githubusercontent.com/minigu5/Localfit/main/install.sh | sh"
+            "  curl -fsSL https://raw.githubusercontent.com/minigu5/Omm/main/install.sh | sh"
         )
         raise typer.Exit(1)
 

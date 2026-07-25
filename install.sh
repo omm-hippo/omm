@@ -1,9 +1,9 @@
 #!/usr/bin/env sh
 # Installs omm (Open source Model Manager) as an isolated CLI command via pipx.
-# Usage: curl -fsSL https://raw.githubusercontent.com/minigu5/Localfit/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/minigu5/Omm/main/install.sh | sh
 set -eu
 
-REPO_URL="https://github.com/minigu5/Localfit.git"
+REPO_URL="https://github.com/minigu5/Omm.git"
 SRC_DIR="$HOME/.omm/src"
 
 # run_apt() runs as root directly, or via sudo if available and needed -
