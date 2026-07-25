@@ -139,3 +139,63 @@ def test_matches_history_rejects_legacy_ref_for_non_hf_provider():
     candidate = {"repo_id": "org/repo", "filename": "model.gguf", "provider": "modelscope"}
     legacy_history = {"org/repo:model.gguf"}
     assert contribute.matches_history(candidate, legacy_history) is False
+
+
+def _provider_candidate(repo_id, filename, provider):
+    return {"repo_id": repo_id, "filename": filename, "name": filename, "provider": provider}
+
+
+def test_phase_a_tries_all_huggingface_before_any_modelscope(monkeypatch):
+    hf_lo = _provider_candidate("o", "hf_lo.gguf", "huggingface")
+    ms_hi = _provider_candidate("o", "ms_hi.gguf", "modelscope")
+    # ModelScope candidate outranks the HF one on predicted speed, but HF
+    # must still be tried first (ModelScope downloads are far slower - see
+    # contribute._prefer_huggingface).
+    ranked = [(ms_hi, 90.0), (hf_lo, 10.0)]
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: ranked)
+
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+
+    assert queue.next_candidate() is hf_lo
+    assert queue.next_candidate() is ms_hi
+
+
+def test_phase_a_preserves_score_order_within_each_provider(monkeypatch):
+    hf_hi = _provider_candidate("o", "hf_hi.gguf", "huggingface")
+    hf_lo = _provider_candidate("o", "hf_lo.gguf", "huggingface")
+    ms = _provider_candidate("o", "ms.gguf", "modelscope")
+    ranked = [(hf_hi, 50.0), (ms, 30.0), (hf_lo, 10.0)]
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: ranked)
+
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+
+    assert queue.next_candidate() is hf_hi
+    assert queue.next_candidate() is hf_lo
+    assert queue.next_candidate() is ms
+
+
+def test_phase_b_below_pool_tries_huggingface_before_modelscope(monkeypatch):
+    hf_weak = _provider_candidate("o", "hf_weak.gguf", "huggingface")
+    ms_strong = _provider_candidate("o", "ms_strong.gguf", "modelscope")
+    ranked = [(ms_strong, 90.0), (hf_weak, 10.0)]
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: ranked)
+
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+    queue.next_candidate()  # drains phase A: hf_weak
+    queue.next_candidate()  # drains phase A: ms_strong
+
+    # below_pool (weakest-still-viable side) should still exhaust HF first
+    assert queue.next_candidate() is hf_weak
+
+
+def test_phase_b_above_pool_tries_huggingface_before_modelscope(monkeypatch):
+    hf_unviable = _provider_candidate("o", "hf_unviable.gguf", "huggingface")
+    ms_unviable = _provider_candidate("o", "ms_unviable.gguf", "modelscope")
+    # ModelScope candidate is the less-bad unviable one by score, but HF
+    # should still be tried first on the above-pool side too.
+    ranked = [(ms_unviable, -1.0), (hf_unviable, -5.0)]
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: ranked)
+
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+
+    assert queue.next_candidate() is hf_unviable  # above, cursor 0

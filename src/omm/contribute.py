@@ -41,6 +41,22 @@ def matches_history(candidate: dict, history_refs: set[str]) -> bool:
     return legacy_ref in history_refs
 
 
+def _prefer_huggingface(pool: list[tuple[dict, float]]) -> list[tuple[dict, float]]:
+    """Stable-sort so every HuggingFace candidate is tried before any other
+    provider's, preserving the pool's existing relative order within each
+    provider (score-descending, score-ascending, whatever the caller set
+    up). ModelScope's download endpoint is far slower than HuggingFace's
+    from most regions (confirmed via live curl - single-digit hundred KB/s),
+    so `contribute`'s benchmark loop should exhaust HF candidates first
+    regardless of predicted inference speed."""
+
+    def priority(item: tuple[dict, float]) -> int:
+        provider = item[0].get("provider") or "huggingface"
+        return 0 if provider == "huggingface" else 1
+
+    return sorted(pool, key=priority)
+
+
 def _next_unseen(
     pool: list[tuple[dict, float]], history_refs: set[str], cursor: int
 ) -> tuple[dict | None, int]:
@@ -68,9 +84,11 @@ class ContributionQueue:
         ranked = predictor.rank_candidates(self.artifact, self.hw)
         viable = [(c, s) for c, s in ranked if s > 0]
         unviable = [(c, s) for c, s in ranked if s <= 0]
-        self._phase_a_queue = [c for c, s in viable if not matches_history(c, self.history_refs)]
-        self._below_pool = list(reversed(viable))
-        self._above_pool = unviable
+        self._phase_a_queue = [
+            c for c, s in _prefer_huggingface(viable) if not matches_history(c, self.history_refs)
+        ]
+        self._below_pool = _prefer_huggingface(list(reversed(viable)))
+        self._above_pool = _prefer_huggingface(unviable)
         self._below_cursor = 0
         self._above_cursor = 0
         self._next_side_is_below = True
