@@ -711,7 +711,16 @@ def _git_update_src() -> subprocess.CompletedProcess:
 
     Verifies origin/main's signature against the anchor still on disk from
     *before* this fetch (SRC_DIR's own trust/allowed_signers, read prior to
-    reset --hard overwriting it) before ever checking the new commit out."""
+    reset --hard overwriting it) before ever checking the new commit out.
+
+    Self-heals origin's URL to the current REPO_URL first: a clone made
+    before a repo rename/transfer still has the old URL in its git config,
+    and while GitHub redirects git operations for renamed/transferred repos,
+    that redirect isn't guaranteed to last forever."""
+    remote_url = _run_git(["git", "-C", str(SRC_DIR), "remote", "get-url", "origin"], timeout=10)
+    if remote_url.returncode == 0 and remote_url.stdout.strip() != _BARE_REPO_URL:
+        _run_git(["git", "-C", str(SRC_DIR), "remote", "set-url", "origin", _BARE_REPO_URL], timeout=10)
+
     fetch = _run_git(["git", "-C", str(SRC_DIR), "fetch", "--quiet", "origin", "main"])
     if fetch.returncode != 0:
         return fetch
