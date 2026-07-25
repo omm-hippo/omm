@@ -9,7 +9,7 @@ fixes.
 ## Reporting a Vulnerability
 
 Please **do not** open a public GitHub issue for a suspected security
-vulnerability. Instead, email **seong381400@gmail.com** with:
+vulnerability. Instead, email **omm.hippo@gmail.com** with:
 
 - A description of the vulnerability and its potential impact
 - Steps to reproduce (a minimal repro is ideal)
