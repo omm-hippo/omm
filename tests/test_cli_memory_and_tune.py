@@ -33,6 +33,35 @@ def test_scan_displays_live_safe_budget(monkeypatch):
     assert "Reserved for apps/OS" in result.stdout
 
 
+def test_scan_clears_stale_link_record_for_uninstalled_engine(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key != "jan")
+    cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
+
+    result = runner.invoke(cli.app, ["scan"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Cleared stale link record" in result.stdout
+    assert "model.gguf" in result.stdout
+    reg = cli.registry.load_registry()
+    assert reg["model.gguf"]["linked"] == {"jan": False, "ollama": True}
+
+
+def test_scan_leaves_link_record_untouched_when_engine_still_installed(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: True)
+    cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
+
+    result = runner.invoke(cli.app, ["scan"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Cleared stale link record" not in result.stdout
+    reg = cli.registry.load_registry()
+    assert reg["model.gguf"]["linked"] == {"jan": True, "ollama": True}
+
+
 def test_tune_uses_live_budget_for_installed_model(monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(

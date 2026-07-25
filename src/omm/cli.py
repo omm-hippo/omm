@@ -219,6 +219,24 @@ def _link_repair_needed(reg: dict) -> bool:
     return False
 
 
+def _reconcile_stale_link_records(reg: dict, installed: dict[str, bool]) -> list[str]:
+    """Clear `linked[engine]=True` registry records for engines that are no
+    longer installed. Uninstalling an engine takes its data dir - and any
+    omm symlinks inside it - with it, so there's nothing left to unlink;
+    this just stops the registry from claiming a dead link still exists.
+    Returns the filenames whose registry entry was corrected."""
+    cleaned = []
+    for filename, entry in reg.items():
+        linked = entry.get("linked", {})
+        stale = {key: False for key, on in linked.items() if on and not installed.get(key, False)}
+        if not stale:
+            continue
+        linked.update(stale)
+        registry.upsert_entry(filename, linked=stale)
+        cleaned.append(filename)
+    return cleaned
+
+
 @app.command()
 def scan() -> None:
     """Scan current PC hardware (RAM, VRAM, OS) and print a summary table."""
@@ -248,17 +266,18 @@ def scan() -> None:
 
     console.print(table)
 
+    installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
+
     engine_table = Table(title="Local AI runners", box=None)
     engine_table.add_column("Program", style="cyan")
     engine_table.add_column("Status", style="white")
     for spec in linker.ENGINES:
-        engine_table.add_row(
-            spec.label, "installed" if linker.is_engine_installed(spec.key) else "not detected"
-        )
+        engine_table.add_row(spec.label, "installed" if installed[spec.key] else "not detected")
     console.print()
     console.print(engine_table)
 
     reg = registry.load_registry()
+    cleaned = _reconcile_stale_link_records(reg, installed)
     external = scan_import.find_external_models()
 
     model_table = Table(title="Local AI models", box=None)
@@ -275,6 +294,12 @@ def scan() -> None:
     console.print()
     console.print(model_table)
 
+    if cleaned:
+        console.print()
+        console.print(
+            f"Cleared stale link record(s) for: {', '.join(cleaned)} "
+            "(engine no longer installed)."
+        )
     if _link_repair_needed(reg):
         console.print()
         console.print(
