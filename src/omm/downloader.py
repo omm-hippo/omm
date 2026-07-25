@@ -13,10 +13,12 @@ finishes the file over one connection rather than re-planning ranges.
 from __future__ import annotations
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
+from rich.console import Console
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -30,6 +32,11 @@ _CHUNK_SIZE = 1024 * 1024
 _DEFAULT_THREADS = 4
 _MIN_CHUNK_SIZE = 8 * 1024 * 1024  # minimum work per thread
 _MIN_PARALLEL_TOTAL = 20 * 1024 * 1024  # below this, not worth parallelizing
+
+_err_console = Console(stderr=True)
+
+_RETRY_DELAYS = [1, 1, 3, 5, 10, 10, 10, 10, 10]
+_MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
 
 
 class DownloadError(Exception):
@@ -210,20 +217,9 @@ def _download_single_stream(
     part_path.rename(dest)
 
 
-def download_file(url: str, dest: Path, stop_check: Callable[[], bool] | None = None) -> None:
-    """Download `url` to `dest`.
-
-    A fresh, range-capable download above `_MIN_PARALLEL_TOTAL` bytes is
-    split across multiple threads for speed. Everything else - small files,
-    servers that ignore Range, and resuming an existing `.part` file from a
-    prior run (single- or multi-threaded feature version alike) - goes
-    through the single-stream path, which also handles resuming.
-
-    If `stop_check` is given, it's polled regularly during the transfer; a
-    truthy result raises `DownloadCancelled` and leaves the `.part` file in
-    place for a later resume (used by `omm contribute`'s Esc-to-stop)."""
-    part_path = dest.with_suffix(dest.suffix + ".part")
-
+def _attempt_download(
+    url: str, dest: Path, part_path: Path, stop_check: Callable[[], bool] | None
+) -> None:
     if not part_path.exists():
         total_size, supports_ranges = _probe_range_support(url)
         if supports_ranges and total_size >= _MIN_PARALLEL_TOTAL:
@@ -239,3 +235,71 @@ def download_file(url: str, dest: Path, stop_check: Callable[[], bool] | None = 
                     # fall through to a clean single-stream retry
 
     _download_single_stream(url, dest, part_path, stop_check)
+
+
+def _is_retryable_network_error(exc: BaseException) -> bool:
+    import requests
+
+    network_errors = (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        requests.exceptions.ChunkedEncodingError,
+    )
+    if isinstance(exc, network_errors):
+        return True
+    return isinstance(exc, DownloadError) and isinstance(exc.__cause__, network_errors)
+
+
+def _sleep_with_stop_check(seconds: float, stop_check: Callable[[], bool] | None) -> None:
+    remaining = seconds
+    tick = 0.5
+    while remaining > 0:
+        if stop_check is not None and stop_check():
+            raise DownloadCancelled("interrupted by user")
+        wait = min(tick, remaining)
+        time.sleep(wait)
+        remaining -= wait
+
+
+def download_file(url: str, dest: Path, stop_check: Callable[[], bool] | None = None) -> None:
+    """Download `url` to `dest`.
+
+    A fresh, range-capable download above `_MIN_PARALLEL_TOTAL` bytes is
+    split across multiple threads for speed. Everything else - small files,
+    servers that ignore Range, and resuming an existing `.part` file from a
+    prior run (single- or multi-threaded feature version alike) - goes
+    through the single-stream path, which also handles resuming.
+
+    Transient network errors (DNS failure, connection reset, timeout,
+    truncated stream) are retried up to `_MAX_ATTEMPTS` times with a fixed
+    backoff schedule (`_RETRY_DELAYS`), reusing the same `.part` file across
+    attempts. Non-network errors (bad HTTP status, etc.) are not retried.
+
+    If `stop_check` is given, it's polled regularly during the transfer and
+    during backoff waits; a truthy result raises `DownloadCancelled` and
+    leaves the `.part` file in place for a later resume (used by `omm
+    contribute`'s Esc-to-stop)."""
+    part_path = dest.with_suffix(dest.suffix + ".part")
+    last_error: Exception | None = None
+
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            _attempt_download(url, dest, part_path, stop_check)
+            return
+        except DownloadCancelled:
+            raise
+        except Exception as e:
+            if not _is_retryable_network_error(e):
+                raise
+            last_error = e
+            if attempt == _MAX_ATTEMPTS:
+                break
+            delay = _RETRY_DELAYS[attempt - 1]
+            _err_console.print(
+                f"[yellow]네트워크 오류, {delay}초 후 재시도 ({attempt + 1}/{_MAX_ATTEMPTS})...[/yellow]"
+            )
+            _sleep_with_stop_check(delay, stop_check)
+
+    raise DownloadError(
+        f"네트워크 연결 실패: {_MAX_ATTEMPTS}번 시도 후 포기 ({last_error})"
+    ) from last_error

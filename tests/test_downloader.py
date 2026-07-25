@@ -211,6 +211,97 @@ def test_download_file_resumes_existing_part_file_via_single_stream(tmp_path, mo
     assert calls == ["bytes=5-"]  # single resume request, no probe
 
 
+# --- network retry/backoff ---------------------------------------------------
+
+
+def test_download_file_retries_transient_network_error_then_succeeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
+    monkeypatch.setattr(downloader.time, "sleep", lambda seconds: None)
+    dest = tmp_path / "model.gguf"
+    dest.with_suffix(dest.suffix + ".part").write_bytes(b"")  # skip range probing
+    calls = {"n": 0}
+
+    def flaky_get(*a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise requests.exceptions.ConnectionError("boom")
+        return _FakeResp(200, [b"hello", b"world"])
+
+    monkeypatch.setattr(requests, "get", flaky_get)
+
+    downloader.download_file("https://example.com/model.gguf", dest)
+
+    assert dest.read_bytes() == b"helloworld"
+    assert calls["n"] == 3
+
+
+def test_download_file_raises_download_error_after_max_attempts(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
+    sleeps = []
+    monkeypatch.setattr(downloader.time, "sleep", lambda seconds: sleeps.append(seconds))
+    dest = tmp_path / "model.gguf"
+    dest.with_suffix(dest.suffix + ".part").write_bytes(b"")  # skip range probing
+    calls = {"n": 0}
+
+    def always_fails(*a, **k):
+        calls["n"] += 1
+        raise requests.exceptions.ConnectionError("boom")
+
+    monkeypatch.setattr(requests, "get", always_fails)
+
+    raised = None
+    try:
+        downloader.download_file("https://example.com/model.gguf", dest)
+    except downloader.DownloadError as e:
+        raised = e
+
+    assert raised is not None
+    assert calls["n"] == downloader._MAX_ATTEMPTS
+    assert sum(sleeps) == sum(downloader._RETRY_DELAYS)
+
+
+def test_download_file_does_not_retry_on_permanent_http_status_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
+    dest = tmp_path / "model.gguf"
+    calls = {"n": 0}
+
+    def not_found(*a, **k):
+        calls["n"] += 1
+        return _FakeResp(404, [])
+
+    monkeypatch.setattr(requests, "get", not_found)
+
+    raised = None
+    try:
+        downloader.download_file("https://example.com/model.gguf", dest)
+    except downloader.DownloadError as e:
+        raised = e
+
+    assert raised is not None
+    assert calls["n"] == 2  # probe + single-stream attempt, no retry
+
+
+def test_download_file_cancellation_during_backoff_wait_raises_immediately(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
+    monkeypatch.setattr(downloader.time, "sleep", lambda seconds: None)
+    dest = tmp_path / "model.gguf"
+
+    def always_fails(*a, **k):
+        raise requests.exceptions.ConnectionError("boom")
+
+    monkeypatch.setattr(requests, "get", always_fails)
+
+    raised = None
+    try:
+        downloader.download_file(
+            "https://example.com/model.gguf", dest, stop_check=lambda: True
+        )
+    except downloader.DownloadCancelled as e:
+        raised = e
+
+    assert raised is not None
+
+
 def test_download_file_parallel_path_honors_stop_check(tmp_path, monkeypatch):
     monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
     monkeypatch.setattr(downloader, "_MIN_PARALLEL_TOTAL", 1)
