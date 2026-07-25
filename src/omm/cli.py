@@ -1723,49 +1723,17 @@ def list_models(
     table.add_column("#", justify="right")
     table.add_column("Filename", style="cyan")
     table.add_column("Size", justify="right")
-    detailed = load_config().get("ui_mode") == "detailed"
-    # Detailed mode only adds a column per engine actually installed here -
-    # with 7 possible engines, always showing all of them would make the
-    # table unreadably wide for the common case of 1-2 installed apps.
-    detailed_specs = [spec for spec in linker.ENGINES if linker.is_engine_installed(spec.key)] if detailed else []
-    if detailed:
-        for spec in detailed_specs:
-            table.add_column(spec.label)
-    else:
-        table.add_column("Links")
+    table.add_column("Links")
 
     for idx, (filename, entry) in enumerate(reg.items(), start=1):
         size_gb = entry.get("size_bytes", 0) / (1024**3)
         linked = entry.get("linked", {})
-        if detailed:
-            table.add_row(
-                str(idx),
-                filename,
-                f"{size_gb:.2f} GB",
-                *("[green]yes[/green]" if linked.get(spec.key) else "no" for spec in detailed_specs),
-            )
-        else:
-            programs = [spec.label for spec in linker.ENGINES if linked.get(spec.key)]
-            table.add_row(
-                str(idx), filename, f"{size_gb:.2f} GB", ", ".join(programs) or "none"
-            )
+        programs = [spec.label for spec in linker.ENGINES if linked.get(spec.key)]
+        table.add_row(
+            str(idx), filename, f"{size_gb:.2f} GB", ", ".join(programs) or "none"
+        )
     console.print(table)
     session_cache.record_results(list(reg.keys()))
-
-
-@setting_app.command(name="ui")
-def configure_ui(
-    mode: str = typer.Argument(None, help="compact or detailed"),
-) -> None:
-    """Choose compact everyday tables or detailed per-engine columns."""
-    current = load_config()
-    if mode is not None:
-        normalized = mode.lower()
-        if normalized not in {"compact", "detailed"}:
-            err_console.print("[red]UI mode must be compact or detailed.[/red]")
-            raise typer.Exit(1)
-        current = config_mod.update_config(ui_mode=normalized)
-    console.print(f"UI mode: [cyan]{current.get('ui_mode', 'compact')}[/cyan]")
 
 
 @setting_app.command(name="telemetry")
@@ -1958,30 +1926,35 @@ def setting_menu(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is not None:
         return
     while True:
+        current = load_config()
+        telemetry_backend = current.get("telemetry_backend") or "local"
+        telemetry_endpoint = current.get("telemetry_endpoint") or "not configured"
+        upload_policy = current.get("telemetry_send_policy", "ask")
+        catalog_manifest = current.get("catalog_manifest_url") or "not configured"
+
         choice = _ask_select(
             questionary.select(
                 "What do you want to change?",
                 choices=[
-                    questionary.Choice("UI mode", value="ui"),
-                    questionary.Choice("Telemetry", value="telemetry"),
-                    questionary.Choice("Upload", value="upload"),
+                    questionary.Choice(
+                        f"Telemetry (current: {telemetry_backend}, {telemetry_endpoint})",
+                        value="telemetry",
+                    ),
+                    questionary.Choice(f"Upload (current: {upload_policy})", value="upload"),
                     questionary.Choice("Calibrate", value="calibrate"),
-                    questionary.Choice("Catalog trust", value="catalog-trust"),
+                    questionary.Choice(
+                        f"Catalog trust (current: {catalog_manifest})", value="catalog-trust"
+                    ),
                     questionary.Choice("Catalog status", value="catalog-status"),
                     questionary.Choice("Catalog rollback", value="catalog-rollback"),
+                    questionary.Choice("← Back", value="back"),
                 ],
             )
         )
-        if choice is None:
+        if choice is None or choice == "back":
             return
 
-        if choice == "ui":
-            mode = _ask_select(
-                questionary.select("UI mode:", choices=["compact", "detailed"])
-            )
-            if mode is not None:
-                configure_ui(mode)
-        elif choice == "telemetry":
+        if choice == "telemetry":
             endpoint = questionary.text(
                 "Endpoint (blank to keep current, 'none' to clear):"
             ).ask()
@@ -1989,16 +1962,16 @@ def setting_menu(ctx: typer.Context) -> None:
         elif choice == "upload":
             action = _ask_select(
                 questionary.select(
-                    "Uploads:",
+                    f"Uploads (current: {upload_policy}):",
                     choices=[
                         questionary.Choice("Always send", value="enable"),
                         questionary.Choice("Never send", value="disable"),
                         questionary.Choice("Ask every time", value="ask"),
-                        questionary.Choice("Leave unchanged", value="skip"),
+                        questionary.Choice("← Back", value="back"),
                     ],
                 )
             )
-            if action is not None:
+            if action is not None and action != "back":
                 configure_upload(
                     enable=(action == "enable"),
                     disable=(action == "disable"),

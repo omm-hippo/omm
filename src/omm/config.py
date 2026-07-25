@@ -35,7 +35,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "external_scan_done": False,
     "catalog_manifest_url": None,
     "catalog_public_key": None,
-    "ui_mode": "compact",
     "contribute_always_ack": False,
 }
 
