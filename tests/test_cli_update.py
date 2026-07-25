@@ -1,3 +1,4 @@
+import importlib.metadata
 import subprocess
 from pathlib import Path
 
@@ -222,7 +223,7 @@ def test_installed_commit_reads_vcs_info_from_direct_url_json(monkeypatch):
             assert name == "direct_url.json"
             return '{"url": "https://x", "vcs_info": {"commit_id": "deadbeef", "vcs": "git"}}'
 
-    monkeypatch.setattr(cli.importlib.metadata, "distribution", lambda name: _FakeDist())
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _FakeDist())
 
     assert cli._installed_commit() == "deadbeef"
 
@@ -234,7 +235,7 @@ def test_installed_commit_returns_none_for_editable_dev_install(monkeypatch):
         def read_text(self, name):
             return '{"dir_info": {"editable": true}, "url": "file:///repo"}'
 
-    monkeypatch.setattr(cli.importlib.metadata, "distribution", lambda name: _FakeDist())
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _FakeDist())
 
     assert cli._installed_commit() is None
 
@@ -243,9 +244,9 @@ def test_installed_commit_returns_none_when_package_not_found(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: None)
 
     def _raise(name):
-        raise cli.importlib.metadata.PackageNotFoundError(name)
+        raise importlib.metadata.PackageNotFoundError(name)
 
-    monkeypatch.setattr(cli.importlib.metadata, "distribution", _raise)
+    monkeypatch.setattr(importlib.metadata, "distribution", _raise)
 
     assert cli._installed_commit() is None
 
@@ -257,7 +258,7 @@ def test_installed_commit_prefers_src_head_over_direct_url_json(monkeypatch):
         def read_text(self, name):
             return '{"url": "https://x", "vcs_info": {"commit_id": "from-direct-url"}}'
 
-    monkeypatch.setattr(cli.importlib.metadata, "distribution", lambda name: _FakeDist())
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _FakeDist())
 
     assert cli._installed_commit() == "from-src-clone"
 
@@ -279,7 +280,7 @@ def test_deps_satisfied_true_when_all_declared_deps_importable(tmp_path, monkeyp
         'dependencies = [\n    "click>=8.1",\n    "rich>=13",\n]\n'
     )
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
-    monkeypatch.setattr(cli.importlib.metadata, "version", lambda name: "1.0")
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "1.0")
 
     assert cli._deps_satisfied() is True
 
@@ -292,10 +293,10 @@ def test_deps_satisfied_false_when_a_declared_dep_is_missing(tmp_path, monkeypat
 
     def _version(name):
         if name == "click":
-            raise cli.importlib.metadata.PackageNotFoundError(name)
+            raise importlib.metadata.PackageNotFoundError(name)
         return "1.0"
 
-    monkeypatch.setattr(cli.importlib.metadata, "version", _version)
+    monkeypatch.setattr(importlib.metadata, "version", _version)
 
     assert cli._deps_satisfied() is False
 

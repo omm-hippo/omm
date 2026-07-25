@@ -1,5 +1,7 @@
 import json
 
+import requests
+
 from omm import config, telemetry
 
 
@@ -15,7 +17,7 @@ def test_send_event_skips_when_not_opted_in_and_not_forced(isolated_omm_home, mo
         lambda: {"telemetry_send_policy": "ask", "telemetry_endpoint": "https://example.com"},
     )
     called = []
-    monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: called.append((a, k)))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: called.append((a, k)))
 
     result = telemetry.send_event({"x": 1})
 
@@ -30,7 +32,7 @@ def test_send_event_sends_when_forced_even_if_not_opted_in(isolated_omm_home, mo
         lambda: {"telemetry_send_policy": "ask", "telemetry_endpoint": "https://example.com"},
     )
     called = []
-    monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: called.append((a, k)) or _FakeResp(200))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: called.append((a, k)) or _FakeResp(200))
 
     result = telemetry.send_event({"x": 1}, force=True)
 
@@ -45,7 +47,7 @@ def test_send_event_forced_still_requires_endpoint(isolated_omm_home, monkeypatc
         lambda: {"telemetry_send_policy": "ask", "telemetry_endpoint": None},
     )
     called = []
-    monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: called.append((a, k)))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: called.append((a, k)))
 
     result = telemetry.send_event({"x": 1}, force=True)
 
@@ -60,7 +62,7 @@ def test_send_event_sends_when_opted_in_without_force(isolated_omm_home, monkeyp
         lambda: {"telemetry_send_policy": "always", "telemetry_endpoint": "https://example.com"},
     )
     called = []
-    monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: called.append((a, k)) or _FakeResp(200))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: called.append((a, k)) or _FakeResp(200))
 
     result = telemetry.send_event({"x": 1})
 
@@ -74,7 +76,7 @@ def test_send_event_logs_sent_ok_on_success(isolated_omm_home, monkeypatch):
         "load_config",
         lambda: {"telemetry_send_policy": "always", "telemetry_endpoint": "https://example.com"},
     )
-    monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: _FakeResp(200))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200))
 
     telemetry.send_event({"x": 1})
 
@@ -91,9 +93,9 @@ def test_send_event_queues_and_logs_on_network_failure(isolated_omm_home, monkey
     )
 
     def raise_network_error(*a, **k):
-        raise telemetry.requests.RequestException("boom")
+        raise requests.RequestException("boom")
 
-    monkeypatch.setattr(telemetry.requests, "post", raise_network_error)
+    monkeypatch.setattr(requests, "post", raise_network_error)
 
     result = telemetry.send_event({"model": "x"})
 
@@ -110,7 +112,7 @@ def test_send_event_queues_and_logs_on_http_error(isolated_omm_home, monkeypatch
         "load_config",
         lambda: {"telemetry_send_policy": "always", "telemetry_endpoint": "https://example.com"},
     )
-    monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: _FakeResp(500))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(500))
 
     result = telemetry.send_event({"model": "y"})
 
@@ -130,7 +132,7 @@ def test_flush_pending_resends_and_clears_on_success(isolated_omm_home, monkeypa
     (isolated_omm_home / "telemetry_pending.json").write_text(
         json.dumps([{"model": "a"}, {"model": "b"}])
     )
-    monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: _FakeResp(200))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200))
 
     resent = telemetry.flush_pending()
 
@@ -141,7 +143,7 @@ def test_flush_pending_resends_and_clears_on_success(isolated_omm_home, monkeypa
 def test_flush_pending_keeps_events_that_still_fail(isolated_omm_home, monkeypatch):
     config.update_config(telemetry_endpoint="https://example.com")
     (isolated_omm_home / "telemetry_pending.json").write_text(json.dumps([{"model": "a"}]))
-    monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: _FakeResp(500))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(500))
 
     resent = telemetry.flush_pending()
 
@@ -154,7 +156,7 @@ def test_flush_pending_caps_attempts_per_call(isolated_omm_home, monkeypatch):
     events = [{"model": str(i)} for i in range(5)]
     (isolated_omm_home / "telemetry_pending.json").write_text(json.dumps(events))
     calls = []
-    monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: calls.append(1) or _FakeResp(200))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or _FakeResp(200))
 
     resent = telemetry.flush_pending(max_retries=3)
 

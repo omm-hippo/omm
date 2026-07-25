@@ -21,8 +21,6 @@ from decimal import Decimal, InvalidOperation
 from importlib.resources import files
 from pathlib import Path
 
-import requests
-
 from omm.hardware import HardwareInfo
 from omm import tuning
 
@@ -273,6 +271,8 @@ def _classify_error_response(response) -> str:
 def _request_json(
     method: str, path: str, payload: dict | None = None, timeout: int = DEFAULT_GENERATION_TIMEOUT_SECONDS
 ) -> dict:
+    import requests
+
     try:
         response = requests.request(
             method,

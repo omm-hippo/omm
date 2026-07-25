@@ -1,6 +1,12 @@
 import json
 
-from omm import registry, scan_import
+from omm import linker, registry, scan_import
+
+
+def _all_linked(**overrides) -> dict:
+    linked = {spec.key: False for spec in linker.ENGINES}
+    linked.update(overrides)
+    return linked
 
 
 def _write_manifest(manifests_root, namespace, name, tag, digest_hex, size=100):
@@ -75,6 +81,92 @@ def test_scan_lmstudio_skips_symlinks(tmp_path, monkeypatch):
     assert found[0].display_name == "model.gguf"
 
 
+def test_scan_anythingllm_reuses_ollama_format_at_its_own_dir(tmp_path, monkeypatch):
+    models_dir = tmp_path / "anythingllm-ollama"
+    blobs_dir = models_dir / "blobs"
+    manifests_root = models_dir / "manifests"
+    blobs_dir.mkdir(parents=True)
+
+    model_digest = "a" * 64
+    (blobs_dir / f"sha256-{model_digest}").write_bytes(b"gguf-bytes")
+    _write_manifest(manifests_root, "library", "llama3", "latest", model_digest)
+
+    monkeypatch.setattr(scan_import.linker, "anythingllm_ollama_models_dir", lambda: models_dir)
+
+    found = scan_import.scan_anythingllm()
+
+    assert len(found) == 1
+    assert found[0].engine == "anythingllm"
+    assert found[0].sha256 == model_digest
+
+
+def test_scan_mstystudio_and_textgenwebui_and_koboldcpp_find_flat_files(tmp_path, monkeypatch):
+    for engine, scan_fn, attr in (
+        ("mstystudio", scan_import.scan_mstystudio, "mstystudio_models_dir"),
+        ("textgenwebui", scan_import.scan_textgenwebui, "textgenwebui_models_dir"),
+        ("koboldcpp", scan_import.scan_koboldcpp, "koboldcpp_models_dir"),
+    ):
+        models_dir = tmp_path / engine
+        models_dir.mkdir()
+        real_file = models_dir / "model.gguf"
+        real_file.write_bytes(b"gguf-bytes")
+        (models_dir / "linked.gguf").symlink_to(tmp_path / "elsewhere.gguf")
+
+        monkeypatch.setattr(scan_import.linker, attr, lambda d=models_dir: d)
+
+        found = scan_fn()
+
+        assert len(found) == 1, engine
+        assert found[0].path == real_file
+        assert found[0].engine == engine
+
+
+def test_scan_textgenwebui_and_koboldcpp_return_empty_when_not_found(monkeypatch):
+    monkeypatch.setattr(scan_import.linker, "textgenwebui_models_dir", lambda: None)
+    monkeypatch.setattr(scan_import.linker, "koboldcpp_models_dir", lambda: None)
+
+    assert scan_import.scan_textgenwebui() == []
+    assert scan_import.scan_koboldcpp() == []
+
+
+def test_scan_jan_resolves_absolute_and_relative_model_paths(tmp_path, monkeypatch):
+    jan_app_dir = tmp_path / "Jan"
+    jan_data_dir = jan_app_dir / "data"
+    models_dir = jan_data_dir / "llamacpp" / "models"
+    monkeypatch.setattr(scan_import.linker, "jan_app_dir", lambda: jan_app_dir)
+    monkeypatch.setattr(scan_import.linker, "jan_models_dir", lambda: models_dir)
+
+    absolute_gguf = tmp_path / "somewhere" / "abs-model.gguf"
+    absolute_gguf.parent.mkdir(parents=True)
+    absolute_gguf.write_bytes(b"abs-bytes")
+    (models_dir / "abs-entry").mkdir(parents=True)
+    (models_dir / "abs-entry" / "model.yml").write_text(f'model_path: "{absolute_gguf}"\nname: "abs-entry"\n')
+
+    rel_gguf = jan_data_dir / "llamacpp" / "models" / "rel-entry" / "model.gguf"
+    rel_gguf.parent.mkdir(parents=True)
+    rel_gguf.write_bytes(b"rel-bytes")
+    (models_dir / "rel-entry" / "model.yml").write_text(
+        'model_path: "llamacpp/models/rel-entry/model.gguf"\nname: "rel-entry"\n'
+    )
+
+    # already-adopted entry (model_path resolves to a symlink) must be skipped
+    already_linked_target = tmp_path / "hub-model.gguf"
+    already_linked_target.write_bytes(b"hub-bytes")
+    (models_dir / "already-linked").mkdir(parents=True)
+    (models_dir / "already-linked" / "model.gguf").symlink_to(already_linked_target)
+    (models_dir / "already-linked" / "model.yml").write_text(
+        f'model_path: "{models_dir / "already-linked" / "model.gguf"}"\nname: "already-linked"\n'
+    )
+
+    found = scan_import.scan_jan()
+
+    by_name = {item.display_name: item for item in found}
+    assert set(by_name) == {"abs-entry", "rel-entry"}
+    assert by_name["abs-entry"].path == absolute_gguf
+    assert by_name["rel-entry"].path == rel_gguf
+    assert all(item.engine == "jan" for item in found)
+
+
 def test_group_by_hash_merges_identical_files_across_engines(tmp_path):
     a = scan_import.ExternalGguf("ollama", "llama3:latest", tmp_path / "a", 10, "same-hash")
     b = scan_import.ExternalGguf("lmstudio", "model.gguf", tmp_path / "b", 10, "same-hash")
@@ -118,7 +210,7 @@ def test_adopt_group_merges_duplicate_across_engines_and_reports_saved_bytes(iso
 
     entry = registry.load_registry()["model.gguf"]
     assert entry["sha256"] == "deadbeef"
-    assert entry["linked"] == {"lmstudio": True, "ollama": True}
+    assert entry["linked"] == _all_linked(lmstudio=True, ollama=True)
 
 
 def test_adopt_group_reuses_existing_hub_copy_for_same_hash(isolated_omm_home, tmp_path):
@@ -154,4 +246,4 @@ def test_adopt_group_reuses_existing_hub_copy_for_same_hash(isolated_omm_home, t
     assert stray_path.is_symlink() and stray_path.resolve() == hub_file.resolve()
 
     entry = registry.load_registry()["existing.gguf"]
-    assert entry["linked"] == {"lmstudio": True, "ollama": True}  # merged, lmstudio flag preserved
+    assert entry["linked"] == _all_linked(lmstudio=True, ollama=True)  # merged, lmstudio flag preserved

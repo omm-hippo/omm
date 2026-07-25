@@ -2,9 +2,15 @@ import json
 
 from typer.testing import CliRunner
 
-from omm import cli, registry
+from omm import cli, linker, registry
 
 runner = CliRunner()
+
+
+def _all_linked(**overrides) -> dict:
+    linked = {spec.key: False for spec in linker.ENGINES}
+    linked.update(overrides)
+    return linked
 
 
 def test_list_shows_index_column_and_records_session(isolated_omm_home, monkeypatch):
@@ -36,8 +42,8 @@ def test_list_json_is_parseable_and_has_expected_fields(isolated_omm_home):
     assert result.exit_code == 0, result.stdout
     data = json.loads(result.stdout)
     assert data == [
-        {"index": 1, "filename": "a.gguf", "size_bytes": 5, "linked": {"lmstudio": False, "ollama": False}},
-        {"index": 2, "filename": "b.gguf", "size_bytes": 9, "linked": {"lmstudio": False, "ollama": True}},
+        {"index": 1, "filename": "a.gguf", "size_bytes": 5, "linked": _all_linked()},
+        {"index": 2, "filename": "b.gguf", "size_bytes": 9, "linked": _all_linked(ollama=True)},
     ]
 
 

@@ -148,6 +148,11 @@ def _stub_successful_install(monkeypatch, isolated_omm_home):
     monkeypatch.setattr(cli, "sha256_file", lambda dest: "deadbeef")
     monkeypatch.setattr(cli.linker, "is_lmstudio_installed", lambda: False)
     monkeypatch.setattr(cli.linker, "is_ollama_installed", lambda: False)
+    monkeypatch.setattr(cli.linker, "is_jan_installed", lambda: False)
+    monkeypatch.setattr(cli.linker, "is_anythingllm_installed", lambda: False)
+    monkeypatch.setattr(cli.linker, "is_mstystudio_installed", lambda: False)
+    monkeypatch.setattr(cli.linker, "is_textgenwebui_installed", lambda: False)
+    monkeypatch.setattr(cli.linker, "is_koboldcpp_installed", lambda: False)
     return filename
 
 

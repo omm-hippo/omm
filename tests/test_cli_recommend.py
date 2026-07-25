@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import questionary
+
 from omm import cli
 
 
@@ -33,7 +35,7 @@ def test_recommend_builds_choice_values_via_install_ref(monkeypatch, isolated_om
     class _DummySelect:
         pass
 
-    monkeypatch.setattr(cli.questionary, "select", fake_select)
+    monkeypatch.setattr(questionary, "select", fake_select)
     monkeypatch.setattr(cli, "_ask_select", lambda select_obj: None)  # cancel path, avoids install()
 
     try:

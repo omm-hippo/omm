@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from urllib.parse import quote_plus
 
-import requests
-
 from omm.providers.base import ModelResolutionError
 
 MS_REPO_FILES = "https://modelscope.cn/api/v1/models/{repo_id}/repo/files"
@@ -20,6 +18,8 @@ MS_DOWNLOAD = "https://modelscope.cn/api/v1/models/{repo_id}/repo"
 
 
 def _list_repo_files(repo_id: str, timeout: float = 15) -> list[dict]:
+    import requests
+
     try:
         resp = requests.get(
             MS_REPO_FILES.format(repo_id=repo_id),

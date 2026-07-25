@@ -1,3 +1,4 @@
+import questionary
 from typer.testing import CliRunner
 
 from omm import cli, linker
@@ -21,7 +22,12 @@ def _stub_successful_install(monkeypatch, isolated_omm_home):
     monkeypatch.setattr(cli, "sha256_file", lambda dest: "deadbeef")
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
-    monkeypatch.setattr(linker, "link_ollama", lambda dest, tag: True)
+    monkeypatch.setattr(linker, "is_jan_installed", lambda: False)
+    monkeypatch.setattr(linker, "is_anythingllm_installed", lambda: False)
+    monkeypatch.setattr(linker, "is_mstystudio_installed", lambda: False)
+    monkeypatch.setattr(linker, "is_textgenwebui_installed", lambda: False)
+    monkeypatch.setattr(linker, "is_koboldcpp_installed", lambda: False)
+    monkeypatch.setattr(linker, "link_ollama", lambda dest, tag, models_dir=None: True)
     monkeypatch.setattr(linker, "sanitize_ollama_tag", lambda filename: "tinyllama")
     return filename
 
@@ -97,7 +103,7 @@ def test_ask_confirm_uses_questionary_with_auto_enter(monkeypatch):
         captured["auto_enter"] = auto_enter
         return FakeQuestion()
 
-    monkeypatch.setattr(cli.questionary, "confirm", fake_confirm)
+    monkeypatch.setattr(questionary, "confirm", fake_confirm)
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
 
     result = cli._ask_confirm("질문?", default=False)

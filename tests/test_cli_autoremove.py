@@ -5,7 +5,16 @@ from omm import cli, linker
 runner = CliRunner()
 
 
+def _stub_no_new_engines(monkeypatch):
+    """Every engine added after LM Studio/Ollama defaults to not-installed,
+    so these tests stay deterministic regardless of what's actually
+    installed on the machine running them."""
+    for key in ("jan", "anythingllm", "mstystudio", "textgenwebui", "koboldcpp"):
+        monkeypatch.setattr(linker, f"is_{key}_installed", lambda: False)
+
+
 def test_autoremove_reports_zero_when_nothing_broken(isolated_omm_home, monkeypatch):
+    _stub_no_new_engines(monkeypatch)
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: True)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
     monkeypatch.setattr(linker, "autoremove_lmstudio", lambda: 0)
@@ -18,6 +27,7 @@ def test_autoremove_reports_zero_when_nothing_broken(isolated_omm_home, monkeypa
 
 
 def test_autoremove_reports_counts_from_both_engines(isolated_omm_home, monkeypatch):
+    _stub_no_new_engines(monkeypatch)
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: True)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
     monkeypatch.setattr(linker, "autoremove_lmstudio", lambda: 2)
@@ -26,11 +36,12 @@ def test_autoremove_reports_counts_from_both_engines(isolated_omm_home, monkeypa
     result = runner.invoke(cli.app, ["autoremove"])
 
     assert result.exit_code == 0, result.stdout
-    assert "Removed 2 broken LM Studio symlink(s)" in result.stdout
-    assert "1 broken Ollama blob(s)" in result.stdout
+    assert "2 broken LM Studio link(s)" in result.stdout
+    assert "1 broken Ollama link(s)" in result.stdout
 
 
 def test_autoremove_cleans_up_orphaned_part_and_gguf_files(isolated_omm_home, monkeypatch):
+    _stub_no_new_engines(monkeypatch)
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
     cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -50,6 +61,7 @@ def test_autoremove_cleans_up_orphaned_part_and_gguf_files(isolated_omm_home, mo
 def test_autoremove_leaves_registered_files_alone(isolated_omm_home, monkeypatch):
     from omm import registry
 
+    _stub_no_new_engines(monkeypatch)
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
     cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -64,6 +76,7 @@ def test_autoremove_leaves_registered_files_alone(isolated_omm_home, monkeypatch
 
 
 def test_autoremove_skips_uninstalled_engines(isolated_omm_home, monkeypatch):
+    _stub_no_new_engines(monkeypatch)
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
     lmstudio_calls = []

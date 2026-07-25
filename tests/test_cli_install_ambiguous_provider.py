@@ -3,6 +3,7 @@ exists on more than one, instead of crashing or silently picking one."""
 
 from __future__ import annotations
 
+import questionary
 from typer.testing import CliRunner
 
 from omm import cli
@@ -30,7 +31,7 @@ def test_install_prompts_for_provider_on_ambiguous_match(monkeypatch, isolated_o
     # questionary.select(...) is evaluated eagerly as an argument to
     # _ask_select, so it must be stubbed too - constructing a real Question
     # tries to open a console, which CI runners (esp. Windows) don't have.
-    monkeypatch.setattr(cli.questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(
         cli, "_ask_select", lambda prompt: "modelscope"
     )
@@ -55,7 +56,7 @@ def test_install_cancels_cleanly_when_provider_prompt_is_escaped(monkeypatch, is
 
     monkeypatch.setattr(cli, "resolve_model", fake_resolve_model)
     monkeypatch.setattr(cli, "_resolve_ref", lambda name: name)
-    monkeypatch.setattr(cli.questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda prompt: None)
 
     result = runner.invoke(cli.app, ["install", repo_id])

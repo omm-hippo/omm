@@ -1,7 +1,8 @@
-"""Find GGUF files sitting in Ollama's / LM Studio's own directories (or an
-arbitrary path) that aren't yet managed by omm, group them by sha256 so
-identical copies collapse into one, and adopt the survivors into the omm
-hub with a symlink left behind at every original location.
+"""Find GGUF files sitting in the directories of every local AI app omm
+knows about (or an arbitrary path) that aren't yet managed by omm, group
+them by sha256 so identical copies collapse into one, and adopt the
+survivors into the omm hub with a symlink (or, for manifest-based engines,
+a rewritten manifest) left behind at every original location.
 
 No Typer/console/questionary here so the scan/group/adopt logic stays
 directly unit-testable - see cli.py for the interactive prompt flow that
@@ -22,10 +23,17 @@ from omm.hashutil import sha256_file
 
 _OLLAMA_MODEL_LAYER = "application/vnd.ollama.image.model"
 
+# Engines identified by a manifest/tag rather than a real on-disk filename
+# (Ollama-format blobs, Jan's model.yml) - their display_name/path aren't a
+# useful "canonical filename" for a model shared with a real-filename
+# engine, so adopt_group() and ModelGroup.display_name prefer any other
+# engine's name when one is available.
+_MANIFEST_STYLE_ENGINES = {"ollama", "anythingllm"}
+
 
 @dataclass
 class ExternalGguf:
-    engine: str  # "ollama" | "lmstudio" | "import"
+    engine: str  # one of linker.ENGINES' keys, or "import"
     display_name: str
     path: Path
     size_bytes: int
@@ -44,7 +52,7 @@ class ModelGroup:
     @property
     def display_name(self) -> str:
         for loc in self.locations:
-            if loc.engine == "lmstudio":
+            if loc.engine not in _MANIFEST_STYLE_ENGINES:
                 return loc.display_name
         return self.locations[0].display_name
 
@@ -59,13 +67,14 @@ class AdoptResult:
     bytes_saved: int
 
 
-def scan_ollama() -> list[ExternalGguf]:
-    """Real (non-symlink) Ollama model-layer blobs - config/manifest blobs
-    are skipped by only looking at digests actually referenced as a model
-    layer, since every Ollama blob shares the same `sha256-<hash>` naming
-    regardless of what it contains."""
-    blobs_dir = linker.ollama_models_dir() / "blobs"
-    manifests_root = linker.ollama_models_dir() / "manifests"
+def _scan_ollama_format(engine: str, models_dir: Path) -> list[ExternalGguf]:
+    """Real (non-symlink) model-layer blobs for any Ollama-format engine
+    (system Ollama, or AnythingLLM's bundled instance at its own
+    models_dir) - config/manifest blobs are skipped by only looking at
+    digests actually referenced as a model layer, since every blob shares
+    the same `sha256-<hash>` naming regardless of what it contains."""
+    blobs_dir = models_dir / "blobs"
+    manifests_root = models_dir / "manifests"
     if not blobs_dir.exists() or not manifests_root.exists():
         return []
 
@@ -89,19 +98,75 @@ def scan_ollama() -> list[ExternalGguf]:
         blob = blobs_dir / f"sha256-{digest}"
         if not blob.is_file() or blob.is_symlink():
             continue
-        found.append(ExternalGguf("ollama", tags[0], blob, blob.stat().st_size, digest))
+        found.append(ExternalGguf(engine, tags[0], blob, blob.stat().st_size, digest))
     return found
 
 
-def scan_lmstudio() -> list[ExternalGguf]:
-    base = linker.lmstudio_models_dir()
+def scan_ollama() -> list[ExternalGguf]:
+    return _scan_ollama_format("ollama", linker.ollama_models_dir())
+
+
+def scan_anythingllm() -> list[ExternalGguf]:
+    return _scan_ollama_format("anythingllm", linker.anythingllm_ollama_models_dir())
+
+
+def _scan_flat_dir(engine: str, base: Path) -> list[ExternalGguf]:
+    """Real (non-symlink) .gguf files anywhere under `base` - shared by
+    every engine that just recognizes a plain directory of GGUFs (LM
+    Studio, Msty, text-generation-webui, KoboldCpp)."""
     if not base.exists():
         return []
     found = []
     for path in base.rglob("*.gguf"):
         if not path.is_file() or path.is_symlink():
             continue
-        found.append(ExternalGguf("lmstudio", path.name, path, path.stat().st_size, sha256_file(path)))
+        found.append(ExternalGguf(engine, path.name, path, path.stat().st_size, sha256_file(path)))
+    return found
+
+
+def scan_lmstudio() -> list[ExternalGguf]:
+    return _scan_flat_dir("lmstudio", linker.lmstudio_models_dir())
+
+
+def scan_mstystudio() -> list[ExternalGguf]:
+    return _scan_flat_dir("mstystudio", linker.mstystudio_models_dir())
+
+
+def scan_textgenwebui() -> list[ExternalGguf]:
+    models_dir = linker.textgenwebui_models_dir()
+    return _scan_flat_dir("textgenwebui", models_dir) if models_dir is not None else []
+
+
+def scan_koboldcpp() -> list[ExternalGguf]:
+    models_dir = linker.koboldcpp_models_dir()
+    return _scan_flat_dir("koboldcpp", models_dir) if models_dir is not None else []
+
+
+def scan_jan() -> list[ExternalGguf]:
+    """Jan models are registered via a model.yml manifest whose model_path
+    can be any absolute path (or one relative to Jan's data folder) - so,
+    unlike the flat-directory engines, the actual .gguf here is very often
+    outside Jan's own directory tree entirely."""
+    models_dir = linker.jan_models_dir()
+    if not models_dir.exists():
+        return []
+    jan_data_dir = linker.jan_app_dir() / "data"
+
+    found = []
+    for config_path in models_dir.glob("*/model.yml"):
+        model_path_str = linker.read_jan_model_path(config_path)
+        if not model_path_str:
+            continue
+        model_path = Path(model_path_str)
+        if not model_path.is_absolute():
+            model_path = jan_data_dir / model_path
+        if not model_path.is_file() or model_path.is_symlink():
+            continue
+        found.append(
+            ExternalGguf(
+                "jan", config_path.parent.name, model_path, model_path.stat().st_size, sha256_file(model_path)
+            )
+        )
     return found
 
 
@@ -117,7 +182,15 @@ def scan_directory(path: Path) -> list[ExternalGguf]:
 
 
 def find_external_models(extra_path: Path | None = None) -> list[ExternalGguf]:
-    found = scan_ollama() + scan_lmstudio()
+    found = (
+        scan_ollama()
+        + scan_lmstudio()
+        + scan_jan()
+        + scan_anythingllm()
+        + scan_mstystudio()
+        + scan_textgenwebui()
+        + scan_koboldcpp()
+    )
     if extra_path is not None:
         found.extend(scan_directory(extra_path))
     return found
@@ -138,14 +211,14 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     reg = registry.load_registry()
     existing_filename = next((fn for fn, e in reg.items() if e.get("sha256") == group.sha256), None)
 
-    linked = {"lmstudio": False, "ollama": False}
+    linked = {spec.key: False for spec in linker.ENGINES}
     bytes_saved = 0
 
     if existing_filename:
         hub_path = MODELS_DIR / existing_filename
         linked.update(reg[existing_filename].get("linked", {}))
     else:
-        preferred = next((loc for loc in group.locations if loc.engine == "lmstudio"), None)
+        preferred = next((loc for loc in group.locations if loc.engine not in _MANIFEST_STYLE_ENGINES), None)
         if preferred is not None:
             filename = preferred.path.name
         else:

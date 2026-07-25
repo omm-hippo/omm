@@ -1,5 +1,7 @@
 import threading
 
+import requests
+
 from omm import downloader
 
 
@@ -23,7 +25,7 @@ def test_download_file_completes_normally_without_stop_check(tmp_path, monkeypat
     dest = tmp_path / "model.gguf"
     monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
     monkeypatch.setattr(
-        downloader.requests, "get", lambda *a, **k: _FakeResp(200, [b"hello", b"world"])
+        requests, "get", lambda *a, **k: _FakeResp(200, [b"hello", b"world"])
     )
 
     downloader.download_file("https://example.com/model.gguf", dest)
@@ -36,7 +38,7 @@ def test_download_file_raises_cancelled_and_keeps_part_file_when_stop_check_fire
     dest = tmp_path / "model.gguf"
     monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
     monkeypatch.setattr(
-        downloader.requests, "get", lambda *a, **k: _FakeResp(200, [b"hello", b"world", b"!!!"])
+        requests, "get", lambda *a, **k: _FakeResp(200, [b"hello", b"world", b"!!!"])
     )
     calls = []
 
@@ -99,7 +101,7 @@ def test_choose_thread_count_scales_with_size_between_bounds():
 
 def test_probe_range_support_parses_content_range_on_206(monkeypatch):
     monkeypatch.setattr(
-        downloader.requests,
+        requests,
         "get",
         lambda *a, **k: _FakeResp(206, [b"x"], headers={"Content-Range": "bytes 0-0/5000000"}),
     )
@@ -112,7 +114,7 @@ def test_probe_range_support_parses_content_range_on_206(monkeypatch):
 
 def test_probe_range_support_not_capable_on_200(monkeypatch):
     monkeypatch.setattr(
-        downloader.requests,
+        requests,
         "get",
         lambda *a, **k: _FakeResp(200, [b"x"], headers={"Content-Length": "5000000"}),
     )
@@ -124,9 +126,9 @@ def test_probe_range_support_not_capable_on_200(monkeypatch):
 
 def test_probe_range_support_handles_network_error(monkeypatch):
     def _raise(*a, **k):
-        raise downloader.requests.RequestException("boom")
+        raise requests.RequestException("boom")
 
-    monkeypatch.setattr(downloader.requests, "get", _raise)
+    monkeypatch.setattr(requests, "get", _raise)
 
     total, capable = downloader._probe_range_support("https://example.com/m.gguf")
 
@@ -147,7 +149,7 @@ def test_probe_range_support_accepts_200_with_matching_content_length(monkeypatc
         def close(self):
             pass
 
-    monkeypatch.setattr(downloader.requests, "get", lambda *a, **k: _FakeResp())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp())
     total, supports_ranges = downloader._probe_range_support("https://example.com/f.gguf")
     assert total == 491400032
     assert supports_ranges is True
@@ -170,7 +172,7 @@ def test_probe_range_support_rejects_200_with_mismatched_content_length(monkeypa
         def close(self):
             pass
 
-    monkeypatch.setattr(downloader.requests, "get", lambda *a, **k: _FakeResp())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp())
     total, supports_ranges = downloader._probe_range_support("https://example.com/f.gguf")
     assert supports_ranges is False
 
@@ -204,7 +206,7 @@ def test_download_file_uses_parallel_path_and_produces_correct_bytes(tmp_path, m
     monkeypatch.setattr(downloader, "_MIN_CHUNK_SIZE", 5)
     payload = bytes(range(40)) * 1  # 40 distinct-ish bytes
     server = _FakeRangeServer(payload)
-    monkeypatch.setattr(downloader.requests, "get", server)
+    monkeypatch.setattr(requests, "get", server)
     dest = tmp_path / "model.gguf"
 
     downloader.download_file("https://example.com/model.gguf", dest)
@@ -224,7 +226,7 @@ def test_download_file_falls_back_to_single_stream_when_range_unsupported(tmp_pa
         # server ignores Range entirely, always returns the full body as 200
         return _FakeResp(200, [payload], headers={"Content-Length": str(len(payload))})
 
-    monkeypatch.setattr(downloader.requests, "get", fake_get)
+    monkeypatch.setattr(requests, "get", fake_get)
     dest = tmp_path / "model.gguf"
 
     downloader.download_file("https://example.com/model.gguf", dest)
@@ -242,12 +244,103 @@ def test_download_file_resumes_existing_part_file_via_single_stream(tmp_path, mo
         calls.append((headers or {}).get("Range"))
         return _FakeResp(206, [b"world"])
 
-    monkeypatch.setattr(downloader.requests, "get", fake_get)
+    monkeypatch.setattr(requests, "get", fake_get)
 
     downloader.download_file("https://example.com/model.gguf", dest)
 
     assert dest.read_bytes() == b"helloworld"
     assert calls == ["bytes=5-"]  # single resume request, no probe
+
+
+# --- network retry/backoff ---------------------------------------------------
+
+
+def test_download_file_retries_transient_network_error_then_succeeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
+    monkeypatch.setattr(downloader.time, "sleep", lambda seconds: None)
+    dest = tmp_path / "model.gguf"
+    dest.with_suffix(dest.suffix + ".part").write_bytes(b"")  # skip range probing
+    calls = {"n": 0}
+
+    def flaky_get(*a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise requests.exceptions.ConnectionError("boom")
+        return _FakeResp(200, [b"hello", b"world"])
+
+    monkeypatch.setattr(requests, "get", flaky_get)
+
+    downloader.download_file("https://example.com/model.gguf", dest)
+
+    assert dest.read_bytes() == b"helloworld"
+    assert calls["n"] == 3
+
+
+def test_download_file_raises_download_error_after_max_attempts(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
+    sleeps = []
+    monkeypatch.setattr(downloader.time, "sleep", lambda seconds: sleeps.append(seconds))
+    dest = tmp_path / "model.gguf"
+    dest.with_suffix(dest.suffix + ".part").write_bytes(b"")  # skip range probing
+    calls = {"n": 0}
+
+    def always_fails(*a, **k):
+        calls["n"] += 1
+        raise requests.exceptions.ConnectionError("boom")
+
+    monkeypatch.setattr(requests, "get", always_fails)
+
+    raised = None
+    try:
+        downloader.download_file("https://example.com/model.gguf", dest)
+    except downloader.DownloadError as e:
+        raised = e
+
+    assert raised is not None
+    assert calls["n"] == downloader._MAX_ATTEMPTS
+    assert sum(sleeps) == sum(downloader._RETRY_DELAYS)
+
+
+def test_download_file_does_not_retry_on_permanent_http_status_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
+    dest = tmp_path / "model.gguf"
+    calls = {"n": 0}
+
+    def not_found(*a, **k):
+        calls["n"] += 1
+        return _FakeResp(404, [])
+
+    monkeypatch.setattr(requests, "get", not_found)
+
+    raised = None
+    try:
+        downloader.download_file("https://example.com/model.gguf", dest)
+    except downloader.DownloadError as e:
+        raised = e
+
+    assert raised is not None
+    assert calls["n"] == 2  # probe + single-stream attempt, no retry
+
+
+def test_download_file_cancellation_during_backoff_wait_raises_immediately(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
+    monkeypatch.setattr(downloader.time, "sleep", lambda seconds: None)
+    dest = tmp_path / "model.gguf"
+
+    def always_fails(*a, **k):
+        raise requests.exceptions.ConnectionError("boom")
+
+    monkeypatch.setattr(requests, "get", always_fails)
+
+    raised = None
+    try:
+        downloader.download_file(
+            "https://example.com/model.gguf", dest, stop_check=lambda: True
+        )
+    except downloader.DownloadCancelled as e:
+        raised = e
+
+    assert raised is not None
 
 
 def test_download_file_parallel_path_honors_stop_check(tmp_path, monkeypatch):
@@ -261,7 +354,7 @@ def test_download_file_parallel_path_honors_stop_check(tmp_path, monkeypatch):
             return _FakeResp(206, [payload[:1]], headers={"Content-Range": f"bytes 0-0/{len(payload)}"})
         return _FakeResp(206, [payload[i : i + 5] for i in range(0, len(payload), 5)])
 
-    monkeypatch.setattr(downloader.requests, "get", fake_get)
+    monkeypatch.setattr(requests, "get", fake_get)
     dest = tmp_path / "model.gguf"
     calls = []
 

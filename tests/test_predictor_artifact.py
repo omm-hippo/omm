@@ -2,6 +2,7 @@ import copy
 import json
 
 import pytest
+import requests
 
 from omm import predictor
 from omm.featurize import FEATURE_ORDER
@@ -67,7 +68,7 @@ def test_invalid_remote_does_not_replace_cache_and_falls_back(monkeypatch, tmp_p
             invalid["trees"] = []
             return invalid
 
-    monkeypatch.setattr(predictor.requests, "get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: Response())
 
     assert predictor.load_model("https://example.test/model.json") == cached
     assert json.loads(cache_path.read_text()) == cached

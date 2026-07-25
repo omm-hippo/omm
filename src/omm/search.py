@@ -8,8 +8,6 @@ from __future__ import annotations
 import difflib
 import re
 
-import requests
-
 from omm import hub, predictor
 from omm.providers import modelscope
 
@@ -180,6 +178,8 @@ def local_candidate_pool(model_url: str | None) -> list[dict]:
 
 
 def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> list[dict]:
+    import requests
+
     try:
         resp = requests.get(
             HF_SEARCH_API,
@@ -217,6 +217,8 @@ MS_SEARCH_API = "https://modelscope.cn/openapi/v1/models"
 
 
 def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list[dict]:
+    import requests
+
     try:
         resp = requests.get(
             MS_SEARCH_API,

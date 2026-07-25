@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-import requests
-
 from omm.providers.base import ModelResolutionError
 
 HF_API = "https://huggingface.co/api/models/{repo_id}"
@@ -21,6 +19,8 @@ def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
     (response key "gguf.total") whether or not the filename spells it out,
     so it covers names like "ID_Legal_Assistant_Q8_0.gguf" that carry a
     quant tag but no param count."""
+    import requests
+
     try:
         resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15)
         resp.raise_for_status()
@@ -53,6 +53,8 @@ def fetch_repo_param_count_b(repo_id: str) -> float | None:
     only have a repo id and filename and whose filename doesn't spell out
     the count. Never raises - used to decide whether to flag a search
     result as unviable, not to resolve an install."""
+    import requests
+
     try:
         resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15)
         resp.raise_for_status()
@@ -72,6 +74,8 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
     """Current LFS sha256 of `filename` in `repo_id`'s main branch, via HF's
     paths-info API. Returns None if the request fails, the file isn't
     listed, or it isn't stored as LFS."""
+    import requests
+
     try:
         resp = requests.post(
             HF_PATHS_INFO.format(repo_id=repo_id),
@@ -90,6 +94,8 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
 
 def remote_file_size(repo_id: str, filename: str) -> int | None:
     """Best-effort Hub file size without downloading the GGUF."""
+    import requests
+
     url = HF_DOWNLOAD.format(repo_id=repo_id, filename=quote(filename, safe="/"))
     try:
         response = requests.head(url, timeout=15, allow_redirects=False)

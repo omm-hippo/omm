@@ -1,3 +1,5 @@
+import requests
+
 from omm import search as search_mod
 
 
@@ -66,9 +68,9 @@ def test_local_candidate_pool_merges_curated_and_cached_and_dedupes(monkeypatch)
 
 def test_search_huggingface_returns_empty_list_on_request_error(monkeypatch):
     def _raise(*args, **kwargs):
-        raise search_mod.requests.RequestException("boom")
+        raise requests.RequestException("boom")
 
-    monkeypatch.setattr(search_mod.requests, "get", _raise)
+    monkeypatch.setattr(requests, "get", _raise)
 
     assert search_mod.search_huggingface("qwen") == []
 
@@ -90,7 +92,7 @@ def test_search_huggingface_filters_out_fake_provenance_repos(monkeypatch):
                 },
             ]
 
-    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
 
     results = search_mod.search_huggingface("mistral")
 
@@ -128,7 +130,7 @@ def test_search_huggingface_picks_a_concrete_filename_for_multi_quant_repos(monk
                 },
             ]
 
-    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
 
     results = search_mod.search_huggingface("granite")
 
@@ -143,7 +145,7 @@ def test_search_huggingface_skips_repos_with_no_matching_gguf_file(monkeypatch):
         def json(self):
             return [{"id": "some-org/no-gguf-here", "siblings": [{"rfilename": "README.md"}]}]
 
-    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
 
     assert search_mod.search_huggingface("something") == []
 
@@ -280,7 +282,7 @@ _MS_SEARCH_PAYLOAD = {
 
 def test_search_modelscope_filters_to_gguf_tagged_repos_and_picks_a_file(monkeypatch):
     monkeypatch.setattr(
-        search_mod.requests, "get", lambda *a, **k: _Resp(_MS_SEARCH_PAYLOAD)
+        requests, "get", lambda *a, **k: _Resp(_MS_SEARCH_PAYLOAD)
     )
     monkeypatch.setattr(
         search_mod.modelscope,
@@ -308,7 +310,7 @@ def test_search_modelscope_skips_fake_provenance_repos(monkeypatch):
             ]
         },
     }
-    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp(payload))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(payload))
     monkeypatch.setattr(
         search_mod.modelscope,
         "fetch_repo_files",
@@ -328,7 +330,7 @@ def test_search_modelscope_returns_empty_list_on_malformed_top_level_response(mo
     # against an explicit `None` value, so `.get("models", [])` on it used
     # to crash with AttributeError instead of degrading gracefully.
     payload = {"success": True, "data": None}
-    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp(payload))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(payload))
 
     assert search_mod.search_modelscope("query") == []
 
@@ -347,11 +349,11 @@ def test_search_modelscope_skips_single_failing_repo_and_keeps_others(monkeypatc
             ]
         },
     }
-    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp(payload))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(payload))
 
     def _fake_fetch_repo_files(repo_id, **kwargs):
         if repo_id == "org/broken-repo-GGUF":
-            raise search_mod.requests.RequestException("boom")
+            raise requests.RequestException("boom")
         return ["qwen2.5-0.5b-instruct-q4_k_m.gguf"], None
 
     monkeypatch.setattr(search_mod.modelscope, "fetch_repo_files", _fake_fetch_repo_files)
@@ -370,6 +372,6 @@ def test_search_huggingface_results_are_tagged_huggingface(monkeypatch):
             "siblings": [{"rfilename": "model.Q4_K_M.gguf"}],
         }
     ]
-    monkeypatch.setattr(search_mod.requests, "get", lambda *a, **k: _Resp(payload))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(payload))
     results = search_mod.search_huggingface("query")
     assert results[0]["provider"] == "huggingface"

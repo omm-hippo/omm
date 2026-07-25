@@ -1,6 +1,7 @@
 """omm CLI entry point (apt/brew-style command routing)."""
 
-import importlib.metadata
+from __future__ import annotations
+
 import json
 import math
 import platform
@@ -15,8 +16,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import click
-import questionary
-import requests
 import typer
 from prompt_toolkit.keys import Keys
 from rich.console import Console
@@ -126,6 +125,8 @@ def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bo
 
 
 def _omm_version() -> str:
+    import importlib.metadata
+
     try:
         return importlib.metadata.version("omm")
     except importlib.metadata.PackageNotFoundError:
@@ -207,16 +208,14 @@ def _shorten_home(path: Path) -> str:
 def _link_repair_needed(reg: dict) -> bool:
     """True if some omm-hub model isn't yet symlinked into an installed
     engine (e.g. Ollama/LM Studio was installed after the model was)."""
-    lmstudio_installed = linker.is_lmstudio_installed()
-    ollama_installed = linker.is_ollama_installed()
+    installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
     for filename, entry in reg.items():
         if not (MODELS_DIR / filename).exists():
             continue
         linked = entry.get("linked", {})
-        if lmstudio_installed and not linked.get("lmstudio"):
-            return True
-        if ollama_installed and not linked.get("ollama"):
-            return True
+        for key, is_installed in installed.items():
+            if is_installed and not linked.get(key):
+                return True
     return False
 
 
@@ -252,13 +251,10 @@ def scan() -> None:
     engine_table = Table(title="Local AI runners", box=None)
     engine_table.add_column("Program", style="cyan")
     engine_table.add_column("Status", style="white")
-    engine_table.add_row(
-        "Ollama", "installed" if linker.is_ollama_installed() else "not detected"
-    )
-    engine_table.add_row(
-        "LM Studio",
-        "installed" if linker.is_lmstudio_installed() else "not detected",
-    )
+    for spec in linker.ENGINES:
+        engine_table.add_row(
+            spec.label, "installed" if linker.is_engine_installed(spec.key) else "not detected"
+        )
     console.print()
     console.print(engine_table)
 
@@ -295,6 +291,8 @@ def scan() -> None:
 def _refresh_data() -> None:
     """Unconditionally re-fetch rules.json and recommend-model.json from
     their configured URLs (used by `omm update` for a full data sync)."""
+    import requests
+
     config = load_config()
 
     rules_url = config.get("rules_url")
@@ -355,6 +353,8 @@ def _installed_commit() -> str | None:
     editable clone (SRC_DIR) first, then falls back to pip's PEP 610
     direct_url.json vcs_info - present for not-yet-migrated installs that
     still used a plain `pipx install <git-URL>` VCS snapshot."""
+    import importlib.metadata
+
     src_commit = _src_head_commit()
     if src_commit:
         return src_commit
@@ -460,6 +460,8 @@ def _maybe_auto_import(ctx: typer.Context) -> None:
 
 
 def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> None:
+    import questionary
+
     found = scan_import.find_external_models(extra_path)
     groups = scan_import.group_by_hash(found)
     if not groups:
@@ -469,7 +471,7 @@ def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> No
     total_gb = sum(g.size_bytes for g in groups) / (1024**3)
     console.print(
         f"Found {len(groups)} model(s) ({len(found)} file(s), ~{total_gb:.1f} GB) "
-        "in Ollama/LM Studio not yet managed by omm."
+        "in supported local AI apps not yet managed by omm."
     )
     if not yes and not _ask_confirm(f"Import {len(groups)} model(s) into the omm hub?"):
         err_console.print("[yellow]Skipped.[/yellow]")
@@ -518,8 +520,8 @@ def import_cmd(
         help="Don't ask for confirmation and import every model found. For scripting.",
     ),
 ) -> None:
-    """Scan Ollama/LM Studio (and optionally PATH) for .gguf files not yet
-    managed by omm, and offer to adopt them into the hub."""
+    """Scan every supported local AI app (and optionally PATH) for .gguf
+    files not yet managed by omm, and offer to adopt them into the hub."""
     extra_path = None
     if path:
         extra_path = Path(path).expanduser()
@@ -587,6 +589,8 @@ def _deps_satisfied() -> bool:
     already-installed packages) can't see a dependency that was newly
     added to source since then - it always reports satisfied, so
     `omm update` would silently skip installing it."""
+    import importlib.metadata
+
     names = _declared_dependency_names()
     if names is None:
         return False
@@ -749,6 +753,8 @@ def _ask_confirm(message: str, default: bool = False) -> bool:
     key bindings are already merged by the time we get the Question object,
     so (unlike _ask_select) we can't bolt an Escape binding on here -
     Ctrl+C/Ctrl+Q still cancel via questionary's own bindings."""
+    import questionary
+
     _require_tty(message)
     answer = questionary.confirm(message, default=default, auto_enter=True).ask()
     return bool(answer)
@@ -768,6 +774,9 @@ def recommend() -> None:
     """Scan hardware and suggest a model to install, ranked by a model
     trained on real install telemetry (falls back to static rules if the
     trained model can't be fetched)."""
+    import questionary
+    import requests
+
     info = scan_hardware()
     config = load_config()
 
@@ -964,6 +973,8 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
     quality option. The predicted-fastest variant in each quant-bits tier is
     highlighted in green, per the cached ML speed model (skipped entirely if
     no model is cached)."""
+    import questionary
+
     info = scan_hardware()
     available_gb = calculate_memory_budget(info).install_budget_gb
 
@@ -1014,34 +1025,23 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
 
 
 def _link_model(dest, repo_id: str | None, ollama_tag: str) -> dict[str, bool]:
-    """Link a downloaded .gguf into LM Studio/Ollama, printing a skip
+    """Link a downloaded .gguf into every installed engine, printing a skip
     notice for whichever engine isn't installed or fails to link. Shared
     by `install` and `update` since both need the exact same behavior
     after a fresh (or refreshed) download."""
-    linked = {"lmstudio": False, "ollama": False}
+    linked = {spec.key: False for spec in linker.ENGINES}
 
-    if linker.is_lmstudio_installed():
+    for spec in linker.ENGINES:
+        if not linker.is_engine_installed(spec.key):
+            console.print(f"[dim]{spec.label} not detected, skipping link.[/dim]")
+            continue
         try:
-            linker.link_lmstudio(dest, repo_id)
-            linked["lmstudio"] = True
+            warning = linker.link_engine(spec.key, dest, repo_id=repo_id, ollama_tag=ollama_tag)
+            linked[spec.key] = True
+            if warning:
+                err_console.print(f"[yellow]{warning}[/yellow]")
         except linker.LinkError as e:
-            err_console.print(f"[yellow]LM Studio link skipped: {e}[/yellow]")
-    else:
-        console.print("[dim]LM Studio not detected, skipping link.[/dim]")
-
-    if linker.is_ollama_installed():
-        try:
-            has_chat_template = linker.link_ollama(dest, ollama_tag)
-            linked["ollama"] = True
-            if not has_chat_template:
-                err_console.print(
-                    "[yellow]This GGUF has no embedded chat template - "
-                    "Ollama will fall back to raw completion (no chat formatting).[/yellow]"
-                )
-        except linker.LinkError as e:
-            err_console.print(f"[yellow]Ollama link skipped: {e}[/yellow]")
-    else:
-        console.print("[dim]Ollama not detected, skipping link.[/dim]")
+            err_console.print(f"[yellow]{spec.label} link skipped: {e}[/yellow]")
 
     return linked
 
@@ -1342,6 +1342,8 @@ def install(
     ),
 ) -> None:
     """Download a model into the central hub and link it into installed engines."""
+    import questionary
+
     model_name = _resolve_ref(model_name)
     try:
         resolved = resolve_model(model_name)
@@ -1379,8 +1381,9 @@ def install(
     console.print(f"[green]Installed {outcome.filename}[/green]")
     if outcome.linked.get("ollama"):
         console.print(f"  Ollama: [green]ollama run {outcome.ollama_tag}[/green]")
-    if outcome.linked.get("lmstudio"):
-        console.print("  LM Studio: visible in your local models list")
+    for spec in linker.ENGINES:
+        if spec.key != "ollama" and outcome.linked.get(spec.key):
+            console.print(f"  {spec.label}: visible in your local models list")
     console.print(f"  Uninstall with: [cyan]omm uninstall {outcome.filename}[/cyan]")
 
 
@@ -1399,10 +1402,9 @@ def _cleanup_incomplete_install(filename: str) -> bool:
 
 def _remove_one(filename: str, entry: dict) -> None:
     linked = entry.get("linked", {})
-    if linked.get("lmstudio"):
-        linker.unlink_lmstudio(filename, entry.get("repo_id"))
-    if linked.get("ollama"):
-        linker.unlink_ollama(entry.get("ollama_name", linker.sanitize_ollama_tag(filename)))
+    for spec in linker.ENGINES:
+        if linked.get(spec.key):
+            linker.unlink_engine(spec.key, filename, entry)
 
     dest = MODELS_DIR / filename
     dest.unlink(missing_ok=True)
@@ -1484,8 +1486,9 @@ def info(
     size_gb = entry.get("size_bytes", 0) / (1024**3)
     linked = entry.get("linked", {})
 
+    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+
     if json_output:
-        ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
         console.print_json(
             data={
                 "filename": filename,
@@ -1494,10 +1497,7 @@ def info(
                 "version": _entry_version(entry),
                 "size_bytes": entry.get("size_bytes", 0),
                 "installed_at": entry.get("installed_at", "unknown"),
-                "linked": {
-                    "lmstudio": bool(linked.get("lmstudio")),
-                    "ollama": bool(linked.get("ollama")),
-                },
+                "linked": {spec.key: bool(linked.get(spec.key)) for spec in linker.ENGINES},
                 "ollama_run_command": f"ollama run {ollama_tag}" if linked.get("ollama") else None,
             }
         )
@@ -1514,15 +1514,14 @@ def info(
     table.add_row("Version", _entry_version(entry))
     table.add_row("Size", f"{size_gb:.2f} GB")
     table.add_row("Installed at", entry.get("installed_at", "unknown"))
-    table.add_row(
-        "LM Studio",
-        "linked (visible in LM Studio app)" if linked.get("lmstudio") else "not linked",
-    )
-    if linked.get("ollama"):
-        ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
-        table.add_row("Ollama", f"ollama run {ollama_tag}")
-    else:
-        table.add_row("Ollama", "not linked")
+    for spec in linker.ENGINES:
+        if spec.key == "ollama":
+            table.add_row("Ollama", f"ollama run {ollama_tag}" if linked.get("ollama") else "not linked")
+        else:
+            table.add_row(
+                spec.label,
+                f"linked (visible in {spec.label})" if linked.get(spec.key) else "not linked",
+            )
 
     console.print(table)
 
@@ -1657,10 +1656,7 @@ def list_models(
                 "index": idx,
                 "filename": filename,
                 "size_bytes": entry.get("size_bytes", 0),
-                "linked": {
-                    "lmstudio": bool(entry.get("linked", {}).get("lmstudio")),
-                    "ollama": bool(entry.get("linked", {}).get("ollama")),
-                },
+                "linked": {spec.key: bool(entry.get("linked", {}).get(spec.key)) for spec in linker.ENGINES},
             }
             for idx, (filename, entry) in enumerate(reg.items(), start=1)
         ]
@@ -1673,9 +1669,13 @@ def list_models(
     table.add_column("Filename", style="cyan")
     table.add_column("Size", justify="right")
     detailed = load_config().get("ui_mode") == "detailed"
+    # Detailed mode only adds a column per engine actually installed here -
+    # with 7 possible engines, always showing all of them would make the
+    # table unreadably wide for the common case of 1-2 installed apps.
+    detailed_specs = [spec for spec in linker.ENGINES if linker.is_engine_installed(spec.key)] if detailed else []
     if detailed:
-        table.add_column("LM Studio")
-        table.add_column("Ollama")
+        for spec in detailed_specs:
+            table.add_column(spec.label)
     else:
         table.add_column("Links")
 
@@ -1687,15 +1687,10 @@ def list_models(
                 str(idx),
                 filename,
                 f"{size_gb:.2f} GB",
-                "[green]yes[/green]" if linked.get("lmstudio") else "no",
-                "[green]yes[/green]" if linked.get("ollama") else "no",
+                *("[green]yes[/green]" if linked.get(spec.key) else "no" for spec in detailed_specs),
             )
         else:
-            programs = [
-                label
-                for key, label in (("lmstudio", "LM Studio"), ("ollama", "Ollama"))
-                if linked.get(key)
-            ]
+            programs = [spec.label for spec in linker.ENGINES if linked.get(spec.key)]
             table.add_row(
                 str(idx), filename, f"{size_gb:.2f} GB", ", ".join(programs) or "none"
             )
@@ -1903,6 +1898,8 @@ def catalog_rollback() -> None:
 @setting_app.callback(invoke_without_command=True)
 def setting_menu(ctx: typer.Context) -> None:
     """Bare `omm setting` opens an interactive menu; a subcommand skips it."""
+    import questionary
+
     if ctx.invoked_subcommand is not None:
         return
     while True:
@@ -2102,12 +2099,14 @@ def link_models(
 ) -> None:
     """Link models into an arbitrary directory or repair known app links.
 
-    Without a directory, re-verify every installed model's LM Studio/Ollama links and repair
-    them. Covers models that were never linked *and* ones whose link is now
-    broken, missing, or stale - link_lmstudio/link_ollama always replace the
-    existing symlink/manifest, so this always re-links rather than trusting
-    the registry's stored `linked` flag. With a directory, reuse the central
-    GGUF through non-copying symlinks for another local application."""
+    Without a directory, re-verify every installed model's links into every
+    supported app (Ollama, LM Studio, Jan, AnythingLLM, Msty,
+    text-generation-webui, KoboldCpp) and repair them. Covers models that
+    were never linked *and* ones whose link is now broken, missing, or
+    stale - link_engine() always replaces the existing symlink/manifest, so
+    this always re-links rather than trusting the registry's stored
+    `linked` flag. With a directory, reuse the central GGUF through
+    non-copying symlinks for another local application."""
     reg = registry.load_registry()
     if not reg:
         console.print("No models installed via omm yet.")
@@ -2139,9 +2138,6 @@ def link_models(
         )
         return
 
-    lmstudio_installed = linker.is_lmstudio_installed()
-    ollama_installed = linker.is_ollama_installed()
-
     relinked_count = 0
     skipped_missing = 0
 
@@ -2151,30 +2147,22 @@ def link_models(
             skipped_missing += 1
             continue
 
+        ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
         new_linked: dict[str, bool] = {}
-        update_fields: dict[str, str] = {}
         changed = False
 
-        if lmstudio_installed:
+        for spec in linker.ENGINES:
+            if not linker.is_engine_installed(spec.key):
+                continue
             try:
-                linker.link_lmstudio(dest, entry.get("repo_id"))
-                new_linked["lmstudio"] = True
+                linker.link_engine(spec.key, dest, repo_id=entry.get("repo_id"), ollama_tag=ollama_tag)
+                new_linked[spec.key] = True
                 changed = True
             except linker.LinkError as e:
-                err_console.print(f"[yellow]{filename}: LM Studio link skipped: {e}[/yellow]")
-
-        if ollama_installed:
-            ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
-            try:
-                linker.link_ollama(dest, ollama_tag)
-                new_linked["ollama"] = True
-                update_fields["ollama_name"] = ollama_tag
-                changed = True
-            except linker.LinkError as e:
-                err_console.print(f"[yellow]{filename}: Ollama link skipped: {e}[/yellow]")
+                err_console.print(f"[yellow]{filename}: {spec.label} link skipped: {e}[/yellow]")
 
         if changed:
-            registry.upsert_entry(filename, linked=new_linked, **update_fields)
+            registry.upsert_entry(filename, linked=new_linked, ollama_name=ollama_tag)
             relinked_count += 1
 
     console.print(
@@ -2214,20 +2202,19 @@ def autoremove() -> None:
     """Remove broken symlinks left behind when a model's source .gguf was
     deleted without going through `omm uninstall`, plus any orphaned partial or
     unregistered downloads in the models directory."""
-    lmstudio_removed = linker.autoremove_lmstudio() if linker.is_lmstudio_installed() else 0
-    ollama_blobs_removed, ollama_manifests_removed = (
-        linker.autoremove_ollama() if linker.is_ollama_installed() else (0, 0)
-    )
+    removed_by_engine: dict[str, int] = {}
+    for spec in linker.ENGINES:
+        if linker.is_engine_installed(spec.key):
+            removed_by_engine[spec.label] = linker.autoremove_engine(spec.key)
     incomplete_removed = _autoremove_incomplete_installs()
 
-    if lmstudio_removed == 0 and ollama_blobs_removed == 0 and incomplete_removed == 0:
+    if not any(removed_by_engine.values()) and incomplete_removed == 0:
         console.print("[green]No broken symlinks found.[/green]")
         return
 
+    parts = [f"{count} broken {label} link(s)" for label, count in removed_by_engine.items() if count]
     console.print(
-        f"[green]Removed {lmstudio_removed} broken LM Studio symlink(s) and "
-        f"{ollama_blobs_removed} broken Ollama blob(s) "
-        f"({ollama_manifests_removed} manifest(s) cleaned up), "
+        f"[green]Removed {', '.join(parts) or '0 broken links'}, "
         f"{incomplete_removed} incomplete install file(s) cleaned up.[/green]"
     )
 
@@ -2708,6 +2695,8 @@ class _ContributionStats:
 def _telemetry_row_count(endpoint: str) -> int | None:
     """Best-effort read of how many rows exist in the (read-open) Firebase
     telemetry endpoint, for `omm contribute`'s before/after summary."""
+    import requests
+
     try:
         resp = requests.get(f"{endpoint}?shallow=true", timeout=10)
         resp.raise_for_status()

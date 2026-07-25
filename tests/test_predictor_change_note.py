@@ -1,5 +1,7 @@
 import json
 
+import requests
+
 from omm import predictor
 from omm.featurize import FEATURE_ORDER
 
@@ -46,7 +48,7 @@ def test_load_model_with_change_note_unchanged_when_fetch_fails_and_falls_back_t
     monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
 
     def _raise(url):
-        raise predictor.requests.RequestException("boom")
+        raise requests.RequestException("boom")
 
     monkeypatch.setattr(predictor, "fetch_and_cache_model", _raise)
 

@@ -1,8 +1,9 @@
 import pytest
+import requests
 
 from omm import hub
 from omm.hub import AmbiguousModelError, ModelResolutionError, resolve_model
-from omm.providers import huggingface, modelscope
+from omm.providers import modelscope
 
 
 class _FakeResponse:
@@ -34,7 +35,7 @@ def _stub_modelscope_not_found(monkeypatch):
 def test_resolve_model_raises_ambiguous_error_with_repo_and_candidates(monkeypatch):
     _stub_modelscope_not_found(monkeypatch)
     monkeypatch.setattr(
-        huggingface.requests,
+        requests,
         "get",
         lambda url, timeout: _FakeResponse(
             [
@@ -98,7 +99,7 @@ def test_resolve_model_skips_mmproj_when_repo_has_single_real_model(monkeypatch)
     # "only one candidate" auto-select shortcut just because it's listed too.
     _stub_modelscope_not_found(monkeypatch)
     monkeypatch.setattr(
-        huggingface.requests,
+        requests,
         "get",
         lambda url, timeout: _FakeResponse(
             [
@@ -118,7 +119,7 @@ def test_resolve_model_raises_when_repo_only_has_mmproj_files(monkeypatch):
     # must not be silently installed as if it were a standalone model.
     _stub_modelscope_not_found(monkeypatch)
     monkeypatch.setattr(
-        huggingface.requests,
+        requests,
         "get",
         lambda url, timeout: _FakeResponse([{"rfilename": "mmproj-model-f16.gguf"}]),
     )
@@ -133,7 +134,7 @@ def test_resolve_model_excludes_mmproj_from_ambiguous_candidates(monkeypatch):
     # a quant of the model.
     _stub_modelscope_not_found(monkeypatch)
     monkeypatch.setattr(
-        huggingface.requests,
+        requests,
         "get",
         lambda url, timeout: _FakeResponse(
             [
@@ -156,7 +157,7 @@ def test_resolve_model_excludes_mmproj_from_ambiguous_candidates(monkeypatch):
 def test_resolve_model_ambiguous_error_carries_repo_level_param_count(monkeypatch):
     _stub_modelscope_not_found(monkeypatch)
     monkeypatch.setattr(
-        huggingface.requests,
+        requests,
         "get",
         lambda url, timeout: _FakeResponse(
             [

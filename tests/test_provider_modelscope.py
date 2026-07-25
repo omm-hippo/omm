@@ -6,6 +6,7 @@ docs/superpowers/specs/2026-07-24-multi-provider-hub-design.md - do not
 from __future__ import annotations
 
 import pytest
+import requests
 
 from omm.providers import modelscope
 from omm.providers.base import ModelResolutionError
@@ -50,7 +51,7 @@ _FILES_PAYLOAD = {
 
 def test_fetch_repo_files_filters_to_gguf_only(monkeypatch):
     monkeypatch.setattr(
-        modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, _FILES_PAYLOAD)
+        requests, "get", lambda *a, **k: _FakeResponse(200, _FILES_PAYLOAD)
     )
     files, param_count_b = modelscope.fetch_repo_files("org/repo")
     assert files == ["model-q4_k_m.gguf", "model-q8_0.gguf"]
@@ -58,7 +59,7 @@ def test_fetch_repo_files_filters_to_gguf_only(monkeypatch):
 
 
 def test_fetch_repo_files_404_raises_model_resolution_error(monkeypatch):
-    monkeypatch.setattr(modelscope.requests, "get", lambda *a, **k: _FakeResponse(404, {}))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(404, {}))
     with pytest.raises(ModelResolutionError):
         modelscope.fetch_repo_files("org/does-not-exist")
 
@@ -73,14 +74,14 @@ def test_download_url_builds_expected_query_string():
 
 def test_remote_file_size_finds_matching_file(monkeypatch):
     monkeypatch.setattr(
-        modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, _FILES_PAYLOAD)
+        requests, "get", lambda *a, **k: _FakeResponse(200, _FILES_PAYLOAD)
     )
     assert modelscope.remote_file_size("org/repo", "model-q4_k_m.gguf") == 491400032
 
 
 def test_remote_file_size_returns_none_for_missing_file(monkeypatch):
     monkeypatch.setattr(
-        modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, _FILES_PAYLOAD)
+        requests, "get", lambda *a, **k: _FakeResponse(200, _FILES_PAYLOAD)
     )
     assert modelscope.remote_file_size("org/repo", "does-not-exist.gguf") is None
 
@@ -88,13 +89,13 @@ def test_remote_file_size_returns_none_for_missing_file(monkeypatch):
 def test_remote_file_size_returns_none_on_404(monkeypatch):
     """remote_file_size never raises - 404/network errors return None for
     best-effort behavior, matching HuggingFace provider contract."""
-    monkeypatch.setattr(modelscope.requests, "get", lambda *a, **k: _FakeResponse(404, {}))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(404, {}))
     assert modelscope.remote_file_size("org/does-not-exist", "model.gguf") is None
 
 
 def test_remote_file_sha256_finds_matching_file(monkeypatch):
     monkeypatch.setattr(
-        modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, _FILES_PAYLOAD)
+        requests, "get", lambda *a, **k: _FakeResponse(200, _FILES_PAYLOAD)
     )
     assert modelscope.remote_file_sha256("org/repo", "model-q8_0.gguf") == "def456"
 
@@ -102,7 +103,7 @@ def test_remote_file_sha256_finds_matching_file(monkeypatch):
 def test_remote_file_sha256_returns_none_on_404(monkeypatch):
     """remote_file_sha256 never raises - 404/network errors return None for
     best-effort behavior, matching HuggingFace provider contract."""
-    monkeypatch.setattr(modelscope.requests, "get", lambda *a, **k: _FakeResponse(404, {}))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(404, {}))
     assert modelscope.remote_file_sha256("org/does-not-exist", "model.gguf") is None
 
 
@@ -130,7 +131,7 @@ def test_fetch_repo_files_non_json_body_raises_model_resolution_error(monkeypatc
     """A 200 response with a non-JSON body should raise ModelResolutionError,
     not leak the underlying ValueError."""
     monkeypatch.setattr(
-        modelscope.requests, "get", lambda *a, **k: _FakeResponseWithJsonError()
+        requests, "get", lambda *a, **k: _FakeResponseWithJsonError()
     )
     with pytest.raises(ModelResolutionError):
         modelscope.fetch_repo_files("org/repo")
@@ -140,7 +141,7 @@ def test_fetch_repo_files_null_data_field_raises_model_resolution_error(monkeypa
     """A response with {"Code": 200, "Data": None} should raise
     ModelResolutionError when there are no files, not crash with AttributeError."""
     monkeypatch.setattr(
-        modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, {"Code": 200, "Data": None})
+        requests, "get", lambda *a, **k: _FakeResponse(200, {"Code": 200, "Data": None})
     )
     # Empty file list should not crash, though it may raise since there are no .gguf files
     # The key point is it doesn't raise AttributeError - _list_repo_files returns [] instead
@@ -152,7 +153,7 @@ def test_remote_file_size_non_json_body_returns_none(monkeypatch):
     """remote_file_size never raises - even a non-JSON body should return None
     for best-effort behavior."""
     monkeypatch.setattr(
-        modelscope.requests, "get", lambda *a, **k: _FakeResponseWithJsonError()
+        requests, "get", lambda *a, **k: _FakeResponseWithJsonError()
     )
     assert modelscope.remote_file_size("org/repo", "model.gguf") is None
 
@@ -161,7 +162,7 @@ def test_remote_file_size_null_data_field_returns_none(monkeypatch):
     """remote_file_size never raises - even a null Data field should return None
     for best-effort behavior."""
     monkeypatch.setattr(
-        modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, {"Code": 200, "Data": None})
+        requests, "get", lambda *a, **k: _FakeResponse(200, {"Code": 200, "Data": None})
     )
     assert modelscope.remote_file_size("org/repo", "model.gguf") is None
 
@@ -170,7 +171,7 @@ def test_remote_file_sha256_non_json_body_returns_none(monkeypatch):
     """remote_file_sha256 never raises - even a non-JSON body should return None
     for best-effort behavior."""
     monkeypatch.setattr(
-        modelscope.requests, "get", lambda *a, **k: _FakeResponseWithJsonError()
+        requests, "get", lambda *a, **k: _FakeResponseWithJsonError()
     )
     assert modelscope.remote_file_sha256("org/repo", "model.gguf") is None
 
@@ -179,6 +180,6 @@ def test_remote_file_sha256_null_data_field_returns_none(monkeypatch):
     """remote_file_sha256 never raises - even a null Data field should return None
     for best-effort behavior."""
     monkeypatch.setattr(
-        modelscope.requests, "get", lambda *a, **k: _FakeResponse(200, {"Code": 200, "Data": None})
+        requests, "get", lambda *a, **k: _FakeResponse(200, {"Code": 200, "Data": None})
     )
     assert modelscope.remote_file_sha256("org/repo", "model.gguf") is None
