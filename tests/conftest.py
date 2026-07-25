@@ -23,6 +23,7 @@ def _no_real_engine_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "anythingllm_app_dir", lambda: tmp_path / "_no_real_anythingllm")
     monkeypatch.setattr(linker, "mstystudio_app_dir", lambda: tmp_path / "_no_real_mstystudio")
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path / "_no_real_heuristic_root"])
+    monkeypatch.setattr(linker, "_APP_BUNDLE_SEARCH_ROOTS", [tmp_path / "_no_real_app_bundle_root"])
     linker.find_koboldcpp_binary.cache_clear()
     linker.find_textgenwebui_root.cache_clear()
     yield

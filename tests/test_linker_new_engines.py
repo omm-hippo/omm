@@ -94,7 +94,8 @@ def test_link_ollama_at_custom_models_dir_does_not_touch_default(tmp_path, monke
     assert manifest_path.exists()
 
 
-def test_is_anythingllm_installed_reflects_app_dir_existence(tmp_path, monkeypatch):
+def test_is_anythingllm_installed_reflects_app_dir_existence_on_non_darwin(tmp_path, monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
     monkeypatch.setattr(linker, "anythingllm_app_dir", lambda: tmp_path / "anythingllm-desktop")
     assert linker.is_anythingllm_installed() is False
 
@@ -102,14 +103,41 @@ def test_is_anythingllm_installed_reflects_app_dir_existence(tmp_path, monkeypat
     assert linker.is_anythingllm_installed() is True
 
 
+def test_is_anythingllm_installed_reflects_app_bundle_on_darwin(tmp_path, monkeypatch):
+    """A leftover data dir (e.g. after dragging the app to Trash) must not
+    count as "installed" on macOS - only the actual .app bundle does."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker, "_APP_BUNDLE_SEARCH_ROOTS", [tmp_path / "Applications"])
+    monkeypatch.setattr(linker, "anythingllm_app_dir", lambda: tmp_path / "anythingllm-desktop")
+    (tmp_path / "anythingllm-desktop").mkdir()  # leftover data dir, no bundle
+    assert linker.is_anythingllm_installed() is False
+
+    (tmp_path / "Applications").mkdir()
+    (tmp_path / "Applications" / "AnythingLLM.app").mkdir()
+    assert linker.is_anythingllm_installed() is True
+
+
 # --- Msty (flat symlink dir) --------------------------------------------
 
 
-def test_is_mstystudio_installed_reflects_app_dir_existence(tmp_path, monkeypatch):
+def test_is_mstystudio_installed_reflects_app_dir_existence_on_non_darwin(tmp_path, monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
     monkeypatch.setattr(linker, "mstystudio_app_dir", lambda: tmp_path / "MstyStudio")
     assert linker.is_mstystudio_installed() is False
 
     (tmp_path / "MstyStudio").mkdir()
+    assert linker.is_mstystudio_installed() is True
+
+
+def test_is_mstystudio_installed_reflects_app_bundle_on_darwin(tmp_path, monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker, "_APP_BUNDLE_SEARCH_ROOTS", [tmp_path / "Applications"])
+    monkeypatch.setattr(linker, "mstystudio_app_dir", lambda: tmp_path / "MstyStudio")
+    (tmp_path / "MstyStudio").mkdir()  # leftover data dir, no bundle
+    assert linker.is_mstystudio_installed() is False
+
+    (tmp_path / "Applications").mkdir()
+    (tmp_path / "Applications" / "MstyStudio.app").mkdir()
     assert linker.is_mstystudio_installed() is True
 
 

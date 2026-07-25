@@ -50,6 +50,7 @@ import json
 import os
 import platform
 import re
+import shutil
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -84,12 +85,36 @@ def ollama_models_dir() -> Path:
     return Path.home() / ".ollama" / "models"
 
 
+_APP_BUNDLE_SEARCH_ROOTS = [Path("/Applications"), Path.home() / "Applications"]
+
+
+def _app_bundle_installed(app_name: str) -> bool:
+    """macOS-only: whether <app_name>.app is actually present in
+    /Applications or ~/Applications. Deleting an app (drag to Trash)
+    removes the bundle but leaves its data dir under ~/Library/Application
+    Support (or, for LM Studio, ~/.lmstudio / ~/.cache/lm-studio) behind -
+    so a bundle check catches an uninstall that a data-dir check misses.
+    No equivalent bundle convention exists on Windows/Linux, so those
+    platforms fall back to the data-dir check instead."""
+    if platform.system() != "Darwin":
+        return False
+    return any((root / f"{app_name}.app").exists() for root in _APP_BUNDLE_SEARCH_ROOTS)
+
+
 def is_lmstudio_installed() -> bool:
+    if platform.system() == "Darwin":
+        return _app_bundle_installed("LM Studio")
     return lmstudio_home_dir().exists()
 
 
 def is_ollama_installed() -> bool:
-    return (Path.home() / ".ollama").exists()
+    # Homebrew's ollama-app cask installs Ollama.app; the plain `ollama`
+    # formula (common on Linux/Homebrew-CLI setups) installs only the
+    # `ollama` binary with no bundle - check both so a CLI-only install
+    # isn't reported as "not installed".
+    if platform.system() == "Darwin":
+        return _app_bundle_installed("Ollama") or shutil.which("ollama") is not None
+    return (Path.home() / ".ollama").exists() or shutil.which("ollama") is not None
 
 
 class LinkError(Exception):
@@ -396,6 +421,8 @@ def anythingllm_ollama_models_dir() -> Path:
 
 
 def is_anythingllm_installed() -> bool:
+    if platform.system() == "Darwin":
+        return _app_bundle_installed("AnythingLLM")
     return anythingllm_app_dir().exists()
 
 
@@ -411,6 +438,8 @@ def jan_models_dir() -> Path:
 
 
 def is_jan_installed() -> bool:
+    if platform.system() == "Darwin":
+        return _app_bundle_installed("Jan")
     return jan_app_dir().exists()
 
 
@@ -488,6 +517,8 @@ def mstystudio_models_dir() -> Path:
 
 
 def is_mstystudio_installed() -> bool:
+    if platform.system() == "Darwin":
+        return _app_bundle_installed("MstyStudio")
     return mstystudio_app_dir().exists()
 
 
