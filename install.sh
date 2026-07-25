@@ -6,6 +6,47 @@ set -eu
 REPO_URL="https://github.com/minigu5/Omm.git"
 SRC_DIR="$HOME/.omm/src"
 
+# Trust anchor for the signature check below - must stay identical to
+# src/omm/trust/allowed_signers in the repo (that copy is what `omm
+# update` verifies future commits against once installed; this one is
+# the TOFU root for a brand new machine, since there's no prior install
+# to carry a trusted copy yet).
+ALLOWED_SIGNERS_CONTENT="seong381400@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh12ERbI3Yx6DPiaROPjCyI2GIQXb9Ihbp9J9L4bnpe"
+
+# Verifies $1 (a commit-ish, usually HEAD) in the git repo at $2 is
+# SSH-signed by a key from ALLOWED_SIGNERS_CONTENT. Fails closed: git
+# too old to check SSH signatures, or verification itself erroring out,
+# is treated the same as an actual bad signature - "can't verify" must
+# never silently mean "trust it anyway".
+verify_commit_signature() {
+    commit="$1"
+    repo_dir="$2"
+
+    git_version=$(git --version | awk '{print $3}')
+    git_major=$(echo "$git_version" | cut -d. -f1)
+    git_minor=$(echo "$git_version" | cut -d. -f2)
+    if [ "$git_major" -lt 2 ] || { [ "$git_major" -eq 2 ] && [ "$git_minor" -lt 34 ]; }; then
+        echo "git 2.34+ is required to verify SSH commit signatures (found $git_version)." >&2
+        return 1
+    fi
+
+    signers_file=$(mktemp)
+    printf '%s\n' "$ALLOWED_SIGNERS_CONTENT" > "$signers_file"
+
+    # `set -e` would abort the whole script on a nonzero exit here (a
+    # known gotcha with `var=$(cmd)` assignments) - routing through an
+    # `if` explicitly guards against that so we can print our own error
+    # and return, instead of the script just dying mid-verification.
+    if verify_output=$(git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$signers_file" \
+        -C "$repo_dir" verify-commit "$commit" 2>&1); then
+        rm -f "$signers_file"
+        return 0
+    fi
+    rm -f "$signers_file"
+    echo "$verify_output" | sed 's/^/  /' >&2
+    return 1
+}
+
 # run_apt() runs as root directly, or via sudo if available and needed -
 # bare Docker containers are usually root already (no sudo binary at all).
 run_apt() {
@@ -96,6 +137,13 @@ fi
 echo "Cloning omm source to $SRC_DIR ..."
 rm -rf "$SRC_DIR"
 git clone --filter=blob:none --quiet "$REPO_URL" "$SRC_DIR"
+
+echo "Verifying commit signature ..."
+if ! verify_commit_signature "$(git -C "$SRC_DIR" rev-parse HEAD)" "$SRC_DIR"; then
+    rm -rf "$SRC_DIR"
+    echo "Signature verification failed - refusing to install untrusted code." >&2
+    exit 1
+fi
 
 # NVIDIA VRAM detection is dead weight on Mac (no NVIDIA GPUs since 2016) -
 # only pull that extra in on other platforms.

@@ -44,6 +44,7 @@ from omm import (
     search as search_mod,
     session_cache,
     telemetry,
+    trust,
     tuning,
     version_check,
 )
@@ -672,6 +673,21 @@ def _migrate_to_editable_install() -> subprocess.CompletedProcess:
     if clone.returncode != 0:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return clone
+
+    head = subprocess.run(
+        ["git", "-C", str(tmp_dir), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10
+    )
+    if head.returncode != 0:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return head
+    # Verified against the *currently running* omm's own bundled anchor
+    # (the old, already-vetted install) - not tmp_dir's own copy, which an
+    # attacker with push access could have edited in the same commit.
+    ok, message = trust.verify_commit(tmp_dir, head.stdout.strip(), trust.current_trust_anchor())
+    if not ok:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
+
     shutil.rmtree(SRC_DIR, ignore_errors=True)
     tmp_dir.rename(SRC_DIR)
     return _run_pipx_install_with_progress(
@@ -679,23 +695,37 @@ def _migrate_to_editable_install() -> subprocess.CompletedProcess:
     )
 
 
+def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="git command timed out")
+
+
 def _git_update_src() -> subprocess.CompletedProcess:
     """Fast path for an already-migrated install: fetch + fast-forward the
     persistent clone in place. The editable install's .pth points straight
     at SRC_DIR/src, so this alone is enough to pick up code changes - no
     pipx call needed unless dependencies themselves changed (checked by
-    the caller via _deps_satisfied())."""
-    for args in (
-        ["git", "-C", str(SRC_DIR), "fetch", "--quiet", "origin", "main"],
-        ["git", "-C", str(SRC_DIR), "reset", "--hard", "--quiet", "origin/main"],
-    ):
-        try:
-            result = subprocess.run(args, capture_output=True, text=True, timeout=30)
-        except subprocess.TimeoutExpired:
-            return subprocess.CompletedProcess(args, 1, stdout="", stderr="git command timed out")
-        if result.returncode != 0:
-            return result
-    return result
+    the caller via _deps_satisfied()).
+
+    Verifies origin/main's signature against the anchor still on disk from
+    *before* this fetch (SRC_DIR's own trust/allowed_signers, read prior to
+    reset --hard overwriting it) before ever checking the new commit out."""
+    fetch = _run_git(["git", "-C", str(SRC_DIR), "fetch", "--quiet", "origin", "main"])
+    if fetch.returncode != 0:
+        return fetch
+
+    rev_parse = _run_git(["git", "-C", str(SRC_DIR), "rev-parse", "origin/main"], timeout=10)
+    if rev_parse.returncode != 0:
+        return rev_parse
+    target_commit = rev_parse.stdout.strip()
+
+    ok, message = trust.verify_commit(SRC_DIR, target_commit, trust.current_trust_anchor())
+    if not ok:
+        return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
+
+    return _run_git(["git", "-C", str(SRC_DIR), "reset", "--hard", "--quiet", "origin/main"])
 
 
 @app.command()

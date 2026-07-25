@@ -358,6 +358,9 @@ def test_migrate_to_editable_install_clones_then_pipx_installs(monkeypatch, tmp_
         if args[:2] == ["git", "clone"]:
             Path(args[-1]).mkdir(parents=True)
             (Path(args[-1]) / "marker").write_text("cloned")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[-2:] == ["rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, stdout="newcommit\n", stderr="")
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     run_calls = []
@@ -365,6 +368,12 @@ def test_migrate_to_editable_install_clones_then_pipx_installs(monkeypatch, tmp_
         cli.subprocess,
         "run",
         lambda args, **kwargs: run_calls.append(args) or fake_run(args, **kwargs),
+    )
+    verify_calls = []
+    monkeypatch.setattr(
+        cli.trust,
+        "verify_commit",
+        lambda repo_dir, commit, anchor: verify_calls.append((repo_dir, commit, anchor)) or (True, "ok"),
     )
     progress_calls = []
     monkeypatch.setattr(
@@ -376,10 +385,44 @@ def test_migrate_to_editable_install_clones_then_pipx_installs(monkeypatch, tmp_
     result = cli._migrate_to_editable_install()
 
     assert result.returncode == 0
-    assert run_calls == [["git", "clone", "--filter=blob:none", "--quiet", cli._BARE_REPO_URL, str(tmp_clone)]]
+    assert run_calls == [
+        ["git", "clone", "--filter=blob:none", "--quiet", cli._BARE_REPO_URL, str(tmp_clone)],
+        ["git", "-C", str(tmp_clone), "rev-parse", "HEAD"],
+    ]
+    assert verify_calls == [(tmp_clone, "newcommit", cli.trust.current_trust_anchor())]
     assert progress_calls == [["pipx", "install", "--force", "--editable", str(src)]]
     assert (src / "marker").read_text() == "cloned"
     assert not tmp_clone.exists()
+
+
+def test_migrate_to_editable_install_skips_pipx_when_signature_verification_fails(monkeypatch, tmp_path):
+    src = tmp_path / "src"
+    tmp_clone = tmp_path / "src.new"
+    monkeypatch.setattr(cli, "SRC_DIR", src)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+
+    def fake_run(args, **kwargs):
+        if args[:2] == ["git", "clone"]:
+            Path(args[-1]).mkdir(parents=True)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[-2:] == ["rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, stdout="badcommit\n", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        cli.trust, "verify_commit", lambda *a, **k: (False, "commit badcomm failed signature verification")
+    )
+    progress_calls = []
+    monkeypatch.setattr(cli, "_run_pipx_install_with_progress", lambda args: progress_calls.append(args))
+
+    result = cli._migrate_to_editable_install()
+
+    assert result.returncode == 1
+    assert "failed signature verification" in result.stderr
+    assert progress_calls == []
+    assert not tmp_clone.exists()
+    assert not src.exists()
 
 
 def test_migrate_to_editable_install_skips_pipx_when_clone_fails(monkeypatch, tmp_path):
@@ -424,10 +467,18 @@ def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):
     src = tmp_path / "src"
     monkeypatch.setattr(cli, "SRC_DIR", src)
     run_calls = []
+
+    def fake_run(args, **kwargs):
+        run_calls.append(args)
+        stdout = "newcommit\n" if args[-2:] == ["rev-parse", "origin/main"] else ""
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    verify_calls = []
     monkeypatch.setattr(
-        cli.subprocess,
-        "run",
-        lambda args, **kwargs: run_calls.append(args) or subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+        cli.trust,
+        "verify_commit",
+        lambda repo_dir, commit, anchor: verify_calls.append((repo_dir, commit, anchor)) or (True, "ok"),
     )
 
     result = cli._git_update_src()
@@ -435,8 +486,30 @@ def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):
     assert result.returncode == 0
     assert run_calls == [
         ["git", "-C", str(src), "fetch", "--quiet", "origin", "main"],
+        ["git", "-C", str(src), "rev-parse", "origin/main"],
         ["git", "-C", str(src), "reset", "--hard", "--quiet", "origin/main"],
     ]
+    assert verify_calls == [(src, "newcommit", cli.trust.current_trust_anchor())]
+
+
+def test_git_update_src_skips_reset_when_signature_verification_fails(monkeypatch, tmp_path):
+    src = tmp_path / "src"
+    monkeypatch.setattr(cli, "SRC_DIR", src)
+    run_calls = []
+
+    def fake_run(args, **kwargs):
+        run_calls.append(args)
+        stdout = "newcommit\n" if args[-2:] == ["rev-parse", "origin/main"] else ""
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli.trust, "verify_commit", lambda *a, **k: (False, "commit newcomm failed signature verification"))
+
+    result = cli._git_update_src()
+
+    assert result.returncode == 1
+    assert "failed signature verification" in result.stderr
+    assert ["git", "-C", str(src), "reset", "--hard", "--quiet", "origin/main"] not in run_calls
 
 
 def test_git_update_src_stops_after_fetch_failure(monkeypatch, tmp_path):
