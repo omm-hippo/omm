@@ -138,3 +138,15 @@ restores the most recent different snapshot.
 pip install -e ".[dev]"
 pytest
 ```
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+testing, and PR conventions, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for
+community expectations. Report security issues per [SECURITY.md](SECURITY.md)
+rather than as a public issue.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Third-party dependency licenses are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
