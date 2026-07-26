@@ -43,6 +43,24 @@ function Install-ViaWinget {
     return $ok
 }
 
+# Resolves $Commit in the git repo at $RepoDir to the commit whose signature
+# actually matters. The repo only accepts changes to main via a GitHub-merged
+# PR ("create a merge commit" strategy) - GitHub builds that merge commit
+# itself and signs it with GitHub's own key, while the contributor's
+# signature lives on the merge commit's second parent (the PR branch tip).
+# For a normal two-parent merge commit, resolve to that second parent;
+# anything else (a direct single-parent commit, or an octopus merge) is
+# returned as-is.
+function Resolve-SigningCommit {
+    param([string]$Commit, [string]$RepoDir)
+
+    $parents = (git -C $RepoDir rev-list --parents -n 1 $Commit).Trim() -split '\s+'
+    if ($parents.Count -eq 3) {
+        return $parents[2]
+    }
+    return $Commit
+}
+
 # Verifies $Commit (a commit-ish, usually HEAD) in the git repo at $RepoDir
 # is SSH-signed by a key from $AllowedSignersContent. Fails closed: git too
 # old to check SSH signatures, or verification itself erroring out, is
@@ -162,7 +180,8 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Verifying commit signature ..."
 $headCommit = (git -C $SrcDir rev-parse HEAD).Trim()
-if (-not (Test-CommitSignature -Commit $headCommit -RepoDir $SrcDir)) {
+$signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $SrcDir
+if (-not (Test-CommitSignature -Commit $signedCommit -RepoDir $SrcDir)) {
     Remove-Item -Recurse -Force $SrcDir
     Write-Error "Signature verification failed - refusing to install untrusted code."
     exit 1
