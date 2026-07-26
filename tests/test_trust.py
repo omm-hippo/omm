@@ -107,6 +107,45 @@ def test_git_version_ok_accepts_current_git():
     assert trust._git_version_ok() is True
 
 
+def test_verify_commit_uses_merge_commit_second_parent(repo, signing_key, allowed_signers):
+    """Mirrors GitHub's "create a merge commit" strategy: the merge commit
+    itself is unsigned (GitHub signs it with its own key in practice), but
+    the PR branch tip it wraps carries the contributor's signature."""
+    _commit(repo, "base")
+    default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
+    _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
+    (repo / "file.txt").write_text("feature\n")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    feature_commit = _commit(repo, "feature work", signing_key=signing_key)
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    _run(["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "merge feature", "feature"], cwd=repo)
+    merge_commit = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+
+    ok, message = trust.verify_commit(repo, merge_commit, allowed_signers)
+
+    assert ok, message
+    assert feature_commit[:7] in message
+
+
+def test_verify_commit_merge_commit_fails_when_second_parent_untrusted(
+    repo, other_signing_key, allowed_signers
+):
+    _commit(repo, "base")
+    default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
+    _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
+    (repo / "file.txt").write_text("feature\n")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    _commit(repo, "feature work by stranger", signing_key=other_signing_key)
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    _run(["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "merge feature", "feature"], cwd=repo)
+    merge_commit = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+
+    ok, message = trust.verify_commit(repo, merge_commit, allowed_signers)
+
+    assert not ok
+    assert "failed signature verification" in message
+
+
 def test_current_trust_anchor_points_at_bundled_file():
     anchor = trust.current_trust_anchor()
 
