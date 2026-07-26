@@ -2917,50 +2917,66 @@ def contribute(
         err_console.print("[yellow]Cancelled.[/yellow]")
         raise typer.Exit(0)
 
+    started_daemon = None
     if not benchmark.ollama_daemon_reachable():
-        err_console.print(
-            "[red]omm contribute requires a running Ollama daemon - "
-            "it's the only benchmarkable engine right now.[/red]"
-        )
-        raise typer.Exit(1)
+        if yes or (
+            _stdin_is_tty()
+            and _ask_confirm(
+                "Ollama isn't running. Start it now, run contribute, then stop it afterward?"
+            )
+        ):
+            started_daemon = benchmark.start_ollama_daemon()
+            if started_daemon is None:
+                err_console.print("[red]Couldn't start the Ollama daemon.[/red]")
+                raise typer.Exit(1)
+        else:
+            err_console.print(
+                "[red]omm contribute requires a running Ollama daemon - "
+                "it's the only benchmarkable engine right now.[/red]"
+            )
+            raise typer.Exit(1)
 
     try:
-        quality_pack, _ = quality_mod.load_pack()
-    except quality_mod.QualityEvaluationError as error:
-        err_console.print(f"[red]Could not load the quality pack: {error}[/red]")
-        raise typer.Exit(1) from error
+        try:
+            quality_pack, _ = quality_mod.load_pack()
+        except quality_mod.QualityEvaluationError as error:
+            err_console.print(f"[red]Could not load the quality pack: {error}[/red]")
+            raise typer.Exit(1) from error
 
-    config = load_config()
-    artifact, _ = _load_recommendation_with_change_note(config)
-    if not artifact or not artifact.get("candidates"):
-        err_console.print(
-            "[red]No trained recommendation model available - can't select candidates.[/red]"
-        )
-        raise typer.Exit(1)
+        config = load_config()
+        artifact, _ = _load_recommendation_with_change_note(config)
+        if not artifact or not artifact.get("candidates"):
+            err_console.print(
+                "[red]No trained recommendation model available - can't select candidates.[/red]"
+            )
+            raise typer.Exit(1)
 
-    endpoint = config.get("telemetry_endpoint")
-    before_count = _telemetry_row_count(endpoint) if endpoint else None
+        endpoint = config.get("telemetry_endpoint")
+        before_count = _telemetry_row_count(endpoint) if endpoint else None
 
-    hw = scan_hardware()
-    history_refs = benchmark_history.loaded_refs()
-    queue = contribute_mod.ContributionQueue(artifact, hw, history_refs)
+        hw = scan_hardware()
+        history_refs = benchmark_history.loaded_refs()
+        queue = contribute_mod.ContributionQueue(artifact, hw, history_refs)
 
-    def refetch():
-        return _load_recommendation_with_change_note(config)
+        def refetch():
+            return _load_recommendation_with_change_note(config)
 
-    listener = _EscListener()
-    listener.start()
-    start_time = time.monotonic()
-    try:
-        stats = _run_contribution_loop(queue, listener.stop_event, refetch, quality_pack=quality_pack)
+        listener = _EscListener()
+        listener.start()
+        start_time = time.monotonic()
+        try:
+            stats = _run_contribution_loop(queue, listener.stop_event, refetch, quality_pack=quality_pack)
+        finally:
+            listener.stop_event.set()
+
+        autoremove()
+
+        after_count = _telemetry_row_count(endpoint) if endpoint else None
+        duration = time.monotonic() - start_time
+        _print_contribution_summary(stats, duration, before_count, after_count)
     finally:
-        listener.stop_event.set()
-
-    autoremove()
-
-    after_count = _telemetry_row_count(endpoint) if endpoint else None
-    duration = time.monotonic() - start_time
-    _print_contribution_summary(stats, duration, before_count, after_count)
+        if started_daemon is not None:
+            benchmark.stop_ollama_daemon(started_daemon)
 
 
 if __name__ == "__main__":

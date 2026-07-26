@@ -42,6 +42,97 @@ def test_requires_ollama_daemon(isolated_omm_home, monkeypatch):
     assert "Ollama daemon" in result.stderr
 
 
+def test_declines_starting_ollama_daemon_when_prompted(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+
+    def fake_confirm(message, **k):
+        return "Ollama isn't running" not in message
+
+    monkeypatch.setattr(cli, "_ask_confirm", fake_confirm)
+    monkeypatch.setattr(
+        cli.benchmark,
+        "start_ollama_daemon",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not start")),
+    )
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 1
+    assert "requires a running Ollama daemon" in result.stderr
+
+
+def test_starts_and_stops_ollama_daemon_when_confirmed(isolated_omm_home, monkeypatch):
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    reachable = {"value": False}
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: reachable["value"])
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
+    monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
+    monkeypatch.setattr(cli, "autoremove", lambda: None)
+
+    started = object()
+    stopped = []
+
+    def _start(*a, **k):
+        reachable["value"] = True
+        return started
+
+    monkeypatch.setattr(cli.benchmark, "start_ollama_daemon", _start)
+    monkeypatch.setattr(cli.benchmark, "stop_ollama_daemon", lambda proc: stopped.append(proc))
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 0, result.stdout
+    assert stopped == [started]
+
+
+def test_yes_flag_auto_starts_ollama_daemon_without_prompting(isolated_omm_home, monkeypatch):
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    reachable = {"value": False}
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: reachable["value"])
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not prompt"))
+    )
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
+    monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
+    monkeypatch.setattr(cli, "autoremove", lambda: None)
+
+    started = object()
+    stopped = []
+
+    def _start(*a, **k):
+        reachable["value"] = True
+        return started
+
+    monkeypatch.setattr(cli.benchmark, "start_ollama_daemon", _start)
+    monkeypatch.setattr(cli.benchmark, "stop_ollama_daemon", lambda proc: stopped.append(proc))
+
+    result = runner.invoke(cli.app, ["contribute", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert stopped == [started]
+
+
 def test_requires_trained_recommendation_model(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
