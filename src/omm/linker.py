@@ -121,17 +121,31 @@ class LinkError(Exception):
     pass
 
 
-def _symlink(src: Path, dst: Path) -> None:
+def link_file(src: Path, dst: Path) -> None:
+    """Link `dst` to `src` without duplicating bytes. Prefers a symlink;
+    on Windows, where creating a symlink needs Developer Mode or an
+    elevated process, falls back to a hard link (no special privilege
+    needed on NTFS, and - since it's the same file record - still no
+    byte duplication, just limited to same-drive destinations)."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() or dst.is_symlink():
         dst.unlink()
     try:
         dst.symlink_to(src)
-    except OSError as e:
+        return
+    except OSError as symlink_error:
+        if platform.system() != "Windows":
+            raise LinkError(
+                f"Could not create symlink at {dst}: {symlink_error}."
+            ) from symlink_error
+    try:
+        dst.hardlink_to(src)
+    except OSError as hardlink_error:
         raise LinkError(
-            f"Could not create symlink at {dst}: {e}. "
-            "On Windows, enable Developer Mode or run as Administrator."
-        ) from e
+            f"Could not create symlink or hard link at {dst}: {hardlink_error}. "
+            "Enable Developer Mode or run as Administrator, or make sure the "
+            "model hub and this destination are on the same drive."
+        ) from hardlink_error
 
 
 # --- LM Studio -------------------------------------------------------------
@@ -152,14 +166,14 @@ def _lmstudio_publisher_repo(repo_id: str | None, filename: str) -> tuple[str, s
 def link_lmstudio(gguf_path: Path, repo_id: str | None) -> Path:
     publisher, repo = _lmstudio_publisher_repo(repo_id, gguf_path.name)
     dst = lmstudio_models_dir() / publisher / repo / gguf_path.name
-    _symlink(gguf_path, dst)
+    link_file(gguf_path, dst)
     return dst
 
 
 def link_custom_directory(gguf_path: Path, directory: Path) -> Path:
     """Expose a central GGUF in an arbitrary local application's model directory."""
     destination = directory.expanduser() / gguf_path.name
-    _symlink(gguf_path, destination)
+    link_file(gguf_path, destination)
     return destination
 
 
@@ -250,7 +264,7 @@ def link_ollama(gguf_path: Path, model_name: str, models_dir: Path | None = None
     blobs_dir.mkdir(parents=True, exist_ok=True)
 
     model_blob = blobs_dir / f"sha256-{model_sha256}"
-    _symlink(gguf_path, model_blob)
+    link_file(gguf_path, model_blob)
 
     # Mirrors the config produced by `ollama create` for a bare GGUF (no
     # Modelfile TEMPLATE override): a single model layer, config mediaType
