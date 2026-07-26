@@ -234,10 +234,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
         if loc.path.resolve() == hub_path.resolve():
             continue
         was_real_file = loc.path.is_file() and not loc.path.is_symlink()
-        if loc.path.exists() or loc.path.is_symlink():
-            loc.path.unlink()
-        loc.path.parent.mkdir(parents=True, exist_ok=True)
-        loc.path.symlink_to(hub_path)
+        linker.link_file(hub_path, loc.path)
         if was_real_file:
             bytes_saved += loc.size_bytes
         if loc.engine in linked:

@@ -1,4 +1,4 @@
-"""SSH commit-signature verification for `install.sh` / `omm update`.
+"""SSH commit-signature verification for `install.sh` / `install.ps1` / `omm update`.
 
 Trust anchor: an SSH `allowed_signers` file (see `allowed_signers` next to
 this module) shipped as package data, naming the maintainers whose commits
