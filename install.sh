@@ -13,6 +13,28 @@ SRC_DIR="$HOME/.omm/src"
 # to carry a trusted copy yet).
 ALLOWED_SIGNERS_CONTENT="seong381400@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh12ERbI3Yx6DPiaROPjCyI2GIQXb9Ihbp9J9L4bnpe"
 
+# Resolves $1 (a commit-ish) in the git repo at $2 to the commit whose
+# signature actually matters. The repo only accepts changes to main via a
+# GitHub-merged PR ("create a merge commit" strategy) - GitHub builds that
+# merge commit itself and signs it with GitHub's own key, while the
+# contributor's signature lives on the merge commit's second parent (the
+# PR branch tip). For a normal two-parent merge commit, resolve to that
+# second parent; anything else (a direct single-parent commit, or an
+# octopus merge) is returned as-is.
+signing_commit() {
+    commit="$1"
+    repo_dir="$2"
+
+    parents=$(git -C "$repo_dir" rev-list --parents -n 1 "$commit")
+    # shellcheck disable=SC2086 # word-splitting is exactly what we want here
+    set -- $parents
+    if [ "$#" -eq 3 ]; then
+        echo "$3"
+    else
+        echo "$commit"
+    fi
+}
+
 # Verifies $1 (a commit-ish, usually HEAD) in the git repo at $2 is
 # SSH-signed by a key from ALLOWED_SIGNERS_CONTENT. Fails closed: git
 # too old to check SSH signatures, or verification itself erroring out,
@@ -139,7 +161,8 @@ rm -rf "$SRC_DIR"
 git clone --filter=blob:none --quiet "$REPO_URL" "$SRC_DIR"
 
 echo "Verifying commit signature ..."
-if ! verify_commit_signature "$(git -C "$SRC_DIR" rev-parse HEAD)" "$SRC_DIR"; then
+head_commit=$(git -C "$SRC_DIR" rev-parse HEAD)
+if ! verify_commit_signature "$(signing_commit "$head_commit" "$SRC_DIR")" "$SRC_DIR"; then
     rm -rf "$SRC_DIR"
     echo "Signature verification failed - refusing to install untrusted code." >&2
     exit 1

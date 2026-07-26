@@ -10,6 +10,21 @@ rather than a no-op: an attacker with push access could otherwise add
 their own key to the same malicious commit and have it self-approve.
 Callers must pass the anchor read *before* the fetched commit is checked
 out (see `current_trust_anchor` docstring).
+
+CAUTION for future edits to `verify_commit`/`_signing_commit`: every
+already-installed `omm` runs *its own* copy of this module against the
+*newly fetched* commit - there is no way to ship a change to the
+verification algorithm itself through the channel it verifies. An
+already-installed client can only pass a newly fetched commit if the OLD
+algorithm (bundled in that client) already accepts it. Changing what
+"a valid signed commit" means (as `_signing_commit`'s merge-commit
+resolution did) therefore strands every existing install at the next
+commit that only the NEW algorithm would accept, until each of them is
+bridged past it once by hand (see the PR #4/#5 incident write-up). Prefer
+changes that keep old algorithms accepting new commits; if that's not
+possible, the fix must ship in `install.sh`/`install.ps1` too (the TOFU
+path has no "old install" to be stuck behind) and the stranding needs
+calling out loudly in release notes.
 """
 
 from __future__ import annotations
