@@ -2,6 +2,12 @@
 # Usage: irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
 $ErrorActionPreference = "Stop"
 
+# Windows PowerShell 5.1's default SecurityProtocol can exclude TLS 1.2 on
+# older Windows builds / .NET Framework versions - GitHub requires TLS 1.2+,
+# so without this, Invoke-RestMethod against raw.githubusercontent.com can
+# fail (sometimes silently, leaving $s as $null instead of throwing).
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
 $RepoUrl = "https://github.com/omm-hippo/omm.git"
 $SrcDir = Join-Path $env:USERPROFILE ".omm\src"
 
