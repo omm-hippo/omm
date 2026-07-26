@@ -48,6 +48,31 @@ def _git_version_ok() -> bool:
     return (major, minor) >= MIN_GIT_VERSION
 
 
+def _signing_commit(repo_dir: Path, commit: str) -> str:
+    """The commit whose signature actually matters for trust purposes.
+
+    The repo's branch protection only allows landing changes through a PR,
+    merged with the "create a merge commit" strategy. GitHub builds that
+    merge commit itself and signs it with GitHub's own key - the
+    contributor's signature lives on the merge commit's second parent (the
+    PR branch tip) instead. For a normal two-parent merge commit, that's
+    the commit to verify; anything else (a direct single-parent commit, or
+    an octopus merge) is verified as-is.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_dir), "rev-list", "--parents", "-n", "1", commit],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return commit
+    parts = result.stdout.split()
+    if len(parts) == 3:  # commit + exactly two parents
+        return parts[2]
+    return commit
+
+
 def verify_commit(
     repo_dir: Path, commit: str, allowed_signers: Path | None
 ) -> tuple[bool, str]:
@@ -63,6 +88,7 @@ def verify_commit(
         return True, "no trust anchor bundled with the current install yet (one-time bootstrap pass-through)"
     if not _git_version_ok():
         return False, "git 2.34+ is required to verify SSH commit signatures"
+    target = _signing_commit(repo_dir, commit)
     try:
         result = subprocess.run(
             [
@@ -70,15 +96,15 @@ def verify_commit(
                 "-c", "gpg.format=ssh",
                 "-c", f"gpg.ssh.allowedSignersFile={allowed_signers}",
                 "-C", str(repo_dir),
-                "verify-commit", commit,
+                "verify-commit", target,
             ],
             capture_output=True,
             text=True,
             timeout=15,
         )
     except subprocess.TimeoutExpired:
-        return False, f"signature verification of {commit[:7]} timed out"
+        return False, f"signature verification of {target[:7]} timed out"
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        return False, f"commit {commit[:7]} failed signature verification: {detail}"
-    return True, f"commit {commit[:7]} signature verified"
+        return False, f"commit {target[:7]} failed signature verification: {detail}"
+    return True, f"commit {target[:7]} signature verified"
