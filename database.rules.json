@@ -24,6 +24,9 @@
         "model_repo_id": {
           ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 512)"
         },
+        "model_provider": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 64)"
+        },
         "model_size_bytes": {
           ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > 0 && newData.val() <= 1099511627776)"
         },
