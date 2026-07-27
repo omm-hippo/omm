@@ -2412,13 +2412,32 @@ def benchmark_cmd(
         output = config_mod.EVALUATIONS_DIR / f"quality-{stamp}.json"
     try:
         try:
-            report = quality_mod.collect_evidence(
-                models,
-                scan_hardware(),
-                pack_path=pack,
-                speed_runs=speed_runs,
-                confirm_performance_timeout=confirm_performance_timeout,
-            )
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]{task.description}[/cyan]"),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                task_id = progress.add_task(
+                    f"Benchmarking ({len(models)} model(s))...", total=len(models)
+                )
+
+                def _on_model_start(tag: str, index: int, total: int) -> None:
+                    progress.update(
+                        task_id,
+                        description=f"Benchmarking {tag} ({index}/{total})",
+                        completed=index - 1,
+                    )
+
+                report = quality_mod.collect_evidence(
+                    models,
+                    scan_hardware(),
+                    pack_path=pack,
+                    speed_runs=speed_runs,
+                    confirm_performance_timeout=confirm_performance_timeout,
+                    on_model_start=_on_model_start,
+                )
+                progress.update(task_id, completed=len(models))
             quality_mod.write_evidence(report, output)
         except quality_mod.QualityEvaluationError as error:
             err_console.print(f"[red]{error}[/red]")
