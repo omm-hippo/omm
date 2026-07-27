@@ -333,6 +333,29 @@ def _tag_matches(name: object, tag: str) -> bool:
     return ":" not in tag and name == f"{tag}:latest"
 
 
+def list_benchmarkable_tags() -> list[str]:
+    """All Ollama tags that could plausibly be benchmarked right now.
+
+    Excludes mmproj/clip projector models (see _model_metadata) - they
+    have no tokenizer of their own and would just fail every time.
+    """
+    tags = _request_json("GET", "/api/tags", timeout=10).get("models")
+    if not isinstance(tags, list):
+        return []
+    names = []
+    for item in tags:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        details = item.get("details")
+        if not isinstance(name, str):
+            continue
+        if isinstance(details, dict) and details.get("family") == "clip":
+            continue
+        names.append(name)
+    return sorted(names)
+
+
 def _model_metadata(tag: str) -> dict:
     tags = _request_json("GET", "/api/tags", timeout=10).get("models")
     if not isinstance(tags, list):

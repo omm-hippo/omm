@@ -233,6 +233,34 @@ def test_model_metadata_rejects_already_linked_clip_mmproj(monkeypatch):
         quality._model_metadata("mmproj")
 
 
+def test_list_benchmarkable_tags_excludes_clip_and_sorts(monkeypatch):
+    def fake_request(method, path, payload=None, timeout=10):
+        assert path == "/api/tags"
+        return {
+            "models": [
+                {"name": "zebra:latest", "details": {"family": "llama"}},
+                {"name": "mmproj:latest", "details": {"family": "clip"}},
+                {"name": "alpha:latest", "details": {"family": "llama"}},
+            ]
+        }
+
+    monkeypatch.setattr(quality, "_request_json", fake_request)
+
+    assert quality.list_benchmarkable_tags() == ["alpha:latest", "zebra:latest"]
+
+
+def test_list_benchmarkable_tags_empty_when_nothing_installed(monkeypatch):
+    monkeypatch.setattr(quality, "_request_json", lambda *a, **k: {"models": []})
+
+    assert quality.list_benchmarkable_tags() == []
+
+
+def test_list_benchmarkable_tags_empty_when_models_key_missing(monkeypatch):
+    monkeypatch.setattr(quality, "_request_json", lambda *a, **k: {})
+
+    assert quality.list_benchmarkable_tags() == []
+
+
 def test_multi_sample_benchmark_reuses_identical_options(monkeypatch):
     calls = []
     monkeypatch.setattr(
