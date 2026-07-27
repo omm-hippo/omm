@@ -9,6 +9,27 @@ permissions:
   contents: read
 
 jobs:
+  windows-install-script:
+    name: Windows PowerShell installer syntax
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Parse install.ps1 with Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          powershell.exe -NoLogo -NoProfile -NonInteractive -Command '
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD "install.ps1"), [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_ }
+              exit 1
+            }
+          '
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   python:
     name: Python 3.11 on ${{ matrix.os }}
     strategy:

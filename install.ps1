@@ -1,5 +1,7 @@
 # Installs omm (Open source Model Manager) as an isolated CLI command via pipx.
-# Usage: irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
+# Usage: [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
+# Do not try to fix the first-download TLS problem inside this script: `irm`
+# fetches the script before PowerShell can execute any of its contents.
 $ErrorActionPreference = "Stop"
 
 $RepoUrl = "https://github.com/omm-hippo/omm.git"
@@ -104,9 +106,49 @@ function Test-CommitSignature {
 # Python package both put on PATH); fall back to the `py` launcher, which
 # some existing installs expose without a bare `python` on PATH.
 
+function Test-PythonCommand {
+    param($Python)
+    $process = $null
+    try {
+        # Do not invoke an app-execution alias in this PowerShell process:
+        # WindowsApps can display a Store prompt and never return. A direct
+        # child process plus a short timeout keeps the installer responsive.
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $Python.Executable
+        $startInfo.Arguments = (@($Python.Arguments) + @(
+            "-c",
+            '"import sys; print(1 if sys.version_info >= (3, 10) else 0)"'
+        )) -join " "
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        if ($null -eq $process) { return $false }
+        if (-not $process.WaitForExit(5000)) {
+            try { $process.Kill() } catch {}
+            return $false
+        }
+        $result = $process.StandardOutput.ReadToEnd()
+        return ($process.ExitCode -eq 0 -and $result.Trim() -eq "1")
+    } catch {
+        # WindowsApps aliases can exist on PATH but open a Store prompt (or
+        # otherwise fail) instead of starting Python. Treat them as absent.
+        return $false
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
 function Get-PythonCommand {
-    if (Test-CommandExists "python") { return @("python") }
-    if (Test-CommandExists "py") { return @("py", "-3") }
+    # Probe execution, rather than trusting Get-Command. Prefer python.org /
+    # winget's `python`, then the py launcher, before asking winget to install.
+    foreach ($candidate in @(
+        [pscustomobject]@{ Executable = "python"; Arguments = @() },
+        [pscustomobject]@{ Executable = "py"; Arguments = @("-3") }
+    )) {
+        if (Test-PythonCommand $candidate) { return $candidate }
+    }
     return $null
 }
 
@@ -122,14 +164,7 @@ if (-not $PythonCmd) {
 }
 
 function Invoke-Python {
-    & $PythonCmd[0] @($PythonCmd | Select-Object -Skip 1) @args
-}
-
-$PyOk = (Invoke-Python -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)")
-if ($PyOk -ne "1") {
-    $pyVersion = (Invoke-Python --version)
-    Write-Error "omm requires Python 3.10+, found: $pyVersion"
-    exit 1
+    & $PythonCmd.Executable @($PythonCmd.Arguments) @args
 }
 
 # --- git -------------------------------------------------------------------

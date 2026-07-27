@@ -57,6 +57,8 @@ from pathlib import Path
 
 from omm.gguf import read_gguf_metadata
 from omm.hashutil import sha256_file
+from omm.atomic import atomic_write_text, backup_corrupt_file, locked
+from omm.config import LINK_OWNERSHIP_PATH
 
 
 def lmstudio_home_dir() -> Path:
@@ -121,6 +123,136 @@ class LinkError(Exception):
     pass
 
 
+def _link_key(path: Path) -> str:
+    """Stable key without resolving a link target that may no longer exist."""
+    return str(path.expanduser().absolute())
+
+
+def _load_link_ownership() -> dict[str, dict[str, object]]:
+    if not LINK_OWNERSHIP_PATH.exists():
+        return {}
+    try:
+        data = json.loads(LINK_OWNERSHIP_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        backup_corrupt_file(LINK_OWNERSHIP_PATH)
+        return {}
+    if not isinstance(data, dict):
+        backup_corrupt_file(LINK_OWNERSHIP_PATH)
+        return {}
+    return {key: value for key, value in data.items() if isinstance(key, str) and isinstance(value, dict)}
+
+
+def _update_link_ownership(path: Path, ownership: dict[str, object] | None) -> None:
+    """Atomically add or remove a hard-link ownership record."""
+    key = _link_key(path)
+    with locked(LINK_OWNERSHIP_PATH):
+        records = _load_link_ownership()
+        if ownership is None:
+            records.pop(key, None)
+        else:
+            records[key] = ownership
+        atomic_write_text(LINK_OWNERSHIP_PATH, json.dumps(records, indent=2) + "\n")
+
+
+def _record_ownership(dst: Path, src: Path | None, kind: str) -> None:
+    stat = dst.stat()
+    _update_link_ownership(
+        dst,
+        {
+            "kind": kind,
+            "source": _link_key(src) if src is not None else None,
+            # An attacker or another program can replace a regular file at
+            # this path.  Device/inode make the ownership claim apply only to
+            # the exact hard link we made, never a later ordinary file.
+            "device": stat.st_dev,
+            "inode": stat.st_ino,
+        },
+    )
+
+
+def _record_hardlink(dst: Path, src: Path) -> None:
+    _record_ownership(dst, src, "hardlink")
+
+
+def _record_symlink(dst: Path, src: Path) -> None:
+    _record_ownership(dst, src, "symlink")
+
+
+def _owned_hardlink(path: Path) -> bool:
+    record = _load_link_ownership().get(_link_key(path))
+    if not record or record.get("kind") != "hardlink" or path.is_symlink() or not path.exists():
+        return False
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    return record.get("device") == stat.st_dev and record.get("inode") == stat.st_ino
+
+
+def _owned_symlink(path: Path) -> bool:
+    record = _load_link_ownership().get(_link_key(path))
+    if not record or record.get("kind") != "symlink" or not path.is_symlink():
+        return False
+    try:
+        target = Path(os.readlink(path))
+        if not target.is_absolute():
+            target = path.parent / target
+        return _link_key(target) == record.get("source")
+    except OSError:
+        return False
+
+
+def _matches_requested_link(src: Path, dst: Path) -> bool:
+    """Whether an old unrecorded destination is provably the requested link."""
+    if dst.is_symlink():
+        try:
+            target = Path(os.readlink(dst))
+            if not target.is_absolute():
+                target = dst.parent / target
+            return _link_key(target) == _link_key(src)
+        except OSError:
+            return False
+    try:
+        return dst.samefile(src)
+    except OSError:
+        return False
+
+
+def _owned_manifest(path: Path) -> bool:
+    record = _load_link_ownership().get(_link_key(path))
+    if not record or record.get("kind") != "manifest" or not path.exists() or path.is_symlink():
+        return False
+    stat = path.stat()
+    return record.get("device") == stat.st_dev and record.get("inode") == stat.st_ino
+
+
+def unlink_owned_link(path: Path) -> bool:
+    """Remove an omm symlink or a recorded, unchanged omm hard link.
+
+    Never removes an unrecorded regular file.  Returns whether a link was
+    removed so callers can preserve ordinary user files at managed paths.
+    """
+    if _owned_symlink(path):
+        path.unlink()
+        _update_link_ownership(path, None)
+        return True
+    if _owned_hardlink(path):
+        path.unlink()
+        _update_link_ownership(path, None)
+        return True
+    return False
+
+
+def autoremove_owned_link(path: Path) -> bool:
+    """Public custom-directory equivalent of the engine autoremove helpers."""
+    if path.is_symlink() and not path.exists():
+        return unlink_owned_link(path)
+    # Do not automatically delete hard links.  Even a recorded hard link is
+    # indistinguishable from a user-owned one after a crash or file-system
+    # restore; preserving an orphan is safer than risking user data.
+    return False
+
+
 def link_file(src: Path, dst: Path) -> None:
     """Link `dst` to `src` without duplicating bytes. Prefers a symlink;
     on Windows, where creating a symlink needs Developer Mode or an
@@ -129,9 +261,24 @@ def link_file(src: Path, dst: Path) -> None:
     byte duplication, just limited to same-drive destinations)."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() or dst.is_symlink():
-        dst.unlink()
+        if not unlink_owned_link(dst):
+            # Pre-ownership-registry omm links have no metadata. During an
+            # explicit relink, adopt only a destination proved to be this
+            # exact source; never infer ownership from a matching filename.
+            if not _matches_requested_link(src, dst):
+                raise LinkError(f"Refusing to replace unowned existing file at {dst}.")
+            if dst.is_symlink():
+                _record_symlink(dst, src)
+            else:
+                _record_hardlink(dst, src)
+            return
     try:
         dst.symlink_to(src)
+        try:
+            _record_symlink(dst, src)
+        except Exception:
+            dst.unlink(missing_ok=True)
+            raise
         return
     except OSError as symlink_error:
         if platform.system() != "Windows":
@@ -140,6 +287,12 @@ def link_file(src: Path, dst: Path) -> None:
             ) from symlink_error
     try:
         dst.hardlink_to(src)
+        try:
+            _record_hardlink(dst, src)
+        except Exception:
+            # Never leave a hard link we cannot prove omm owns.
+            dst.unlink(missing_ok=True)
+            raise
     except OSError as hardlink_error:
         raise LinkError(
             f"Could not create symlink or hard link at {dst}: {hardlink_error}. "
@@ -179,8 +332,7 @@ def link_custom_directory(gguf_path: Path, directory: Path) -> Path:
 
 def unlink_custom_directory(filename: str, directory: Path) -> None:
     dst = directory.expanduser() / filename
-    if dst.is_symlink():
-        dst.unlink()
+    unlink_owned_link(dst)
 
 
 def autoremove_custom_directory(directory: Path) -> int:
@@ -193,16 +345,15 @@ def autoremove_custom_directory(directory: Path) -> int:
     removed = 0
     for path in directory.iterdir():
         if path.is_symlink() and not path.exists():
-            path.unlink()
-            removed += 1
+            if unlink_owned_link(path):
+                removed += 1
     return removed
 
 
 def unlink_lmstudio(filename: str, repo_id: str | None) -> None:
     publisher, repo = _lmstudio_publisher_repo(repo_id, filename)
     dst = lmstudio_models_dir() / publisher / repo / filename
-    if dst.is_symlink():
-        dst.unlink()
+    if unlink_owned_link(dst):
         for parent in (dst.parent, dst.parent.parent):
             try:
                 parent.rmdir()
@@ -264,7 +415,10 @@ def link_ollama(gguf_path: Path, model_name: str, models_dir: Path | None = None
     blobs_dir.mkdir(parents=True, exist_ok=True)
 
     model_blob = blobs_dir / f"sha256-{model_sha256}"
-    link_file(gguf_path, model_blob)
+    # A matching content-addressed blob may be owned by Ollama or another
+    # manifest. It is already usable; never replace it.
+    if not model_blob.exists() and not model_blob.is_symlink():
+        link_file(gguf_path, model_blob)
 
     # Mirrors the config produced by `ollama create` for a bare GGUF (no
     # Modelfile TEMPLATE override): a single model layer, config mediaType
@@ -286,7 +440,8 @@ def link_ollama(gguf_path: Path, model_name: str, models_dir: Path | None = None
     config_bytes = json.dumps(config).encode()
     config_sha256 = hashlib.sha256(config_bytes).hexdigest()
     config_blob = blobs_dir / f"sha256-{config_sha256}"
-    config_blob.write_bytes(config_bytes)
+    if not config_blob.exists() and not config_blob.is_symlink():
+        config_blob.write_bytes(config_bytes)
 
     manifest = {
         "schemaVersion": 2,
@@ -309,7 +464,18 @@ def link_ollama(gguf_path: Path, model_name: str, models_dir: Path | None = None
         models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name
     )
     manifest_dir.mkdir(parents=True, exist_ok=True)
-    (manifest_dir / "latest").write_text(json.dumps(manifest, indent=2))
+    manifest_path = manifest_dir / "latest"
+    if manifest_path.exists() or manifest_path.is_symlink():
+        if not _owned_manifest(manifest_path):
+            raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
+        manifest_path.unlink()
+        _update_link_ownership(manifest_path, None)
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    try:
+        _record_ownership(manifest_path, None, "manifest")
+    except OSError:
+        manifest_path.unlink(missing_ok=True)
+        raise
 
     return has_chat_template
 
@@ -327,22 +493,13 @@ def unlink_ollama(model_name: str, models_dir: Path | None = None) -> None:
     )
     if not manifest_path.exists():
         return
-
-    manifest = json.loads(manifest_path.read_text())
-    blobs_dir = models_dir / "blobs"
-
-    config_digest = manifest["config"]["digest"].replace(":", "-")
-    config_blob = blobs_dir / config_digest
-    if config_blob.exists():
-        config_blob.unlink()
-
-    for layer in manifest["layers"]:
-        layer_digest = layer["digest"].replace(":", "-")
-        layer_blob = blobs_dir / layer_digest
-        if layer_blob.is_symlink():
-            layer_blob.unlink()
-
+    if not _owned_manifest(manifest_path):
+        return
+    # Blobs are content-addressed and can be shared by a user manifest or
+    # another omm model. Leave their collection to Ollama; only our manifest
+    # is safe to remove here.
     manifest_path.unlink()
+    _update_link_ownership(manifest_path, None)
     try:
         manifest_path.parent.rmdir()
     except OSError:
@@ -362,13 +519,13 @@ def autoremove_lmstudio() -> int:
     removed = 0
     for path in list(base.rglob("*")):
         if path.is_symlink() and not path.exists():
-            path.unlink()
-            removed += 1
-            for parent in (path.parent, path.parent.parent):
-                try:
-                    parent.rmdir()
-                except OSError:
-                    break
+            if unlink_owned_link(path):
+                removed += 1
+                for parent in (path.parent, path.parent.parent):
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
     return removed
 
 
@@ -385,8 +542,8 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
     broken_digests = set()
     for blob in blobs_dir.iterdir():
         if blob.is_symlink() and not blob.exists():
-            broken_digests.add(blob.name)
-            blob.unlink()
+            if unlink_owned_link(blob):
+                broken_digests.add(blob.name)
 
     manifests_removed = 0
     if broken_digests and manifests_root.exists():
@@ -398,8 +555,9 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
             layer_digests = {
                 layer["digest"].replace(":", "-") for layer in manifest.get("layers", [])
             }
-            if layer_digests & broken_digests:
+            if layer_digests & broken_digests and _owned_manifest(manifest_path):
                 manifest_path.unlink()
+                _update_link_ownership(manifest_path, None)
                 manifests_removed += 1
                 try:
                     manifest_path.parent.rmdir()
