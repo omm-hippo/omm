@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from importlib.resources import files
 from pathlib import Path
+from typing import Callable
 
 from omm.hardware import HardwareInfo
 from omm import tuning
@@ -840,6 +841,7 @@ def collect_evidence(
     speed_runs: int = 3,
     *,
     confirm_performance_timeout: bool = False,
+    on_model_start: Callable[[str, int, int], None] | None = None,
 ) -> dict:
     if not tags:
         raise QualityEvaluationError("at least one Ollama model tag is required")
@@ -849,7 +851,10 @@ def collect_evidence(
         raise QualityEvaluationError("model tags must be unique non-empty strings")
     pack, pack_sha256 = load_pack(pack_path)
     models = []
-    for tag in tags:
+    total = len(tags)
+    for index, tag in enumerate(tags, start=1):
+        if on_model_start is not None:
+            on_model_start(tag, index, total)
         entry = _evaluate_tag_once(tag, hardware, pack, speed_runs)
         if (
             confirm_performance_timeout

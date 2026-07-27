@@ -114,6 +114,25 @@ def test_collect_evidence_redacts_hardware_names(monkeypatch):
     assert report["models"][0]["measurement_isolation"]["unloaded_after_run"] is True
 
 
+def test_collect_evidence_calls_on_model_start_once_per_tag_in_order(monkeypatch):
+    monkeypatch.setattr(quality, "ollama_version", lambda: "0.32.1")
+    monkeypatch.setattr(
+        quality,
+        "evaluate_model",
+        lambda tag, pack, speed_runs=3: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+    calls = []
+
+    quality.collect_evidence(
+        ["model:one", "model:two"],
+        _hardware(),
+        on_model_start=lambda tag, index, total: calls.append((tag, index, total)),
+    )
+
+    assert calls == [("model:one", 1, 2), ("model:two", 2, 2)]
+
+
 def test_unload_model_uses_keep_alive_zero_without_deleting(monkeypatch):
     calls = []
     monkeypatch.setattr(
