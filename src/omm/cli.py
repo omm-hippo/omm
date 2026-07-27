@@ -2430,6 +2430,9 @@ def benchmark_cmd(
                         completed=index - 1,
                     )
 
+                def _on_daemon_event(message: str) -> None:
+                    progress.console.print(f"[yellow]{message}[/yellow]")
+
                 report = quality_mod.collect_evidence(
                     models,
                     scan_hardware(),
@@ -2437,6 +2440,7 @@ def benchmark_cmd(
                     speed_runs=speed_runs,
                     confirm_performance_timeout=confirm_performance_timeout,
                     on_model_start=_on_model_start,
+                    on_daemon_event=_on_daemon_event,
                 )
                 progress.update(task_id, completed=len(models))
             quality_mod.write_evidence(report, output)

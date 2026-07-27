@@ -12,7 +12,9 @@ import time
 
 OLLAMA_HOST = "http://localhost:11434"
 _BENCHMARK_PROMPT = "Explain what an operating system is."
-_NUM_PREDICT = 32
+# Matches quality._speed_probe's measured num_predict, so speed numbers from
+# this simple probe and the full `omm benchmark` speed probe stay comparable.
+_NUM_PREDICT = 64
 _DAEMON_START_TIMEOUT = 15.0
 
 

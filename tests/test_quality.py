@@ -133,6 +133,59 @@ def test_collect_evidence_calls_on_model_start_once_per_tag_in_order(monkeypatch
     assert calls == [("model:one", 1, 2), ("model:two", 2, 2)]
 
 
+def test_collect_evidence_recovers_from_daemon_crash_mid_batch(monkeypatch):
+    """Daemon found dead before the first tag, restart succeeds immediately -
+    the batch proceeds and both tags still get benchmarked."""
+    version_calls = {"count": 0}
+
+    def fake_ollama_version():
+        version_calls["count"] += 1
+        return None if version_calls["count"] == 1 else "0.30.10"
+
+    monkeypatch.setattr(quality, "ollama_version", fake_ollama_version)
+    monkeypatch.setattr(quality.benchmark, "start_ollama_daemon", lambda: object())
+    monkeypatch.setattr(
+        quality,
+        "evaluate_model",
+        lambda tag, pack, speed_runs=3: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+    events = []
+
+    report = quality.collect_evidence(
+        ["model:one", "model:two"],
+        _hardware(),
+        on_daemon_event=events.append,
+    )
+
+    assert [m["tag"] for m in report["models"]] == ["model:one", "model:two"]
+    assert any("restart" in event.lower() for event in events)
+
+
+def test_collect_evidence_gives_up_after_max_daemon_restart_failures(monkeypatch):
+    """Daemon never comes back - stop after the failure cap instead of
+    burning a full per-request timeout on every remaining tag."""
+    monkeypatch.setattr(quality, "ollama_version", lambda: None)
+    monkeypatch.setattr(quality.benchmark, "start_ollama_daemon", lambda: None)
+    monkeypatch.setattr(quality.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        quality,
+        "evaluate_model",
+        lambda tag, pack, speed_runs=3: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+    events = []
+
+    report = quality.collect_evidence(
+        ["model:one", "model:two"],
+        _hardware(),
+        on_daemon_event=events.append,
+    )
+
+    assert report["models"] == []
+    assert any("won't come back" in event for event in events)
+
+
 def test_unload_model_uses_keep_alive_zero_without_deleting(monkeypatch):
     calls = []
     monkeypatch.setattr(
