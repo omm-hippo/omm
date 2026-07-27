@@ -353,6 +353,18 @@ _BARE_REPO_URL = REPO_URL.removeprefix("git+")
 SRC_DIR = OMM_HOME / "src"
 
 
+def _update_channel() -> str:
+    """'stable' or 'beta', from `omm setting version` (config key
+    update_channel). Anything else in config falls back to stable."""
+    channel = load_config().get("update_channel")
+    return "beta" if channel == "beta" else "stable"
+
+
+def _channel_branch(channel: str | None = None) -> str:
+    """Repo branch backing the given (or current) update channel."""
+    return "beta" if (channel or _update_channel()) == "beta" else "main"
+
+
 def _src_head_commit() -> str | None:
     """HEAD commit of the persistent editable clone at SRC_DIR, if this
     install has migrated to the git-pull update mechanism. None if not
@@ -423,19 +435,19 @@ def _bg_version_check_cmd() -> None:
     so the `git ls-remote` round trip survives the short-lived parent
     command exiting; writes the result to the shared cache for a later
     `omm` invocation to pick up."""
-    version_check.cached_remote_head(_remote_head_commit)
+    version_check.cached_remote_head(_remote_head_commit, _channel_branch())
 
 
-def _confirm_and_print_update_notice(cached_latest: str, installed: str) -> None:
+def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch: str = "main") -> None:
     """The cached remote head can be up to _TTL_SECONDS stale, so a mismatch
     against it is only a hint, not proof. Before alarming the user, re-check
     live and refresh the cache - this trades a bit of extra latency (only on
     the rare command where the notice would otherwise fire) for never showing
     a stale "update available" once the real remote has caught up."""
-    latest = _remote_head_commit()
+    latest = _remote_head_commit(branch)
     if latest is None:  # offline/unreachable - don't guess, stay silent
         return
-    version_check.record(latest)
+    version_check.record(latest, branch)
     if latest != installed:
         err_console.print("[yellow]Update available! Run: [bold]omm update[/bold][/yellow]")
 
@@ -446,13 +458,14 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
     installed = _installed_commit()
     if not installed:  # editable/dev install - nothing to compare against
         return
-    fresh, latest = version_check.cached_remote_head_if_fresh()
+    branch = _channel_branch()
+    fresh, latest = version_check.cached_remote_head_if_fresh(branch)
     if fresh:
         if latest and latest != installed:
-            ctx.call_on_close(lambda: _confirm_and_print_update_notice(latest, installed))
+            ctx.call_on_close(lambda: _confirm_and_print_update_notice(latest, installed, branch))
         return
-    if version_check.should_start_check():
-        version_check.mark_checking()
+    if version_check.should_start_check(branch):
+        version_check.mark_checking(branch)
         try:
             subprocess.Popen(
                 [sys.executable, "-m", "omm.cli", "_bg-version-check"],
@@ -643,7 +656,7 @@ def _run_pipx_install_with_progress(args: list[str]) -> subprocess.CompletedProc
     return result
 
 
-def _migrate_to_editable_install() -> subprocess.CompletedProcess:
+def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedProcess:
     """First-run (or self-heal) path: clone the repo into a scratch dir,
     swap it into place as SRC_DIR only once the clone has actually
     succeeded, then pipx --editable-install it, so future `omm update`
@@ -651,6 +664,9 @@ def _migrate_to_editable_install() -> subprocess.CompletedProcess:
     SRC_DIR isn't a valid git checkout - regardless of whether the
     currently installed commit already matches latest, since the goal is
     switching mechanism, not code.
+
+    `branch` picks the update channel (main=stable, beta=beta); see
+    `omm setting version`.
 
     Clones into SRC_DIR.new rather than SRC_DIR directly: a clone that
     fails partway (network drop, timeout, Ctrl-C) must not destroy a
@@ -662,7 +678,10 @@ def _migrate_to_editable_install() -> subprocess.CompletedProcess:
     shutil.rmtree(tmp_dir, ignore_errors=True)
     try:
         clone = subprocess.run(
-            ["git", "clone", "--filter=blob:none", "--quiet", _BARE_REPO_URL, str(tmp_dir)],
+            [
+                "git", "clone", "--filter=blob:none", "--branch", branch,
+                "--single-branch", "--quiet", _BARE_REPO_URL, str(tmp_dir),
+            ],
             capture_output=True,
             text=True,
             timeout=60,
@@ -702,16 +721,26 @@ def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProce
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="git command timed out")
 
 
-def _git_update_src() -> subprocess.CompletedProcess:
+def _git_update_src(branch: str = "main") -> subprocess.CompletedProcess:
     """Fast path for an already-migrated install: fetch + fast-forward the
     persistent clone in place. The editable install's .pth points straight
     at SRC_DIR/src, so this alone is enough to pick up code changes - no
     pipx call needed unless dependencies themselves changed (checked by
     the caller via _deps_satisfied()).
 
-    Verifies origin/main's signature against the anchor still on disk from
-    *before* this fetch (SRC_DIR's own trust/allowed_signers, read prior to
-    reset --hard overwriting it) before ever checking the new commit out.
+    `branch` is the update channel's branch (main=stable, beta=beta); see
+    `omm setting version`. Uses `checkout -B` rather than `reset --hard` so
+    this also handles a channel switch, where SRC_DIR's currently checked
+    out local branch may differ from `branch`. Fetches with an explicit
+    refspec (not just `fetch origin <branch>`) because SRC_DIR was cloned
+    `--single-branch`, which only auto-updates the remote-tracking ref for
+    the branch it was cloned with - a bare branch name on the command line
+    for any other branch would land in FETCH_HEAD only, leaving
+    `origin/<branch>` missing for the rev-parse below.
+
+    Verifies the target commit's signature against the anchor still on disk
+    from *before* this fetch (SRC_DIR's own trust/allowed_signers, read
+    prior to checkout overwriting it) before ever checking it out.
 
     Self-heals origin's URL to the current REPO_URL first: a clone made
     before a repo rename/transfer still has the old URL in its git config,
@@ -721,11 +750,13 @@ def _git_update_src() -> subprocess.CompletedProcess:
     if remote_url.returncode == 0 and remote_url.stdout.strip() != _BARE_REPO_URL:
         _run_git(["git", "-C", str(SRC_DIR), "remote", "set-url", "origin", _BARE_REPO_URL], timeout=10)
 
-    fetch = _run_git(["git", "-C", str(SRC_DIR), "fetch", "--quiet", "origin", "main"])
+    fetch = _run_git(
+        ["git", "-C", str(SRC_DIR), "fetch", "--quiet", "origin", f"{branch}:refs/remotes/origin/{branch}"]
+    )
     if fetch.returncode != 0:
         return fetch
 
-    rev_parse = _run_git(["git", "-C", str(SRC_DIR), "rev-parse", "origin/main"], timeout=10)
+    rev_parse = _run_git(["git", "-C", str(SRC_DIR), "rev-parse", f"origin/{branch}"], timeout=10)
     if rev_parse.returncode != 0:
         return rev_parse
     target_commit = rev_parse.stdout.strip()
@@ -734,34 +765,26 @@ def _git_update_src() -> subprocess.CompletedProcess:
     if not ok:
         return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
 
-    return _run_git(["git", "-C", str(SRC_DIR), "reset", "--hard", "--quiet", "origin/main"])
+    return _run_git(
+        ["git", "-C", str(SRC_DIR), "checkout", "-B", branch, f"origin/{branch}", "--force", "--quiet"]
+    )
 
 
-@app.command()
-def update() -> None:
-    """Reinstall omm from the latest source, then refresh rules/model data.
-    Uses a persistent editable clone (SRC_DIR) for a git-pull-speed update
-    once migrated; a one-time pipx --editable install otherwise."""
+def _perform_update(branch: str) -> subprocess.CompletedProcess:
+    """Shared by `omm update` and `omm setting version` (channel switch):
+    migrate-or-pull SRC_DIR onto `branch`, reinstalling via pipx only if
+    dependencies changed."""
     migrated = _src_head_commit() is not None
-    installed = _installed_commit()
-    latest = _remote_head_commit() if installed else None
-    if latest:
-        version_check.record(latest)
-    if migrated and installed and latest and installed == latest:
-        console.print(f"[green]omm is already up to date ({installed[:7]}).[/green]")
-        _refresh_data()
-        return
-
     try:
         if not migrated:
-            result = _migrate_to_editable_install()
-        else:
-            console.print(f"Updating omm from {REPO_URL} ...")
-            result = _git_update_src()
-            if result.returncode == 0 and not _deps_satisfied():
-                result = _run_pipx_install_with_progress(
-                    ["pipx", "install", "--force", "--editable", _install_spec()]
-                )
+            return _migrate_to_editable_install(branch)
+        console.print(f"Updating omm from {REPO_URL} ({branch}) ...")
+        result = _git_update_src(branch)
+        if result.returncode == 0 and not _deps_satisfied():
+            result = _run_pipx_install_with_progress(
+                ["pipx", "install", "--force", "--editable", _install_spec()]
+            )
+        return result
     except FileNotFoundError:
         err_console.print(
             "[red]git or pipx not found. Install them first, or rerun the installer:[/red]\n"
@@ -769,6 +792,26 @@ def update() -> None:
         )
         raise typer.Exit(1)
 
+
+@app.command()
+def update() -> None:
+    """Reinstall omm from the latest source, then refresh rules/model data.
+    Uses a persistent editable clone (SRC_DIR) for a git-pull-speed update
+    once migrated; a one-time pipx --editable install otherwise. Pulls
+    from whichever branch `omm setting version` has selected (stable/main
+    by default, or beta)."""
+    branch = _channel_branch()
+    migrated = _src_head_commit() is not None
+    installed = _installed_commit()
+    latest = _remote_head_commit(branch) if installed else None
+    if latest:
+        version_check.record(latest, branch)
+    if migrated and installed and latest and installed == latest:
+        console.print(f"[green]omm is already up to date ({installed[:7]}).[/green]")
+        _refresh_data()
+        return
+
+    result = _perform_update(branch)
     if result.returncode != 0:
         err_console.print(f"[red]Update failed:[/red]\n{result.stderr}")
         raise typer.Exit(1)
@@ -1811,6 +1854,41 @@ def configure_upload(
     console.print(table)
 
 
+@setting_app.command(name="version")
+def configure_version(
+    stable: bool = typer.Option(False, "--stable", help="Track the stable channel (main branch)."),
+    beta: bool = typer.Option(False, "--beta", help="Track the beta channel (beta branch)."),
+) -> None:
+    """Show or switch the update channel `omm update` pulls from. Switching
+    takes effect immediately - it fetches and checks out the new branch
+    right away, no separate `omm update` needed."""
+    if stable and beta:
+        err_console.print("[red]Choose only one of --stable or --beta.[/red]")
+        raise typer.Exit(1)
+    requested = "beta" if beta else ("stable" if stable else None)
+    current = load_config()
+    if requested and requested != (current.get("update_channel") or "stable"):
+        branch = _channel_branch(requested)
+        result = _perform_update(branch)
+        if result.returncode != 0:
+            err_console.print(f"[red]Channel switch failed:[/red]\n{result.stderr}")
+            raise typer.Exit(1)
+        current = config_mod.update_config(update_channel=requested)
+        latest = _remote_head_commit(branch)
+        if latest:
+            version_check.record(latest, branch)
+        console.print(f"[green]Switched to the {requested} channel.[/green]")
+        _refresh_data()
+    channel = current.get("update_channel") or "stable"
+    commit = _installed_commit()
+    table = Table(title="Update channel", show_header=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    table.add_row("Channel", f"{channel} ({_channel_branch(channel)})")
+    table.add_row("Commit", commit[:7] if commit else "unknown")
+    console.print(table)
+
+
 @setting_app.command(name="calibrate")
 def calibrate(
     model_name: str = typer.Argument(
@@ -1940,6 +2018,7 @@ def setting_menu(ctx: typer.Context) -> None:
         telemetry_endpoint = current.get("telemetry_endpoint") or "not configured"
         upload_policy = current.get("telemetry_send_policy", "ask")
         catalog_manifest = current.get("catalog_manifest_url") or "not configured"
+        update_channel = current.get("update_channel") or "stable"
 
         choice = _ask_select(
             questionary.select(
@@ -1950,6 +2029,7 @@ def setting_menu(ctx: typer.Context) -> None:
                         value="telemetry",
                     ),
                     questionary.Choice(f"Upload (current: {upload_policy})", value="upload"),
+                    questionary.Choice(f"Version channel (current: {update_channel})", value="version"),
                     questionary.Choice("Calibrate", value="calibrate"),
                     questionary.Choice(
                         f"Catalog trust (current: {catalog_manifest})", value="catalog-trust"
@@ -1986,6 +2066,19 @@ def setting_menu(ctx: typer.Context) -> None:
                     disable=(action == "disable"),
                     ask=(action == "ask"),
                 )
+        elif choice == "version":
+            action = _ask_select(
+                questionary.select(
+                    f"Update channel (current: {update_channel}):",
+                    choices=[
+                        questionary.Choice("Stable (main)", value="stable"),
+                        questionary.Choice("Beta", value="beta"),
+                        questionary.Choice("← Back", value="back"),
+                    ],
+                )
+            )
+            if action is not None and action != "back":
+                configure_version(stable=(action == "stable"), beta=(action == "beta"))
         elif choice == "calibrate":
             model_name = questionary.text(
                 "Model to calibrate (blank for smallest installed):"

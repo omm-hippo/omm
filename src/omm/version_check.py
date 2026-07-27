@@ -46,6 +46,11 @@ def _save(data: dict) -> None:
         pass
 
 
+def _ref_entry(cache: dict, ref: str) -> dict:
+    entry = cache.get(ref)
+    return entry if isinstance(entry, dict) else {}
+
+
 def cached_remote_head(
     fetch: Callable[[str], str | None],
     ref: str = "main",
@@ -54,37 +59,46 @@ def cached_remote_head(
     """`fetch` is injected (cli._remote_head_commit) so the actual
     `git ls-remote` call stays single-sourced in cli.py. A `None` result
     (offline/unreachable) is cached too, same TTL, so an offline run
-    doesn't retry the network call on every command."""
+    doesn't retry the network call on every command.
+
+    Cached per `ref` (branch), so switching update channel (stable/beta)
+    never serves a stale reading recorded for the other branch."""
     cache = _load()
-    checked_at = cache.get("checked_at")
+    entry = _ref_entry(cache, ref)
+    checked_at = entry.get("checked_at")
     if isinstance(checked_at, (int, float)) and time.time() - checked_at < ttl_seconds:
-        return cache.get("remote_head")
+        return entry.get("remote_head")
     latest = fetch(ref)
-    _save({"checked_at": time.time(), "remote_head": latest})
+    cache[ref] = {"checked_at": time.time(), "remote_head": latest}
+    _save(cache)
     return latest
 
 
-def cached_remote_head_if_fresh(ttl_seconds: int = _TTL_SECONDS) -> tuple[bool, str | None]:
+def cached_remote_head_if_fresh(
+    ref: str = "main", ttl_seconds: int = _TTL_SECONDS
+) -> tuple[bool, str | None]:
     """Non-blocking read: never fetches. Returns `(True, remote_head)` if a
     prior check (this run or a detached child from an earlier one) is still
     within TTL, else `(False, None)` meaning the caller should decide
     whether to kick off a fresh check itself."""
     cache = _load()
-    checked_at = cache.get("checked_at")
+    entry = _ref_entry(cache, ref)
+    checked_at = entry.get("checked_at")
     if isinstance(checked_at, (int, float)) and time.time() - checked_at < ttl_seconds:
-        return True, cache.get("remote_head")
+        return True, entry.get("remote_head")
     return False, None
 
 
-def should_start_check(ttl_seconds: int = _TTL_SECONDS) -> bool:
+def should_start_check(ref: str = "main", ttl_seconds: int = _TTL_SECONDS) -> bool:
     """True if the cache is stale and no other recently-spawned detached
     child is already fetching (avoids piling up duplicate `git ls-remote`
     processes when several short `omm` commands run back to back)."""
     cache = _load()
-    checked_at = cache.get("checked_at")
+    entry = _ref_entry(cache, ref)
+    checked_at = entry.get("checked_at")
     if isinstance(checked_at, (int, float)) and time.time() - checked_at < ttl_seconds:
         return False
-    checking_since = cache.get("checking_since")
+    checking_since = entry.get("checking_since")
     if (
         isinstance(checking_since, (int, float))
         and time.time() - checking_since < _CHECK_IN_FLIGHT_TTL_SECONDS
@@ -93,16 +107,20 @@ def should_start_check(ttl_seconds: int = _TTL_SECONDS) -> bool:
     return True
 
 
-def mark_checking() -> None:
+def mark_checking(ref: str = "main") -> None:
     """Called right before spawning the detached child, so concurrent short
     `omm` invocations don't each spawn their own `git ls-remote` process."""
     cache = _load()
-    cache["checking_since"] = time.time()
+    entry = _ref_entry(cache, ref)
+    entry["checking_since"] = time.time()
+    cache[ref] = entry
     _save(cache)
 
 
-def record(remote_head: str | None) -> None:
+def record(remote_head: str | None, ref: str = "main") -> None:
     """Overwrite the cache with a freshly-known remote head (e.g. right
     after `omm update` fetches it live), so the next background check
     doesn't serve a pre-update reading for up to `_TTL_SECONDS`."""
-    _save({"checked_at": time.time(), "remote_head": remote_head})
+    cache = _load()
+    cache[ref] = {"checked_at": time.time(), "remote_head": remote_head}
+    _save(cache)
