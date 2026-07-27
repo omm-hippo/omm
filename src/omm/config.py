@@ -36,6 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "catalog_manifest_url": None,
     "catalog_public_key": None,
     "contribute_always_ack": False,
+    "update_channel": "stable",
 }
 
 

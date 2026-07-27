@@ -1,3 +1,5 @@
+import subprocess
+
 import questionary
 from typer.testing import CliRunner
 
@@ -70,6 +72,63 @@ def test_setting_catalog_rollback_reports_error_with_no_snapshots(isolated_omm_h
 
     assert result.exit_code == 1
     assert "Catalog rollback failed" in result.stderr
+
+
+def test_setting_version_defaults_to_stable_without_flags(isolated_omm_home):
+    result = runner.invoke(cli.app, ["setting", "version"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "stable" in result.stdout.lower()
+    assert "main" in result.stdout.lower()
+
+
+def test_setting_version_rejects_both_flags(isolated_omm_home):
+    result = runner.invoke(cli.app, ["setting", "version", "--stable", "--beta"])
+
+    assert result.exit_code == 1
+    assert "only one" in result.stderr.lower()
+
+
+def test_setting_version_switch_to_beta_runs_perform_update_and_saves_config(isolated_omm_home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda branch: calls.append(branch) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "beta_sha")
+    monkeypatch.setattr(cli, "_refresh_data", lambda: None)
+
+    result = runner.invoke(cli.app, ["setting", "version", "--beta"])
+
+    assert result.exit_code == 0, result.stdout
+    assert calls == ["beta"]
+    assert config.load_config()["update_channel"] == "beta"
+    assert "beta" in result.stdout.lower()
+
+
+def test_setting_version_switch_failure_does_not_persist_channel(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda branch: subprocess.CompletedProcess([], 1, stdout="", stderr="offline"),
+    )
+
+    result = runner.invoke(cli.app, ["setting", "version", "--beta"])
+
+    assert result.exit_code == 1
+    assert "offline" in result.stderr
+    assert config.load_config().get("update_channel", "stable") == "stable"
+
+
+def test_setting_version_is_a_noop_when_already_on_requested_channel(isolated_omm_home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_perform_update", lambda branch: calls.append(branch))
+
+    result = runner.invoke(cli.app, ["setting", "version", "--stable"])
+
+    assert result.exit_code == 0, result.stdout
+    assert calls == []
 
 
 def test_old_top_level_commands_are_removed(isolated_omm_home):
@@ -155,3 +214,27 @@ def test_setting_bare_menu_upload_submenu_has_back_option(isolated_omm_home, mon
     upload_labels = [choice.title for choice in captured_choices[1]]
     assert upload_labels[-1] == "← Back"
     assert config.load_config()["telemetry_send_policy"] == "ask"
+
+
+def test_setting_bare_menu_version_submenu_switches_channel(isolated_omm_home, monkeypatch):
+    answers = iter(["version", "beta", None])
+    captured_choices: list = []
+
+    def fake_select(message, choices=None, **kwargs):
+        captured_choices.append(choices)
+        return None
+
+    monkeypatch.setattr(questionary, "select", fake_select)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
+    monkeypatch.setattr(
+        cli, "_perform_update", lambda branch: subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    )
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "beta_sha")
+    monkeypatch.setattr(cli, "_refresh_data", lambda: None)
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    version_labels = [choice.title for choice in captured_choices[1]]
+    assert version_labels[-1] == "← Back"
+    assert config.load_config()["update_channel"] == "beta"
