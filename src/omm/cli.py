@@ -2821,6 +2821,11 @@ class _ContributionStats:
     benchmarked: list[tuple[str, float]]
     skipped_unfit: int = 0
     attempted_not_uploaded: int = 0
+    daemon_restarts: int = 0
+
+
+_MAX_CONSECUTIVE_DAEMON_FAILURES = 3
+_DAEMON_RESTART_BACKOFF_SECONDS = 5.0
 
 
 def _telemetry_row_count(endpoint: str) -> int | None:
@@ -2879,10 +2884,37 @@ class _EscListener:
 
 
 def _run_contribution_loop(
-    queue, stop_event: threading.Event, refetch, quality_pack: dict | None = None
+    queue,
+    stop_event: threading.Event,
+    refetch,
+    quality_pack: dict | None = None,
+    daemon_ref: dict | None = None,
 ) -> _ContributionStats:
     stats = _ContributionStats(benchmarked=[])
+    consecutive_daemon_failures = 0
     while not stop_event.is_set():
+        if not benchmark.ollama_daemon_reachable():
+            err_console.print(
+                "[yellow]Ollama daemon isn't reachable - it likely crashed mid-session. "
+                "Attempting to restart it...[/yellow]"
+            )
+            restarted = benchmark.start_ollama_daemon()
+            if restarted is None:
+                consecutive_daemon_failures += 1
+                if consecutive_daemon_failures >= _MAX_CONSECUTIVE_DAEMON_FAILURES:
+                    err_console.print(
+                        "[red]Ollama daemon won't come back after "
+                        f"{consecutive_daemon_failures} attempts - stopping "
+                        "omm contribute instead of looping unattended.[/red]"
+                    )
+                    break
+                time.sleep(_DAEMON_RESTART_BACKOFF_SECONDS)
+                continue
+            if daemon_ref is not None:
+                daemon_ref["proc"] = restarted
+            stats.daemon_restarts += 1
+            consecutive_daemon_failures = 0
+
         candidate = queue.next_candidate(refetch=refetch)
         if candidate is None:
             console.print("[dim]No more candidates available for this hardware.[/dim]")
@@ -2959,6 +2991,11 @@ def _print_contribution_summary(
         console.print(f"  - {name:<40} {tokens_per_sec:.1f} tok/s")
     console.print(f"Skipped (predicted not to fit this hardware): {stats.skipped_unfit}")
     console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
+    if stats.daemon_restarts:
+        console.print(
+            f"[yellow]Ollama daemon was found dead and restarted {stats.daemon_restarts}x "
+            "during this session.[/yellow]"
+        )
     if before_count is not None and after_count is not None:
         console.print(
             f"Global telemetry dataset: {before_count} -> {after_count} rows "
@@ -3030,6 +3067,7 @@ def contribute(
             )
             raise typer.Exit(1)
 
+    daemon_ref = {"proc": started_daemon}
     try:
         try:
             quality_pack, _ = quality_mod.load_pack()
@@ -3059,7 +3097,9 @@ def contribute(
         listener.start()
         start_time = time.monotonic()
         try:
-            stats = _run_contribution_loop(queue, listener.stop_event, refetch, quality_pack=quality_pack)
+            stats = _run_contribution_loop(
+                queue, listener.stop_event, refetch, quality_pack=quality_pack, daemon_ref=daemon_ref
+            )
         finally:
             listener.stop_event.set()
 
@@ -3069,8 +3109,8 @@ def contribute(
         duration = time.monotonic() - start_time
         _print_contribution_summary(stats, duration, before_count, after_count)
     finally:
-        if started_daemon is not None:
-            benchmark.stop_ollama_daemon(started_daemon)
+        if daemon_ref["proc"] is not None:
+            benchmark.stop_ollama_daemon(daemon_ref["proc"])
 
 
 if __name__ == "__main__":
