@@ -66,6 +66,14 @@ _CHIP_MODEL_RE = re.compile(
 )
 
 _MMPROJ_RE = re.compile(r"mmproj", re.IGNORECASE)
+_GPT_OSS_SIZE_RE = re.compile(
+    r"(?:^|[/_.:-])gpt[-_.]?oss(?:[-_.:]|$).*?(20|120)[Bb](?=[-_.:]|$)",
+    re.IGNORECASE,
+)
+_GPT_OSS_ACTIVE_PARAMS_B = {
+    "20": 3.6,
+    "120": 5.1,
+}
 
 
 def is_mmproj_filename(filename: str) -> bool:
@@ -126,8 +134,36 @@ def parse_active_param_count_billions(text: str) -> float | None:
     return float(matches[-1].replace("_", "."))
 
 
+def _known_gpt_oss_active_parameter_count(candidate: dict) -> float | None:
+    """Return the model author's published active count for gpt-oss.
+
+    Older telemetry recorded total parameters in the active field for these
+    models. Keeping this narrow compatibility correction makes those
+    historical rows usable while new local Ollama measurements provide a
+    tensor-derived value.
+    """
+    sources = [
+        str(candidate.get("filename") or ""),
+        str(candidate.get("repo_id") or ""),
+        str(candidate.get("name") or ""),
+        str(candidate.get("model_installed") or ""),
+    ]
+    for source in sources:
+        match = _GPT_OSS_SIZE_RE.search(source)
+        if match:
+            return _GPT_OSS_ACTIVE_PARAMS_B[match.group(1)]
+    return None
+
+
 def candidate_active_parameter_count_billions(candidate: dict) -> float | None:
     explicit = _positive_finite_number(candidate.get("active_parameter_count_b"))
+    known_gpt_oss = _known_gpt_oss_active_parameter_count(candidate)
+    if known_gpt_oss is not None:
+        total = candidate_parameter_count_billions(candidate)
+        # Preserve a new tensor-derived value, but repair the historical bug
+        # where the "active" value was merely the total/name-parsed count.
+        if explicit is None or (total is not None and explicit >= total * 0.8):
+            return known_gpt_oss
     if explicit is not None:
         return explicit
     sources = [str(candidate.get("filename") or "")]
@@ -139,6 +175,8 @@ def candidate_active_parameter_count_billions(candidate: dict) -> float | None:
         parsed = parse_active_param_count_billions(source)
         if parsed is not None:
             return parsed
+    if candidate.get("is_moe") is True:
+        return None
     return candidate_parameter_count_billions(candidate)
 
 

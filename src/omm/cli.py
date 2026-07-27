@@ -2588,6 +2588,7 @@ def _report_telemetry(
         "filename": model_filename or filename,
         "repo_id": repo_id,
         "size_bytes": size_bytes,
+        "is_moe": metadata.get("is_moe") is True,
     }
     parameter_count = _number("parameter_count_b", "parameter_count_billions")
     if parameter_count is None:
@@ -2598,8 +2599,15 @@ def _report_telemetry(
     active_parameter_count = _number("active_parameter_count_b", "active_parameter_count_billions")
     if active_parameter_count is None:
         active_parameter_count = candidate_active_parameter_count_billions(candidate)
-    if active_parameter_count is None:
+    if active_parameter_count is None and not candidate["is_moe"]:
         active_parameter_count = parameter_count
+    if candidate["is_moe"] and active_parameter_count is None:
+        telemetry.log_attempt("skipped_moe_active_parameters_unknown", filename)
+        console.print(
+            "[dim]Telemetry not sent - this MoE model's active parameter count "
+            "could not be verified.[/dim]"
+        )
+        return False
     quant_bits = _number("quant_bits")
     if quant_bits is None:
         value = metadata.get("quantization_level")
@@ -2716,6 +2724,7 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
         "filename": tag,
         "repo_id": None,
         "size_bytes": metadata.get("size_bytes"),
+        "is_moe": metadata.get("is_moe") is True,
     }
     parameter_count = _number("parameter_count_b")
     if parameter_count is None:
@@ -2730,7 +2739,7 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     if quant_bits is None:
         quant_bits = candidate_quant_bits(candidate)
     active_parameter_count = candidate_active_parameter_count_billions(candidate)
-    if active_parameter_count is None:
+    if active_parameter_count is None and not candidate["is_moe"]:
         active_parameter_count = parameter_count
     if parameter_count is not None:
         event["parameter_count_b"] = parameter_count

@@ -333,6 +333,95 @@ def _tag_matches(name: object, tag: str) -> bool:
     return ":" not in tag and name == f"{tag}:latest"
 
 
+def _tensor_parameter_count(tensor: object) -> int | None:
+    """Return the number of logical parameters represented by an Ollama
+    verbose ``/api/show`` tensor entry.
+
+    Quantization changes storage size, not the tensor's logical shape, so
+    multiplying the dimensions works for BF16 and quantized expert weights
+    alike. Reject malformed shapes instead of guessing.
+    """
+    if not isinstance(tensor, dict):
+        return None
+    shape = tensor.get("shape")
+    if not isinstance(shape, list) or not shape:
+        return None
+    dimensions: list[int] = []
+    for value in shape:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None
+        dimensions.append(value)
+    return math.prod(dimensions)
+
+
+def _moe_active_parameter_count_billions(
+    model_info: object,
+    tensors: object,
+) -> float | None:
+    """Derive active parameters for a GGUF MoE model from its tensor shapes.
+
+    ``total * experts_used / experts`` is wrong because attention, routing,
+    norms and the output projection are active for every token. Instead,
+    scale only routed ``*_exps`` tensors and keep the remaining tensors
+    active. Input embeddings are excluded when a separate output projection
+    exists, matching the standard "active parameters per token" definition
+    used by model authors such as OpenAI's gpt-oss model card.
+
+    The calculation is accepted only when the verbose tensor inventory sums
+    exactly to ``general.parameter_count``. Any unfamiliar or incomplete
+    response returns ``None`` rather than emitting another plausible-looking
+    but wrong training feature.
+    """
+    if not isinstance(model_info, dict) or not isinstance(tensors, list):
+        return None
+    architecture = model_info.get("general.architecture")
+    if not isinstance(architecture, str) or not architecture:
+        return None
+
+    total = model_info.get("general.parameter_count")
+    expert_count = model_info.get(f"{architecture}.expert_count")
+    expert_used_count = model_info.get(f"{architecture}.expert_used_count")
+    values = (total, expert_count, expert_used_count)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values):
+        return None
+    if expert_count <= 1 or expert_used_count > expert_count:
+        return None
+
+    tensor_counts: list[tuple[str, int]] = []
+    for tensor in tensors:
+        count = _tensor_parameter_count(tensor)
+        name = tensor.get("name") if isinstance(tensor, dict) else None
+        if count is None or not isinstance(name, str):
+            return None
+        tensor_counts.append((name, count))
+
+    tensor_total = sum(count for _name, count in tensor_counts)
+    if tensor_total != total:
+        return None
+
+    expert_total = sum(count for name, count in tensor_counts if "_exps." in name)
+    if expert_total <= 0 or expert_total >= total:
+        return None
+
+    # When input and output embeddings are separate, the input lookup does
+    # not activate the full vocabulary matrix for each token. Keep a tied
+    # embedding counted when no distinct output projection exists.
+    names = {name for name, _count in tensor_counts}
+    input_embedding = (
+        next((count for name, count in tensor_counts if name == "token_embd.weight"), 0)
+        if "output.weight" in names
+        else 0
+    )
+    always_active = total - expert_total - input_embedding
+    if always_active <= 0:
+        return None
+
+    active = always_active + expert_total * expert_used_count / expert_count
+    if not math.isfinite(active) or not 0 < active <= total:
+        return None
+    return active / 1_000_000_000
+
+
 def _model_metadata(tag: str) -> dict:
     tags = _request_json("GET", "/api/tags", timeout=10).get("models")
     if not isinstance(tags, list):
@@ -363,11 +452,47 @@ def _model_metadata(tag: str) -> dict:
     shown = _request_json("POST", "/api/show", {"model": tag}, timeout=30)
     details = shown.get("details") if isinstance(shown.get("details"), dict) else {}
     model_info = shown.get("model_info") if isinstance(shown.get("model_info"), dict) else {}
+    architecture = model_info.get("general.architecture")
+    expert_count = (
+        model_info.get(f"{architecture}.expert_count")
+        if isinstance(architecture, str) and architecture
+        else None
+    )
+    expert_used_count = (
+        model_info.get(f"{architecture}.expert_used_count")
+        if isinstance(architecture, str) and architecture
+        else None
+    )
+    is_moe = (
+        isinstance(expert_count, int)
+        and not isinstance(expert_count, bool)
+        and expert_count > 1
+        and isinstance(expert_used_count, int)
+        and not isinstance(expert_used_count, bool)
+        and 0 < expert_used_count <= expert_count
+    )
+    active_parameter_count_b = None
+    if is_moe:
+        # Keep dense-model metadata requests small. Only MoE models need the
+        # verbose tensor inventory required for an exact routed-weight count.
+        try:
+            verbose = _request_json(
+                "POST",
+                "/api/show",
+                {"model": tag, "verbose": True},
+                timeout=30,
+            )
+        except QualityEvaluationError:
+            verbose = {}
+        active_parameter_count_b = _moe_active_parameter_count_billions(
+            verbose.get("model_info"),
+            verbose.get("tensors"),
+        )
     capabilities = shown.get("capabilities")
     if not isinstance(capabilities, list):
         capabilities = []
     size_bytes = listed.get("size")
-    return {
+    metadata = {
         "tag": tag,
         "digest": listed.get("digest") if isinstance(listed.get("digest"), str) else None,
         "size_bytes": size_bytes if isinstance(size_bytes, int) and size_bytes > 0 else None,
@@ -382,7 +507,11 @@ def _model_metadata(tag: str) -> dict:
             for value in capabilities
             if isinstance(value, str) and len(value) <= 64
         ][:32],
+        "is_moe": is_moe,
     }
+    if active_parameter_count_b is not None:
+        metadata["active_parameter_count_b"] = active_parameter_count_b
+    return metadata
 
 
 def _normalized_digest(value: object) -> str | None:
