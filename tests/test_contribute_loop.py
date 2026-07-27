@@ -164,6 +164,104 @@ def test_ollama_unreachable_mid_loop_counts_as_not_uploaded(isolated_omm_home, m
     assert removed == ["model.gguf"]
 
 
+def test_daemon_dies_mid_benchmark_retries_same_candidate_once(isolated_omm_home, monkeypatch):
+    """Daemon crashes *during* a candidate's own download/benchmark (not
+    between candidates - that's the other test). The already-downloaded
+    model must get one retry after the daemon comes back, instead of being
+    thrown away and re-downloaded from scratch as a "new" candidate."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    _seed_registry_entry("model.gguf")
+
+    reachable_calls = [True, False]
+    monkeypatch.setattr(
+        cli.benchmark, "ollama_daemon_reachable", lambda: reachable_calls.pop(0)
+    )
+    restarted = []
+    fake_proc = object()
+    monkeypatch.setattr(
+        cli.benchmark, "start_ollama_daemon", lambda: (restarted.append(1), fake_proc)[1]
+    )
+
+    calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        calls.append(resolved.filename)
+        if len(calls) == 1:
+            return cli.InstallOutcome(
+                filename="model.gguf",
+                repo_id="org/repo",
+                linked={"lmstudio": False, "ollama": True},
+                tokens_per_sec=None,
+                telemetry_sent=False,
+            )
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=42.0,
+            telemetry_sent=True,
+            sha256="deadbeef",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    removed = []
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+
+    daemon_ref = {"proc": None}
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None, daemon_ref=daemon_ref)
+
+    assert calls == ["model.gguf", "model.gguf"]
+    assert restarted == [1]
+    assert daemon_ref["proc"] is fake_proc
+    assert stats.daemon_restarts == 1
+    assert stats.benchmarked == [("model", 42.0)]
+    assert removed == ["model.gguf"]  # only removed once, after the final outcome
+
+
+def test_daemon_wont_restart_after_dying_mid_benchmark_gives_up_on_candidate(
+    isolated_omm_home, monkeypatch
+):
+    """If the daemon can't be restarted after dying mid-benchmark, fall back
+    to the existing not-uploaded bookkeeping instead of retrying forever."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    _seed_registry_entry("model.gguf")
+
+    reachable_calls = [True, False]
+    monkeypatch.setattr(
+        cli.benchmark, "ollama_daemon_reachable", lambda: reachable_calls.pop(0)
+    )
+    monkeypatch.setattr(cli.benchmark, "start_ollama_daemon", lambda: None)
+
+    calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        calls.append(resolved.filename)
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    removed = []
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert calls == ["model.gguf"]  # no retry attempted - daemon never came back
+    assert stats.daemon_restarts == 0
+    assert stats.attempted_not_uploaded == 1
+    assert removed == ["model.gguf"]
+
+
 def test_dead_daemon_is_restarted_before_next_candidate(isolated_omm_home, monkeypatch):
     """Daemon crashed mid-session (e.g. OOM): the loop must notice before
     burning bandwidth on a download, restart it, and carry on - instead of
