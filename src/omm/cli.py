@@ -2950,6 +2950,47 @@ def _run_contribution_loop(
             err_console.print(f"[yellow]Skipping {candidate['filename']}: {e}[/yellow]")
             continue
 
+        if outcome.tokens_per_sec is None and not benchmark.ollama_daemon_reachable():
+            # Daemon died *during* this candidate's own download/benchmark
+            # (as opposed to between candidates, which the check at the top
+            # of the loop already catches). The model is already downloaded
+            # and linked, so retry it once after restarting the daemon
+            # instead of throwing away the download and re-fetching it as a
+            # "new" candidate on the next iteration.
+            err_console.print(
+                f"[yellow]Ollama daemon crashed while benchmarking {display_name} - "
+                "restarting it and retrying this model once...[/yellow]"
+            )
+            restarted = benchmark.start_ollama_daemon()
+            if restarted is None:
+                err_console.print(
+                    f"[red]Couldn't restart the Ollama daemon - giving up on "
+                    f"{display_name} for now.[/red]"
+                )
+            else:
+                if daemon_ref is not None:
+                    daemon_ref["proc"] = restarted
+                stats.daemon_restarts += 1
+                try:
+                    outcome = _install_impl(
+                        resolved,
+                        auto_upload=True,
+                        skip_unfit=True,
+                        stop_event=stop_event,
+                        use_quality_eval=True,
+                        quality_pack=quality_pack,
+                    )
+                except ContributionStopped as e:
+                    _cleanup_incomplete_install(e.filename)
+                    reg = registry.load_registry()
+                    fn, entry = _lookup_entry(e.filename, reg)
+                    if entry:
+                        _remove_one(fn, entry)
+                    break
+                except (DownloadError, linker.LinkError) as e:
+                    err_console.print(f"[yellow]Skipping {candidate['filename']}: {e}[/yellow]")
+                    continue
+
         if outcome.skipped_unfit:
             stats.skipped_unfit += 1
             continue
