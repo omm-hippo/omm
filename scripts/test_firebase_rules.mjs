@@ -217,6 +217,26 @@ const v7Success = {
 const v7SuccessCreated = await request("telemetry", "POST", v7Success);
 assert.equal(v7SuccessCreated.ok, true, `valid v7 success event was rejected (${v7SuccessCreated.status})`);
 
+const v7SuccessWithModelProvider = await request("telemetry", "POST", {
+  ...v7Success,
+  model_provider: "huggingface",
+});
+assert.equal(
+  v7SuccessWithModelProvider.ok,
+  true,
+  `v7 success with model_provider was rejected (${v7SuccessWithModelProvider.status})`,
+);
+
+const v7SuccessWithOverlongModelProvider = await request("telemetry", "POST", {
+  ...v7Success,
+  model_provider: "a".repeat(65),
+});
+assert.equal(
+  v7SuccessWithOverlongModelProvider.ok,
+  false,
+  "v7 success accepted a model_provider longer than 64 characters",
+);
+
 const v7SuccessWithFailureReason = await request("telemetry", "POST", {
   ...v7Success,
   failure_reason: "unknown",
