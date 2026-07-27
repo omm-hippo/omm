@@ -49,7 +49,7 @@ def test_confirm_and_print_update_notice_silent_when_live_check_shows_current(mo
     the bug report and must stay silent."""
     monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "old_sha")
     recorded = []
-    monkeypatch.setattr(cli.version_check, "record", lambda v: recorded.append(v))
+    monkeypatch.setattr(cli.version_check, "record", lambda v, *a, **k: recorded.append(v))
     printed = []
     monkeypatch.setattr(cli.err_console, "print", lambda *a, **k: printed.append(a))
 
@@ -113,7 +113,7 @@ def test_maybe_start_update_check_skips_for_dev_install(monkeypatch):
 
 def test_maybe_start_update_check_confirms_when_fresh_cache_has_newer_version(monkeypatch):
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old_sha")
-    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda: (True, "new_sha"))
+    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda *a, **k: (True, "new_sha"))
     monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "new_sha")
     monkeypatch.setattr(cli.version_check, "record", lambda *a, **k: None)
     printed = []
@@ -130,7 +130,7 @@ def test_maybe_start_update_check_confirms_when_fresh_cache_has_newer_version(mo
 
 def test_maybe_start_update_check_silent_when_fresh_cache_matches_installed(monkeypatch):
     monkeypatch.setattr(cli, "_installed_commit", lambda: "same_sha")
-    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda: (True, "same_sha"))
+    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda *a, **k: (True, "same_sha"))
     monkeypatch.setattr(
         cli, "_remote_head_commit", lambda ref="main": (_ for _ in ()).throw(AssertionError("no live check"))
     )
@@ -149,10 +149,10 @@ def test_maybe_start_update_check_spawns_detached_child_when_stale_and_not_in_fl
     command must not block on the network - it only kicks off a detached
     child and registers no notice of its own (the result isn't known yet)."""
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old_sha")
-    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda: (False, None))
-    monkeypatch.setattr(cli.version_check, "should_start_check", lambda: True)
+    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda *a, **k: (False, None))
+    monkeypatch.setattr(cli.version_check, "should_start_check", lambda *a, **k: True)
     marked = []
-    monkeypatch.setattr(cli.version_check, "mark_checking", lambda: marked.append(1))
+    monkeypatch.setattr(cli.version_check, "mark_checking", lambda *a, **k: marked.append(1))
     popen_calls = []
     monkeypatch.setattr(cli.subprocess, "Popen", lambda args, **kwargs: popen_calls.append((args, kwargs)))
     ctx = _FakeCtx("list")
@@ -171,8 +171,8 @@ def test_maybe_start_update_check_skips_spawn_when_check_already_in_flight(monke
     """Several short `omm` commands run back to back shouldn't each spawn
     their own `git ls-remote` child while one is already in flight."""
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old_sha")
-    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda: (False, None))
-    monkeypatch.setattr(cli.version_check, "should_start_check", lambda: False)
+    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda *a, **k: (False, None))
+    monkeypatch.setattr(cli.version_check, "should_start_check", lambda *a, **k: False)
     monkeypatch.setattr(cli.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no popen")))
     ctx = _FakeCtx("list")
 

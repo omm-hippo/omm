@@ -39,12 +39,12 @@ def test_update_migrates_when_not_yet_migrated_even_if_commit_matches(monkeypatc
     same_commit = "abc1234" * 5 + "abc12345"
     monkeypatch.setattr(cli, "_src_head_commit", lambda: None)
     monkeypatch.setattr(cli, "_installed_commit", lambda: same_commit)
-    monkeypatch.setattr(cli, "_remote_head_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: same_commit)
     migrate_calls = []
     monkeypatch.setattr(
         cli,
         "_migrate_to_editable_install",
-        lambda: migrate_calls.append(1) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        lambda *a, **k: migrate_calls.append(1) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     )
     refresh_calls = []
     monkeypatch.setattr(cli, "_refresh_data", lambda: refresh_calls.append(1))
@@ -60,12 +60,12 @@ def test_update_migrates_when_not_yet_migrated_even_if_commit_matches(monkeypatc
 def test_update_fast_path_skips_pipx_when_deps_unaffected(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
-    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
     git_calls = []
     monkeypatch.setattr(
         cli,
         "_git_update_src",
-        lambda: git_calls.append(1) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        lambda *a, **k: git_calls.append(1) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     )
     monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
     pipx_calls = []
@@ -84,11 +84,11 @@ def test_update_fast_path_skips_pipx_when_deps_unaffected(monkeypatch):
 def test_update_fast_path_falls_back_to_pipx_when_deps_changed(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
-    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
     monkeypatch.setattr(
         cli,
         "_git_update_src",
-        lambda: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     )
     monkeypatch.setattr(cli, "_deps_satisfied", lambda: False)
     pipx_calls = []
@@ -110,11 +110,11 @@ def test_update_fast_path_falls_back_to_pipx_when_deps_changed(monkeypatch):
 def test_update_reports_error_when_git_update_fails(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
-    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
     monkeypatch.setattr(
         cli,
         "_git_update_src",
-        lambda: subprocess.CompletedProcess([], 1, stdout="", stderr="fetch failed"),
+        lambda *a, **k: subprocess.CompletedProcess([], 1, stdout="", stderr="fetch failed"),
     )
     refresh_calls = []
     monkeypatch.setattr(cli, "_refresh_data", lambda: refresh_calls.append(1))
@@ -129,11 +129,11 @@ def test_update_reports_error_when_git_update_fails(monkeypatch):
 def test_update_reports_error_when_pipx_missing(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
-    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
     monkeypatch.setattr(
         cli,
         "_git_update_src",
-        lambda: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     )
     monkeypatch.setattr(cli, "_deps_satisfied", lambda: False)
 
@@ -154,11 +154,11 @@ def test_update_reports_error_when_pipx_missing(monkeypatch):
 def test_update_reports_error_and_skips_data_refresh_on_pipx_failure(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
-    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
     monkeypatch.setattr(
         cli,
         "_git_update_src",
-        lambda: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     )
     monkeypatch.setattr(cli, "_deps_satisfied", lambda: False)
     monkeypatch.setattr(
@@ -180,7 +180,7 @@ def test_update_skips_reinstall_when_already_up_to_date(monkeypatch):
     same_commit = "abc1234" * 5 + "abc12345"
     monkeypatch.setattr(cli, "_src_head_commit", lambda: same_commit)
     monkeypatch.setattr(cli, "_installed_commit", lambda: same_commit)
-    monkeypatch.setattr(cli, "_remote_head_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: same_commit)
     popen_calls = []
     monkeypatch.setattr(cli.subprocess, "Popen", lambda *a, **k: popen_calls.append(a) or _FakeProc([]))
     refresh_calls = []
@@ -204,10 +204,10 @@ def test_update_refreshes_stale_cache_with_live_remote_head(monkeypatch):
     same_commit = "abc1234" * 5 + "abc12345"
     monkeypatch.setattr(cli, "_src_head_commit", lambda: same_commit)
     monkeypatch.setattr(cli, "_installed_commit", lambda: same_commit)
-    monkeypatch.setattr(cli, "_remote_head_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: same_commit)
     monkeypatch.setattr(cli, "_refresh_data", lambda: None)
     recorded = []
-    monkeypatch.setattr(cli.version_check, "record", lambda head: recorded.append(head))
+    monkeypatch.setattr(cli.version_check, "record", lambda head, *a, **k: recorded.append(head))
 
     result = runner.invoke(cli.app, ["update"])
 
@@ -386,7 +386,10 @@ def test_migrate_to_editable_install_clones_then_pipx_installs(monkeypatch, tmp_
 
     assert result.returncode == 0
     assert run_calls == [
-        ["git", "clone", "--filter=blob:none", "--quiet", cli._BARE_REPO_URL, str(tmp_clone)],
+        [
+            "git", "clone", "--filter=blob:none", "--branch", "main",
+            "--single-branch", "--quiet", cli._BARE_REPO_URL, str(tmp_clone),
+        ],
         ["git", "-C", str(tmp_clone), "rev-parse", "HEAD"],
     ]
     assert verify_calls == [(tmp_clone, "newcommit", cli.trust.current_trust_anchor())]
@@ -491,9 +494,9 @@ def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):
     assert result.returncode == 0
     assert run_calls == [
         ["git", "-C", str(src), "remote", "get-url", "origin"],
-        ["git", "-C", str(src), "fetch", "--quiet", "origin", "main"],
+        ["git", "-C", str(src), "fetch", "--quiet", "origin", "main:refs/remotes/origin/main"],
         ["git", "-C", str(src), "rev-parse", "origin/main"],
-        ["git", "-C", str(src), "reset", "--hard", "--quiet", "origin/main"],
+        ["git", "-C", str(src), "checkout", "-B", "main", "origin/main", "--force", "--quiet"],
     ]
     assert verify_calls == [(src, "newcommit", cli.trust.current_trust_anchor())]
 
@@ -515,7 +518,7 @@ def test_git_update_src_skips_reset_when_signature_verification_fails(monkeypatc
 
     assert result.returncode == 1
     assert "failed signature verification" in result.stderr
-    assert ["git", "-C", str(src), "reset", "--hard", "--quiet", "origin/main"] not in run_calls
+    assert ["git", "-C", str(src), "checkout", "-B", "main", "origin/main", "--force", "--quiet"] not in run_calls
 
 
 def test_git_update_src_stops_after_fetch_failure(monkeypatch, tmp_path):
@@ -536,7 +539,7 @@ def test_git_update_src_stops_after_fetch_failure(monkeypatch, tmp_path):
     assert result.returncode == 1
     assert run_calls == [
         ["git", "-C", str(src), "remote", "get-url", "origin"],
-        ["git", "-C", str(src), "fetch", "--quiet", "origin", "main"],
+        ["git", "-C", str(src), "fetch", "--quiet", "origin", "main:refs/remotes/origin/main"],
     ]
 
 
