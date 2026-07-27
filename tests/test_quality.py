@@ -496,7 +496,12 @@ def test_collect_evidence_preserves_sibling_results_after_one_model_fails(monkey
 
 
 def test_collect_evidence_classifies_daemon_unreachable_as_transient(monkeypatch):
-    monkeypatch.setattr(quality, "ollama_version", lambda: None)
+    # A healthy version response here means collect_evidence's own daemon
+    # precheck (which now runs before every tag) lets this attempt through;
+    # the "unavailable" condition under test comes from _model_metadata /
+    # evaluate_model themselves, not from the precheck's own recovery loop
+    # (covered separately by test_collect_evidence_gives_up_after_max_daemon_restart_failures).
+    monkeypatch.setattr(quality, "ollama_version", lambda: "0.32.1")
 
     def raising_metadata(tag):
         raise quality.QualityEvaluationError(
@@ -577,7 +582,11 @@ def test_collect_evidence_classifies_missing_model_file_as_transient_not_unfit(m
 
 
 def test_failure_entry_never_leaks_raw_exception_text_paths_or_ips(monkeypatch):
-    monkeypatch.setattr(quality, "ollama_version", lambda: None)
+    # See test_collect_evidence_classifies_daemon_unreachable_as_transient:
+    # a healthy version response lets collect_evidence's daemon precheck
+    # through so the raising _model_metadata/evaluate_model below are what
+    # actually produce the failure entry under test.
+    monkeypatch.setattr(quality, "ollama_version", lambda: "0.32.1")
     secret_message = "C:\\Users\\alice\\secret\\path connection refused by 10.0.0.5"
 
     def raising_metadata(tag):
@@ -637,7 +646,20 @@ def _patch_confirmation_plumbing(monkeypatch, *, ollama_version="0.32.1", unload
     own polling, never as a substitute for that confirmation). Tests
     control the interesting part (each attempt's outcome) themselves via a
     fake `_evaluate_tag_once`."""
-    monkeypatch.setattr(quality, "ollama_version", lambda: ollama_version)
+    version_calls = {"n": 0}
+
+    def fake_ollama_version():
+        version_calls["n"] += 1
+        # collect_evidence's own daemon precheck fires before every tag,
+        # including the first - it must see a healthy daemon here so the
+        # (mocked) _evaluate_tag_once actually runs. Only later calls (e.g.
+        # _confirm_generation_timeout's own health check) reflect the
+        # scenario a given test is set up to exercise.
+        if version_calls["n"] == 1:
+            return "0.32.1"
+        return ollama_version
+
+    monkeypatch.setattr(quality, "ollama_version", fake_ollama_version)
     monkeypatch.setattr(quality, "_model_metadata", _ok_metadata)
     monkeypatch.setattr(quality, "ensure_model_unloaded", lambda tag, **k: unload_confirmed)
     monkeypatch.setattr(quality.time, "sleep", lambda seconds: None)
