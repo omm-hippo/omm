@@ -161,7 +161,7 @@ def test_happy_path_runs_loop_cleans_up_and_prints_summary(isolated_omm_home, mo
 
     loop_calls = []
 
-    def fake_loop(queue, stop_event, refetch, quality_pack=None):
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None):
         loop_calls.append(1)
         return cli._ContributionStats(benchmarked=[("m", 12.5)], skipped_unfit=1, attempted_not_uploaded=0)
 
@@ -249,7 +249,7 @@ def test_contribute_loads_quality_pack_and_passes_it_to_loop(isolated_omm_home, 
 
     captured = {}
 
-    def fake_loop(queue, stop_event, refetch, quality_pack=None):
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None):
         captured["quality_pack"] = quality_pack
         return cli._ContributionStats(benchmarked=[])
 
