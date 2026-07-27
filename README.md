@@ -29,9 +29,9 @@ omm scan             # Print a hardware, runner, and model summary (RAM, VRAM, O
 omm recommend        # Suggest a model that fits this machine, then offer to install it
 omm tune <name>      # Recommend context, GPU offload, threads, and batch size
 omm benchmark <name>  # Local quality + speed smoke evidence
-omm search <query> [--json]  # Search curated models, cached candidates, and HuggingFace
+omm search <query> [--json] [--skip-unfit]  # Search curated models, cached candidates, and HuggingFace
 omm install <name> [--skip-unfit] [--upload/--no-upload]  # Download a model and link it into LM Studio / Ollama
-omm import [--yes]   # Adopt GGUF files already sitting in Ollama/LM Studio into the hub
+omm import [directory] [--yes]  # Adopt GGUF files already sitting in Ollama/LM Studio (or a given directory) into the hub
 omm uninstall <name> # Uninstall a model and clean up its symlinks/manifests
 omm uninstall all [--yes]  # Uninstall every model installed via omm
 omm list [--json]    # Show models installed via omm and their linked status
@@ -45,6 +45,7 @@ omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit model
 omm update           # Git-pull the latest source into ~/.omm/src, then refresh rules/model data
 omm setting          # Interactive menu for UI mode, telemetry, upload policy, and catalog trust
 omm setting ui compact          # Use short everyday tables (`detailed` for diagnostics)
+omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
 omm setting upload --enable|--disable|--ask  # Configure the benchmark-upload send policy
 omm setting calibrate <name>    # Locally correct predicted speed with an installed Ollama model
