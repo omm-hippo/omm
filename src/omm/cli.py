@@ -2387,6 +2387,9 @@ def benchmark_cmd(
 ) -> None:
     """Measure a small reproducible quality pack and decode speed."""
     models = [_resolve_benchmark_tag(m) for m in models]
+    if "all" in models and models != ["all"]:
+        err_console.print("[red]`all` must be the only argument.[/red]")
+        raise typer.Exit(1)
     started_daemon = None
     if not benchmark.ollama_daemon_reachable():
         if _stdin_is_tty() and _ask_confirm(
@@ -2399,18 +2402,43 @@ def benchmark_cmd(
         else:
             err_console.print("[red]Ollama is not running at http://localhost:11434.[/red]")
             raise typer.Exit(1)
+    if models == ["all"]:
+        models = quality_mod.list_benchmarkable_tags()
+        if not models:
+            err_console.print("[red]No models are installed in Ollama to benchmark.[/red]")
+            raise typer.Exit(1)
+        console.print(f"[dim]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/dim]")
     if output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output = config_mod.EVALUATIONS_DIR / f"quality-{stamp}.json"
     try:
         try:
-            report = quality_mod.collect_evidence(
-                models,
-                scan_hardware(),
-                pack_path=pack,
-                speed_runs=speed_runs,
-                confirm_performance_timeout=confirm_performance_timeout,
-            )
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]{task.description}[/cyan]"),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                task_id = progress.add_task(
+                    f"Benchmarking ({len(models)} model(s))...", total=len(models)
+                )
+
+                def _on_model_start(tag: str, index: int, total: int) -> None:
+                    progress.update(
+                        task_id,
+                        description=f"Benchmarking {tag} ({index}/{total})",
+                        completed=index - 1,
+                    )
+
+                report = quality_mod.collect_evidence(
+                    models,
+                    scan_hardware(),
+                    pack_path=pack,
+                    speed_runs=speed_runs,
+                    confirm_performance_timeout=confirm_performance_timeout,
+                    on_model_start=_on_model_start,
+                )
+                progress.update(task_id, completed=len(models))
             quality_mod.write_evidence(report, output)
         except quality_mod.QualityEvaluationError as error:
             err_console.print(f"[red]{error}[/red]")

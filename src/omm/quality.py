@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from importlib.resources import files
 from pathlib import Path
+from typing import Callable
 
 from omm.hardware import HardwareInfo
 from omm import tuning
@@ -331,6 +332,29 @@ def _tag_matches(name: object, tag: str) -> bool:
     if name == tag:
         return True
     return ":" not in tag and name == f"{tag}:latest"
+
+
+def list_benchmarkable_tags() -> list[str]:
+    """All Ollama tags that could plausibly be benchmarked right now.
+
+    Excludes mmproj/clip projector models (see _model_metadata) - they
+    have no tokenizer of their own and would just fail every time.
+    """
+    tags = _request_json("GET", "/api/tags", timeout=10).get("models")
+    if not isinstance(tags, list):
+        return []
+    names = []
+    for item in tags:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        details = item.get("details")
+        if not isinstance(name, str):
+            continue
+        if isinstance(details, dict) and details.get("family") == "clip":
+            continue
+        names.append(name)
+    return sorted(names)
 
 
 def _model_metadata(tag: str) -> dict:
@@ -817,6 +841,7 @@ def collect_evidence(
     speed_runs: int = 3,
     *,
     confirm_performance_timeout: bool = False,
+    on_model_start: Callable[[str, int, int], None] | None = None,
 ) -> dict:
     if not tags:
         raise QualityEvaluationError("at least one Ollama model tag is required")
@@ -826,7 +851,10 @@ def collect_evidence(
         raise QualityEvaluationError("model tags must be unique non-empty strings")
     pack, pack_sha256 = load_pack(pack_path)
     models = []
-    for tag in tags:
+    total = len(tags)
+    for index, tag in enumerate(tags, start=1):
+        if on_model_start is not None:
+            on_model_start(tag, index, total)
         entry = _evaluate_tag_once(tag, hardware, pack, speed_runs)
         if (
             confirm_performance_timeout
