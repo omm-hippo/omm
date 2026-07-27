@@ -157,8 +157,9 @@ def _root(ctx: typer.Context) -> None:
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
         commit = _installed_commit()
-        suffix = f" ({commit[:7]})" if commit else ""
-        console.print(f"omm {_omm_version()}{suffix}")
+        parts = [commit[:7]] if commit else []
+        parts.append(_update_channel())
+        console.print(f"omm {_omm_version()} ({', '.join(parts)})")
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
     _maybe_auto_import(ctx)
