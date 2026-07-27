@@ -33,6 +33,7 @@ def _seed_registry_entry(filename, sha256="deadbeef"):
 def test_stops_immediately_when_stop_event_already_set(isolated_omm_home, monkeypatch):
     queue = _FakeQueue([_candidate()])
     stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     stop_event.set()
     monkeypatch.setattr(cli, "_install_impl", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
 
@@ -41,9 +42,10 @@ def test_stops_immediately_when_stop_event_already_set(isolated_omm_home, monkey
     assert stats.benchmarked == []
 
 
-def test_stops_when_queue_exhausted(isolated_omm_home):
+def test_stops_when_queue_exhausted(isolated_omm_home, monkeypatch):
     queue = _FakeQueue([])
     stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
@@ -56,6 +58,7 @@ def test_successful_benchmark_records_history_and_deletes_model(isolated_omm_hom
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
@@ -85,6 +88,7 @@ def test_skipped_unfit_candidate_counted_and_not_deleted(isolated_omm_home, monk
     c = _candidate(filename="too-big.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
 
     def fake_install_impl(resolved, **kwargs):
         stop_event.set()
@@ -107,6 +111,7 @@ def test_upload_failure_counts_as_not_uploaded_and_does_not_mark_seen(isolated_o
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
@@ -136,6 +141,7 @@ def test_ollama_unreachable_mid_loop_counts_as_not_uploaded(isolated_omm_home, m
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
@@ -158,11 +164,74 @@ def test_ollama_unreachable_mid_loop_counts_as_not_uploaded(isolated_omm_home, m
     assert removed == ["model.gguf"]
 
 
+def test_dead_daemon_is_restarted_before_next_candidate(isolated_omm_home, monkeypatch):
+    """Daemon crashed mid-session (e.g. OOM): the loop must notice before
+    burning bandwidth on a download, restart it, and carry on - instead of
+    downloading a multi-GB file only to fail the benchmark afterwards."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    _seed_registry_entry("model.gguf")
+
+    reachable_calls = [False, True]
+    monkeypatch.setattr(
+        cli.benchmark, "ollama_daemon_reachable", lambda: reachable_calls.pop(0)
+    )
+    restarted = []
+    fake_proc = object()
+    monkeypatch.setattr(
+        cli.benchmark, "start_ollama_daemon", lambda: (restarted.append(1), fake_proc)[1]
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=42.0,
+            telemetry_sent=True,
+            sha256="deadbeef",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    daemon_ref = {"proc": None}
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None, daemon_ref=daemon_ref)
+
+    assert restarted == [1]
+    assert daemon_ref["proc"] is fake_proc
+    assert stats.daemon_restarts == 1
+    assert stats.benchmarked == [("model", 42.0)]
+
+
+def test_daemon_that_wont_come_back_aborts_loop_instead_of_spinning(isolated_omm_home, monkeypatch):
+    """If the daemon can't be restarted at all, the loop must give up after
+    a few tries rather than looping unattended for hours re-downloading
+    models it can never benchmark."""
+    queue = _FakeQueue([_candidate(filename="model.gguf")] * 10)
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.benchmark, "start_ollama_daemon", lambda: None)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        cli, "_install_impl", lambda *a, **k: (_ for _ in ()).throw(AssertionError)
+    )
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert stats.benchmarked == []
+    assert stats.daemon_restarts == 0
+    assert len(queue._candidates) == 10  # never even attempted a download
+
+
 def test_download_error_skips_candidate_and_continues(isolated_omm_home, monkeypatch):
     c1 = _candidate(filename="bad.gguf", name="bad")
     c2 = _candidate(filename="good.gguf", name="good")
     queue = _FakeQueue([c1, c2])
     stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     _seed_registry_entry("good.gguf")
 
     calls = []
@@ -194,6 +263,7 @@ def test_contribution_stopped_cleans_up_and_breaks(isolated_omm_home, monkeypatc
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c, _candidate(filename="never-reached.gguf")])
     stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
@@ -215,6 +285,7 @@ def test_contribution_stopped_cleans_up_and_breaks(isolated_omm_home, monkeypatc
 def test_run_contribution_loop_builds_url_via_provider_dispatch(isolated_omm_home, monkeypatch):
     seen_urls = []
     stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
 
     def fake_install_impl(resolved, **kwargs):
         seen_urls.append(resolved.url)
