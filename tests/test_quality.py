@@ -233,6 +233,96 @@ def test_model_metadata_rejects_already_linked_clip_mmproj(monkeypatch):
         quality._model_metadata("mmproj")
 
 
+def test_moe_active_parameter_count_scales_only_routed_expert_tensors():
+    model_info = {
+        "general.architecture": "gptoss",
+        "general.parameter_count": 1_650,
+        "gptoss.expert_count": 4,
+        "gptoss.expert_used_count": 1,
+    }
+    tensors = [
+        {"name": "token_embd.weight", "shape": [10, 10]},
+        {"name": "output.weight", "shape": [10, 10]},
+        {"name": "blk.0.attn.weight", "shape": [10, 20]},
+        {"name": "blk.0.ffn_gate_inp.weight", "shape": [10, 4]},
+        {"name": "blk.0.ffn_gate_exps.weight", "shape": [10, 10, 4]},
+        {"name": "blk.0.ffn_up_exps.weight", "shape": [10, 10, 4]},
+        {"name": "blk.0.ffn_down_exps.weight", "shape": [10, 10, 4]},
+        {"name": "output_norm.weight", "shape": [10]},
+    ]
+
+    # Always-active: total 1650 - expert 1200 - input embedding 100 = 350.
+    # Routed expert share: 1200 * 1/4 = 300. Active total = 650.
+    assert quality._moe_active_parameter_count_billions(model_info, tensors) == 0.00000065
+
+
+def test_moe_active_parameter_count_rejects_incomplete_tensor_inventory():
+    model_info = {
+        "general.architecture": "testmoe",
+        "general.parameter_count": 1_000,
+        "testmoe.expert_count": 8,
+        "testmoe.expert_used_count": 2,
+    }
+    tensors = [
+        {"name": "token_embd.weight", "shape": [10, 10]},
+        {"name": "blk.0.ffn_gate_exps.weight", "shape": [10, 10, 8]},
+    ]
+
+    assert quality._moe_active_parameter_count_billions(model_info, tensors) is None
+
+
+def test_model_metadata_derives_moe_active_parameters_from_verbose_show(monkeypatch):
+    calls = []
+
+    def fake_request(method, path, payload=None, timeout=10):
+        calls.append((method, path, payload, timeout))
+        if path == "/api/tags":
+            return {
+                "models": [
+                    {
+                        "name": "moe:latest",
+                        "digest": "sha256:" + "a" * 64,
+                        "size": 100,
+                        "details": {"family": "testmoe"},
+                    }
+                ]
+            }
+        if payload == {"model": "moe"}:
+            return {
+                "details": {"parameter_size": "1B", "quantization_level": "Q4"},
+                "model_info": {
+                    "general.architecture": "testmoe",
+                    "general.parameter_count": 1_600,
+                    "testmoe.expert_count": 4,
+                    "testmoe.expert_used_count": 1,
+                },
+                "capabilities": ["completion"],
+            }
+        assert payload == {"model": "moe", "verbose": True}
+        return {
+            "model_info": {
+                "general.architecture": "testmoe",
+                "general.parameter_count": 1_600,
+                "testmoe.expert_count": 4,
+                "testmoe.expert_used_count": 1,
+            },
+            "tensors": [
+                {"name": "always.weight", "shape": [20, 20]},
+                {"name": "blk.0.ffn_gate_exps.weight", "shape": [10, 10, 4]},
+                {"name": "blk.0.ffn_up_exps.weight", "shape": [10, 10, 4]},
+                {"name": "blk.0.ffn_down_exps.weight", "shape": [10, 10, 4]},
+            ],
+        }
+
+    monkeypatch.setattr(quality, "_request_json", fake_request)
+
+    metadata = quality._model_metadata("moe")
+
+    assert metadata["is_moe"] is True
+    assert metadata["active_parameter_count_b"] == 0.0000007
+    assert calls[-1][2] == {"model": "moe", "verbose": True}
+
+
 def test_multi_sample_benchmark_reuses_identical_options(monkeypatch):
     calls = []
     monkeypatch.setattr(

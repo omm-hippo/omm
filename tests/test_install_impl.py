@@ -408,6 +408,48 @@ def test_report_telemetry_emits_v7_success_with_cpu_fields(
     assert "private GPU name" not in json.dumps(event)
 
 
+def test_report_telemetry_skips_moe_when_active_count_is_unknown(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli,
+        "scan_hardware",
+        lambda: SimpleNamespace(
+            ram_total_gb=16.0,
+            vram_total_gb=8.0,
+            unified_memory=False,
+            gpu_tflops=20.0,
+        ),
+    )
+    sent = []
+    attempts = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+    monkeypatch.setattr(
+        cli.telemetry,
+        "log_attempt",
+        lambda action, detail=None: attempts.append((action, detail)),
+    )
+
+    result = cli._report_telemetry(
+        "custom-moe:20b",
+        None,
+        10.0,
+        model_metadata={
+            "is_moe": True,
+            "parameter_size": "20B",
+            "quantization_level": "Q4_K_M",
+        },
+    )
+
+    assert result is False
+    assert sent == []
+    assert attempts == [
+        ("skipped_moe_active_parameters_unknown", "custom-moe:20b")
+    ]
+
+
 def test_report_telemetry_falls_back_to_v4_when_runtime_is_unverified(
     isolated_omm_home, monkeypatch
 ):
