@@ -2386,6 +2386,9 @@ def benchmark_cmd(
 ) -> None:
     """Measure a small reproducible quality pack and decode speed."""
     models = [_resolve_benchmark_tag(m) for m in models]
+    if "all" in models and models != ["all"]:
+        err_console.print("[red]`all` must be the only argument.[/red]")
+        raise typer.Exit(1)
     started_daemon = None
     if not benchmark.ollama_daemon_reachable():
         if _stdin_is_tty() and _ask_confirm(
@@ -2398,6 +2401,12 @@ def benchmark_cmd(
         else:
             err_console.print("[red]Ollama is not running at http://localhost:11434.[/red]")
             raise typer.Exit(1)
+    if models == ["all"]:
+        models = quality_mod.list_benchmarkable_tags()
+        if not models:
+            err_console.print("[red]No models are installed in Ollama to benchmark.[/red]")
+            raise typer.Exit(1)
+        console.print(f"[dim]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/dim]")
     if output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output = config_mod.EVALUATIONS_DIR / f"quality-{stamp}.json"
