@@ -155,18 +155,19 @@ def _update_link_ownership(path: Path, ownership: dict[str, object] | None) -> N
 
 
 def _record_ownership(dst: Path, src: Path | None, kind: str) -> None:
-    stat = dst.stat()
+    record = {
+        "kind": kind,
+        "source": _link_key(src) if src is not None else None,
+    }
+    if kind != "symlink":
+        stat = dst.stat()
+        # An attacker or another program can replace a regular file at
+        # this path.  Device/inode make the ownership claim apply only to
+        # the exact hard link we made, never a later ordinary file.
+        record.update({"device": stat.st_dev, "inode": stat.st_ino})
     _update_link_ownership(
         dst,
-        {
-            "kind": kind,
-            "source": _link_key(src) if src is not None else None,
-            # An attacker or another program can replace a regular file at
-            # this path.  Device/inode make the ownership claim apply only to
-            # the exact hard link we made, never a later ordinary file.
-            "device": stat.st_dev,
-            "inode": stat.st_ino,
-        },
+        record,
     )
 
 
