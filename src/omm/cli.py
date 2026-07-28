@@ -1339,6 +1339,7 @@ def _install_impl(
         except quality_mod.QualityEvaluationError:
             model_metadata = None
         runtime_options = tuning.recommend_runtime_settings(runtime_hw, runtime_candidate).ollama_options
+        eval_error: quality_mod.QualityEvaluationError | None = None
         if use_quality_eval:
             try:
                 def _evaluate_with_runtime():
@@ -1354,8 +1355,9 @@ def _install_impl(
                 )
             except _Interrupted as e:
                 raise ContributionStopped(filename) from e
-            except quality_mod.QualityEvaluationError:
+            except quality_mod.QualityEvaluationError as error:
                 result = None
+                eval_error = error
             finally:
                 quality_mod.unload_model(ollama_tag)
             if result is not None:
@@ -1422,7 +1424,11 @@ def _install_impl(
                 telemetry.log_attempt("declined_by_user", filename)
         else:
             telemetry_sent = _report_telemetry(
-                filename, repo_id, tokens_per_sec, provider=resolved.provider
+                filename,
+                repo_id,
+                tokens_per_sec,
+                provider=resolved.provider,
+                failure_reason=eval_error.failure_reason if eval_error is not None else None,
             )
     else:
         telemetry.log_attempt("not_attempted_no_ollama_link", filename)
@@ -2563,14 +2569,25 @@ def _report_telemetry(
     model_filename: str | None = None,
     model_digest: str | None = None,
     provider: str | None = None,
+    failure_reason: str | None = None,
 ) -> bool:
     if tokens_per_sec is None:
-        # Ollama daemon wasn't reachable - not a real "it doesn't run" signal,
-        # so skip rather than polluting the speed-regression training data.
-        telemetry.log_attempt("skipped_daemon_unreachable", filename)
-        console.print(
-            "[dim]Telemetry not sent - Ollama daemon wasn't reachable during benchmark.[/dim]"
-        )
+        # Not a real "it doesn't run" signal, so skip rather than polluting
+        # the speed-regression training data. `failure_reason` (when known,
+        # from a caught QualityEvaluationError) says what actually went
+        # wrong - never assume it was the daemon unless that's confirmed,
+        # since guessing wrong here is how the same "daemon" theory gets
+        # re-fixed without ever being the real cause.
+        if failure_reason is None:
+            telemetry.log_attempt("skipped_daemon_unreachable", filename)
+            console.print(
+                "[dim]Telemetry not sent - Ollama daemon wasn't reachable during benchmark.[/dim]"
+            )
+        else:
+            telemetry.log_attempt(f"skipped_{failure_reason}", filename)
+            console.print(
+                f"[dim]Telemetry not sent - benchmark failed ({failure_reason}).[/dim]"
+            )
         return False
     info = scan_hardware()
     if size_bytes is None:
@@ -2854,10 +2871,18 @@ class _ContributionStats:
     skipped_unfit: int = 0
     attempted_not_uploaded: int = 0
     daemon_restarts: int = 0
+    given_up_on: int = 0
 
 
 _MAX_CONSECUTIVE_DAEMON_FAILURES = 3
 _DAEMON_RESTART_BACKOFF_SECONDS = 5.0
+# A candidate that produces no real benchmark result (tokens_per_sec is
+# None) this many times in a row is treated as permanently broken for this
+# session and given up on, instead of being re-offered by the queue forever
+# - a single candidate that always fails (for whatever reason - a crash the
+# daemon can't survive, a reproducible timeout, etc.) would otherwise
+# consume the entire unattended run without ever producing an upload.
+_MAX_CANDIDATE_BENCHMARK_FAILURES = 2
 
 
 def _telemetry_row_count(endpoint: str) -> int | None:
@@ -2924,6 +2949,7 @@ def _run_contribution_loop(
 ) -> _ContributionStats:
     stats = _ContributionStats(benchmarked=[])
     consecutive_daemon_failures = 0
+    benchmark_failure_counts: dict[str, int] = {}
     while not stop_event.is_set():
         if not benchmark.ollama_daemon_reachable():
             err_console.print(
@@ -2960,6 +2986,7 @@ def _run_contribution_loop(
             provider=provider,
         )
         display_name = candidate.get("name", candidate["filename"])
+        ref_str = contribute_mod.ref(candidate)
         console.print(f"[cyan]Trying {display_name}...[/cyan]")
 
         try:
@@ -3033,7 +3060,6 @@ def _run_contribution_loop(
             _remove_one(fn, entry)
 
         if outcome.tokens_per_sec is not None and outcome.telemetry_sent:
-            ref_str = contribute_mod.ref(candidate)
             benchmark_history.record_benchmarked(
                 ref_str,
                 repo_id=outcome.repo_id,
@@ -3045,6 +3071,23 @@ def _run_contribution_loop(
             stats.benchmarked.append((display_name, outcome.tokens_per_sec))
         else:
             stats.attempted_not_uploaded += 1
+            if outcome.tokens_per_sec is None:
+                # No real benchmark result came back at all (as opposed to a
+                # real result whose upload just failed/was declined - that
+                # case is worth retrying, this one keeps producing nothing).
+                # Give up on this exact candidate after it fails enough
+                # times in a row, instead of letting the queue re-offer the
+                # one broken model forever while every other candidate goes
+                # untried.
+                count = benchmark_failure_counts.get(ref_str, 0) + 1
+                benchmark_failure_counts[ref_str] = count
+                if count >= _MAX_CANDIDATE_BENCHMARK_FAILURES:
+                    err_console.print(
+                        f"[yellow]{display_name} has failed to produce a benchmark result "
+                        f"{count}x this session - giving up on it and moving on.[/yellow]"
+                    )
+                    queue.mark_seen(ref_str)
+                    stats.given_up_on += 1
 
     return stats
 
@@ -3064,6 +3107,11 @@ def _print_contribution_summary(
         console.print(f"  - {name:<40} {tokens_per_sec:.1f} tok/s")
     console.print(f"Skipped (predicted not to fit this hardware): {stats.skipped_unfit}")
     console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
+    if stats.given_up_on:
+        console.print(
+            f"[yellow]Gave up on {stats.given_up_on} candidate(s) after repeated "
+            "benchmark failures this session.[/yellow]"
+        )
     if stats.daemon_restarts:
         console.print(
             f"[yellow]Ollama daemon was found dead and restarted {stats.daemon_restarts}x "

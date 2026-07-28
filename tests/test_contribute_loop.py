@@ -9,9 +9,13 @@ class _FakeQueue:
         self.marked_seen = []
 
     def next_candidate(self, refetch=None):
-        if not self._candidates:
-            return None
-        return self._candidates.pop(0)
+        # Mirrors the real ContributionQueue: a candidate marked seen must
+        # never be handed out again, even if it's still in the backing list.
+        while self._candidates:
+            candidate = self._candidates.pop(0)
+            if cli.contribute_mod.ref(candidate) not in self.marked_seen:
+                return candidate
+        return None
 
     def mark_seen(self, ref):
         self.marked_seen.append(ref)
@@ -162,6 +166,47 @@ def test_ollama_unreachable_mid_loop_counts_as_not_uploaded(isolated_omm_home, m
 
     assert stats.attempted_not_uploaded == 1
     assert removed == ["model.gguf"]
+
+
+def test_gives_up_on_candidate_that_repeatedly_fails_to_benchmark(isolated_omm_home, monkeypatch):
+    """A candidate that never produces a real tokens_per_sec (e.g. it
+    reliably crashes the daemon or times out every time) must not be
+    re-offered by the queue forever - that would burn the whole unattended
+    session on one broken model while every other candidate goes untried
+    (the exact failure mode behind repeated 0-upload `omm contribute` runs).
+    """
+    c = _candidate(filename="model.gguf")
+    # The real queue would keep re-offering this candidate since it never
+    # gets marked seen on failure; the fake queue mirrors that by handing it
+    # back out every time next_candidate() is called, until mark_seen fires.
+    queue = _FakeQueue([c, c, c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+
+    calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        calls.append(resolved.filename)
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    # Queue only had 3 entries queued up front (simulating "keeps getting
+    # re-offered"); the loop must stop asking for it after the 2nd failure.
+    assert calls == ["model.gguf", "model.gguf"]
+    assert stats.attempted_not_uploaded == 2
+    assert stats.given_up_on == 1
+    assert queue.marked_seen == ["huggingface:org/repo:model.gguf"]
 
 
 def test_daemon_dies_mid_benchmark_retries_same_candidate_once(isolated_omm_home, monkeypatch):
