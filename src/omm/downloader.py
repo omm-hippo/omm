@@ -15,6 +15,7 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Callable
 
@@ -183,8 +184,18 @@ def _download_parallel(
                 )
                 for start, end in ranges
             ]
+            # A plain future.result() with no timeout blocks on a raw OS
+            # wait. On Windows that can't be interrupted by Ctrl+C at all
+            # (unlike POSIX, where a blocking syscall wakes on EINTR) until
+            # the wait itself completes - so polling with a short timeout is
+            # what lets a pending Ctrl+C actually get serviced.
             for future in futures:
-                future.result()
+                while True:
+                    try:
+                        future.result(timeout=0.5)
+                        break
+                    except FutureTimeoutError:
+                        continue
 
     if errors:
         cancelled = next((e for e in errors if isinstance(e, DownloadCancelled)), None)

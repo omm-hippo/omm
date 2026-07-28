@@ -2959,8 +2959,10 @@ class _EscListener:
     """Background key-listener so Esc can interrupt `omm contribute` even
     mid-download/mid-benchmark, not just at a questionary prompt. No-ops
     (Ctrl+C is still the fallback) when stdin isn't a real terminal - tests,
-    CI, and piped input all fall into this path, mirroring session_cache.py's
-    tty-detection idiom."""
+    CI, and piped input all fall into this path. Uses `sys.stdin.isatty()`
+    rather than session_cache.py's `os.ttyname()` idiom: that call doesn't
+    exist on Windows at all, which used to skip starting this listener
+    there entirely and left Esc permanently dead on Windows."""
 
     def __init__(self) -> None:
         self.stop_event = threading.Event()
@@ -2968,30 +2970,38 @@ class _EscListener:
 
     def start(self) -> None:
         try:
-            import os
-
-            os.ttyname(0)
-        except (OSError, AttributeError):
-            # AttributeError: os.ttyname doesn't exist on Windows at all.
+            if not sys.stdin.isatty():
+                return
+        except (AttributeError, ValueError, OSError):
             return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
         try:
-            import select
-
             from prompt_toolkit.input import create_input
 
             inp = create_input()
             with inp.raw_mode():
-                while not self.stop_event.is_set():
-                    ready, _, _ = select.select([inp.fileno()], [], [], 0.1)
-                    if not ready:
-                        continue
-                    for key_press in inp.read_keys():
-                        if key_press.key == Keys.Escape:
-                            self.stop_event.set()
+                if sys.platform == "win32":
+                    # Win32Input.read_keys() already polls the console input
+                    # buffer non-blockingly, so there's no fd to select() on
+                    # (Windows select() only works on sockets anyway).
+                    while not self.stop_event.is_set():
+                        for key_press in inp.read_keys():
+                            if key_press.key == Keys.Escape:
+                                self.stop_event.set()
+                        time.sleep(0.1)
+                else:
+                    import select
+
+                    while not self.stop_event.is_set():
+                        ready, _, _ = select.select([inp.fileno()], [], [], 0.1)
+                        if not ready:
+                            continue
+                        for key_press in inp.read_keys():
+                            if key_press.key == Keys.Escape:
+                                self.stop_event.set()
         except Exception:
             pass  # best-effort; Ctrl+C still works as a fallback
 
