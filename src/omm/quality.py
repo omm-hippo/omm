@@ -20,9 +20,10 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from importlib.resources import files
 from pathlib import Path
+from typing import Callable
 
 from omm.hardware import HardwareInfo
-from omm import tuning
+from omm import benchmark, tuning
 
 OLLAMA_HOST = "http://localhost:11434"
 MAX_PACK_BYTES = 1_000_000
@@ -83,6 +84,12 @@ FAILURE_REASONS = MODEL_UNFIT_REASONS | TRANSIENT_ERROR_REASONS | PERFORMANCE_UN
 # events record this exact value as timeout_seconds - it must never be
 # shortened to manufacture a timeout.
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 180
+# If the daemon is found dead partway through a multi-model collect_evidence
+# run, give up after this many consecutive failed restart attempts rather
+# than burning a full DEFAULT_GENERATION_TIMEOUT_SECONDS per remaining
+# request-per-remaining-tag (mirrors omm contribute's daemon recovery loop).
+_MAX_CONSECUTIVE_DAEMON_FAILURES = 3
+_DAEMON_RESTART_BACKOFF_SECONDS = 5.0
 # A client-side requests.ReadTimeout only ends *our* wait for a response -
 # it says nothing about whether Ollama's own generation goroutine actually
 # stopped. Before a confirmation attempt may run, we explicitly unload the
@@ -420,6 +427,29 @@ def _moe_active_parameter_count_billions(
     if not math.isfinite(active) or not 0 < active <= total:
         return None
     return active / 1_000_000_000
+
+
+def list_benchmarkable_tags() -> list[str]:
+    """All Ollama tags that could plausibly be benchmarked right now.
+
+    Excludes mmproj/clip projector models (see _model_metadata) - they
+    have no tokenizer of their own and would just fail every time.
+    """
+    tags = _request_json("GET", "/api/tags", timeout=10).get("models")
+    if not isinstance(tags, list):
+        return []
+    names = []
+    for item in tags:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        details = item.get("details")
+        if not isinstance(name, str):
+            continue
+        if isinstance(details, dict) and details.get("family") == "clip":
+            continue
+        names.append(name)
+    return sorted(names)
 
 
 def _model_metadata(tag: str) -> dict:
@@ -946,6 +976,8 @@ def collect_evidence(
     speed_runs: int = 3,
     *,
     confirm_performance_timeout: bool = False,
+    on_model_start: Callable[[str, int, int], None] | None = None,
+    on_daemon_event: Callable[[str], None] | None = None,
 ) -> dict:
     if not tags:
         raise QualityEvaluationError("at least one Ollama model tag is required")
@@ -955,7 +987,38 @@ def collect_evidence(
         raise QualityEvaluationError("model tags must be unique non-empty strings")
     pack, pack_sha256 = load_pack(pack_path)
     models = []
-    for tag in tags:
+    total = len(tags)
+    consecutive_daemon_failures = 0
+    cursor = 0
+    while cursor < total:
+        tag = tags[cursor]
+        if ollama_version() is None:
+            # Daemon died partway through the batch (e.g. crashed while
+            # benchmarking a previous tag). Try to bring it back instead of
+            # letting every remaining tag burn a full
+            # DEFAULT_GENERATION_TIMEOUT_SECONDS per request before failing.
+            if on_daemon_event is not None:
+                on_daemon_event(
+                    "Ollama daemon isn't reachable - it likely crashed mid-run. "
+                    "Attempting to restart it..."
+                )
+            restarted = benchmark.start_ollama_daemon()
+            if restarted is None:
+                consecutive_daemon_failures += 1
+                if consecutive_daemon_failures >= _MAX_CONSECUTIVE_DAEMON_FAILURES:
+                    if on_daemon_event is not None:
+                        on_daemon_event(
+                            "Ollama daemon won't come back after "
+                            f"{consecutive_daemon_failures} attempts - stopping the "
+                            f"remaining benchmark run ({total - cursor} tag(s) not attempted)."
+                        )
+                    break
+                time.sleep(_DAEMON_RESTART_BACKOFF_SECONDS)
+                continue
+            consecutive_daemon_failures = 0
+        cursor += 1
+        if on_model_start is not None:
+            on_model_start(tag, cursor, total)
         entry = _evaluate_tag_once(tag, hardware, pack, speed_runs)
         if (
             confirm_performance_timeout

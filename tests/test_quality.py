@@ -114,6 +114,78 @@ def test_collect_evidence_redacts_hardware_names(monkeypatch):
     assert report["models"][0]["measurement_isolation"]["unloaded_after_run"] is True
 
 
+def test_collect_evidence_calls_on_model_start_once_per_tag_in_order(monkeypatch):
+    monkeypatch.setattr(quality, "ollama_version", lambda: "0.32.1")
+    monkeypatch.setattr(
+        quality,
+        "evaluate_model",
+        lambda tag, pack, speed_runs=3: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+    calls = []
+
+    quality.collect_evidence(
+        ["model:one", "model:two"],
+        _hardware(),
+        on_model_start=lambda tag, index, total: calls.append((tag, index, total)),
+    )
+
+    assert calls == [("model:one", 1, 2), ("model:two", 2, 2)]
+
+
+def test_collect_evidence_recovers_from_daemon_crash_mid_batch(monkeypatch):
+    """Daemon found dead before the first tag, restart succeeds immediately -
+    the batch proceeds and both tags still get benchmarked."""
+    version_calls = {"count": 0}
+
+    def fake_ollama_version():
+        version_calls["count"] += 1
+        return None if version_calls["count"] == 1 else "0.30.10"
+
+    monkeypatch.setattr(quality, "ollama_version", fake_ollama_version)
+    monkeypatch.setattr(quality.benchmark, "start_ollama_daemon", lambda: object())
+    monkeypatch.setattr(
+        quality,
+        "evaluate_model",
+        lambda tag, pack, speed_runs=3: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+    events = []
+
+    report = quality.collect_evidence(
+        ["model:one", "model:two"],
+        _hardware(),
+        on_daemon_event=events.append,
+    )
+
+    assert [m["tag"] for m in report["models"]] == ["model:one", "model:two"]
+    assert any("restart" in event.lower() for event in events)
+
+
+def test_collect_evidence_gives_up_after_max_daemon_restart_failures(monkeypatch):
+    """Daemon never comes back - stop after the failure cap instead of
+    burning a full per-request timeout on every remaining tag."""
+    monkeypatch.setattr(quality, "ollama_version", lambda: None)
+    monkeypatch.setattr(quality.benchmark, "start_ollama_daemon", lambda: None)
+    monkeypatch.setattr(quality.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        quality,
+        "evaluate_model",
+        lambda tag, pack, speed_runs=3: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+    events = []
+
+    report = quality.collect_evidence(
+        ["model:one", "model:two"],
+        _hardware(),
+        on_daemon_event=events.append,
+    )
+
+    assert report["models"] == []
+    assert any("won't come back" in event for event in events)
+
+
 def test_unload_model_uses_keep_alive_zero_without_deleting(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -323,6 +395,34 @@ def test_model_metadata_derives_moe_active_parameters_from_verbose_show(monkeypa
     assert calls[-1][2] == {"model": "moe", "verbose": True}
 
 
+def test_list_benchmarkable_tags_excludes_clip_and_sorts(monkeypatch):
+    def fake_request(method, path, payload=None, timeout=10):
+        assert path == "/api/tags"
+        return {
+            "models": [
+                {"name": "zebra:latest", "details": {"family": "llama"}},
+                {"name": "mmproj:latest", "details": {"family": "clip"}},
+                {"name": "alpha:latest", "details": {"family": "llama"}},
+            ]
+        }
+
+    monkeypatch.setattr(quality, "_request_json", fake_request)
+
+    assert quality.list_benchmarkable_tags() == ["alpha:latest", "zebra:latest"]
+
+
+def test_list_benchmarkable_tags_empty_when_nothing_installed(monkeypatch):
+    monkeypatch.setattr(quality, "_request_json", lambda *a, **k: {"models": []})
+
+    assert quality.list_benchmarkable_tags() == []
+
+
+def test_list_benchmarkable_tags_empty_when_models_key_missing(monkeypatch):
+    monkeypatch.setattr(quality, "_request_json", lambda *a, **k: {})
+
+    assert quality.list_benchmarkable_tags() == []
+
+
 def test_multi_sample_benchmark_reuses_identical_options(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -486,7 +586,12 @@ def test_collect_evidence_preserves_sibling_results_after_one_model_fails(monkey
 
 
 def test_collect_evidence_classifies_daemon_unreachable_as_transient(monkeypatch):
-    monkeypatch.setattr(quality, "ollama_version", lambda: None)
+    # A healthy version response here means collect_evidence's own daemon
+    # precheck (which now runs before every tag) lets this attempt through;
+    # the "unavailable" condition under test comes from _model_metadata /
+    # evaluate_model themselves, not from the precheck's own recovery loop
+    # (covered separately by test_collect_evidence_gives_up_after_max_daemon_restart_failures).
+    monkeypatch.setattr(quality, "ollama_version", lambda: "0.32.1")
 
     def raising_metadata(tag):
         raise quality.QualityEvaluationError(
@@ -567,7 +672,11 @@ def test_collect_evidence_classifies_missing_model_file_as_transient_not_unfit(m
 
 
 def test_failure_entry_never_leaks_raw_exception_text_paths_or_ips(monkeypatch):
-    monkeypatch.setattr(quality, "ollama_version", lambda: None)
+    # See test_collect_evidence_classifies_daemon_unreachable_as_transient:
+    # a healthy version response lets collect_evidence's daemon precheck
+    # through so the raising _model_metadata/evaluate_model below are what
+    # actually produce the failure entry under test.
+    monkeypatch.setattr(quality, "ollama_version", lambda: "0.32.1")
     secret_message = "C:\\Users\\alice\\secret\\path connection refused by 10.0.0.5"
 
     def raising_metadata(tag):
@@ -627,7 +736,20 @@ def _patch_confirmation_plumbing(monkeypatch, *, ollama_version="0.32.1", unload
     own polling, never as a substitute for that confirmation). Tests
     control the interesting part (each attempt's outcome) themselves via a
     fake `_evaluate_tag_once`."""
-    monkeypatch.setattr(quality, "ollama_version", lambda: ollama_version)
+    version_calls = {"n": 0}
+
+    def fake_ollama_version():
+        version_calls["n"] += 1
+        # collect_evidence's own daemon precheck fires before every tag,
+        # including the first - it must see a healthy daemon here so the
+        # (mocked) _evaluate_tag_once actually runs. Only later calls (e.g.
+        # _confirm_generation_timeout's own health check) reflect the
+        # scenario a given test is set up to exercise.
+        if version_calls["n"] == 1:
+            return "0.32.1"
+        return ollama_version
+
+    monkeypatch.setattr(quality, "ollama_version", fake_ollama_version)
     monkeypatch.setattr(quality, "_model_metadata", _ok_metadata)
     monkeypatch.setattr(quality, "ensure_model_unloaded", lambda tag, **k: unload_confirmed)
     monkeypatch.setattr(quality.time, "sleep", lambda seconds: None)
