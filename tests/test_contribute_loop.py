@@ -1,4 +1,5 @@
 import threading
+from types import SimpleNamespace
 
 from omm import benchmark_history, cli, registry
 
@@ -9,9 +10,13 @@ class _FakeQueue:
         self.marked_seen = []
 
     def next_candidate(self, refetch=None):
-        if not self._candidates:
-            return None
-        return self._candidates.pop(0)
+        # Mirrors the real ContributionQueue: a candidate marked seen must
+        # never be handed out again, even if it's still in the backing list.
+        while self._candidates:
+            candidate = self._candidates.pop(0)
+            if cli.contribute_mod.ref(candidate) not in self.marked_seen:
+                return candidate
+        return None
 
     def mark_seen(self, ref):
         self.marked_seen.append(ref)
@@ -105,6 +110,32 @@ def test_skipped_unfit_candidate_counted_and_not_deleted(isolated_omm_home, monk
     assert stats.skipped_unfit == 1
     assert stats.benchmarked == []
     assert removed == []
+    assert queue.marked_seen == ["huggingface:org/repo:too-big.gguf"]
+
+
+def test_unfit_candidates_eventually_exhaust_instead_of_spinning_forever(
+    isolated_omm_home, monkeypatch
+):
+    """Once the only hardware-fit candidate is gone, the queue's "above"
+    pool of unfit candidates must also become exhausted - otherwise
+    next_candidate() always has one more unfit entry to hand back and the
+    loop spins at machine speed forever instead of ever stopping."""
+    candidates = [_candidate(filename=f"unfit-{i}.gguf") for i in range(3)]
+    queue = _FakeQueue(list(candidates))
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+
+    def fake_install_impl(resolved, **kwargs):
+        return cli.InstallOutcome(
+            filename=resolved.filename, repo_id="org/repo", linked={}, skipped_unfit=True
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert stats.skipped_unfit == 3
+    assert len(queue.marked_seen) == 3
 
 
 def test_upload_failure_counts_as_not_uploaded_and_does_not_mark_seen(isolated_omm_home, monkeypatch):
@@ -162,6 +193,118 @@ def test_ollama_unreachable_mid_loop_counts_as_not_uploaded(isolated_omm_home, m
 
     assert stats.attempted_not_uploaded == 1
     assert removed == ["model.gguf"]
+
+
+def test_gives_up_on_candidate_that_repeatedly_fails_to_benchmark(isolated_omm_home, monkeypatch):
+    """A candidate that never produces a real tokens_per_sec (e.g. it
+    reliably crashes the daemon or times out every time) must not be
+    re-offered by the queue forever - that would burn the whole unattended
+    session on one broken model while every other candidate goes untried
+    (the exact failure mode behind repeated 0-upload `omm contribute` runs).
+    """
+    c = _candidate(filename="model.gguf")
+    # The real queue would keep re-offering this candidate since it never
+    # gets marked seen on failure; the fake queue mirrors that by handing it
+    # back out every time next_candidate() is called, until mark_seen fires.
+    queue = _FakeQueue([c, c, c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+
+    calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        calls.append(resolved.filename)
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    # Queue only had 3 entries queued up front (simulating "keeps getting
+    # re-offered"); the loop must stop asking for it after the 2nd failure.
+    assert calls == ["model.gguf", "model.gguf"]
+    assert stats.attempted_not_uploaded == 2
+    assert stats.given_up_on == 1
+    assert queue.marked_seen == ["huggingface:org/repo:model.gguf"]
+
+
+def test_giving_up_on_candidate_reports_failure_telemetry_with_real_reason(
+    isolated_omm_home, monkeypatch
+):
+    """Once a candidate is given up on, the *real* reason it failed
+    (generation_timeout, out_of_memory, etc. - never a vague "daemon"
+    guess) should be reported so future sessions don't have to rediscover
+    "this doesn't work on this hardware" from scratch every time."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c, c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+
+    def fake_install_impl(resolved, **kwargs):
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            ollama_tag="model:latest",
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="generation_timeout",
+            model_metadata={"parameter_size": "9B", "quantization_level": "Q4_K_M"},
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    reported = []
+    monkeypatch.setattr(
+        cli, "_report_contribute_failure_telemetry", lambda outcome: reported.append(outcome)
+    )
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert stats.given_up_on == 1
+    assert len(reported) == 1
+    assert reported[0].failure_reason == "generation_timeout"
+    assert reported[0].model_metadata == {"parameter_size": "9B", "quantization_level": "Q4_K_M"}
+
+
+def test_report_contribute_failure_telemetry_sends_transient_error_event(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli, "scan_hardware",
+        lambda: SimpleNamespace(
+            ram_total_gb=8.0, vram_total_gb=None, unified_memory=True, gpu_tflops=None,
+            cpu=None, cpu_arch=None, cpu_physical_cores=None, cpu_logical_cores=None,
+        ),
+    )
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+
+    outcome = cli.InstallOutcome(
+        filename="model.gguf",
+        repo_id="org/repo",
+        linked={},
+        ollama_tag="model:latest",
+        failure_reason="generation_timeout",
+        model_metadata={"parameter_size": "9B", "quantization_level": "Q4_K_M"},
+    )
+
+    cli._report_contribute_failure_telemetry(outcome)
+
+    assert len(sent) == 1
+    assert sent[0]["outcome"] == "transient_error"
+    assert sent[0]["failure_reason"] == "generation_timeout"
 
 
 def test_daemon_dies_mid_benchmark_retries_same_candidate_once(isolated_omm_home, monkeypatch):

@@ -35,6 +35,7 @@ from omm import (
     calibration,
     catalog,
     config as config_mod,
+    contribute_state,
     linker,
     predictor,
     quality as quality_mod,
@@ -1164,6 +1165,8 @@ class InstallOutcome:
     telemetry_sent: bool = False
     skipped_unfit: bool = False
     sha256: str | None = None
+    failure_reason: str | None = None
+    model_metadata: dict | None = None
 
 
 class ContributionStopped(Exception):
@@ -1327,6 +1330,7 @@ def _install_impl(
     model_metadata = None
     engine_version = None
     runtime_options = None
+    eval_error: quality_mod.QualityEvaluationError | None = None
     if linked["ollama"]:
         console.print("Benchmarking...")
         runtime_hw = scan_hardware()
@@ -1354,8 +1358,9 @@ def _install_impl(
                 )
             except _Interrupted as e:
                 raise ContributionStopped(filename) from e
-            except quality_mod.QualityEvaluationError:
+            except quality_mod.QualityEvaluationError as error:
                 result = None
+                eval_error = error
             finally:
                 quality_mod.unload_model(ollama_tag)
             if result is not None:
@@ -1422,13 +1427,19 @@ def _install_impl(
                 telemetry.log_attempt("declined_by_user", filename)
         else:
             telemetry_sent = _report_telemetry(
-                filename, repo_id, tokens_per_sec, provider=resolved.provider
+                filename,
+                repo_id,
+                tokens_per_sec,
+                provider=resolved.provider,
+                failure_reason=eval_error.failure_reason if eval_error is not None else None,
             )
     else:
         telemetry.log_attempt("not_attempted_no_ollama_link", filename)
 
     return InstallOutcome(
-        filename, repo_id, linked, ollama_tag, tokens_per_sec, telemetry_sent, sha256=sha256
+        filename, repo_id, linked, ollama_tag, tokens_per_sec, telemetry_sent, sha256=sha256,
+        failure_reason=eval_error.failure_reason if eval_error is not None else None,
+        model_metadata=model_metadata,
     )
 
 
@@ -2387,6 +2398,9 @@ def benchmark_cmd(
 ) -> None:
     """Measure a small reproducible quality pack and decode speed."""
     models = [_resolve_benchmark_tag(m) for m in models]
+    if "all" in models and models != ["all"]:
+        err_console.print("[red]`all` must be the only argument.[/red]")
+        raise typer.Exit(1)
     started_daemon = None
     if not benchmark.ollama_daemon_reachable():
         if _stdin_is_tty() and _ask_confirm(
@@ -2399,18 +2413,47 @@ def benchmark_cmd(
         else:
             err_console.print("[red]Ollama is not running at http://localhost:11434.[/red]")
             raise typer.Exit(1)
+    if models == ["all"]:
+        models = quality_mod.list_benchmarkable_tags()
+        if not models:
+            err_console.print("[red]No models are installed in Ollama to benchmark.[/red]")
+            raise typer.Exit(1)
+        console.print(f"[dim]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/dim]")
     if output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output = config_mod.EVALUATIONS_DIR / f"quality-{stamp}.json"
     try:
         try:
-            report = quality_mod.collect_evidence(
-                models,
-                scan_hardware(),
-                pack_path=pack,
-                speed_runs=speed_runs,
-                confirm_performance_timeout=confirm_performance_timeout,
-            )
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]{task.description}[/cyan]"),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                task_id = progress.add_task(
+                    f"Benchmarking ({len(models)} model(s))...", total=len(models)
+                )
+
+                def _on_model_start(tag: str, index: int, total: int) -> None:
+                    progress.update(
+                        task_id,
+                        description=f"Benchmarking {tag} ({index}/{total})",
+                        completed=index - 1,
+                    )
+
+                def _on_daemon_event(message: str) -> None:
+                    progress.console.print(f"[yellow]{message}[/yellow]")
+
+                report = quality_mod.collect_evidence(
+                    models,
+                    scan_hardware(),
+                    pack_path=pack,
+                    speed_runs=speed_runs,
+                    confirm_performance_timeout=confirm_performance_timeout,
+                    on_model_start=_on_model_start,
+                    on_daemon_event=_on_daemon_event,
+                )
+                progress.update(task_id, completed=len(models))
             quality_mod.write_evidence(report, output)
         except quality_mod.QualityEvaluationError as error:
             err_console.print(f"[red]{error}[/red]")
@@ -2531,14 +2574,25 @@ def _report_telemetry(
     model_filename: str | None = None,
     model_digest: str | None = None,
     provider: str | None = None,
+    failure_reason: str | None = None,
 ) -> bool:
     if tokens_per_sec is None:
-        # Ollama daemon wasn't reachable - not a real "it doesn't run" signal,
-        # so skip rather than polluting the speed-regression training data.
-        telemetry.log_attempt("skipped_daemon_unreachable", filename)
-        console.print(
-            "[dim]Telemetry not sent - Ollama daemon wasn't reachable during benchmark.[/dim]"
-        )
+        # Not a real "it doesn't run" signal, so skip rather than polluting
+        # the speed-regression training data. `failure_reason` (when known,
+        # from a caught QualityEvaluationError) says what actually went
+        # wrong - never assume it was the daemon unless that's confirmed,
+        # since guessing wrong here is how the same "daemon" theory gets
+        # re-fixed without ever being the real cause.
+        if failure_reason is None:
+            telemetry.log_attempt("skipped_daemon_unreachable", filename)
+            console.print(
+                "[dim]Telemetry not sent - Ollama daemon wasn't reachable during benchmark.[/dim]"
+            )
+        else:
+            telemetry.log_attempt(f"skipped_{failure_reason}", filename)
+            console.print(
+                f"[dim]Telemetry not sent - benchmark failed ({failure_reason}).[/dim]"
+            )
         return False
     info = scan_hardware()
     if size_bytes is None:
@@ -2769,6 +2823,25 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     return sent
 
 
+def _report_contribute_failure_telemetry(outcome: "InstallOutcome") -> None:
+    """Best-effort v7 failure event for a candidate `omm contribute` gave up
+    on, so "this doesn't work on this class of hardware" gets recorded once
+    instead of every future contributor's session silently rediscovering it
+    from scratch. Only ever reports model_unfit or transient_error (per
+    quality.outcome_for_failure_reason) - never performance_unfit, since
+    that verdict requires the same-session confirm-twice flow `omm
+    benchmark` uses, which `omm contribute` doesn't run."""
+    if outcome.failure_reason is None:
+        return
+    model = {
+        "tag": outcome.ollama_tag or outcome.filename,
+        "outcome": quality_mod.outcome_for_failure_reason(outcome.failure_reason),
+        "failure_reason": outcome.failure_reason,
+        "model_metadata": outcome.model_metadata,
+    }
+    _report_failure_telemetry(model, environment={})
+
+
 def _normalize_model_digest(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -2831,10 +2904,19 @@ class _ContributionStats:
     skipped_unfit: int = 0
     attempted_not_uploaded: int = 0
     daemon_restarts: int = 0
+    given_up_on: int = 0
+    exhausted: bool = False
 
 
 _MAX_CONSECUTIVE_DAEMON_FAILURES = 3
 _DAEMON_RESTART_BACKOFF_SECONDS = 5.0
+# A candidate that produces no real benchmark result (tokens_per_sec is
+# None) this many times in a row is treated as permanently broken for this
+# session and given up on, instead of being re-offered by the queue forever
+# - a single candidate that always fails (for whatever reason - a crash the
+# daemon can't survive, a reproducible timeout, etc.) would otherwise
+# consume the entire unattended run without ever producing an upload.
+_MAX_CANDIDATE_BENCHMARK_FAILURES = 2
 
 
 def _telemetry_row_count(endpoint: str) -> int | None:
@@ -2901,6 +2983,7 @@ def _run_contribution_loop(
 ) -> _ContributionStats:
     stats = _ContributionStats(benchmarked=[])
     consecutive_daemon_failures = 0
+    benchmark_failure_counts: dict[str, int] = {}
     while not stop_event.is_set():
         if not benchmark.ollama_daemon_reachable():
             err_console.print(
@@ -2927,6 +3010,7 @@ def _run_contribution_loop(
         candidate = queue.next_candidate(refetch=refetch)
         if candidate is None:
             console.print("[dim]No more candidates available for this hardware.[/dim]")
+            stats.exhausted = True
             break
 
         provider = candidate.get("provider") or "huggingface"
@@ -2937,6 +3021,7 @@ def _run_contribution_loop(
             provider=provider,
         )
         display_name = candidate.get("name", candidate["filename"])
+        ref_str = contribute_mod.ref(candidate)
         console.print(f"[cyan]Trying {display_name}...[/cyan]")
 
         try:
@@ -3002,6 +3087,15 @@ def _run_contribution_loop(
 
         if outcome.skipped_unfit:
             stats.skipped_unfit += 1
+            # Hardware fit doesn't change mid-session, so a candidate the
+            # predictor already rejected once needs no second look this
+            # run. Without this, once every genuinely-viable candidate is
+            # exhausted (queue.py's Phase B "below" side), the "above"
+            # side of unfit candidates never becomes fully seen either -
+            # next_candidate() always has one more unfit entry to hand
+            # back, so the loop spins at machine speed forever instead of
+            # reaching "No more candidates" or trying refetch.
+            queue.mark_seen(ref_str)
             continue
 
         reg = registry.load_registry()
@@ -3010,7 +3104,6 @@ def _run_contribution_loop(
             _remove_one(fn, entry)
 
         if outcome.tokens_per_sec is not None and outcome.telemetry_sent:
-            ref_str = contribute_mod.ref(candidate)
             benchmark_history.record_benchmarked(
                 ref_str,
                 repo_id=outcome.repo_id,
@@ -3022,6 +3115,24 @@ def _run_contribution_loop(
             stats.benchmarked.append((display_name, outcome.tokens_per_sec))
         else:
             stats.attempted_not_uploaded += 1
+            if outcome.tokens_per_sec is None:
+                # No real benchmark result came back at all (as opposed to a
+                # real result whose upload just failed/was declined - that
+                # case is worth retrying, this one keeps producing nothing).
+                # Give up on this exact candidate after it fails enough
+                # times in a row, instead of letting the queue re-offer the
+                # one broken model forever while every other candidate goes
+                # untried.
+                count = benchmark_failure_counts.get(ref_str, 0) + 1
+                benchmark_failure_counts[ref_str] = count
+                if count >= _MAX_CANDIDATE_BENCHMARK_FAILURES:
+                    err_console.print(
+                        f"[yellow]{display_name} has failed to produce a benchmark result "
+                        f"{count}x this session - giving up on it and moving on.[/yellow]"
+                    )
+                    queue.mark_seen(ref_str)
+                    stats.given_up_on += 1
+                    _report_contribute_failure_telemetry(outcome)
 
     return stats
 
@@ -3031,6 +3142,10 @@ def _print_contribution_summary(
     duration_seconds: float,
     before_count: int | None,
     after_count: int | None,
+    *,
+    total_candidates: int | None = None,
+    covered_candidates: int | None = None,
+    succeeded_candidates: int | None = None,
 ) -> None:
     minutes, seconds = divmod(int(duration_seconds), 60)
     console.print("=" * 70)
@@ -3041,6 +3156,11 @@ def _print_contribution_summary(
         console.print(f"  - {name:<40} {tokens_per_sec:.1f} tok/s")
     console.print(f"Skipped (predicted not to fit this hardware): {stats.skipped_unfit}")
     console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
+    if stats.given_up_on:
+        console.print(
+            f"[yellow]Gave up on {stats.given_up_on} candidate(s) after repeated "
+            "benchmark failures this session.[/yellow]"
+        )
     if stats.daemon_restarts:
         console.print(
             f"[yellow]Ollama daemon was found dead and restarted {stats.daemon_restarts}x "
@@ -3055,6 +3175,20 @@ def _print_contribution_summary(
             "  [dim](delta may include uploads from other contributors during this session)[/dim]"
         )
     console.print("=" * 70)
+    if stats.exhausted and total_candidates is not None and covered_candidates is not None:
+        console.print(
+            "[bold green]Thank you for contributing![/bold green] Every model "
+            "currently published for this hardware has now been benchmarked or "
+            f"evaluated ({covered_candidates}/{total_candidates} candidates covered"
+            + (
+                f", {succeeded_candidates} of them successfully"
+                if succeeded_candidates is not None
+                else ""
+            )
+            + "). There is nothing left for `omm contribute` to try on this "
+            "machine right now - it will pick up again automatically once new "
+            "candidates are published or the recommendation model is retrained."
+        )
 
 
 @app.command()
@@ -3133,6 +3267,18 @@ def contribute(
             )
             raise typer.Exit(1)
 
+        total_candidates = len(artifact["candidates"])
+        prior_state = contribute_state.load()
+        if prior_state is not None and prior_state.get("total_candidates") == total_candidates:
+            err_console.print(
+                "[yellow]Heads up: a previous omm contribute session already "
+                "covered every candidate currently published for this hardware "
+                f"({prior_state.get('covered_candidates')}/{total_candidates}, as of "
+                f"{prior_state.get('exhausted_at', 'an earlier run')}). You likely have "
+                "nothing new to benchmark unless the catalog has grown since then - "
+                "this run will confirm that quickly rather than find anything new.[/yellow]"
+            )
+
         endpoint = config.get("telemetry_endpoint")
         before_count = _telemetry_row_count(endpoint) if endpoint else None
 
@@ -3157,7 +3303,18 @@ def contribute(
 
         after_count = _telemetry_row_count(endpoint) if endpoint else None
         duration = time.monotonic() - start_time
-        _print_contribution_summary(stats, duration, before_count, after_count)
+        covered_candidates = len(queue.history_refs)
+        _print_contribution_summary(
+            stats,
+            duration,
+            before_count,
+            after_count,
+            total_candidates=total_candidates,
+            covered_candidates=covered_candidates,
+            succeeded_candidates=len(benchmark_history.loaded_refs()),
+        )
+        if stats.exhausted:
+            contribute_state.record_exhausted(total_candidates, covered_candidates)
     finally:
         if daemon_ref["proc"] is not None:
             benchmark.stop_ollama_daemon(daemon_ref["proc"])
