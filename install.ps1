@@ -1,9 +1,14 @@
 # Installs omm (Open source Model Manager) as an isolated CLI command via pipx.
 # Usage: irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
+# To install a non-default branch: $env:OMM_INSTALL_BRANCH = "beta"; irm ... | iex
 $ErrorActionPreference = "Stop"
 
 $RepoUrl = "https://github.com/omm-hippo/omm.git"
 $SrcDir = Join-Path $env:USERPROFILE ".omm\src"
+
+# Set $env:OMM_INSTALL_BRANCH before piping this script into iex to install
+# from a branch other than the repo default (e.g. to try a beta build).
+$Branch = $env:OMM_INSTALL_BRANCH
 
 # Trust anchor for the signature check below - must stay identical to
 # src/omm/trust/allowed_signers in the repo (that copy is what `omm
@@ -88,9 +93,22 @@ function Test-CommitSignature {
     $signersFile = New-TemporaryFile
     Set-Content -Path $signersFile.FullName -Value $AllowedSignersContent -NoNewline
 
+    # git/ssh-keygen write their "Good signature" status line to stderr even
+    # on success. PowerShell 7.3+ defaults $PSNativeCommandUseErrorActionPreference
+    # to $true, which - combined with the script-wide $ErrorActionPreference =
+    # "Stop" - promotes that single stderr line into a terminating
+    # NativeCommandError before $LASTEXITCODE is ever checked. Suppress both
+    # preferences for just this call so a successful verification isn't
+    # mistaken for a crash.
+    $oldErrorPref = $ErrorActionPreference
+    $oldNativePref = $PSNativeCommandUseErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $PSNativeCommandUseErrorActionPreference = $false
     $verifyOutput = git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$($signersFile.FullName)" `
         -C $RepoDir verify-commit $Commit 2>&1
     $ok = $LASTEXITCODE -eq 0
+    $ErrorActionPreference = $oldErrorPref
+    $PSNativeCommandUseErrorActionPreference = $oldNativePref
     Remove-Item $signersFile.FullName -Force -ErrorAction SilentlyContinue
     if (-not $ok) {
         Write-Warning ($verifyOutput | Out-String)
@@ -172,7 +190,13 @@ Write-Host "Cloning omm source to $SrcDir ..."
 if (Test-Path $SrcDir) {
     Remove-Item -Recurse -Force $SrcDir
 }
-git clone --filter=blob:none --quiet $RepoUrl $SrcDir
+$CloneArgs = @("clone", "--filter=blob:none", "--quiet")
+if ($Branch) {
+    Write-Host "Using branch: $Branch"
+    $CloneArgs += @("-b", $Branch)
+}
+$CloneArgs += @($RepoUrl, $SrcDir)
+git @CloneArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Error "git clone failed."
     exit 1
