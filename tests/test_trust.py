@@ -146,6 +146,48 @@ def test_verify_commit_merge_commit_fails_when_second_parent_untrusted(
     assert "failed signature verification" in message
 
 
+def test_verify_commit_rejects_nested_update_branch_merge(repo, signing_key, allowed_signers):
+    """An Update branch merge cannot masquerade as a contributor's tip.
+
+    GitHub's final PR merge chooses this nested merge as its second parent.
+    It is unsigned even though the commit below it was signed, so the
+    one-level resolver must reject it instead of walking back to a signer.
+    """
+    _commit(repo, "base")
+    default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
+
+    _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
+    (repo / "file.txt").write_text("feature\n")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    _commit(repo, "signed feature work", signing_key=signing_key)
+
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    (repo / "main.txt").write_text("main advanced\n")
+    _run(["git", "add", "main.txt"], cwd=repo)
+    _commit(repo, "main advanced")
+
+    _run(["git", "checkout", "-q", "feature"], cwd=repo)
+    _run(
+        ["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "update feature", default_branch],
+        cwd=repo,
+    )
+    nested_merge = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    _run(
+        ["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "merge feature", "feature"],
+        cwd=repo,
+    )
+    candidate = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+
+    assert trust._signing_commit(repo, candidate) == nested_merge
+    ok, message = trust.verify_commit(repo, candidate, allowed_signers)
+
+    assert not ok
+    assert nested_merge[:7] in message
+    assert "failed signature verification" in message
+
+
 def test_current_trust_anchor_points_at_bundled_file():
     anchor = trust.current_trust_anchor()
 

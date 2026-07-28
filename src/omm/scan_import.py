@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -234,7 +235,32 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
         if loc.path.resolve() == hub_path.resolve():
             continue
         was_real_file = loc.path.is_file() and not loc.path.is_symlink()
-        linker.link_file(hub_path, loc.path)
+        if was_real_file:
+            # Keep the external copy recoverable until the replacement link
+            # exists. A same-directory rename is atomic on Windows/NTFS and
+            # avoids losing a model when a cross-drive hardlink fallback
+            # fails after symlink creation is denied.
+            quarantine = loc.path.with_name(f".{loc.path.name}.omm-import-{uuid.uuid4().hex}")
+            loc.path.replace(quarantine)
+            try:
+                # `group.sha256` came from the earlier scan, so re-hash the
+                # exact quarantined file at this destructive boundary.
+                if sha256_file(quarantine) != sha256_file(hub_path):
+                    raise linker.LinkError(
+                        f"Refusing to replace changed unowned duplicate at {loc.path}."
+                    )
+                linker.link_file(hub_path, loc.path)
+            except Exception:
+                # link_file leaves no destination on its own failure paths.
+                # Restore the original atomically rather than leaving a model
+                # missing from its external engine directory.
+                if not loc.path.exists() and not loc.path.is_symlink():
+                    quarantine.replace(loc.path)
+                raise
+            else:
+                quarantine.unlink()
+        else:
+            linker.link_file(hub_path, loc.path)
         if was_real_file:
             bytes_saved += loc.size_bytes
         if loc.engine in linked:

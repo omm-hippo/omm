@@ -41,6 +41,18 @@ omm --help
 2. **Run the full suite locally**: `pytest -q`. CI also runs on Ubuntu,
    Windows, and macOS, plus a Docker build and a bare-install check (no dev
    extras) — a change that only works in your local venv may still fail CI.
+   CI rejects a PR unless its exact head commit (including a fork PR) is
+   SSH-signed by a key in the protected base branch's
+   `src/omm/trust/allowed_signers`. External contributors do **not** need to
+   own a maintainer key: a maintainer supplies the final trusted, signed
+   endorsement/tip before merging. The gate fetches that commit as Git data
+   only; it does not execute or import PR code. Direct pushes to `main` must
+   remain disabled in branch protection. Require the `Trusted PR head /
+   Trusted PR head` status from `.github/workflows/trusted-head.yml` before
+   merge. Do not use GitHub's **Update branch** after that signature is made:
+   it creates a nested merge and invalidates the signed tip. Rebase first, or
+   have a maintainer add a new allowed-signer SSH-signed non-merge tip
+   afterward.
 3. **Don't touch `published/recommend-model.json` by hand.** That artifact is
    produced by the training pipeline (`scripts/train_model.py`) and gated by
    the quality checks described in the README; hand edits will be

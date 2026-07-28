@@ -1524,6 +1524,12 @@ def _remove_one(filename: str, entry: dict) -> None:
     for spec in linker.ENGINES:
         if linked.get(spec.key):
             linker.unlink_engine(spec.key, filename, entry)
+    # `omm link <directory>` records the exact destination.  It may be a
+    # Windows hard link, so use the ownership-aware remover rather than ever
+    # unlinking an arbitrary regular file at that path.
+    for destination in entry.get("custom_links", []):
+        if isinstance(destination, str):
+            linker.unlink_owned_link(Path(destination))
 
     dest = MODELS_DIR / filename
     dest.unlink(missing_ok=True)
@@ -2348,6 +2354,13 @@ def autoremove() -> None:
     for spec in linker.ENGINES:
         if linker.is_engine_installed(spec.key):
             removed_by_engine[spec.label] = linker.autoremove_engine(spec.key)
+    custom_removed = 0
+    for entry in registry.load_registry().values():
+        for destination in entry.get("custom_links", []):
+            if isinstance(destination, str) and linker.autoremove_owned_link(Path(destination)):
+                custom_removed += 1
+    if custom_removed:
+        removed_by_engine["custom"] = custom_removed
     incomplete_removed = _autoremove_incomplete_installs()
 
     if not any(removed_by_engine.values()) and incomplete_removed == 0:

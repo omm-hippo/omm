@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from omm import linker, registry, scan_import
 
 
@@ -204,8 +206,8 @@ def test_adopt_group_merges_duplicate_across_engines_and_reports_saved_bytes(iso
     hub_path = scan_import.MODELS_DIR / "model.gguf"
     assert hub_path.exists() and not hub_path.is_symlink()
     assert hub_path.read_bytes() == payload
-    assert ollama_path.is_symlink() and ollama_path.resolve() == hub_path.resolve()
-    assert lmstudio_path.is_symlink() and lmstudio_path.resolve() == hub_path.resolve()
+    assert ollama_path.samefile(hub_path)
+    assert lmstudio_path.samefile(hub_path)
     assert result.bytes_saved == len(payload)  # one of the two copies reclaimed
 
     entry = registry.load_registry()["model.gguf"]
@@ -243,7 +245,42 @@ def test_adopt_group_reuses_existing_hub_copy_for_same_hash(isolated_omm_home, t
 
     assert result.filename == "existing.gguf"
     assert result.bytes_saved == len(payload)
-    assert stray_path.is_symlink() and stray_path.resolve() == hub_file.resolve()
+    assert stray_path.samefile(hub_file)
 
     entry = registry.load_registry()["existing.gguf"]
     assert entry["linked"] == _all_linked(lmstudio=True, ollama=True)  # merged, lmstudio flag preserved
+
+
+def test_adopt_group_preserves_duplicate_changed_after_scan(isolated_omm_home, tmp_path):
+    hub_file = scan_import.MODELS_DIR / "existing.gguf"
+    hub_file.write_bytes(b"trusted hub bytes")
+    registry.upsert_entry("existing.gguf", sha256="scan-hash", linked={})
+    external = tmp_path / "external.gguf"
+    external.write_bytes(b"changed after scan")
+    group = scan_import.ModelGroup(
+        sha256="scan-hash",
+        locations=[scan_import.ExternalGguf("lmstudio", "external.gguf", external, external.stat().st_size, "scan-hash")],
+    )
+
+    with pytest.raises(linker.LinkError, match="changed unowned duplicate"):
+        scan_import.adopt_group(group)
+    assert external.read_bytes() == b"changed after scan"
+
+
+def test_adopt_group_restores_duplicate_when_link_creation_fails(isolated_omm_home, tmp_path, monkeypatch):
+    payload = b"identical bytes"
+    hub_file = scan_import.MODELS_DIR / "existing.gguf"
+    hub_file.write_bytes(payload)
+    registry.upsert_entry("existing.gguf", sha256="scan-hash", linked={})
+    external = tmp_path / "external.gguf"
+    external.write_bytes(payload)
+    group = scan_import.ModelGroup(
+        sha256="scan-hash",
+        locations=[scan_import.ExternalGguf("lmstudio", "external.gguf", external, len(payload), "scan-hash")],
+    )
+    monkeypatch.setattr(scan_import.linker, "link_file", lambda *_: (_ for _ in ()).throw(linker.LinkError("cross-drive")))
+
+    with pytest.raises(linker.LinkError, match="cross-drive"):
+        scan_import.adopt_group(group)
+    assert external.read_bytes() == payload
+    assert not list(tmp_path.glob(".external.gguf.omm-import-*"))

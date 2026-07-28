@@ -15,7 +15,8 @@ This bootstraps `python3`, `git`, and `pipx` if missing (Debian/Ubuntu via `apt`
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
+# This must run before irm: script-internal TLS settings are too late for its first download.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
 ```
 
 This bootstraps Python and git via [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) if missing (built into Windows 10 2004+ and Windows 11 — on older Windows, install [Python 3.10+](https://www.python.org/downloads/) and [git](https://git-scm.com/downloads) manually first), then installs `omm` the same way as above. Open a new PowerShell window afterward so your `PATH` picks up `omm`. Linking models into Ollama/LM Studio needs either [Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development) enabled or an elevated (Administrator) shell to create symlinks; without either, `omm` falls back to a hard link automatically as long as the model hub and the target app's folder are on the same drive.
