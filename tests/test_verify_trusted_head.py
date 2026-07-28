@@ -48,6 +48,34 @@ def test_verifier_is_stdlib_only_and_accepts_a_trusted_signed_commit(tmp_path):
     assert verifier.verify(repo, commit, anchor)[0]
 
 
+def test_verifier_accepts_relative_repo_and_anchor_from_parent_cwd(tmp_path, monkeypatch):
+    parent = tmp_path / "parent"
+    repo = parent / "verifier"
+    anchor = repo / "src" / "omm" / "trust" / "allowed_signers"
+    key = tmp_path / "id_ed25519"
+    parent.mkdir()
+    _run(["ssh-keygen", "-t", "ed25519", "-f", str(key), "-N", "", "-q"])
+    anchor.parent.mkdir(parents=True)
+    anchor.write_text(f"test@example.com {key.with_suffix('.pub').read_text().strip()}\n")
+    repo.mkdir(exist_ok=True)
+    _run(["git", "init", "-q"], cwd=repo)
+    _run(["git", "config", "user.email", "test@example.com"], cwd=repo)
+    _run(["git", "config", "user.name", "test"], cwd=repo)
+    _run(["git", "config", "gpg.format", "ssh"], cwd=repo)
+    _run(["git", "config", "user.signingkey", str(key.with_suffix(".pub"))], cwd=repo)
+    (repo / "file.txt").write_text("trusted\n")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    _run(["git", "commit", "-q", "-S", "-m", "trusted"], cwd=repo)
+    commit = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+
+    monkeypatch.chdir(parent)
+    ok, message = _load_verifier().verify(
+        Path("verifier"), commit, Path("verifier/src/omm/trust/allowed_signers")
+    )
+
+    assert ok, message
+
+
 def test_verifier_rejects_unsigned_merge_with_trusted_second_parent(tmp_path):
     key = tmp_path / "id_ed25519"
     _run(["ssh-keygen", "-t", "ed25519", "-f", str(key), "-N", "", "-q"])
