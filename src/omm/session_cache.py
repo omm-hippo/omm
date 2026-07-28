@@ -24,11 +24,23 @@ def _session_path() -> Path | None:
     # ever runs, which would short-circuit this to "no session" even when
     # fd 0 itself is a real tty.
     try:
-        tty = os.ttyname(0)
-    except (OSError, AttributeError):
-        # AttributeError: os.ttyname doesn't exist on Windows at all.
+        session_key = os.ttyname(0)
+    except OSError:
+        # Not a real tty (piped input, CI, non-interactive) - no session.
         return None
-    digest = hashlib.sha1(tty.encode()).hexdigest()
+    except AttributeError:
+        # os.ttyname doesn't exist on Windows at all. Fall back to the
+        # parent process id - each terminal window/tab keeps a stable shell
+        # (cmd.exe/powershell.exe) pid across the lifetime of that window,
+        # and every `omm` invocation typed into it is a direct child of
+        # that shell, so getppid() plays the same role ttyname() plays on
+        # POSIX: same window -> same key, different windows -> different
+        # keys.
+        try:
+            session_key = str(os.getppid())
+        except OSError:
+            return None
+    digest = hashlib.sha1(session_key.encode()).hexdigest()
     return config.OMM_HOME / "session" / f"{digest}.json"
 
 
