@@ -179,6 +179,50 @@ def test_happy_path_runs_loop_cleans_up_and_prints_summary(isolated_omm_home, mo
     assert "100 -> 100" in result.stdout
 
 
+def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_home, monkeypatch):
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url: (
+            {
+                "trees": [{}],
+                "candidates": [
+                    {"repo_id": "o", "filename": "a.gguf"},
+                    {"repo_id": "o", "filename": "b.gguf"},
+                    {"repo_id": "o", "filename": "c.gguf"},
+                ],
+            },
+            False,
+        ),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    # 2 of 3 candidates already covered by the time the (faked) loop returns:
+    # loaded_refs seeds the queue's history_refs before the loop runs, and
+    # the faked loop below doesn't touch it further, so this is exactly what
+    # queue.history_refs will contain when the summary is printed.
+    monkeypatch.setattr(
+        cli.benchmark_history, "loaded_refs", lambda: {"huggingface:o:a.gguf", "huggingface:o:b.gguf"}
+    )
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
+
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None):
+        return cli._ContributionStats(benchmarked=[], skipped_unfit=1, exhausted=True)
+
+    monkeypatch.setattr(cli, "_run_contribution_loop", fake_loop)
+    monkeypatch.setattr(cli, "autoremove", lambda: None)
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Thank you for contributing" in result.stdout
+    assert "2/3 candidates covered" in result.stdout
+
+
 def test_contribute_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monkeypatch):
     config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)

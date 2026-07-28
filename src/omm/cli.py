@@ -1164,6 +1164,8 @@ class InstallOutcome:
     telemetry_sent: bool = False
     skipped_unfit: bool = False
     sha256: str | None = None
+    failure_reason: str | None = None
+    model_metadata: dict | None = None
 
 
 class ContributionStopped(Exception):
@@ -1327,6 +1329,7 @@ def _install_impl(
     model_metadata = None
     engine_version = None
     runtime_options = None
+    eval_error: quality_mod.QualityEvaluationError | None = None
     if linked["ollama"]:
         console.print("Benchmarking...")
         runtime_hw = scan_hardware()
@@ -1339,7 +1342,6 @@ def _install_impl(
         except quality_mod.QualityEvaluationError:
             model_metadata = None
         runtime_options = tuning.recommend_runtime_settings(runtime_hw, runtime_candidate).ollama_options
-        eval_error: quality_mod.QualityEvaluationError | None = None
         if use_quality_eval:
             try:
                 def _evaluate_with_runtime():
@@ -1434,7 +1436,9 @@ def _install_impl(
         telemetry.log_attempt("not_attempted_no_ollama_link", filename)
 
     return InstallOutcome(
-        filename, repo_id, linked, ollama_tag, tokens_per_sec, telemetry_sent, sha256=sha256
+        filename, repo_id, linked, ollama_tag, tokens_per_sec, telemetry_sent, sha256=sha256,
+        failure_reason=eval_error.failure_reason if eval_error is not None else None,
+        model_metadata=model_metadata,
     )
 
 
@@ -2809,6 +2813,25 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     return sent
 
 
+def _report_contribute_failure_telemetry(outcome: "InstallOutcome") -> None:
+    """Best-effort v7 failure event for a candidate `omm contribute` gave up
+    on, so "this doesn't work on this class of hardware" gets recorded once
+    instead of every future contributor's session silently rediscovering it
+    from scratch. Only ever reports model_unfit or transient_error (per
+    quality.outcome_for_failure_reason) - never performance_unfit, since
+    that verdict requires the same-session confirm-twice flow `omm
+    benchmark` uses, which `omm contribute` doesn't run."""
+    if outcome.failure_reason is None:
+        return
+    model = {
+        "tag": outcome.ollama_tag or outcome.filename,
+        "outcome": quality_mod.outcome_for_failure_reason(outcome.failure_reason),
+        "failure_reason": outcome.failure_reason,
+        "model_metadata": outcome.model_metadata,
+    }
+    _report_failure_telemetry(model, environment={})
+
+
 def _normalize_model_digest(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -2872,6 +2895,7 @@ class _ContributionStats:
     attempted_not_uploaded: int = 0
     daemon_restarts: int = 0
     given_up_on: int = 0
+    exhausted: bool = False
 
 
 _MAX_CONSECUTIVE_DAEMON_FAILURES = 3
@@ -2976,6 +3000,7 @@ def _run_contribution_loop(
         candidate = queue.next_candidate(refetch=refetch)
         if candidate is None:
             console.print("[dim]No more candidates available for this hardware.[/dim]")
+            stats.exhausted = True
             break
 
         provider = candidate.get("provider") or "huggingface"
@@ -3097,6 +3122,7 @@ def _run_contribution_loop(
                     )
                     queue.mark_seen(ref_str)
                     stats.given_up_on += 1
+                    _report_contribute_failure_telemetry(outcome)
 
     return stats
 
@@ -3106,6 +3132,10 @@ def _print_contribution_summary(
     duration_seconds: float,
     before_count: int | None,
     after_count: int | None,
+    *,
+    total_candidates: int | None = None,
+    covered_candidates: int | None = None,
+    succeeded_candidates: int | None = None,
 ) -> None:
     minutes, seconds = divmod(int(duration_seconds), 60)
     console.print("=" * 70)
@@ -3135,6 +3165,20 @@ def _print_contribution_summary(
             "  [dim](delta may include uploads from other contributors during this session)[/dim]"
         )
     console.print("=" * 70)
+    if stats.exhausted and total_candidates is not None and covered_candidates is not None:
+        console.print(
+            "[bold green]Thank you for contributing![/bold green] Every model "
+            "currently published for this hardware has now been benchmarked or "
+            f"evaluated ({covered_candidates}/{total_candidates} candidates covered"
+            + (
+                f", {succeeded_candidates} of them successfully"
+                if succeeded_candidates is not None
+                else ""
+            )
+            + "). There is nothing left for `omm contribute` to try on this "
+            "machine right now - it will pick up again automatically once new "
+            "candidates are published or the recommendation model is retrained."
+        )
 
 
 @app.command()
@@ -3237,7 +3281,15 @@ def contribute(
 
         after_count = _telemetry_row_count(endpoint) if endpoint else None
         duration = time.monotonic() - start_time
-        _print_contribution_summary(stats, duration, before_count, after_count)
+        _print_contribution_summary(
+            stats,
+            duration,
+            before_count,
+            after_count,
+            total_candidates=len(artifact.get("candidates", [])),
+            covered_candidates=len(queue.history_refs),
+            succeeded_candidates=len(benchmark_history.loaded_refs()),
+        )
     finally:
         if daemon_ref["proc"] is not None:
             benchmark.stop_ollama_daemon(daemon_ref["proc"])

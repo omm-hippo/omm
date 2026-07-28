@@ -1,4 +1,5 @@
 import threading
+from types import SimpleNamespace
 
 from omm import benchmark_history, cli, registry
 
@@ -233,6 +234,77 @@ def test_gives_up_on_candidate_that_repeatedly_fails_to_benchmark(isolated_omm_h
     assert stats.attempted_not_uploaded == 2
     assert stats.given_up_on == 1
     assert queue.marked_seen == ["huggingface:org/repo:model.gguf"]
+
+
+def test_giving_up_on_candidate_reports_failure_telemetry_with_real_reason(
+    isolated_omm_home, monkeypatch
+):
+    """Once a candidate is given up on, the *real* reason it failed
+    (generation_timeout, out_of_memory, etc. - never a vague "daemon"
+    guess) should be reported so future sessions don't have to rediscover
+    "this doesn't work on this hardware" from scratch every time."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c, c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+
+    def fake_install_impl(resolved, **kwargs):
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            ollama_tag="model:latest",
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="generation_timeout",
+            model_metadata={"parameter_size": "9B", "quantization_level": "Q4_K_M"},
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    reported = []
+    monkeypatch.setattr(
+        cli, "_report_contribute_failure_telemetry", lambda outcome: reported.append(outcome)
+    )
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert stats.given_up_on == 1
+    assert len(reported) == 1
+    assert reported[0].failure_reason == "generation_timeout"
+    assert reported[0].model_metadata == {"parameter_size": "9B", "quantization_level": "Q4_K_M"}
+
+
+def test_report_contribute_failure_telemetry_sends_transient_error_event(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli, "scan_hardware",
+        lambda: SimpleNamespace(
+            ram_total_gb=8.0, vram_total_gb=None, unified_memory=True, gpu_tflops=None,
+            cpu=None, cpu_arch=None, cpu_physical_cores=None, cpu_logical_cores=None,
+        ),
+    )
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+
+    outcome = cli.InstallOutcome(
+        filename="model.gguf",
+        repo_id="org/repo",
+        linked={},
+        ollama_tag="model:latest",
+        failure_reason="generation_timeout",
+        model_metadata={"parameter_size": "9B", "quantization_level": "Q4_K_M"},
+    )
+
+    cli._report_contribute_failure_telemetry(outcome)
+
+    assert len(sent) == 1
+    assert sent[0]["outcome"] == "transient_error"
+    assert sent[0]["failure_reason"] == "generation_timeout"
 
 
 def test_daemon_dies_mid_benchmark_retries_same_candidate_once(isolated_omm_home, monkeypatch):
