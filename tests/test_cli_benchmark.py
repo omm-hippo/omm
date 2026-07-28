@@ -65,6 +65,63 @@ def test_benchmark_saves_local_report_and_asks_before_upload(isolated_omm_home, 
     assert sent == []
 
 
+def test_benchmark_all_expands_to_every_installed_tag(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.quality_mod, "list_benchmarkable_tags", lambda: ["a:latest", "b:latest"])
+    seen_tags = []
+    monkeypatch.setattr(
+        cli.quality_mod,
+        "collect_evidence",
+        lambda tags, *a, **k: seen_tags.append(list(tags)) or _full_report(),
+    )
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+
+    result = runner.invoke(cli.app, ["benchmark", "all"])
+
+    assert result.exit_code == 0, result.stdout
+    assert seen_tags == [["a:latest", "b:latest"]]
+    assert "Expanding 'all' to 2 model(s)" in result.stdout
+
+
+def test_benchmark_all_errors_when_nothing_installed(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli.quality_mod, "list_benchmarkable_tags", lambda: [])
+
+    result = runner.invoke(cli.app, ["benchmark", "all"])
+
+    assert result.exit_code == 1
+    assert "no models" in result.output.lower()
+
+
+def test_benchmark_all_mixed_with_other_tag_is_rejected(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+
+    result = runner.invoke(cli.app, ["benchmark", "all", "other:latest"])
+
+    assert result.exit_code == 1
+    assert "must be the only argument" in result.output
+
+
+def test_benchmark_shows_progress_per_model(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+
+    def fake_collect_evidence(tags, *a, on_model_start=None, **k):
+        for index, tag in enumerate(tags, start=1):
+            if on_model_start is not None:
+                on_model_start(tag, index, len(tags))
+        return _full_report()
+
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+
+    result = runner.invoke(cli.app, ["benchmark", "small:latest"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Benchmarking small:latest (1/1)" in result.stdout
+
+
 def test_benchmark_uploads_when_confirmed(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
@@ -389,7 +446,10 @@ def test_confirm_performance_timeout_flag_is_forwarded_to_collect_evidence(isola
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     seen = {}
 
-    def fake_collect_evidence(models, hw, pack_path=None, speed_runs=3, confirm_performance_timeout=False):
+    def fake_collect_evidence(
+        models, hw, pack_path=None, speed_runs=3, confirm_performance_timeout=False,
+        on_model_start=None, on_daemon_event=None,
+    ):
         seen["confirm_performance_timeout"] = confirm_performance_timeout
         return _full_report()
 
@@ -407,7 +467,10 @@ def test_confirm_performance_timeout_flag_defaults_to_false(isolated_omm_home, m
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     seen = {}
 
-    def fake_collect_evidence(models, hw, pack_path=None, speed_runs=3, confirm_performance_timeout=False):
+    def fake_collect_evidence(
+        models, hw, pack_path=None, speed_runs=3, confirm_performance_timeout=False,
+        on_model_start=None, on_daemon_event=None,
+    ):
         seen["confirm_performance_timeout"] = confirm_performance_timeout
         return _full_report()
 
