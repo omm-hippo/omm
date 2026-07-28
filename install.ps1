@@ -91,10 +91,20 @@ function Test-CommitSignature {
     $signersFile = New-TemporaryFile
     Set-Content -Path $signersFile.FullName -Value $AllowedSignersContent -NoNewline
 
-    $verifyOutput = git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$($signersFile.FullName)" `
-        -C $RepoDir verify-commit $Commit 2>&1
-    $ok = $LASTEXITCODE -eq 0
-    Remove-Item $signersFile.FullName -Force -ErrorAction SilentlyContinue
+    # git writes normal SSH signature success details to stderr. Under the
+    # script-wide "Stop" setting that would throw before its exit code can be
+    # checked, so scope a non-terminating preference to this native command.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ok = $false
+    try {
+        $ErrorActionPreference = "Continue"
+        $verifyOutput = git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$($signersFile.FullName)" `
+            -C $RepoDir verify-commit $Commit 2>&1
+        $ok = $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        Remove-Item $signersFile.FullName -Force -ErrorAction SilentlyContinue
+    }
     if (-not $ok) {
         Write-Warning ($verifyOutput | Out-String)
     }
