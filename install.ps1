@@ -123,8 +123,12 @@ function Test-CommitSignature {
 # some existing installs expose without a bare `python` on PATH.
 
 function Get-PythonCommand {
-    if (Test-CommandExists "python") { return @("python") }
-    if (Test-CommandExists "py") { return @("py", "-3") }
+    # The leading comma prevents PowerShell from unrolling a single-element
+    # array onto the output stream - without it, `return @("python")` hands
+    # the caller a bare string "python" instead of a 1-element array, and
+    # $PythonCmd[0] silently becomes the string's first character ('p').
+    if (Test-CommandExists "python") { return , @("python") }
+    if (Test-CommandExists "py") { return , @("py", "-3") }
     return $null
 }
 
