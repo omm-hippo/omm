@@ -159,12 +159,16 @@ def _record_ownership(dst: Path, src: Path | None, kind: str) -> None:
         "kind": kind,
         "source": _link_key(src) if src is not None else None,
     }
-    if kind != "symlink":
+    if kind == "symlink":
+        # Use lstat: a broken link has no target to stat, but its own file
+        # identity still lets us prove it is the link omm created.
+        stat = dst.lstat()
+    else:
         stat = dst.stat()
         # An attacker or another program can replace a regular file at
         # this path.  Device/inode make the ownership claim apply only to
         # the exact hard link we made, never a later ordinary file.
-        record.update({"device": stat.st_dev, "inode": stat.st_ino})
+    record.update({"device": stat.st_dev, "inode": stat.st_ino})
     _update_link_ownership(
         dst,
         record,
@@ -194,6 +198,14 @@ def _owned_symlink(path: Path) -> bool:
     record = _load_link_ownership().get(_link_key(path))
     if not record or record.get("kind") != "symlink" or not path.is_symlink():
         return False
+    if "device" in record and "inode" in record:
+        try:
+            stat = path.lstat()
+        except OSError:
+            return False
+        return record.get("device") == stat.st_dev and record.get("inode") == stat.st_ino
+    # Records written before symlink identities were retained remain
+    # compatible, but their target text is the only available proof.
     try:
         target = Path(os.readlink(path))
         if not target.is_absolute():
