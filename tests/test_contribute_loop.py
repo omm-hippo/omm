@@ -109,6 +109,32 @@ def test_skipped_unfit_candidate_counted_and_not_deleted(isolated_omm_home, monk
     assert stats.skipped_unfit == 1
     assert stats.benchmarked == []
     assert removed == []
+    assert queue.marked_seen == ["huggingface:org/repo:too-big.gguf"]
+
+
+def test_unfit_candidates_eventually_exhaust_instead_of_spinning_forever(
+    isolated_omm_home, monkeypatch
+):
+    """Once the only hardware-fit candidate is gone, the queue's "above"
+    pool of unfit candidates must also become exhausted - otherwise
+    next_candidate() always has one more unfit entry to hand back and the
+    loop spins at machine speed forever instead of ever stopping."""
+    candidates = [_candidate(filename=f"unfit-{i}.gguf") for i in range(3)]
+    queue = _FakeQueue(list(candidates))
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+
+    def fake_install_impl(resolved, **kwargs):
+        return cli.InstallOutcome(
+            filename=resolved.filename, repo_id="org/repo", linked={}, skipped_unfit=True
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert stats.skipped_unfit == 3
+    assert len(queue.marked_seen) == 3
 
 
 def test_upload_failure_counts_as_not_uploaded_and_does_not_mark_seen(isolated_omm_home, monkeypatch):

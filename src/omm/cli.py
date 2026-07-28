@@ -3052,6 +3052,15 @@ def _run_contribution_loop(
 
         if outcome.skipped_unfit:
             stats.skipped_unfit += 1
+            # Hardware fit doesn't change mid-session, so a candidate the
+            # predictor already rejected once needs no second look this
+            # run. Without this, once every genuinely-viable candidate is
+            # exhausted (queue.py's Phase B "below" side), the "above"
+            # side of unfit candidates never becomes fully seen either -
+            # next_candidate() always has one more unfit entry to hand
+            # back, so the loop spins at machine speed forever instead of
+            # reaching "No more candidates" or trying refetch.
+            queue.mark_seen(ref_str)
             continue
 
         reg = registry.load_registry()
