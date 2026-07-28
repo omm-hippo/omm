@@ -35,6 +35,7 @@ from omm import (
     calibration,
     catalog,
     config as config_mod,
+    contribute_state,
     linker,
     predictor,
     quality as quality_mod,
@@ -3257,6 +3258,18 @@ def contribute(
             )
             raise typer.Exit(1)
 
+        total_candidates = len(artifact["candidates"])
+        prior_state = contribute_state.load()
+        if prior_state is not None and prior_state.get("total_candidates") == total_candidates:
+            err_console.print(
+                "[yellow]Heads up: a previous omm contribute session already "
+                "covered every candidate currently published for this hardware "
+                f"({prior_state.get('covered_candidates')}/{total_candidates}, as of "
+                f"{prior_state.get('exhausted_at', 'an earlier run')}). You likely have "
+                "nothing new to benchmark unless the catalog has grown since then - "
+                "this run will confirm that quickly rather than find anything new.[/yellow]"
+            )
+
         endpoint = config.get("telemetry_endpoint")
         before_count = _telemetry_row_count(endpoint) if endpoint else None
 
@@ -3281,15 +3294,18 @@ def contribute(
 
         after_count = _telemetry_row_count(endpoint) if endpoint else None
         duration = time.monotonic() - start_time
+        covered_candidates = len(queue.history_refs)
         _print_contribution_summary(
             stats,
             duration,
             before_count,
             after_count,
-            total_candidates=len(artifact.get("candidates", [])),
-            covered_candidates=len(queue.history_refs),
+            total_candidates=total_candidates,
+            covered_candidates=covered_candidates,
             succeeded_candidates=len(benchmark_history.loaded_refs()),
         )
+        if stats.exhausted:
+            contribute_state.record_exhausted(total_candidates, covered_candidates)
     finally:
         if daemon_ref["proc"] is not None:
             benchmark.stop_ollama_daemon(daemon_ref["proc"])

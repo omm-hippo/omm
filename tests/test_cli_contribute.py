@@ -221,6 +221,103 @@ def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_ho
     assert result.exit_code == 0, result.stdout
     assert "Thank you for contributing" in result.stdout
     assert "2/3 candidates covered" in result.stdout
+    state = cli.contribute_state.load()
+    assert state["total_candidates"] == 3
+    assert state["covered_candidates"] == 2
+
+
+def test_no_heads_up_warning_on_first_ever_session(isolated_omm_home, monkeypatch):
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "a.gguf"}]}, False),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
+    monkeypatch.setattr(
+        cli, "_run_contribution_loop",
+        lambda *a, **k: cli._ContributionStats(benchmarked=[]),
+    )
+    monkeypatch.setattr(cli, "autoremove", lambda: None)
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Heads up" not in result.stderr
+
+
+def test_heads_up_warning_when_prior_session_already_covered_same_catalog(
+    isolated_omm_home, monkeypatch
+):
+    cli.contribute_state.record_exhausted(total_candidates=1, covered_candidates=1)
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "a.gguf"}]}, False),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: {"huggingface:o:a.gguf"})
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
+    monkeypatch.setattr(
+        cli, "_run_contribution_loop",
+        lambda *a, **k: cli._ContributionStats(benchmarked=[], exhausted=True),
+    )
+    monkeypatch.setattr(cli, "autoremove", lambda: None)
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Heads up" in result.stderr
+    assert "1/1" in result.stderr
+
+
+def test_no_heads_up_warning_when_catalog_grew_since_last_exhaustion(
+    isolated_omm_home, monkeypatch
+):
+    cli.contribute_state.record_exhausted(total_candidates=1, covered_candidates=1)
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url: (
+            {
+                "trees": [{}],
+                "candidates": [
+                    {"repo_id": "o", "filename": "a.gguf"},
+                    {"repo_id": "o", "filename": "b.gguf"},
+                ],
+            },
+            False,
+        ),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: {"huggingface:o:a.gguf"})
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
+    monkeypatch.setattr(
+        cli, "_run_contribution_loop",
+        lambda *a, **k: cli._ContributionStats(benchmarked=[]),
+    )
+    monkeypatch.setattr(cli, "autoremove", lambda: None)
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Heads up" not in result.stderr
 
 
 def test_contribute_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monkeypatch):
