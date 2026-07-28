@@ -47,3 +47,18 @@ def test_installer_treats_missing_pipx_module_as_unavailable():
     assert "Invoke-Python -m pipx --version *> $null" in probe
     assert "} catch {" in probe
     assert "return $false" in probe
+
+
+def test_installer_checks_git_signature_exit_code_after_non_terminating_stderr():
+    script = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    verifier = script.split("function Test-CommitSignature {", 1)[1].split(
+        "# --- python", 1
+    )[0]
+
+    assert '$previousErrorActionPreference = $ErrorActionPreference' in verifier
+    assert '$ErrorActionPreference = "Continue"' in verifier
+    assert "try {" in verifier
+    assert "-C $RepoDir verify-commit $Commit 2>&1" in verifier
+    assert "$ok = $LASTEXITCODE -eq 0" in verifier
+    assert "} finally {" in verifier
+    assert "$ErrorActionPreference = $previousErrorActionPreference" in verifier
