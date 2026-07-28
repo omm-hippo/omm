@@ -1133,14 +1133,22 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
     )
 
 
-def _link_model(dest, repo_id: str | None, ollama_tag: str) -> dict[str, bool]:
+def _link_model(
+    dest, repo_id: str | None, ollama_tag: str, *, only_ollama: bool = False
+) -> dict[str, bool]:
     """Link a downloaded .gguf into every installed engine, printing a skip
     notice for whichever engine isn't installed or fails to link. Shared
     by `install` and `update` since both need the exact same behavior
-    after a fresh (or refreshed) download."""
+    after a fresh (or refreshed) download.
+
+    `only_ollama` restricts linking to Ollama alone - `omm contribute` only
+    needs Ollama to benchmark, so linking into LM Studio/Jan/etc. for every
+    downloaded candidate is unnecessary churn."""
     linked = {spec.key: False for spec in linker.ENGINES}
 
     for spec in linker.ENGINES:
+        if only_ollama and spec.key != "ollama":
+            continue
         if not linker.is_engine_installed(spec.key):
             console.print(f"[dim]{spec.label} not detected, skipping link.[/dim]")
             continue
@@ -1255,6 +1263,7 @@ def _install_impl(
     stop_event: threading.Event | None = None,
     use_quality_eval: bool = False,
     quality_pack: dict | None = None,
+    link_only_ollama: bool = False,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -1306,7 +1315,7 @@ def _install_impl(
     sha256 = sha256_file(dest)
 
     ollama_tag = linker.sanitize_ollama_tag(filename)
-    linked = _link_model(dest, repo_id, ollama_tag)
+    linked = _link_model(dest, repo_id, ollama_tag, only_ollama=link_only_ollama)
 
     registry.upsert_entry(
         filename,
@@ -3045,6 +3054,7 @@ def _run_contribution_loop(
                 stop_event=stop_event,
                 use_quality_eval=True,
                 quality_pack=quality_pack,
+                link_only_ollama=True,
             )
         except ContributionStopped as e:
             _cleanup_incomplete_install(e.filename)
@@ -3086,6 +3096,7 @@ def _run_contribution_loop(
                         stop_event=stop_event,
                         use_quality_eval=True,
                         quality_pack=quality_pack,
+                        link_only_ollama=True,
                     )
                 except ContributionStopped as e:
                     _cleanup_incomplete_install(e.filename)
