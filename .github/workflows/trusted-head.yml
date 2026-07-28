@@ -1,0 +1,40 @@
+name: Trusted PR head
+
+"on":
+  pull_request_target:
+
+permissions:
+  contents: read
+
+jobs:
+  trusted-head:
+    name: Trusted PR head
+    runs-on: ubuntu-latest
+    steps:
+      # Explicitly check out the protected base SHA, not the PR merge/head.
+      # The verifier script and its anchor are therefore outside PR control.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: verifier
+          fetch-depth: 1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Fetch the fork PR head as data only
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git -C verifier fetch --no-tags --depth=1 origin \
+            "+refs/pull/$PR_NUMBER/head:refs/omm-trust/pr/$PR_NUMBER"
+          actual_head="$(git -C verifier rev-parse "refs/omm-trust/pr/$PR_NUMBER")"
+          test "$actual_head" = "$EXPECTED_HEAD"
+      - name: Verify the exact PR head with trusted base assets
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python verifier/scripts/verify_trusted_head.py
+          --repo verifier
+          --commit "$PR_HEAD"
+          --anchor verifier/src/omm/trust/allowed_signers

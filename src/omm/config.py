@@ -12,6 +12,10 @@ OMM_HOME = Path.home() / ".omm"
 MODELS_DIR = OMM_HOME / "models"
 CONFIG_PATH = OMM_HOME / "config.json"
 REGISTRY_PATH = OMM_HOME / "models.json"
+# Records only Windows hard links created by omm.  Unlike a symlink, a hard
+# link is indistinguishable from an ordinary file, so cleanup must have an
+# explicit ownership record before it is allowed to remove one.
+LINK_OWNERSHIP_PATH = OMM_HOME / "link-ownership.json"
 RULES_PATH = OMM_HOME / "rules.json"
 RECOMMEND_MODEL_PATH = OMM_HOME / "recommend-model.json"
 EVALUATIONS_DIR = OMM_HOME / "evaluations"

@@ -15,6 +15,7 @@ def test_link_custom_directory_links_every_registered_model(isolated_omm_home, t
     result = runner.invoke(cli.app, ["link", str(target)])
 
     assert result.exit_code == 0, result.stdout
-    assert (target / filename).is_symlink()
+    destination = target / filename
+    assert destination.is_symlink() or destination.samefile(source)
     entry = registry.load_registry()[filename]
     assert str(target / filename) in entry["custom_links"]

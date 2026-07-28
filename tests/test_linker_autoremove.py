@@ -22,12 +22,16 @@ def test_link_ollama_refuses_clip_mmproj_gguf(tmp_path, monkeypatch):
     assert not (tmp_path / "ollama").exists()
 
 
-def test_autoremove_lmstudio_deletes_broken_symlink_and_prunes_empty_dirs(tmp_path, monkeypatch):
+def test_autoremove_lmstudio_deletes_broken_symlink_and_prunes_empty_dirs(isolated_omm_home, tmp_path, monkeypatch):
     models_dir = tmp_path / "lmstudio" / "models"
     broken_dir = models_dir / "TheBloke" / "TinyLlama-1.1B-Chat-v1.0-GGUF"
     broken_dir.mkdir(parents=True)
     broken_link = broken_dir / "tinyllama.gguf"
-    broken_link.symlink_to(tmp_path / "does-not-exist.gguf")
+    try:
+        broken_link.symlink_to(tmp_path / "does-not-exist.gguf")
+    except OSError:
+        pytest.skip("creating symlinks needs Developer Mode or elevation on this Windows host")
+    linker._record_symlink(broken_link, tmp_path / "does-not-exist.gguf")
 
     live_target = tmp_path / "real.gguf"
     live_target.write_bytes(b"data")
@@ -52,14 +56,18 @@ def test_autoremove_lmstudio_returns_zero_when_dir_missing(tmp_path, monkeypatch
     assert linker.autoremove_lmstudio() == 0
 
 
-def test_autoremove_ollama_removes_broken_blob_and_its_manifest(tmp_path, monkeypatch):
+def test_autoremove_ollama_removes_broken_blob_and_its_manifest(isolated_omm_home, tmp_path, monkeypatch):
     models_dir = tmp_path / "ollama"
     blobs_dir = models_dir / "blobs"
     blobs_dir.mkdir(parents=True)
 
     broken_digest_hex = "a" * 64
     broken_blob = blobs_dir / f"sha256-{broken_digest_hex}"
-    broken_blob.symlink_to(tmp_path / "gone.gguf")
+    try:
+        broken_blob.symlink_to(tmp_path / "gone.gguf")
+    except OSError:
+        pytest.skip("creating symlinks needs Developer Mode or elevation on this Windows host")
+    linker._record_symlink(broken_blob, tmp_path / "gone.gguf")
 
     live_digest_hex = "b" * 64
     live_blob = blobs_dir / f"sha256-{live_digest_hex}"
@@ -71,7 +79,8 @@ def test_autoremove_ollama_removes_broken_blob_and_its_manifest(tmp_path, monkey
 
     broken_manifest_dir = manifests_root / "broken-model"
     broken_manifest_dir.mkdir(parents=True)
-    (broken_manifest_dir / "latest").write_text(
+    broken_manifest = broken_manifest_dir / "latest"
+    broken_manifest.write_text(
         json.dumps(
             {
                 "schemaVersion": 2,
@@ -80,6 +89,7 @@ def test_autoremove_ollama_removes_broken_blob_and_its_manifest(tmp_path, monkey
             }
         )
     )
+    linker._record_ownership(broken_manifest, None, "manifest")
 
     live_manifest_dir = manifests_root / "alive-model"
     live_manifest_dir.mkdir(parents=True)
@@ -103,6 +113,25 @@ def test_autoremove_ollama_removes_broken_blob_and_its_manifest(tmp_path, monkey
     assert not (broken_manifest_dir / "latest").exists()
     assert live_blob.is_symlink()
     assert (live_manifest_dir / "latest").exists()
+
+
+def test_autoremove_ollama_preserves_unowned_broken_blob_and_manifest(isolated_omm_home, tmp_path, monkeypatch):
+    models_dir = tmp_path / "ollama"
+    blobs_dir = models_dir / "blobs"
+    blobs_dir.mkdir(parents=True)
+    digest = "c" * 64
+    blob = blobs_dir / f"sha256-{digest}"
+    try:
+        blob.symlink_to(tmp_path / "gone.gguf")
+    except OSError:
+        pytest.skip("creating symlinks needs Developer Mode or elevation on this Windows host")
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "user" / "latest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"layers": [{"digest": f"sha256:{digest}"}]}))
+
+    assert linker.autoremove_ollama(models_dir=models_dir) == (0, 0)
+    assert blob.is_symlink()
+    assert manifest.exists()
 
 
 def test_autoremove_ollama_returns_zero_when_blobs_dir_missing(tmp_path, monkeypatch):

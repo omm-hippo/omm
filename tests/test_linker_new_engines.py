@@ -76,7 +76,7 @@ def test_autoremove_jan_returns_zero_when_dir_missing(tmp_path, monkeypatch):
 # --- AnythingLLM (Ollama-format at its own models_dir) ------------------
 
 
-def test_link_ollama_at_custom_models_dir_does_not_touch_default(tmp_path, monkeypatch):
+def test_link_ollama_at_custom_models_dir_does_not_touch_default(isolated_omm_home, tmp_path, monkeypatch):
     """AnythingLLM reuses link_ollama() pointed at its own models_dir - it
     must not fall back to the real ~/.ollama when one is passed."""
     gguf_path = tmp_path / "model.gguf"
@@ -141,7 +141,7 @@ def test_is_mstystudio_installed_reflects_app_bundle_on_darwin(tmp_path, monkeyp
     assert linker.is_mstystudio_installed() is True
 
 
-def test_link_custom_directory_reused_for_mstystudio(tmp_path, monkeypatch):
+def test_link_custom_directory_reused_for_mstystudio(isolated_omm_home, tmp_path, monkeypatch):
     gguf_path = tmp_path / "model.gguf"
     gguf_path.write_bytes(b"x")
     models_dir = tmp_path / "MstyStudio" / "models"
@@ -150,8 +150,9 @@ def test_link_custom_directory_reused_for_mstystudio(tmp_path, monkeypatch):
     warning = linker.link_engine("mstystudio", gguf_path, repo_id=None, ollama_tag="model")
 
     assert warning is None
-    assert (models_dir / "model.gguf").is_symlink()
-    assert (models_dir / "model.gguf").resolve() == gguf_path.resolve()
+    destination = models_dir / "model.gguf"
+    assert destination.is_symlink() or destination.samefile(gguf_path)
+    assert destination.samefile(gguf_path)
 
 
 # --- KoboldCpp / text-generation-webui heuristic discovery --------------
