@@ -75,7 +75,7 @@ function Resolve-SigningCommit {
 # treated the same as an actual bad signature - "can't verify" must never
 # silently mean "trust it anyway".
 function Test-CommitSignature {
-    param([string]$Commit, [string]$RepoDir)
+    param([string]$Commit, [string]$RepoDir, [switch]$Quiet)
 
     # Write-Warning, not Write-Error: with $ErrorActionPreference = "Stop"
     # a Write-Error here would terminate the whole script immediately,
@@ -117,7 +117,7 @@ function Test-CommitSignature {
         $PSNativeCommandUseErrorActionPreference = $previousNativePref
         Remove-Item $signersFile.FullName -Force -ErrorAction SilentlyContinue
     }
-    if (-not $ok) {
+    if (-not $ok -and -not $Quiet) {
         Write-Warning ($verifyOutput | Out-String)
     }
     return $ok
@@ -250,8 +250,23 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Verifying commit signature ..."
 $headCommit = (git -C $SrcDir rev-parse HEAD).Trim()
-$signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $SrcDir
-if (-not (Test-CommitSignature -Commit $signedCommit -RepoDir $SrcDir)) {
+# Try the commit itself first - a maintainer can directly SSH-sign a merge
+# commit (e.g. syncing one branch into another outside GitHub's PR flow),
+# and that signature is trustworthy on its own. Only fall back to
+# Resolve-SigningCommit's second-parent heuristic - for GitHub's own
+# "create a merge commit" PRs, where GitHub signs the merge with a key
+# this script doesn't trust and the real signature is one hop down, on the
+# PR branch tip - when the direct check fails.
+$verified = Test-CommitSignature -Commit $headCommit -RepoDir $SrcDir -Quiet
+if (-not $verified) {
+    $signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $SrcDir
+    if ($signedCommit -ne $headCommit) {
+        $verified = Test-CommitSignature -Commit $signedCommit -RepoDir $SrcDir
+    } else {
+        $verified = Test-CommitSignature -Commit $headCommit -RepoDir $SrcDir
+    }
+}
+if (-not $verified) {
     Remove-Item -Recurse -Force $SrcDir
     Write-Error "Signature verification failed - refusing to install untrusted code."
     exit 1

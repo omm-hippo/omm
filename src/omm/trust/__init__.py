@@ -88,6 +88,30 @@ def _signing_commit(repo_dir: Path, commit: str) -> str:
     return commit
 
 
+def _verify_signature(
+    repo_dir: Path, commit: str, allowed_signers: Path
+) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-c", "gpg.format=ssh",
+                "-c", f"gpg.ssh.allowedSignersFile={allowed_signers}",
+                "-C", str(repo_dir),
+                "verify-commit", commit,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"signature verification of {commit[:7]} timed out"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        return False, f"commit {commit[:7]} failed signature verification: {detail}"
+    return True, f"commit {commit[:7]} signature verified"
+
+
 def verify_commit(
     repo_dir: Path, commit: str, allowed_signers: Path | None
 ) -> tuple[bool, str]:
@@ -98,28 +122,24 @@ def verify_commit(
     trust feature - there's no anchor to compare the new commit against
     yet, so this one update is let through unverified (bootstrap). The
     *next* update carries a bundled anchor and starts enforcing the chain.
+
+    Tries `commit` itself first - a maintainer can directly SSH-sign a
+    merge commit (e.g. syncing one branch into another outside GitHub's PR
+    flow), and that signature is trustworthy on its own. Only when that
+    fails and `commit` has exactly two parents does this fall back to
+    `_signing_commit`'s second-parent heuristic, for the GitHub
+    "create a merge commit" case where GitHub itself signs the merge with
+    a key this repo doesn't trust and the real signature lives one hop
+    down, on the PR branch tip.
     """
     if allowed_signers is None:
         return True, "no trust anchor bundled with the current install yet (one-time bootstrap pass-through)"
     if not _git_version_ok():
         return False, "git 2.34+ is required to verify SSH commit signatures"
+    ok, message = _verify_signature(repo_dir, commit, allowed_signers)
+    if ok:
+        return ok, message
     target = _signing_commit(repo_dir, commit)
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "-c", "gpg.format=ssh",
-                "-c", f"gpg.ssh.allowedSignersFile={allowed_signers}",
-                "-C", str(repo_dir),
-                "verify-commit", target,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"signature verification of {target[:7]} timed out"
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        return False, f"commit {target[:7]} failed signature verification: {detail}"
-    return True, f"commit {target[:7]} signature verified"
+    if target == commit:
+        return ok, message
+    return _verify_signature(repo_dir, target, allowed_signers)
