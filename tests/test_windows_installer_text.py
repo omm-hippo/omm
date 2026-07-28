@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,3 +24,26 @@ def test_installer_probes_a_runnable_supported_python_not_just_path_presence():
     assert "System.Diagnostics.ProcessStartInfo" in script
     assert "WaitForExit(5000)" in script
     assert "$process.Kill()" in script
+
+
+def test_installer_trust_anchor_matches_allowed_signers_file():
+    script = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    expected = (ROOT / "src" / "omm" / "trust" / "allowed_signers").read_text(
+        encoding="utf-8"
+    ).strip()
+    match = re.search(r'\$AllowedSignersContent = "(.*?)"', script, re.DOTALL)
+
+    assert match is not None
+    assert match.group(1) == expected
+
+
+def test_installer_treats_missing_pipx_module_as_unavailable():
+    script = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    probe = script.split("function Test-PipxAvailable {", 1)[1].split(
+        "if (-not (Test-PipxAvailable))", 1
+    )[0]
+
+    assert "try {" in probe
+    assert "Invoke-Python -m pipx --version *> $null" in probe
+    assert "} catch {" in probe
+    assert "return $false" in probe

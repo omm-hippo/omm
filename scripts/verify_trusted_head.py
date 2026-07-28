@@ -53,6 +53,10 @@ def _resolve_commit(repo: Path, commit: str) -> tuple[str | None, str | None]:
 
 
 def verify(repo: Path, commit: str, anchor: Path) -> tuple[bool, str]:
+    # git evaluates gpg.ssh.allowedSignersFile after applying -C.  Make both
+    # paths absolute while the caller's working directory still defines them.
+    repo = repo.resolve()
+    anchor = anchor.resolve()
     if not repo.is_dir():
         return False, f"candidate repository does not exist: {repo}"
     if not anchor.is_file():
