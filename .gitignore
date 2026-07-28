@@ -11,3 +11,4 @@ build/
 .firebase/
 *-debug.log
 .worktrees/
+no_upload/
