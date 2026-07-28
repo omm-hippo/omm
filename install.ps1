@@ -12,7 +12,8 @@ $SrcDir = Join-Path $env:USERPROFILE ".omm\src"
 # update` verifies future commits against once installed; this one is
 # the TOFU root for a brand new machine, since there's no prior install
 # to carry a trusted copy yet).
-$AllowedSignersContent = "seong381400@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh12ERbI3Yx6DPiaROPjCyI2GIQXb9Ihbp9J9L4bnpe"
+$AllowedSignersContent = "seong381400@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh12ERbI3Yx6DPiaROPjCyI2GIQXb9Ihbp9J9L4bnpe
+ahseongchoi@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5UPWuM/1GxGo5TQ5nEJm9UvXShygIozjbvxB1VT9u6"
 
 function Test-CommandExists {
     param([string]$Name)
@@ -192,8 +193,14 @@ function Invoke-Pipx {
 
 function Test-PipxAvailable {
     if (Test-CommandExists "pipx") { return $true }
-    Invoke-Python -m pipx --version *> $null
-    return $LASTEXITCODE -eq 0
+    try {
+        Invoke-Python -m pipx --version *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        # A missing pipx module writes an error under $ErrorActionPreference = "Stop".
+        # That is the expected signal for the bootstrap below, not an installer failure.
+        return $false
+    }
 }
 
 if (-not (Test-PipxAvailable)) {
