@@ -59,6 +59,7 @@ from omm.featurize import (
     candidate_active_parameter_count_billions,
     candidate_parameter_count_billions,
     candidate_quant_bits,
+    is_mmproj_filename,
     parse_param_count_billions,
     parse_quant_bits,
 )
@@ -70,6 +71,7 @@ from omm.hub import (
     ResolvedModel,
     best_filenames_by_tier,
     download_url,
+    fetch_repo_files,
     fetch_repo_param_count_b,
     rank_quant_variants,
     remote_file_size,
@@ -1252,6 +1254,44 @@ def _maybe_auto_calibrate(
         f"[dim]Local calibration updated: correction ×{factor:.2f} "
         "(not uploaded).[/dim]"
     )
+
+
+def _fetch_sibling_candidates(boundary: dict) -> list[dict]:
+    """Phase C helper for `omm contribute`: given the candidate dict that
+    was actually benchmarked at the fit/unfit boundary, look up every
+    other GGUF quantization in the same repo and hand back the unseen
+    ones closest to that quant level first, so the boundary search steps
+    outward one quant at a time instead of jumping to an extreme.
+    Best-effort - never raises, so it can't abort the contribution loop."""
+    provider = boundary.get("provider") or "huggingface"
+    repo_id = boundary["repo_id"]
+    tried_bits = parse_quant_bits(boundary["filename"])
+    if tried_bits is None:
+        return []
+    try:
+        filenames, _ = fetch_repo_files(provider, repo_id)
+    except ModelResolutionError:
+        return []
+
+    scored = []
+    for filename in filenames:
+        if filename == boundary["filename"] or is_mmproj_filename(filename):
+            continue
+        bits = parse_quant_bits(filename)
+        if bits is None:
+            continue
+        scored.append((abs(bits - tried_bits), filename))
+    scored.sort(key=lambda item: item[0])
+
+    siblings = []
+    for _, filename in scored:
+        candidate = dict(boundary)
+        candidate["provider"] = provider
+        candidate["filename"] = filename
+        candidate.pop("quant_bits", None)
+        candidate["size_bytes"] = remote_file_size(provider, repo_id, filename)
+        siblings.append(candidate)
+    return siblings
 
 
 def _install_impl(
@@ -3012,6 +3052,7 @@ def _run_contribution_loop(
     refetch,
     quality_pack: dict | None = None,
     daemon_ref: dict | None = None,
+    fetch_siblings=None,
 ) -> _ContributionStats:
     stats = _ContributionStats(benchmarked=[])
     consecutive_daemon_failures = 0
@@ -3039,7 +3080,7 @@ def _run_contribution_loop(
             stats.daemon_restarts += 1
             consecutive_daemon_failures = 0
 
-        candidate = queue.next_candidate(refetch=refetch)
+        candidate = queue.next_candidate(refetch=refetch, fetch_siblings=fetch_siblings)
         if candidate is None:
             console.print("[dim]No more candidates available for this hardware.[/dim]")
             stats.exhausted = True
@@ -3328,7 +3369,12 @@ def contribute(
         start_time = time.monotonic()
         try:
             stats = _run_contribution_loop(
-                queue, listener.stop_event, refetch, quality_pack=quality_pack, daemon_ref=daemon_ref
+                queue,
+                listener.stop_event,
+                refetch,
+                quality_pack=quality_pack,
+                daemon_ref=daemon_ref,
+                fetch_siblings=_fetch_sibling_candidates,
             )
         finally:
             listener.stop_event.set()

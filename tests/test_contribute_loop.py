@@ -9,7 +9,7 @@ class _FakeQueue:
         self._candidates = list(candidates)
         self.marked_seen = []
 
-    def next_candidate(self, refetch=None):
+    def next_candidate(self, refetch=None, fetch_siblings=None):
         # Mirrors the real ContributionQueue: a candidate marked seen must
         # never be handed out again, even if it's still in the backing list.
         while self._candidates:
