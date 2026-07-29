@@ -1271,12 +1271,15 @@ def _maybe_auto_calibrate(
         return
     if predicted <= 0:
         return
-    factor = calibration.record_calibration(
-        hardware,
-        measured_tokens_per_sec=tokens_per_sec,
-        predicted_tokens_per_sec=predicted,
-        engine="ollama",
-    )
+    try:
+        factor = calibration.record_calibration(
+            hardware,
+            measured_tokens_per_sec=tokens_per_sec,
+            predicted_tokens_per_sec=predicted,
+            engine="ollama",
+        )
+    except OSError:
+        return
     console.print(
         f"[dim]Local calibration updated: correction ×{factor:.2f} "
         "(not uploaded).[/dim]"
@@ -2054,12 +2057,16 @@ def calibrate(
     if measured is None or measured <= 0:
         err_console.print("[red]Calibration requires a running Ollama model server.[/red]")
         raise typer.Exit(1)
-    factor = calibration.record_calibration(
-        hardware,
-        measured_tokens_per_sec=measured,
-        predicted_tokens_per_sec=predicted,
-        engine="ollama",
-    )
+    try:
+        factor = calibration.record_calibration(
+            hardware,
+            measured_tokens_per_sec=measured,
+            predicted_tokens_per_sec=predicted,
+            engine="ollama",
+        )
+    except OSError as e:
+        err_console.print(f"[red]Could not save calibration: {e}[/red]")
+        raise typer.Exit(1) from e
     console.print(
         f"[green]Local calibration saved: {measured:.1f} tok/s measured, "
         f"{predicted:.1f} predicted, correction ×{factor:.2f}.[/green]"

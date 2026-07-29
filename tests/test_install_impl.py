@@ -625,3 +625,39 @@ def test_install_impl_exits_cleanly_on_insufficient_disk_space_mid_download_with
         cli._install_impl(_resolved())
 
     assert exc_info.value.exit_code == 1
+
+
+def test_auto_calibrate_does_not_crash_install_when_write_fails(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        cli.predictor, "load_cached_model", lambda: {"trees": [{"leaf": True, "value": 20.0}]}
+    )
+    hw_stub = SimpleNamespace(
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=16.0,
+        ram_available_gb=12.0,
+        vram_total_gb=None,
+        vram_free_gb=None,
+        unified_memory=False,
+        gpu_name=None,
+        gpu_tflops=None,
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: hw_stub)
+    monkeypatch.setattr(
+        cli.predictor, "predict_speed_interval", lambda *args, **kwargs: (20.0, 20.0, 20.0)
+    )
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 30.0)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+    monkeypatch.setattr(
+        cli.calibration,
+        "record_calibration",
+        lambda hardware, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    outcome = cli._install_impl(_resolved())  # must not raise
+
+    assert outcome.tokens_per_sec == 30.0
