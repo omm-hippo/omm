@@ -544,3 +544,120 @@ def test_use_quality_eval_failure_reports_no_result(isolated_omm_home, monkeypat
 
     assert outcome.tokens_per_sec is None
     assert outcome.telemetry_sent is False
+
+
+def test_install_impl_exits_when_not_enough_disk_space_and_not_skip_unfit(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 50 * 1024**3)
+    monkeypatch.setattr(
+        cli.shutil, "disk_usage", lambda path: SimpleNamespace(total=0, used=0, free=10 * 1024**3)
+    )
+    download_calls = []
+    monkeypatch.setattr(cli, "download_file", lambda *a, **k: download_calls.append(a))
+
+    with pytest.raises(cli.typer.Exit) as exc_info:
+        cli._install_impl(_resolved())
+
+    assert exc_info.value.exit_code == 1
+    assert download_calls == []
+
+
+def test_install_impl_skips_gracefully_when_not_enough_disk_space_and_skip_unfit(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 50 * 1024**3)
+    monkeypatch.setattr(
+        cli.shutil, "disk_usage", lambda path: SimpleNamespace(total=0, used=0, free=10 * 1024**3)
+    )
+    download_calls = []
+    monkeypatch.setattr(cli, "download_file", lambda *a, **k: download_calls.append(a))
+
+    outcome = cli._install_impl(_resolved(), skip_unfit=True)
+
+    assert outcome.skipped_low_disk is True
+    assert download_calls == []
+
+
+def test_install_impl_proceeds_when_disk_space_check_is_inconclusive(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 10.0)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+
+    outcome = cli._install_impl(_resolved())
+
+    assert outcome.tokens_per_sec == 10.0
+
+
+def test_install_impl_cleans_up_partial_file_and_skips_on_insufficient_disk_space_mid_download(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
+
+    def fake_download(url, dest, **kwargs):
+        dest.with_suffix(dest.suffix + ".part").write_bytes(b"partial")
+        raise cli.InsufficientDiskSpaceError("disk full mid-download")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    outcome = cli._install_impl(_resolved(), skip_unfit=True)
+
+    assert outcome.skipped_low_disk is True
+    dest = cli.MODELS_DIR / "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    assert not dest.with_suffix(dest.suffix + ".part").exists()
+
+
+def test_install_impl_exits_cleanly_on_insufficient_disk_space_mid_download_without_skip_unfit(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
+    monkeypatch.setattr(
+        cli,
+        "download_file",
+        lambda *a, **k: (_ for _ in ()).throw(cli.InsufficientDiskSpaceError("disk full")),
+    )
+
+    with pytest.raises(cli.typer.Exit) as exc_info:
+        cli._install_impl(_resolved())
+
+    assert exc_info.value.exit_code == 1
+
+
+def test_auto_calibrate_does_not_crash_install_when_write_fails(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        cli.predictor, "load_cached_model", lambda: {"trees": [{"leaf": True, "value": 20.0}]}
+    )
+    hw_stub = SimpleNamespace(
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=16.0,
+        ram_available_gb=12.0,
+        vram_total_gb=None,
+        vram_free_gb=None,
+        unified_memory=False,
+        gpu_name=None,
+        gpu_tflops=None,
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: hw_stub)
+    monkeypatch.setattr(
+        cli.predictor, "predict_speed_interval", lambda *args, **kwargs: (20.0, 20.0, 20.0)
+    )
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 30.0)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+    monkeypatch.setattr(
+        cli.calibration,
+        "record_calibration",
+        lambda hardware, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    outcome = cli._install_impl(_resolved())  # must not raise
+
+    assert outcome.tokens_per_sec == 30.0

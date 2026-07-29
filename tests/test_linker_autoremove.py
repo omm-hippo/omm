@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -138,3 +139,48 @@ def test_autoremove_ollama_returns_zero_when_blobs_dir_missing(tmp_path, monkeyp
     monkeypatch.setattr(linker, "ollama_models_dir", lambda: tmp_path / "missing")
 
     assert linker.autoremove_ollama() == (0, 0)
+
+
+def test_autoremove_ollama_skips_manifest_it_cannot_unlink(isolated_omm_home, tmp_path, monkeypatch):
+    models_dir = tmp_path / "ollama"
+    blobs_dir = models_dir / "blobs"
+    blobs_dir.mkdir(parents=True)
+
+    broken_digest_hex = "a" * 64
+    broken_blob = blobs_dir / f"sha256-{broken_digest_hex}"
+    try:
+        broken_blob.symlink_to(tmp_path / "gone.gguf")
+    except OSError:
+        pytest.skip("creating symlinks needs Developer Mode or elevation on this Windows host")
+    linker._record_symlink(broken_blob, tmp_path / "gone.gguf")
+
+    manifests_root = models_dir / "manifests" / "registry.ollama.ai" / "library"
+    broken_manifest_dir = manifests_root / "broken-model"
+    broken_manifest_dir.mkdir(parents=True)
+    broken_manifest = broken_manifest_dir / "latest"
+    broken_manifest.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 2,
+                "config": {"digest": f"sha256:{broken_digest_hex}", "size": 1},
+                "layers": [{"digest": f"sha256:{broken_digest_hex}", "size": 1}],
+            }
+        )
+    )
+    linker._record_ownership(broken_manifest, None, "manifest")
+
+    monkeypatch.setattr(linker, "ollama_models_dir", lambda: models_dir)
+    real_unlink = Path.unlink
+
+    def _flaky_unlink(self, missing_ok=False):
+        if self == broken_manifest:
+            raise OSError("permission denied")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _flaky_unlink)
+
+    blobs_removed, manifests_removed = linker.autoremove_ollama()  # must not raise
+
+    assert blobs_removed == 1
+    assert manifests_removed == 0
+    assert broken_manifest.exists()

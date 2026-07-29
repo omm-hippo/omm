@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 
+from omm.atomic import atomic_write_text, backup_corrupt_file
 from omm.config import RULES_PATH
 
 DEFAULT_RULES: list[dict] = [
@@ -32,10 +33,19 @@ DEFAULT_RULES: list[dict] = [
 ]
 
 
-def load_rules() -> list[dict]:
-    if RULES_PATH.exists():
+def _read_rules_file() -> list[dict] | None:
+    if not RULES_PATH.exists():
+        return None
+    try:
         return json.loads(RULES_PATH.read_text())
-    return DEFAULT_RULES
+    except (OSError, json.JSONDecodeError):
+        backup_corrupt_file(RULES_PATH)
+        return None
+
+
+def load_rules() -> list[dict]:
+    rules = _read_rules_file()
+    return rules if rules is not None else DEFAULT_RULES
 
 
 def fetch_rules(url: str) -> list[dict]:
@@ -45,14 +55,14 @@ def fetch_rules(url: str) -> list[dict]:
     resp.raise_for_status()
     rules = resp.json()
     RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RULES_PATH.write_text(json.dumps(rules, indent=2))
+    atomic_write_text(RULES_PATH, json.dumps(rules, indent=2))
     return rules
 
 
 def refresh_rules_with_change_note(url: str) -> tuple[list[dict], bool]:
     """Like fetch_rules, but also reports whether the fetched rules differ
     from what was already cached."""
-    previous = json.loads(RULES_PATH.read_text()) if RULES_PATH.exists() else None
+    previous = _read_rules_file()
     fetched = fetch_rules(url)
     return fetched, fetched != previous
 

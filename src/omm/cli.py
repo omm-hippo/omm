@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import math
 import platform
@@ -53,13 +54,14 @@ from omm import (
 from omm import contribute as contribute_mod
 from omm.completion import complete_install_name, complete_remove_filename
 from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
-from omm.downloader import DownloadCancelled, DownloadError, download_file
+from omm.downloader import DownloadCancelled, DownloadError, InsufficientDiskSpaceError, download_file
 from omm.hardware import HardwareInfo, calculate_memory_budget, scan_hardware
 from omm.hashutil import sha256_file
 from omm.featurize import (
     candidate_active_parameter_count_billions,
     candidate_parameter_count_billions,
     candidate_quant_bits,
+    is_mmproj_filename,
     parse_param_count_billions,
     parse_quant_bits,
 )
@@ -71,6 +73,7 @@ from omm.hub import (
     ResolvedModel,
     best_filenames_by_tier,
     download_url,
+    fetch_repo_files,
     fetch_repo_param_count_b,
     rank_quant_variants,
     remote_file_size,
@@ -539,7 +542,11 @@ def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> No
     for group in groups:
         if group.sha256 not in selected_hashes:
             continue
-        result = scan_import.adopt_group(group)
+        try:
+            result = scan_import.adopt_group(group)
+        except (OSError, linker.LinkError) as e:
+            err_console.print(f"[yellow]Could not import {group.display_name}: {e}[/yellow]")
+            continue
         bytes_saved += result.bytes_saved
         console.print(f"  [green]Imported {result.filename}[/green]")
 
@@ -794,6 +801,9 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
             "  curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh"
         )
         raise typer.Exit(1)
+    except OSError as e:
+        err_console.print(f"[red]Update failed: {e}[/red]")
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -1158,14 +1168,22 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
     )
 
 
-def _link_model(dest, repo_id: str | None, ollama_tag: str) -> dict[str, bool]:
+def _link_model(
+    dest, repo_id: str | None, ollama_tag: str, *, only_ollama: bool = False
+) -> dict[str, bool]:
     """Link a downloaded .gguf into every installed engine, printing a skip
     notice for whichever engine isn't installed or fails to link. Shared
     by `install` and `update` since both need the exact same behavior
-    after a fresh (or refreshed) download."""
+    after a fresh (or refreshed) download.
+
+    `only_ollama` restricts linking to Ollama alone - `omm contribute` only
+    needs Ollama to benchmark, so linking into LM Studio/Jan/etc. for every
+    downloaded candidate is unnecessary churn."""
     linked = {spec.key: False for spec in linker.ENGINES}
 
     for spec in linker.ENGINES:
+        if only_ollama and spec.key != "ollama":
+            continue
         if not linker.is_engine_installed(spec.key):
             console.print(f"[dim]{spec.label} not detected, skipping link.[/dim]")
             continue
@@ -1189,6 +1207,7 @@ class InstallOutcome:
     tokens_per_sec: float | None = None
     telemetry_sent: bool = False
     skipped_unfit: bool = False
+    skipped_low_disk: bool = False
     sha256: str | None = None
     failure_reason: str | None = None
     model_metadata: dict | None = None
@@ -1259,16 +1278,57 @@ def _maybe_auto_calibrate(
         return
     if predicted <= 0:
         return
-    factor = calibration.record_calibration(
-        hardware,
-        measured_tokens_per_sec=tokens_per_sec,
-        predicted_tokens_per_sec=predicted,
-        engine="ollama",
-    )
+    try:
+        factor = calibration.record_calibration(
+            hardware,
+            measured_tokens_per_sec=tokens_per_sec,
+            predicted_tokens_per_sec=predicted,
+            engine="ollama",
+        )
+    except OSError:
+        return
     console.print(
         f"[dim]Local calibration updated: correction ×{factor:.2f} "
         "(not uploaded).[/dim]"
     )
+
+
+def _fetch_sibling_candidates(boundary: dict) -> list[dict]:
+    """Phase C helper for `omm contribute`: given the candidate dict that
+    was actually benchmarked at the fit/unfit boundary, look up every
+    other GGUF quantization in the same repo and hand back the unseen
+    ones closest to that quant level first, so the boundary search steps
+    outward one quant at a time instead of jumping to an extreme.
+    Best-effort - never raises, so it can't abort the contribution loop."""
+    provider = boundary.get("provider") or "huggingface"
+    repo_id = boundary["repo_id"]
+    tried_bits = parse_quant_bits(boundary["filename"])
+    if tried_bits is None:
+        return []
+    try:
+        filenames, _ = fetch_repo_files(provider, repo_id)
+    except ModelResolutionError:
+        return []
+
+    scored = []
+    for filename in filenames:
+        if filename == boundary["filename"] or is_mmproj_filename(filename):
+            continue
+        bits = parse_quant_bits(filename)
+        if bits is None:
+            continue
+        scored.append((abs(bits - tried_bits), filename))
+    scored.sort(key=lambda item: item[0])
+
+    siblings = []
+    for _, filename in scored:
+        candidate = dict(boundary)
+        candidate["provider"] = provider
+        candidate["filename"] = filename
+        candidate.pop("quant_bits", None)
+        candidate["size_bytes"] = remote_file_size(provider, repo_id, filename)
+        siblings.append(candidate)
+    return siblings
 
 
 def _install_impl(
@@ -1280,6 +1340,7 @@ def _install_impl(
     stop_event: threading.Event | None = None,
     use_quality_eval: bool = False,
     quality_pack: dict | None = None,
+    link_only_ollama: bool = False,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -1316,6 +1377,20 @@ def _install_impl(
     if dest.exists():
         err_console.print(f"[yellow]{filename} already downloaded, skipping fetch.[/yellow]")
     else:
+        size_bytes = remote_file_size(resolved.provider or "huggingface", repo_id, filename) if repo_id else None
+        if size_bytes:
+            free_gb = shutil.disk_usage(MODELS_DIR).free / (1024**3)
+            required_gb = size_bytes / (1024**3)
+            if required_gb > free_gb:
+                message = (
+                    f"{filename} needs ~{required_gb:.1f}GB but only "
+                    f"{free_gb:.1f}GB free on disk"
+                )
+                if skip_unfit:
+                    err_console.print(f"[yellow]Skipping {message}.[/yellow]")
+                    return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
+                err_console.print(f"[red]Not enough disk space: {message}.[/red]")
+                raise typer.Exit(1)
         try:
             if stop_event is not None:
                 download_file(url, dest, stop_check=stop_event.is_set)
@@ -1323,6 +1398,12 @@ def _install_impl(
                 download_file(url, dest)
         except DownloadCancelled as e:
             raise ContributionStopped(filename) from e
+        except InsufficientDiskSpaceError as e:
+            _cleanup_incomplete_install(filename)
+            err_console.print(f"[red]{e}[/red]")
+            if skip_unfit:
+                return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
+            raise typer.Exit(1) from e
         except DownloadError as e:
             err_console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from e
@@ -1331,7 +1412,7 @@ def _install_impl(
     sha256 = sha256_file(dest)
 
     ollama_tag = linker.sanitize_ollama_tag(filename)
-    linked = _link_model(dest, repo_id, ollama_tag)
+    linked = _link_model(dest, repo_id, ollama_tag, only_ollama=link_only_ollama)
 
     registry.upsert_entry(
         filename,
@@ -1536,11 +1617,17 @@ def _cleanup_incomplete_install(filename: str) -> bool:
     part = dest.with_suffix(dest.suffix + ".part")
     cleaned = False
     if part.exists():
-        part.unlink()
-        cleaned = True
+        try:
+            part.unlink()
+            cleaned = True
+        except OSError:
+            pass
     if dest.exists():
-        dest.unlink()
-        cleaned = True
+        try:
+            dest.unlink()
+            cleaned = True
+        except OSError:
+            pass
     return cleaned
 
 
@@ -1557,8 +1644,14 @@ def _remove_one(filename: str, entry: dict) -> None:
             linker.unlink_owned_link(Path(destination))
 
     dest = MODELS_DIR / filename
-    dest.unlink(missing_ok=True)
-    dest.with_suffix(dest.suffix + ".part").unlink(missing_ok=True)
+    try:
+        dest.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        dest.with_suffix(dest.suffix + ".part").unlink(missing_ok=True)
+    except OSError:
+        pass
 
     registry.remove_entry(filename)
     console.print(f"[green]Removed {filename}[/green]")
@@ -1724,7 +1817,12 @@ def _update_one(filename: str, entry: dict) -> str:
         if new_sha256 == old_sha256:
             tmp.unlink(missing_ok=True)
             return "up_to_date"
-        tmp.replace(dest)
+        try:
+            tmp.replace(dest)
+        except OSError as e:
+            err_console.print(f"[red]{filename}: update failed to finalize: {e}[/red]")
+            tmp.unlink(missing_ok=True)
+            return "skipped"
 
     ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
     linked = _link_model(dest, repo_id, ollama_tag)
@@ -1983,12 +2081,16 @@ def calibrate(
     if measured is None or measured <= 0:
         err_console.print("[red]Calibration requires a running Ollama model server.[/red]")
         raise typer.Exit(1)
-    factor = calibration.record_calibration(
-        hardware,
-        measured_tokens_per_sec=measured,
-        predicted_tokens_per_sec=predicted,
-        engine="ollama",
-    )
+    try:
+        factor = calibration.record_calibration(
+            hardware,
+            measured_tokens_per_sec=measured,
+            predicted_tokens_per_sec=predicted,
+            engine="ollama",
+        )
+    except OSError as e:
+        err_console.print(f"[red]Could not save calibration: {e}[/red]")
+        raise typer.Exit(1) from e
     console.print(
         f"[green]Local calibration saved: {measured:.1f} tok/s measured, "
         f"{predicted:.1f} predicted, correction ×{factor:.2f}.[/green]"
@@ -2287,7 +2389,11 @@ def link_models(
 
     if directory is not None:
         directory = directory.expanduser()
-        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            err_console.print(f"[red]Could not create {directory}: {error}[/red]")
+            raise typer.Exit(1) from error
         linked_count = 0
         skipped_missing = 0
         for filename, entry in reg.items():
@@ -2362,10 +2468,16 @@ def _autoremove_incomplete_installs() -> int:
             continue
         if path.suffix == ".part":
             if path.with_suffix("").name not in reg:
-                path.unlink()
+                try:
+                    path.unlink()
+                except OSError:
+                    continue
                 removed += 1
         elif path.suffix == ".gguf" and path.name not in reg:
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError:
+                continue
             removed += 1
     return removed
 
@@ -2940,6 +3052,7 @@ def _client_version() -> str | None:
 class _ContributionStats:
     benchmarked: list[tuple[str, float]]
     skipped_unfit: int = 0
+    skipped_low_disk: int = 0
     attempted_not_uploaded: int = 0
     daemon_restarts: int = 0
     given_up_on: int = 0
@@ -2975,8 +3088,10 @@ class _EscListener:
     """Background key-listener so Esc can interrupt `omm contribute` even
     mid-download/mid-benchmark, not just at a questionary prompt. No-ops
     (Ctrl+C is still the fallback) when stdin isn't a real terminal - tests,
-    CI, and piped input all fall into this path, mirroring session_cache.py's
-    tty-detection idiom."""
+    CI, and piped input all fall into this path. Uses `sys.stdin.isatty()`
+    rather than session_cache.py's `os.ttyname()` idiom: that call doesn't
+    exist on Windows at all, which used to skip starting this listener
+    there entirely and left Esc permanently dead on Windows."""
 
     def __init__(self) -> None:
         self.stop_event = threading.Event()
@@ -2984,30 +3099,38 @@ class _EscListener:
 
     def start(self) -> None:
         try:
-            import os
-
-            os.ttyname(0)
-        except (OSError, AttributeError):
-            # AttributeError: os.ttyname doesn't exist on Windows at all.
+            if not sys.stdin.isatty():
+                return
+        except (AttributeError, ValueError, OSError):
             return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
         try:
-            import select
-
             from prompt_toolkit.input import create_input
 
             inp = create_input()
             with inp.raw_mode():
-                while not self.stop_event.is_set():
-                    ready, _, _ = select.select([inp.fileno()], [], [], 0.1)
-                    if not ready:
-                        continue
-                    for key_press in inp.read_keys():
-                        if key_press.key == Keys.Escape:
-                            self.stop_event.set()
+                if sys.platform == "win32":
+                    # Win32Input.read_keys() already polls the console input
+                    # buffer non-blockingly, so there's no fd to select() on
+                    # (Windows select() only works on sockets anyway).
+                    while not self.stop_event.is_set():
+                        for key_press in inp.read_keys():
+                            if key_press.key == Keys.Escape:
+                                self.stop_event.set()
+                        time.sleep(0.1)
+                else:
+                    import select
+
+                    while not self.stop_event.is_set():
+                        ready, _, _ = select.select([inp.fileno()], [], [], 0.1)
+                        if not ready:
+                            continue
+                        for key_press in inp.read_keys():
+                            if key_press.key == Keys.Escape:
+                                self.stop_event.set()
         except Exception:
             pass  # best-effort; Ctrl+C still works as a fallback
 
@@ -3018,6 +3141,7 @@ def _run_contribution_loop(
     refetch,
     quality_pack: dict | None = None,
     daemon_ref: dict | None = None,
+    fetch_siblings=None,
 ) -> _ContributionStats:
     stats = _ContributionStats(benchmarked=[])
     consecutive_daemon_failures = 0
@@ -3045,7 +3169,7 @@ def _run_contribution_loop(
             stats.daemon_restarts += 1
             consecutive_daemon_failures = 0
 
-        candidate = queue.next_candidate(refetch=refetch)
+        candidate = queue.next_candidate(refetch=refetch, fetch_siblings=fetch_siblings)
         if candidate is None:
             console.print("[dim]No more candidates available for this hardware.[/dim]")
             stats.exhausted = True
@@ -3070,6 +3194,7 @@ def _run_contribution_loop(
                 stop_event=stop_event,
                 use_quality_eval=True,
                 quality_pack=quality_pack,
+                link_only_ollama=True,
             )
         except ContributionStopped as e:
             _cleanup_incomplete_install(e.filename)
@@ -3111,6 +3236,7 @@ def _run_contribution_loop(
                         stop_event=stop_event,
                         use_quality_eval=True,
                         quality_pack=quality_pack,
+                        link_only_ollama=True,
                     )
                 except ContributionStopped as e:
                     _cleanup_incomplete_install(e.filename)
@@ -3133,6 +3259,14 @@ def _run_contribution_loop(
             # next_candidate() always has one more unfit entry to hand
             # back, so the loop spins at machine speed forever instead of
             # reaching "No more candidates" or trying refetch.
+            queue.mark_seen(ref_str)
+            continue
+
+        if outcome.skipped_low_disk:
+            stats.skipped_low_disk += 1
+            # Free space doesn't reliably change mid-session either, and a
+            # later `omm contribute` run will re-check it from scratch -
+            # same rationale as the skipped_unfit case just above.
             queue.mark_seen(ref_str)
             continue
 
@@ -3193,6 +3327,7 @@ def _print_contribution_summary(
     for name, tokens_per_sec in stats.benchmarked:
         console.print(f"  - {name:<40} {tokens_per_sec:.1f} tok/s")
     console.print(f"Skipped (predicted not to fit this hardware): {stats.skipped_unfit}")
+    console.print(f"Skipped (not enough disk space): {stats.skipped_low_disk}")
     console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
     if stats.given_up_on:
         console.print(
@@ -3332,7 +3467,12 @@ def contribute(
         start_time = time.monotonic()
         try:
             stats = _run_contribution_loop(
-                queue, listener.stop_event, refetch, quality_pack=quality_pack, daemon_ref=daemon_ref
+                queue,
+                listener.stop_event,
+                refetch,
+                quality_pack=quality_pack,
+                daemon_ref=daemon_ref,
+                fetch_siblings=_fetch_sibling_candidates,
             )
         finally:
             listener.stop_event.set()
@@ -3358,5 +3498,26 @@ def contribute(
             benchmark.stop_ollama_daemon(daemon_ref["proc"])
 
 
+def main() -> None:
+    """Console-script entry point (see pyproject.toml [project.scripts]).
+    Catches disk-full errors that escape every local handler - e.g. a JSON
+    write during `omm autoremove` - and prints one clean line instead of
+    Typer's default traceback. Everything else propagates untouched so a
+    genuine bug still surfaces as a normal traceback and can be reported."""
+    try:
+        app()
+    except InsufficientDiskSpaceError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise SystemExit(1) from None
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            err_console.print(
+                "[red]Not enough disk space to complete this operation. "
+                "Free up space and try again.[/red]"
+            )
+            raise SystemExit(1) from None
+        raise
+
+
 if __name__ == "__main__":
-    app()
+    main()

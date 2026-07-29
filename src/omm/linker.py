@@ -51,6 +51,7 @@ import os
 import platform
 import re
 import shutil
+import struct
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -272,7 +273,10 @@ def link_file(src: Path, dst: Path) -> None:
     elevated process, falls back to a hard link (no special privilege
     needed on NTFS, and - since it's the same file record - still no
     byte duplication, just limited to same-drive destinations)."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise LinkError(f"Could not create directory {dst.parent}: {e}") from e
     if dst.exists() or dst.is_symlink():
         if not unlink_owned_link(dst):
             # Pre-ownership-registry omm links have no metadata. During an
@@ -408,7 +412,12 @@ def link_ollama(gguf_path: Path, model_name: str, models_dir: Path | None = None
     model_sha256 = sha256_file(gguf_path)
     model_digest = f"sha256:{model_sha256}"
 
-    gguf_meta = read_gguf_metadata(gguf_path, {"general.architecture", "tokenizer.chat_template"})
+    try:
+        gguf_meta = read_gguf_metadata(gguf_path, {"general.architecture", "tokenizer.chat_template"})
+    except (struct.error, KeyError) as e:
+        raise LinkError(
+            f"Could not read GGUF metadata from {gguf_path.name}: corrupted or truncated file ({e})."
+        ) from e
     architecture = gguf_meta.get("general.architecture", "unknown")
     has_chat_template = "tokenizer.chat_template" in gguf_meta
 
@@ -425,70 +434,73 @@ def link_ollama(gguf_path: Path, model_name: str, models_dir: Path | None = None
         )
 
     blobs_dir = models_dir / "blobs"
-    blobs_dir.mkdir(parents=True, exist_ok=True)
-
-    model_blob = blobs_dir / f"sha256-{model_sha256}"
-    # A matching content-addressed blob may be owned by Ollama or another
-    # manifest. It is already usable; never replace it.
-    if not model_blob.exists() and not model_blob.is_symlink():
-        link_file(gguf_path, model_blob)
-
-    # Mirrors the config produced by `ollama create` for a bare GGUF (no
-    # Modelfile TEMPLATE override): a single model layer, config mediaType
-    # "application/vnd.docker.container.image.v1+json", and model_family
-    # taken from the GGUF's own general.architecture field. With this shape,
-    # Ollama reads tokenizer.chat_template straight from the GGUF at
-    # inference time - no separate template layer is needed or created by
-    # `ollama create` itself in this case.
-    config = {
-        "model_format": "gguf",
-        "model_family": architecture,
-        "model_families": [architecture],
-        "model_type": _guess_param_size(gguf_path.name),
-        "file_type": _guess_quant(gguf_path.name),
-        "architecture": "amd64",
-        "os": "linux",
-        "rootfs": {"type": "layers", "diff_ids": [model_digest]},
-    }
-    config_bytes = json.dumps(config).encode()
-    config_sha256 = hashlib.sha256(config_bytes).hexdigest()
-    config_blob = blobs_dir / f"sha256-{config_sha256}"
-    if not config_blob.exists() and not config_blob.is_symlink():
-        config_blob.write_bytes(config_bytes)
-
-    manifest = {
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-        "config": {
-            "mediaType": "application/vnd.docker.container.image.v1+json",
-            "digest": f"sha256:{config_sha256}",
-            "size": len(config_bytes),
-        },
-        "layers": [
-            {
-                "mediaType": "application/vnd.ollama.image.model",
-                "digest": model_digest,
-                "size": gguf_path.stat().st_size,
-            }
-        ],
-    }
-
-    manifest_dir = (
-        models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name
-    )
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = manifest_dir / "latest"
-    if manifest_path.exists() or manifest_path.is_symlink():
-        if not _owned_manifest(manifest_path):
-            raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
-        manifest_path.unlink()
-        _update_link_ownership(manifest_path, None)
-    manifest_path.write_text(json.dumps(manifest, indent=2))
     try:
-        _record_ownership(manifest_path, None, "manifest")
-    except OSError:
-        manifest_path.unlink(missing_ok=True)
-        raise
+        blobs_dir.mkdir(parents=True, exist_ok=True)
+
+        model_blob = blobs_dir / f"sha256-{model_sha256}"
+        # A matching content-addressed blob may be owned by Ollama or another
+        # manifest. It is already usable; never replace it.
+        if not model_blob.exists() and not model_blob.is_symlink():
+            link_file(gguf_path, model_blob)
+
+        # Mirrors the config produced by `ollama create` for a bare GGUF (no
+        # Modelfile TEMPLATE override): a single model layer, config mediaType
+        # "application/vnd.docker.container.image.v1+json", and model_family
+        # taken from the GGUF's own general.architecture field. With this shape,
+        # Ollama reads tokenizer.chat_template straight from the GGUF at
+        # inference time - no separate template layer is needed or created by
+        # `ollama create` itself in this case.
+        config = {
+            "model_format": "gguf",
+            "model_family": architecture,
+            "model_families": [architecture],
+            "model_type": _guess_param_size(gguf_path.name),
+            "file_type": _guess_quant(gguf_path.name),
+            "architecture": "amd64",
+            "os": "linux",
+            "rootfs": {"type": "layers", "diff_ids": [model_digest]},
+        }
+        config_bytes = json.dumps(config).encode()
+        config_sha256 = hashlib.sha256(config_bytes).hexdigest()
+        config_blob = blobs_dir / f"sha256-{config_sha256}"
+        if not config_blob.exists() and not config_blob.is_symlink():
+            config_blob.write_bytes(config_bytes)
+
+        manifest = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "digest": f"sha256:{config_sha256}",
+                "size": len(config_bytes),
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.ollama.image.model",
+                    "digest": model_digest,
+                    "size": gguf_path.stat().st_size,
+                }
+            ],
+        }
+
+        manifest_dir = (
+            models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name
+        )
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = manifest_dir / "latest"
+        if manifest_path.exists() or manifest_path.is_symlink():
+            if not _owned_manifest(manifest_path):
+                raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
+            manifest_path.unlink()
+            _update_link_ownership(manifest_path, None)
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        try:
+            _record_ownership(manifest_path, None, "manifest")
+        except OSError:
+            manifest_path.unlink(missing_ok=True)
+            raise
+    except OSError as e:
+        raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
 
     return has_chat_template
 
@@ -511,7 +523,10 @@ def unlink_ollama(model_name: str, models_dir: Path | None = None) -> None:
     # Blobs are content-addressed and can be shared by a user manifest or
     # another omm model. Leave their collection to Ollama; only our manifest
     # is safe to remove here.
-    manifest_path.unlink()
+    try:
+        manifest_path.unlink()
+    except OSError:
+        return
     _update_link_ownership(manifest_path, None)
     try:
         manifest_path.parent.rmdir()
@@ -569,7 +584,10 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
                 layer["digest"].replace(":", "-") for layer in manifest.get("layers", [])
             }
             if layer_digests & broken_digests and _owned_manifest(manifest_path):
-                manifest_path.unlink()
+                try:
+                    manifest_path.unlink()
+                except OSError:
+                    continue
                 _update_link_ownership(manifest_path, None)
                 manifests_removed += 1
                 try:
@@ -637,19 +655,25 @@ def link_jan(gguf_path: Path, model_id: str) -> Path:
     points model_path straight at it - no symlink needed, since Jan's own
     local-file import does the same (stores the absolute path as-is)."""
     config_path = _jan_model_yaml_path(model_id)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        f'model_path: "{gguf_path}"\n'
-        f'name: "{model_id}"\n'
-        f"size_bytes: {gguf_path.stat().st_size}\n"
-    )
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            f'model_path: "{gguf_path}"\n'
+            f'name: "{model_id}"\n'
+            f"size_bytes: {gguf_path.stat().st_size}\n"
+        )
+    except OSError as e:
+        raise LinkError(f"Could not write Jan manifest at {config_path}: {e}") from e
     return config_path
 
 
 def unlink_jan(model_id: str) -> None:
     config_path = _jan_model_yaml_path(model_id)
     if config_path.exists():
-        config_path.unlink()
+        try:
+            config_path.unlink()
+        except OSError:
+            return
     try:
         config_path.parent.rmdir()
     except OSError:
@@ -681,7 +705,10 @@ def autoremove_jan() -> int:
     for config_path in list(models_dir.glob("*/model.yml")):
         model_path = read_jan_model_path(config_path)
         if model_path and not Path(model_path).exists():
-            config_path.unlink()
+            try:
+                config_path.unlink()
+            except OSError:
+                continue
             removed += 1
             try:
                 config_path.parent.rmdir()

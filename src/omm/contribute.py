@@ -12,6 +12,17 @@ Selection order:
   above), skipping anything in `history_refs`. When both sides are fully
   seen, the caller may supply `refetch` to check for newly published
   candidates before giving up.
+  Phase C - once Phase A, Phase B, and `refetch` are all exhausted, the
+  caller may supply `fetch_siblings` to probe other GGUF quantizations of
+  the two boundary repos (the last candidate Phase A popped, and the
+  first Phase B drew from its unviable side) - below first, then above -
+  narrowing in on this machine's actual fit/unfit ceiling instead of
+  stopping cold at the fixed candidate pool's edge.
+
+`mark_seen` re-ranks the remaining pools immediately (via `_rebuild`), so
+a local calibration update from the benchmark that was just marked seen
+takes effect on the very next `next_candidate()` call rather than only on
+the next session or the next `refetch`.
 """
 
 from __future__ import annotations
@@ -78,6 +89,12 @@ class ContributionQueue:
         self.artifact = artifact
         self.hw = hw
         self.history_refs = set(history_refs)
+        self._boundary_below: dict | None = None
+        self._boundary_above: dict | None = None
+        self._phase_c_below_queue: list[dict] = []
+        self._phase_c_above_queue: list[dict] = []
+        self._phase_c_below_fetched = False
+        self._phase_c_above_fetched = False
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -95,13 +112,17 @@ class ContributionQueue:
 
     def mark_seen(self, seen_ref: str) -> None:
         self.history_refs.add(seen_ref)
+        self._rebuild()
 
     def next_candidate(
-        self, refetch: Callable[[], tuple[dict, bool]] | None = None
+        self,
+        refetch: Callable[[], tuple[dict, bool]] | None = None,
+        fetch_siblings: Callable[[dict], list[dict]] | None = None,
     ) -> dict | None:
         while self._phase_a_queue:
             candidate = self._phase_a_queue.pop(0)
             if not matches_history(candidate, self.history_refs):
+                self._boundary_below = candidate
                 return candidate
 
         for _ in range(2):  # try both sides at most once before giving up
@@ -109,10 +130,14 @@ class ContributionQueue:
                 candidate, self._below_cursor = _next_unseen(
                     self._below_pool, self.history_refs, self._below_cursor
                 )
+                if candidate is not None:
+                    self._boundary_below = candidate
             else:
                 candidate, self._above_cursor = _next_unseen(
                     self._above_pool, self.history_refs, self._above_cursor
                 )
+                if candidate is not None and self._boundary_above is None:
+                    self._boundary_above = candidate
             self._next_side_is_below = not self._next_side_is_below
             if candidate is not None:
                 return candidate
@@ -122,6 +147,32 @@ class ContributionQueue:
             if changed:
                 self.artifact = new_artifact
                 self._rebuild()
-                return self.next_candidate(refetch)
+                return self.next_candidate(refetch, fetch_siblings)
 
+        return self._next_phase_c_candidate(fetch_siblings)
+
+    def _next_phase_c_candidate(
+        self, fetch_siblings: Callable[[dict], list[dict]] | None
+    ) -> dict | None:
+        if fetch_siblings is None:
+            return None
+        for boundary_attr, queue_attr, fetched_attr in (
+            ("_boundary_below", "_phase_c_below_queue", "_phase_c_below_fetched"),
+            ("_boundary_above", "_phase_c_above_queue", "_phase_c_above_fetched"),
+        ):
+            if not getattr(self, fetched_attr):
+                setattr(self, fetched_attr, True)
+                boundary = getattr(self, boundary_attr)
+                if boundary is not None:
+                    siblings = fetch_siblings(boundary)
+                    setattr(
+                        self,
+                        queue_attr,
+                        [c for c in siblings if not matches_history(c, self.history_refs)],
+                    )
+            queue = getattr(self, queue_attr)
+            while queue:
+                candidate = queue.pop(0)
+                if not matches_history(candidate, self.history_refs):
+                    return candidate
         return None

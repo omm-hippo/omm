@@ -176,6 +176,29 @@ def test_update_reports_error_and_skips_data_refresh_on_pipx_failure(monkeypatch
     assert refresh_calls == []
 
 
+def test_update_reports_error_when_pipx_permission_denied(monkeypatch):
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli, "_git_update_src", lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    )
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: False)
+
+    def _raise(*args, **kwargs):
+        raise PermissionError("pipx exists but is not executable")
+
+    monkeypatch.setattr(cli.subprocess, "Popen", _raise)
+    refresh_calls = []
+    monkeypatch.setattr(cli, "_refresh_data", lambda: refresh_calls.append(1))
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "update failed" in result.stderr.lower()
+    assert refresh_calls == []
+
+
 def test_update_skips_reinstall_when_already_up_to_date(monkeypatch):
     same_commit = "abc1234" * 5 + "abc12345"
     monkeypatch.setattr(cli, "_src_head_commit", lambda: same_commit)

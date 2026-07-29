@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from omm.atomic import atomic_write_text, backup_corrupt_file, locked
 
-OMM_HOME = Path.home() / ".omm"
+
+def _resolve_omm_home() -> Path:
+    """~/.omm by default; OMM_HOME overrides it for machines where the home
+    directory's filesystem lacks room for GGUF models (e.g. contribute)."""
+    override = os.environ.get("OMM_HOME", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".omm"
+
+
+OMM_HOME = _resolve_omm_home()
 MODELS_DIR = OMM_HOME / "models"
 CONFIG_PATH = OMM_HOME / "config.json"
 REGISTRY_PATH = OMM_HOME / "models.json"

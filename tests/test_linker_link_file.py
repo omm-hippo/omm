@@ -1,3 +1,4 @@
+import struct
 from pathlib import Path
 
 import pytest
@@ -185,3 +186,41 @@ def test_ollama_preserves_unowned_manifest_and_existing_blob(isolated_omm_home, 
         linker.link_ollama(source, "model", models_dir=models_dir)
     assert blob.read_bytes() == b"user blob"
     assert manifest.read_text() == "user manifest"
+
+
+def test_link_file_raises_link_error_when_mkdir_fails(tmp_path, monkeypatch):
+    src = tmp_path / "model.gguf"
+    src.write_bytes(b"weights")
+    dst = tmp_path / "dst" / "model.gguf"
+
+    monkeypatch.setattr(Path, "mkdir", lambda self, parents=True, exist_ok=True: (_ for _ in ()).throw(OSError("permission denied")))
+
+    with pytest.raises(linker.LinkError):
+        linker.link_file(src, dst)
+
+
+def test_link_ollama_raises_link_error_when_blob_write_fails(tmp_path, monkeypatch):
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda self, data: (_ for _ in ()).throw(OSError("disk full"))
+    )
+
+    with pytest.raises(linker.LinkError):
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+
+def test_link_ollama_raises_link_error_on_corrupt_gguf_metadata(tmp_path, monkeypatch):
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+
+    def _raise_struct_error(*a, **k):
+        raise struct.error("unpack requires a buffer of 8 bytes")
+
+    monkeypatch.setattr(linker, "read_gguf_metadata", _raise_struct_error)
+
+    with pytest.raises(linker.LinkError, match="corrupted"):
+        linker.link_ollama(source, "model", models_dir=models_dir)

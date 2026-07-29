@@ -12,9 +12,11 @@ finishes the file over one connection rather than re-planning ranges.
 
 from __future__ import annotations
 
+import errno
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Callable
 
@@ -44,6 +46,10 @@ class DownloadError(Exception):
 
 
 class DownloadCancelled(DownloadError):
+    pass
+
+
+class InsufficientDiskSpaceError(DownloadError):
     pass
 
 
@@ -140,7 +146,14 @@ def _download_range_worker(
             for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
                 if not chunk:
                     continue
-                f.write(chunk)
+                try:
+                    f.write(chunk)
+                except OSError as e:
+                    if e.errno == errno.ENOSPC:
+                        raise InsufficientDiskSpaceError(
+                            f"Not enough disk space to download {part_path.name}."
+                        ) from e
+                    raise
                 with lock:
                     progress.update(task_id, advance=len(chunk))
                 if stop_check is not None and stop_check():
@@ -183,13 +196,26 @@ def _download_parallel(
                 )
                 for start, end in ranges
             ]
+            # A plain future.result() with no timeout blocks on a raw OS
+            # wait. On Windows that can't be interrupted by Ctrl+C at all
+            # (unlike POSIX, where a blocking syscall wakes on EINTR) until
+            # the wait itself completes - so polling with a short timeout is
+            # what lets a pending Ctrl+C actually get serviced.
             for future in futures:
-                future.result()
+                while True:
+                    try:
+                        future.result(timeout=0.5)
+                        break
+                    except FutureTimeoutError:
+                        continue
 
     if errors:
         cancelled = next((e for e in errors if isinstance(e, DownloadCancelled)), None)
         if cancelled is not None:
             raise cancelled
+        disk_full = next((e for e in errors if isinstance(e, InsufficientDiskSpaceError)), None)
+        if disk_full is not None:
+            raise disk_full
         raise DownloadError(str(errors[0])) from errors[0]
 
     part_path.rename(dest)
@@ -227,7 +253,14 @@ def _download_single_stream(
         with part_path.open(mode) as f:
             for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
                 if chunk:
-                    f.write(chunk)
+                    try:
+                        f.write(chunk)
+                    except OSError as e:
+                        if e.errno == errno.ENOSPC:
+                            raise InsufficientDiskSpaceError(
+                                f"Not enough disk space to download {dest.name}."
+                            ) from e
+                        raise
                     progress.update(task, advance=len(chunk))
                 if stop_check is not None and stop_check():
                     raise DownloadCancelled("interrupted by user")
@@ -246,7 +279,7 @@ def _attempt_download(
                 try:
                     _download_parallel(url, dest, part_path, total_size, thread_count, stop_check)
                     return
-                except DownloadCancelled:
+                except (DownloadCancelled, InsufficientDiskSpaceError):
                     raise
                 except DownloadError:
                     part_path.unlink(missing_ok=True)

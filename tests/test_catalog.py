@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -45,3 +47,15 @@ def test_catalog_rollback_restores_previous_different_snapshot(tmp_path):
 
     assert selected.exists()
     assert artifact.read_text() == '{"version":1}'
+
+
+def test_archive_current_artifact_returns_none_on_write_failure(tmp_path, monkeypatch):
+    artifact = tmp_path / "recommend.json"
+    artifact.write_text('{"version":1}')
+    history = tmp_path / "history"
+
+    monkeypatch.setattr(
+        Path, "mkdir", lambda self, parents=True, exist_ok=True: (_ for _ in ()).throw(OSError(errno.ENOSPC, "No space left on device"))
+    )
+
+    assert catalog.archive_current_artifact(artifact, history) is None

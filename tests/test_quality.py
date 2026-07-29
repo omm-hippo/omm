@@ -1151,3 +1151,18 @@ def test_outcome_for_confirmed_generation_timeout_is_performance_unfit():
     assert quality.FAILURE_REASON_CONFIRMED_GENERATION_TIMEOUT in quality.PERFORMANCE_UNFIT_REASONS
     assert quality.FAILURE_REASON_CONFIRMED_GENERATION_TIMEOUT not in quality.MODEL_UNFIT_REASONS
     assert quality.FAILURE_REASON_CONFIRMED_GENERATION_TIMEOUT not in quality.TRANSIENT_ERROR_REASONS
+
+
+def test_write_evidence_raises_quality_evaluation_error_on_write_failure(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    bad_path = tmp_path / "does-not-exist-parent" / "evidence.json"
+    monkeypatch.setattr(
+        Path, "mkdir", lambda self, parents=True, exist_ok=True: (_ for _ in ()).throw(OSError("permission denied"))
+    )
+
+    try:
+        quality.write_evidence({"models": []}, bad_path)
+        assert False, "expected QualityEvaluationError"
+    except quality.QualityEvaluationError:
+        pass
