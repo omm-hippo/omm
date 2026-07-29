@@ -60,6 +60,8 @@ omm help [command]   # Show help, same as --help
 
 All errors, warnings, and confirmation prompts print to stderr; `--json` output on `search`/`list`/`info`/`benchmark` is the only thing written to stdout, so it's safe to pipe (e.g. `omm list --json | jq .`). Any command that would otherwise prompt for confirmation fails fast with a non-zero exit code when there's no terminal attached instead of hanging — pass `--yes`/`-y` (`uninstall all`, `upgrade`, `import`, `contribute`) or the relevant flag (`install --skip-unfit`, `install --upload`/`--no-upload`) to run it unattended.
 
+Set `OMM_HOME` to store everything (models, config, catalog history) under a different directory instead of `~/.omm` — useful when `$HOME`'s filesystem doesn't have room for GGUF models, e.g. `OMM_HOME=/mnt/data/omm omm contribute --yes`.
+
 Localfit does not assume all installed memory belongs to the model. A live
 scan subtracts memory currently used by other applications, keeps at least
 2 GB (or 10% of RAM) for the OS and newly opened apps, and applies total-memory
