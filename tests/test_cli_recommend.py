@@ -17,6 +17,7 @@ def test_recommend_builds_choice_values_via_install_ref(monkeypatch, isolated_om
     }
     artifact = {"candidates": [candidate]}
     captured_choices = []
+    captured_options = {}
 
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli, "load_config", lambda: {})
@@ -28,8 +29,9 @@ def test_recommend_builds_choice_values_via_install_ref(monkeypatch, isolated_om
     )
     monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
 
-    def fake_select(prompt_text, choices):
+    def fake_select(prompt_text, choices, **kwargs):
         captured_choices.extend(choices)
+        captured_options.update(kwargs)
         return _DummySelect()
 
     class _DummySelect:
@@ -45,3 +47,5 @@ def test_recommend_builds_choice_values_via_install_ref(monkeypatch, isolated_om
               # when recommend() is called directly instead of via CliRunner
 
     assert captured_choices[0].value == "ms:org/repo"
+    assert captured_options["pointer"] == "❯"
+    assert "Enter select" in captured_options["instruction"]

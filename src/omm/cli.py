@@ -39,6 +39,7 @@ from omm import (
     linker,
     predictor,
     quality as quality_mod,
+    recommend_ui,
     registry,
     rules as rules_mod,
     scan_import,
@@ -878,12 +879,43 @@ def _resolve_upload_decision(prompt: str) -> bool:
     return _ask_confirm(prompt)
 
 
+def _select_recommended_model(
+    info: object,
+    ranked: list[tuple[dict, float | None]],
+    refs: list[str],
+) -> str | None:
+    import questionary
+
+    rows = recommend_ui.build_rows(ranked, refs)
+    recommend_ui.print_screen(console, info, len(rows))
+    choices = [
+        questionary.Choice(
+            title=recommend_ui.choice_title(row, console.size.width),
+            value=row.value,
+        )
+        for row in rows
+    ]
+    selected = _ask_select(
+        questionary.select(
+            "Choose a model",
+            choices=choices,
+            qmark="◆",
+            pointer="❯",
+            instruction="(↑↓ move · Enter select · Esc cancel)",
+            style=recommend_ui.SELECT_STYLE,
+        )
+    )
+    if selected is not None:
+        selected_row = next(row for row in rows if row.value == selected)
+        recommend_ui.print_detail(console, info, selected_row)
+    return selected
+
+
 @app.command()
 def recommend() -> None:
     """Scan hardware and suggest a model to install, ranked by a model
     trained on real install telemetry (falls back to static rules if the
     trained model can't be fetched)."""
-    import questionary
     import requests
 
     info = scan_hardware()
@@ -901,14 +933,7 @@ def recommend() -> None:
 
         refs = [search_mod.install_ref(c) for c, speed in viable]
         session_cache.record_seen(refs)
-        choices = [
-            questionary.Choice(
-                title=f"{c['name']} (~{speed:.0f} tok/s predicted) - {c.get('description', '')}",
-                value=ref,
-            )
-            for (c, speed), ref in zip(viable, refs)
-        ]
-        selected = _ask_select(questionary.select("Pick a model to install:", choices=choices))
+        selected = _select_recommended_model(info, viable, refs)
         if selected is None:
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
@@ -936,11 +961,11 @@ def recommend() -> None:
         raise typer.Exit(1)
 
     session_cache.record_seen([r["name"] for r in matches])
-    choices = [
-        questionary.Choice(title=f"{r['name']} - {r['description']}", value=r["name"])
-        for r in matches
-    ]
-    selected = _ask_select(questionary.select("Pick a model to install:", choices=choices))
+    selected = _select_recommended_model(
+        info,
+        [(rule, None) for rule in matches],
+        [rule["name"] for rule in matches],
+    )
     if selected is None:
         err_console.print("[yellow]Cancelled.[/yellow]")
         raise typer.Exit(0)
