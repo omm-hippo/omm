@@ -65,11 +65,14 @@ def archive_current_artifact(
     destination_dir = history_dir or CATALOG_HISTORY_DIR
     if not source.exists():
         return None
-    content = source.read_bytes()
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    destination = destination_dir / f"{sha256_bytes(content)}.json"
-    if not destination.exists():
-        destination.write_bytes(content)
+    try:
+        content = source.read_bytes()
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / f"{sha256_bytes(content)}.json"
+        if not destination.exists():
+            destination.write_bytes(content)
+    except OSError:
+        return None
     return destination
 
 
