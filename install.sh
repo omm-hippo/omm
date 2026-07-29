@@ -223,7 +223,11 @@ if [ -f "$ZSHRC" ] && ! grep -qF "completion:*' menu select" "$ZSHRC" 2>/dev/nul
 fi
 
 echo
-echo "Done. If 'omm' isn't found, open a new shell (pipx just updated your PATH)."
-echo "Try:  omm scan"
+echo "======================================================================"
+echo " Done! Your PATH was just updated, so THIS terminal doesn't see 'omm' yet."
+echo " Open a NEW terminal, or run:  source ~/.bashrc   (zsh: source ~/.zshrc)"
+echo "======================================================================"
+echo
+echo "Then try:  omm scan"
 echo "Tip: run 'omm --install-completion' once (then restart your shell) to enable Tab completion for install/uninstall."
 echo "     (zsh users: a menu-select zstyle was added to ~/.zshrc so Tab cycles through matches instead of just listing them.)"
