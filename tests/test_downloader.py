@@ -1,4 +1,6 @@
+import errno
 import threading
+from pathlib import Path
 
 import requests
 
@@ -19,6 +21,36 @@ class _FakeResp:
 
     def close(self):
         pass
+
+
+def test_download_file_converts_enospc_write_error_to_insufficient_disk_space_error(tmp_path, monkeypatch):
+    dest = tmp_path / "model.gguf"
+    monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
+    get_calls = []
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **k: get_calls.append(1) or _FakeResp(200, [b"hello"])
+    )
+
+    class _FullDiskFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def write(self, data):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(Path, "open", lambda self, mode="r": _FullDiskFile())
+
+    raised = None
+    try:
+        downloader.download_file("https://example.com/model.gguf", dest)
+    except downloader.InsufficientDiskSpaceError as e:
+        raised = e
+
+    assert raised is not None
+    assert len(get_calls) == 2  # probe + single-stream, not retried
 
 
 def test_download_file_completes_normally_without_stop_check(tmp_path, monkeypatch):
