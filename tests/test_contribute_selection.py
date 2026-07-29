@@ -162,6 +162,82 @@ def test_boundary_below_tracks_last_phase_a_draw_and_boundary_above_freezes_on_f
     assert queue._boundary_above is c
 
 
+def test_phase_c_yields_fetch_siblings_result_after_pools_exhausted(monkeypatch):
+    a, b = _candidate("o", "a.gguf"), _candidate("o", "b.gguf")
+    c = _candidate("o", "c.gguf")
+    ranked = [(a, 40.0), (b, 20.0), (c, -1.0)]
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: ranked)
+
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+    for _ in range(3):
+        candidate = queue.next_candidate()
+        queue.mark_seen(contribute.ref(candidate))
+
+    assert queue.next_candidate() is None  # phase A/B fully exhausted
+    assert queue._boundary_below is b
+    assert queue._boundary_above is c
+
+    sibling = _candidate("o", "b-q8.gguf")
+    fetched_for = []
+
+    def fake_fetch_siblings(boundary):
+        fetched_for.append(boundary)
+        return [sibling] if boundary is b else []
+
+    assert queue.next_candidate(fetch_siblings=fake_fetch_siblings) is sibling
+    assert fetched_for == [b]  # below tried before above
+
+
+def test_phase_c_falls_through_to_above_when_below_boundary_absent(monkeypatch):
+    c = _candidate("o", "c.gguf")
+    ranked = [(c, -1.0)]  # only ever unviable -> phase A empty, below boundary never set
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: ranked)
+
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+    assert queue.next_candidate() is c  # phase B above: only unviable candidate
+    queue.mark_seen(contribute.ref(c))
+    assert queue.next_candidate() is None
+    assert queue._boundary_below is None
+    assert queue._boundary_above is c
+
+    sibling = _candidate("o", "c-q2.gguf")
+    result = queue.next_candidate(
+        fetch_siblings=lambda boundary: [sibling] if boundary is c else []
+    )
+
+    assert result is sibling
+
+
+def test_phase_c_returns_none_and_does_not_call_fetch_siblings_when_not_provided(monkeypatch):
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: [])
+
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+
+    assert queue.next_candidate() is None
+
+
+def test_phase_c_does_not_refetch_siblings_twice_for_the_same_side(monkeypatch):
+    a = _candidate("o", "a.gguf")
+    ranked = [(a, 40.0)]
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: ranked)
+
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+    queue.next_candidate()
+    queue.mark_seen(contribute.ref(a))
+    assert queue.next_candidate() is None
+    assert queue._boundary_below is a
+
+    call_count = {"n": 0}
+
+    def counting_fetch(boundary):
+        call_count["n"] += 1
+        return []
+
+    assert queue.next_candidate(fetch_siblings=counting_fetch) is None
+    assert queue.next_candidate(fetch_siblings=counting_fetch) is None
+    assert call_count["n"] == 1  # below side fetched once and cached empty, not re-fetched
+
+
 def test_ref_includes_provider_prefix():
     candidate = {"repo_id": "org/repo", "filename": "model.gguf", "provider": "modelscope"}
     assert contribute.ref(candidate) == "modelscope:org/repo:model.gguf"

@@ -80,6 +80,10 @@ class ContributionQueue:
         self.history_refs = set(history_refs)
         self._boundary_below: dict | None = None
         self._boundary_above: dict | None = None
+        self._phase_c_below_queue: list[dict] = []
+        self._phase_c_above_queue: list[dict] = []
+        self._phase_c_below_fetched = False
+        self._phase_c_above_fetched = False
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -100,7 +104,9 @@ class ContributionQueue:
         self._rebuild()
 
     def next_candidate(
-        self, refetch: Callable[[], tuple[dict, bool]] | None = None
+        self,
+        refetch: Callable[[], tuple[dict, bool]] | None = None,
+        fetch_siblings: Callable[[dict], list[dict]] | None = None,
     ) -> dict | None:
         while self._phase_a_queue:
             candidate = self._phase_a_queue.pop(0)
@@ -130,6 +136,32 @@ class ContributionQueue:
             if changed:
                 self.artifact = new_artifact
                 self._rebuild()
-                return self.next_candidate(refetch)
+                return self.next_candidate(refetch, fetch_siblings)
 
+        return self._next_phase_c_candidate(fetch_siblings)
+
+    def _next_phase_c_candidate(
+        self, fetch_siblings: Callable[[dict], list[dict]] | None
+    ) -> dict | None:
+        if fetch_siblings is None:
+            return None
+        for boundary_attr, queue_attr, fetched_attr in (
+            ("_boundary_below", "_phase_c_below_queue", "_phase_c_below_fetched"),
+            ("_boundary_above", "_phase_c_above_queue", "_phase_c_above_fetched"),
+        ):
+            if not getattr(self, fetched_attr):
+                setattr(self, fetched_attr, True)
+                boundary = getattr(self, boundary_attr)
+                if boundary is not None:
+                    siblings = fetch_siblings(boundary)
+                    setattr(
+                        self,
+                        queue_attr,
+                        [c for c in siblings if not matches_history(c, self.history_refs)],
+                    )
+            queue = getattr(self, queue_attr)
+            while queue:
+                candidate = queue.pop(0)
+                if not matches_history(candidate, self.history_refs):
+                    return candidate
         return None
