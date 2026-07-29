@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from omm import cli, linker
@@ -89,3 +91,26 @@ def test_autoremove_skips_uninstalled_engines(isolated_omm_home, monkeypatch):
     assert result.exit_code == 0, result.stdout
     assert lmstudio_calls == []
     assert ollama_calls == []
+
+
+def test_autoremove_tolerates_permission_error_removing_incomplete_file(isolated_omm_home, monkeypatch):
+    _stub_no_new_engines(monkeypatch)
+    monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
+    cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    orphan = cli.MODELS_DIR / "orphan.gguf"
+    orphan.write_bytes(b"junk")
+
+    real_unlink = Path.unlink
+
+    def _flaky_unlink(self, missing_ok=False):
+        if self == orphan:
+            raise OSError("permission denied")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _flaky_unlink)
+
+    result = runner.invoke(cli.app, ["autoremove"])
+
+    assert result.exit_code == 0, result.stdout
+    assert orphan.exists()

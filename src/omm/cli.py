@@ -801,6 +801,9 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
             "  curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh"
         )
         raise typer.Exit(1)
+    except OSError as e:
+        err_console.print(f"[red]Update failed: {e}[/red]")
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -1614,11 +1617,17 @@ def _cleanup_incomplete_install(filename: str) -> bool:
     part = dest.with_suffix(dest.suffix + ".part")
     cleaned = False
     if part.exists():
-        part.unlink()
-        cleaned = True
+        try:
+            part.unlink()
+            cleaned = True
+        except OSError:
+            pass
     if dest.exists():
-        dest.unlink()
-        cleaned = True
+        try:
+            dest.unlink()
+            cleaned = True
+        except OSError:
+            pass
     return cleaned
 
 
@@ -1635,8 +1644,14 @@ def _remove_one(filename: str, entry: dict) -> None:
             linker.unlink_owned_link(Path(destination))
 
     dest = MODELS_DIR / filename
-    dest.unlink(missing_ok=True)
-    dest.with_suffix(dest.suffix + ".part").unlink(missing_ok=True)
+    try:
+        dest.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        dest.with_suffix(dest.suffix + ".part").unlink(missing_ok=True)
+    except OSError:
+        pass
 
     registry.remove_entry(filename)
     console.print(f"[green]Removed {filename}[/green]")
@@ -1802,7 +1817,12 @@ def _update_one(filename: str, entry: dict) -> str:
         if new_sha256 == old_sha256:
             tmp.unlink(missing_ok=True)
             return "up_to_date"
-        tmp.replace(dest)
+        try:
+            tmp.replace(dest)
+        except OSError as e:
+            err_console.print(f"[red]{filename}: update failed to finalize: {e}[/red]")
+            tmp.unlink(missing_ok=True)
+            return "skipped"
 
     ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
     linked = _link_model(dest, repo_id, ollama_tag)
@@ -2369,7 +2389,11 @@ def link_models(
 
     if directory is not None:
         directory = directory.expanduser()
-        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            err_console.print(f"[red]Could not create {directory}: {error}[/red]")
+            raise typer.Exit(1) from error
         linked_count = 0
         skipped_missing = 0
         for filename, entry in reg.items():
@@ -2444,10 +2468,16 @@ def _autoremove_incomplete_installs() -> int:
             continue
         if path.suffix == ".part":
             if path.with_suffix("").name not in reg:
-                path.unlink()
+                try:
+                    path.unlink()
+                except OSError:
+                    continue
                 removed += 1
         elif path.suffix == ".gguf" and path.name not in reg:
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError:
+                continue
             removed += 1
     return removed
 
