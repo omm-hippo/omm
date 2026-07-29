@@ -542,7 +542,11 @@ def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> No
     for group in groups:
         if group.sha256 not in selected_hashes:
             continue
-        result = scan_import.adopt_group(group)
+        try:
+            result = scan_import.adopt_group(group)
+        except (OSError, linker.LinkError) as e:
+            err_console.print(f"[yellow]Could not import {group.display_name}: {e}[/yellow]")
+            continue
         bytes_saved += result.bytes_saved
         console.print(f"  [green]Imported {result.filename}[/green]")
 
