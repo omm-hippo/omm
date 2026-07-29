@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "omm"
-version = "0.1.143"
+version = "0.1.144"
 description = "Open source Model Manager - a package manager for local LLMs (GGUF)"
 requires-python = ">=3.10"
 license = "MIT"
@@ -44,7 +44,7 @@ server = [
 nvidia = ["nvidia-ml-py>=12"]
 
 [project.scripts]
-omm = "omm.cli:app"
+omm = "omm.cli:main"
 localfit-server = "localfit_server.__main__:main"
 
 [tool.hatch.build.targets.wheel]

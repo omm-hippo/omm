@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import math
 import platform
@@ -3456,5 +3457,26 @@ def contribute(
             benchmark.stop_ollama_daemon(daemon_ref["proc"])
 
 
+def main() -> None:
+    """Console-script entry point (see pyproject.toml [project.scripts]).
+    Catches disk-full errors that escape every local handler - e.g. a JSON
+    write during `omm autoremove` - and prints one clean line instead of
+    Typer's default traceback. Everything else propagates untouched so a
+    genuine bug still surfaces as a normal traceback and can be reported."""
+    try:
+        app()
+    except InsufficientDiskSpaceError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise SystemExit(1) from None
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            err_console.print(
+                "[red]Not enough disk space to complete this operation. "
+                "Free up space and try again.[/red]"
+            )
+            raise SystemExit(1) from None
+        raise
+
+
 if __name__ == "__main__":
-    app()
+    main()
