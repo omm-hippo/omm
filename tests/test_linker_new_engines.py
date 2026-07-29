@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from omm import linker
@@ -255,3 +257,53 @@ def test_is_engine_installed_reflects_monkeypatched_per_engine_check(monkeypatch
 def test_engines_table_has_no_duplicate_keys():
     keys = [spec.key for spec in linker.ENGINES]
     assert len(keys) == len(set(keys))
+
+
+def test_link_jan_raises_link_error_when_write_fails(tmp_path, monkeypatch):
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"weights")
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: tmp_path / "jan")
+    monkeypatch.setattr(
+        Path, "write_text", lambda self, content: (_ for _ in ()).throw(OSError("disk full"))
+    )
+
+    with pytest.raises(linker.LinkError):
+        linker.link_jan(gguf_path, "model-id")
+
+
+def test_unlink_ollama_swallows_permission_error(tmp_path, monkeypatch):
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    linker.link_ollama(source, "model", models_dir=models_dir)
+
+    monkeypatch.setattr(Path, "unlink", lambda self, missing_ok=False: (_ for _ in ()).throw(OSError("permission denied")))
+
+    linker.unlink_ollama("model", models_dir=models_dir)  # must not raise
+
+
+def test_unlink_jan_swallows_permission_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: tmp_path / "jan")
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"weights")
+    linker.link_jan(gguf_path, "model-id")
+
+    monkeypatch.setattr(Path, "unlink", lambda self, missing_ok=False: (_ for _ in ()).throw(OSError("permission denied")))
+
+    linker.unlink_jan("model-id")  # must not raise
+
+
+def test_autoremove_jan_skips_manifest_it_cannot_unlink(tmp_path, monkeypatch):
+    models_dir = tmp_path / "jan"
+    model_dir = models_dir / "model-id"
+    model_dir.mkdir(parents=True)
+    config_path = model_dir / "model.yml"
+    config_path.write_text('model_path: "/gone/model.gguf"\n')
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    monkeypatch.setattr(Path, "unlink", lambda self, missing_ok=False: (_ for _ in ()).throw(OSError("permission denied")))
+
+    removed = linker.autoremove_jan()  # must not raise
+
+    assert removed == 0
+    assert config_path.exists()
