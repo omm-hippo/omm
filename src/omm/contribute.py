@@ -95,6 +95,7 @@ class ContributionQueue:
 
     def mark_seen(self, seen_ref: str) -> None:
         self.history_refs.add(seen_ref)
+        self._rebuild()
 
     def next_candidate(
         self, refetch: Callable[[], tuple[dict, bool]] | None = None
