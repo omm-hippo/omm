@@ -3010,6 +3010,7 @@ def _client_version() -> str | None:
 class _ContributionStats:
     benchmarked: list[tuple[str, float]]
     skipped_unfit: int = 0
+    skipped_low_disk: int = 0
     attempted_not_uploaded: int = 0
     daemon_restarts: int = 0
     given_up_on: int = 0
@@ -3219,6 +3220,14 @@ def _run_contribution_loop(
             queue.mark_seen(ref_str)
             continue
 
+        if outcome.skipped_low_disk:
+            stats.skipped_low_disk += 1
+            # Free space doesn't reliably change mid-session either, and a
+            # later `omm contribute` run will re-check it from scratch -
+            # same rationale as the skipped_unfit case just above.
+            queue.mark_seen(ref_str)
+            continue
+
         reg = registry.load_registry()
         fn, entry = _lookup_entry(outcome.filename, reg)
         if entry:
@@ -3276,6 +3285,7 @@ def _print_contribution_summary(
     for name, tokens_per_sec in stats.benchmarked:
         console.print(f"  - {name:<40} {tokens_per_sec:.1f} tok/s")
     console.print(f"Skipped (predicted not to fit this hardware): {stats.skipped_unfit}")
+    console.print(f"Skipped (not enough disk space): {stats.skipped_low_disk}")
     console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
     if stats.given_up_on:
         console.print(
