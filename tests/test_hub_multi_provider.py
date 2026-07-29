@@ -63,3 +63,15 @@ def test_bare_repo_on_neither_provider_raises_model_resolution_error(monkeypatch
 def test_url_from_known_modelscope_host_is_tagged(monkeypatch):
     resolved = hub.resolve_model("https://modelscope.cn/api/v1/models/org/repo/repo?FilePath=x.gguf")
     assert resolved.provider is None  # host tagging only covers huggingface.co for now
+
+
+def test_fetch_repo_files_routes_to_provider_module(monkeypatch):
+    def fake(repo_id):
+        return ["a.Q4_K_M.gguf", "a.Q8_0.gguf"], 7.0
+
+    monkeypatch.setattr(huggingface, "fetch_repo_files", fake)
+
+    files, param_count_b = hub.fetch_repo_files("huggingface", "org/repo")
+
+    assert files == ["a.Q4_K_M.gguf", "a.Q8_0.gguf"]
+    assert param_count_b == 7.0
