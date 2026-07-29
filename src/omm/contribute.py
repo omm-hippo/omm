@@ -78,6 +78,8 @@ class ContributionQueue:
         self.artifact = artifact
         self.hw = hw
         self.history_refs = set(history_refs)
+        self._boundary_below: dict | None = None
+        self._boundary_above: dict | None = None
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -103,6 +105,7 @@ class ContributionQueue:
         while self._phase_a_queue:
             candidate = self._phase_a_queue.pop(0)
             if not matches_history(candidate, self.history_refs):
+                self._boundary_below = candidate
                 return candidate
 
         for _ in range(2):  # try both sides at most once before giving up
@@ -110,10 +113,14 @@ class ContributionQueue:
                 candidate, self._below_cursor = _next_unseen(
                     self._below_pool, self.history_refs, self._below_cursor
                 )
+                if candidate is not None:
+                    self._boundary_below = candidate
             else:
                 candidate, self._above_cursor = _next_unseen(
                     self._above_pool, self.history_refs, self._above_cursor
                 )
+                if candidate is not None and self._boundary_above is None:
+                    self._boundary_above = candidate
             self._next_side_is_below = not self._next_side_is_below
             if candidate is not None:
                 return candidate

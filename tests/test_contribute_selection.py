@@ -142,6 +142,26 @@ def test_mark_seen_reranks_remaining_queue_from_current_rank_candidates(monkeypa
     assert queue.next_candidate() is c
 
 
+def test_boundary_below_tracks_last_phase_a_draw_and_boundary_above_freezes_on_first(monkeypatch):
+    a, b = _candidate("o", "a.gguf"), _candidate("o", "b.gguf")
+    c, d = _candidate("o", "c.gguf"), _candidate("o", "d.gguf")
+    ranked = [(a, 40.0), (b, 20.0), (c, -1.0), (d, -5.0)]
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: ranked)
+
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+    queue.next_candidate()  # phase A: a
+    queue.mark_seen(contribute.ref(a))
+    queue.next_candidate()  # phase A: b (last/weakest phase-A draw)
+    queue.mark_seen(contribute.ref(b))
+    queue.next_candidate()  # phase B above: c (first unviable)
+    queue.mark_seen(contribute.ref(c))
+    queue.next_candidate()  # phase B above: d
+    queue.mark_seen(contribute.ref(d))
+
+    assert queue._boundary_below is b
+    assert queue._boundary_above is c
+
+
 def test_ref_includes_provider_prefix():
     candidate = {"repo_id": "org/repo", "filename": "model.gguf", "provider": "modelscope"}
     assert contribute.ref(candidate) == "modelscope:org/repo:model.gguf"
