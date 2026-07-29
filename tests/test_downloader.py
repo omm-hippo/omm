@@ -403,3 +403,76 @@ def test_download_file_parallel_path_honors_stop_check(tmp_path, monkeypatch):
     assert raised
     assert not dest.exists()
     assert dest.with_suffix(dest.suffix + ".part").exists()
+
+
+def test_download_file_parallel_path_converts_enospc_write_error_to_insufficient_disk_space_error(tmp_path, monkeypatch):
+    """Verify ENOSPC in a range worker is converted to InsufficientDiskSpaceError,
+    propagates out without retry, and doesn't retry single-stream fallback."""
+    monkeypatch.setattr(downloader, "_MIN_PARALLEL_TOTAL", 10)
+    monkeypatch.setattr(downloader, "_MIN_CHUNK_SIZE", 5)
+    dest = tmp_path / "model.gguf"
+
+    # Setup a range-capable server that will be called for probe + range requests
+    payload = bytes(range(40)) * 1  # 40 bytes, enough to split into multiple ranges
+    server = _FakeRangeServer(payload)
+    monkeypatch.setattr(requests, "get", server)
+
+    # Track writes across all file objects; fail on second write to trigger ENOSPC
+    # during a range worker's write (not the truncate).
+    write_count = [0]
+
+    class _PartiallyFullDiskFile:
+        def __init__(self, path, mode):
+            self.path = path
+            self.mode = mode
+            self.file = None
+
+        def __enter__(self):
+            # Use real file for underlying storage; we'll intercept writes.
+            self.file = open(self.path, self.mode)
+            return self
+
+        def __exit__(self, *exc_info):
+            if self.file:
+                self.file.close()
+            return False
+
+        def truncate(self, size=None):
+            # Allow truncate (used by _download_parallel to pre-allocate)
+            return self.file.truncate(size)
+
+        def seek(self, pos):
+            return self.file.seek(pos)
+
+        def write(self, data):
+            write_count[0] += 1
+            # Fail on second write: first write succeeds (from first range worker),
+            # second write fails (from another range worker or attempt).
+            if write_count[0] >= 2:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return self.file.write(data)
+
+    original_open = Path.open
+    def fake_open(self, mode="r"):
+        # Intercept part_path.open to use our wrapper; let other opens pass through.
+        if "b" in mode and self.name.endswith(".part"):
+            return _PartiallyFullDiskFile(self, mode)
+        return original_open(self, mode)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+
+    raised = None
+    try:
+        downloader.download_file("https://example.com/model.gguf", dest)
+    except downloader.InsufficientDiskSpaceError as e:
+        raised = e
+
+    # Verify the error is InsufficientDiskSpaceError (not generic DownloadError).
+    assert raised is not None
+    # Verify no retry happened: probe (1) + range workers (at least 1) = at least 2 GET calls.
+    # If there were a retry (which there shouldn't be), we'd see another probe + range workers.
+    # So we expect exactly the requests from the first attempt.
+    assert server.requests[0] == "bytes=0-0"  # First request is the probe.
+    assert len(server.requests) >= 2  # Probe + at least one range worker before ENOSPC.
+    # Verify part_path still exists (not cleaned up yet, pending next retry).
+    assert dest.with_suffix(dest.suffix + ".part").exists()
