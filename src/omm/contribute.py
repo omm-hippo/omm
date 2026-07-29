@@ -12,6 +12,17 @@ Selection order:
   above), skipping anything in `history_refs`. When both sides are fully
   seen, the caller may supply `refetch` to check for newly published
   candidates before giving up.
+  Phase C - once Phase A, Phase B, and `refetch` are all exhausted, the
+  caller may supply `fetch_siblings` to probe other GGUF quantizations of
+  the two boundary repos (the last candidate Phase A popped, and the
+  first Phase B drew from its unviable side) - below first, then above -
+  narrowing in on this machine's actual fit/unfit ceiling instead of
+  stopping cold at the fixed candidate pool's edge.
+
+`mark_seen` re-ranks the remaining pools immediately (via `_rebuild`), so
+a local calibration update from the benchmark that was just marked seen
+takes effect on the very next `next_candidate()` call rather than only on
+the next session or the next `refetch`.
 """
 
 from __future__ import annotations
