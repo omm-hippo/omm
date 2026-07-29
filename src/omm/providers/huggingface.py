@@ -36,10 +36,13 @@ def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
     except requests.RequestException as e:
         raise ModelResolutionError(f"Could not reach Hugging Face for '{repo_id}': {e}") from e
 
-    payload = resp.json()
-    siblings = payload.get("siblings", [])
-    files = [s["rfilename"] for s in siblings if s["rfilename"].endswith(".gguf")]
-    param_count_b = _parse_gguf_total_params(payload)
+    try:
+        payload = resp.json()
+        siblings = payload.get("siblings", [])
+        files = [s["rfilename"] for s in siblings if s["rfilename"].endswith(".gguf")]
+        param_count_b = _parse_gguf_total_params(payload)
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        raise ModelResolutionError(f"HF API returned an unexpected response for '{repo_id}': {e}") from e
     return files, param_count_b
 
 
@@ -86,10 +89,13 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
     except requests.RequestException:
         return None
 
-    entries = resp.json()
-    if not entries:
+    try:
+        entries = resp.json()
+        if not entries:
+            return None
+        return entries[0].get("lfs", {}).get("sha256")
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError):
         return None
-    return entries[0].get("lfs", {}).get("sha256")
 
 
 def remote_file_size(repo_id: str, filename: str) -> int | None:
