@@ -53,7 +53,7 @@ from omm import (
 from omm import contribute as contribute_mod
 from omm.completion import complete_install_name, complete_remove_filename
 from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
-from omm.downloader import DownloadCancelled, DownloadError, download_file
+from omm.downloader import DownloadCancelled, DownloadError, InsufficientDiskSpaceError, download_file
 from omm.hardware import HardwareInfo, calculate_memory_budget, scan_hardware
 from omm.hashutil import sha256_file
 from omm.featurize import (
@@ -1199,6 +1199,7 @@ class InstallOutcome:
     tokens_per_sec: float | None = None
     telemetry_sent: bool = False
     skipped_unfit: bool = False
+    skipped_low_disk: bool = False
     sha256: str | None = None
     failure_reason: str | None = None
     model_metadata: dict | None = None
@@ -1365,6 +1366,20 @@ def _install_impl(
     if dest.exists():
         err_console.print(f"[yellow]{filename} already downloaded, skipping fetch.[/yellow]")
     else:
+        size_bytes = remote_file_size(resolved.provider or "huggingface", repo_id, filename) if repo_id else None
+        if size_bytes:
+            free_gb = shutil.disk_usage(MODELS_DIR).free / (1024**3)
+            required_gb = size_bytes / (1024**3)
+            if required_gb > free_gb:
+                message = (
+                    f"{filename} needs ~{required_gb:.1f}GB but only "
+                    f"{free_gb:.1f}GB free on disk"
+                )
+                if skip_unfit:
+                    err_console.print(f"[yellow]Skipping {message}.[/yellow]")
+                    return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
+                err_console.print(f"[red]Not enough disk space: {message}.[/red]")
+                raise typer.Exit(1)
         try:
             if stop_event is not None:
                 download_file(url, dest, stop_check=stop_event.is_set)
@@ -1372,6 +1387,12 @@ def _install_impl(
                 download_file(url, dest)
         except DownloadCancelled as e:
             raise ContributionStopped(filename) from e
+        except InsufficientDiskSpaceError as e:
+            _cleanup_incomplete_install(filename)
+            err_console.print(f"[red]{e}[/red]")
+            if skip_unfit:
+                return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
+            raise typer.Exit(1) from e
         except DownloadError as e:
             err_console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from e
