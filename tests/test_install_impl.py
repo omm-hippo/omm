@@ -391,7 +391,7 @@ def test_report_telemetry_emits_v7_success_with_cpu_fields(
     )
 
     event = sent[0]
-    assert event["benchmark_version"] == 7
+    assert event["benchmark_version"] == 8
     assert event["outcome"] == "success"
     assert "failure_reason" not in event
     assert event["parameter_count_b"] == 7
@@ -401,10 +401,15 @@ def test_report_telemetry_emits_v7_success_with_cpu_fields(
     assert event["gpu_offload_percent"] == 75
     assert event["model_digest"] == "a" * 64
     assert "runtime" not in event
-    assert event["cpu_model"] == "private CPU name"
+    assert event["cpu_score"] == 0.0
+    assert event["cpu_tier"] == 0.0
     assert event["cpu_arch"] == "x86_64"
     assert event["cpu_physical_cores"] == 4
     assert event["cpu_logical_cores"] == 8
+    assert event["gpu_score"] == 0.0
+    assert event["gpu_tier"] == 0.0
+    assert "cpu_model" not in event
+    assert "private CPU name" not in json.dumps(event)
     assert "private GPU name" not in json.dumps(event)
 
 

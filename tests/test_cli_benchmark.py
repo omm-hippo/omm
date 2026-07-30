@@ -369,7 +369,7 @@ def test_benchmark_summary_reports_mixed_outcomes_and_uploads_all_of_them(isolat
     assert "outcome" not in by_tag["small:latest"]
 
     unfit_event = by_tag["big:latest"]
-    assert unfit_event["benchmark_version"] == 7
+    assert unfit_event["benchmark_version"] == 8
     assert unfit_event["outcome"] == "model_unfit"
     assert unfit_event["failure_reason"] == "out_of_memory"
     assert "tokens_per_sec" not in unfit_event
@@ -377,7 +377,7 @@ def test_benchmark_summary_reports_mixed_outcomes_and_uploads_all_of_them(isolat
     assert unfit_event["context_length"] == 4096
 
     transient_event = by_tag["flaky:latest"]
-    assert transient_event["benchmark_version"] == 7
+    assert transient_event["benchmark_version"] == 8
     assert transient_event["outcome"] == "transient_error"
     assert transient_event["failure_reason"] == "connection_error"
     assert "tokens_per_sec" not in transient_event
@@ -518,7 +518,7 @@ def test_benchmark_reports_and_uploads_performance_unfit_outcome(isolated_omm_ho
 
     assert len(sent) == 1  # 8. exactly one Firebase event for this tag - no duplicate upload
     event = sent[0]
-    assert event["benchmark_version"] == 7
+    assert event["benchmark_version"] == 8
     assert event["outcome"] == "performance_unfit"
     assert event["failure_reason"] == "confirmed_generation_timeout"
     assert event["confirmation_attempts"] == 2
