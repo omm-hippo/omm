@@ -64,6 +64,7 @@ def _row() -> dict:
         "cpu_threads": 8,
         "num_batch": 512,
         "cpu_model": "AMD Ryzen 9 7950X3D",
+        "gpu_model": "NVIDIA RTX 4090",
         "cpu_arch": "x86_64",
         "cpu_physical_cores": 16,
         "cpu_logical_cores": 32,
@@ -153,3 +154,18 @@ def test_explicit_metadata_beats_conflicting_filename_values():
     assert features[FEATURE_ORDER.index("active_param_count_b")] == 1.0
     assert features[FEATURE_ORDER.index("quant_bits")] == 8.0
     assert features[FEATURE_ORDER.index("model_size_gb")] == 3.0 * 8.0 / 8.0 * 1.1
+
+
+def test_gpu_score_and_tier_are_derived_from_gpu_name_not_hardcoded_zero():
+    hw = _hardware()  # gpu_name="NVIDIA RTX 4090" already set in this fixture
+    candidate = {
+        "name": "model-7B-Q4.gguf",
+        "filename": "model-7B-Q4.gguf",
+        "repo_id": "org/model-7B",
+        "size_bytes": 4 * 1024**3,
+    }
+    features = build_prediction_features(hw, candidate, runtime=_runtime())
+    gpu_score_index = FEATURE_ORDER.index("gpu_score")
+    gpu_tier_index = FEATURE_ORDER.index("gpu_tier")
+    assert features[gpu_score_index] == 4090.0
+    assert features[gpu_tier_index] == 0.0

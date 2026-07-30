@@ -119,6 +119,7 @@ def build_prediction_features(
     if model_size_gb is None and parameters is not None and quant_bits is not None:
         model_size_gb = parameters * quant_bits / 8.0 * 1.1
     cpu_score, cpu_tier = parse_chip_score(hw.cpu or "")
+    gpu_score, gpu_tier = parse_chip_score(hw.gpu_name or "")
     return build_features(
         ram_gb=hw.ram_total_gb,
         vram_gb=hw.vram_total_gb if has_gpu else 0.0,
@@ -127,8 +128,8 @@ def build_prediction_features(
         quant_bits=quant_bits,
         cpu_score=cpu_score,
         cpu_tier=cpu_tier,
-        gpu_score=0.0,
-        gpu_tier=0.0,
+        gpu_score=gpu_score,
+        gpu_tier=gpu_tier,
         model_size_gb=model_size_gb or 0.0,
         gpu_tflops=hw.gpu_tflops or 0.0,
         context_length=runtime.context_length,
