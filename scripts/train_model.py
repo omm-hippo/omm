@@ -339,8 +339,7 @@ def _extract_features_and_reason(
     if is_direct and (not isinstance(cpu_model, str) or not cpu_model.strip()):
         return None, None, "missing_cpu_metadata"
     cpu_score, cpu_tier = parse_chip_score(cpu_model if isinstance(cpu_model, str) else "")
-    gpu_model = row.get("gpu_model") if is_direct else ""
-    gpu_score, gpu_tier = parse_chip_score(gpu_model if isinstance(gpu_model, str) else "")
+    gpu_score, gpu_tier = 0.0, 0.0
     features = build_features(
         ram_gb=ram_gb,
         vram_gb=vram_gb,

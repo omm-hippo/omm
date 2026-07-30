@@ -64,7 +64,6 @@ def _row() -> dict:
         "cpu_threads": 8,
         "num_batch": 512,
         "cpu_model": "AMD Ryzen 9 7950X3D",
-        "gpu_model": "NVIDIA RTX 4090",
         "cpu_arch": "x86_64",
         "cpu_physical_cores": 16,
         "cpu_logical_cores": 32,
