@@ -176,6 +176,66 @@ def test_v6_rejects_missing_or_invalid_direct_metadata_without_name_fallback():
     assert reason == "missing_runtime_metadata"
 
 
+def _v8_row(speed: float, **overrides) -> dict:
+    defaults = dict(
+        benchmark_version=8,
+        outcome="success",
+        parameter_count_b=7.0,
+        active_parameter_count_b=3.0,
+        quant_bits=4.0,
+        engine_version="1.0",
+        client_version="1.0",
+        runtime_profile="throughput",
+        cpu_score=7950.0,
+        cpu_tier=1.0,
+        cpu_arch="x86_64",
+        cpu_physical_cores=8,
+        cpu_logical_cores=16,
+        gpu_score=4090.0,
+        gpu_tier=0.0,
+        sample_count=3,
+        tokens_per_sec_min=speed - 1,
+        tokens_per_sec_max=speed + 1,
+    )
+    defaults.update(overrides)
+    return _row(speed, **defaults)
+
+
+def test_v8_uses_direct_cpu_and_gpu_score_without_a_raw_name():
+    X, y = train_model.real_rows_to_training_data([_v8_row(20)])
+
+    assert len(X) == 1
+    assert y == [20]
+
+
+def test_v8_rejects_missing_cpu_score():
+    row = _v8_row(20, cpu_score=None)
+
+    _, reason = train_model._real_row_to_sample(row)
+
+    assert reason == "missing_cpu_metadata"
+
+
+def test_v8_gpu_score_defaults_to_zero_when_no_gpu_was_detected():
+    with_gpu, reason1 = train_model._real_row_to_sample(_v8_row(20))
+    without_gpu, reason2 = train_model._real_row_to_sample(
+        _v8_row(20, gpu_score=None, gpu_tier=None, vram_gb=None)
+    )
+
+    assert reason1 is None and reason2 is None
+    gpu_score_index = train_model.FEATURE_ORDER.index("gpu_score")
+    assert with_gpu[0][gpu_score_index] == 4090.0
+    assert without_gpu[0][gpu_score_index] == 0.0
+
+
+def test_v8_success_outcome_required_like_v7():
+    row = _v8_row(20, outcome="bogus")
+
+    _, reason = train_model._real_row_to_sample(row)
+
+    assert reason == "invalid_outcome"
+
+
 def _v6_row(speed: float, **overrides) -> dict:
     return _row(
         speed,
@@ -261,6 +321,7 @@ def test_training_audit_explains_rejections_and_duplicate_collapse():
         "unique_configurations": 1,
         "direct_v6_unique_configurations": 0,
         "direct_v7_unique_configurations": 0,
+        "direct_v8_unique_configurations": 0,
         "direct_unique_configurations": 0,
         "duplicates_collapsed": 1,
         "rejections": {
@@ -851,7 +912,7 @@ def test_v7_outcome_contract_across_both_datasets():
     assert fit_audit["rejections"] == {"transient_error_excluded": 1}
 
 
-def test_report_telemetry_v7_success_event_feeds_speed_regression_and_positive_fit_label(monkeypatch):
+def test_report_telemetry_v8_success_event_feeds_speed_regression_and_positive_fit_label(monkeypatch):
     """End-to-end contract check between omm.cli and scripts.train_model:
     the exact event `_report_telemetry` sends for a successful benchmark
     must be consumable by both training datasets. This is exactly the kind
@@ -864,8 +925,8 @@ def test_report_telemetry_v7_success_event_feeds_speed_regression_and_positive_f
         "scan_hardware",
         lambda: SimpleNamespace(
             ram_total_gb=16.0, vram_total_gb=8.0, unified_memory=False, gpu_tflops=20.0,
-            cpu="Test CPU", cpu_arch="x86_64", cpu_physical_cores=4, cpu_logical_cores=8,
-            gpu_name="Test GPU",
+            cpu="AMD Ryzen 5 5600X", cpu_arch="x86_64", cpu_physical_cores=4, cpu_logical_cores=8,
+            gpu_name="NVIDIA RTX 4090",
         ),
     )
     sent = []
@@ -885,13 +946,16 @@ def test_report_telemetry_v7_success_event_feeds_speed_regression_and_positive_f
     )
 
     event = sent[0]
-    assert event["benchmark_version"] == 7
+    assert event["benchmark_version"] == 8
     assert event["outcome"] == "success"
+    assert event["cpu_score"] == 5600.0
+    assert event["gpu_score"] == 4090.0
     assert "failure_reason" not in event
+    assert "cpu_model" not in event
 
     speed_X, speed_y, speed_audit = train_model.real_rows_to_training_data_with_audit([event])
     assert speed_y == [42.5]
-    assert speed_audit["direct_v7_unique_configurations"] == 1
+    assert speed_audit["direct_v8_unique_configurations"] == 1
     assert speed_audit["rejections"] == {}
 
     fit_X, fit_y, fit_audit = train_model.real_rows_to_fit_training_data_with_audit([event])
