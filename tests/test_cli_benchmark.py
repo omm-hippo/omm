@@ -24,6 +24,23 @@ def _hardware() -> HardwareInfo:
     )
 
 
+def _hardware_with_chip_metadata() -> HardwareInfo:
+    return HardwareInfo(
+        os_name="Linux",
+        os_version="",
+        cpu="AMD Ryzen 5 5600X",
+        ram_total_gb=16,
+        ram_available_gb=12,
+        unified_memory=False,
+        gpu_name="NVIDIA GeForce RTX 4090",
+        vram_total_gb=24,
+        vram_free_gb=20,
+        cpu_arch="x86_64",
+        cpu_physical_cores=6,
+        cpu_logical_cores=12,
+    )
+
+
 def _full_report():
     return {
         "schema_version": 1,
@@ -546,3 +563,46 @@ def test_performance_unfit_upload_rejected_when_timeout_seconds_missing(isolated
     runner.invoke(cli.app, ["benchmark", "big:latest", "--confirm-performance-timeout"])
 
     assert sent == []
+
+
+def test_report_telemetry_v8_success_sends_chip_scores_not_raw_names(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
+    sent = []
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
+
+    cli._report_telemetry(
+        "model-7B-Q4.gguf", "org/model", 42.5,
+        size_bytes=4 * 1024**3, sample_count=3, speed_min=40.0, speed_max=45.0,
+        model_metadata={"parameter_size": "7B", "quantization_level": "Q4_K_M"},
+        runtime={
+            "runtime_profile": "explicit_ollama_options", "context_length": 4096,
+            "gpu_offload_percent": 100, "cpu_threads": 8, "num_batch": 512,
+        },
+        engine_version="0.32.1",
+    )
+
+    event = sent[0]
+    assert event["benchmark_version"] == 8
+    assert event["cpu_score"] == 5600.0
+    assert event["cpu_tier"] == 0.0
+    assert event["gpu_score"] == 4090.0
+    assert event["gpu_tier"] == 0.0
+    assert "cpu_model" not in event
+    assert "gpu_name" not in event
+
+
+def test_report_failure_telemetry_v8_sends_chip_scores_not_raw_names(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
+    sent = []
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
+
+    cli._report_failure_telemetry(
+        {"tag": "too-big:latest", "outcome": "model_unfit", "failure_reason": "out_of_memory"},
+        {},
+    )
+
+    event = sent[0]
+    assert event["benchmark_version"] == 8
+    assert event["cpu_score"] == 5600.0
+    assert event["gpu_score"] == 4090.0
+    assert "cpu_model" not in event

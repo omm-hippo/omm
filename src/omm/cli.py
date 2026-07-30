@@ -62,6 +62,7 @@ from omm.featurize import (
     candidate_parameter_count_billions,
     candidate_quant_bits,
     is_mmproj_filename,
+    parse_chip_score,
     parse_param_count_billions,
     parse_quant_bits,
 )
@@ -2654,9 +2655,10 @@ def benchmark_cmd(
 
         console.print(f"[green]Saved reproducible local evidence to {output}.[/green]")
         console.print(
-            "[dim]No generated text is stored. v6/v7 telemetry includes CPU model, "
-            "architecture, and core counts; it excludes GPU names. "
-            "aggregate numbers may be shared below. Not a leaderboard.[/dim]"
+            "[dim]No generated text is stored. v8 telemetry includes a CPU/GPU "
+            "generation score (never the model name), plus CPU architecture and "
+            "core counts. aggregate numbers may be shared below. Not a "
+            "leaderboard.[/dim]"
         )
         if _resolve_upload_decision(
             "Send these benchmark results to the server to help train the recommendation model?"
@@ -2822,6 +2824,7 @@ def _report_telemetry(
     safe_filename = _safe_model_filename(model_filename or filename)
     complete_runtime = _complete_runtime(runtime)
     complete_cpu = _complete_cpu_metadata(info)
+    complete_gpu = _complete_gpu_metadata(info)
     client_version = _client_version()
     if (
         parameter_count is not None and active_parameter_count is not None and quant_bits is not None
@@ -2829,23 +2832,25 @@ def _report_telemetry(
         and isinstance(engine_version, str) and engine_version
         and client_version is not None and sample_count >= 3
     ):
-        # v7: same direct-metadata contract as the old v6 promotion, plus an
-        # explicit outcome so this measurement is unambiguously distinct
-        # from a v7 model_unfit/transient_error failure event (never sent
-        # from this function - see _report_failure_telemetry). Do not send
-        # v6 from new code: v6 stays a read-only, backward-compatible
-        # schema for historical data already in Firebase.
+        # v8: same direct-metadata contract as v7, except cpu_score/cpu_tier
+        # (locally computed, never the raw name) replace cpu_model, and
+        # gpu_score/gpu_tier (same parser, run on the GPU name instead) are
+        # attached whenever a GPU was detected at all. Do not send v6/v7
+        # from new code: both stay read-only, backward-compatible schemas
+        # for historical data already in Firebase.
         event.update(
             parameter_count_b=parameter_count,
             active_parameter_count_b=active_parameter_count,
             quant_bits=quant_bits,
             engine_version=engine_version,
             client_version=client_version,
-            benchmark_version=7,
+            benchmark_version=8,
             outcome="success",
             **complete_runtime,
             **complete_cpu,
         )
+        if complete_gpu:
+            event.update(complete_gpu)
         if safe_filename is not None:
             event["model_filename"] = safe_filename
         if digest is not None:
@@ -2890,7 +2895,7 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
         "unified_memory": info.unified_memory,
         "model_installed": _safe_model_filename(tag) or str(tag)[:512],
         "engine": "ollama",
-        "benchmark_version": 7,
+        "benchmark_version": 8,
         "outcome": outcome,
         "failure_reason": reason,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
@@ -2907,6 +2912,9 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     complete_cpu = _complete_cpu_metadata(info)
     if complete_cpu:
         event.update(complete_cpu)
+    complete_gpu = _complete_gpu_metadata(info)
+    if complete_gpu:
+        event.update(complete_gpu)
 
     # Best-effort model metadata: present whenever the failure happened after
     # /api/show succeeded (e.g. an out-of-memory load), absent when the model
@@ -3007,8 +3015,11 @@ def _safe_model_filename(value: object) -> str | None:
     return Path(value.replace("\\", "/")).name
 
 
-def _complete_cpu_metadata(info: HardwareInfo) -> dict[str, str | int] | None:
-    """Return direct-metadata (v6/v7) CPU data only when it is useful for training."""
+def _complete_cpu_metadata(info: HardwareInfo) -> dict[str, str | int | float] | None:
+    """Return direct-metadata (v8) CPU data only when it is useful for
+    training. Never includes the raw CPU model name - only a locally
+    computed ordinal score/tier from the same parser GPU names use (see
+    docs/telemetry-v8.md)."""
     model = getattr(info, "cpu", None)
     arch = getattr(info, "cpu_arch", None)
     physical = getattr(info, "cpu_physical_cores", None)
@@ -3023,12 +3034,26 @@ def _complete_cpu_metadata(info: HardwareInfo) -> dict[str, str | int] | None:
         or not 1 <= physical <= logical <= 1024
     ):
         return None
+    cpu_score, cpu_tier = parse_chip_score(model)
     return {
-        "cpu_model": model,
+        "cpu_score": cpu_score,
+        "cpu_tier": cpu_tier,
         "cpu_arch": arch,
         "cpu_physical_cores": physical,
         "cpu_logical_cores": logical,
     }
+
+
+def _complete_gpu_metadata(info: HardwareInfo) -> dict[str, float] | None:
+    """Return locally-computed v8 GPU chip score data, or None when no GPU
+    was detected at all. Never includes the raw GPU name (see
+    docs/telemetry-v8.md) - only the two numbers `parse_chip_score` derives
+    from it."""
+    name = getattr(info, "gpu_name", None)
+    if not isinstance(name, str) or not name.strip():
+        return None
+    gpu_score, gpu_tier = parse_chip_score(name)
+    return {"gpu_score": gpu_score, "gpu_tier": gpu_tier}
 
 
 def _complete_runtime(runtime: object) -> dict | None:
