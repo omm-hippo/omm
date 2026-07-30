@@ -141,6 +141,19 @@ def test_validate_dataset_rejects_union_exceeding_the_sum_it_is_drawn_from():
         validate_dataset(audit, min_unique_configurations=1)
 
 
+def test_validate_dataset_accepts_v8_only_corpus():
+    # Steady-state future: telemetry is 100% v8 (no v6/v7 rows at all). The
+    # ceiling check must count v8 or this raises a bare ValueError instead of
+    # the caught InsufficientTelemetryError, hard-failing the training job.
+    audit = {
+        "raw_rows": 5, "rejected_rows": 0, "unique_configurations": 5,
+        "direct_v6_unique_configurations": 0, "direct_v7_unique_configurations": 0,
+        "direct_v8_unique_configurations": 5,
+        "direct_unique_configurations": 5,
+    }
+    validate_dataset(audit, min_unique_configurations=5)  # must not raise
+
+
 def test_dataset_rejection_rate_must_be_a_fraction():
     with pytest.raises(ValueError, match="at most 1"):
         validate_dataset(

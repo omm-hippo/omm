@@ -390,6 +390,7 @@ def validate_dataset(
     unique = audit.get("unique_configurations")
     direct_v6_unique = audit.get("direct_v6_unique_configurations")
     direct_v7_unique = audit.get("direct_v7_unique_configurations", 0)
+    direct_v8_unique = audit.get("direct_v8_unique_configurations", 0)
     direct_unique = audit.get("direct_unique_configurations")
     checks = [
         ("raw_rows", raw_rows),
@@ -397,6 +398,7 @@ def validate_dataset(
         ("unique_configurations", unique),
         ("direct_v6_unique_configurations", direct_v6_unique),
         ("direct_v7_unique_configurations", direct_v7_unique),
+        ("direct_v8_unique_configurations", direct_v8_unique),
     ]
     if direct_unique is not None:
         checks.append(("direct_unique_configurations", direct_unique))
@@ -409,16 +411,19 @@ def validate_dataset(
         # Backward-compatible fallback for audits built before this field
         # existed (e.g. hand-constructed pre-fix test fixtures): reproduces
         # the old sum-based count. This is only exact when a configuration
-        # cannot appear in both the v6 and v7 sets - true for any caller
-        # that never mixed schema versions. Real audits from
+        # cannot appear in more than one of the v6/v7/v8 sets - true for any
+        # caller that never mixed schema versions. Real audits from
         # real_rows_to_training_data_with_audit always provide the field
         # directly, computed as a proper union: a configuration measured
-        # under both v6 and v7 is one training example, not two.
-        direct_unique = direct_v6_unique + direct_v7_unique
-    if direct_unique > direct_v6_unique + direct_v7_unique:
+        # under more than one schema version is one training example, not
+        # several.
+        direct_unique = direct_v6_unique + direct_v7_unique + direct_v8_unique
+    if direct_unique > direct_v6_unique + direct_v7_unique + direct_v8_unique:
         raise ValueError(
             "audit.direct_unique_configurations cannot exceed the sum of "
-            "audit.direct_v6_unique_configurations and audit.direct_v7_unique_configurations"
+            "audit.direct_v6_unique_configurations, "
+            "audit.direct_v7_unique_configurations, and "
+            "audit.direct_v8_unique_configurations"
         )
     if direct_unique > unique:
         raise ValueError(
