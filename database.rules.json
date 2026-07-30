@@ -102,7 +102,7 @@
           ".validate": "!newData.exists() || (newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 0 && newData.val() <= 65536)"
         },
         "cpu_model": {
-          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 256)"
+          ".validate": "!newData.exists() || (newData.parent().child('benchmark_version').val() < 8 && newData.isString() && newData.val().length > 0 && newData.val().length <= 256)"
         },
         "cpu_arch": {
           ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 64)"
