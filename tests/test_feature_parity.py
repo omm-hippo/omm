@@ -41,7 +41,8 @@ def _hardware() -> HardwareInfo:
 def _row() -> dict:
     return {
         "engine": "ollama",
-        "benchmark_version": 6,
+        "benchmark_version": 8,
+        "outcome": "success",
         "tokens_per_sec": 20,
         "sample_count": 3,
         "tokens_per_sec_min": 20,
@@ -63,10 +64,17 @@ def _row() -> dict:
         "gpu_offload_percent": 100,
         "cpu_threads": 8,
         "num_batch": 512,
-        "cpu_model": "AMD Ryzen 9 7950X3D",
+        # Matches parse_chip_score("AMD Ryzen 9 7950X3D") == (7950.0, 1.0)
+        # and parse_chip_score("NVIDIA RTX 4090") == (4090.0, 0.0) -
+        # _hardware()'s cpu/gpu_name below, run through the same parser
+        # `_report_telemetry` uses client-side.
+        "cpu_score": 7950.0,
+        "cpu_tier": 1.0,
         "cpu_arch": "x86_64",
         "cpu_physical_cores": 16,
         "cpu_logical_cores": 32,
+        "gpu_score": 4090.0,
+        "gpu_tier": 0.0,
     }
 
 
