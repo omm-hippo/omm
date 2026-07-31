@@ -44,6 +44,7 @@ def test_telemetry_opt_in_true_migrates_to_always_policy(isolated_omm_home):
 
     assert loaded["telemetry_send_policy"] == "always"
     assert "telemetry_opt_in" not in loaded
+    assert loaded["onboarding_version"] == config.CURRENT_ONBOARDING_VERSION
 
 
 def test_telemetry_opt_in_false_migrates_to_ask_policy(isolated_omm_home):
@@ -60,3 +61,28 @@ def test_fresh_config_defaults_to_ask_policy(isolated_omm_home):
 
     assert loaded["telemetry_send_policy"] == "ask"
     assert loaded["contribute_always_ack"] is False
+    assert loaded["onboarding_version"] == 0
+    assert loaded["config_schema_version"] == config.CONFIG_SCHEMA_VERSION
+
+
+def test_invalid_new_settings_fall_back_without_reopening_setup(isolated_omm_home):
+    config.CONFIG_PATH.write_text(
+        json.dumps(
+            {
+                "config_schema_version": config.CONFIG_SCHEMA_VERSION,
+                "onboarding_version": "broken",
+                "default_engine": "unknown",
+                "telemetry_send_policy": "sometimes",
+                "update_channel": "nightly",
+                "ui_mode": "huge",
+            }
+        )
+    )
+
+    loaded = config.load_config()
+
+    assert loaded["onboarding_version"] == config.CURRENT_ONBOARDING_VERSION
+    assert loaded["default_engine"] is None
+    assert loaded["telemetry_send_policy"] == "ask"
+    assert loaded["update_channel"] == "stable"
+    assert loaded["ui_mode"] == "compact"

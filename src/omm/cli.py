@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import json
 import math
+import os
 import platform
 import re
 import shutil
@@ -38,6 +39,7 @@ from omm import (
     config as config_mod,
     contribute_state,
     linker,
+    onboarding,
     predictor,
     quality as quality_mod,
     recommend_ui,
@@ -158,7 +160,15 @@ def _telemetry_destination_line() -> str:
 
 
 @app.callback(invoke_without_command=True)
-def _root(ctx: typer.Context) -> None:
+def _root(
+    ctx: typer.Context,
+    skip_onboarding: bool = typer.Option(
+        False,
+        "--skip-onboarding",
+        help="Skip first-run setup for this invocation.",
+    ),
+) -> None:
+    _maybe_run_onboarding(ctx, skip_onboarding=skip_onboarding)
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
         commit = _installed_commit()
@@ -167,6 +177,8 @@ def _root(ctx: typer.Context) -> None:
         console.print(f"omm {_omm_version()} ({', '.join(parts)})")
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
+    if ctx.invoked_subcommand == "setup":
+        return
     _maybe_auto_import(ctx)
     resent = telemetry.flush_pending()
     if resent:
@@ -193,6 +205,17 @@ def help_cmd(
 
     sub_ctx = cmd_obj.make_context(command, [], parent=root_ctx, resilient_parsing=True)
     console.print(cmd_obj.get_help(sub_ctx))
+
+
+@app.command()
+def setup() -> None:
+    """Run the guided local setup again."""
+    if not _stdin_is_tty() or not _stdout_is_tty():
+        err_console.print(
+            "[red]OMM setup requires an interactive terminal.[/red]"
+        )
+        raise typer.Exit(1)
+    _run_onboarding(load_config())
 
 
 def _install_spec() -> str:
@@ -432,7 +455,7 @@ def _cached_remote_head_commit(ref: str = "main") -> str | None:
     return version_check.cached_remote_head(_remote_head_commit, ref)
 
 
-_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "help", "_bg-version-check"}
+_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "help", "setup", "_bg-version-check"}
 
 
 @app.command(name="_bg-version-check", hidden=True)
@@ -483,7 +506,80 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
             pass
 
 
-_SKIP_AUTO_IMPORT_SUBCOMMANDS = {"update", "help", "import", "_bg-version-check"}
+_SKIP_AUTO_IMPORT_SUBCOMMANDS = {"update", "help", "setup", "import", "_bg-version-check"}
+
+
+def _stdout_is_tty() -> bool:
+    return sys.stdout.isatty()
+
+
+def _completion_is_active(ctx: typer.Context) -> bool:
+    return bool(ctx.resilient_parsing or os.environ.get("_OMM_COMPLETE"))
+
+
+def _machine_readable_or_help_invocation() -> bool:
+    """Root callbacks run before Typer parses subcommand options.
+
+    Inspect the real argv so a first-run prompt can never pollute JSON output
+    or appear in front of help/completion output. Typer's test runner does not
+    replace ``sys.argv``, so tests set it explicitly when exercising this path.
+    """
+    noninteractive_options = {
+        "--json",
+        "--help",
+        "-h",
+        "--show-completion",
+        "--install-completion",
+    }
+    return any(argument in noninteractive_options for argument in sys.argv[1:])
+
+
+def _run_onboarding(current: dict) -> str:
+    """Run the guided flow and return configured/skipped/cancelled."""
+    detected = onboarding.detect_supported_engines()
+    storage = onboarding.inspect_storage(OMM_HOME)
+    console.print("[bold]Welcome to OMM setup[/bold]")
+    for line in onboarding.context_lines(
+        storage, detected, telemetry_endpoint=current.get("telemetry_endpoint")
+    ):
+        console.print(line)
+
+    action = onboarding.choose_onboarding_action()
+    if action == "skip":
+        onboarding.mark_onboarding_skipped()
+        console.print("[dim]Setup skipped. Run `omm setup` whenever you are ready.[/dim]")
+        return "skipped"
+    if action is None:
+        console.print("[yellow]Setup cancelled; no setup choices were saved.[/yellow]")
+        return "cancelled"
+
+    state = onboarding.collect_onboarding(current, detected=detected)
+    if state is None:
+        console.print("[yellow]Setup cancelled; no setup choices were saved.[/yellow]")
+        return "cancelled"
+    console.print("\n[bold]Review[/bold]")
+    for line in onboarding.review_lines(state, console.size.width - 2):
+        console.print(f"  {line}")
+    if not onboarding.confirm_onboarding():
+        console.print("[yellow]Setup cancelled; no setup choices were saved.[/yellow]")
+        return "cancelled"
+
+    onboarding.apply_onboarding(state)
+    console.print("[green]OMM setup saved.[/green]")
+    return "configured"
+
+
+def _maybe_run_onboarding(ctx: typer.Context, *, skip_onboarding: bool) -> None:
+    current = load_config()
+    invocation = onboarding.InvocationContext(
+        stdin_is_tty=_stdin_is_tty(),
+        stdout_is_tty=_stdout_is_tty(),
+        command=ctx.invoked_subcommand,
+        skip_onboarding=skip_onboarding or _machine_readable_or_help_invocation(),
+        is_completion=_completion_is_active(ctx),
+    )
+    if onboarding.should_run_onboarding(current, invocation):
+        _run_onboarding(current)
 
 
 def _maybe_auto_import(ctx: typer.Context) -> None:

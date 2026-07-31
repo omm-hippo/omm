@@ -44,6 +44,7 @@ omm link <directory> # Reuse central GGUF files in another app without copying t
 omm autoremove       # Clean up broken symlinks and orphaned partial downloads
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
 omm update           # Git-pull the latest source into ~/.omm/src, then refresh rules/model data
+omm setup            # Run the guided local setup again
 omm setting          # Interactive menu for UI mode, telemetry, upload policy, and catalog trust
 omm setting ui compact          # Use short everyday tables (`detailed` for diagnostics)
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
@@ -55,6 +56,12 @@ omm help [command]   # Show help, same as --help
 ```
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `search`/`install` mark models predicted not to run on this machine's hardware in red.
+
+On a new installation, the first interactive command offers a local setup for
+the default runtime, benchmark-upload policy, update channel, and terminal
+presentation. It shows the active model-storage path and detects Ollama and LM
+Studio without starting them. Run `omm setup` to change the choices later, or
+pass the global `--skip-onboarding` option to skip the offer for one command.
 
 ### Scripting
 
