@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 
 from typer.testing import CliRunner
 
@@ -30,8 +31,9 @@ def _no_engines(monkeypatch):
 def test_upgrade_single_repo_model_up_to_date(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
     (cli.MODELS_DIR / "model.gguf").write_bytes(b"old-bytes")
-    registry.save_registry({"model.gguf": _entry(sha256="same-hash")})
-    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "same-hash")
+    same_hash = hashlib.sha256(b"old-bytes").hexdigest()
+    registry.save_registry({"model.gguf": _entry(sha256=same_hash)})
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: same_hash)
 
     result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
 
@@ -43,7 +45,10 @@ def test_upgrade_single_repo_model_redownloads_on_hash_mismatch(isolated_omm_hom
     _no_engines(monkeypatch)
     (cli.MODELS_DIR / "model.gguf").write_bytes(b"old-bytes")
     registry.save_registry({"model.gguf": _entry(sha256="old-hash")})
-    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "new-hash")
+    expected = hashlib.sha256(b"new-bytes-from-upstream").hexdigest()
+    monkeypatch.setattr(
+        cli, "remote_file_sha256", lambda provider, repo_id, filename: expected
+    )
 
     def fake_download(url, dest, **_kw):
         Path(dest).write_bytes(b"new-bytes-from-upstream")
@@ -156,8 +161,10 @@ def test_upgrade_all_confirmation_cancelled_leaves_registry_untouched(isolated_o
 
 def test_upgrade_all_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
-    registry.save_registry({"model.gguf": _entry(sha256="same-hash")})
-    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "same-hash")
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"same")
+    same_hash = hashlib.sha256(b"same").hexdigest()
+    registry.save_registry({"model.gguf": _entry(sha256=same_hash)})
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: same_hash)
 
     result = runner.invoke(cli.app, ["upgrade", "--yes"])
 
@@ -167,8 +174,10 @@ def test_upgrade_all_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monk
 
 def test_upgrade_all_yes_flag_before_subcommand_skips_prompt(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
-    registry.save_registry({"model.gguf": _entry(sha256="same-hash")})
-    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "same-hash")
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"same")
+    same_hash = hashlib.sha256(b"same").hexdigest()
+    registry.save_registry({"model.gguf": _entry(sha256=same_hash)})
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: same_hash)
 
     result = runner.invoke(cli.app, ["--yes", "upgrade"])
 
@@ -191,14 +200,20 @@ def test_upgrade_all_reports_summary_counts(isolated_omm_home, monkeypatch):
     (cli.MODELS_DIR / "changed.gguf").write_bytes(b"b")
     registry.save_registry(
         {
-            "same.gguf": _entry(sha256="same-hash", repo_id="org/same"),
+            "same.gguf": _entry(
+                sha256=hashlib.sha256(b"a").hexdigest(), repo_id="org/same"
+            ),
             "changed.gguf": _entry(sha256="old-hash", repo_id="org/changed"),
         }
     )
     monkeypatch.setattr(cli, "_ask_confirm", lambda message, default=False: True)
 
     def fake_remote_hash(provider, repo_id, filename):
-        return "same-hash" if repo_id == "org/same" else "new-hash"
+        return (
+            hashlib.sha256(b"a").hexdigest()
+            if repo_id == "org/same"
+            else hashlib.sha256(b"new-content").hexdigest()
+        )
 
     monkeypatch.setattr(cli, "remote_file_sha256", fake_remote_hash)
 
@@ -211,6 +226,75 @@ def test_upgrade_all_reports_summary_counts(isolated_omm_home, monkeypatch):
 
     assert result.exit_code == 0, result.stdout
     assert "1 updated, 1 up to date, 0 skipped" in result.stdout
+
+
+def test_upgrade_repo_hash_mismatch_preserves_installed_file(
+    isolated_omm_home, monkeypatch
+):
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"known-good")
+    registry.save_registry({"model.gguf": _entry(sha256="old-hash")})
+    monkeypatch.setattr(
+        cli, "remote_file_sha256", lambda provider, repo_id, filename: "expected-hash"
+    )
+    monkeypatch.setattr(
+        cli, "download_file", lambda url, path, **_kw: Path(path).write_bytes(b"tampered")
+    )
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0
+    assert "does not match provider metadata" in result.stderr
+    assert dest.read_bytes() == b"known-good"
+    assert not (cli.MODELS_DIR / "model.gguf.update").exists()
+
+
+def test_upgrade_repairs_tampered_local_file_even_when_registry_matches_remote(
+    isolated_omm_home, monkeypatch
+):
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"tampered")
+    expected = hashlib.sha256(b"known-good").hexdigest()
+    registry.save_registry({"model.gguf": _entry(sha256=expected)})
+    monkeypatch.setattr(
+        cli, "remote_file_sha256", lambda provider, repo_id, filename: expected
+    )
+    monkeypatch.setattr(
+        cli,
+        "download_file",
+        lambda url, path, **_kw: Path(path).write_bytes(b"known-good"),
+    )
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0, result.stdout
+    assert dest.read_bytes() == b"known-good"
+    assert "updated to" in result.stdout
+
+
+def test_upgrade_direct_url_repairs_tampered_local_file(
+    isolated_omm_home, monkeypatch
+):
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"tampered")
+    expected = hashlib.sha256(b"known-good").hexdigest()
+    registry.save_registry(
+        {"model.gguf": _entry(repo_id=None, sha256=expected)}
+    )
+    monkeypatch.setattr(
+        cli,
+        "download_file",
+        lambda url, path, **_kw: Path(path).write_bytes(b"known-good"),
+    )
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0, result.stdout
+    assert dest.read_bytes() == b"known-good"
+    assert "updated to" in result.stdout
 
 
 def test_upgrade_all_with_empty_registry_reports_nothing_to_do(isolated_omm_home):

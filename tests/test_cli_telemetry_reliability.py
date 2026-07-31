@@ -1,8 +1,9 @@
 import json
 
+import requests
 from typer.testing import CliRunner
 
-from omm import cli, linker
+from omm import cli, config, linker
 from omm.hub import ResolvedModel
 
 runner = CliRunner()
@@ -79,7 +80,7 @@ def test_report_telemetry_notice_and_log_when_daemon_unreachable(isolated_omm_ho
     assert _log_outcomes(isolated_omm_home) == ["skipped_daemon_unreachable"]
 
 
-def test_report_telemetry_prints_retry_notice_when_send_fails(isolated_omm_home, monkeypatch):
+def test_one_shot_upload_failure_is_not_described_as_queued(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
@@ -88,7 +89,8 @@ def test_report_telemetry_prints_retry_notice_when_send_fails(isolated_omm_home,
     result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
 
     assert result.exit_code == 0, result.stdout
-    assert "will retry" in result.stdout.lower()
+    assert "not queued" in result.stdout.lower()
+    assert "retry" not in result.stdout.lower()
 
 
 def test_report_telemetry_silent_on_success(isolated_omm_home, monkeypatch):
@@ -100,7 +102,7 @@ def test_report_telemetry_silent_on_success(isolated_omm_home, monkeypatch):
     result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
 
     assert result.exit_code == 0, result.stdout
-    assert "will retry" not in result.stdout.lower()
+    assert "queued" not in result.stdout.lower()
 
 
 def test_root_prints_notice_when_pending_telemetry_flushed(isolated_omm_home, monkeypatch):
@@ -109,7 +111,8 @@ def test_root_prints_notice_when_pending_telemetry_flushed(isolated_omm_home, mo
     result = runner.invoke(cli.app, ["list"])
 
     assert result.exit_code == 0, result.stdout
-    assert "sent 2 queued telemetry event" in result.stdout.lower()
+    assert "sent 2 queued telemetry event" in result.stderr.lower()
+    assert "queued telemetry" not in result.stdout.lower()
 
 
 def test_root_no_notice_when_nothing_pending(isolated_omm_home, monkeypatch):
@@ -119,6 +122,7 @@ def test_root_no_notice_when_nothing_pending(isolated_omm_home, monkeypatch):
 
     assert result.exit_code == 0, result.stdout
     assert "queued telemetry" not in result.stdout.lower()
+    assert "queued telemetry" not in result.stderr.lower()
 
 
 def test_bare_omm_does_not_flush_pending_telemetry(isolated_omm_home, monkeypatch):
@@ -130,3 +134,80 @@ def test_bare_omm_does_not_flush_pending_telemetry(isolated_omm_home, monkeypatc
     result = runner.invoke(cli.app, [])
 
     assert result.exit_code == 0, result.stdout
+
+
+def test_setting_disable_does_not_flush_before_revoking_consent(
+    isolated_omm_home, monkeypatch
+):
+    config.update_config(
+        telemetry_send_policy="always",
+        telemetry_endpoint="https://example.com/v1/benchmarks",
+        external_scan_done=True,
+    )
+    (isolated_omm_home / "telemetry_pending.json").write_text(
+        json.dumps([{"model": "private"}])
+    )
+    post_calls = []
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: post_calls.append((args, kwargs)),
+    )
+
+    result = runner.invoke(cli.app, ["setting", "upload", "--disable"])
+
+    assert result.exit_code == 0, result.stdout
+    assert post_calls == []
+    assert config.load_config()["telemetry_send_policy"] == "never"
+
+
+def test_setting_ask_does_not_flush_before_changing_consent(
+    isolated_omm_home, monkeypatch
+):
+    config.update_config(
+        telemetry_send_policy="always",
+        telemetry_endpoint="https://example.com/v1/benchmarks",
+        external_scan_done=True,
+    )
+    (isolated_omm_home / "telemetry_pending.json").write_text(
+        json.dumps([{"model": "private"}])
+    )
+    post_calls = []
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: post_calls.append((args, kwargs)),
+    )
+
+    result = runner.invoke(cli.app, ["setting", "upload", "--ask"])
+
+    assert result.exit_code == 0, result.stdout
+    assert post_calls == []
+    assert config.load_config()["telemetry_send_policy"] == "ask"
+
+
+def test_setting_clear_endpoint_does_not_flush_to_old_destination(
+    isolated_omm_home, monkeypatch
+):
+    config.update_config(
+        telemetry_send_policy="always",
+        telemetry_endpoint="https://example.com/v1/benchmarks",
+        external_scan_done=True,
+    )
+    (isolated_omm_home / "telemetry_pending.json").write_text(
+        json.dumps([{"model": "private"}])
+    )
+    post_calls = []
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: post_calls.append((args, kwargs)),
+    )
+
+    result = runner.invoke(
+        cli.app, ["setting", "telemetry", "--endpoint", "none"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert post_calls == []
+    assert config.load_config()["telemetry_endpoint"] is None

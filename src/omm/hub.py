@@ -15,7 +15,10 @@ Accepts these forms for `omm install <model_name>`:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from pathlib import PurePosixPath
+import re
+import unicodedata
+from urllib.parse import parse_qs, urlparse
 
 from omm.featurize import is_mmproj_filename, parse_param_count_billions, parse_quant_bits
 from omm.providers.base import AmbiguousModelError, AmbiguousProviderError, ModelResolutionError
@@ -64,6 +67,66 @@ class QuantVariant:
 _RAM_OVERHEAD_FACTOR = 1.2  # context/runtime slack on top of raw weight size
 
 
+def validate_provider(provider: str) -> str:
+    if not isinstance(provider, str) or provider not in _PROVIDER_MODULES:
+        raise ModelResolutionError(f"unsupported model provider: {provider!r}")
+    return provider
+
+
+def validate_repo_id(repo_id: str) -> str:
+    """Validate the provider repository id before it reaches URL or link paths.
+
+    Both supported providers use exactly ``owner/repository``. Keeping that
+    contract here prevents a provider response or copied command from smuggling
+    ``..`` or Windows separators into LM Studio's directory layout.
+    """
+    if (
+        not isinstance(repo_id, str)
+        or len(repo_id) > 300
+        or "\\" in repo_id
+        or any(ord(character) < 32 for character in repo_id)
+    ):
+        raise ModelResolutionError("model repository id contains unsafe path characters")
+    parts = repo_id.split("/")
+    if len(parts) != 2 or any(
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part) is None
+        for part in parts
+    ):
+        raise ModelResolutionError(
+            "model repository id must use the safe 'owner/repository' form"
+        )
+    return repo_id
+
+
+def validate_model_filename(filename: str) -> str:
+    """Allow a relative provider path but never a path that escapes the hub."""
+    if (
+        not isinstance(filename, str)
+        or not filename
+        or len(filename) > 500
+        or unicodedata.normalize("NFC", filename) != filename
+        or "\\" in filename
+        or any(ord(character) < 32 for character in filename)
+    ):
+        raise ModelResolutionError("model filename contains unsafe path characters")
+    path = PurePosixPath(filename)
+    if (
+        path.is_absolute()
+        or filename != path.as_posix()
+        or any(part in {"", ".", ".."} or ":" in part for part in path.parts)
+        or not filename.lower().endswith(".gguf")
+    ):
+        raise ModelResolutionError(
+            "model filename must be a safe relative path ending in .gguf"
+        )
+    return filename
+
+
+def model_filename_identity(filename: str) -> str:
+    """Portable identity for registry paths on case-insensitive filesystems."""
+    return validate_model_filename(filename).casefold()
+
+
 def rank_quant_variants(
     candidates: list[str], available_gb: float, param_count_b: float | None = None
 ) -> list[QuantVariant]:
@@ -104,23 +167,23 @@ def best_filenames_by_tier(
 
 
 def download_url(provider: str, repo_id: str, filename: str) -> str:
-    return _PROVIDER_MODULES[provider].download_url(repo_id, filename)
+    return _PROVIDER_MODULES[validate_provider(provider)].download_url(repo_id, filename)
 
 
 def fetch_repo_files(provider: str, repo_id: str) -> tuple[list[str], float | None]:
-    return _PROVIDER_MODULES[provider].fetch_repo_files(repo_id)
+    return _PROVIDER_MODULES[validate_provider(provider)].fetch_repo_files(repo_id)
 
 
 def remote_file_size(provider: str, repo_id: str, filename: str) -> int | None:
-    return _PROVIDER_MODULES[provider].remote_file_size(repo_id, filename)
+    return _PROVIDER_MODULES[validate_provider(provider)].remote_file_size(repo_id, filename)
 
 
 def remote_file_sha256(provider: str, repo_id: str, filename: str) -> str | None:
-    return _PROVIDER_MODULES[provider].remote_file_sha256(repo_id, filename)
+    return _PROVIDER_MODULES[validate_provider(provider)].remote_file_sha256(repo_id, filename)
 
 
 def fetch_repo_param_count_b(provider: str, repo_id: str) -> float | None:
-    return _PROVIDER_MODULES[provider].fetch_repo_param_count_b(repo_id)
+    return _PROVIDER_MODULES[validate_provider(provider)].fetch_repo_param_count_b(repo_id)
 
 
 def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> ResolvedModel:
@@ -128,17 +191,21 @@ def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> Reso
     filename given -> just build the URL; filename omitted -> list the
     repo's .gguf files and either pick the lone candidate or raise
     AmbiguousModelError."""
-    module = _PROVIDER_MODULES[provider]
+    module = _PROVIDER_MODULES[validate_provider(provider)]
+    repo_id = validate_repo_id(repo_id)
     if filename is not None:
         if not filename.lower().endswith(".gguf"):
             filename = f"{filename}.gguf"
+        filename = validate_model_filename(filename)
         url = module.download_url(repo_id, filename)
         return ResolvedModel(url=url, filename=filename, repo_id=repo_id, provider=provider)
 
     candidates, param_count_b = module.fetch_repo_files(repo_id)
     if not candidates:
         raise ModelResolutionError(f"No .gguf files found in {provider} repo '{repo_id}'.")
-    model_candidates = [c for c in candidates if not is_mmproj_filename(c)]
+    model_candidates = [
+        validate_model_filename(c) for c in candidates if not is_mmproj_filename(c)
+    ]
     if not model_candidates:
         raise ModelResolutionError(
             f"{provider} repo '{repo_id}' only contains a multimodal projector "
@@ -153,6 +220,7 @@ def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> Reso
 
 _URL_HOST_PROVIDER = {
     "huggingface.co": "huggingface",
+    "modelscope.cn": "modelscope",
 }
 
 _PREFIXES = {
@@ -166,13 +234,19 @@ _PREFIXES = {
 def resolve_model(model_name: str) -> ResolvedModel:
     if model_name in CURATED_INDEX:
         repo_id, filename = CURATED_INDEX[model_name]
+        repo_id = validate_repo_id(repo_id)
+        filename = validate_model_filename(filename)
         url = huggingface.download_url(repo_id, filename)
         return ResolvedModel(url=url, filename=filename, repo_id=repo_id, provider="huggingface")
 
     if model_name.startswith("http://") or model_name.startswith("https://"):
-        filename = model_name.rsplit("/", 1)[-1].split("?", 1)[0]
-        host = urlparse(model_name).hostname or ""
+        parsed = urlparse(model_name)
+        host = parsed.hostname or ""
         provider = _URL_HOST_PROVIDER.get(host.removeprefix("www."))
+        query_filename = parse_qs(parsed.query).get("FilePath", [None])[0]
+        filename = validate_model_filename(
+            query_filename or parsed.path.rsplit("/", 1)[-1]
+        )
         return ResolvedModel(url=model_name, filename=filename, repo_id=None, provider=provider)
 
     if ":" in model_name:

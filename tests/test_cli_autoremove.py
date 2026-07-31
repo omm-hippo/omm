@@ -60,6 +60,27 @@ def test_autoremove_cleans_up_orphaned_part_and_gguf_files(isolated_omm_home, mo
     assert not orphan_full.exists()
 
 
+def test_autoremove_cleans_nested_partial_and_resume_metadata(
+    isolated_omm_home, monkeypatch
+):
+    _stub_no_new_engines(monkeypatch)
+    monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
+    nested = cli.MODELS_DIR / "quantized"
+    nested.mkdir(parents=True)
+    orphan_part = nested / "orphan.gguf.part"
+    orphan_meta = nested / "orphan.gguf.part.meta"
+    orphan_part.write_bytes(b"partial")
+    orphan_meta.write_text("{}")
+
+    result = runner.invoke(cli.app, ["autoremove"])
+
+    assert result.exit_code == 0, result.stdout
+    assert not orphan_part.exists()
+    assert not orphan_meta.exists()
+    assert not nested.exists()
+
+
 def test_autoremove_leaves_registered_files_alone(isolated_omm_home, monkeypatch):
     from omm import registry
 

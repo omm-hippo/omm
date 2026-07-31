@@ -194,6 +194,35 @@ def test_remove_still_errors_when_nothing_on_disk(isolated_omm_home):
     assert "is not installed via omm" in result.stderr
 
 
+def test_remove_does_not_clean_path_outside_model_hub(isolated_omm_home):
+    victim = cli.MODELS_DIR.parent / "victim.gguf"
+    victim.write_bytes(b"keep")
+
+    result = runner.invoke(cli.app, ["uninstall", "../victim.gguf"])
+
+    assert result.exit_code == 1
+    assert victim.read_bytes() == b"keep"
+
+
+def test_remove_collision_drops_only_requested_registry_key(
+    isolated_omm_home,
+):
+    shared_path = cli.MODELS_DIR / "Model.gguf"
+    shared_path.write_bytes(b"shared")
+    registry.save_registry(
+        {
+            "Model.gguf": {"linked": {}},
+            "model.gguf": {"linked": {}},
+        }
+    )
+
+    result = runner.invoke(cli.app, ["uninstall", "model.gguf"])
+
+    assert result.exit_code == 0, result.stdout
+    assert shared_path.read_bytes() == b"shared"
+    assert set(registry.load_registry()) == {"Model.gguf"}
+
+
 def test_uninstall_tolerates_permission_error_removing_model_file(isolated_omm_home, monkeypatch):
     filename = "a.gguf"
     dest = cli.MODELS_DIR / filename

@@ -55,6 +55,24 @@ def test_send_event_forced_still_requires_endpoint(isolated_omm_home, monkeypatc
     assert result is False
 
 
+def test_one_shot_forced_failure_is_not_queued_for_unattended_retry(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {"telemetry_send_policy": "ask", "telemetry_endpoint": "https://example.com"},
+    )
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *a, **k: (_ for _ in ()).throw(requests.RequestException("boom")),
+    )
+
+    assert telemetry.send_event({"x": 1}, force=True) is False
+    assert not (isolated_omm_home / "telemetry_pending.json").exists()
+
+
 def test_send_event_sends_when_opted_in_without_force(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(
         telemetry,
@@ -128,7 +146,9 @@ def test_flush_pending_returns_zero_when_empty(isolated_omm_home):
 
 
 def test_flush_pending_resends_and_clears_on_success(isolated_omm_home, monkeypatch):
-    config.update_config(telemetry_endpoint="https://example.com")
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="always"
+    )
     (isolated_omm_home / "telemetry_pending.json").write_text(
         json.dumps([{"model": "a"}, {"model": "b"}])
     )
@@ -141,7 +161,9 @@ def test_flush_pending_resends_and_clears_on_success(isolated_omm_home, monkeypa
 
 
 def test_flush_pending_keeps_events_that_still_fail(isolated_omm_home, monkeypatch):
-    config.update_config(telemetry_endpoint="https://example.com")
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="always"
+    )
     (isolated_omm_home / "telemetry_pending.json").write_text(json.dumps([{"model": "a"}]))
     monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(500))
 
@@ -152,7 +174,9 @@ def test_flush_pending_keeps_events_that_still_fail(isolated_omm_home, monkeypat
 
 
 def test_flush_pending_caps_attempts_per_call(isolated_omm_home, monkeypatch):
-    config.update_config(telemetry_endpoint="https://example.com")
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="always"
+    )
     events = [{"model": str(i)} for i in range(5)]
     (isolated_omm_home / "telemetry_pending.json").write_text(json.dumps(events))
     calls = []
@@ -164,3 +188,25 @@ def test_flush_pending_caps_attempts_per_call(isolated_omm_home, monkeypatch):
     assert len(calls) == 3
     remaining = json.loads((isolated_omm_home / "telemetry_pending.json").read_text())
     assert len(remaining) == 2
+
+
+def test_flush_pending_never_sends_after_user_opts_out(isolated_omm_home, monkeypatch):
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="never"
+    )
+    pending_path = isolated_omm_home / "telemetry_pending.json"
+    pending_path.write_text(json.dumps([{"model": "private"}]))
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or _FakeResp(200))
+
+    assert telemetry.flush_pending() == 0
+    assert calls == []
+    assert json.loads(pending_path.read_text()) == [{"model": "private"}]
+
+
+def test_pending_queue_is_bounded(isolated_omm_home):
+    telemetry._save_pending([{"id": index} for index in range(telemetry._MAX_PENDING_EVENTS + 5)])
+
+    pending = json.loads((isolated_omm_home / "telemetry_pending.json").read_text())
+    assert len(pending) == telemetry._MAX_PENDING_EVENTS
+    assert pending[0] == {"id": 5}

@@ -174,8 +174,8 @@ def _force_windows_hardlinks(monkeypatch):
 
 def test_windows_hardlink_lifecycle_removes_only_recorded_link(isolated_omm_home, tmp_path, monkeypatch):
     _force_windows_hardlinks(monkeypatch)
-    source = tmp_path / "hub" / "model.gguf"
-    source.parent.mkdir()
+    source = linker.MODELS_DIR / "model.gguf"
+    source.parent.mkdir(exist_ok=True)
     source.write_bytes(b"weights")
     directory = tmp_path / "custom"
     destination = linker.link_custom_directory(source, directory)
@@ -193,7 +193,8 @@ def test_windows_hardlink_lifecycle_removes_only_recorded_link(isolated_omm_home
 
 def test_windows_hardlink_lmstudio_and_ollama_uninstall_lifecycle(isolated_omm_home, tmp_path, monkeypatch):
     _force_windows_hardlinks(monkeypatch)
-    source = tmp_path / "hub.gguf"
+    source = linker.MODELS_DIR / "hub.gguf"
+    source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(b"weights")
 
     lmstudio = tmp_path / "lmstudio" / "models"
@@ -225,6 +226,56 @@ def test_windows_owned_blob_delete_retries_transient_file_lock(monkeypatch, tmp_
 
     assert linker._unlink_owned_link_with_retry(tmp_path / "blob") is True
     assert len(calls) == 3
+
+
+def test_nested_filename_unlink_uses_flat_link_basename(
+    isolated_omm_home, tmp_path
+):
+    source = linker.MODELS_DIR / "sub" / "model.gguf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"weights")
+    directory = tmp_path / "custom"
+    destination = linker.link_custom_directory(source, directory)
+
+    linker.unlink_custom_directory("sub/model.gguf", directory)
+
+    assert not destination.exists()
+
+
+def test_flat_link_collision_does_not_replace_another_model(
+    isolated_omm_home, tmp_path
+):
+    first = linker.MODELS_DIR / "a" / "model.gguf"
+    second = linker.MODELS_DIR / "b" / "model.gguf"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    directory = tmp_path / "custom"
+    destination = linker.link_custom_directory(first, directory)
+
+    with pytest.raises(linker.LinkError, match="different model"):
+        linker.link_custom_directory(second, directory)
+
+    assert destination.samefile(first)
+    linker.unlink_custom_directory("b/model.gguf", directory)
+    assert destination.exists()
+    linker.unlink_custom_directory("a/model.gguf", directory)
+    assert not destination.exists()
+
+
+def test_lmstudio_rejects_unsafe_repository_id(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    source = tmp_path / "model.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "lmstudio"
+    monkeypatch.setattr(linker, "lmstudio_models_dir", lambda: models_dir)
+
+    with pytest.raises(linker.LinkError, match="Unsafe model repository"):
+        linker.link_lmstudio(source, "../escape")
+
+    assert not (tmp_path / "escape" / "model.gguf").exists()
 
 
 def test_autoremove_preserves_registered_orphan_hardlink(isolated_omm_home, tmp_path, monkeypatch):
@@ -280,16 +331,17 @@ def test_ollama_preserves_unowned_manifest_and_existing_blob(isolated_omm_home, 
     manifest.parent.mkdir(parents=True)
     manifest.write_text("user manifest")
 
-    with pytest.raises(linker.LinkError, match="unowned Ollama manifest"):
+    with pytest.raises(
+        linker.LinkError,
+        match="does not match its digest|unowned Ollama manifest",
+    ):
         linker.link_ollama(source, "model", models_dir=models_dir)
     assert blob.read_bytes() == b"user blob"
     assert manifest.read_text() == "user manifest"
 
 
-def test_ollama_force_reclaims_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
-    """A manifest omm itself wrote in the past but whose ownership record was
-    lost (e.g. link_ownership.json reset) looks identical to a stranger's
-    manifest - force must still be able to reclaim it on request."""
+def test_ollama_force_preserves_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
+    """Force never turns an unproven manifest into an OMM-owned file."""
     source = tmp_path / "source.gguf"
     source.write_bytes(b"weights")
     models_dir = tmp_path / "ollama"
@@ -298,12 +350,10 @@ def test_ollama_force_reclaims_unowned_manifest(isolated_omm_home, tmp_path, mon
     manifest.parent.mkdir(parents=True)
     manifest.write_text("stale manifest, no ownership record")
 
-    result = linker.link_ollama(source, "model", models_dir=models_dir, force=True)
+    with pytest.raises(linker.LinkError, match="unowned Ollama manifest"):
+        linker.link_ollama(source, "model", models_dir=models_dir, force=True)
 
-    assert result is False  # no tokenizer.chat_template in the stubbed metadata
-    new_manifest = json.loads(manifest.read_text())
-    assert new_manifest["layers"][0]["digest"] == f"sha256:{linker.sha256_file(source)}"
-    assert linker._owned_manifest(manifest)
+    assert manifest.read_text() == "stale manifest, no ownership record"
 
 
 def test_link_file_raises_link_error_when_mkdir_fails(tmp_path, monkeypatch):

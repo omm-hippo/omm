@@ -70,7 +70,7 @@ def fetch_repo_param_count_b(repo_id: str) -> float | None:
 
 
 def download_url(repo_id: str, filename: str) -> str:
-    return HF_DOWNLOAD.format(repo_id=repo_id, filename=filename)
+    return HF_DOWNLOAD.format(repo_id=repo_id, filename=quote(filename, safe="/"))
 
 
 def remote_file_sha256(repo_id: str, filename: str) -> str | None:

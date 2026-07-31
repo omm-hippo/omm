@@ -22,6 +22,9 @@ def _no_real_engine_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "jan_app_dir", lambda: tmp_path / "_no_real_jan")
     monkeypatch.setattr(linker, "anythingllm_app_dir", lambda: tmp_path / "_no_real_anythingllm")
     monkeypatch.setattr(linker, "mstystudio_app_dir", lambda: tmp_path / "_no_real_mstystudio")
+    monkeypatch.setattr(
+        linker, "LINK_OWNERSHIP_PATH", tmp_path / "_no_real_link_ownership.json"
+    )
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path / "_no_real_heuristic_root"])
     monkeypatch.setattr(linker, "_APP_BUNDLE_SEARCH_ROOTS", [tmp_path / "_no_real_app_bundle_root"])
     linker.find_koboldcpp_binary.cache_clear()
@@ -51,6 +54,7 @@ def isolated_omm_home(tmp_path, monkeypatch):
 
     monkeypatch.setattr(registry, "REGISTRY_PATH", config.REGISTRY_PATH)
     monkeypatch.setattr(linker, "LINK_OWNERSHIP_PATH", config.LINK_OWNERSHIP_PATH)
+    monkeypatch.setattr(linker, "MODELS_DIR", models_dir)
     monkeypatch.setattr(cli, "MODELS_DIR", models_dir)
     monkeypatch.setattr(scan_import, "MODELS_DIR", models_dir)
     monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", config.RECOMMEND_MODEL_PATH)

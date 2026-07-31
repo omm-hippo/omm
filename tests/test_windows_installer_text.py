@@ -86,6 +86,17 @@ def test_bootstrap_verifiers_keep_the_same_fail_closed_contract():
     assert '[ "$#" -eq 3 ]' in sh
 
 
+def test_unix_installer_trust_anchor_matches_allowed_signers_file():
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    expected = (ROOT / "src" / "omm" / "trust" / "allowed_signers").read_text(
+        encoding="utf-8"
+    ).strip()
+    match = re.search(r'ALLOWED_SIGNERS_CONTENT="(.*?)"', script, re.DOTALL)
+
+    assert match is not None
+    assert match.group(1) == expected
+
+
 def test_installer_treats_missing_pipx_module_as_unavailable():
     script = (ROOT / "install.ps1").read_text(encoding="utf-8")
     probe = script.split("function Test-PipxAvailable {", 1)[1].split(

@@ -1,11 +1,12 @@
 import json
+import hashlib
 import threading
 import time
 from types import SimpleNamespace
 
 import pytest
 
-from omm import cli
+from omm import cli, registry
 from omm.downloader import DownloadCancelled
 from omm.hub import ResolvedModel
 
@@ -36,6 +37,7 @@ def _stub_common(monkeypatch, ollama=True, lmstudio=False):
     )
     monkeypatch.setattr(cli.quality_mod, "unload_model", lambda tag: True)
     monkeypatch.setattr(cli.quality_mod, "runtime_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda *args: None)
 
 
 def test_skip_unfit_returns_outcome_without_prompting_or_downloading(isolated_omm_home, monkeypatch):
@@ -284,6 +286,91 @@ def test_plain_install_path_unaffected_by_stop_event_none(isolated_omm_home, mon
 
     assert calls == ["no-kwargs"]
     assert outcome.tokens_per_sec == 10.0
+
+
+def test_install_rejects_provider_download_when_sha256_does_not_match(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(
+        cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"tampered")
+    )
+    _stub_common(monkeypatch, ollama=False)
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda *args: "0" * 64)
+
+    with pytest.raises(cli.DownloadError, match="does not match"):
+        cli._install_impl(_resolved(provider="huggingface"))
+
+    assert not (cli.MODELS_DIR / _resolved().filename).exists()
+
+
+def test_install_accepts_provider_download_when_sha256_matches(
+    isolated_omm_home, monkeypatch
+):
+    payload = b"provider-bytes"
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(
+        cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(payload)
+    )
+    _stub_common(monkeypatch, ollama=False)
+    monkeypatch.setattr(cli, "sha256_file", lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+    monkeypatch.setattr(
+        cli, "remote_file_sha256", lambda *args: hashlib.sha256(payload).hexdigest()
+    )
+
+    outcome = cli._install_impl(_resolved(provider="huggingface"))
+
+    assert outcome.sha256 == hashlib.sha256(payload).hexdigest()
+
+
+def test_install_refuses_unverified_existing_file_from_different_source(
+    isolated_omm_home, monkeypatch
+):
+    filename = _resolved().filename
+    (cli.MODELS_DIR / filename).write_bytes(b"unowned")
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch, ollama=False)
+
+    with pytest.raises(cli.DownloadError, match="cannot be verified"):
+        cli._install_impl(_resolved())
+
+
+def test_install_rejects_casefold_collision_with_registered_model(
+    isolated_omm_home, monkeypatch
+):
+    existing_name = "Model.gguf"
+    existing = cli.MODELS_DIR / existing_name
+    existing.write_bytes(b"existing")
+    registry.save_registry(
+        {
+            existing_name: {
+                "source": "https://example.com/Model.gguf",
+                "sha256": hashlib.sha256(existing.read_bytes()).hexdigest(),
+                "linked": {},
+            }
+        }
+    )
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    resolved = ResolvedModel(
+        url="https://example.com/model.gguf",
+        filename="model.gguf",
+        repo_id=None,
+        provider=None,
+    )
+
+    with pytest.raises(cli.DownloadError, match="collides with registered path"):
+        cli._install_impl(resolved)
+
+    assert existing.read_bytes() == b"existing"
+
+
+def test_install_rejects_unknown_provider_without_key_error(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+
+    with pytest.raises(cli.DownloadError, match="unsupported model provider"):
+        cli._install_impl(_resolved(provider="unknown"))
 
 
 def test_benchmark_always_runs_but_upload_needs_confirm(isolated_omm_home, monkeypatch):
@@ -885,6 +972,15 @@ def test_without_force_skips_fetch_when_already_present(isolated_omm_home, monke
     dest = cli.MODELS_DIR / resolved.filename
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(b"stale-bytes")
+    registry.save_registry(
+        {
+            resolved.filename: {
+                "source": resolved.url,
+                "sha256": "deadbeef",
+                "linked": {},
+            }
+        }
+    )
 
     monkeypatch.setattr(
         cli, "remote_file_size", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no size check"))
