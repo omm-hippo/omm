@@ -86,10 +86,14 @@ from omm.hub import (
     download_url,
     fetch_repo_files,
     fetch_repo_param_count_b,
+    model_filename_identity,
     rank_quant_variants,
     remote_file_size,
     remote_file_sha256,
     resolve_model,
+    validate_model_filename,
+    validate_provider,
+    validate_repo_id,
 )
 
 class PlainHelpFormatter(click.HelpFormatter):
@@ -284,7 +288,7 @@ app = typer.Typer(
 )
 setting_app = typer.Typer(
     name="setting",
-    help="View or change omm settings (telemetry, upload policy, catalog trust).",
+    help="View or change omm settings (telemetry, upload policy, version, calibration, catalog trust).",
     invoke_without_command=True,
     rich_markup_mode=None,
 )
@@ -386,7 +390,15 @@ def _root(
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
     _maybe_auto_import(ctx)
-    opts.pending_telemetry_notice = telemetry.flush_pending()
+    # A setting command may revoke consent or change the destination, so do
+    # not send queued telemetry before the requested mutation takes effect.
+    if ctx.invoked_subcommand != "setting":
+        resent = telemetry.flush_pending()
+        if resent:
+            err_console.print(
+                f"[dim]Sent {resent} queued telemetry event(s) "
+                "from a previous session.[/dim]"
+            )
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
@@ -494,6 +506,48 @@ def _shorten_home(path: Path) -> str:
         return str(path)
 
 
+def _managed_model_path(filename: str) -> Path:
+    """Resolve a registry/CLI filename inside the central model hub."""
+    filename = validate_model_filename(filename)
+    root = MODELS_DIR.resolve()
+    candidate = MODELS_DIR / filename
+    if not candidate.resolve().is_relative_to(root):
+        raise ModelResolutionError(
+            f"model filename escapes the managed model hub: {filename}"
+        )
+    identity = model_filename_identity(filename)
+    for registered_filename in registry.load_registry():
+        if registered_filename == filename:
+            continue
+        try:
+            registered_identity = model_filename_identity(registered_filename)
+        except ModelResolutionError:
+            registered_identity = None
+        if registered_identity is not None and registered_identity == identity:
+            raise ModelResolutionError(
+                f"model filename collides with registered path "
+                f"{registered_filename!r} on a case-insensitive filesystem"
+            )
+        if not isinstance(registered_filename, str):
+            continue
+        registered_path = MODELS_DIR / registered_filename
+        try:
+            registered_is_managed = registered_path.resolve().is_relative_to(root)
+        except OSError:
+            registered_is_managed = False
+        if registered_is_managed and candidate.exists() and registered_path.exists():
+            try:
+                aliases_existing_path = candidate.samefile(registered_path)
+            except OSError:
+                aliases_existing_path = False
+            if aliases_existing_path:
+                raise ModelResolutionError(
+                    f"model filename aliases registered path "
+                    f"{registered_filename!r} on this filesystem"
+                )
+    return candidate
+
+
 def _link_repair_needed(reg: dict) -> bool:
     """True if some omm-hub model isn't yet symlinked into an installed
     engine (e.g. Ollama/LM Studio was installed after the model was).
@@ -503,7 +557,11 @@ def _link_repair_needed(reg: dict) -> bool:
     forever for a conflict the user can't resolve by re-running it."""
     installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
     for filename, entry in reg.items():
-        if not (MODELS_DIR / filename).exists():
+        try:
+            model_path = _managed_model_path(filename)
+        except ModelResolutionError:
+            continue
+        if not model_path.exists():
             continue
         linked = entry.get("linked", {})
         blocked = entry.get("link_blocked") or []
@@ -1970,6 +2028,17 @@ def _install_impl(
     kwargs above."""
     opts = _global_opts()
     url, filename, repo_id = resolved.url, resolved.filename, resolved.repo_id
+    try:
+        filename = validate_model_filename(filename)
+        provider = validate_provider(resolved.provider or "huggingface")
+        if repo_id is not None:
+            repo_id = validate_repo_id(repo_id)
+    except ModelResolutionError as error:
+        raise DownloadError(str(error)) from error
+    try:
+        dest = _managed_model_path(filename)
+    except ModelResolutionError as error:
+        raise DownloadError(str(error)) from error
 
     artifact = predictor.load_cached_model()
     trees = artifact.get("trees") if artifact else None
@@ -1997,19 +2066,36 @@ def _install_impl(
                     f"(range {speed_low:.1f}–{speed_high:.1f}).[/dim]"
                 )
 
-    dest = MODELS_DIR / filename
     downloaded_now = False
+    expected_sha256 = (
+        remote_file_sha256(provider, repo_id, filename)
+        if resolved.provider and repo_id
+        else None
+    )
     if dest.exists() and not force:
+        existing_sha256 = sha256_file(dest)
+        if expected_sha256 is not None and existing_sha256 != expected_sha256:
+            raise DownloadError(
+                f"{filename} already exists but does not match the provider SHA-256; "
+                "refusing to reuse or overwrite it."
+            )
+        if expected_sha256 is None:
+            existing_entry = registry.load_registry().get(filename)
+            if not (
+                isinstance(existing_entry, dict)
+                and existing_entry.get("source") == url
+                and existing_entry.get("sha256") == existing_sha256
+            ):
+                raise DownloadError(
+                    f"{filename} already exists but its source and digest cannot "
+                    "be verified; refusing to adopt or overwrite it."
+                )
         err_console.print(f"[yellow]{filename} already downloaded, skipping fetch.[/yellow]")
     else:
         if force:
-            # Guarantee a genuinely fresh download: remove any existing
-            # completed file and any stale `.part` sidecar so we never
-            # resume stale bytes, and never hit Path.rename's
-            # FileExistsError on Windows when the fresh download finalizes
-            # onto an already-existing dest.
+            # A forced install must never reuse completed or partial bytes.
             _cleanup_incomplete_install(filename)
-        size_bytes = remote_file_size(resolved.provider or "huggingface", repo_id, filename) if repo_id else None
+        size_bytes = remote_file_size(provider, repo_id, filename) if repo_id else None
         if size_bytes:
             try:
                 _ensure_install_disk_capacity(
@@ -2041,9 +2127,8 @@ def _install_impl(
             if skip_unfit:
                 return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
             raise typer.Exit(1) from e
-        except DownloadError as e:
-            err_console.print(f"[red]{e}[/red]")
-            raise typer.Exit(1) from e
+        except DownloadError:
+            raise
 
     try:
         _ensure_install_disk_capacity(
@@ -2062,8 +2147,13 @@ def _install_impl(
         raise typer.Exit(1) from error
 
     if not opts.quiet:
-        console.print("Verifying checksum...")
+        console.print("Verifying checksum..." if expected_sha256 else "Computing checksum...")
     sha256 = sha256_file(dest)
+    if expected_sha256 is not None and sha256 != expected_sha256:
+        dest.unlink(missing_ok=True)
+        raise DownloadError(
+            f"Downloaded SHA-256 for {filename} does not match the provider metadata."
+        )
 
     ollama_tag = linker.sanitize_ollama_tag(filename)
     try:
@@ -2086,7 +2176,7 @@ def _install_impl(
         installed_at=datetime.now(timezone.utc).isoformat(),
         ollama_name=ollama_tag,
         repo_id=repo_id,
-        provider=resolved.provider or "huggingface",
+        provider=provider,
         linked=linked,
     )
 
@@ -2317,14 +2407,18 @@ def install(
         _print_install_suggestions(model_name)
         raise typer.Exit(1) from e
 
-    outcome = _install_impl(
-        resolved,
-        skip_unfit=skip_unfit,
-        auto_upload=upload is True,
-        no_upload=upload is False,
-        assume_yes=_global_opts().yes,
-        force=force,
-    )
+    try:
+        outcome = _install_impl(
+            resolved,
+            skip_unfit=skip_unfit,
+            auto_upload=upload is True,
+            no_upload=upload is False,
+            assume_yes=_global_opts().yes,
+            force=force,
+        )
+    except DownloadError as error:
+        err_console.print(f"[red]{error}[/red]")
+        raise typer.Exit(1) from error
 
     console.print(f"[green]Installed {outcome.filename}[/green]")
     if outcome.linked.get("ollama"):
@@ -2336,17 +2430,26 @@ def install(
     _report_lmstudio_load_verification(outcome)
 
 
-def _cleanup_incomplete_install(filename: str) -> bool:
-    dest = MODELS_DIR / filename
-    part = dest.with_suffix(dest.suffix + ".part")
+def _cleanup_download_parts(destination: Path) -> bool:
+    part = destination.with_suffix(destination.suffix + ".part")
+    metadata = part.with_name(f"{part.name}.meta")
     cleaned = False
-    if part.exists():
-        try:
-            part.unlink()
-            cleaned = True
-        except OSError:
-            pass
-        _sidecar_path(part).unlink(missing_ok=True)
+    for path in (part, _sidecar_path(part), metadata):
+        if path.exists():
+            try:
+                path.unlink()
+                cleaned = True
+            except OSError:
+                pass
+    return cleaned
+
+
+def _cleanup_incomplete_install(filename: str) -> bool:
+    try:
+        dest = _managed_model_path(filename)
+    except ModelResolutionError:
+        return False
+    cleaned = _cleanup_download_parts(dest)
     if dest.exists():
         try:
             dest.unlink()
@@ -2369,25 +2472,39 @@ def _unlink_with_retry(path: Path, *, attempts: int = 8) -> None:
 
 
 def _remove_one(filename: str, entry: dict) -> None:
+    try:
+        dest = _managed_model_path(filename)
+    except ModelResolutionError as error:
+        err_console.print(
+            f"[yellow]Removed unsafe registry entry {filename!r} without touching "
+            f"the filesystem ({error}).[/yellow]"
+        )
+        registry.remove_entry(filename)
+        return
     linked = entry.get("linked", {})
     ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
     if linked.get("ollama") and benchmark.ollama_daemon_reachable():
         quality_mod.ensure_model_unloaded(ollama_tag, max_wait_seconds=10)
     for spec in linker.ENGINES:
         if linked.get(spec.key):
-            linker.unlink_engine(spec.key, filename, entry)
+            try:
+                linker.unlink_engine(spec.key, filename, entry)
+            except linker.LinkError as error:
+                err_console.print(
+                    f"[yellow]{filename}: {spec.label} cleanup skipped: {error}[/yellow]"
+                )
     # `omm link <directory>` records the exact destination.  It may be a
     # Windows hard link, so use the ownership-aware remover rather than ever
     # unlinking an arbitrary regular file at that path.
     for destination in entry.get("custom_links", []):
         if isinstance(destination, str):
-            linker.unlink_owned_link(Path(destination))
+            linker.unlink_owned_link(Path(destination), expected_source=dest)
 
-    dest = MODELS_DIR / filename
     _unlink_with_retry(dest)
     part = dest.with_suffix(dest.suffix + ".part")
     _unlink_with_retry(part)
     _unlink_with_retry(_sidecar_path(part))
+    _unlink_with_retry(part.with_name(f"{part.name}.meta"))
 
     registry.remove_entry(filename)
     console.print(f"[green]Removed {filename}[/green]")
@@ -2534,12 +2651,31 @@ def _update_one(filename: str, entry: dict) -> str:
     first and only re-download on a mismatch; direct-URL installs have no
     such endpoint, so they re-download to a temp file and compare hashes
     before swapping it in."""
-    dest = MODELS_DIR / filename
+    try:
+        filename = validate_model_filename(filename)
+    except ModelResolutionError as error:
+        err_console.print(f"[red]{filename}: unsafe registry filename ({error}).[/red]")
+        return "skipped"
+    try:
+        dest = _managed_model_path(filename)
+    except ModelResolutionError as error:
+        err_console.print(f"[red]{filename}: unsafe registry filename ({error}).[/red]")
+        return "skipped"
     repo_id = entry.get("repo_id")
-    provider = entry.get("provider") or "huggingface"
+    try:
+        provider = validate_provider(entry.get("provider") or "huggingface")
+    except ModelResolutionError as error:
+        err_console.print(f"[red]{filename}: unsafe registry provider ({error}).[/red]")
+        return "skipped"
     old_sha256 = entry.get("sha256")
+    tmp = dest.with_name(dest.name + ".update")
 
     if repo_id:
+        try:
+            repo_id = validate_repo_id(repo_id)
+        except ModelResolutionError as error:
+            err_console.print(f"[red]{filename}: unsafe repository id ({error}).[/red]")
+            return "skipped"
         remote_sha256 = remote_file_sha256(provider, repo_id, filename)
         if remote_sha256 is None:
             err_console.print(
@@ -2547,17 +2683,30 @@ def _update_one(filename: str, entry: dict) -> str:
                 "(no repo/LFS info), skipped.[/yellow]"
             )
             return "skipped"
-        if remote_sha256 == old_sha256:
+        if (
+            remote_sha256 == old_sha256
+            and dest.is_file()
+            and sha256_file(dest) == remote_sha256
+        ):
             return "up_to_date"
 
         url = download_url(provider, repo_id, filename)
         opts = _global_opts()
         try:
-            download_file(url, dest, quiet=opts.quiet, no_color=opts.no_color)
+            download_file(url, tmp, quiet=opts.quiet, no_color=opts.no_color)
         except DownloadError as e:
             err_console.print(f"[red]{filename}: update download failed: {e}[/red]")
+            tmp.unlink(missing_ok=True)
+            _cleanup_download_parts(tmp)
             return "skipped"
-        new_sha256 = sha256_file(dest)
+        new_sha256 = sha256_file(tmp)
+        if new_sha256 != remote_sha256:
+            err_console.print(
+                f"[red]{filename}: downloaded SHA-256 does not match provider metadata; "
+                "the installed file was preserved.[/red]"
+            )
+            tmp.unlink(missing_ok=True)
+            return "skipped"
     else:
         source = entry.get("source")
         if not source:
@@ -2571,21 +2720,23 @@ def _update_one(filename: str, entry: dict) -> str:
         except DownloadError as e:
             err_console.print(f"[red]{filename}: update download failed: {e}[/red]")
             tmp.unlink(missing_ok=True)
-            tmp_part = tmp.with_suffix(tmp.suffix + ".part")
-            tmp_part.unlink(missing_ok=True)
-            _sidecar_path(tmp_part).unlink(missing_ok=True)
+            _cleanup_download_parts(tmp)
             return "skipped"
 
         new_sha256 = sha256_file(tmp)
-        if new_sha256 == old_sha256:
+        if (
+            new_sha256 == old_sha256
+            and dest.is_file()
+            and sha256_file(dest) == new_sha256
+        ):
             tmp.unlink(missing_ok=True)
             return "up_to_date"
-        try:
-            tmp.replace(dest)
-        except OSError as e:
-            err_console.print(f"[red]{filename}: update failed to finalize: {e}[/red]")
-            tmp.unlink(missing_ok=True)
-            return "skipped"
+    try:
+        tmp.replace(dest)
+    except OSError as e:
+        err_console.print(f"[red]{filename}: update failed to finalize: {e}[/red]")
+        tmp.unlink(missing_ok=True)
+        return "skipped"
 
     ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
     linked = _link_model(dest, repo_id, ollama_tag)
@@ -3259,7 +3410,12 @@ def link_models(
             )
 
         for filename, entry in reg.items():
-            source = MODELS_DIR / filename
+            try:
+                source = _managed_model_path(filename)
+            except ModelResolutionError as error:
+                err_console.print(f"[yellow]{filename}: unsafe registry entry skipped: {error}[/yellow]")
+                skipped_missing += 1
+                continue
             if not source.exists():
                 skipped_missing += 1
                 continue
@@ -3291,7 +3447,12 @@ def link_models(
     )
 
     for filename, entry in reg.items():
-        dest = MODELS_DIR / filename
+        try:
+            dest = _managed_model_path(filename)
+        except ModelResolutionError as error:
+            err_console.print(f"[yellow]{filename}: unsafe registry entry skipped: {error}[/yellow]")
+            skipped_missing += 1
+            continue
         if not dest.exists():
             skipped_missing += 1
             continue
@@ -3349,33 +3510,40 @@ def _autoremove_incomplete_installs() -> int:
 
     reg = registry.load_registry()
     removed = 0
-    for path in MODELS_DIR.iterdir():
-        if not path.is_file():
+    for path in MODELS_DIR.rglob("*"):
+        if not path.is_file() or path.is_symlink():
             continue
-        if path.suffix == ".part":
-            if path.with_suffix("").name not in reg:
-                try:
-                    path.unlink()
-                except OSError:
-                    continue
-                removed += 1
-                _sidecar_path(path).unlink(missing_ok=True)
-        elif path.name.endswith(".part.ranges.json"):
-            # Resume sidecar left behind after its .part was already
-            # removed some other way (e.g. `omm uninstall`).
-            part = path.with_name(path.name.removesuffix(".ranges.json"))
-            if not part.exists():
-                try:
-                    path.unlink()
-                except OSError:
-                    continue
-                removed += 1
-        elif path.suffix == ".gguf" and path.name not in reg:
+        relative = path.relative_to(MODELS_DIR).as_posix()
+        registry_filename: str | None = None
+        companion_part: Path | None = None
+        if relative.endswith(".gguf.part.ranges.json"):
+            registry_filename = relative[: -len(".part.ranges.json")]
+            companion_part = path.with_name(path.name.removesuffix(".ranges.json"))
+        elif relative.endswith(".gguf.part.meta"):
+            registry_filename = relative[: -len(".part.meta")]
+            companion_part = path.with_name(path.name.removesuffix(".meta"))
+        elif relative.endswith(".gguf.part"):
+            registry_filename = relative[: -len(".part")]
+        elif relative.endswith(".gguf"):
+            registry_filename = relative
+        if registry_filename is not None and (
+            registry_filename not in reg
+            or (companion_part is not None and not companion_part.exists())
+        ):
             try:
                 path.unlink()
             except OSError:
                 continue
             removed += 1
+    for directory in sorted(
+        (path for path in MODELS_DIR.rglob("*") if path.is_dir() and not path.is_symlink()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
     return removed
 
 
@@ -3632,8 +3800,15 @@ def _report_telemetry(
         return False
     info = scan_hardware()
     if size_bytes is None:
-        model_file = MODELS_DIR / filename
-        size_bytes = model_file.stat().st_size if model_file.exists() else None
+        try:
+            model_file = _managed_model_path(filename)
+        except ModelResolutionError:
+            model_file = None
+        size_bytes = (
+            model_file.stat().st_size
+            if model_file is not None and model_file.exists()
+            else None
+        )
     event = {
         "ram_gb": round(info.ram_total_gb, 1),
         "vram_gb": round(info.vram_total_gb, 1) if info.vram_total_gb is not None else None,
@@ -3741,7 +3916,12 @@ def _report_telemetry(
             event["model_digest"] = digest
     sent = telemetry.send_event(event, force=True)
     if not sent:
-        console.print("[dim]Telemetry not sent (will retry next time you run omm).[/dim]")
+        if load_config().get("telemetry_send_policy") == "always":
+            console.print("[dim]Telemetry not sent (queued for a later retry).[/dim]")
+        else:
+            console.print(
+                "[dim]Telemetry not sent (this one-time upload was not queued).[/dim]"
+            )
     return sent
 
 
@@ -3861,7 +4041,13 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
 
     sent = telemetry.send_event(event, force=True)
     if not sent:
-        console.print(f"[dim]Telemetry not sent for {tag} (will retry next time you run omm).[/dim]")
+        if load_config().get("telemetry_send_policy") == "always":
+            console.print(f"[dim]Telemetry not sent for {tag} (queued for a later retry).[/dim]")
+        else:
+            console.print(
+                f"[dim]Telemetry not sent for {tag} "
+                "(this one-time upload was not queued).[/dim]"
+            )
     return sent
 
 
@@ -4143,19 +4329,21 @@ def _run_contribution_loop(
             stats.exhausted = True
             break
 
-        provider = candidate.get("provider") or "huggingface"
-        resolved = ResolvedModel(
-            url=download_url(provider, candidate["repo_id"], candidate["filename"]),
-            filename=candidate["filename"],
-            repo_id=candidate["repo_id"],
-            provider=provider,
-        )
         display_name = candidate.get("name", candidate["filename"])
         ref_str = contribute_mod.ref(candidate)
         if not opts.quiet:
             console.print(f"[blue]Trying {display_name}...[/blue]")
 
         try:
+            provider = validate_provider(candidate.get("provider") or "huggingface")
+            repo_id = validate_repo_id(candidate["repo_id"])
+            filename = validate_model_filename(candidate["filename"])
+            resolved = ResolvedModel(
+                url=download_url(provider, repo_id, filename),
+                filename=filename,
+                repo_id=repo_id,
+                provider=provider,
+            )
             outcome = _install_impl(
                 resolved,
                 auto_upload=True,
@@ -4172,7 +4360,7 @@ def _run_contribution_loop(
             if entry:
                 _remove_one(fn, entry)
             break
-        except (DownloadError, linker.LinkError) as e:
+        except (DownloadError, ModelResolutionError, linker.LinkError) as e:
             err_console.print(f"[yellow]Skipping {candidate['filename']}: {e}[/yellow]")
             continue
 

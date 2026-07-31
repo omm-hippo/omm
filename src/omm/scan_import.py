@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from pathlib import Path
 from omm import linker, registry
 from omm.config import MODELS_DIR, ensure_omm_home
 from omm.hashutil import sha256_file
+from omm.hub import ModelResolutionError, validate_model_filename
 
 _OLLAMA_MODEL_LAYER = "application/vnd.ollama.image.model"
 
@@ -66,6 +68,16 @@ class ModelGroup:
 class AdoptResult:
     filename: str
     bytes_saved: int
+
+
+def _is_safe_registry_filename(filename: object, resolver) -> bool:
+    if not isinstance(filename, str):
+        return False
+    try:
+        resolver(filename)
+    except ModelResolutionError:
+        return False
+    return True
 
 
 def _scan_ollama_format(engine: str, models_dir: Path) -> list[ExternalGguf]:
@@ -210,18 +222,35 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     location for this hash with a symlink to it. Returns bytes reclaimed."""
     ensure_omm_home()
     reg = registry.load_registry()
-    existing_filename = next((fn for fn, e in reg.items() if e.get("sha256") == group.sha256), None)
+    def managed_path(filename: str) -> Path:
+        filename = validate_model_filename(filename)
+        path = MODELS_DIR / filename
+        if not path.resolve().is_relative_to(MODELS_DIR.resolve()):
+            raise ModelResolutionError("registry filename escapes the model hub")
+        return path
+
+    existing_filename = next(
+        (
+            fn
+            for fn, entry in reg.items()
+            if entry.get("sha256") == group.sha256
+            and _is_safe_registry_filename(fn, managed_path)
+        ),
+        None,
+    )
 
     linked = {spec.key: False for spec in linker.ENGINES}
     bytes_saved = 0
 
     if existing_filename:
-        hub_path = MODELS_DIR / existing_filename
+        hub_path = managed_path(existing_filename)
         linked.update(reg[existing_filename].get("linked", {}))
     else:
         preferred = next((loc for loc in group.locations if loc.engine not in _MANIFEST_STYLE_ENGINES), None)
         if preferred is not None:
-            filename = preferred.path.name
+            filename = validate_model_filename(
+                unicodedata.normalize("NFC", preferred.path.name)
+            )
         else:
             preferred = group.locations[0]
             filename = f"{linker.sanitize_ollama_tag(preferred.display_name)}.gguf"

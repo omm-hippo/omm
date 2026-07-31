@@ -97,6 +97,13 @@ class BenchmarkStore:
         event_hash = hashlib.sha256(event_json.encode()).hexdigest()
         fields.append("event_hash")
         values = [event.get(field) for field in fields[:-1]]
+        # The original schema predates v7 failure telemetry and keeps this
+        # materialized column NOT NULL. Failure rows intentionally omit speed;
+        # store a non-exported sentinel in the legacy column while event_json
+        # preserves the exact contract (with no fabricated tokens_per_sec).
+        tokens_index = fields.index("tokens_per_sec")
+        if values[tokens_index] is None:
+            values[tokens_index] = 0
         values.append(event_hash)
         values.append(event_json)
         placeholders = ", ".join("?" for _ in values)

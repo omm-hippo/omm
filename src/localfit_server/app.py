@@ -24,6 +24,7 @@ class BenchmarkEvent(BaseModel):
     gpu_tflops: float | None = Field(default=None, ge=0, le=100_000)
     model_installed: str = Field(min_length=1, max_length=300)
     model_repo_id: str | None = Field(default=None, max_length=300)
+    model_provider: Literal["huggingface", "modelscope"] | None = None
     model_size_bytes: int | None = Field(default=None, gt=0, le=10**15)
     model_filename: str | None = Field(default=None, max_length=300)
     model_digest: str | None = Field(default=None, max_length=64)
@@ -33,9 +34,9 @@ class BenchmarkEvent(BaseModel):
     engine_version: str | None = Field(default=None, min_length=1, max_length=100)
     client_version: str | None = Field(default=None, min_length=1, max_length=100)
     engine: Literal["llama.cpp", "lmstudio", "ollama", "jan", "gpt4all"]
-    benchmark_version: int = Field(ge=1, le=1000)
+    benchmark_version: int = Field(ge=1, le=8)
     recorded_at: datetime
-    tokens_per_sec: float = Field(gt=0, le=10_000)
+    tokens_per_sec: float | None = Field(default=None, gt=0, le=10_000)
     sample_count: int | None = Field(default=None, ge=1, le=10)
     tokens_per_sec_min: float | None = Field(default=None, gt=0, le=10_000)
     tokens_per_sec_max: float | None = Field(default=None, gt=0, le=10_000)
@@ -57,6 +58,22 @@ class BenchmarkEvent(BaseModel):
     quality_correct: int | None = Field(default=None, ge=0, le=100)
     quality_total: int | None = Field(default=None, ge=1, le=100)
     quality_accuracy: float | None = Field(default=None, ge=0, le=1)
+    outcome: Literal[
+        "success", "model_unfit", "transient_error", "performance_unfit"
+    ] | None = None
+    failure_reason: Literal[
+        "out_of_memory",
+        "model_load_failed",
+        "unsupported_runtime",
+        "generation_timeout",
+        "ollama_unavailable",
+        "connection_error",
+        "no_timing_metrics",
+        "unknown",
+        "confirmed_generation_timeout",
+    ] | None = None
+    confirmation_attempts: int | None = Field(default=None, ge=1, le=2)
+    timeout_seconds: float | None = Field(default=None, gt=0, le=3600)
 
     @field_validator("model_installed", "model_repo_id", "model_filename")
     @classmethod
@@ -84,6 +101,10 @@ class BenchmarkEvent(BaseModel):
         bounds = (self.tokens_per_sec_min, self.tokens_per_sec_max)
         if (bounds[0] is None) != (bounds[1] is None):
             raise ValueError("sample minimum and maximum must be supplied together")
+        if self.tokens_per_sec is None and (
+            self.sample_count is not None or bounds[0] is not None
+        ):
+            raise ValueError("sample summary requires tokens_per_sec")
         if bounds[0] is not None and not (
             bounds[0] <= self.tokens_per_sec <= bounds[1]
         ):
@@ -113,9 +134,24 @@ class BenchmarkEvent(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_v6_requirements(self) -> "BenchmarkEvent":
-        if self.benchmark_version not in (5, 6):
+    def validate_versioned_contract(self) -> "BenchmarkEvent":
+        if self.benchmark_version < 7:
+            if self.tokens_per_sec is None:
+                raise ValueError("legacy success events require tokens_per_sec")
+            if any(
+                value is not None
+                for value in (
+                    self.outcome,
+                    self.failure_reason,
+                    self.confirmation_attempts,
+                    self.timeout_seconds,
+                )
+            ):
+                raise ValueError("outcome fields require benchmark_version 7 or 8")
+        if self.benchmark_version not in (5, 6, 7, 8):
             return self
+        if self.benchmark_version in (7, 8):
+            return self._validate_outcome_contract()
         required_model_metadata = (
             self.parameter_count_b,
             self.active_parameter_count_b,
@@ -166,6 +202,131 @@ class BenchmarkEvent(BaseModel):
                 raise ValueError("physical CPU cores cannot exceed logical CPU cores")
         return self
 
+    def _validate_outcome_contract(self) -> "BenchmarkEvent":
+        version = f"v{self.benchmark_version}"
+        if self.engine != "ollama":
+            raise ValueError(f"{version} events require the ollama engine")
+        if self.outcome is None:
+            raise ValueError(f"{version} events require an explicit outcome")
+        if self.benchmark_version == 8 and self.cpu_model is not None:
+            raise ValueError("v8 events must not include a raw CPU model name")
+        speed_fields = (
+            self.tokens_per_sec,
+            self.sample_count,
+            self.tokens_per_sec_min,
+            self.tokens_per_sec_max,
+        )
+        if self.outcome == "success":
+            if self.failure_reason is not None:
+                raise ValueError(f"{version} success must not include failure_reason")
+            if self.confirmation_attempts is not None or self.timeout_seconds is not None:
+                raise ValueError(f"{version} success must not include confirmation fields")
+            required_model_metadata = (
+                self.parameter_count_b,
+                self.active_parameter_count_b,
+                self.quant_bits,
+                self.engine_version,
+                self.client_version,
+            )
+            if any(value is None for value in required_model_metadata):
+                raise ValueError(
+                    f"{version} success requires model metadata and component versions"
+                )
+            if self.active_parameter_count_b > self.parameter_count_b:
+                raise ValueError("active_parameter_count_b cannot exceed parameter_count_b")
+            required_runtime = (
+                self.runtime_profile,
+                self.context_length,
+                self.gpu_offload_percent,
+                self.cpu_threads,
+                self.num_batch,
+            )
+            if any(value is None for value in required_runtime):
+                raise ValueError(f"{version} success requires runtime metadata")
+            if not self.runtime_profile.strip():
+                raise ValueError(f"{version} success runtime_profile must be non-empty")
+            if not 256 <= self.context_length <= 131_072:
+                raise ValueError(
+                    f"{version} success context_length must be between 256 and 131072"
+                )
+            if not 1 <= self.cpu_threads <= 1024:
+                raise ValueError(
+                    f"{version} success cpu_threads must be between 1 and 1024"
+                )
+            if not 1 <= self.num_batch <= 65_536:
+                raise ValueError(
+                    f"{version} success num_batch must be between 1 and 65536"
+                )
+            cpu_fields = (
+                (
+                    self.cpu_model,
+                    self.cpu_arch,
+                    self.cpu_physical_cores,
+                    self.cpu_logical_cores,
+                )
+                if self.benchmark_version == 7
+                else (
+                    self.cpu_score,
+                    self.cpu_tier,
+                    self.cpu_arch,
+                    self.cpu_physical_cores,
+                    self.cpu_logical_cores,
+                )
+            )
+            if any(value is None for value in cpu_fields):
+                raise ValueError(
+                    f"{version} success requires privacy-safe CPU metadata"
+                )
+            if self.cpu_physical_cores > self.cpu_logical_cores:
+                raise ValueError("physical CPU cores cannot exceed logical CPU cores")
+            if self.tokens_per_sec is None or self.sample_count is None:
+                raise ValueError(f"{version} success requires speed and sample summary")
+            if self.sample_count < 3:
+                raise ValueError(f"{version} success sample_count must be at least 3")
+            if self.tokens_per_sec_min is None or self.tokens_per_sec_max is None:
+                raise ValueError(
+                    f"{version} success requires sample minimum and maximum"
+                )
+            return self
+
+        if any(value is not None for value in speed_fields):
+            raise ValueError(f"{version} failure events must not include speed fields")
+        if any(
+            value is not None
+            for value in (
+                self.quality_pack_id,
+                self.quality_pack_version,
+                self.quality_correct,
+                self.quality_total,
+                self.quality_accuracy,
+            )
+        ):
+            raise ValueError(f"{version} failure events must not include quality fields")
+        reasons = {
+            "model_unfit": {"out_of_memory", "unsupported_runtime"},
+            "transient_error": {
+                "model_load_failed",
+                "generation_timeout",
+                "ollama_unavailable",
+                "connection_error",
+                "no_timing_metrics",
+                "unknown",
+            },
+            "performance_unfit": {"confirmed_generation_timeout"},
+        }
+        if self.failure_reason not in reasons[self.outcome]:
+            raise ValueError(
+                f"invalid failure_reason for {version} {self.outcome}"
+            )
+        if self.outcome == "performance_unfit":
+            if self.confirmation_attempts != 2 or self.timeout_seconds is None:
+                raise ValueError(
+                    f"{version} performance_unfit requires two attempts and timeout_seconds"
+                )
+        elif self.confirmation_attempts is not None or self.timeout_seconds is not None:
+            raise ValueError("confirmation fields are only valid for performance_unfit")
+        return self
+
 
 @lru_cache(maxsize=1)
 def get_store() -> BenchmarkStore:
@@ -200,7 +361,9 @@ def health() -> dict[str, str]:
 
 @app.post("/v1/benchmarks", status_code=status.HTTP_201_CREATED)
 def create_benchmark(event: BenchmarkEvent) -> dict[str, int | str]:
-    result = get_store().insert(event.model_dump(mode="json"))
+    # Preserve the wire contract: absent optional v7/v8 failure fields stay
+    # absent in event_json rather than becoming explicit nulls.
+    result = get_store().insert(event.model_dump(mode="json", exclude_none=True))
     return {"id": result.id, "status": "stored" if result.created else "duplicate"}
 
 

@@ -764,9 +764,9 @@ def test_failure_entry_never_leaks_raw_exception_text_paths_or_ips(monkeypatch):
 # --- performance_unfit confirmation flow (--confirm-performance-timeout) --
 #
 # These tests mock at the _evaluate_tag_once boundary (one full attempt),
-# not evaluate_model directly - _evaluate_tag_once already has its own
-# internal "retry once without runtime_options" fallback (tested elsewhere)
-# that is orthogonal to the confirmation orchestration under test here.
+# not evaluate_model directly. _evaluate_tag_once has only a TypeError
+# compatibility fallback for legacy callable signatures; real evaluator
+# failures are never retried there.
 
 
 def _ok_metadata(tag):
@@ -774,6 +774,41 @@ def _ok_metadata(tag):
         "tag": tag, "digest": "abc123", "size_bytes": 1_000_000,
         "parameter_size": "7B", "quantization_level": "Q4_0",
     }
+
+
+def test_evaluate_tag_once_does_not_retry_real_timeout_as_legacy_fallback(monkeypatch):
+    calls = []
+    monkeypatch.setattr(quality, "_model_metadata", _ok_metadata)
+    monkeypatch.setattr(
+        quality.tuning,
+        "recommend_runtime_settings",
+        lambda hardware, metadata: type(
+            "Profile",
+            (),
+            {
+                "ollama_options": {"num_ctx": 2048},
+                "context_length": 2048,
+                "gpu_offload_percent": 100,
+                "cpu_threads": 8,
+                "num_batch": 512,
+            },
+        )(),
+    )
+
+    def timeout(*args, **kwargs):
+        calls.append(kwargs)
+        raise quality.QualityEvaluationError(
+            "timed out", failure_reason=quality.FAILURE_REASON_GENERATION_TIMEOUT
+        )
+
+    monkeypatch.setattr(quality, "evaluate_model", timeout)
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+
+    entry = quality._evaluate_tag_once("big:latest", _hardware(), {}, 3)
+
+    assert entry["outcome"] == "transient_error"
+    assert entry["failure_reason"] == "generation_timeout"
+    assert len(calls) == 1
 
 
 def _timeout_entry(tag="big:latest"):
@@ -834,6 +869,37 @@ def test_default_mode_single_timeout_is_transient_error_never_confirmed(monkeypa
     assert calls["n"] == 1
     assert "confirmation_attempts" not in entry
     assert "timeout_seconds" not in entry
+
+
+def test_evaluate_tag_once_passes_only_supported_optional_keywords(monkeypatch):
+    calls = []
+
+    def evaluator(tag, pack, speed_runs=3, runtime_options=None):
+        calls.append((tag, speed_runs, runtime_options))
+        return {
+            "tag": tag,
+            "speed": {"median_tokens_per_sec": 10.0},
+            "quality": None,
+            "runtime": None,
+        }
+
+    monkeypatch.setattr(quality, "evaluate_model", evaluator)
+    monkeypatch.setattr(quality, "_model_metadata", _ok_metadata)
+    monkeypatch.setattr(
+        quality.tuning,
+        "recommend_runtime_settings",
+        lambda hardware, metadata: type(
+            "Profile", (), {"ollama_options": {"num_ctx": 2048}}
+        )(),
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+
+    result = quality._evaluate_tag_once(
+        "model:latest", _hardware(), {"items": []}, speed_runs=3
+    )
+
+    assert result["outcome"] == "success"
+    assert calls == [("model:latest", 3, {"num_ctx": 2048})]
 
 
 def test_confirm_mode_second_attempt_succeeds_reports_real_success(monkeypatch):

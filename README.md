@@ -106,7 +106,7 @@ omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy i
 omm autoremove  # Clean up broken symlinks and orphaned partial downloads
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
 omm update  # Git-pull the latest source into ~/.omm/src, then refresh rules/model data
-omm setting  # Interactive menu for telemetry, upload policy, version channel, and catalog trust
+omm setting  # Interactive menu for telemetry, upload policy, version, calibration, and catalog trust
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
 omm setting upload --enable|--disable|--ask  # Configure the benchmark-upload send policy
@@ -140,7 +140,7 @@ command adapts after memory-heavy applications are opened or closed.
 `omm benchmark` runs a versioned eight-item bilingual arithmetic smoke pack
 against models already installed in Ollama. It stores parsed answers,
 correctness, pinned model metadata, and fixed-length timings under
-`~/.omm/evaluations/`; it stores no generated text. Opt-in v6 telemetry sends
+`~/.omm/evaluations/`; it stores no generated text. Opt-in v7 telemetry sends
 CPU model, architecture, and core counts so speed predictions can distinguish
 otherwise identical Linux `x86_64` machines.
 Results are uploaded only after explicit opt-in. The pack is intentionally
@@ -158,8 +158,10 @@ antivirus for omm.
 
 ## Self-hosted benchmark data
 
-Benchmark uploads are disabled and have no server endpoint by default. To run
-the bundled FastAPI + SQLite collector locally:
+Benchmark results are never uploaded without explicit per-run consent or an
+`always` policy. New installations include the hosted Firebase endpoint as the
+default destination, while existing local-only configurations stay local. To
+run the bundled FastAPI + SQLite collector instead:
 
 ```sh
 pip install -e ".[server]"
@@ -171,7 +173,8 @@ localfit-server
 Explicitly configure the endpoint and opt in before uploading:
 
 ```sh
-omm setting telemetry --endpoint http://127.0.0.1:8000/v1/benchmarks --enable
+omm setting telemetry --endpoint http://127.0.0.1:8000/v1/benchmarks
+omm setting upload --enable
 ```
 
 Training can consume the authenticated export directly:
@@ -182,8 +185,8 @@ python scripts/train_model.py \
   --telemetry-url http://127.0.0.1:8000/v1/benchmarks/export
 ```
 
-The old Firebase Realtime Database JSON endpoint remains supported only when
-explicitly configured. Its official `*.firebaseio.com` or
+Firebase Realtime Database JSON endpoints remain supported. An official
+`*.firebaseio.com` or
 `*.firebasedatabase.app` `.json` URL can be read without an admin token;
 self-hosted raw export requires `LOCALFIT_ADMIN_TOKEN`. Exact duplicate events
 are ignored.
@@ -192,8 +195,8 @@ Automated retraining is fail-closed. Configure
 `LOCALFIT_TELEMETRY_EXPORT_URL`; configure `LOCALFIT_ADMIN_TOKEN` as well for a
 self-hosted export (it is optional for an official Firebase JSON URL). The
 scheduled job otherwise stops without changing the published artifact. It
-requires at least 100 distinct valid v6 configurations with explicit runtime and CPU metadata
-metadata (legacy rows do not satisfy this minimum), rejects datasets with more
+requires at least 100 distinct valid v6/v7 configurations with explicit
+runtime and CPU metadata (legacy rows do not satisfy this minimum), rejects datasets with more
 than 25% invalid rows, and reserves a deterministic 20% holdout. A 64-tree v4
 candidate replaces the incumbent only when both holdout RMSLE and P90 absolute
 percentage error stay within the configured regression limits. Selection is

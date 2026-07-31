@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import requests
 from rich.console import Console
+import pytest
 
 from omm import downloader
 
@@ -68,6 +69,23 @@ def test_download_file_completes_normally_without_stop_check(tmp_path, monkeypat
 
     assert dest.read_bytes() == b"helloworld"
     assert not dest.with_suffix(dest.suffix + ".part").exists()
+
+
+def test_download_file_refuses_symlinked_partial_path(tmp_path, monkeypatch):
+    dest = tmp_path / "model.gguf"
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"preserve")
+    dest.with_suffix(dest.suffix + ".part").symlink_to(victim)
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no request")),
+    )
+
+    with pytest.raises(downloader.DownloadError, match="symlinked partial"):
+        downloader.download_file("https://example.com/model.gguf", dest)
+
+    assert victim.read_bytes() == b"preserve"
 
 
 def test_download_file_raises_cancelled_and_keeps_part_file_when_stop_check_fires(tmp_path, monkeypatch):
@@ -139,13 +157,18 @@ def test_probe_range_support_parses_content_range_on_206(monkeypatch):
     monkeypatch.setattr(
         requests,
         "get",
-        lambda *a, **k: _FakeResp(206, [b"x"], headers={"Content-Range": "bytes 0-0/5000000"}),
+        lambda *a, **k: _FakeResp(
+            206,
+            [b"x"],
+            headers={"Content-Range": "bytes 0-0/5000000", "ETag": '"v1"'},
+        ),
     )
 
-    total, capable = downloader._probe_range_support("https://example.com/m.gguf")
+    total, capable, etag = downloader._probe_range_support("https://example.com/m.gguf")
 
     assert total == 5000000
     assert capable is True
+    assert etag == '"v1"'
 
 
 def test_probe_range_support_not_capable_on_200(monkeypatch):
@@ -155,9 +178,10 @@ def test_probe_range_support_not_capable_on_200(monkeypatch):
         lambda *a, **k: _FakeResp(200, [b"x"], headers={"Content-Length": "5000000"}),
     )
 
-    total, capable = downloader._probe_range_support("https://example.com/m.gguf")
+    total, capable, etag = downloader._probe_range_support("https://example.com/m.gguf")
 
     assert capable is False
+    assert etag is None
 
 
 def test_probe_range_support_handles_network_error(monkeypatch):
@@ -166,10 +190,11 @@ def test_probe_range_support_handles_network_error(monkeypatch):
 
     monkeypatch.setattr(requests, "get", _raise)
 
-    total, capable = downloader._probe_range_support("https://example.com/m.gguf")
+    total, capable, etag = downloader._probe_range_support("https://example.com/m.gguf")
 
     assert total == 0
     assert capable is False
+    assert etag is None
 
 
 def test_probe_range_support_accepts_200_with_matching_content_length(monkeypatch):
@@ -180,15 +205,22 @@ def test_probe_range_support_accepts_200_with_matching_content_length(monkeypatc
 
     class _FakeResp:
         status_code = 200
-        headers = {"Content-Range": "bytes 0-0/491400032", "Content-Length": "1"}
+        headers = {
+            "Content-Range": "bytes 0-0/491400032",
+            "Content-Length": "1",
+            "ETag": '"v1"',
+        }
 
         def close(self):
             pass
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp())
-    total, supports_ranges = downloader._probe_range_support("https://example.com/f.gguf")
+    total, supports_ranges, etag = downloader._probe_range_support(
+        "https://example.com/f.gguf"
+    )
     assert total == 491400032
     assert supports_ranges is True
+    assert etag == '"v1"'
 
 
 def test_probe_range_support_rejects_200_with_mismatched_content_length(monkeypatch):
@@ -209,8 +241,11 @@ def test_probe_range_support_rejects_200_with_mismatched_content_length(monkeypa
             pass
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp())
-    total, supports_ranges = downloader._probe_range_support("https://example.com/f.gguf")
+    total, supports_ranges, etag = downloader._probe_range_support(
+        "https://example.com/f.gguf"
+    )
     assert supports_ranges is False
+    assert etag is None
 
 
 # --- end-to-end dispatcher behavior -----------------------------------------
@@ -229,12 +264,142 @@ class _FakeRangeServer:
         self.requests.append(range_header)
         if range_header == "bytes=0-0":
             return _FakeResp(
-                206, [self.payload[:1]], headers={"Content-Range": f"bytes 0-0/{len(self.payload)}"}
+                206,
+                [self.payload[:1]],
+                headers={
+                    "Content-Range": f"bytes 0-0/{len(self.payload)}",
+                    "ETag": '"v1"',
+                },
             )
         start_str, end_str = range_header.removeprefix("bytes=").split("-")
         start, end = int(start_str), int(end_str)
         chunk = self.payload[start : end + 1]
-        return _FakeResp(206, [chunk])
+        return _FakeResp(
+            206,
+            [chunk],
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{len(self.payload)}",
+                "ETag": '"v1"',
+            },
+        )
+
+
+def test_probe_range_support_rejects_wrong_probe_range(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *a, **k: _FakeResp(
+            206,
+            [b"x"],
+            headers={"Content-Range": "bytes 1-1/5000000"},
+        ),
+    )
+
+    assert downloader._probe_range_support("https://example.com/m.gguf") == (
+        0,
+        False,
+        None,
+    )
+
+
+def test_parallel_download_rejects_wrong_worker_range_and_restarts_cleanly(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(downloader, "_MIN_PARALLEL_TOTAL", 10)
+    monkeypatch.setattr(downloader, "_MIN_CHUNK_SIZE", 5)
+    payload = bytes(range(40))
+    calls = []
+
+    def fake_get(url, headers=None, stream=True, timeout=30):
+        range_header = (headers or {}).get("Range", "")
+        calls.append(range_header)
+        if range_header == "bytes=0-0":
+            return _FakeResp(
+                206,
+                [payload[:1]],
+                headers={
+                    "Content-Range": f"bytes 0-0/{len(payload)}",
+                    "ETag": '"v1"',
+                },
+            )
+        if range_header:
+            requested_start, requested_end = (
+                int(value)
+                for value in range_header.removeprefix("bytes=").split("-")
+            )
+            chunk = payload[requested_start : requested_end + 1]
+            return _FakeResp(
+                206,
+                [chunk],
+                headers={
+                    "Content-Range": (
+                        f"bytes 0-{len(chunk) - 1}/{len(payload)}"
+                    ),
+                    "ETag": '"v1"',
+                },
+            )
+        return _FakeResp(
+            200,
+            [payload],
+            headers={"Content-Length": str(len(payload))},
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    dest = tmp_path / "model.gguf"
+
+    downloader.download_file("https://example.com/model.gguf", dest)
+
+    assert dest.read_bytes() == payload
+    assert calls[-1] == ""
+
+
+def test_parallel_download_requires_one_strong_etag_for_every_worker(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(downloader, "_MIN_PARALLEL_TOTAL", 10)
+    monkeypatch.setattr(downloader, "_MIN_CHUNK_SIZE", 5)
+    payload = bytes(range(40))
+    calls = []
+
+    def fake_get(url, headers=None, stream=True, timeout=30):
+        range_header = (headers or {}).get("Range", "")
+        calls.append((range_header, (headers or {}).get("If-Range")))
+        if range_header == "bytes=0-0":
+            return _FakeResp(
+                206,
+                [payload[:1]],
+                headers={
+                    "Content-Range": f"bytes 0-0/{len(payload)}",
+                    "ETag": '"v1"',
+                },
+            )
+        if range_header:
+            start, end = (
+                int(value)
+                for value in range_header.removeprefix("bytes=").split("-")
+            )
+            return _FakeResp(
+                206,
+                [payload[start : end + 1]],
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{len(payload) + 1}",
+                    "ETag": '"v2"',
+                },
+            )
+        return _FakeResp(
+            200,
+            [payload],
+            headers={"Content-Length": str(len(payload))},
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    dest = tmp_path / "model.gguf"
+
+    downloader.download_file("https://example.com/model.gguf", dest)
+
+    assert dest.read_bytes() == payload
+    assert all(if_range == '"v1"' for _, if_range in calls[1:-1])
+    assert calls[-1] == ("", None)
 
 
 def test_download_file_uses_parallel_path_and_produces_correct_bytes(tmp_path, monkeypatch):
@@ -274,18 +439,206 @@ def test_download_file_resumes_existing_part_file_via_single_stream(tmp_path, mo
     dest = tmp_path / "model.gguf"
     part = dest.with_suffix(dest.suffix + ".part")
     part.write_bytes(b"hello")
+    url = "https://example.com/model.gguf"
+    downloader._write_resume_metadata(
+        downloader._part_metadata_path(part), url, '"v1"', 10
+    )
     calls = []
 
     def fake_get(url, headers=None, stream=True, timeout=30):
-        calls.append((headers or {}).get("Range"))
-        return _FakeResp(206, [b"world"])
+        calls.append(
+            (
+                (headers or {}).get("Range"),
+                (headers or {}).get("If-Range"),
+            )
+        )
+        return _FakeResp(
+            206,
+            [b"world"],
+            headers={"Content-Range": "bytes 5-9/10", "ETag": '"v1"'},
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    downloader.download_file(url, dest)
+
+    assert dest.read_bytes() == b"helloworld"
+    assert calls == [("bytes=5-", '"v1"')]  # single bound resume request, no probe
+    assert not downloader._part_metadata_path(part).exists()
+
+
+def test_download_file_discards_legacy_partial_without_validator(
+    tmp_path, monkeypatch
+):
+    dest = tmp_path / "model.gguf"
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(b"old-prefix")
+    calls = []
+
+    def fake_get(url, headers=None, stream=True, timeout=30):
+        calls.append(headers or {})
+        return _FakeResp(200, [b"fresh"], headers={"Content-Length": "5"})
 
     monkeypatch.setattr(requests, "get", fake_get)
 
     downloader.download_file("https://example.com/model.gguf", dest)
 
-    assert dest.read_bytes() == b"helloworld"
-    assert calls == ["bytes=5-"]  # single resume request, no probe
+    assert dest.read_bytes() == b"fresh"
+    assert calls == [{}]
+
+
+def test_changed_resume_truncates_old_prefix_before_recording_new_etag(
+    tmp_path, monkeypatch
+):
+    dest = tmp_path / "model.gguf"
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(b"old-prefix")
+    url = "https://example.com/model.gguf"
+    downloader._write_resume_metadata(
+        downloader._part_metadata_path(part), url, '"old"', 20
+    )
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *a, **k: _FakeResp(
+            200,
+            [b"new-body"],
+            headers={"Content-Length": "8", "ETag": '"new"'},
+        ),
+    )
+
+    def crash_while_recording(*args, **kwargs):
+        assert part.read_bytes() == b""
+        raise RuntimeError("simulated crash")
+
+    monkeypatch.setattr(downloader, "atomic_write_text", crash_while_recording)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        downloader.download_file(url, dest)
+
+    assert part.read_bytes() == b""
+
+
+def test_download_file_restarts_cleanly_after_416(tmp_path, monkeypatch):
+    dest = tmp_path / "model.gguf"
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(b"truncated")
+    url = "https://example.com/model.gguf"
+    downloader._write_resume_metadata(
+        downloader._part_metadata_path(part), url, '"v1"', 20
+    )
+    responses = iter(
+        [
+            _FakeResp(416, []),
+            _FakeResp(200, [b"complete"], headers={"Content-Length": "8"}),
+        ]
+    )
+    monkeypatch.setattr(requests, "get", lambda *a, **k: next(responses))
+
+    downloader.download_file(url, dest)
+
+    assert dest.read_bytes() == b"complete"
+    assert not part.exists()
+
+
+def test_download_file_does_not_trust_same_length_partial_after_416(
+    tmp_path, monkeypatch
+):
+    dest = tmp_path / "model.gguf"
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(b"complete")
+    url = "https://example.com/model.gguf"
+    downloader._write_resume_metadata(
+        downloader._part_metadata_path(part), url, '"v1"', 10
+    )
+    responses = iter(
+        [
+            _FakeResp(
+                416, [], headers={"Content-Range": f"bytes */{part.stat().st_size}"}
+            ),
+            _FakeResp(200, [b"verified"], headers={"Content-Length": "8"}),
+        ]
+    )
+    monkeypatch.setattr(requests, "get", lambda *a, **k: next(responses))
+
+    downloader.download_file(url, dest)
+
+    assert dest.read_bytes() == b"verified"
+    assert not part.exists()
+
+
+def test_download_file_restarts_when_206_range_does_not_match_request(
+    tmp_path, monkeypatch
+):
+    dest = tmp_path / "model.gguf"
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(b"stale")
+    url = "https://example.com/model.gguf"
+    downloader._write_resume_metadata(
+        downloader._part_metadata_path(part), url, '"v1"', 10
+    )
+    responses = iter(
+        [
+            _FakeResp(
+                206,
+                [b"wrong"],
+                headers={"Content-Range": "bytes 0-4/10", "ETag": '"v1"'},
+            ),
+            _FakeResp(200, [b"fresh"], headers={"Content-Length": "5"}),
+        ]
+    )
+    monkeypatch.setattr(requests, "get", lambda *a, **k: next(responses))
+
+    downloader.download_file(url, dest)
+
+    assert dest.read_bytes() == b"fresh"
+
+
+def test_download_file_rejects_short_resumed_body(tmp_path, monkeypatch):
+    dest = tmp_path / "model.gguf"
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(b"hello")
+    url = "https://example.com/model.gguf"
+    downloader._write_resume_metadata(
+        downloader._part_metadata_path(part), url, '"v1"', 10
+    )
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *a, **k: _FakeResp(
+            206,
+            [b"wor"],
+            headers={"Content-Range": "bytes 5-9/10", "ETag": '"v1"'},
+        ),
+    )
+
+    with pytest.raises(downloader.DownloadError, match="returned 3 bytes"):
+        downloader.download_file(url, dest)
+
+    assert not dest.exists()
+
+
+def test_download_file_rejects_partial_206_for_clean_request(
+    tmp_path, monkeypatch
+):
+    dest = tmp_path / "model.gguf"
+    dest.with_suffix(dest.suffix + ".part").write_bytes(b"")
+    responses = iter(
+        [
+            _FakeResp(
+                206, [b"tail"], headers={"Content-Range": "bytes 5-8/9"}
+            ),
+            _FakeResp(
+                206, [b"tail"], headers={"Content-Range": "bytes 5-8/9"}
+            ),
+        ]
+    )
+    monkeypatch.setattr(requests, "get", lambda *a, **k: next(responses))
+
+    with pytest.raises(downloader.DownloadError, match="invalid Content-Range"):
+        downloader.download_file("https://example.com/model.gguf", dest)
+
+    assert not dest.exists()
 
 
 # --- network retry/backoff ---------------------------------------------------
@@ -388,7 +741,7 @@ def test_download_file_parallel_path_honors_stop_check(tmp_path, monkeypatch):
         range_header = (headers or {}).get("Range", "")
         if range_header == "bytes=0-0":
             return _FakeResp(206, [payload[:1]], headers={"Content-Range": f"bytes 0-0/{len(payload)}"})
-        return _FakeResp(206, [payload[i : i + 5] for i in range(0, len(payload), 5)])
+        return _FakeResp(200, [payload[i : i + 5] for i in range(0, len(payload), 5)])
 
     monkeypatch.setattr(requests, "get", fake_get)
     dest = tmp_path / "model.gguf"
@@ -418,10 +771,9 @@ class _DropsAfterFirstByte:
     reset mid-stream (as opposed to a clean end of the response body)."""
 
     status_code = 206
-    headers: dict = {}
-
-    def __init__(self, first_byte: bytes):
+    def __init__(self, first_byte: bytes, headers: dict):
         self._first_byte = first_byte
+        self.headers = headers
 
     def iter_content(self, chunk_size):
         yield self._first_byte
@@ -449,23 +801,42 @@ def test_download_file_resumes_parallel_download_after_network_drop_without_rest
 
     range_headers_seen: list[str] = []
     dropped_once = {"done": False}
+    etag = '"model-v1"'
 
     def flaky_server(url, headers=None, stream=True, timeout=30):
         range_header = (headers or {}).get("Range", "")
         range_headers_seen.append(range_header)
         if range_header == "bytes=0-0":
             return _FakeResp(
-                206, [payload[:1]], headers={"Content-Range": f"bytes 0-0/{len(payload)}"}
+                206,
+                [payload[:1]],
+                headers={
+                    "Content-Range": f"bytes 0-0/{len(payload)}",
+                    "ETag": etag,
+                },
             )
         # The first request for range 0-9 drops after 1 byte, exactly once.
         # Whichever thread happens to service it (thread scheduling order
         # isn't deterministic), only its very first attempt is dropped.
         if range_header == "bytes=0-9" and not dropped_once["done"]:
             dropped_once["done"] = True
-            return _DropsAfterFirstByte(payload[0:1])
+            return _DropsAfterFirstByte(
+                payload[0:1],
+                {
+                    "Content-Range": f"bytes 0-9/{len(payload)}",
+                    "ETag": etag,
+                },
+            )
         start_str, end_str = range_header.removeprefix("bytes=").split("-")
         start, end = int(start_str), int(end_str)
-        return _FakeResp(206, [payload[start : end + 1]])
+        return _FakeResp(
+            206,
+            [payload[start : end + 1]],
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{len(payload)}",
+                "ETag": etag,
+            },
+        )
 
     monkeypatch.setattr(requests, "get", flaky_server)
 
@@ -492,7 +863,10 @@ def test_download_parallel_resume_only_refetches_unfinished_ranges(tmp_path, mon
     part.write_bytes(payload[:10] + payload[10:14] + b"\x00" * 6)
 
     sidecar = downloader._sidecar_path(part)
+    etag = '"model-v1"'
     state = {
+        "url": "https://example.com/model.gguf",
+        "etag": etag,
         "total_size": 20,
         "ranges": [
             {"start": 0, "end": 9, "done": 10},  # already complete
@@ -502,13 +876,22 @@ def test_download_parallel_resume_only_refetches_unfinished_ranges(tmp_path, mon
     sidecar.write_text(json.dumps(state))
 
     requested_ranges = []
+    monkeypatch.setattr(
+        downloader,
+        "_probe_range_support",
+        lambda url: (len(payload), True, etag),
+    )
 
     def fake_get(url, headers=None, stream=True, timeout=30):
         range_header = (headers or {}).get("Range", "")
         requested_ranges.append(range_header)
         # Only the unfinished range (bytes 14-19) should ever be requested.
         assert range_header == "bytes=14-19"
-        return _FakeResp(206, [payload[14:20]])
+        return _FakeResp(
+            206,
+            [payload[14:20]],
+            headers={"Content-Range": "bytes 14-19/20", "ETag": etag},
+        )
 
     monkeypatch.setattr(requests, "get", fake_get)
 
@@ -743,7 +1126,7 @@ def test_download_file_retry_warning_still_prints_when_quiet(tmp_path, monkeypat
     """quiet suppresses the progress bar, not the network-retry warning -
     that's a warning, and warnings always print (see #80)."""
     dest = tmp_path / "model.gguf"
-    monkeypatch.setattr(downloader, "_probe_range_support", lambda url: (0, False))
+    monkeypatch.setattr(downloader, "_probe_range_support", lambda url: (0, False, None))
     monkeypatch.setattr(downloader, "_sleep_with_stop_check", lambda seconds, stop_check: None)
     attempts = [
         requests.exceptions.ConnectionError("boom"),

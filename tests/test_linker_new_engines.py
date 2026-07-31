@@ -1,3 +1,5 @@
+import json
+import platform
 from pathlib import Path
 
 import pytest
@@ -17,9 +19,42 @@ def test_link_jan_writes_model_yaml_with_absolute_path(tmp_path, monkeypatch):
 
     assert config_path == tmp_path / "jan-models" / "tinyllama-q4" / "model.yml"
     text = config_path.read_text()
-    assert f'model_path: "{gguf_path}"' in text
+    assert f"model_path: {json.dumps(str(gguf_path))}" in text
     assert 'name: "tinyllama-q4"' in text
     assert f"size_bytes: {len(b'fake-gguf-bytes')}" in text
+
+
+@pytest.mark.skipif(
+    platform.system() == "Windows",
+    reason='Windows filenames cannot contain the double quote character',
+)
+def test_link_jan_escapes_quotes_in_model_path(tmp_path, monkeypatch):
+    gguf_path = tmp_path / 'model "quoted".gguf'
+    gguf_path.write_bytes(b"x")
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: tmp_path / "jan-models")
+
+    config_path = linker.link_jan(gguf_path, "quoted-model")
+
+    assert f"model_path: {json.dumps(str(gguf_path))}" in config_path.read_text()
+    assert linker.read_jan_model_path(config_path) == str(gguf_path)
+
+
+def test_link_jan_rejects_symlinked_model_directory(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    models_dir = tmp_path / "jan-models"
+    outside = tmp_path / "outside"
+    models_dir.mkdir()
+    outside.mkdir()
+    (models_dir / "safe").symlink_to(outside, target_is_directory=True)
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"x")
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+
+    with pytest.raises(linker.LinkError, match="symlinked model directory"):
+        linker.link_jan(gguf_path, "safe")
+
+    assert not (outside / "model.yml").exists()
 
 
 def test_read_jan_model_path_extracts_field(tmp_path):
@@ -49,6 +84,52 @@ def test_unlink_jan_removes_manifest_and_empty_dir(tmp_path, monkeypatch):
     assert not config_path.parent.exists()
 
 
+def test_link_jan_refuses_to_overwrite_unowned_manifest(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"x")
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    config_path = models_dir / "tinyllama-q4" / "model.yml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('model_path: "/user/model.gguf"\nname: "user"\n')
+
+    with pytest.raises(linker.LinkError, match="unowned Jan manifest"):
+        linker.link_jan(gguf_path, "tinyllama-q4")
+
+    assert config_path.read_text() == 'model_path: "/user/model.gguf"\nname: "user"\n'
+
+
+def test_unlink_jan_preserves_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    config_path = models_dir / "user-model" / "model.yml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('model_path: "/missing/user.gguf"\n')
+
+    linker.unlink_jan("user-model")
+
+    assert config_path.exists()
+
+
+def test_unlink_jan_preserves_owned_manifest_modified_in_place(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"x")
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    config_path = linker.link_jan(gguf_path, "model")
+    config_path.write_text(
+        f"model_path: {json.dumps(str(gguf_path))}\nname: \"user-edited\"\n"
+    )
+
+    linker.unlink_jan("model")
+
+    assert config_path.exists()
+
+
 def test_autoremove_jan_deletes_manifests_pointing_at_missing_files(tmp_path, monkeypatch):
     models_dir = tmp_path / "jan-models"
     monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
@@ -75,6 +156,19 @@ def test_autoremove_jan_returns_zero_when_dir_missing(tmp_path, monkeypatch):
     assert linker.autoremove_jan() == 0
 
 
+def test_autoremove_jan_preserves_unowned_broken_manifest(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    config_path = models_dir / "user-model" / "model.yml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(f'model_path: "{tmp_path / "missing.gguf"}"\n')
+
+    assert linker.autoremove_jan() == 0
+    assert config_path.exists()
+
+
 # --- AnythingLLM (Ollama-format at its own models_dir) ------------------
 
 
@@ -94,6 +188,106 @@ def test_link_ollama_at_custom_models_dir_does_not_touch_default(isolated_omm_ho
     assert (custom_dir / "blobs").exists()
     manifest_path = custom_dir / "manifests" / "registry.ollama.ai" / "library" / "mymodel" / "latest"
     assert manifest_path.exists()
+
+
+@pytest.mark.parametrize(
+    "unsafe_name",
+    ["", ".", "..", "../escape", "/tmp/escape", "C:escape", "name:tag"],
+)
+def test_link_ollama_rejects_unsafe_model_name(
+    isolated_omm_home, tmp_path, monkeypatch, unsafe_name
+):
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"x")
+    monkeypatch.setattr(
+        linker,
+        "read_gguf_metadata",
+        lambda path, keys: {"general.architecture": "llama"},
+    )
+    models_dir = tmp_path / "ollama"
+
+    with pytest.raises(linker.LinkError, match="Unsafe Ollama"):
+        linker.link_ollama(gguf_path, unsafe_name, models_dir=models_dir)
+
+    assert not (tmp_path / "escape").exists()
+
+
+def test_ollama_manifest_collision_preserves_first_model(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    first = linker.MODELS_DIR / "a" / "model.gguf"
+    second = linker.MODELS_DIR / "a-model.gguf"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    monkeypatch.setattr(
+        linker,
+        "read_gguf_metadata",
+        lambda path, keys: {"general.architecture": "llama"},
+    )
+    models_dir = tmp_path / "ollama"
+    tag = linker.sanitize_ollama_tag(str(first.relative_to(linker.MODELS_DIR)))
+    assert tag == linker.sanitize_ollama_tag(second.name)
+
+    linker.link_ollama(first, tag, models_dir=models_dir)
+    manifest_path = (
+        models_dir
+        / "manifests"
+        / "registry.ollama.ai"
+        / "library"
+        / tag
+        / "latest"
+    )
+    original = manifest_path.read_bytes()
+
+    with pytest.raises(linker.LinkError, match="Refusing to replace"):
+        linker.link_ollama(second, tag, models_dir=models_dir)
+    linker.unlink_ollama(tag, models_dir=models_dir, expected_source=second)
+
+    assert manifest_path.read_bytes() == original
+
+
+def test_jan_manifest_collision_preserves_first_model(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    first = linker.MODELS_DIR / "a" / "model.gguf"
+    second = linker.MODELS_DIR / "a-model.gguf"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    tag = linker.sanitize_ollama_tag(str(first.relative_to(linker.MODELS_DIR)))
+    assert tag == linker.sanitize_ollama_tag(second.name)
+
+    manifest_path = linker.link_jan(first, tag)
+    original = manifest_path.read_bytes()
+
+    with pytest.raises(linker.LinkError, match="Refusing to replace"):
+        linker.link_jan(second, tag)
+    linker.unlink_jan(tag, expected_source=second)
+
+    assert manifest_path.read_bytes() == original
+
+
+def test_link_ollama_rejects_corrupted_existing_digest_blob(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"expected")
+    monkeypatch.setattr(
+        linker,
+        "read_gguf_metadata",
+        lambda path, keys: {"general.architecture": "llama"},
+    )
+    models_dir = tmp_path / "ollama"
+    digest = linker.sha256_file(gguf_path)
+    blob = models_dir / "blobs" / f"sha256-{digest}"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"corrupted")
+
+    with pytest.raises(linker.LinkError, match="does not match its digest"):
+        linker.link_ollama(gguf_path, "model", models_dir=models_dir)
 
 
 def test_is_anythingllm_installed_reflects_app_dir_existence_on_non_darwin(tmp_path, monkeypatch):
@@ -299,7 +493,9 @@ def test_link_jan_raises_link_error_when_write_fails(tmp_path, monkeypatch):
     gguf_path.write_bytes(b"weights")
     monkeypatch.setattr(linker, "jan_models_dir", lambda: tmp_path / "jan")
     monkeypatch.setattr(
-        Path, "write_text", lambda self, content: (_ for _ in ()).throw(OSError("disk full"))
+        linker,
+        "atomic_write_text",
+        lambda path, content: (_ for _ in ()).throw(OSError("disk full")),
     )
 
     with pytest.raises(linker.LinkError):

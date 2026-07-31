@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import errno
 import json
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -36,6 +37,8 @@ from rich.segment import Segment
 from rich.style import StyleType
 from rich.table import Column
 from rich.text import Text
+
+from omm.atomic import atomic_write_text
 
 _CHUNK_SIZE = 1024 * 1024
 _DEFAULT_THREADS = 4
@@ -78,12 +81,26 @@ def _read_sidecar(sidecar_path: Path) -> dict | None:
         return None
 
 
-def _write_sidecar(sidecar_path: Path, total_size: int, ranges: list[dict]) -> None:
+def _write_sidecar(
+    sidecar_path: Path,
+    url: str,
+    strong_etag: str,
+    total_size: int,
+    ranges: list[dict],
+) -> None:
     # Write-to-temp-then-rename so a crash mid-write can't leave behind a
     # half-written JSON file that would poison the next resume attempt.
     tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
     with tmp.open("w") as f:
-        json.dump({"total_size": total_size, "ranges": ranges}, f)
+        json.dump(
+            {
+                "url": url,
+                "etag": strong_etag,
+                "total_size": total_size,
+                "ranges": ranges,
+            },
+            f,
+        )
     tmp.replace(sidecar_path)
 
 
@@ -153,6 +170,52 @@ def _progress(*, quiet: bool = False, no_color: bool = False) -> Progress:
     )
 
 
+def _strong_etag(headers) -> str | None:
+    etag = (headers.get("ETag") or "").strip()
+    return etag if etag and not etag.startswith("W/") else None
+
+
+def _part_metadata_path(part_path: Path) -> Path:
+    return part_path.with_name(f"{part_path.name}.meta")
+
+
+def _load_resume_metadata(
+    meta_path: Path, url: str, resume_pos: int
+) -> tuple[str, int] | None:
+    try:
+        metadata = json.loads(meta_path.read_text())
+        etag = metadata["etag"]
+        total_size = metadata["total_size"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if (
+        metadata.get("url") != url
+        or not isinstance(etag, str)
+        or not etag
+        or etag.startswith("W/")
+        or not isinstance(total_size, int)
+        or isinstance(total_size, bool)
+        or total_size <= resume_pos
+    ):
+        return None
+    return etag, total_size
+
+
+def _write_resume_metadata(
+    meta_path: Path, url: str, etag: str | None, total_size: int | None
+) -> None:
+    if etag is None or total_size is None or total_size <= 0:
+        meta_path.unlink(missing_ok=True)
+        return
+    atomic_write_text(
+        meta_path,
+        json.dumps(
+            {"url": url, "etag": etag, "total_size": total_size},
+            sort_keys=True,
+        ),
+    )
+
+
 def _choose_thread_count(total_size: int, max_threads: int = _DEFAULT_THREADS) -> int:
     if total_size < _MIN_PARALLEL_TOTAL:
         return 1
@@ -174,8 +237,11 @@ def _plan_ranges(total_size: int, num_threads: int) -> list[tuple[int, int]]:
     return ranges
 
 
-def _probe_range_support(url: str) -> tuple[int, bool]:
-    """Probe with a 1-byte Range request. Returns (total_size, supports_ranges).
+def _probe_range_support(url: str) -> tuple[int, bool, str | None]:
+    """Probe with a 1-byte Range request.
+
+    Returns total size, range support, and a strong ETag. Parallel download
+    additionally requires the ETag so every range stays bound to one object.
     A 206 with a parseable `Content-Range` means the server (and by
     extension its CDN) honors Range requests, so a full download can be
     safely split across threads. Some servers (confirmed: ModelScope's
@@ -190,19 +256,18 @@ def _probe_range_support(url: str) -> tuple[int, bool]:
     try:
         resp = requests.get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=30)
     except requests.RequestException:
-        return 0, False
+        return 0, False, None
+    strong_etag = _strong_etag(resp.headers)
     resp.close()
-    content_range = resp.headers.get("Content-Range", "")
+    content_range = (resp.headers.get("Content-Range") or "").strip()
     honored = resp.status_code == 206 or (
         resp.status_code == 200 and resp.headers.get("Content-Length") == "1"
     )
-    if honored and content_range:
-        try:
-            total = int(content_range.rsplit("/", 1)[-1])
-        except (ValueError, IndexError):
-            return 0, False
-        return total, total > 0
-    return 0, False
+    match = re.fullmatch(r"bytes 0-0/(\d+)", content_range)
+    if honored and match is not None:
+        total = int(match.group(1))
+        return total, total > 0, strong_etag
+    return 0, False, None
 
 
 def _download_range_worker(
@@ -212,6 +277,7 @@ def _download_range_worker(
     range_state: dict,
     ranges_state: list[dict],
     total_size: int,
+    strong_etag: str,
     progress: Progress,
     task_id,
     lock: threading.Lock,
@@ -224,26 +290,54 @@ def _download_range_worker(
     end = range_state["end"]
     resume_offset = start + range_state["done"]
 
+    resp = None
     try:
         resp = requests.get(
-            url, headers={"Range": f"bytes={resume_offset}-{end}"}, stream=True, timeout=30
+            url,
+            headers={
+                "Range": f"bytes={resume_offset}-{end}",
+                "If-Range": strong_etag,
+            },
+            stream=True,
+            timeout=30,
         )
         expected_len = end - resume_offset + 1
-        honored = resp.status_code == 206 or (
+        content_range = re.fullmatch(
+            r"bytes (\d+)-(\d+)/(\d+|\*)",
+            (resp.headers.get("Content-Range") or "").strip(),
+        )
+        range_matches = (
+            content_range is not None
+            and int(content_range.group(1)) == resume_offset
+            and int(content_range.group(2)) == end
+            and content_range.group(3) != "*"
+            and int(content_range.group(3)) == total_size
+        )
+        response_etag = (resp.headers.get("ETag") or "").strip()
+        honored = (resp.status_code == 206 and range_matches) or (
             resp.status_code == 200
             and resp.headers.get("Content-Length") == str(expected_len)
+            and range_matches
         )
-        if not honored:
+        if not honored or response_etag != strong_etag:
             raise DownloadError(
                 f"Expected a Range response for bytes={resume_offset}-{end}, got "
-                f"status {resp.status_code} with Content-Length "
-                f"{resp.headers.get('Content-Length')}"
+                f"status {resp.status_code}, Content-Range "
+                f"{resp.headers.get('Content-Range')!r}, and Content-Length "
+                f"{resp.headers.get('Content-Length')!r}; response ETag "
+                f"{response_etag!r} did not preserve {strong_etag!r}"
             )
+        written = 0
         with part_path.open("r+b") as f:
             f.seek(resume_offset)
             for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
                 if not chunk:
                     continue
+                if written + len(chunk) > expected_len:
+                    raise DownloadError(
+                        f"Range bytes={resume_offset}-{end} returned more than "
+                        f"{expected_len} bytes."
+                    )
                 try:
                     f.write(chunk)
                 except OSError as e:
@@ -252,14 +346,29 @@ def _download_range_worker(
                             f"Not enough disk space to download {part_path.name}."
                         ) from e
                     raise
+                written += len(chunk)
                 with lock:
                     range_state["done"] += len(chunk)
                     progress.update(task_id, advance=len(chunk))
-                    _write_sidecar(sidecar_path, total_size, ranges_state)
+                    _write_sidecar(
+                        sidecar_path,
+                        url,
+                        strong_etag,
+                        total_size,
+                        ranges_state,
+                    )
                 if stop_check is not None and stop_check():
                     raise DownloadCancelled("interrupted by user")
+        if written != expected_len:
+            raise DownloadError(
+                f"Range bytes={resume_offset}-{end} returned {written} bytes; "
+                f"expected {expected_len}."
+            )
     except Exception as e:  # noqa: BLE001 - collected and re-raised by the caller
         errors.append(e)
+    finally:
+        if resp is not None:
+            resp.close()
 
 
 def _run_range_workers(
@@ -269,6 +378,7 @@ def _run_range_workers(
     sidecar_path: Path,
     total_size: int,
     ranges_state: list[dict],
+    strong_etag: str,
     stop_check: Callable[[], bool] | None,
     *,
     quiet: bool = False,
@@ -297,6 +407,7 @@ def _run_range_workers(
                         r,
                         ranges_state,
                         total_size,
+                        strong_etag,
                         progress,
                         task_id,
                         lock,
@@ -327,7 +438,7 @@ def _run_range_workers(
             raise disk_full
         raise DownloadError(str(errors[0])) from errors[0]
 
-    part_path.rename(dest)
+    part_path.replace(dest)
     sidecar_path.unlink(missing_ok=True)
 
 
@@ -338,6 +449,7 @@ def _download_parallel(
     sidecar_path: Path,
     total_size: int,
     thread_count: int,
+    strong_etag: str,
     stop_check: Callable[[], bool] | None,
     *,
     quiet: bool = False,
@@ -348,10 +460,17 @@ def _download_parallel(
         f.truncate(total_size)
 
     ranges_state = [{"start": start, "end": end, "done": 0} for start, end in _plan_ranges(total_size, thread_count)]
-    _write_sidecar(sidecar_path, total_size, ranges_state)
+    _write_sidecar(sidecar_path, url, strong_etag, total_size, ranges_state)
 
     _run_range_workers(
-        url, dest, part_path, sidecar_path, total_size, ranges_state, stop_check,
+        url,
+        dest,
+        part_path,
+        sidecar_path,
+        total_size,
+        ranges_state,
+        strong_etag,
+        stop_check,
         quiet=quiet, no_color=no_color,
     )
 
@@ -368,7 +487,14 @@ def _download_parallel_resume(
     no_color: bool = False,
 ) -> None:
     _run_range_workers(
-        url, dest, part_path, sidecar_path, state["total_size"], state["ranges"], stop_check,
+        url,
+        dest,
+        part_path,
+        sidecar_path,
+        state["total_size"],
+        state["ranges"],
+        state["etag"],
+        stop_check,
         quiet=quiet, no_color=no_color,
     )
 
@@ -381,34 +507,131 @@ def _download_single_stream(
     *,
     quiet: bool = False,
     no_color: bool = False,
+    allow_clean_restart: bool = True,
 ) -> None:
     import requests
 
     dest.parent.mkdir(parents=True, exist_ok=True)
+    meta_path = _part_metadata_path(part_path)
     resume_pos = part_path.stat().st_size if part_path.exists() else 0
+    resume_etag: str | None = None
+    resume_total: int | None = None
+    if resume_pos:
+        resume_metadata = _load_resume_metadata(meta_path, url, resume_pos)
+        if resume_metadata is None:
+            part_path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+            resume_pos = 0
+        else:
+            resume_etag, resume_total = resume_metadata
 
-    headers = {"Range": f"bytes={resume_pos}-"} if resume_pos else {}
+    headers = (
+        {
+            "Range": f"bytes={resume_pos}-",
+            "If-Range": resume_etag,
+        }
+        if resume_pos
+        else {}
+    )
     resp = requests.get(url, headers=headers, stream=True, timeout=30)
 
     if resume_pos and resp.status_code == 200:
-        # Server ignored the Range request; restart from scratch.
         resume_pos = 0
         mode = "wb"
+        raw_length = resp.headers.get("Content-Length")
+        try:
+            final_total = int(raw_length) if raw_length is not None else None
+        except ValueError:
+            final_total = None
+        if final_total is not None and final_total < 0:
+            final_total = None
+        expected_response_bytes = final_total
     elif resp.status_code == 416:
-        # Already fully downloaded.
-        part_path.rename(dest)
-        return
+        if not resume_pos:
+            raise DownloadError(f"Download failed: HTTP 416 for {url}")
+        resp.close()
+        part_path.unlink(missing_ok=True)
+        meta_path.unlink(missing_ok=True)
+        return _download_single_stream(
+            url,
+            dest,
+            part_path,
+            stop_check,
+            quiet=quiet,
+            no_color=no_color,
+            allow_clean_restart=False,
+        )
     elif resp.status_code in (200, 206):
         resp.raise_for_status()
-        mode = "ab" if resume_pos and resp.status_code == 206 else "wb"
+        if resp.status_code == 206:
+            match = re.fullmatch(
+                r"bytes (\d+)-(\d+)/(\d+)",
+                (resp.headers.get("Content-Range") or "").strip(),
+            )
+            range_start = int(match.group(1)) if match is not None else -1
+            range_end = int(match.group(2)) if match is not None else -1
+            range_total = int(match.group(3)) if match is not None else -1
+            valid_resume = (
+                resume_pos > 0
+                and resume_etag is not None
+                and resume_total is not None
+                and range_start == resume_pos
+                and range_end == range_total - 1
+                and range_total == resume_total
+                and _strong_etag(resp.headers) == resume_etag
+            )
+            if not valid_resume:
+                resp.close()
+                part_path.unlink(missing_ok=True)
+                meta_path.unlink(missing_ok=True)
+                if not allow_clean_restart:
+                    raise DownloadError(
+                        "Server returned an invalid Content-Range after a clean retry."
+                    )
+                return _download_single_stream(
+                    url,
+                    dest,
+                    part_path,
+                    stop_check,
+                    quiet=quiet,
+                    no_color=no_color,
+                    allow_clean_restart=False,
+                )
+            expected_response_bytes = range_total - resume_pos
+            final_total = range_total
+            mode = "ab"
+        else:
+            raw_length = resp.headers.get("Content-Length")
+            try:
+                final_total = int(raw_length) if raw_length is not None else None
+            except ValueError:
+                final_total = None
+            if final_total is not None and final_total < 0:
+                final_total = None
+            expected_response_bytes = final_total
+            mode = "wb"
     else:
         raise DownloadError(f"Download failed: HTTP {resp.status_code} for {url}")
 
-    total = int(resp.headers.get("Content-Length", 0)) + resume_pos
+    if mode == "wb":
+        with part_path.open("wb"):
+            pass
+    _write_resume_metadata(
+        meta_path,
+        url,
+        resume_etag if mode == "ab" else _strong_etag(resp.headers),
+        final_total,
+    )
+    written = 0
 
     with _progress(quiet=quiet, no_color=no_color) as progress:
-        task = progress.add_task("download", total=total or None, completed=resume_pos, filename=dest.name)
-        with part_path.open(mode) as f:
+        task = progress.add_task(
+            "download",
+            total=final_total or None,
+            completed=resume_pos if mode == "ab" else 0,
+            filename=dest.name,
+        )
+        with part_path.open("ab") as f:
             for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
                 if chunk:
                     try:
@@ -419,11 +642,23 @@ def _download_single_stream(
                                 f"Not enough disk space to download {dest.name}."
                             ) from e
                         raise
+                    written += len(chunk)
                     progress.update(task, advance=len(chunk))
                 if stop_check is not None and stop_check():
                     raise DownloadCancelled("interrupted by user")
 
-    part_path.rename(dest)
+    resp.close()
+    if expected_response_bytes is not None and written != expected_response_bytes:
+        raise DownloadError(
+            f"Download returned {written} bytes; expected {expected_response_bytes}."
+        )
+    if final_total is not None and part_path.stat().st_size != final_total:
+        raise DownloadError(
+            f"Downloaded file is {part_path.stat().st_size} bytes; "
+            f"expected {final_total}."
+        )
+    part_path.replace(dest)
+    meta_path.unlink(missing_ok=True)
 
 
 def _attempt_download(
@@ -439,7 +674,16 @@ def _attempt_download(
 
     if part_path.exists() and sidecar_path.exists():
         state = _read_sidecar(sidecar_path)
-        if state and state.get("total_size") == part_path.stat().st_size:
+        total_size, supports_ranges, strong_etag = _probe_range_support(url)
+        if (
+            isinstance(state, dict)
+            and supports_ranges
+            and strong_etag is not None
+            and state.get("url") == url
+            and state.get("etag") == strong_etag
+            and state.get("total_size") == total_size
+            and total_size == part_path.stat().st_size
+        ):
             try:
                 _download_parallel_resume(
                     url, dest, part_path, sidecar_path, state, stop_check,
@@ -465,13 +709,24 @@ def _attempt_download(
             sidecar_path.unlink(missing_ok=True)
 
     if not part_path.exists():
-        total_size, supports_ranges = _probe_range_support(url)
-        if supports_ranges and total_size >= _MIN_PARALLEL_TOTAL:
+        total_size, supports_ranges, strong_etag = _probe_range_support(url)
+        if (
+            supports_ranges
+            and strong_etag is not None
+            and total_size >= _MIN_PARALLEL_TOTAL
+        ):
             thread_count = _choose_thread_count(total_size)
             if thread_count > 1:
                 try:
                     _download_parallel(
-                        url, dest, part_path, sidecar_path, total_size, thread_count, stop_check,
+                        url,
+                        dest,
+                        part_path,
+                        sidecar_path,
+                        total_size,
+                        thread_count,
+                        strong_etag,
+                        stop_check,
                         quiet=quiet, no_color=no_color,
                     )
                     return
@@ -523,24 +778,24 @@ def download_file(
 
     A fresh, range-capable download above `_MIN_PARALLEL_TOTAL` bytes is
     split across multiple threads for speed. Everything else - small files,
-    servers that ignore Range, and resuming an existing `.part` file from a
-    prior run (single- or multi-threaded feature version alike) - goes
-    through the single-stream path, which also handles resuming.
+    servers that ignore Range, and resuming an existing validated partial
+    file from a prior run goes through the single-stream path.
 
     Transient network errors (DNS failure, connection reset, timeout,
     truncated stream) are retried up to `_MAX_ATTEMPTS` times with a fixed
-    backoff schedule (`_RETRY_DELAYS`), reusing the same `.part` file across
-    attempts. Non-network errors (bad HTTP status, etc.) are not retried.
+    fixed backoff schedule, reusing partial bytes only while their strong
+    validator still matches. Non-network errors are not retried.
 
     If `stop_check` is given, it's polled regularly during the transfer and
     during backoff waits; a truthy result raises `DownloadCancelled` and
-    leaves the `.part` file in place for a later resume (used by `omm
-    contribute`'s Esc-to-stop).
+    leaves the partial in place for a later validated resume.
 
     `quiet` disables the progress bar (the retry warning below still prints -
     it's a warning, not decorative). `no_color` disables ANSI styling on both
     the progress bar and the retry warning."""
     part_path = dest.with_suffix(dest.suffix + ".part")
+    if part_path.is_symlink():
+        raise DownloadError(f"Refusing symlinked partial download path: {part_path}.")
     last_error: Exception | None = None
     if no_color:
         _err_console.no_color = True

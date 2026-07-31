@@ -156,10 +156,12 @@ anyway.
   `tokens_per_sec_min/max`, or `sample_count` - not even a faked zero. If
   you need to represent "this had no real measurement," the absence of
   those fields *is* the representation.
-- IPs, usernames, hostnames, filesystem paths. Nothing in the v7 payload
-  builder (`omm.cli._report_failure_telemetry`) reads from the OS beyond
-  `scan_hardware()`, which already redacts raw CPU/GPU model strings the
-  same way v6 does.
+- IPs, usernames, hostnames, filesystem paths, or raw GPU model names.
+  The v7 payload builder (`omm.cli._report_failure_telemetry`) does send the
+  CPU model string, architecture, and physical/logical core counts returned
+  by `scan_hardware()` because those fields are required training inputs;
+  that hardware metadata is shown in the consented telemetry contract rather
+  than being described as redacted.
 
 ## Why two separate training datasets
 
