@@ -18,7 +18,8 @@ $Branch = $env:OMM_INSTALL_BRANCH
 # the TOFU root for a brand new machine, since there's no prior install
 # to carry a trusted copy yet).
 $AllowedSignersContent = "seong381400@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh12ERbI3Yx6DPiaROPjCyI2GIQXb9Ihbp9J9L4bnpe
-ahseongchoi@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5UPWuM/1GxGo5TQ5nEJm9UvXShygIozjbvxB1VT9u6"
+ahseongchoi@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5UPWuM/1GxGo5TQ5nEJm9UvXShygIozjbvxB1VT9u6
+fakeminjun7321@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL4gaNZPEizBHr81LObieqSxd6HExCPK7UKupsTniJ8s"
 
 function Test-CommandExists {
     param([string]$Name)
