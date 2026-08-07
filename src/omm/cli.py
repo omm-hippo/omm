@@ -302,9 +302,13 @@ def scan() -> None:
     engine_table.add_column("Program", style="cyan")
     engine_table.add_column("Status", style="white")
     for spec in linker.ENGINES:
-        engine_table.add_row(spec.label, "installed" if installed[spec.key] else "not detected")
+        if installed[spec.key]:
+            engine_table.add_row(spec.label, "installed")
     console.print()
     console.print(engine_table)
+    note = _missing_engines_note(installed)
+    if note:
+        console.print(note)
 
     reg = registry.load_registry()
     cleaned = _reconcile_stale_link_records(reg, installed)
