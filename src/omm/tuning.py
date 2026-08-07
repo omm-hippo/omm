@@ -107,7 +107,11 @@ def recommend_runtime_settings(
     memory_budget = calculate_memory_budget(hw)
     vram = memory_budget.vram_budget_gb or 0.0
     if hw.unified_memory:
-        gpu_offload_percent = 100 if model_size is None or model_size <= available else 0
+        # RAM and VRAM are the same physical pool on unified memory, so
+        # disabling GPU offload never frees memory the model needs -- it
+        # only makes inference slower. Always prefer full offload here;
+        # low-headroom machines are protected via context_length instead.
+        gpu_offload_percent = 100
     elif vram <= 0 or model_size is None:
         gpu_offload_percent = 0
     elif model_size <= vram * 0.85:
