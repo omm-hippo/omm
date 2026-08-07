@@ -182,19 +182,10 @@ def _available_memory(info: object) -> float | None:
 
 
 def print_screen(console: Console, info: object, candidate_count: int) -> None:
-    intro = Text()
-    intro.append("Your hardware has been scanned", style="white")
-    intro.append("  ·  ", style=MUTED)
-    intro.append(
-        f"{candidate_count} compatible model{'s' if candidate_count != 1 else ''} found",
-        style=f"bold {SUCCESS}",
-    )
     console.print(
-        Panel(
-            intro,
-            border_style=ACCENT,
-            box=box.ROUNDED,
-            padding=(0, 1),
+        Text(
+            f"{candidate_count} compatible model{'s' if candidate_count != 1 else ''} found",
+            style=f"bold {SUCCESS}",
         )
     )
     cpu = str(getattr(info, "cpu", "") or "Unknown")

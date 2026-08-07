@@ -7,7 +7,7 @@ import questionary
 from omm import cli
 
 
-def test_recommend_builds_choice_values_via_install_ref(monkeypatch, isolated_omm_home):
+def test_recommend_builds_choice_values_via_exact_install_ref(monkeypatch, isolated_omm_home):
     candidate = {
         "name": "org/repo",
         "repo_id": "org/repo",
@@ -46,6 +46,6 @@ def test_recommend_builds_choice_values_via_install_ref(monkeypatch, isolated_om
         pass  # typer.Exit(0) on the cancel path is expected - not a real SystemExit
               # when recommend() is called directly instead of via CliRunner
 
-    assert captured_choices[0].value == "ms:org/repo"
+    assert captured_choices[0].value == "ms:org/repo:model.gguf"
     assert captured_options["pointer"] == "❯"
     assert "Enter select" in captured_options["instruction"]

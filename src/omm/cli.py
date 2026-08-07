@@ -947,7 +947,7 @@ def recommend() -> None:
             err_console.print("[red]No model is predicted to run on this hardware.[/red]")
             raise typer.Exit(1)
 
-        refs = [search_mod.install_ref(c) for c, speed in viable]
+        refs = [search_mod.exact_install_ref(c) for c, speed in viable]
         session_cache.record_seen(refs)
         selected = _select_recommended_model(info, viable, refs)
         if selected is None:
