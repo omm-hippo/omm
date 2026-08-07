@@ -12,3 +12,4 @@ build/
 *-debug.log
 .worktrees/
 no_upload/
+.superpowers/

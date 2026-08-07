@@ -97,6 +97,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minimum-real-configurations", type=int, default=20)
     parser.add_argument("--maximum-rejection-rate", type=float, default=0.25)
     parser.add_argument("--holdout-fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--minimum-fit-negative-examples",
+        type=int,
+        default=5,
+        help=(
+            "Minimum known-unfit (model_unfit/performance_unfit) telemetry rows "
+            "required before fit_balanced_accuracy/fit_false_positive_rate can "
+            "block a release; below this, a single row's prediction is too "
+            "noisy to gate on."
+        ),
+    )
     parser.add_argument("--quality-report", type=Path, help="Optional JSON quality-gate report.")
     return parser.parse_args()
 
@@ -229,16 +240,16 @@ def _extract_features_and_reason(
     if engine not in ("ollama", "llama.cpp", "lmstudio"):
         return None, None, "unsupported_engine"
     benchmark_version = row.get("benchmark_version")
-    if benchmark_version not in (None, 1, 2, 3, 4, 5, 6, 7):
+    if benchmark_version not in (None, 1, 2, 3, 4, 5, 6, 7, 8):
         return None, None, "unsupported_schema"
 
     tokens_per_sec = _bounded_number(row.get("tokens_per_sec"), 0.0, 10_000.0)
     ram_gb = _bounded_number(row.get("ram_gb"), 1.0, 1024.0)
     vram_gb = _bounded_number(row.get("vram_gb"), 0.0, 512.0)
     gpu_tflops = _bounded_number(row.get("gpu_tflops"), 0.0, 1000.0)
-    # "direct" = the explicit-metadata schema (v6 and its v7 successor),
-    # as opposed to the legacy name-parsing fallback used by v1-v5.
-    is_direct = benchmark_version in (6, 7)
+    # "direct" = the explicit-metadata schema (v6, v7, and v8), as opposed
+    # to the legacy name-parsing fallback used by v1-v5.
+    is_direct = benchmark_version in (6, 7, 8)
     if is_direct:
         required_runtime = (
             "runtime_profile", "context_length", "gpu_offload_percent", "cpu_threads", "num_batch",
@@ -260,7 +271,7 @@ def _extract_features_and_reason(
         return None, None, "invalid_measurement"
     if None in (context_length, gpu_offload_percent, cpu_threads, num_batch):
         return None, None, "invalid_runtime"
-    if require_speed and benchmark_version in (4, 5, 6, 7):
+    if require_speed and benchmark_version in (4, 5, 6, 7, 8):
         if is_direct and any(
             row.get(field) is None
             for field in ("sample_count", "tokens_per_sec_min", "tokens_per_sec_max")
@@ -335,10 +346,28 @@ def _extract_features_and_reason(
         if param_count_b is None or quant_bits is None or model_size_gb is None:
             return None, None, "unparseable_model"
 
-    cpu_model = row.get("cpu_model") if is_direct else ""
-    if is_direct and (not isinstance(cpu_model, str) or not cpu_model.strip()):
-        return None, None, "missing_cpu_metadata"
-    cpu_score, cpu_tier = parse_chip_score(cpu_model if isinstance(cpu_model, str) else "")
+    if benchmark_version == 8:
+        cpu_score = _direct_bounded_number(row.get("cpu_score"), 0.0, 99_999.0)
+        cpu_tier = _direct_bounded_number(row.get("cpu_tier"), 0.0, 10.0)
+        if cpu_score is None or cpu_tier is None:
+            return None, None, "missing_cpu_metadata"
+        gpu_score = _direct_bounded_number(row.get("gpu_score"), 0.0, 99_999.0) or 0.0
+        gpu_tier = _direct_bounded_number(row.get("gpu_tier"), 0.0, 10.0) or 0.0
+    elif is_direct:
+        cpu_model = row.get("cpu_model")
+        if not isinstance(cpu_model, str) or not cpu_model.strip():
+            return None, None, "missing_cpu_metadata"
+        cpu_score, cpu_tier = parse_chip_score(cpu_model)
+        gpu_score, gpu_tier = 0.0, 0.0
+    else:
+        # Pre-v6 telemetry never collected cpu_model at all, so this branch
+        # used to silently score every such row's hardware as (0.0, 0.0) -
+        # indistinguishable from every OTHER pre-v6 row regardless of their
+        # real (and very different) speeds. Once enough real telemetry
+        # accumulated, that collapsed bucket's variance alone was enough to
+        # regress p90_absolute_percentage_error and block every retrain
+        # (2026-08-07 incident). Excluded rather than guessed at.
+        return None, None, "no_hardware_identity_pre_v6_schema"
     features = build_features(
         ram_gb=ram_gb,
         vram_gb=vram_gb,
@@ -349,6 +378,8 @@ def _extract_features_and_reason(
         gpu_tflops=gpu_tflops or 0.0,
         cpu_score=cpu_score,
         cpu_tier=cpu_tier,
+        gpu_score=gpu_score,
+        gpu_tier=gpu_tier,
         context_length=context_length,
         gpu_offload_ratio=gpu_offload_percent / 100.0,
         cpu_threads=cpu_threads,
@@ -367,7 +398,7 @@ def _real_row_to_sample(row: dict) -> tuple[tuple[list[float], float] | None, st
     performance_unfit go instead) - never coerced into a fake
     tokens_per_sec=0 regression row.
     """
-    if isinstance(row, dict) and row.get("benchmark_version") == 7:
+    if isinstance(row, dict) and row.get("benchmark_version") in (7, 8):
         outcome = row.get("outcome")
         if outcome not in V7_OUTCOMES:
             return None, "invalid_outcome"
@@ -393,14 +424,17 @@ def _real_row_to_fit_sample(row: dict) -> tuple[tuple[list[float], bool] | None,
     "transient_error" is excluded entirely (it says nothing about fit), and
     "success" contributes a positive example.
 
-    Legacy v1-v6 rows have no `outcome` field - this schema simply cannot
-    express a failure, so every valid legacy row is treated as an implicit
-    success (fit=True). This is the documented backward-compatibility path:
-    old data can only ever supply positive examples.
+    v6 rows have no `outcome` field yet, but do carry a real cpu_model -
+    so a valid v6 row is treated as an implicit success (fit=True), same
+    backward-compatibility path as the speed-regression dataset. Pre-v6
+    rows have no cpu_model at all and are excluded entirely (see
+    `_extract_features_and_reason`'s no_hardware_identity_pre_v6_schema),
+    not assumed positive - old data with zero hardware signal shouldn't
+    silently vote either way.
     """
     if not isinstance(row, dict):
         return None, "not_an_object"
-    if row.get("benchmark_version") == 7:
+    if row.get("benchmark_version") in (7, 8):
         outcome = row.get("outcome")
         if outcome not in V7_OUTCOMES:
             return None, "invalid_outcome"
@@ -427,6 +461,7 @@ def real_rows_to_training_data_with_audit(
     samples_capped = 0
     direct_v6_groups: set[tuple[float, ...]] = set()
     direct_v7_groups: set[tuple[float, ...]] = set()
+    direct_v8_groups: set[tuple[float, ...]] = set()
     for row in rows:
         sample, reason = _real_row_to_sample(row)
         if sample is None:
@@ -446,6 +481,10 @@ def real_rows_to_training_data_with_audit(
         elif benchmark_version == 7:
             # Same explicit-metadata bar, via the v7 outcome="success" path.
             direct_v7_groups.add(group_key)
+        elif benchmark_version == 8:
+            # Same bar again, via v8's cpu_score/gpu_score in place of
+            # cpu_model.
+            direct_v8_groups.add(group_key)
         samples = groups.setdefault(group_key, [])
         if len(samples) < 50:
             samples.append(tokens_per_sec)
@@ -464,13 +503,14 @@ def real_rows_to_training_data_with_audit(
         "unique_configurations": len(groups),
         "direct_v6_unique_configurations": len(direct_v6_groups),
         "direct_v7_unique_configurations": len(direct_v7_groups),
-        # Union, not sum: a configuration benchmarked under both v6 and v7
+        "direct_v8_unique_configurations": len(direct_v8_groups),
+        # Union, not sum: a configuration benchmarked under v6, v7, and v8
         # (same hardware/model/runtime feature vector, just a newer client)
-        # is one real training example, not two. This is the count the
+        # is one real training example, not three. This is the count the
         # quality gate's min_unique_configurations threshold should compare
         # against - see validate_dataset(). The per-version counts above
         # stay purely diagnostic.
-        "direct_unique_configurations": len(direct_v6_groups | direct_v7_groups),
+        "direct_unique_configurations": len(direct_v6_groups | direct_v7_groups | direct_v8_groups),
         "duplicates_collapsed": samples_used - len(groups),
         "rejections": dict(sorted(rejections.items())),
     }
@@ -769,7 +809,11 @@ def main() -> None:
         # fits on real_X/real_y), so there is no train/holdout leakage risk
         # in scoring the whole fit dataset here.
         fit_examples = list(zip(fit_X, fit_y)) if fit_y else None
-        evaluation = compare_artifacts(candidate, baseline, holdout_X, holdout_y, fit_examples=fit_examples)
+        evaluation = compare_artifacts(
+            candidate, baseline, holdout_X, holdout_y,
+            min_fit_negative_examples=args.minimum_fit_negative_examples,
+            fit_examples=fit_examples,
+        )
         evaluation.update(
             {
                 "holdout_fraction": args.holdout_fraction,

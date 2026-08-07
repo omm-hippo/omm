@@ -501,4 +501,111 @@ assert.equal(
   "v7 transient_error accepted timeout_seconds - that field belongs to performance_unfit only",
 );
 
+// --- v8: cpu_score/cpu_tier replace cpu_model, gpu_score/gpu_tier added ----
+
+const v8Success = {
+  ram_gb: 24,
+  vram_gb: 6,
+  unified_memory: false,
+  model_installed: "small:latest",
+  engine: "ollama",
+  benchmark_version: 8,
+  recorded_at: "2026-07-30T00:00:00+00:00",
+  outcome: "success",
+  tokens_per_sec: 20.5,
+  parameter_count_b: 7,
+  active_parameter_count_b: 7,
+  quant_bits: 4,
+  engine_version: "0.32.1",
+  client_version: "0.1.70",
+  runtime_profile: "explicit_ollama_options",
+  context_length: 4096,
+  gpu_offload_percent: 100,
+  cpu_threads: 8,
+  num_batch: 512,
+  sample_count: 3,
+  tokens_per_sec_min: 19.5,
+  tokens_per_sec_max: 21.5,
+  cpu_score: 7950,
+  cpu_tier: 1,
+  cpu_arch: "x86_64",
+  cpu_physical_cores: 6,
+  cpu_logical_cores: 12,
+  gpu_score: 4090,
+  gpu_tier: 0,
+};
+const v8SuccessCreated = await request("telemetry", "POST", v8Success);
+assert.equal(v8SuccessCreated.ok, true, `valid v8 success event was rejected (${v8SuccessCreated.status})`);
+
+const v8SuccessWithoutGpu = await request("telemetry", "POST", {
+  ...v8Success,
+  gpu_score: undefined,
+  gpu_tier: undefined,
+  vram_gb: undefined,
+});
+assert.equal(
+  v8SuccessWithoutGpu.ok,
+  true,
+  "v8 success rejected an event with no GPU detected (gpu_score/gpu_tier/vram_gb all absent)",
+);
+
+const v8SuccessMissingCpuScore = await request("telemetry", "POST", {
+  ...v8Success,
+  cpu_score: undefined,
+});
+assert.equal(
+  v8SuccessMissingCpuScore.ok,
+  false,
+  "v8 success accepted a missing cpu_score - it is required, unlike gpu_score",
+);
+
+const v8SuccessWithRawCpuModelRejected = await request("telemetry", "POST", {
+  ...v8Success,
+  cpu_model: "AMD Ryzen 5 5600X 6-Core Processor",
+});
+assert.equal(
+  v8SuccessWithRawCpuModelRejected.ok,
+  false,
+  "v8 accepted a raw cpu_model field - v8 must never carry it, that's the whole point",
+);
+
+const v8CpuScoreOutOfRange = await request("telemetry", "POST", {
+  ...v8Success,
+  cpu_score: 100_000,
+});
+assert.equal(v8CpuScoreOutOfRange.ok, false, "v8 accepted a cpu_score above the 99999 bound");
+
+const v8CpuTierOutOfRange = await request("telemetry", "POST", {
+  ...v8Success,
+  cpu_tier: 11,
+});
+assert.equal(v8CpuTierOutOfRange.ok, false, "v8 accepted a cpu_tier above the 10 bound");
+
+const v8ModelUnfit = {
+  ram_gb: 24,
+  vram_gb: 6,
+  unified_memory: false,
+  model_installed: "too-big:latest",
+  engine: "ollama",
+  benchmark_version: 8,
+  recorded_at: "2026-07-30T00:00:00+00:00",
+  outcome: "model_unfit",
+  failure_reason: "out_of_memory",
+};
+const v8ModelUnfitCreated = await request("telemetry", "POST", v8ModelUnfit);
+assert.equal(v8ModelUnfitCreated.ok, true, `valid v8 model_unfit event was rejected (${v8ModelUnfitCreated.status})`);
+
+const v8Transient = {
+  ram_gb: 24,
+  unified_memory: false,
+  model_installed: "small:latest",
+  engine: "ollama",
+  benchmark_version: 8,
+  recorded_at: "2026-07-30T00:00:00+00:00",
+  outcome: "transient_error",
+  failure_reason: "ollama_unavailable",
+};
+const v8TransientCreated = await request("telemetry", "POST", v8Transient);
+assert.equal(v8TransientCreated.ok, true, `valid v8 transient_error event was rejected (${v8TransientCreated.status})`);
+
 console.log("Firebase rules scenarios passed.");
