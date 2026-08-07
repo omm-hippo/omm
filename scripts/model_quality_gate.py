@@ -383,14 +383,18 @@ def compare_artifacts(
 
 
 #: Rejection reasons meaning "this row was routed to the fit-classification
-#: dataset instead, on purpose" (see scripts/train_model.py). These aren't
+#: dataset instead, on purpose", or excluded for a known, permanent
+#: structural reason (see scripts/train_model.py). These aren't
 #: data-quality problems, so they're excluded from the rejection-rate gate
-#: below - otherwise a healthy stream of v7 failure telemetry would look
-#: identical to a stream of malformed rows and eventually block training.
+#: below - otherwise a healthy stream of v7 failure telemetry (or a healthy
+#: stream of pre-v6 telemetry with no hardware identity to report) would
+#: look identical to a stream of malformed rows and eventually block
+#: training.
 _INTENTIONALLY_EXCLUDED_REASONS = frozenset({
     "model_unfit_excluded_from_regression",
     "performance_unfit_excluded_from_regression",
     "transient_error_excluded",
+    "no_hardware_identity_pre_v6_schema",
 })
 
 

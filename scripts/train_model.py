@@ -353,12 +353,21 @@ def _extract_features_and_reason(
             return None, None, "missing_cpu_metadata"
         gpu_score = _direct_bounded_number(row.get("gpu_score"), 0.0, 99_999.0) or 0.0
         gpu_tier = _direct_bounded_number(row.get("gpu_tier"), 0.0, 10.0) or 0.0
-    else:
-        cpu_model = row.get("cpu_model") if is_direct else ""
-        if is_direct and (not isinstance(cpu_model, str) or not cpu_model.strip()):
+    elif is_direct:
+        cpu_model = row.get("cpu_model")
+        if not isinstance(cpu_model, str) or not cpu_model.strip():
             return None, None, "missing_cpu_metadata"
-        cpu_score, cpu_tier = parse_chip_score(cpu_model if isinstance(cpu_model, str) else "")
+        cpu_score, cpu_tier = parse_chip_score(cpu_model)
         gpu_score, gpu_tier = 0.0, 0.0
+    else:
+        # Pre-v6 telemetry never collected cpu_model at all, so this branch
+        # used to silently score every such row's hardware as (0.0, 0.0) -
+        # indistinguishable from every OTHER pre-v6 row regardless of their
+        # real (and very different) speeds. Once enough real telemetry
+        # accumulated, that collapsed bucket's variance alone was enough to
+        # regress p90_absolute_percentage_error and block every retrain
+        # (2026-08-07 incident). Excluded rather than guessed at.
+        return None, None, "no_hardware_identity_pre_v6_schema"
     features = build_features(
         ram_gb=ram_gb,
         vram_gb=vram_gb,
@@ -415,10 +424,13 @@ def _real_row_to_fit_sample(row: dict) -> tuple[tuple[list[float], bool] | None,
     "transient_error" is excluded entirely (it says nothing about fit), and
     "success" contributes a positive example.
 
-    Legacy v1-v6 rows have no `outcome` field - this schema simply cannot
-    express a failure, so every valid legacy row is treated as an implicit
-    success (fit=True). This is the documented backward-compatibility path:
-    old data can only ever supply positive examples.
+    v6 rows have no `outcome` field yet, but do carry a real cpu_model -
+    so a valid v6 row is treated as an implicit success (fit=True), same
+    backward-compatibility path as the speed-regression dataset. Pre-v6
+    rows have no cpu_model at all and are excluded entirely (see
+    `_extract_features_and_reason`'s no_hardware_identity_pre_v6_schema),
+    not assumed positive - old data with zero hardware signal shouldn't
+    silently vote either way.
     """
     if not isinstance(row, dict):
         return None, "not_an_object"

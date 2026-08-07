@@ -60,7 +60,7 @@ def _row(speed: float, **overrides) -> dict:
 
 
 def test_repeated_configuration_is_collapsed_to_median_speed():
-    X, y = train_model.real_rows_to_training_data([_row(10), _row(100), _row(20)])
+    X, y = train_model.real_rows_to_training_data([_v6_row(10), _v6_row(100), _v6_row(20)])
 
     assert len(X) == 1
     assert y == [20]
@@ -73,20 +73,24 @@ def test_unknown_benchmark_schema_is_ignored():
     assert y == []
 
 
-def test_privacy_minimized_schema_three_is_accepted_without_names():
+def test_privacy_minimized_schema_three_is_rejected_for_missing_hardware_identity():
+    # Schema v3 predates cpu_model collection entirely - a valid row here
+    # is indistinguishable from any other pre-v6 hardware, so it's excluded
+    # rather than silently scored as "unknown" (see no_hardware_identity_
+    # pre_v6_schema in _extract_features_and_reason).
     row = _row(20, benchmark_version=3)
     row.pop("gpu", None)
     row.pop("cpu", None)
     row.pop("os", None)
 
-    X, y = train_model.real_rows_to_training_data([row])
+    X, y, audit = train_model.real_rows_to_training_data_with_audit([row])
 
-    assert len(X) == 1
-    assert y == [20]
+    assert X == [] and y == []
+    assert audit["rejections"] == {"no_hardware_identity_pre_v6_schema": 1}
 
 
-def test_multi_sample_schema_four_is_accepted():
-    X, y = train_model.real_rows_to_training_data(
+def test_multi_sample_schema_four_is_rejected_for_missing_hardware_identity():
+    X, y, audit = train_model.real_rows_to_training_data_with_audit(
         [
             _row(
                 20,
@@ -98,8 +102,8 @@ def test_multi_sample_schema_four_is_accepted():
         ]
     )
 
-    assert len(X) == 1
-    assert y == [20]
+    assert X == [] and y == []
+    assert audit["rejections"] == {"no_hardware_identity_pre_v6_schema": 1}
 
 
 def test_inconsistent_schema_four_sample_summary_is_rejected():
@@ -258,12 +262,15 @@ def _v6_row(speed: float, **overrides) -> dict:
 
 
 def test_quality_gate_rejects_legacy_only_configurations():
+    # Legacy (pre-v6) rows carry no hardware identity at all, so they're
+    # excluded before ever reaching unique_configurations - a legacy-only
+    # telemetry batch trains on nothing.
     _X, _y, audit = train_model.real_rows_to_training_data_with_audit(
         [_row(10), _row(20, vram_gb=6)]
     )
 
-    assert audit["unique_configurations"] == 2
-    assert audit["direct_v6_unique_configurations"] == 0
+    assert audit["unique_configurations"] == 0
+    assert audit["rejections"] == {"no_hardware_identity_pre_v6_schema": 2}
     with pytest.raises(ValueError, match="too few unique direct-v6"):
         validate_dataset(audit, min_unique_configurations=1)
 
@@ -281,9 +288,9 @@ def test_direct_v6_duplicate_configurations_are_collapsed_for_the_gate():
 
 def test_supported_engines_are_kept_as_distinct_training_configurations():
     rows = [
-        _row(20, engine="ollama"),
-        _row(21, engine="llama.cpp"),
-        _row(19, engine="lmstudio"),
+        _v6_row(20, engine="ollama"),
+        _v6_row(21, engine="llama.cpp"),
+        _v6_row(19, engine="lmstudio"),
     ]
 
     X, y = train_model.real_rows_to_training_data(rows)
@@ -301,8 +308,8 @@ def test_supported_engines_are_kept_as_distinct_training_configurations():
 
 def test_training_audit_explains_rejections_and_duplicate_collapse():
     rows = [
-        _row(10),
-        _row(20),
+        _v6_row(10),
+        _v6_row(20),
         _row(30, engine="other"),
         _row(40, ram_gb="not-a-number"),
         _row(50, model_installed="unknown.gguf", model_repo_id="org/unknown"),
@@ -319,10 +326,10 @@ def test_training_audit_explains_rejections_and_duplicate_collapse():
         "samples_used": 2,
         "samples_capped": 0,
         "unique_configurations": 1,
-        "direct_v6_unique_configurations": 0,
+        "direct_v6_unique_configurations": 1,
         "direct_v7_unique_configurations": 0,
         "direct_v8_unique_configurations": 0,
-        "direct_unique_configurations": 0,
+        "direct_unique_configurations": 1,
         "duplicates_collapsed": 1,
         "rejections": {
             "invalid_measurement": 1,
@@ -531,7 +538,7 @@ def test_quality_gate_split_rejects_too_few_selection_contexts():
 
 def test_quality_gate_regression_does_not_overwrite_output(tmp_path, monkeypatch):
     telemetry = tmp_path / "telemetry.json"
-    telemetry.write_text(json.dumps([_row(10), _row(20, vram_gb=6)]))
+    telemetry.write_text(json.dumps([_v6_row(10), _v6_row(20, vram_gb=6)]))
     output = tmp_path / "model.json"
     output.write_text("incumbent-output")
     baseline = tmp_path / "baseline.json"
@@ -829,6 +836,19 @@ def test_validate_dataset_excludes_intentional_v7_exclusions_from_rejection_rate
     validate_dataset(audit, min_unique_configurations=1, max_rejection_rate=0.25)
 
 
+def test_validate_dataset_excludes_pre_v6_hardware_identity_gap_from_rejection_rate():
+    # Regression test for the 2026-08-07 incident: a healthy stream of
+    # legitimate pre-v6 telemetry (no hardware identity to report, by
+    # schema design - not malformed) must not trip the rejection-rate gate
+    # any more than a healthy stream of v7 model_unfit events does.
+    rows = [_v6_row(10)] + [_row(20) for _ in range(10)]
+    _X, _y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert audit["rejected_rows"] == 10
+    assert audit["rejections"] == {"no_hardware_identity_pre_v6_schema": 10}
+    validate_dataset(audit, min_unique_configurations=1, max_rejection_rate=0.25)
+
+
 def test_real_rows_to_fit_training_data_separates_success_and_model_unfit():
     rows = [
         _v6_row(20),
@@ -868,17 +888,31 @@ def test_real_rows_to_fit_training_data_model_unfit_still_requires_model_metadat
     assert audit["rejections"] == {"missing_model_metadata": 1}
 
 
-def test_real_rows_to_fit_training_data_legacy_v1_v6_rows_are_implicit_positives():
-    """v1-v6 telemetry cannot express a failure at all, so every valid
-    legacy row is an implicit success - the documented backward-
-    compatibility path for the fit dataset."""
+def test_real_rows_to_fit_training_data_v6_rows_with_no_outcome_are_implicit_positives():
+    """v6 telemetry has no `outcome` field yet, but it does carry a real
+    cpu_model - so a valid v6 row is still an implicit success, unlike
+    pre-v6 rows (see the next test)."""
     fit_X, fit_y, audit = train_model.real_rows_to_fit_training_data_with_audit(
-        [_row(10), _row(20, vram_gb=6)]
+        [_v6_row(10), _v6_row(20, vram_gb=6)]
     )
 
     assert fit_y == [True, True]
     assert audit["positive_examples"] == 2
     assert audit["negative_examples"] == 0
+
+
+def test_real_rows_to_fit_training_data_pre_v6_rows_are_excluded_not_assumed_positive():
+    # Pre-v6 rows have no cpu_model at all, so they'd be indistinguishable
+    # "unknown hardware" in the fit dataset too - excluded rather than
+    # assumed fit, same as the speed-regression dataset.
+    fit_X, fit_y, audit = train_model.real_rows_to_fit_training_data_with_audit(
+        [_row(10), _row(20, vram_gb=6)]
+    )
+
+    assert fit_X == [] and fit_y == []
+    assert audit["positive_examples"] == 0
+    assert audit["negative_examples"] == 0
+    assert audit["rejections"] == {"no_hardware_identity_pre_v6_schema": 2}
 
 
 def test_v7_outcome_contract_across_both_datasets():
