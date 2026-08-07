@@ -54,7 +54,13 @@ from omm import (
 from omm import contribute as contribute_mod
 from omm.completion import complete_install_name, complete_remove_filename
 from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
-from omm.downloader import DownloadCancelled, DownloadError, InsufficientDiskSpaceError, download_file
+from omm.downloader import (
+    DownloadCancelled,
+    DownloadError,
+    InsufficientDiskSpaceError,
+    _sidecar_path,
+    download_file,
+)
 from omm.hardware import HardwareInfo, calculate_memory_budget, scan_hardware
 from omm.hashutil import sha256_file
 from omm.featurize import (
@@ -1628,6 +1634,7 @@ def _cleanup_incomplete_install(filename: str) -> bool:
             cleaned = True
         except OSError:
             pass
+        _sidecar_path(part).unlink(missing_ok=True)
     if dest.exists():
         try:
             dest.unlink()
@@ -1655,7 +1662,9 @@ def _remove_one(filename: str, entry: dict) -> None:
     except OSError:
         pass
     try:
-        dest.with_suffix(dest.suffix + ".part").unlink(missing_ok=True)
+        part = dest.with_suffix(dest.suffix + ".part")
+        part.unlink(missing_ok=True)
+        _sidecar_path(part).unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -1816,7 +1825,9 @@ def _update_one(filename: str, entry: dict) -> str:
         except DownloadError as e:
             err_console.print(f"[red]{filename}: update download failed: {e}[/red]")
             tmp.unlink(missing_ok=True)
-            tmp.with_suffix(tmp.suffix + ".part").unlink(missing_ok=True)
+            tmp_part = tmp.with_suffix(tmp.suffix + ".part")
+            tmp_part.unlink(missing_ok=True)
+            _sidecar_path(tmp_part).unlink(missing_ok=True)
             return "skipped"
 
         new_sha256 = sha256_file(tmp)
@@ -2474,6 +2485,17 @@ def _autoremove_incomplete_installs() -> int:
             continue
         if path.suffix == ".part":
             if path.with_suffix("").name not in reg:
+                try:
+                    path.unlink()
+                except OSError:
+                    continue
+                removed += 1
+                _sidecar_path(path).unlink(missing_ok=True)
+        elif path.name.endswith(".part.ranges.json"):
+            # Resume sidecar left behind after its .part was already
+            # removed some other way (e.g. `omm uninstall`).
+            part = path.with_name(path.name.removesuffix(".ranges.json"))
+            if not part.exists():
                 try:
                     path.unlink()
                 except OSError:

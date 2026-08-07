@@ -13,6 +13,7 @@ finishes the file over one connection rather than re-planning ranges.
 from __future__ import annotations
 
 import errno
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -51,6 +52,33 @@ class DownloadCancelled(DownloadError):
 
 class InsufficientDiskSpaceError(DownloadError):
     pass
+
+
+def _sidecar_path(part_path: Path) -> Path:
+    """Path to the JSON file tracking per-range progress of a parallel
+    download, so an interrupted download can resume only the unfinished
+    byte ranges instead of restarting the whole file. `part_path` itself
+    can't carry this info: `_download_parallel` pre-truncates it to the
+    final size before any bytes arrive, so its file size alone can't tell
+    a resume how much of each thread's range actually landed."""
+    return part_path.with_name(part_path.name + ".ranges.json")
+
+
+def _read_sidecar(sidecar_path: Path) -> dict | None:
+    try:
+        with sidecar_path.open("r") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_sidecar(sidecar_path: Path, total_size: int, ranges: list[dict]) -> None:
+    # Write-to-temp-then-rename so a crash mid-write can't leave behind a
+    # half-written JSON file that would poison the next resume attempt.
+    tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
+    with tmp.open("w") as f:
+        json.dump({"total_size": total_size, "ranges": ranges}, f)
+    tmp.replace(sidecar_path)
 
 
 def _progress() -> Progress:
@@ -118,8 +146,10 @@ def _probe_range_support(url: str) -> tuple[int, bool]:
 def _download_range_worker(
     url: str,
     part_path: Path,
-    start: int,
-    end: int,
+    sidecar_path: Path,
+    range_state: dict,
+    ranges_state: list[dict],
+    total_size: int,
     progress: Progress,
     task_id,
     lock: threading.Lock,
@@ -128,21 +158,27 @@ def _download_range_worker(
 ) -> None:
     import requests
 
+    start = range_state["start"]
+    end = range_state["end"]
+    resume_offset = start + range_state["done"]
+
     try:
-        resp = requests.get(url, headers={"Range": f"bytes={start}-{end}"}, stream=True, timeout=30)
-        expected_len = end - start + 1
+        resp = requests.get(
+            url, headers={"Range": f"bytes={resume_offset}-{end}"}, stream=True, timeout=30
+        )
+        expected_len = end - resume_offset + 1
         honored = resp.status_code == 206 or (
             resp.status_code == 200
             and resp.headers.get("Content-Length") == str(expected_len)
         )
         if not honored:
             raise DownloadError(
-                f"Expected a Range response for bytes={start}-{end}, got "
+                f"Expected a Range response for bytes={resume_offset}-{end}, got "
                 f"status {resp.status_code} with Content-Length "
                 f"{resp.headers.get('Content-Length')}"
             )
         with part_path.open("r+b") as f:
-            f.seek(start)
+            f.seek(resume_offset)
             for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
                 if not chunk:
                     continue
@@ -155,59 +191,67 @@ def _download_range_worker(
                         ) from e
                     raise
                 with lock:
+                    range_state["done"] += len(chunk)
                     progress.update(task_id, advance=len(chunk))
+                    _write_sidecar(sidecar_path, total_size, ranges_state)
                 if stop_check is not None and stop_check():
                     raise DownloadCancelled("interrupted by user")
     except Exception as e:  # noqa: BLE001 - collected and re-raised by the caller
         errors.append(e)
 
 
-def _download_parallel(
+def _run_range_workers(
     url: str,
     dest: Path,
     part_path: Path,
+    sidecar_path: Path,
     total_size: int,
-    thread_count: int,
+    ranges_state: list[dict],
     stop_check: Callable[[], bool] | None,
 ) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with part_path.open("wb") as f:
-        f.truncate(total_size)
-
-    ranges = _plan_ranges(total_size, thread_count)
+    """Download whichever ranges in `ranges_state` aren't yet `done`, in
+    parallel, updating the sidecar after every chunk so a future resume
+    only has to fetch what's still missing."""
     lock = threading.Lock()
     errors: list[Exception] = []
+    completed = sum(r["done"] for r in ranges_state)
+    pending = [r for r in ranges_state if r["done"] < (r["end"] - r["start"] + 1)]
 
     with _progress() as progress:
-        task_id = progress.add_task("download", total=total_size, completed=0, filename=dest.name)
-        with ThreadPoolExecutor(max_workers=thread_count) as executor:
-            futures = [
-                executor.submit(
-                    _download_range_worker,
-                    url,
-                    part_path,
-                    start,
-                    end,
-                    progress,
-                    task_id,
-                    lock,
-                    errors,
-                    stop_check,
-                )
-                for start, end in ranges
-            ]
-            # A plain future.result() with no timeout blocks on a raw OS
-            # wait. On Windows that can't be interrupted by Ctrl+C at all
-            # (unlike POSIX, where a blocking syscall wakes on EINTR) until
-            # the wait itself completes - so polling with a short timeout is
-            # what lets a pending Ctrl+C actually get serviced.
-            for future in futures:
-                while True:
-                    try:
-                        future.result(timeout=0.5)
-                        break
-                    except FutureTimeoutError:
-                        continue
+        task_id = progress.add_task(
+            "download", total=total_size, completed=completed, filename=dest.name
+        )
+        if pending:
+            with ThreadPoolExecutor(max_workers=len(pending)) as executor:
+                futures = [
+                    executor.submit(
+                        _download_range_worker,
+                        url,
+                        part_path,
+                        sidecar_path,
+                        r,
+                        ranges_state,
+                        total_size,
+                        progress,
+                        task_id,
+                        lock,
+                        errors,
+                        stop_check,
+                    )
+                    for r in pending
+                ]
+                # A plain future.result() with no timeout blocks on a raw OS
+                # wait. On Windows that can't be interrupted by Ctrl+C at all
+                # (unlike POSIX, where a blocking syscall wakes on EINTR) until
+                # the wait itself completes - so polling with a short timeout is
+                # what lets a pending Ctrl+C actually get serviced.
+                for future in futures:
+                    while True:
+                        try:
+                            future.result(timeout=0.5)
+                            break
+                        except FutureTimeoutError:
+                            continue
 
     if errors:
         cancelled = next((e for e in errors if isinstance(e, DownloadCancelled)), None)
@@ -219,6 +263,39 @@ def _download_parallel(
         raise DownloadError(str(errors[0])) from errors[0]
 
     part_path.rename(dest)
+    sidecar_path.unlink(missing_ok=True)
+
+
+def _download_parallel(
+    url: str,
+    dest: Path,
+    part_path: Path,
+    sidecar_path: Path,
+    total_size: int,
+    thread_count: int,
+    stop_check: Callable[[], bool] | None,
+) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with part_path.open("wb") as f:
+        f.truncate(total_size)
+
+    ranges_state = [{"start": start, "end": end, "done": 0} for start, end in _plan_ranges(total_size, thread_count)]
+    _write_sidecar(sidecar_path, total_size, ranges_state)
+
+    _run_range_workers(url, dest, part_path, sidecar_path, total_size, ranges_state, stop_check)
+
+
+def _download_parallel_resume(
+    url: str,
+    dest: Path,
+    part_path: Path,
+    sidecar_path: Path,
+    state: dict,
+    stop_check: Callable[[], bool] | None,
+) -> None:
+    _run_range_workers(
+        url, dest, part_path, sidecar_path, state["total_size"], state["ranges"], stop_check
+    )
 
 
 def _download_single_stream(
@@ -271,18 +348,49 @@ def _download_single_stream(
 def _attempt_download(
     url: str, dest: Path, part_path: Path, stop_check: Callable[[], bool] | None
 ) -> None:
+    sidecar_path = _sidecar_path(part_path)
+
+    if part_path.exists() and sidecar_path.exists():
+        state = _read_sidecar(sidecar_path)
+        if state and state.get("total_size") == part_path.stat().st_size:
+            try:
+                _download_parallel_resume(url, dest, part_path, sidecar_path, state, stop_check)
+                return
+            except (DownloadCancelled, InsufficientDiskSpaceError):
+                raise
+            except DownloadError as e:
+                if _is_retryable_network_error(e):
+                    # Leave part_path + sidecar in place - the outer retry
+                    # loop in download_file() will call back in here after
+                    # its backoff, and this branch will resume the same
+                    # ranges rather than restarting the whole file.
+                    raise
+                part_path.unlink(missing_ok=True)
+                sidecar_path.unlink(missing_ok=True)
+                # fall through to a clean single-stream retry
+        else:
+            # Stale or mismatched sidecar (e.g. left over from a different
+            # URL/size) - can't trust its per-range progress, start clean.
+            part_path.unlink(missing_ok=True)
+            sidecar_path.unlink(missing_ok=True)
+
     if not part_path.exists():
         total_size, supports_ranges = _probe_range_support(url)
         if supports_ranges and total_size >= _MIN_PARALLEL_TOTAL:
             thread_count = _choose_thread_count(total_size)
             if thread_count > 1:
                 try:
-                    _download_parallel(url, dest, part_path, total_size, thread_count, stop_check)
+                    _download_parallel(
+                        url, dest, part_path, sidecar_path, total_size, thread_count, stop_check
+                    )
                     return
                 except (DownloadCancelled, InsufficientDiskSpaceError):
                     raise
-                except DownloadError:
+                except DownloadError as e:
+                    if _is_retryable_network_error(e):
+                        raise
                     part_path.unlink(missing_ok=True)
+                    sidecar_path.unlink(missing_ok=True)
                     # fall through to a clean single-stream retry
 
     _download_single_stream(url, dest, part_path, stop_check)
