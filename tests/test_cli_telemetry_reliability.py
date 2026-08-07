@@ -42,7 +42,7 @@ def _log_outcomes(isolated_omm_home):
 
 def test_declining_upload_confirm_logs_declined_by_user(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda message, default=False: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
 
     result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
@@ -77,7 +77,7 @@ def test_report_telemetry_notice_and_log_when_daemon_unreachable(isolated_omm_ho
 
 def test_report_telemetry_prints_retry_notice_when_send_fails(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda message, default=False: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: False)
 
@@ -89,7 +89,7 @@ def test_report_telemetry_prints_retry_notice_when_send_fails(isolated_omm_home,
 
 def test_report_telemetry_silent_on_success(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda message, default=False: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
 

@@ -165,7 +165,7 @@ def test_plain_install_path_unaffected_by_stop_event_none(isolated_omm_home, mon
 
     monkeypatch.setattr(cli, "download_file", fake_download)
     _stub_common(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 10.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
 
@@ -179,7 +179,7 @@ def test_benchmark_always_runs_but_upload_needs_confirm(isolated_omm_home, monke
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     bench_calls = []
     monkeypatch.setattr(
         cli.benchmark, "benchmark_ollama", lambda tag: bench_calls.append(tag) or 42.0
@@ -221,7 +221,7 @@ def test_auto_calibrate_runs_silently_when_cached_model_available(isolated_omm_h
     )
     monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 30.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
     recorded = {}
@@ -246,7 +246,7 @@ def test_resolve_upload_decision_always_skips_prompt(isolated_omm_home):
 def test_resolve_upload_decision_never_skips_prompt(isolated_omm_home, monkeypatch):
     cli.config_mod.update_config(telemetry_send_policy="never")
     monkeypatch.setattr(
-        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+        cli, "_ask_upload_choice", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
     )
 
     assert cli._resolve_upload_decision("prompt") is False
@@ -254,10 +254,18 @@ def test_resolve_upload_decision_never_skips_prompt(isolated_omm_home, monkeypat
 
 def test_resolve_upload_decision_ask_falls_back_to_confirm(isolated_omm_home, monkeypatch):
     cli.config_mod.update_config(telemetry_send_policy="ask")
-    monkeypatch.setattr(cli, "_ask_confirm", lambda message, **k: message == "prompt")
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda message: "yes" if message == "prompt" else "no")
 
     assert cli._resolve_upload_decision("prompt") is True
     assert cli._resolve_upload_decision("other") is False
+
+
+def test_resolve_upload_decision_always_choice_persists_policy_and_uploads(isolated_omm_home, monkeypatch):
+    cli.config_mod.update_config(telemetry_send_policy="ask")
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "always")
+
+    assert cli._resolve_upload_decision("prompt") is True
+    assert cli.load_config()["telemetry_send_policy"] == "always"
 
 
 def test_install_auto_uploads_without_confirm_when_policy_always(isolated_omm_home, monkeypatch):
@@ -587,7 +595,7 @@ def test_install_impl_proceeds_when_disk_space_check_is_inconclusive(isolated_om
     monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
     monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 10.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
 
@@ -654,7 +662,7 @@ def test_auto_calibrate_does_not_crash_install_when_write_fails(isolated_omm_hom
     )
     monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 30.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
     monkeypatch.setattr(

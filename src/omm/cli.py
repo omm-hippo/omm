@@ -879,17 +879,127 @@ def _ask_select(question: questionary.Question):
     return _add_escape_to_cancel(question).ask()
 
 
-def _ask_confirm(message: str, default: bool = False) -> bool:
-    """Yes/no prompt that answers on the y/n keypress itself (no Enter
-    needed) via questionary's auto_enter. questionary.confirm's internal
-    key bindings are already merged by the time we get the Question object,
-    so (unlike _ask_select) we can't bolt an Escape binding on here -
-    Ctrl+C/Ctrl+Q still cancel via questionary's own bindings."""
-    import questionary
+# Reverse of the standard 2-beolsik (두벌식) layout: what each jamo types as
+# on a physical QWERTY key. A single-key prompt (y/n/a/...) should accept
+# the jamo too, since pressing the key is what matters, not whether 한/영
+# happens to be toggled on at the time.
+_HANGUL_JAMO_TO_LATIN = {
+    "ㅂ": "q", "ㅈ": "w", "ㄷ": "e", "ㄱ": "r", "ㅅ": "t",
+    "ㅛ": "y", "ㅕ": "u", "ㅑ": "i", "ㅐ": "o", "ㅔ": "p",
+    "ㅁ": "a", "ㄴ": "s", "ㅇ": "d", "ㄹ": "f", "ㅎ": "g",
+    "ㅗ": "h", "ㅓ": "j", "ㅏ": "k", "ㅣ": "l",
+    "ㅋ": "z", "ㅌ": "x", "ㅊ": "c", "ㅍ": "v", "ㅠ": "b",
+    "ㅜ": "n", "ㅡ": "m",
+}
+
+
+def _build_single_key_bindings(
+    choices: list[tuple[str, str, object]],
+    default_value: object,
+    status: dict[str, object],
+):
+    """KeyBindings for _ask_single_key, split out so tests can drive
+    handlers directly with a fake event instead of running a real terminal
+    app (see test_cli_recommend_escape.py for the same pattern applied to
+    _add_escape_to_cancel). Each choice's key also responds to the jamo a
+    Korean IME produces on the same physical key (_HANGUL_JAMO_TO_LATIN),
+    so 한/영 toggle state doesn't matter. Written from scratch rather than
+    extending questionary.confirm because its key bindings are already
+    merged into the Question by the time we get it back, so extra bindings
+    can't be bolted on afterwards."""
+    from prompt_toolkit.key_binding import KeyBindings
+
+    by_key: dict[str, tuple[str, object]] = {}
+    for key, label, value in choices:
+        by_key[key.lower()] = (label, value)
+        by_key[key.upper()] = (label, value)
+
+    bindings = KeyBindings()
+
+    @bindings.add(Keys.ControlQ, eager=True)
+    @bindings.add(Keys.ControlC, eager=True)
+    def _abort(event):
+        event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
+
+    def _accept(label: str, value: object):
+        def handler(event):
+            status["answer"] = (label, value)
+            event.app.exit(result=value)
+
+        return handler
+
+    for key, (label, value) in by_key.items():
+        bindings.add(key)(_accept(label, value))
+    for jamo, latin in _HANGUL_JAMO_TO_LATIN.items():
+        if latin in by_key:
+            label, value = by_key[latin]
+            bindings.add(jamo)(_accept(label, value))
+
+    @bindings.add(Keys.ControlM, eager=True)
+    def _enter(event):
+        event.app.exit(result=default_value)
+
+    @bindings.add(Keys.Any)
+    def _other(event):
+        """Disallow inserting other text."""
+
+    return bindings
+
+
+def _ask_single_key(
+    message: str,
+    choices: list[tuple[str, str, object]],
+    default_value: object,
+    instruction: str,
+) -> object:
+    """Single-keypress prompt: each choice is (key, label, value); answers
+    immediately on keypress (no Enter needed), like questionary.confirm but
+    with an arbitrary key->value map instead of a hardcoded y/n."""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import to_formatted_text
+    from questionary.styles import merge_styles_default
 
     _require_tty(message)
-    answer = questionary.confirm(message, default=default, auto_enter=True).ask()
-    return bool(answer)
+
+    status: dict[str, object] = {"answer": None}
+    bindings = _build_single_key_bindings(choices, default_value, status)
+
+    def get_prompt_tokens():
+        tokens = [("class:qmark", "?"), ("class:question", f" {message} ")]
+        if status["answer"] is None:
+            tokens.append(("class:instruction", f"{instruction} "))
+        else:
+            tokens.append(("class:answer", status["answer"][0]))
+        return to_formatted_text(tokens)
+
+    merged_style = merge_styles_default([None])
+    return PromptSession(
+        get_prompt_tokens, key_bindings=bindings, style=merged_style
+    ).app.run()
+
+
+def _ask_confirm(message: str, default: bool = False) -> bool:
+    """Yes/no prompt that answers on the y/n keypress itself (no Enter
+    needed)."""
+    return bool(
+        _ask_single_key(
+            message,
+            [("y", "Yes", True), ("n", "No", False)],
+            default_value=default,
+            instruction="(y/n)",
+        )
+    )
+
+
+def _ask_upload_choice(prompt: str) -> str:
+    """The telemetry-upload confirm, split out from _resolve_upload_decision
+    so tests can stub it without going through a real terminal prompt."""
+    return _ask_single_key(
+        prompt,
+        [("y", "Yes", "yes"), ("n", "No", "no"), ("a", "Always", "always")],
+        default_value="no",
+        instruction="(y/n/a - a saves 'always' as the new default)",
+    )
 
 
 def _resolve_upload_decision(prompt: str) -> bool:
@@ -898,7 +1008,16 @@ def _resolve_upload_decision(prompt: str) -> bool:
         return True
     if policy == "never":
         return False
-    return _ask_confirm(prompt)
+    answer = _ask_upload_choice(prompt)
+    if answer == "always":
+        if load_config().get("telemetry_endpoint"):
+            config_mod.update_config(telemetry_send_policy="always")
+            console.print(
+                "[dim]Saved: omm will now always send benchmark results "
+                "(change with `omm setting upload`).[/dim]"
+            )
+        return True
+    return answer == "yes"
 
 
 def _select_recommended_model(

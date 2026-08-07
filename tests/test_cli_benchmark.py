@@ -66,7 +66,7 @@ def test_benchmark_saves_local_report_and_asks_before_upload(isolated_omm_home, 
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -92,7 +92,7 @@ def test_benchmark_all_expands_to_every_installed_tag(isolated_omm_home, monkeyp
         "collect_evidence",
         lambda tags, *a, **k: seen_tags.append(list(tags)) or _full_report(),
     )
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
 
     result = runner.invoke(cli.app, ["benchmark", "all"])
 
@@ -131,7 +131,7 @@ def test_benchmark_shows_progress_per_model(isolated_omm_home, monkeypatch):
         return _full_report()
 
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
 
     result = runner.invoke(cli.app, ["benchmark", "small:latest"])
 
@@ -143,7 +143,7 @@ def test_benchmark_uploads_when_confirmed(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -178,7 +178,7 @@ def test_benchmark_reports_model_provider_from_registry_entry(isolated_omm_home,
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -196,7 +196,7 @@ def test_benchmark_defaults_provider_to_huggingface_when_entry_not_found(isolate
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -387,7 +387,7 @@ def test_benchmark_exits_nonzero_only_when_every_model_fails(isolated_omm_home, 
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _all_failed_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
 
     result = runner.invoke(cli.app, ["benchmark", "big:latest", "flaky:latest"])
 
@@ -399,7 +399,7 @@ def test_benchmark_does_not_ask_to_upload_when_declined_for_mixed_outcomes(isola
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _mixed_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -414,6 +414,7 @@ def test_benchmark_starts_and_stops_daemon_when_confirmed(isolated_omm_home, mon
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: reachable["value"])
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
