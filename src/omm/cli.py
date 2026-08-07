@@ -125,6 +125,7 @@ console = Console()
 err_console = Console(stderr=True)
 
 REPO_URL = "git+https://github.com/omm-hippo/omm.git"
+COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"
 
 
 def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bool]:
@@ -254,6 +255,16 @@ def _reconcile_stale_link_records(reg: dict, installed: dict[str, bool]) -> list
         registry.upsert_entry(filename, linked=stale)
         cleaned.append(filename)
     return cleaned
+
+
+def _missing_engines_note(installed: dict[str, bool]) -> str | None:
+    """One-line pointer to the compatibility wiki page for engines not
+    installed on this machine - `None` when every known engine is
+    installed, so info/scan tables don't print a useless zero-count line."""
+    missing = sum(1 for is_installed in installed.values() if not is_installed)
+    if missing == 0:
+        return None
+    return f"+ {missing} program(s) not installed — see the compatibility list: {COMPATIBLE_PROGRAMS_URL}"
 
 
 @app.command()
