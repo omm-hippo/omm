@@ -1902,7 +1902,10 @@ def info(
     table.add_row("Version", _entry_version(entry))
     table.add_row("Size", f"{size_gb:.2f} GB")
     table.add_row("Installed at", entry.get("installed_at", "unknown"))
+    installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
     for spec in linker.ENGINES:
+        if not installed[spec.key]:
+            continue
         if spec.key == "ollama":
             table.add_row("Ollama", f"ollama run {ollama_tag}" if linked.get("ollama") else "not linked")
         else:
@@ -1912,6 +1915,9 @@ def info(
             )
 
     console.print(table)
+    note = _missing_engines_note(installed)
+    if note:
+        console.print(note)
 
 
 def _update_one(filename: str, entry: dict) -> str:
