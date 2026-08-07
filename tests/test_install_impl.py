@@ -674,3 +674,30 @@ def test_auto_calibrate_does_not_crash_install_when_write_fails(isolated_omm_hom
     outcome = cli._install_impl(_resolved())  # must not raise
 
     assert outcome.tokens_per_sec == 30.0
+
+
+def test_link_model_does_not_print_skip_notice_for_uninstalled_engines(
+    isolated_omm_home, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key == "ollama")
+    monkeypatch.setattr(
+        cli.linker,
+        "link_engine",
+        lambda key, dest, *, repo_id, ollama_tag: None,
+    )
+    dest = tmp_path / "model.gguf"
+    dest.write_bytes(b"x")
+
+    linked = cli._link_model(dest, "org/repo", "model-tag")
+
+    captured = capsys.readouterr()
+    assert "not detected, skipping link" not in captured.out
+    assert linked == {
+        "ollama": True,
+        "lmstudio": False,
+        "jan": False,
+        "anythingllm": False,
+        "mstystudio": False,
+        "textgenwebui": False,
+        "koboldcpp": False,
+    }

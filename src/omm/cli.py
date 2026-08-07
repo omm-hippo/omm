@@ -1331,7 +1331,6 @@ def _link_model(
         if only_ollama and spec.key != "ollama":
             continue
         if not linker.is_engine_installed(spec.key):
-            console.print(f"[dim]{spec.label} not detected, skipping link.[/dim]")
             continue
         try:
             warning = linker.link_engine(spec.key, dest, repo_id=repo_id, ollama_tag=ollama_tag)
