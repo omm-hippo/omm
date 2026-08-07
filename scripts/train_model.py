@@ -97,6 +97,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minimum-real-configurations", type=int, default=20)
     parser.add_argument("--maximum-rejection-rate", type=float, default=0.25)
     parser.add_argument("--holdout-fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--minimum-fit-negative-examples",
+        type=int,
+        default=5,
+        help=(
+            "Minimum known-unfit (model_unfit/performance_unfit) telemetry rows "
+            "required before fit_balanced_accuracy/fit_false_positive_rate can "
+            "block a release; below this, a single row's prediction is too "
+            "noisy to gate on."
+        ),
+    )
     parser.add_argument("--quality-report", type=Path, help="Optional JSON quality-gate report.")
     return parser.parse_args()
 
@@ -786,7 +797,11 @@ def main() -> None:
         # fits on real_X/real_y), so there is no train/holdout leakage risk
         # in scoring the whole fit dataset here.
         fit_examples = list(zip(fit_X, fit_y)) if fit_y else None
-        evaluation = compare_artifacts(candidate, baseline, holdout_X, holdout_y, fit_examples=fit_examples)
+        evaluation = compare_artifacts(
+            candidate, baseline, holdout_X, holdout_y,
+            min_fit_negative_examples=args.minimum_fit_negative_examples,
+            fit_examples=fit_examples,
+        )
         evaluation.update(
             {
                 "holdout_fraction": args.holdout_fraction,

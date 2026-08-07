@@ -558,6 +558,7 @@ def test_quality_gate_regression_does_not_overwrite_output(tmp_path, monkeypatch
             telemetry_file=[telemetry], offline=True, telemetry_url="", output=output,
             baseline=baseline, quality_gate=True, minimum_real_configurations=0,
             maximum_rejection_rate=0.25, holdout_fraction=0.2, quality_report=None,
+            minimum_fit_negative_examples=5,
         ),
     )
 
@@ -587,6 +588,7 @@ def test_quality_gate_insufficient_data_republishes_baseline_unchanged(tmp_path,
             maximum_rejection_rate=0.25,
             holdout_fraction=0.2,
             quality_report=quality_report,
+            minimum_fit_negative_examples=5,
         ),
     )
 
@@ -616,6 +618,7 @@ def test_quality_gate_insufficient_data_still_requires_readable_baseline(tmp_pat
             maximum_rejection_rate=0.25,
             holdout_fraction=0.2,
             quality_report=None,
+            minimum_fit_negative_examples=5,
         ),
     )
 
@@ -635,6 +638,7 @@ def test_offline_training_exports_v4_with_64_trees(tmp_path, monkeypatch):
             telemetry_file=[], offline=True, telemetry_url="", output=output,
             baseline=None, quality_gate=False, minimum_real_configurations=0,
             maximum_rejection_rate=0.25, holdout_fraction=0.2, quality_report=None,
+            minimum_fit_negative_examples=5,
         ),
     )
 

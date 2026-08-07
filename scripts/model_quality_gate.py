@@ -282,6 +282,7 @@ def compare_artifacts(
     max_p90_ape_regression: float = 0.05,
     max_selection_metric_regression: float = 0.05,
     min_selection_groups: int = 3,
+    min_fit_negative_examples: int = 5,
     fit_examples: list[tuple[list[float], bool]] | None = None,
 ) -> dict:
     """Return a JSON-safe regression-gate report for two model artifacts.
@@ -290,6 +291,15 @@ def compare_artifacts(
     the fit_balanced_accuracy/fit_false_positive_rate comparison below uses
     explicit outcome labels when the caller has them (see that function's
     docstring for the legacy fallback when omitted).
+
+    `min_fit_negative_examples` guards those same two metrics against tiny
+    negative-class samples, the same way `min_selection_groups` guards the
+    selection metrics: with only a handful of known-unfit rows (real-world
+    model_unfit/performance_unfit telemetry is rare), fit_balanced_accuracy
+    and fit_false_positive_rate are only ever exactly 0%, 50%, 100%, etc,
+    so a single flipped prediction can swing them from perfect to
+    worst-possible and block a deploy on noise rather than a real
+    regression.
     """
     rmsle_threshold = _threshold(max_rmsle_regression, "max_rmsle_regression")
     p90_threshold = _threshold(max_p90_ape_regression, "max_p90_ape_regression")
@@ -300,6 +310,10 @@ def compare_artifacts(
         raise ValueError("min_selection_groups must be an integer")
     if min_selection_groups < 1:
         raise ValueError("min_selection_groups must be at least 1")
+    if isinstance(min_fit_negative_examples, bool) or not isinstance(min_fit_negative_examples, int):
+        raise ValueError("min_fit_negative_examples must be an integer")
+    if min_fit_negative_examples < 1:
+        raise ValueError("min_fit_negative_examples must be at least 1")
     candidate_order = candidate.get("feature_order") if isinstance(candidate, dict) else None
     baseline_order = baseline.get("feature_order") if isinstance(baseline, dict) else None
     if candidate_order != baseline_order:
@@ -324,6 +338,13 @@ def compare_artifacts(
             failures.append(
                 f"{metric} regressed: candidate={candidate_value}, allowed={allowed}"
             )
+    if fit_examples:
+        fit_negative_examples = sum(1 for _features, is_fit in fit_examples if not is_fit)
+    else:
+        # Legacy fallback (see evaluate_artifact/_selection_and_fit_metrics):
+        # without explicit fit_examples, "negative" is inferred as actual < 1.0.
+        fit_negative_examples = sum(1 for actual in y if actual < 1.0)
+    fit_metrics = {"fit_balanced_accuracy", "fit_false_positive_rate"}
     for metric, higher_is_better in (
         ("top1_selection_accuracy", True),
         ("fit_balanced_accuracy", True),
@@ -331,6 +352,8 @@ def compare_artifacts(
         ("p90_normalized_regret", False),
         ("fit_false_positive_rate", False),
     ):
+        if metric in fit_metrics and fit_negative_examples < min_fit_negative_examples:
+            continue
         candidate_value = candidate_metrics[metric]
         baseline_value = baseline_metrics[metric]
         if candidate_value is None or baseline_value is None:
@@ -353,7 +376,9 @@ def compare_artifacts(
             "max_p90_ape_regression": p90_threshold,
             "max_selection_metric_regression": selection_threshold,
             "min_selection_groups": min_selection_groups,
+            "min_fit_negative_examples": min_fit_negative_examples,
         },
+        "fit_negative_examples": fit_negative_examples,
     }
 
 
