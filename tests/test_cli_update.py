@@ -54,7 +54,7 @@ def test_update_migrates_when_not_yet_migrated_even_if_commit_matches(monkeypatc
     assert result.exit_code == 0, result.stdout
     assert migrate_calls == [1]
     assert refresh_calls == [1]
-    assert "reinstalled" in result.stdout.lower()
+    assert "updated" in result.stdout.lower()
 
 
 def test_update_fast_path_skips_pipx_when_deps_unaffected(monkeypatch):

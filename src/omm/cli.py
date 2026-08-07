@@ -140,6 +140,14 @@ def _omm_version() -> str:
         return "dev"
 
 
+def _version_line(commit: str | None) -> str:
+    """'0.1.23 (a1b2c3d, beta)' style summary, shared by the bare `omm`
+    banner and `omm update`'s before/after display."""
+    parts = [commit[:7]] if commit else []
+    parts.append(_update_channel())
+    return f"{_omm_version()} ({', '.join(parts)})"
+
+
 def _telemetry_destination_line() -> str:
     """Human-readable summary of where install/contribute telemetry goes,
     shown under the bare `omm` version banner."""
@@ -162,10 +170,7 @@ def _telemetry_destination_line() -> str:
 def _root(ctx: typer.Context) -> None:
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
-        commit = _installed_commit()
-        parts = [commit[:7]] if commit else []
-        parts.append(_update_channel())
-        console.print(f"omm {_omm_version()} ({', '.join(parts)})")
+        console.print(f"omm {_version_line(_installed_commit())}")
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
     _maybe_auto_import(ctx)
@@ -335,8 +340,6 @@ def _refresh_data() -> None:
             console.print(f"[green]Updated rules.json ({len(fetched)} entries) from {rules_url}[/green]")
         except requests.RequestException as e:
             err_console.print(f"[red]Failed to fetch rules from {rules_url}: {e}[/red]")
-    else:
-        console.print("[dim]No rules_url configured - using bundled defaults.[/dim]")
 
     model_url = config.get("model_url")
     if model_url:
@@ -821,16 +824,18 @@ def update() -> None:
     if latest:
         version_check.record(latest, branch)
     if migrated and installed and latest and installed == latest:
-        console.print(f"[green]omm is already up to date ({installed[:7]}).[/green]")
+        console.print(f"[dim]omm is already up to date - {_version_line(installed)}[/dim]")
         _refresh_data()
         return
 
+    before = _version_line(installed)
     result = _perform_update(branch)
     if result.returncode != 0:
         err_console.print(f"[red]Update failed:[/red]\n{result.stderr}")
         raise typer.Exit(1)
 
-    console.print("[green]omm reinstalled from the latest source.[/green]")
+    after = _version_line(_installed_commit())
+    console.print(f"[bold green]✓ Updated: {before} -> {after}[/bold green]")
     _refresh_data()
 
 
