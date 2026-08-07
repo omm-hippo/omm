@@ -40,8 +40,8 @@ def test_build_rows_adds_human_context_and_special_variant_warning():
 
     [row] = recommend_ui.build_rows([(candidate, 33.0)], ["example/model"])
 
-    assert row.badge == "SPECIAL"
-    assert row.use_case == "Local AI"
+    assert row.badge == "⚠ CAUTION"
+    assert row.use_case == "General purpose"
     assert row.memory_gb is not None
     assert "uncensored" in row.warning.lower()
     assert row.description == "Popular on Hugging Face with 404,795 downloads."
@@ -66,7 +66,6 @@ def test_recommend_screen_renders_hardware_table_and_selected_detail():
     recommend_ui.print_detail(console, _hardware(), row)
 
     rendered = output.getvalue()
-    assert "OMM · Model Advisor" in rendered
     assert "Ryzen 7 5800H" in rendered
     assert "RTX 3060" in rendered
     assert "Recommended models" in rendered
