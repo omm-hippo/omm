@@ -120,7 +120,7 @@ def _use_case(candidate: dict) -> str:
         return "Embeddings"
     if {"chat", "instruct", "it"} & tokens:
         return "General chat"
-    return "Local AI"
+    return "General purpose"
 
 
 def _description(candidate: dict) -> str:
@@ -141,16 +141,16 @@ def build_rows(
     for index, ((candidate, speed), value) in enumerate(zip(ranked, values)):
         warning = _warning(candidate)
         curated = str(candidate.get("description") or "").lower() == "curated default"
-        if warning:
-            badge, badge_style = "SPECIAL", f"fg:{WARNING} bold"
-        elif index == 0:
+        if index == 0 and not warning:
             badge, badge_style = "BEST FIT", f"fg:{SUCCESS} bold"
+        elif warning:
+            badge, badge_style = "⚠ CAUTION", f"fg:{WARNING} bold"
         elif curated:
-            badge, badge_style = "CURATED", f"fg:{SUCCESS} bold"
+            badge, badge_style = "OMM PICK", f"fg:{SUCCESS} bold"
         elif "downloads" in str(candidate.get("description") or "").lower():
-            badge, badge_style = "POPULAR", f"fg:{WARNING} bold"
+            badge, badge_style = "POPULAR", f"fg:{METRIC} bold"
         else:
-            badge, badge_style = "COMPATIBLE", f"fg:{METRIC} bold"
+            badge, badge_style = "COMPATIBLE", f"fg:{MUTED} bold"
         rows.append(
             RecommendationRow(
                 candidate=candidate,
@@ -182,21 +182,10 @@ def _available_memory(info: object) -> float | None:
 
 
 def print_screen(console: Console, info: object, candidate_count: int) -> None:
-    intro = Text()
-    intro.append("Your hardware has been scanned", style="white")
-    intro.append("  ·  ", style=MUTED)
-    intro.append(
-        f"{candidate_count} compatible model{'s' if candidate_count != 1 else ''} found",
-        style=f"bold {SUCCESS}",
-    )
     console.print(
-        Panel(
-            intro,
-            title=f"[bold {ACCENT}]◆ OMM · Model Advisor[/]",
-            title_align="left",
-            border_style=ACCENT,
-            box=box.ROUNDED,
-            padding=(0, 1),
+        Text(
+            f"{candidate_count} compatible model{'s' if candidate_count != 1 else ''} found",
+            style=f"bold {SUCCESS}",
         )
     )
     cpu = str(getattr(info, "cpu", "") or "Unknown")
@@ -245,7 +234,7 @@ def print_screen(console: Console, info: object, candidate_count: int) -> None:
 
 def _choice_widths(width: int) -> tuple[int, int, int, int]:
     if width < 84:
-        return max(18, width - 35), 11, 0, 11
+        return max(18, width - 35), 11, 0, 13
     model = max(24, min(40, width - 63))
     return model, 13, 13, 15
 
@@ -271,7 +260,7 @@ def choice_title(row: RecommendationRow, width: int) -> list[tuple[str, str]]:
             _prompt_style("bold"),
             _clip(row.display_name, model_width - 1).ljust(model_width),
         ),
-        (_prompt_style(row.badge_style), row.badge.ljust(badge_width)),
+        (_prompt_style(row.badge_style), _clip(row.badge, badge_width - 1).ljust(badge_width)),
         (_prompt_style(f"fg:{METRIC}"), speed.ljust(13)),
     ]
     if memory_width:

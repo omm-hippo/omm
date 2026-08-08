@@ -99,6 +99,27 @@ def install_ref(candidate: dict) -> str:
     return f"{_PROVIDER_PREFIX[provider]}:{repo_id}"
 
 
+def exact_install_ref(candidate: dict) -> str:
+    """Like install_ref(), but resolves straight to the specific .gguf file
+    already priced into this candidate's speed/memory prediction, instead of
+    a bare repo id. `omm recommend` rows are already quant-specific - handing
+    install_ref()'s bare repo to `omm install` would trigger its
+    AmbiguousModelError quant picker a second time, and that picker could
+    land on a different quant than the one just shown to the user.
+    """
+    name = candidate.get("name")
+    if name and name in hub.CURATED_INDEX:
+        return name
+    repo_id = candidate.get("repo_id") or name or ""
+    filename = candidate.get("filename")
+    if not repo_id or not filename:
+        return install_ref(candidate)
+    provider = candidate.get("provider") or "huggingface"
+    if provider == "huggingface":
+        return f"{repo_id}:{filename}"
+    return f"{_PROVIDER_PREFIX[provider]}:{repo_id}:{filename}"
+
+
 _PROVIDER_PREFIX = {"modelscope": "ms"}
 
 

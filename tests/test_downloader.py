@@ -1,4 +1,5 @@
 import errno
+import json
 import threading
 from pathlib import Path
 
@@ -403,6 +404,153 @@ def test_download_file_parallel_path_honors_stop_check(tmp_path, monkeypatch):
     assert raised
     assert not dest.exists()
     assert dest.with_suffix(dest.suffix + ".part").exists()
+
+
+# --- parallel-download resume via sidecar ------------------------------------
+
+
+class _DropsAfterFirstByte:
+    """A 206 response whose `iter_content` yields exactly one byte and then
+    raises `ChunkedEncodingError`, the way `requests` surfaces a connection
+    reset mid-stream (as opposed to a clean end of the response body)."""
+
+    status_code = 206
+    headers: dict = {}
+
+    def __init__(self, first_byte: bytes):
+        self._first_byte = first_byte
+
+    def iter_content(self, chunk_size):
+        yield self._first_byte
+        raise requests.exceptions.ChunkedEncodingError("connection reset")
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_download_file_resumes_parallel_download_after_network_drop_without_restarting(
+    tmp_path, monkeypatch
+):
+    """The bug this guards: a 4-thread parallel download interrupted by a
+    transient network error (laptop sleep, wifi drop) used to unlink the
+    whole `.part` file and restart from byte 0. It should now resume only
+    the bytes the affected range still needs, not the whole file."""
+    monkeypatch.setattr(downloader, "_MIN_PARALLEL_TOTAL", 10)
+    monkeypatch.setattr(downloader, "_MIN_CHUNK_SIZE", 5)
+    monkeypatch.setattr(downloader.time, "sleep", lambda seconds: None)
+    payload = bytes(range(40))  # 40 bytes -> 4 ranges of 10 bytes each: 0-9,10-19,20-29,30-39
+    dest = tmp_path / "model.gguf"
+
+    range_headers_seen: list[str] = []
+    dropped_once = {"done": False}
+
+    def flaky_server(url, headers=None, stream=True, timeout=30):
+        range_header = (headers or {}).get("Range", "")
+        range_headers_seen.append(range_header)
+        if range_header == "bytes=0-0":
+            return _FakeResp(
+                206, [payload[:1]], headers={"Content-Range": f"bytes 0-0/{len(payload)}"}
+            )
+        # The first request for range 0-9 drops after 1 byte, exactly once.
+        # Whichever thread happens to service it (thread scheduling order
+        # isn't deterministic), only its very first attempt is dropped.
+        if range_header == "bytes=0-9" and not dropped_once["done"]:
+            dropped_once["done"] = True
+            return _DropsAfterFirstByte(payload[0:1])
+        start_str, end_str = range_header.removeprefix("bytes=").split("-")
+        start, end = int(start_str), int(end_str)
+        return _FakeResp(206, [payload[start : end + 1]])
+
+    monkeypatch.setattr(requests, "get", flaky_server)
+
+    downloader.download_file("https://example.com/model.gguf", dest)
+
+    assert dest.read_bytes() == payload
+    assert not dest.with_suffix(dest.suffix + ".part").exists()
+    assert not dest.with_suffix(dest.suffix + ".part.ranges.json").exists()
+    # The retry for range 0-9 must ask for byte 1 onward, not byte 0 again -
+    # proof it resumed the range instead of restarting the whole file.
+    assert "bytes=1-9" in range_headers_seen
+    assert dropped_once["done"]
+
+
+def test_download_parallel_resume_only_refetches_unfinished_ranges(tmp_path, monkeypatch):
+    """Directly exercise `_attempt_download`'s sidecar-resume branch: a
+    `.part` + matching sidecar on disk (as left behind by an interrupted
+    parallel download) must resume with per-range `Range` headers computed
+    from each range's recorded progress, not redownload finished ranges or
+    restart unfinished ones from their start."""
+    dest = tmp_path / "model.gguf"
+    part = dest.with_suffix(dest.suffix + ".part")
+    payload = bytes(range(20))  # two 10-byte ranges: 0-9 (done) and 10-19 (4/10 done)
+    part.write_bytes(payload[:10] + payload[10:14] + b"\x00" * 6)
+
+    sidecar = downloader._sidecar_path(part)
+    state = {
+        "total_size": 20,
+        "ranges": [
+            {"start": 0, "end": 9, "done": 10},  # already complete
+            {"start": 10, "end": 19, "done": 4},  # 4 bytes already landed
+        ],
+    }
+    sidecar.write_text(json.dumps(state))
+
+    requested_ranges = []
+
+    def fake_get(url, headers=None, stream=True, timeout=30):
+        range_header = (headers or {}).get("Range", "")
+        requested_ranges.append(range_header)
+        # Only the unfinished range (bytes 14-19) should ever be requested.
+        assert range_header == "bytes=14-19"
+        return _FakeResp(206, [payload[14:20]])
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    downloader.download_file("https://example.com/model.gguf", dest)
+
+    assert dest.read_bytes() == payload
+    assert requested_ranges == ["bytes=14-19"]  # never re-requested the completed range
+    assert not sidecar.exists()
+
+
+def test_download_parallel_falls_back_cleanly_on_non_network_download_error(tmp_path, monkeypatch):
+    """A structural (non-network) DownloadError from the parallel path -
+    e.g. a server that stops honoring Range mid-download - must still drop
+    the `.part`/sidecar and fall back to a clean single-stream download,
+    same as before this change."""
+    monkeypatch.setattr(downloader, "_MIN_PARALLEL_TOTAL", 10)
+    monkeypatch.setattr(downloader, "_MIN_CHUNK_SIZE", 5)
+    payload = bytes(range(40))
+    dest = tmp_path / "model.gguf"
+    calls = {"n": 0}
+
+    def bad_range_server(url, headers=None, stream=True, timeout=30):
+        calls["n"] += 1
+        range_header = (headers or {}).get("Range", "")
+        if range_header == "bytes=0-0":
+            return _FakeResp(
+                206, [payload[:1]], headers={"Content-Range": f"bytes 0-0/{len(payload)}"}
+            )
+        if calls["n"] == 2:
+            # Server stops honoring Range for this worker: full 200 body.
+            return _FakeResp(200, [payload], headers={"Content-Length": str(len(payload))})
+        if not range_header:
+            # The single-stream fallback's fresh (non-resuming) request.
+            return _FakeResp(200, [payload], headers={"Content-Length": str(len(payload))})
+        start_str, end_str = range_header.removeprefix("bytes=").split("-")
+        start, end = int(start_str), int(end_str)
+        return _FakeResp(206, [payload[start : end + 1]])
+
+    monkeypatch.setattr(requests, "get", bad_range_server)
+
+    downloader.download_file("https://example.com/model.gguf", dest)
+
+    assert dest.read_bytes() == payload
+    assert not dest.with_suffix(dest.suffix + ".part").exists()
+    assert not dest.with_suffix(dest.suffix + ".part.ranges.json").exists()
 
 
 def test_download_file_parallel_path_converts_enospc_write_error_to_insufficient_disk_space_error(tmp_path, monkeypatch):

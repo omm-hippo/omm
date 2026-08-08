@@ -1,4 +1,5 @@
-import questionary
+from unittest.mock import MagicMock
+
 from typer.testing import CliRunner
 
 from omm import cli, linker
@@ -34,7 +35,7 @@ def _stub_successful_install(monkeypatch, isolated_omm_home):
 
 def test_install_runs_benchmark_and_telemetry_on_yes(isolated_omm_home, monkeypatch):
     filename = _stub_successful_install(monkeypatch, isolated_omm_home)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda message, default=False: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append((event, force)))
@@ -49,7 +50,7 @@ def test_install_runs_benchmark_and_telemetry_on_yes(isolated_omm_home, monkeypa
 
 def test_install_runs_benchmark_but_skips_upload_on_no(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch, isolated_omm_home)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda message, default=False: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     bench_calls = []
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: bench_calls.append(tag) or 42.0)
     sent = []
@@ -90,26 +91,61 @@ def test_install_upload_flag_sends_telemetry_without_a_tty(isolated_omm_home, mo
     assert sent[0][1] is True
 
 
-def test_ask_confirm_uses_questionary_with_auto_enter(monkeypatch):
-    captured = {}
+def _handler_for(bindings, key):
+    matches = [b for b in bindings.bindings if b.keys == (key,)]
+    assert matches, f"expected a binding for {key!r}"
+    return matches[-1].handler
 
-    class FakeQuestion:
-        def ask(self):
-            return True
 
-    def fake_confirm(message, default=False, auto_enter=True):
-        captured["message"] = message
-        captured["default"] = default
-        captured["auto_enter"] = auto_enter
-        return FakeQuestion()
+def test_ask_confirm_key_bindings_answer_on_y_and_n():
+    status = {"answer": None}
+    bindings = cli._build_single_key_bindings(
+        [("y", "Yes", True), ("n", "No", False)], default_value=False, status=status
+    )
 
-    monkeypatch.setattr(questionary, "confirm", fake_confirm)
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    fake_event = MagicMock()
+    _handler_for(bindings, "y")(fake_event)
+    fake_event.app.exit.assert_called_once_with(result=True)
 
-    result = cli._ask_confirm("질문?", default=False)
+    fake_event = MagicMock()
+    _handler_for(bindings, "n")(fake_event)
+    fake_event.app.exit.assert_called_once_with(result=False)
 
-    assert result is True
-    assert captured == {"message": "질문?", "default": False, "auto_enter": True}
+
+def test_ask_confirm_accepts_hangul_jamo_for_the_same_physical_key():
+    """A 2-beolsik Korean IME turns a 'y' keypress into the jamo 'ㅛ'; the
+    prompt should accept it as yes regardless of 한/영 toggle state, since
+    what matters is the physical key, not the IME state."""
+    status = {"answer": None}
+    bindings = cli._build_single_key_bindings(
+        [("y", "Yes", True), ("n", "No", False)], default_value=False, status=status
+    )
+
+    fake_event = MagicMock()
+    _handler_for(bindings, "ㅛ")(fake_event)
+    fake_event.app.exit.assert_called_once_with(result=True)
+
+    fake_event = MagicMock()
+    _handler_for(bindings, "ㅜ")(fake_event)
+    fake_event.app.exit.assert_called_once_with(result=False)
+
+
+def test_ask_upload_choice_key_bindings_include_always():
+    status = {"answer": None}
+    bindings = cli._build_single_key_bindings(
+        [("y", "Yes", "yes"), ("n", "No", "no"), ("a", "Always", "always")],
+        default_value="no",
+        status=status,
+    )
+
+    fake_event = MagicMock()
+    _handler_for(bindings, "a")(fake_event)
+    fake_event.app.exit.assert_called_once_with(result="always")
+
+    # 'a' sits at the jamo 'ㅁ' on a 2-beolsik keyboard.
+    fake_event = MagicMock()
+    _handler_for(bindings, "ㅁ")(fake_event)
+    fake_event.app.exit.assert_called_once_with(result="always")
 
 
 def test_ask_confirm_errors_instead_of_hanging_without_a_tty(monkeypatch):

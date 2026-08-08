@@ -54,7 +54,13 @@ from omm import (
 from omm import contribute as contribute_mod
 from omm.completion import complete_install_name, complete_remove_filename
 from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
-from omm.downloader import DownloadCancelled, DownloadError, InsufficientDiskSpaceError, download_file
+from omm.downloader import (
+    DownloadCancelled,
+    DownloadError,
+    InsufficientDiskSpaceError,
+    _sidecar_path,
+    download_file,
+)
 from omm.hardware import HardwareInfo, calculate_memory_budget, scan_hardware
 from omm.hashutil import sha256_file
 from omm.featurize import (
@@ -119,6 +125,7 @@ console = Console()
 err_console = Console(stderr=True)
 
 REPO_URL = "git+https://github.com/omm-hippo/omm.git"
+COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"
 
 
 def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bool]:
@@ -138,6 +145,14 @@ def _omm_version() -> str:
         return importlib.metadata.version("omm")
     except importlib.metadata.PackageNotFoundError:
         return "dev"
+
+
+def _version_line(commit: str | None) -> str:
+    """'0.1.23 (a1b2c3d, beta)' style summary, shared by the bare `omm`
+    banner and `omm update`'s before/after display."""
+    parts = [commit[:7]] if commit else []
+    parts.append(_update_channel())
+    return f"{_omm_version()} ({', '.join(parts)})"
 
 
 def _telemetry_destination_line() -> str:
@@ -162,10 +177,7 @@ def _telemetry_destination_line() -> str:
 def _root(ctx: typer.Context) -> None:
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
-        commit = _installed_commit()
-        parts = [commit[:7]] if commit else []
-        parts.append(_update_channel())
-        console.print(f"omm {_omm_version()} ({', '.join(parts)})")
+        console.print(f"omm {_version_line(_installed_commit())}")
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
     _maybe_auto_import(ctx)
@@ -245,6 +257,16 @@ def _reconcile_stale_link_records(reg: dict, installed: dict[str, bool]) -> list
     return cleaned
 
 
+def _missing_engines_note(installed: dict[str, bool]) -> str | None:
+    """One-line pointer to the compatibility wiki page for engines not
+    installed on this machine - `None` when every known engine is
+    installed, so info/scan tables don't print a useless zero-count line."""
+    missing = sum(1 for is_installed in installed.values() if not is_installed)
+    if missing == 0:
+        return None
+    return f"+ {missing} program(s) not installed — see the compatibility list: {COMPATIBLE_PROGRAMS_URL}"
+
+
 @app.command()
 def scan() -> None:
     """Scan current PC hardware (RAM, VRAM, OS) and print a summary table."""
@@ -280,9 +302,13 @@ def scan() -> None:
     engine_table.add_column("Program", style="cyan")
     engine_table.add_column("Status", style="white")
     for spec in linker.ENGINES:
-        engine_table.add_row(spec.label, "installed" if installed[spec.key] else "not detected")
+        if installed[spec.key]:
+            engine_table.add_row(spec.label, "installed")
     console.print()
     console.print(engine_table)
+    note = _missing_engines_note(installed)
+    if note:
+        console.print(note)
 
     reg = registry.load_registry()
     cleaned = _reconcile_stale_link_records(reg, installed)
@@ -335,8 +361,6 @@ def _refresh_data() -> None:
             console.print(f"[green]Updated rules.json ({len(fetched)} entries) from {rules_url}[/green]")
         except requests.RequestException as e:
             err_console.print(f"[red]Failed to fetch rules from {rules_url}: {e}[/red]")
-    else:
-        console.print("[dim]No rules_url configured - using bundled defaults.[/dim]")
 
     model_url = config.get("model_url")
     if model_url:
@@ -821,16 +845,18 @@ def update() -> None:
     if latest:
         version_check.record(latest, branch)
     if migrated and installed and latest and installed == latest:
-        console.print(f"[green]omm is already up to date ({installed[:7]}).[/green]")
+        console.print(f"[dim]omm is already up to date - {_version_line(installed)}[/dim]")
         _refresh_data()
         return
 
+    before = _version_line(installed)
     result = _perform_update(branch)
     if result.returncode != 0:
         err_console.print(f"[red]Update failed:[/red]\n{result.stderr}")
         raise typer.Exit(1)
 
-    console.print("[green]omm reinstalled from the latest source.[/green]")
+    after = _version_line(_installed_commit())
+    console.print(f"[bold green]✓ Updated: {before} -> {after}[/bold green]")
     _refresh_data()
 
 
@@ -868,17 +894,127 @@ def _ask_select(question: questionary.Question):
     return _add_escape_to_cancel(question).ask()
 
 
-def _ask_confirm(message: str, default: bool = False) -> bool:
-    """Yes/no prompt that answers on the y/n keypress itself (no Enter
-    needed) via questionary's auto_enter. questionary.confirm's internal
-    key bindings are already merged by the time we get the Question object,
-    so (unlike _ask_select) we can't bolt an Escape binding on here -
-    Ctrl+C/Ctrl+Q still cancel via questionary's own bindings."""
-    import questionary
+# Reverse of the standard 2-beolsik (두벌식) layout: what each jamo types as
+# on a physical QWERTY key. A single-key prompt (y/n/a/...) should accept
+# the jamo too, since pressing the key is what matters, not whether 한/영
+# happens to be toggled on at the time.
+_HANGUL_JAMO_TO_LATIN = {
+    "ㅂ": "q", "ㅈ": "w", "ㄷ": "e", "ㄱ": "r", "ㅅ": "t",
+    "ㅛ": "y", "ㅕ": "u", "ㅑ": "i", "ㅐ": "o", "ㅔ": "p",
+    "ㅁ": "a", "ㄴ": "s", "ㅇ": "d", "ㄹ": "f", "ㅎ": "g",
+    "ㅗ": "h", "ㅓ": "j", "ㅏ": "k", "ㅣ": "l",
+    "ㅋ": "z", "ㅌ": "x", "ㅊ": "c", "ㅍ": "v", "ㅠ": "b",
+    "ㅜ": "n", "ㅡ": "m",
+}
+
+
+def _build_single_key_bindings(
+    choices: list[tuple[str, str, object]],
+    default_value: object,
+    status: dict[str, object],
+):
+    """KeyBindings for _ask_single_key, split out so tests can drive
+    handlers directly with a fake event instead of running a real terminal
+    app (see test_cli_recommend_escape.py for the same pattern applied to
+    _add_escape_to_cancel). Each choice's key also responds to the jamo a
+    Korean IME produces on the same physical key (_HANGUL_JAMO_TO_LATIN),
+    so 한/영 toggle state doesn't matter. Written from scratch rather than
+    extending questionary.confirm because its key bindings are already
+    merged into the Question by the time we get it back, so extra bindings
+    can't be bolted on afterwards."""
+    from prompt_toolkit.key_binding import KeyBindings
+
+    by_key: dict[str, tuple[str, object]] = {}
+    for key, label, value in choices:
+        by_key[key.lower()] = (label, value)
+        by_key[key.upper()] = (label, value)
+
+    bindings = KeyBindings()
+
+    @bindings.add(Keys.ControlQ, eager=True)
+    @bindings.add(Keys.ControlC, eager=True)
+    def _abort(event):
+        event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
+
+    def _accept(label: str, value: object):
+        def handler(event):
+            status["answer"] = (label, value)
+            event.app.exit(result=value)
+
+        return handler
+
+    for key, (label, value) in by_key.items():
+        bindings.add(key)(_accept(label, value))
+    for jamo, latin in _HANGUL_JAMO_TO_LATIN.items():
+        if latin in by_key:
+            label, value = by_key[latin]
+            bindings.add(jamo)(_accept(label, value))
+
+    @bindings.add(Keys.ControlM, eager=True)
+    def _enter(event):
+        event.app.exit(result=default_value)
+
+    @bindings.add(Keys.Any)
+    def _other(event):
+        """Disallow inserting other text."""
+
+    return bindings
+
+
+def _ask_single_key(
+    message: str,
+    choices: list[tuple[str, str, object]],
+    default_value: object,
+    instruction: str,
+) -> object:
+    """Single-keypress prompt: each choice is (key, label, value); answers
+    immediately on keypress (no Enter needed), like questionary.confirm but
+    with an arbitrary key->value map instead of a hardcoded y/n."""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import to_formatted_text
+    from questionary.styles import merge_styles_default
 
     _require_tty(message)
-    answer = questionary.confirm(message, default=default, auto_enter=True).ask()
-    return bool(answer)
+
+    status: dict[str, object] = {"answer": None}
+    bindings = _build_single_key_bindings(choices, default_value, status)
+
+    def get_prompt_tokens():
+        tokens = [("class:qmark", "?"), ("class:question", f" {message} ")]
+        if status["answer"] is None:
+            tokens.append(("class:instruction", f"{instruction} "))
+        else:
+            tokens.append(("class:answer", status["answer"][0]))
+        return to_formatted_text(tokens)
+
+    merged_style = merge_styles_default([None])
+    return PromptSession(
+        get_prompt_tokens, key_bindings=bindings, style=merged_style
+    ).app.run()
+
+
+def _ask_confirm(message: str, default: bool = False) -> bool:
+    """Yes/no prompt that answers on the y/n keypress itself (no Enter
+    needed)."""
+    return bool(
+        _ask_single_key(
+            message,
+            [("y", "Yes", True), ("n", "No", False)],
+            default_value=default,
+            instruction="(y/n)",
+        )
+    )
+
+
+def _ask_upload_choice(prompt: str) -> str:
+    """The telemetry-upload confirm, split out from _resolve_upload_decision
+    so tests can stub it without going through a real terminal prompt."""
+    return _ask_single_key(
+        prompt,
+        [("y", "Yes", "yes"), ("n", "No", "no"), ("a", "Always", "always")],
+        default_value="no",
+        instruction="(y/n/a - a saves 'always' as the new default)",
+    )
 
 
 def _resolve_upload_decision(prompt: str) -> bool:
@@ -887,7 +1023,16 @@ def _resolve_upload_decision(prompt: str) -> bool:
         return True
     if policy == "never":
         return False
-    return _ask_confirm(prompt)
+    answer = _ask_upload_choice(prompt)
+    if answer == "always":
+        if load_config().get("telemetry_endpoint"):
+            config_mod.update_config(telemetry_send_policy="always")
+            console.print(
+                "[dim]Saved: omm will now always send benchmark results "
+                "(change with `omm setting upload`).[/dim]"
+            )
+        return True
+    return answer == "yes"
 
 
 def _select_recommended_model(
@@ -942,7 +1087,7 @@ def recommend() -> None:
             err_console.print("[red]No model is predicted to run on this hardware.[/red]")
             raise typer.Exit(1)
 
-        refs = [search_mod.install_ref(c) for c, speed in viable]
+        refs = [search_mod.exact_install_ref(c) for c, speed in viable]
         session_cache.record_seen(refs)
         selected = _select_recommended_model(info, viable, refs)
         if selected is None:
@@ -1172,10 +1317,10 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
 def _link_model(
     dest, repo_id: str | None, ollama_tag: str, *, only_ollama: bool = False
 ) -> dict[str, bool]:
-    """Link a downloaded .gguf into every installed engine, printing a skip
-    notice for whichever engine isn't installed or fails to link. Shared
-    by `install` and `update` since both need the exact same behavior
-    after a fresh (or refreshed) download.
+    """Link a downloaded .gguf into every installed engine, printing a
+    warning only when an installed engine fails to link (uninstalled
+    engines are skipped silently). Shared by `install` and `update` since
+    both need the exact same behavior after a fresh (or refreshed) download.
 
     `only_ollama` restricts linking to Ollama alone - `omm contribute` only
     needs Ollama to benchmark, so linking into LM Studio/Jan/etc. for every
@@ -1186,7 +1331,6 @@ def _link_model(
         if only_ollama and spec.key != "ollama":
             continue
         if not linker.is_engine_installed(spec.key):
-            console.print(f"[dim]{spec.label} not detected, skipping link.[/dim]")
             continue
         try:
             warning = linker.link_engine(spec.key, dest, repo_id=repo_id, ollama_tag=ollama_tag)
@@ -1623,6 +1767,7 @@ def _cleanup_incomplete_install(filename: str) -> bool:
             cleaned = True
         except OSError:
             pass
+        _sidecar_path(part).unlink(missing_ok=True)
     if dest.exists():
         try:
             dest.unlink()
@@ -1650,7 +1795,9 @@ def _remove_one(filename: str, entry: dict) -> None:
     except OSError:
         pass
     try:
-        dest.with_suffix(dest.suffix + ".part").unlink(missing_ok=True)
+        part = dest.with_suffix(dest.suffix + ".part")
+        part.unlink(missing_ok=True)
+        _sidecar_path(part).unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -1758,7 +1905,10 @@ def info(
     table.add_row("Version", _entry_version(entry))
     table.add_row("Size", f"{size_gb:.2f} GB")
     table.add_row("Installed at", entry.get("installed_at", "unknown"))
+    installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
     for spec in linker.ENGINES:
+        if not installed[spec.key]:
+            continue
         if spec.key == "ollama":
             table.add_row("Ollama", f"ollama run {ollama_tag}" if linked.get("ollama") else "not linked")
         else:
@@ -1768,6 +1918,9 @@ def info(
             )
 
     console.print(table)
+    note = _missing_engines_note(installed)
+    if note:
+        console.print(note)
 
 
 def _update_one(filename: str, entry: dict) -> str:
@@ -1811,7 +1964,9 @@ def _update_one(filename: str, entry: dict) -> str:
         except DownloadError as e:
             err_console.print(f"[red]{filename}: update download failed: {e}[/red]")
             tmp.unlink(missing_ok=True)
-            tmp.with_suffix(tmp.suffix + ".part").unlink(missing_ok=True)
+            tmp_part = tmp.with_suffix(tmp.suffix + ".part")
+            tmp_part.unlink(missing_ok=True)
+            _sidecar_path(tmp_part).unlink(missing_ok=True)
             return "skipped"
 
         new_sha256 = sha256_file(tmp)
@@ -2469,6 +2624,17 @@ def _autoremove_incomplete_installs() -> int:
             continue
         if path.suffix == ".part":
             if path.with_suffix("").name not in reg:
+                try:
+                    path.unlink()
+                except OSError:
+                    continue
+                removed += 1
+                _sidecar_path(path).unlink(missing_ok=True)
+        elif path.name.endswith(".part.ranges.json"):
+            # Resume sidecar left behind after its .part was already
+            # removed some other way (e.g. `omm uninstall`).
+            part = path.with_name(path.name.removesuffix(".ranges.json"))
+            if not part.exists():
                 try:
                     path.unlink()
                 except OSError:
