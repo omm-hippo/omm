@@ -34,8 +34,16 @@ def test_help_with_no_args_matches_dash_dash_help():
     expected = runner.invoke(cli.app, ["--help"])
 
     assert result.exit_code == 0, result.stdout
-    assert "COMMANDS" in result.stdout
+    assert "Example usage" in result.stdout
     assert result.stdout == expected.stdout
+
+
+def test_help_all_lists_every_command():
+    result = runner.invoke(cli.app, ["help", "--all"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "COMMANDS" in result.stdout
+    assert "autoremove" in result.stdout
 
 
 def test_help_with_command_name_shows_that_commands_help():

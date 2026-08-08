@@ -786,7 +786,8 @@ def main() -> None:
                 )
             return
         try:
-            baseline = json.loads(args.baseline.read_text())
+            baseline_text = args.baseline.read_text()
+            baseline = json.loads(baseline_text)
         except (OSError, json.JSONDecodeError) as error:
             raise ValueError(f"could not read baseline artifact {args.baseline}: {error}") from error
         validate_artifact(baseline, FEATURE_ORDER)
@@ -822,9 +823,31 @@ def main() -> None:
                 "fit_telemetry_audit": fit_audit,
             }
         )
+        selection_group_count = evaluation.get("candidate", {}).get("selection_group_count")
+        min_selection_groups = evaluation.get("thresholds", {}).get("min_selection_groups")
+        insufficient_selection_groups = (
+            selection_group_count is not None
+            and min_selection_groups is not None
+            and selection_group_count < min_selection_groups
+        )
+        if insufficient_selection_groups:
+            evaluation["skipped"] = True
         if args.quality_report:
             args.quality_report.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(args.quality_report, json.dumps(evaluation, indent=2) + "\n")
+        if insufficient_selection_groups:
+            # Too few distinct real configurations to compare candidate vs.
+            # baseline on ANY metric in this holdout, not just the
+            # selection-ranking ones - same "come back with more telemetry"
+            # treatment as the pre-training volume check above, not a bug.
+            print(
+                f"Quality gate: only {selection_group_count} selection group(s) in the "
+                f"holdout, need {min_selection_groups}. Keeping current model unchanged."
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with locked(args.output):
+                atomic_write_text(args.output, baseline_text)
+            return
         if not evaluation["passed"]:
             raise SystemExit("quality gate rejected candidate: " + "; ".join(evaluation["failures"]))
         artifact = train_artifact(

@@ -109,10 +109,44 @@ try:
 except ImportError:
     pass
 
+_ROOT_HELP_TEXT = """Example usage:
+  omm search TEXT
+  omm install MODEL
+  omm list
+  omm recommend
+  omm uninstall MODEL
+
+Tuning & quality:
+  omm tune MODEL
+  omm benchmark MODEL...
+  omm contribute
+
+Maintenance:
+  omm scan
+  omm upgrade [MODEL]
+  omm setting
+
+Further help:
+  omm help COMMAND      Show help for one command
+  omm help --all        List every command
+  https://github.com/omm-hippo/omm
+"""
+
+
+class _RootHelpGroup(typer.core.TyperGroup):
+    """Homebrew-style curated `omm --help`/`omm help` - a short list of
+    common commands instead of the full alphabetical listing of every
+    registered subcommand. Full list stays reachable via `omm help --all`."""
+
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        formatter.write(_ROOT_HELP_TEXT)
+
+
 app = typer.Typer(
     name="omm",
     help="Open source Model Manager - package manager for local LLMs (GGUF).",
     rich_markup_mode=None,
+    cls=_RootHelpGroup,
 )
 setting_app = typer.Typer(
     name="setting",
@@ -192,10 +226,16 @@ def _root(ctx: typer.Context) -> None:
 def help_cmd(
     ctx: typer.Context,
     command: str = typer.Argument(None, help="Show help for a specific subcommand."),
+    all: bool = typer.Option(False, "--all", help="List every command, not just the common ones."),
 ) -> None:
     """Show help, same as --help."""
     root_ctx = ctx.find_root()
     if command is None:
+        if all:
+            formatter = root_ctx.make_formatter()
+            typer.core.TyperGroup.format_help(root_ctx.command, root_ctx, formatter)
+            console.print(formatter.getvalue().rstrip("\n"))
+            raise typer.Exit(0)
         console.print(root_ctx.get_help())
         raise typer.Exit(0)
 

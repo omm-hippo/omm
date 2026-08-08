@@ -575,6 +575,55 @@ def test_quality_gate_regression_does_not_overwrite_output(tmp_path, monkeypatch
     assert output.read_text() == "incumbent-output"
 
 
+def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchanged(tmp_path, monkeypatch):
+    telemetry = tmp_path / "telemetry.json"
+    telemetry.write_text(json.dumps([_v6_row(10), _v6_row(20, vram_gb=6)]))
+    output = tmp_path / "model.json"
+    baseline = tmp_path / "baseline.json"
+    quality_report = tmp_path / "quality-report.json"
+    monkeypatch.setattr(train_model, "load_candidates", lambda: [])
+    X, y = train_model.real_rows_to_training_data(json.loads(telemetry.read_text()))
+    baseline.write_text(
+        json.dumps(
+            train_model.train_artifact(
+                X, y, sample_weight=None, training_mode="telemetry", bootstrap_method=None,
+                real_rows=[], telemetry_audit={"unique_configurations": len(X)},
+                input_sources=[], evaluation=None,
+            )
+        )
+    )
+    monkeypatch.setattr(
+        train_model,
+        "compare_artifacts",
+        lambda *_args, **_kwargs: {
+            "passed": False,
+            "failures": [
+                "insufficient selection groups: candidate=2, required=3",
+                "p90_absolute_percentage_error regressed: candidate=0.51, allowed=0.40",
+            ],
+            "candidate": {"selection_group_count": 2},
+            "baseline": {"selection_group_count": 2},
+            "thresholds": {"min_selection_groups": 3},
+        },
+    )
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[telemetry], offline=True, telemetry_url="", output=output,
+            baseline=baseline, quality_gate=True, minimum_real_configurations=0,
+            maximum_rejection_rate=0.25, holdout_fraction=0.2, quality_report=quality_report,
+            minimum_fit_negative_examples=5,
+        ),
+    )
+
+    train_model.main()  # must not raise: too few real configs to compare, not a code bug
+
+    assert output.read_text() == baseline.read_text()
+    report = json.loads(quality_report.read_text())
+    assert report["skipped"] is True
+
+
 def test_quality_gate_insufficient_data_republishes_baseline_unchanged(tmp_path, monkeypatch):
     output = tmp_path / "model.json"
     baseline = tmp_path / "baseline.json"
