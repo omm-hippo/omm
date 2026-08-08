@@ -22,8 +22,10 @@ def _hardware() -> HardwareInfo:
     )
 
 
-def test_scan_displays_live_safe_budget(monkeypatch):
+def test_scan_displays_live_safe_budget(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: False)
 
     result = runner.invoke(cli.app, ["scan"])
 

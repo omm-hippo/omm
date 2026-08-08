@@ -1317,10 +1317,10 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
 def _link_model(
     dest, repo_id: str | None, ollama_tag: str, *, only_ollama: bool = False
 ) -> dict[str, bool]:
-    """Link a downloaded .gguf into every installed engine, printing a skip
-    notice for whichever engine isn't installed or fails to link. Shared
-    by `install` and `update` since both need the exact same behavior
-    after a fresh (or refreshed) download.
+    """Link a downloaded .gguf into every installed engine, printing a
+    warning only when an installed engine fails to link (uninstalled
+    engines are skipped silently). Shared by `install` and `update` since
+    both need the exact same behavior after a fresh (or refreshed) download.
 
     `only_ollama` restricts linking to Ollama alone - `omm contribute` only
     needs Ollama to benchmark, so linking into LM Studio/Jan/etc. for every
