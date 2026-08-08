@@ -125,6 +125,7 @@ console = Console()
 err_console = Console(stderr=True)
 
 REPO_URL = "git+https://github.com/omm-hippo/omm.git"
+COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"
 
 
 def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bool]:
@@ -256,6 +257,16 @@ def _reconcile_stale_link_records(reg: dict, installed: dict[str, bool]) -> list
     return cleaned
 
 
+def _missing_engines_note(installed: dict[str, bool]) -> str | None:
+    """One-line pointer to the compatibility wiki page for engines not
+    installed on this machine - `None` when every known engine is
+    installed, so info/scan tables don't print a useless zero-count line."""
+    missing = sum(1 for is_installed in installed.values() if not is_installed)
+    if missing == 0:
+        return None
+    return f"+ {missing} program(s) not installed — see the compatibility list: {COMPATIBLE_PROGRAMS_URL}"
+
+
 @app.command()
 def scan() -> None:
     """Scan current PC hardware (RAM, VRAM, OS) and print a summary table."""
@@ -291,9 +302,13 @@ def scan() -> None:
     engine_table.add_column("Program", style="cyan")
     engine_table.add_column("Status", style="white")
     for spec in linker.ENGINES:
-        engine_table.add_row(spec.label, "installed" if installed[spec.key] else "not detected")
+        if installed[spec.key]:
+            engine_table.add_row(spec.label, "installed")
     console.print()
     console.print(engine_table)
+    note = _missing_engines_note(installed)
+    if note:
+        console.print(note)
 
     reg = registry.load_registry()
     cleaned = _reconcile_stale_link_records(reg, installed)
@@ -1302,10 +1317,10 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
 def _link_model(
     dest, repo_id: str | None, ollama_tag: str, *, only_ollama: bool = False
 ) -> dict[str, bool]:
-    """Link a downloaded .gguf into every installed engine, printing a skip
-    notice for whichever engine isn't installed or fails to link. Shared
-    by `install` and `update` since both need the exact same behavior
-    after a fresh (or refreshed) download.
+    """Link a downloaded .gguf into every installed engine, printing a
+    warning only when an installed engine fails to link (uninstalled
+    engines are skipped silently). Shared by `install` and `update` since
+    both need the exact same behavior after a fresh (or refreshed) download.
 
     `only_ollama` restricts linking to Ollama alone - `omm contribute` only
     needs Ollama to benchmark, so linking into LM Studio/Jan/etc. for every
@@ -1316,7 +1331,6 @@ def _link_model(
         if only_ollama and spec.key != "ollama":
             continue
         if not linker.is_engine_installed(spec.key):
-            console.print(f"[dim]{spec.label} not detected, skipping link.[/dim]")
             continue
         try:
             warning = linker.link_engine(spec.key, dest, repo_id=repo_id, ollama_tag=ollama_tag)
@@ -1891,7 +1905,10 @@ def info(
     table.add_row("Version", _entry_version(entry))
     table.add_row("Size", f"{size_gb:.2f} GB")
     table.add_row("Installed at", entry.get("installed_at", "unknown"))
+    installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
     for spec in linker.ENGINES:
+        if not installed[spec.key]:
+            continue
         if spec.key == "ollama":
             table.add_row("Ollama", f"ollama run {ollama_tag}" if linked.get("ollama") else "not linked")
         else:
@@ -1901,6 +1918,9 @@ def info(
             )
 
     console.print(table)
+    note = _missing_engines_note(installed)
+    if note:
+        console.print(note)
 
 
 def _update_one(filename: str, entry: dict) -> str:
