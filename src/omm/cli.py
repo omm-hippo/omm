@@ -110,8 +110,16 @@ setting_app = typer.Typer(
     rich_markup_mode=None,
 )
 app.add_typer(setting_app)
-console = Console()
-err_console = Console(stderr=True)
+if platform.system() == "Windows":
+    # Legacy cp949/cp1252 consoles cannot encode every model name or symbol.
+    # Preserve their configured encoding but replace unsupported glyphs rather
+    # than crashing a command with UnicodeEncodeError.
+    for _stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(_stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
+console = Console(safe_box=platform.system() == "Windows")
+err_console = Console(stderr=True, safe_box=platform.system() == "Windows")
 
 REPO_URL = "git+https://github.com/omm-hippo/omm.git"
 
@@ -262,10 +270,14 @@ def scan() -> None:
         table.add_row("GPU", info.gpu_name or "Unknown")
     elif info.gpu_name:
         table.add_row("GPU", info.gpu_name)
-        table.add_row("VRAM (total)", f"{info.vram_total_gb:.1f} GB")
-        table.add_row("VRAM (free)", f"{info.vram_free_gb:.1f} GB")
+        if info.vram_total_gb is not None:
+            table.add_row("VRAM (total)", f"{info.vram_total_gb:.1f} GB")
+        if info.vram_free_gb is not None:
+            table.add_row("VRAM (free)", f"{info.vram_free_gb:.1f} GB")
+        if info.vram_total_gb is None:
+            table.add_row("VRAM", "Shared or unavailable from the OS")
     else:
-        table.add_row("GPU", "None detected (no NVIDIA GPU found)")
+        table.add_row("GPU", "None detected")
 
     console.print(table)
 
@@ -352,7 +364,8 @@ def _refresh_data() -> None:
 
 _BARE_REPO_URL = REPO_URL.removeprefix("git+")
 
-SRC_DIR = OMM_HOME / "src"
+_PACKAGE_CHECKOUT = Path(__file__).resolve().parents[2]
+SRC_DIR = _PACKAGE_CHECKOUT if (_PACKAGE_CHECKOUT / ".git").exists() else OMM_HOME / "src"
 
 
 def _update_channel() -> str:
@@ -829,7 +842,10 @@ def _add_escape_to_cancel(question: questionary.Question) -> questionary.Questio
     def _abort(event) -> None:
         event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
 
-    question.application.key_bindings.add(Keys.Escape, eager=True)(_abort)
+    application = getattr(question, "application", None)
+    key_bindings = getattr(application, "key_bindings", None)
+    if key_bindings is not None:
+        key_bindings.add(Keys.Escape, eager=True)(_abort)
     return question
 
 
@@ -865,8 +881,41 @@ def _ask_confirm(message: str, default: bool = False) -> bool:
     import questionary
 
     _require_tty(message)
-    answer = questionary.confirm(message, default=default, auto_enter=True).ask()
+    question = questionary.confirm(message, default=default, auto_enter=True)
+    answer = _add_escape_to_cancel(question).ask()
     return bool(answer)
+
+
+def _ensure_ollama_running(action: str, *, assume_yes: bool = False):
+    """Preflight Ollama without confusing missing, stopped, and stale PATH."""
+    state = benchmark.ollama_install_state()
+    if state in {"running", "running_path_stale"}:
+        if state == "running_path_stale":
+            console.print(
+                "[dim]Ollama API is running; the current terminal PATH has not "
+                "picked up the Ollama command yet.[/dim]"
+            )
+        return None
+    if state == "missing":
+        err_console.print(
+            "[red]Ollama is not installed or its executable cannot be found. "
+            "Install Ollama from https://ollama.com/download, start it once, "
+            f"then retry `omm {action}`.[/red]"
+        )
+        raise typer.Exit(1)
+
+    prompt = f"Ollama is installed but stopped. Start it now for `omm {action}`?"
+    if not assume_yes and (not _stdin_is_tty() or not _ask_confirm(prompt)):
+        err_console.print(
+            f"[red]omm {action} requires the Ollama API at {benchmark.OLLAMA_HOST}.[/red]"
+        )
+        raise typer.Exit(1)
+    started = benchmark.start_ollama_daemon()
+    if started is None:
+        detail = benchmark.last_daemon_start_error() or "unknown startup failure"
+        err_console.print(f"[red]Could not start Ollama: {detail}[/red]")
+        raise typer.Exit(1)
+    return started
 
 
 def _resolve_upload_decision(prompt: str) -> bool:
@@ -1362,7 +1411,7 @@ def _install_impl(
                 result = None
                 eval_error = error
             finally:
-                quality_mod.unload_model(ollama_tag)
+                quality_mod.ensure_model_unloaded(ollama_tag)
             if result is not None:
                 tokens_per_sec = result["speed"]["median_tokens_per_sec"]
                 samples = result["speed"]["samples_tokens_per_sec"]
@@ -1519,8 +1568,23 @@ def _cleanup_incomplete_install(filename: str) -> bool:
     return cleaned
 
 
+def _unlink_with_retry(path: Path, *, attempts: int = 8) -> None:
+    """Bounded Windows handle-release retry; never loops indefinitely."""
+    for attempt in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(min(0.1 * (2**attempt), 1.0))
+
+
 def _remove_one(filename: str, entry: dict) -> None:
     linked = entry.get("linked", {})
+    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    if linked.get("ollama") and benchmark.ollama_daemon_reachable():
+        quality_mod.ensure_model_unloaded(ollama_tag, max_wait_seconds=10)
     for spec in linker.ENGINES:
         if linked.get(spec.key):
             linker.unlink_engine(spec.key, filename, entry)
@@ -1532,8 +1596,8 @@ def _remove_one(filename: str, entry: dict) -> None:
             linker.unlink_owned_link(Path(destination))
 
     dest = MODELS_DIR / filename
-    dest.unlink(missing_ok=True)
-    dest.with_suffix(dest.suffix + ".part").unlink(missing_ok=True)
+    _unlink_with_retry(dest)
+    _unlink_with_retry(dest.with_suffix(dest.suffix + ".part"))
 
     registry.remove_entry(filename)
     console.print(f"[green]Removed {filename}[/green]")
@@ -2254,7 +2318,8 @@ def link_models(
     stale - link_engine() always replaces the existing symlink/manifest, so
     this always re-links rather than trusting the registry's stored
     `linked` flag. With a directory, reuse the central GGUF through
-    non-copying symlinks for another local application."""
+    zero-copy links when possible, with an explicit copy warning when Windows
+    permissions and volume boundaries make that impossible."""
     reg = registry.load_registry()
     if not reg:
         console.print("No models installed via omm yet.")
@@ -2265,13 +2330,23 @@ def link_models(
         directory.mkdir(parents=True, exist_ok=True)
         linked_count = 0
         skipped_missing = 0
+        copy_warnings: list[str] = []
+
+        def report_copy(_source: Path, destination: Path, size_bytes: int) -> None:
+            copy_warnings.append(
+                f"{size_bytes / 1024**3:.1f} GiB copied to {destination}; "
+                "a zero-copy Windows link was unavailable."
+            )
+
         for filename, entry in reg.items():
             source = MODELS_DIR / filename
             if not source.exists():
                 skipped_missing += 1
                 continue
             try:
-                destination = linker.link_custom_directory(source, directory)
+                destination = linker.link_custom_directory(
+                    source, directory, on_copy=report_copy
+                )
             except linker.LinkError as error:
                 err_console.print(f"[yellow]{filename}: custom link skipped: {error}[/yellow]")
                 continue
@@ -2280,6 +2355,8 @@ def link_models(
                 custom_links.append(str(destination))
             registry.upsert_entry(filename, custom_links=custom_links)
             linked_count += 1
+        for warning in copy_warnings:
+            err_console.print(f"[yellow]{warning}[/yellow]")
         console.print(
             f"[green]{linked_count} model(s) linked into {directory}.[/green] "
             f"{skipped_missing} skipped (file missing)."
@@ -2303,9 +2380,16 @@ def link_models(
             if not linker.is_engine_installed(spec.key):
                 continue
             try:
-                linker.link_engine(spec.key, dest, repo_id=entry.get("repo_id"), ollama_tag=ollama_tag)
+                warning = linker.link_engine(
+                    spec.key,
+                    dest,
+                    repo_id=entry.get("repo_id"),
+                    ollama_tag=ollama_tag,
+                )
                 new_linked[spec.key] = True
                 changed = True
+                if warning:
+                    err_console.print(f"[yellow]{warning}[/yellow]")
             except linker.LinkError as e:
                 err_console.print(f"[yellow]{filename}: {spec.label} link skipped: {e}[/yellow]")
 
@@ -2414,18 +2498,7 @@ def benchmark_cmd(
     if "all" in models and models != ["all"]:
         err_console.print("[red]`all` must be the only argument.[/red]")
         raise typer.Exit(1)
-    started_daemon = None
-    if not benchmark.ollama_daemon_reachable():
-        if _stdin_is_tty() and _ask_confirm(
-            "Ollama isn't running. Start it now, benchmark, then stop it afterward?"
-        ):
-            started_daemon = benchmark.start_ollama_daemon()
-            if started_daemon is None:
-                err_console.print("[red]Couldn't start the Ollama daemon.[/red]")
-                raise typer.Exit(1)
-        else:
-            err_console.print("[red]Ollama is not running at http://localhost:11434.[/red]")
-            raise typer.Exit(1)
+    started_daemon = _ensure_ollama_running("benchmark")
     if models == ["all"]:
         models = quality_mod.list_benchmarkable_tags()
         if not models:
@@ -2958,17 +3031,31 @@ class _EscListener:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        try:
-            import os
-
-            os.ttyname(0)
-        except (OSError, AttributeError):
-            # AttributeError: os.ttyname doesn't exist on Windows at all.
+        if not sys.stdin.isatty():
             return
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        target = self._run_windows if platform.system() == "Windows" else self._run_posix
+        self._thread = threading.Thread(target=target, daemon=True)
         self._thread.start()
 
-    def _run(self) -> None:
+    def _run_windows(self) -> None:
+        """Read one Win32 console key at a time without termios/select."""
+        try:
+            import msvcrt
+
+            while not self.stop_event.is_set():
+                if msvcrt.kbhit():
+                    key = msvcrt.getwch()
+                    if key == "\x1b":
+                        self.stop_event.set()
+                        return
+                    # Consume the second code unit from function/arrow keys.
+                    if key in {"\x00", "\xe0"} and msvcrt.kbhit():
+                        msvcrt.getwch()
+                time.sleep(0.05)
+        except Exception:
+            pass  # best-effort; Ctrl+C still works as a fallback
+
+    def _run_posix(self) -> None:
         try:
             import select
 
@@ -3224,6 +3311,10 @@ def contribute(
             "Run `omm setting upload --enable` or `--ask` first.[/red]"
         )
         raise typer.Exit(1)
+    # Engine availability is a preflight, not part of the expensive-work
+    # consent. Do it first so users are never asked to approve bandwidth,
+    # disk, and compute for a run this machine cannot start.
+    started_daemon = _ensure_ollama_running("contribute", assume_yes=yes)
     if policy == "always" and not load_config().get("contribute_always_ack"):
         err_console.print(
             "[yellow]Upload policy is 'always' - every benchmark result from this "
@@ -3231,6 +3322,8 @@ def contribute(
             "asking each time.[/yellow]"
         )
         if not yes and not _ask_confirm("Continue?"):
+            if started_daemon is not None:
+                benchmark.stop_ollama_daemon(started_daemon)
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
         config_mod.update_config(contribute_always_ack=True)
@@ -3241,28 +3334,17 @@ def contribute(
         "runs unattended (no per-model confirmation), and uploads every benchmark "
         f"result to the server per your current upload policy ({policy}).[/yellow]"
     )
+    if platform.system() == "Windows":
+        err_console.print(
+            "[yellow]Windows real-time antivirus scanning can delay first model loads. "
+            "omm uses repeated samples and reports their median; do not disable Defender, "
+            "but avoid other heavy disk activity if you want comparable results.[/yellow]"
+        )
     if not yes and not _ask_confirm("Start contributing compute now?"):
+        if started_daemon is not None:
+            benchmark.stop_ollama_daemon(started_daemon)
         err_console.print("[yellow]Cancelled.[/yellow]")
         raise typer.Exit(0)
-
-    started_daemon = None
-    if not benchmark.ollama_daemon_reachable():
-        if yes or (
-            _stdin_is_tty()
-            and _ask_confirm(
-                "Ollama isn't running. Start it now, run contribute, then stop it afterward?"
-            )
-        ):
-            started_daemon = benchmark.start_ollama_daemon()
-            if started_daemon is None:
-                err_console.print("[red]Couldn't start the Ollama daemon.[/red]")
-                raise typer.Exit(1)
-        else:
-            err_console.print(
-                "[red]omm contribute requires a running Ollama daemon - "
-                "it's the only benchmarkable engine right now.[/red]"
-            )
-            raise typer.Exit(1)
 
     daemon_ref = {"proc": started_daemon}
     try:

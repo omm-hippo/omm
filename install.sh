@@ -4,14 +4,41 @@
 set -eu
 
 REPO_URL="https://github.com/omm-hippo/omm.git"
-SRC_DIR="$HOME/.omm/src"
+OMM_HOME="${OMM_HOME:-$HOME/.omm}"
+SOURCES_DIR="$OMM_HOME/sources"
+case "$OMM_HOME" in
+    /*) ;;
+    *) echo "Refusing non-absolute OMM_HOME: $OMM_HOME" >&2; exit 1 ;;
+esac
+case "$OMM_HOME" in
+    ""|/|"$HOME"|"$HOME"/) echo "Refusing unsafe OMM_HOME: $OMM_HOME" >&2; exit 1 ;;
+esac
+if [ -d "$OMM_HOME" ]; then
+    resolved_omm_home=$(cd -P -- "$OMM_HOME" && pwd -P)
+    current_dir=$(pwd -P)
+    case "$current_dir" in
+        "$resolved_omm_home"|"$resolved_omm_home"/*)
+            echo "Refusing OMM_HOME that contains the current directory: $resolved_omm_home" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*)
+        echo "Windows detected. Run the native PowerShell installer instead:" >&2
+        echo "  irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex" >&2
+        exit 1
+        ;;
+esac
 
 # Trust anchor for the signature check below - must stay identical to
 # src/omm/trust/allowed_signers in the repo (that copy is what `omm
 # update` verifies future commits against once installed; this one is
 # the TOFU root for a brand new machine, since there's no prior install
 # to carry a trusted copy yet).
-ALLOWED_SIGNERS_CONTENT="seong381400@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh12ERbI3Yx6DPiaROPjCyI2GIQXb9Ihbp9J9L4bnpe"
+ALLOWED_SIGNERS_CONTENT="seong381400@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh12ERbI3Yx6DPiaROPjCyI2GIQXb9Ihbp9J9L4bnpe
+ahseongchoi@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5UPWuM/1GxGo5TQ5nEJm9UvXShygIozjbvxB1VT9u6"
 
 # Resolves $1 (a commit-ish) in the git repo at $2 to the commit whose
 # signature actually matters. The repo only accepts changes to main via a
@@ -92,8 +119,15 @@ if ! command -v python3 >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; t
     run_apt update -qq && run_apt install -y --no-install-recommends python3 python3-venv python3-pip || true
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 not found. Install Python 3.10+ first: https://www.python.org/downloads/" >&2
+PY=""
+for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        PY=$(command -v "$candidate")
+        break
+    fi
+done
+if [ -z "$PY" ]; then
+    echo "Python 3.10+ not found: https://www.python.org/downloads/" >&2
     exit 1
 fi
 
@@ -110,98 +144,75 @@ if ! command -v git >/dev/null 2>&1; then
     exit 1
 fi
 
-PY_OK=$(python3 -c 'import sys; print(1 if sys.version_info >= (3, 10) else 0)')
-if [ "$PY_OK" != "1" ]; then
-    echo "omm requires Python 3.10+, found: $(python3 --version)" >&2
-    exit 1
-fi
-
-if ! python3 -c "import ensurepip" >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+if ! "$PY" -c "import ensurepip" >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
     echo "python3-venv not found (needed by pipx), installing it via apt..."
     run_apt update -qq && run_apt install -y --no-install-recommends python3-venv python3-pip || true
 fi
 
-# Run pipx either as a direct command (brew/apt install, or once PATH
-# catches up) or as `python3 -m pipx` (works right after a pip --user
-# install, before PATH is refreshed in this shell).
+# Always run pipx through the exact Python interpreter validated above.
+# A random `pipx` executable on PATH may belong to an older Python.
 run_pipx() {
-    if command -v pipx >/dev/null 2>&1; then
-        pipx "$@"
-    else
-        python3 -m pipx "$@"
-    fi
+    "$PY" -m pipx "$@"
 }
 
-if ! command -v pipx >/dev/null 2>&1 && ! python3 -m pipx --version >/dev/null 2>&1; then
+if ! "$PY" -m pipx --version >/dev/null 2>&1; then
     echo "pipx not found, installing it..."
-    if command -v brew >/dev/null 2>&1; then
-        # Skip brew's implicit `brew update` before installing - it can add
-        # tens of seconds to minutes if the formula index is stale, and
-        # pipx's version rarely matters enough to need the latest index.
-        HOMEBREW_NO_AUTO_UPDATE=1 brew install pipx
-    elif command -v apt-get >/dev/null 2>&1 && run_apt update -qq && run_apt install -y --no-install-recommends pipx; then
-        # Ubuntu 23.04+/Debian 12+ ship a pipx package that correctly pulls
-        # in python3-venv as a dependency - preferred over --user pip when
-        # available since it avoids PEP-668 "externally-managed-environment"
-        # entirely.
-        :
-    elif python3 -m pip install --user --quiet pipx 2>/dev/null; then
+    if "$PY" -m pip install --user --quiet pipx 2>/dev/null; then
         :
     else
         # Homebrew/PEP-668 "externally-managed-environment" Pythons refuse
         # plain --user installs; pipx itself is safe to force here since it
         # only manages its own isolated venvs afterward.
-        python3 -m pip install --user --quiet --break-system-packages pipx
+        "$PY" -m pip install --user --quiet --break-system-packages pipx
     fi
     run_pipx ensurepath
 fi
 
-echo "Cloning omm source to $SRC_DIR ..."
-rm -rf "$SRC_DIR"
-git clone --filter=blob:none --quiet "$REPO_URL" "$SRC_DIR"
+mkdir -p "$SOURCES_DIR"
+STAGING_DIR="$SOURCES_DIR/checkout.$$"
+rm -rf "$STAGING_DIR"
+echo "Cloning omm source to a versioned staging directory ..."
+git clone --filter=blob:none --quiet "$REPO_URL" "$STAGING_DIR"
 
 echo "Verifying commit signature ..."
-head_commit=$(git -C "$SRC_DIR" rev-parse HEAD)
-if ! verify_commit_signature "$(signing_commit "$head_commit" "$SRC_DIR")" "$SRC_DIR"; then
-    rm -rf "$SRC_DIR"
+head_commit=$(git -C "$STAGING_DIR" rev-parse HEAD)
+if ! verify_commit_signature "$(signing_commit "$head_commit" "$STAGING_DIR")" "$STAGING_DIR"; then
+    rm -rf "$STAGING_DIR"
     echo "Signature verification failed - refusing to install untrusted code." >&2
     exit 1
+fi
+SRC_DIR="$SOURCES_DIR/$head_commit"
+if [ -d "$SRC_DIR" ]; then
+    rm -rf "$STAGING_DIR"
+else
+    mv "$STAGING_DIR" "$SRC_DIR"
 fi
 
 # NVIDIA VRAM detection is dead weight on Mac (no NVIDIA GPUs since 2016) -
 # only pull that extra in on other platforms.
-if [ "$(uname -s)" = "Darwin" ]; then
-    INSTALL_SPEC="$SRC_DIR"
-else
+if command -v nvidia-smi >/dev/null 2>&1; then
     INSTALL_SPEC="$SRC_DIR[nvidia]"
+else
+    INSTALL_SPEC="$SRC_DIR"
 fi
 
 echo "Installing omm (editable) from $SRC_DIR ..."
-run_pipx install --force --editable "$INSTALL_SPEC"
+run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"
 
-# `pipx ensurepath` (via the `userpath` package) writes the PATH line to
-# ~/.profile, which login shells source but plain interactive shells don't
-# (e.g. many Docker/container terminals, like Kasm's, only source ~/.bashrc
-# and never touch ~/.profile) - so a brand new shell still can't find omm.
-# Belt-and-suspenders: make sure ~/.bashrc also gets the PATH line.
-BASHRC="$HOME/.bashrc"
-LOCAL_BIN="$HOME/.local/bin"
-if [ -f "$BASHRC" ] && ! grep -qF "$LOCAL_BIN" "$BASHRC" 2>/dev/null; then
-    printf '\nexport PATH="%s:$PATH"\n' "$LOCAL_BIN" >> "$BASHRC"
-fi
+# Marks custom OMM_HOME directories as installer-managed. The uninstaller
+# requires this marker before removing anything from a non-default home.
+printf '%s\n' 'omm installer managed home v1' > "$OMM_HOME/.omm-managed"
 
-# zsh's default Tab completion just lists matches - it needs
-# `menu select` explicitly enabled to let Tab cycle through a grid of
-# candidates and Enter pick one, which is what most people expect from
-# "Tab completion". Add it once if the user has a ~/.zshrc and doesn't
-# already set it.
-ZSHRC="$HOME/.zshrc"
-if [ -f "$ZSHRC" ] && ! grep -qF "completion:*' menu select" "$ZSHRC" 2>/dev/null; then
-    printf "\n# omm: enable interactive Tab-completion menu (zsh)\nzstyle ':completion:*' menu select\n" >> "$ZSHRC"
-fi
+# pipx now points at the verified checkout above. Old versioned checkouts are
+# no longer active; best-effort cleanup keeps reinstalls from accumulating.
+for old_source in "$SOURCES_DIR"/*; do
+    if [ "$old_source" != "$SRC_DIR" ]; then
+        rm -rf "$old_source" 2>/dev/null || true
+    fi
+done
+rm -rf "$OMM_HOME/src" 2>/dev/null || true
 
 echo
 echo "Done. If 'omm' isn't found, open a new shell (pipx just updated your PATH)."
 echo "Try:  omm scan"
 echo "Tip: run 'omm --install-completion' once (then restart your shell) to enable Tab completion for install/uninstall."
-echo "     (zsh users: a menu-select zstyle was added to ~/.zshrc so Tab cycles through matches instead of just listing them.)"

@@ -51,9 +51,11 @@ import os
 import platform
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 from omm.gguf import read_gguf_metadata
 from omm.hashutil import sha256_file
@@ -77,6 +79,9 @@ def lmstudio_home_dir() -> Path:
 
 
 def lmstudio_models_dir() -> Path:
+    override = os.environ.get("OMM_LMSTUDIO_MODELS_DIR")
+    if override:
+        return Path(override).expanduser()
     return lmstudio_home_dir() / "models"
 
 
@@ -169,6 +174,8 @@ def _record_ownership(dst: Path, src: Path | None, kind: str) -> None:
         # this path.  Device/inode make the ownership claim apply only to
         # the exact hard link we made, never a later ordinary file.
     record.update({"device": stat.st_dev, "inode": stat.st_ino})
+    if kind == "copy":
+        record.update({"size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
     _update_link_ownership(
         dst,
         record,
@@ -215,6 +222,22 @@ def _owned_symlink(path: Path) -> bool:
         return False
 
 
+def _owned_copy(path: Path) -> bool:
+    record = _load_link_ownership().get(_link_key(path))
+    if not record or record.get("kind") != "copy" or path.is_symlink() or not path.exists():
+        return False
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    return (
+        record.get("device") == stat.st_dev
+        and record.get("inode") == stat.st_ino
+        and record.get("size") == stat.st_size
+        and record.get("mtime_ns") == stat.st_mtime_ns
+    )
+
+
 def _matches_requested_link(src: Path, dst: Path) -> bool:
     """Whether an old unrecorded destination is provably the requested link."""
     if dst.is_symlink():
@@ -253,6 +276,21 @@ def unlink_owned_link(path: Path) -> bool:
         path.unlink()
         _update_link_ownership(path, None)
         return True
+    if _owned_copy(path):
+        path.unlink()
+        _update_link_ownership(path, None)
+        return True
+    return False
+
+
+def _unlink_owned_link_with_retry(path: Path, attempts: int = 8) -> bool:
+    for attempt in range(attempts):
+        try:
+            return unlink_owned_link(path)
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(min(0.1 * (2**attempt), 1.0))
     return False
 
 
@@ -266,12 +304,17 @@ def autoremove_owned_link(path: Path) -> bool:
     return False
 
 
-def link_file(src: Path, dst: Path) -> None:
-    """Link `dst` to `src` without duplicating bytes. Prefers a symlink;
-    on Windows, where creating a symlink needs Developer Mode or an
-    elevated process, falls back to a hard link (no special privilege
-    needed on NTFS, and - since it's the same file record - still no
-    byte duplication, just limited to same-drive destinations)."""
+CopyReporter = Callable[[Path, Path, int], None]
+
+
+def link_file(src: Path, dst: Path, *, on_copy: CopyReporter | None = None) -> str:
+    """Expose ``src`` at ``dst`` and return symlink/hardlink/copy.
+
+    Windows file junctions are not applicable here (they only target
+    directories). A hard link is attempted first because it needs no
+    Developer Mode; a symlink covers cross-volume destinations when
+    permitted, and an ownership-recorded copy is the last-resort fallback.
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() or dst.is_symlink():
         if not unlink_owned_link(dst):
@@ -284,7 +327,21 @@ def link_file(src: Path, dst: Path) -> None:
                 _record_symlink(dst, src)
             else:
                 _record_hardlink(dst, src)
-            return
+            return "symlink" if dst.is_symlink() else "hardlink"
+
+    errors = []
+    if platform.system() == "Windows":
+        try:
+            dst.hardlink_to(src)
+            try:
+                _record_hardlink(dst, src)
+            except Exception:
+                dst.unlink(missing_ok=True)
+                raise
+            return "hardlink"
+        except OSError as error:
+            errors.append(f"hard link: {error}")
+
     try:
         dst.symlink_to(src)
         try:
@@ -292,26 +349,46 @@ def link_file(src: Path, dst: Path) -> None:
         except Exception:
             dst.unlink(missing_ok=True)
             raise
-        return
-    except OSError as symlink_error:
+        return "symlink"
+    except OSError as error:
+        errors.append(f"symbolic link: {error}")
         if platform.system() != "Windows":
-            raise LinkError(
-                f"Could not create symlink at {dst}: {symlink_error}."
-            ) from symlink_error
+            raise LinkError(f"Could not create symlink at {dst}: {error}.") from error
+
     try:
-        dst.hardlink_to(src)
         try:
-            _record_hardlink(dst, src)
+            source_size = src.stat().st_size
+            free_bytes = shutil.disk_usage(dst.parent).free
+        except OSError as error:
+            raise LinkError(
+                f"Could not verify free space before copying {src} to {dst}: {error}."
+            ) from error
+        reserve = min(max(64 * 1024**2, source_size // 20), 1024**3)
+        required = source_size + reserve
+        if free_bytes < required:
+            raise LinkError(
+                f"A real copy is required at {dst}, but the destination has only "
+                f"{free_bytes / 1024**3:.1f} GiB free; the {source_size / 1024**3:.1f} GiB "
+                f"model needs at least {required / 1024**3:.1f} GiB including safety space."
+            )
+        shutil.copy2(src, dst)
+        try:
+            _record_ownership(dst, src, "copy")
         except Exception:
-            # Never leave a hard link we cannot prove omm owns.
             dst.unlink(missing_ok=True)
             raise
-    except OSError as hardlink_error:
+        if on_copy is not None:
+            on_copy(src, dst, source_size)
+        return "copy"
+    except OSError as error:
+        try:
+            dst.unlink(missing_ok=True)
+        except OSError:
+            pass
+        errors.append(f"copy: {error}")
         raise LinkError(
-            f"Could not create symlink or hard link at {dst}: {hardlink_error}. "
-            "Enable Developer Mode or run as Administrator, or make sure the "
-            "model hub and this destination are on the same drive."
-        ) from hardlink_error
+            f"Could not expose the model at {dst} ({'; '.join(errors)})."
+        ) from error
 
 
 # --- LM Studio -------------------------------------------------------------
@@ -329,17 +406,21 @@ def _lmstudio_publisher_repo(repo_id: str | None, filename: str) -> tuple[str, s
     return "local", Path(filename).stem
 
 
-def link_lmstudio(gguf_path: Path, repo_id: str | None) -> Path:
+def link_lmstudio(
+    gguf_path: Path, repo_id: str | None, *, on_copy: CopyReporter | None = None
+) -> Path:
     publisher, repo = _lmstudio_publisher_repo(repo_id, gguf_path.name)
     dst = lmstudio_models_dir() / publisher / repo / gguf_path.name
-    link_file(gguf_path, dst)
+    link_file(gguf_path, dst, on_copy=on_copy)
     return dst
 
 
-def link_custom_directory(gguf_path: Path, directory: Path) -> Path:
+def link_custom_directory(
+    gguf_path: Path, directory: Path, *, on_copy: CopyReporter | None = None
+) -> Path:
     """Expose a central GGUF in an arbitrary local application's model directory."""
     destination = directory.expanduser() / gguf_path.name
-    link_file(gguf_path, destination)
+    link_file(gguf_path, destination, on_copy=on_copy)
     return destination
 
 
@@ -396,7 +477,13 @@ def _guess_quant(filename: str) -> str:
     return m.group(1).upper() if m else "unknown"
 
 
-def link_ollama(gguf_path: Path, model_name: str, models_dir: Path | None = None) -> bool:
+def link_ollama(
+    gguf_path: Path,
+    model_name: str,
+    models_dir: Path | None = None,
+    *,
+    on_copy: CopyReporter | None = None,
+) -> bool:
     """Link into Ollama (or an Ollama-format engine at a different
     models_dir, e.g. AnythingLLM's bundled instance). Returns True if the
     source GGUF has an embedded chat template (Ollama reads it from the
@@ -431,7 +518,7 @@ def link_ollama(gguf_path: Path, model_name: str, models_dir: Path | None = None
     # A matching content-addressed blob may be owned by Ollama or another
     # manifest. It is already usable; never replace it.
     if not model_blob.exists() and not model_blob.is_symlink():
-        link_file(gguf_path, model_blob)
+        link_file(gguf_path, model_blob, on_copy=on_copy)
 
     # Mirrors the config produced by `ollama create` for a bare GGUF (no
     # Modelfile TEMPLATE override): a single model layer, config mediaType
@@ -508,15 +595,43 @@ def unlink_ollama(model_name: str, models_dir: Path | None = None) -> None:
         return
     if not _owned_manifest(manifest_path):
         return
-    # Blobs are content-addressed and can be shared by a user manifest or
-    # another omm model. Leave their collection to Ollama; only our manifest
-    # is safe to remove here.
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        model_digests = {
+            layer.get("digest", "").replace(":", "-")
+            for layer in manifest.get("layers", [])
+            if layer.get("mediaType") == "application/vnd.ollama.image.model"
+        }
+    except (OSError, json.JSONDecodeError):
+        model_digests = set()
     manifest_path.unlink()
     _update_link_ownership(manifest_path, None)
     try:
         manifest_path.parent.rmdir()
     except OSError:
         pass
+
+    # An omm-owned link/copy can be reclaimed once no remaining manifest
+    # references its content digest. This matters on Windows: deleting the
+    # hub filename alone does not free an NTFS hard link, and a loaded model
+    # may retain a handle until Ollama confirms it has unloaded.
+    manifests_root = models_dir / "manifests"
+    referenced = set()
+    if manifests_root.exists():
+        for other in manifests_root.rglob("*"):
+            if not other.is_file():
+                continue
+            try:
+                data = json.loads(other.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            referenced.update(
+                layer.get("digest", "").replace(":", "-")
+                for layer in data.get("layers", [])
+                if layer.get("mediaType") == "application/vnd.ollama.image.model"
+            )
+    for digest in model_digests - referenced:
+        _unlink_owned_link_with_retry(models_dir / "blobs" / digest)
 
 
 # --- Autoremove (broken symlink cleanup) ------------------------------
@@ -839,39 +954,47 @@ def link_engine(key: str, gguf_path: Path, *, repo_id: str | None, ollama_tag: s
     """Link `gguf_path` into the named engine (must already be confirmed
     installed via is_engine_installed). Returns an optional warning message
     to surface to the user; raises LinkError on failure."""
+    messages: list[str] = []
+
+    def report_copy(_source: Path, destination: Path, size_bytes: int) -> None:
+        messages.append(
+            f"Windows could not create a zero-copy link, so omm copied "
+            f"{size_bytes / 1024**3:.1f} GiB to {destination}. This uses additional disk space."
+        )
+
     if key == "ollama":
-        has_chat_template = link_ollama(gguf_path, ollama_tag)
+        has_chat_template = link_ollama(gguf_path, ollama_tag, on_copy=report_copy)
         if not has_chat_template:
-            return (
+            messages.append(
                 "This GGUF has no embedded chat template - Ollama will fall "
                 "back to raw completion (no chat formatting)."
             )
-        return None
-    if key == "lmstudio":
-        link_lmstudio(gguf_path, repo_id)
-        return None
-    if key == "jan":
+    elif key == "lmstudio":
+        link_lmstudio(gguf_path, repo_id, on_copy=report_copy)
+    elif key == "jan":
         link_jan(gguf_path, ollama_tag)
-        return None
-    if key == "anythingllm":
-        link_ollama(gguf_path, ollama_tag, models_dir=anythingllm_ollama_models_dir())
-        return None
-    if key == "mstystudio":
-        link_custom_directory(gguf_path, mstystudio_models_dir())
-        return None
-    if key == "textgenwebui":
+    elif key == "anythingllm":
+        link_ollama(
+            gguf_path,
+            ollama_tag,
+            models_dir=anythingllm_ollama_models_dir(),
+            on_copy=report_copy,
+        )
+    elif key == "mstystudio":
+        link_custom_directory(gguf_path, mstystudio_models_dir(), on_copy=report_copy)
+    elif key == "textgenwebui":
         models_dir = textgenwebui_models_dir()
         if models_dir is None:
             raise LinkError("text-generation-webui not found.")
-        link_custom_directory(gguf_path, models_dir)
-        return None
-    if key == "koboldcpp":
+        link_custom_directory(gguf_path, models_dir, on_copy=report_copy)
+    elif key == "koboldcpp":
         models_dir = koboldcpp_models_dir()
         if models_dir is None:
             raise LinkError("KoboldCpp not found.")
-        link_custom_directory(gguf_path, models_dir)
-        return None
-    raise ValueError(f"unknown engine: {key}")
+        link_custom_directory(gguf_path, models_dir, on_copy=report_copy)
+    else:
+        raise ValueError(f"unknown engine: {key}")
+    return "\n".join(messages) or None
 
 
 def unlink_engine(key: str, filename: str, entry: dict) -> None:

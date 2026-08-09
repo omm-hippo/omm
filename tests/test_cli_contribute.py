@@ -18,36 +18,37 @@ class _FakeListener:
         self.stop_event.set()
 
 
-def test_declining_consent_cancels_before_any_other_check(isolated_omm_home, monkeypatch):
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+def test_engine_preflight_happens_before_expensive_work_consent(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(
-        cli.benchmark,
-        "ollama_daemon_reachable",
-        lambda: (_ for _ in ()).throw(AssertionError("should not check daemon before consent")),
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no consent prompt"))
     )
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
 
     result = runner.invoke(cli.app, ["contribute"])
 
-    assert result.exit_code == 0, result.stdout
-    assert "Cancelled" in result.stderr
+    assert result.exit_code == 1, result.stdout
+    assert "not installed" in result.stderr
 
 
 def test_requires_ollama_daemon(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
 
     result = runner.invoke(cli.app, ["contribute"])
 
     assert result.exit_code == 1
-    assert "Ollama daemon" in result.stderr
+    assert "not installed" in result.stderr
 
 
 def test_declines_starting_ollama_daemon_when_prompted(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama.exe"))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
 
     def fake_confirm(message, **k):
-        return "Ollama isn't running" not in message
+        return "installed but stopped" not in message
 
     monkeypatch.setattr(cli, "_ask_confirm", fake_confirm)
     monkeypatch.setattr(
@@ -59,13 +60,14 @@ def test_declines_starting_ollama_daemon_when_prompted(isolated_omm_home, monkey
     result = runner.invoke(cli.app, ["contribute"])
 
     assert result.exit_code == 1
-    assert "requires a running Ollama daemon" in result.stderr
+    assert "requires the Ollama API" in result.stderr
 
 
 def test_starts_and_stops_ollama_daemon_when_confirmed(isolated_omm_home, monkeypatch):
     config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
     reachable = {"value": False}
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: reachable["value"])
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama.exe"))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
     monkeypatch.setattr(
@@ -101,6 +103,7 @@ def test_yes_flag_auto_starts_ollama_daemon_without_prompting(isolated_omm_home,
     config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
     reachable = {"value": False}
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: reachable["value"])
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama.exe"))
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not prompt"))
     )

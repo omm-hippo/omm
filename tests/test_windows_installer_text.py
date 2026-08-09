@@ -1,8 +1,38 @@
 from pathlib import Path
 import re
+import subprocess
+import sys
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell 5.1 parser")
+def test_powershell_51_parses_installer_and_uninstaller():
+    command = r"""
+$allErrors = @()
+foreach ($name in @('install.ps1', 'uninstall.ps1')) {
+    $tokens = $null
+    $errors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $PWD $name), [ref]$tokens, [ref]$errors
+    ) | Out-Null
+    $allErrors += $errors
+}
+if ($allErrors.Count -gt 0) {
+    $allErrors | ForEach-Object { Write-Error $_ }
+    exit 1
+}
+"""
+    result = subprocess.run(
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", command],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_windows_readme_sets_tls_before_downloading_installer():
@@ -36,6 +66,25 @@ def test_installer_trust_anchor_matches_allowed_signers_file():
     assert match is not None
     assert match.group(1) == expected
 
+    sh_script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    sh_match = re.search(r'ALLOWED_SIGNERS_CONTENT="(.*?)"', sh_script, re.DOTALL)
+    assert sh_match is not None
+    assert sh_match.group(1) == expected
+
+
+def test_bootstrap_verifiers_keep_the_same_fail_closed_contract():
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    for script in (ps1, sh):
+        assert "2.34" in script
+        assert "verify-commit" in script
+        assert "gpg.format=ssh" in script
+        assert "allowedSignersFile" in script
+        assert "Signature verification failed" in script
+    assert "$parents.Count -eq 3" in ps1
+    assert '[ "$#" -eq 3 ]' in sh
+
 
 def test_installer_treats_missing_pipx_module_as_unavailable():
     script = (ROOT / "install.ps1").read_text(encoding="utf-8")
@@ -62,3 +111,57 @@ def test_installer_checks_git_signature_exit_code_after_non_terminating_stderr()
     assert "$ok = $LASTEXITCODE -eq 0" in verifier
     assert "} finally {" in verifier
     assert "$ErrorActionPreference = $previousErrorActionPreference" in verifier
+
+
+def test_installers_pin_pipx_to_validated_python_and_use_versioned_staging():
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert 'Invoke-Python -m pipx @args' in ps1
+    assert '--python $PythonExecutable $InstallSpec' in ps1
+    assert '--source winget' in ps1
+    assert 'checkout-' in ps1 and '$SourcesDir' in ps1
+
+    assert '"$PY" -m pipx "$@"' in sh
+    assert '--python "$PY" "$INSTALL_SPEC"' in sh
+    assert 'checkout.$$' in sh and '$SOURCES_DIR' in sh
+    assert '.bashrc' not in sh and '.zshrc' not in sh
+
+
+def test_uninstallers_exist_and_preserve_models_without_purge():
+    ps1 = (ROOT / "uninstall.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "uninstall.sh").read_text(encoding="utf-8")
+
+    assert "pipx uninstall omm" in ps1
+    assert "pipx uninstall omm" in sh
+    assert "if ($Purge)" in ps1
+    assert 'if [ "$PURGE" = "1" ]' in sh
+
+
+def test_uninstallers_require_managed_custom_home_and_never_delete_the_container_recursively():
+    ps1 = (ROOT / "uninstall.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "uninstall.sh").read_text(encoding="utf-8")
+
+    for script in (ps1, sh):
+        assert ".omm-managed" in script
+        assert "current directory" in script
+    assert 'rm -rf "$OMM_HOME"' not in sh
+    assert 'rm -rf "$RESOLVED_HOME"' not in sh
+    assert "Remove-Item -LiteralPath $resolvedHome -Recurse" not in ps1
+
+
+def test_uninstallers_do_not_rewrite_user_shell_profiles():
+    ps1 = (ROOT / "uninstall.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "uninstall.sh").read_text(encoding="utf-8")
+
+    assert ".bashrc" not in sh
+    assert ".zshrc" not in sh
+    assert "$PROFILE" not in ps1
+
+
+def test_installers_create_custom_home_ownership_marker():
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert 'Join-Path $OmmHome ".omm-managed"' in ps1
+    assert '"$OMM_HOME/.omm-managed"' in sh

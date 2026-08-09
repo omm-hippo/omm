@@ -1,8 +1,21 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from omm import linker, registry, scan_import
+
+
+def _mock_symlinks(monkeypatch) -> set[Path]:
+    """Model symlink semantics without requiring Windows Developer Mode."""
+    marked: set[Path] = set()
+    native_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path.absolute() in marked or native_is_symlink(path),
+    )
+    return marked
 
 
 def _all_linked(**overrides) -> dict:
@@ -48,7 +61,9 @@ def test_scan_ollama_skips_config_blobs_and_symlinks(tmp_path, monkeypatch):
     symlinked_digest = "b" * 64
     linked_target = tmp_path / "already-in-hub.gguf"
     linked_target.write_bytes(b"x")
-    (blobs_dir / f"sha256-{symlinked_digest}").symlink_to(linked_target)
+    linked_blob = blobs_dir / f"sha256-{symlinked_digest}"
+    linked_blob.write_bytes(b"x")
+    _mock_symlinks(monkeypatch).add(linked_blob.absolute())
 
     _write_manifest(manifests_root, "library", "llama3", "latest", model_digest)
     _write_manifest(manifests_root, "library", "already-linked", "latest", symlinked_digest)
@@ -72,7 +87,9 @@ def test_scan_lmstudio_skips_symlinks(tmp_path, monkeypatch):
 
     link_dir = models_dir / "org2" / "repo2"
     link_dir.mkdir(parents=True)
-    (link_dir / "linked.gguf").symlink_to(tmp_path / "elsewhere.gguf")
+    linked_file = link_dir / "linked.gguf"
+    linked_file.write_bytes(b"linked")
+    _mock_symlinks(monkeypatch).add(linked_file.absolute())
 
     monkeypatch.setattr(scan_import.linker, "lmstudio_models_dir", lambda: models_dir)
 
@@ -103,6 +120,7 @@ def test_scan_anythingllm_reuses_ollama_format_at_its_own_dir(tmp_path, monkeypa
 
 
 def test_scan_mstystudio_and_textgenwebui_and_koboldcpp_find_flat_files(tmp_path, monkeypatch):
+    mocked_links = _mock_symlinks(monkeypatch)
     for engine, scan_fn, attr in (
         ("mstystudio", scan_import.scan_mstystudio, "mstystudio_models_dir"),
         ("textgenwebui", scan_import.scan_textgenwebui, "textgenwebui_models_dir"),
@@ -112,7 +130,9 @@ def test_scan_mstystudio_and_textgenwebui_and_koboldcpp_find_flat_files(tmp_path
         models_dir.mkdir()
         real_file = models_dir / "model.gguf"
         real_file.write_bytes(b"gguf-bytes")
-        (models_dir / "linked.gguf").symlink_to(tmp_path / "elsewhere.gguf")
+        linked_file = models_dir / "linked.gguf"
+        linked_file.write_bytes(b"linked")
+        mocked_links.add(linked_file.absolute())
 
         monkeypatch.setattr(scan_import.linker, attr, lambda d=models_dir: d)
 
@@ -155,7 +175,9 @@ def test_scan_jan_resolves_absolute_and_relative_model_paths(tmp_path, monkeypat
     already_linked_target = tmp_path / "hub-model.gguf"
     already_linked_target.write_bytes(b"hub-bytes")
     (models_dir / "already-linked").mkdir(parents=True)
-    (models_dir / "already-linked" / "model.gguf").symlink_to(already_linked_target)
+    already_linked = models_dir / "already-linked" / "model.gguf"
+    already_linked.write_bytes(b"hub-bytes")
+    _mock_symlinks(monkeypatch).add(already_linked.absolute())
     (models_dir / "already-linked" / "model.yml").write_text(
         f'model_path: "{models_dir / "already-linked" / "model.gguf"}"\nname: "already-linked"\n'
     )

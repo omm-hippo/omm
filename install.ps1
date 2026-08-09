@@ -5,7 +5,18 @@
 $ErrorActionPreference = "Stop"
 
 $RepoUrl = "https://github.com/omm-hippo/omm.git"
-$SrcDir = Join-Path $env:USERPROFILE ".omm\src"
+$OmmHome = if ($env:OMM_HOME) { $env:OMM_HOME } else { Join-Path $env:USERPROFILE ".omm" }
+$OmmHome = [IO.Path]::GetFullPath($OmmHome).TrimEnd('\')
+$profileHome = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
+if (-not $OmmHome -or $OmmHome -eq [IO.Path]::GetPathRoot($OmmHome).TrimEnd('\') -or $OmmHome -eq $profileHome) {
+    throw "Refusing unsafe OMM_HOME: $OmmHome"
+}
+$currentDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\')
+$homePrefix = $OmmHome + [IO.Path]::DirectorySeparatorChar
+if ($currentDirectory -eq $OmmHome -or $currentDirectory.StartsWith($homePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing OMM_HOME that contains the current directory: $OmmHome"
+}
+$SourcesDir = Join-Path $OmmHome "sources"
 
 # Trust anchor for the signature check below - must stay identical to
 # src/omm/trust/allowed_signers in the repo (that copy is what `omm
@@ -194,15 +205,10 @@ if (-not (Test-CommandExists "git")) {
 # --- pipx --------------------------------------------------------------
 
 function Invoke-Pipx {
-    if (Test-CommandExists "pipx") {
-        & pipx @args
-    } else {
-        Invoke-Python -m pipx @args
-    }
+    Invoke-Python -m pipx @args
 }
 
 function Test-PipxAvailable {
-    if (Test-CommandExists "pipx") { return $true }
     try {
         Invoke-Python -m pipx --version *> $null
         return $LASTEXITCODE -eq 0
@@ -219,35 +225,60 @@ if (-not (Test-PipxAvailable)) {
     Invoke-Pipx ensurepath
     Update-SessionPath
 }
+Invoke-Pipx ensurepath
+$PythonExecutable = (Invoke-Python -c "import sys; print(sys.executable)").Trim()
 
-Write-Host "Cloning omm source to $SrcDir ..."
-if (Test-Path $SrcDir) {
-    Remove-Item -Recurse -Force $SrcDir
-}
-git clone --filter=blob:none --quiet $RepoUrl $SrcDir
+New-Item -ItemType Directory -Force -Path $SourcesDir | Out-Null
+$StagingDir = Join-Path $SourcesDir ("checkout-" + $PID + "-" + [guid]::NewGuid().ToString("N"))
+Write-Host "Cloning omm source to a versioned staging directory ..."
+git clone --filter=blob:none --quiet $RepoUrl $StagingDir
 if ($LASTEXITCODE -ne 0) {
     Write-Error "git clone failed."
     exit 1
 }
 
 Write-Host "Verifying commit signature ..."
-$headCommit = (git -C $SrcDir rev-parse HEAD).Trim()
-$signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $SrcDir
-if (-not (Test-CommitSignature -Commit $signedCommit -RepoDir $SrcDir)) {
-    Remove-Item -Recurse -Force $SrcDir
+$headCommit = (git -C $StagingDir rev-parse HEAD).Trim()
+$signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $StagingDir
+if (-not (Test-CommitSignature -Commit $signedCommit -RepoDir $StagingDir)) {
+    Remove-Item -Recurse -Force $StagingDir
     Write-Error "Signature verification failed - refusing to install untrusted code."
     exit 1
 }
+$SrcDir = Join-Path $SourcesDir $headCommit
+if (Test-Path $SrcDir) {
+    Remove-Item -Recurse -Force $StagingDir
+} else {
+    Move-Item -LiteralPath $StagingDir -Destination $SrcDir
+}
 
-# NVIDIA GPUs are common on Windows machines (unlike Mac, which hasn't
-# shipped one since 2016), so always pull in the VRAM-detection extra here.
-$InstallSpec = "$SrcDir[nvidia]"
+# Install NVML only when the machine actually exposes an NVIDIA driver.
+$InstallSpec = if (Test-CommandExists "nvidia-smi") { "$SrcDir[nvidia]" } else { $SrcDir }
 
 Write-Host "Installing omm (editable) from $SrcDir ..."
-Invoke-Pipx install --force --editable $InstallSpec
+Invoke-Pipx install --force --editable --python $PythonExecutable $InstallSpec
 if ($LASTEXITCODE -ne 0) {
     Write-Error "pipx install failed."
     exit 1
+}
+
+# Marks custom OMM_HOME directories as installer-managed. The uninstaller
+# requires this marker before removing anything from a non-default home.
+Set-Content -LiteralPath (Join-Path $OmmHome ".omm-managed") -Value "omm installer managed home v1" -Encoding Ascii
+
+# pipx now points at the verified checkout above. Best-effort cleanup of old
+# versioned checkouts is safe; a live old omm process may keep one locked on
+# Windows, in which case it remains available and a future reinstall retries.
+Get-ChildItem -LiteralPath $SourcesDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    if ([IO.Path]::GetFullPath($_.FullName) -ne [IO.Path]::GetFullPath($SrcDir)) {
+        try { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+        catch { Write-Warning "Could not remove old source checkout $($_.FullName): $_" }
+    }
+}
+$LegacySrcDir = Join-Path $OmmHome "src"
+if (Test-Path -LiteralPath $LegacySrcDir) {
+    try { Remove-Item -LiteralPath $LegacySrcDir -Recurse -Force }
+    catch { Write-Warning "Could not remove legacy source checkout ${LegacySrcDir}: $_" }
 }
 
 Write-Host ""

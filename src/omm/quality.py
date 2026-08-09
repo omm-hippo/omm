@@ -650,6 +650,11 @@ def ensure_model_unloaded(
         loaded = _model_is_loaded(tag)
         if loaded is False:
             return True
+        if loaded is None:
+            # The daemon/API itself is unavailable. Waiting cannot confirm a
+            # handle release and only stalls cleanup; the caller's bounded
+            # file-unlink retries will still surface a real Windows lock.
+            return False
         if elapsed >= max_wait_seconds:
             return False
         time.sleep(poll_interval_seconds)

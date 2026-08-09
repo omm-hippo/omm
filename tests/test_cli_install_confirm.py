@@ -27,7 +27,9 @@ def _stub_successful_install(monkeypatch, isolated_omm_home):
     monkeypatch.setattr(linker, "is_mstystudio_installed", lambda: False)
     monkeypatch.setattr(linker, "is_textgenwebui_installed", lambda: False)
     monkeypatch.setattr(linker, "is_koboldcpp_installed", lambda: False)
-    monkeypatch.setattr(linker, "link_ollama", lambda dest, tag, models_dir=None: True)
+    monkeypatch.setattr(
+        linker, "link_ollama", lambda dest, tag, models_dir=None, **kwargs: True
+    )
     monkeypatch.setattr(linker, "sanitize_ollama_tag", lambda filename: "tinyllama")
     return filename
 

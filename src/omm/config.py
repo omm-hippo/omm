@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from omm.atomic import atomic_write_text, backup_corrupt_file, locked
 
-OMM_HOME = Path.home() / ".omm"
+OMM_HOME = Path(os.environ.get("OMM_HOME", Path.home() / ".omm")).expanduser()
 MODELS_DIR = OMM_HOME / "models"
 CONFIG_PATH = OMM_HOME / "config.json"
 REGISTRY_PATH = OMM_HOME / "models.json"

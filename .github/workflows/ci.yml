@@ -10,25 +10,71 @@ permissions:
 
 jobs:
   windows-install-script:
-    name: Windows PowerShell installer syntax
+    name: Windows PowerShell script syntax
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Parse install.ps1 with Windows PowerShell 5.1
+      - name: Parse installer and uninstaller with Windows PowerShell 5.1
         shell: pwsh
         run: |
-          powershell.exe -NoLogo -NoProfile -NonInteractive -Command '
-            $tokens = $null
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile(
-              (Join-Path $PWD "install.ps1"), [ref]$tokens, [ref]$errors
-            ) | Out-Null
-            if ($errors.Count -gt 0) {
-              $errors | ForEach-Object { Write-Error $_ }
-              exit 1
+          foreach ($name in @("install.ps1", "uninstall.ps1")) {
+            powershell.exe -NoLogo -NoProfile -NonInteractive -Command "
+              `$tokens = `$null
+              `$errors = `$null
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                (Join-Path '$PWD' '$name'), [ref]`$tokens, [ref]`$errors
+              ) | Out-Null
+              if (`$errors.Count -gt 0) {
+                `$errors | ForEach-Object { Write-Error `$_ }
+                exit 1
+              }
+            "
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
             }
-          '
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Smoke-test safe PowerShell purge
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "omm-uninstall-smoke"
+          $managed = Join-Path $root "custom-home"
+          $stub = Join-Path $root "bin"
+          New-Item -ItemType Directory -Force -Path (Join-Path $managed "models"), $stub | Out-Null
+          Set-Content -LiteralPath (Join-Path $managed ".omm-managed") -Value "omm installer managed home v1" -Encoding Ascii
+          Set-Content -LiteralPath (Join-Path $managed "config.json") -Value "{}" -Encoding Ascii
+          Set-Content -LiteralPath (Join-Path $managed "keep-me.txt") -Value "user-owned" -Encoding Ascii
+          Set-Content -LiteralPath (Join-Path $stub "python.cmd") -Value "@exit /b 1" -Encoding Ascii
+          $env:PATH = "$stub;$env:PATH"
+          $env:OMM_HOME = $managed
+          & .\uninstall.ps1 -Purge
+          if (Test-Path -LiteralPath (Join-Path $managed "models")) { throw "models survived purge" }
+          if (Test-Path -LiteralPath (Join-Path $managed "config.json")) { throw "config survived purge" }
+          if (-not (Test-Path -LiteralPath (Join-Path $managed "keep-me.txt"))) { throw "user file was removed" }
+
+  posix-install-scripts:
+    name: POSIX installer syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Parse installer and uninstaller
+        run: sh -n install.sh uninstall.sh
+      - name: Smoke-test safe POSIX purge
+        run: |
+          root=$(mktemp -d)
+          managed="$root/custom-home"
+          stub="$root/bin"
+          mkdir -p "$managed/models" "$stub"
+          printf '%s\n' 'omm installer managed home v1' > "$managed/.omm-managed"
+          printf '%s\n' '{}' > "$managed/config.json"
+          printf '%s\n' 'user-owned' > "$managed/keep-me.txt"
+          printf '%s\n' '#!/bin/sh' 'exit 1' > "$stub/python3"
+          printf '%s\n' '#!/bin/sh' 'exit 1' > "$stub/python"
+          printf '%s\n' '#!/bin/sh' 'exit 1' > "$stub/pipx"
+          chmod +x "$stub/python3" "$stub/python" "$stub/pipx"
+          PATH="$stub:$PATH" OMM_HOME="$managed" sh ./uninstall.sh --purge
+          test ! -e "$managed/models"
+          test ! -e "$managed/config.json"
+          test -e "$managed/keep-me.txt"
 
   python:
     name: Python 3.11 on ${{ matrix.os }}
