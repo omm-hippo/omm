@@ -23,6 +23,65 @@ def _hardware() -> HardwareInfo:
     )
 
 
+def test_isolated_evaluator_enforces_absolute_deadline_and_terminates_worker(monkeypatch):
+    class FakeConnection:
+        def poll(self, timeout):
+            return False
+
+        def close(self):
+            pass
+
+    class FakeProcess:
+        exitcode = None
+
+        def __init__(self):
+            self.alive = True
+            self.terminated = False
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return self.alive
+
+        def terminate(self):
+            self.terminated = True
+            self.alive = False
+
+        def join(self, timeout=None):
+            pass
+
+        def kill(self):
+            self.alive = False
+
+    process = FakeProcess()
+
+    class FakeContext:
+        def Pipe(self, duplex=False):
+            assert duplex is False
+            return FakeConnection(), FakeConnection()
+
+        def Process(self, **kwargs):
+            return process
+
+    times = iter([0.0, 31.0, 601.0])
+    monkeypatch.setattr(quality.multiprocessing, "get_context", lambda method: FakeContext())
+    monkeypatch.setattr(quality.time, "monotonic", lambda: next(times))
+    progress = []
+
+    with pytest.raises(quality.QualityEvaluationError, match="session deadline") as error:
+        quality.evaluate_model_isolated(
+            "model",
+            {},
+            timeout_seconds=600,
+            progress_callback=lambda elapsed, deadline: progress.append((elapsed, deadline)),
+        )
+
+    assert error.value.failure_reason == quality.FAILURE_REASON_GENERATION_TIMEOUT
+    assert progress == [(31.0, 600)]
+    assert process.terminated is True
+
+
 def test_bundled_quality_pack_is_versioned_bounded_and_attributed():
     pack, digest = quality.load_pack()
 
