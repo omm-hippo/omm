@@ -25,8 +25,17 @@ def _stub_common(monkeypatch, ollama=True, lmstudio=False):
     monkeypatch.setattr(cli.linker, "is_mstystudio_installed", lambda: False)
     monkeypatch.setattr(cli.linker, "is_textgenwebui_installed", lambda: False)
     monkeypatch.setattr(cli.linker, "is_koboldcpp_installed", lambda: False)
-    monkeypatch.setattr(cli.linker, "link_ollama", lambda dest, tag, models_dir=None: ollama)
+    monkeypatch.setattr(
+        cli.linker, "link_ollama", lambda dest, tag, models_dir=None, **kwargs: ollama
+    )
     monkeypatch.setattr(cli.linker, "sanitize_ollama_tag", lambda filename: "tinyllama")
+    monkeypatch.setattr(
+        cli.quality_mod,
+        "_model_metadata",
+        lambda tag: (_ for _ in ()).throw(cli.quality_mod.QualityEvaluationError("not available")),
+    )
+    monkeypatch.setattr(cli.quality_mod, "unload_model", lambda tag: True)
+    monkeypatch.setattr(cli.quality_mod, "runtime_snapshot", lambda *a, **k: None)
 
 
 def test_skip_unfit_returns_outcome_without_prompting_or_downloading(isolated_omm_home, monkeypatch):
@@ -511,7 +520,9 @@ def test_use_quality_eval_reports_median_speed_and_quality_summary(isolated_omm_
     }
     monkeypatch.setattr(cli.quality_mod, "evaluate_model", lambda tag, pack, speed_runs=3: fake_result)
     unloaded = []
-    monkeypatch.setattr(cli.quality_mod, "unload_model", lambda tag: unloaded.append(tag) or True)
+    monkeypatch.setattr(
+        cli.quality_mod, "ensure_model_unloaded", lambda tag: unloaded.append(tag) or True
+    )
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -542,7 +553,7 @@ def test_use_quality_eval_failure_reports_no_result(isolated_omm_home, monkeypat
         raise cli.quality_mod.QualityEvaluationError("ollama returned nothing")
 
     monkeypatch.setattr(cli.quality_mod, "evaluate_model", raise_eval)
-    monkeypatch.setattr(cli.quality_mod, "unload_model", lambda tag: True)
+    monkeypatch.setattr(cli.quality_mod, "ensure_model_unloaded", lambda tag: True)
     monkeypatch.setattr(
         cli.telemetry, "send_event", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no send"))
     )

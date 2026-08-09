@@ -1,6 +1,7 @@
 import json
 import struct
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -55,7 +56,9 @@ def test_link_file_raises_on_non_windows_without_trying_hardlink(tmp_path, monke
         linker.link_file(src, dst)
 
 
-def test_link_file_raises_when_both_symlink_and_hardlink_fail_on_windows(tmp_path, monkeypatch):
+def test_link_file_copies_when_symlink_and_hardlink_fail_on_windows(
+    isolated_omm_home, tmp_path, monkeypatch
+):
     src = tmp_path / "model.gguf"
     src.write_bytes(b"weights")
     dst = tmp_path / "dst" / "model.gguf"
@@ -66,8 +69,73 @@ def test_link_file_raises_when_both_symlink_and_hardlink_fail_on_windows(tmp_pat
         Path, "hardlink_to", lambda self, target: (_ for _ in ()).throw(OSError("cross-drive"))
     )
 
-    with pytest.raises(linker.LinkError):
+    assert linker.link_file(src, dst) == "copy"
+    assert dst.read_bytes() == b"weights"
+    assert linker.unlink_owned_link(dst)
+    assert not dst.exists()
+
+
+def test_windows_copy_fallback_reports_extra_disk_usage(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    src = tmp_path / "model.gguf"
+    src.write_bytes(b"weights")
+    dst = tmp_path / "other-volume" / "model.gguf"
+    reports = []
+
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        Path, "hardlink_to", lambda self, target: (_ for _ in ()).throw(OSError("cross-drive"))
+    )
+    monkeypatch.setattr(
+        Path, "symlink_to", lambda self, target: (_ for _ in ()).throw(OSError("no privilege"))
+    )
+
+    assert linker.link_file(src, dst, on_copy=lambda *args: reports.append(args)) == "copy"
+    assert reports == [(src, dst, len(b"weights"))]
+
+
+def test_windows_copy_fallback_refuses_insufficient_space_without_partial_file(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    src = tmp_path / "model.gguf"
+    src.write_bytes(b"weights")
+    dst = tmp_path / "other-volume" / "model.gguf"
+
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        Path, "hardlink_to", lambda self, target: (_ for _ in ()).throw(OSError("cross-drive"))
+    )
+    monkeypatch.setattr(
+        Path, "symlink_to", lambda self, target: (_ for _ in ()).throw(OSError("no privilege"))
+    )
+    monkeypatch.setattr(linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=1))
+
+    with pytest.raises(linker.LinkError, match="destination has only"):
         linker.link_file(src, dst)
+    assert not dst.exists()
+
+
+def test_link_engine_surfaces_windows_copy_warning(isolated_omm_home, tmp_path, monkeypatch):
+    src = tmp_path / "model.gguf"
+    src.write_bytes(b"weights")
+    models_dir = tmp_path / "MstyStudio" / "models"
+
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker, "mstystudio_models_dir", lambda: models_dir)
+    monkeypatch.setattr(
+        Path, "hardlink_to", lambda self, target: (_ for _ in ()).throw(OSError("cross-drive"))
+    )
+    monkeypatch.setattr(
+        Path, "symlink_to", lambda self, target: (_ for _ in ()).throw(OSError("no privilege"))
+    )
+
+    warning = linker.link_engine("mstystudio", src, repo_id=None, ollama_tag="model")
+
+    assert warning is not None
+    assert "copied" in warning
+    assert "additional disk space" in warning
+    assert (models_dir / src.name).read_bytes() == b"weights"
 
 
 def test_link_file_replaces_existing_destination(isolated_omm_home, tmp_path):
@@ -124,10 +192,26 @@ def test_windows_hardlink_lmstudio_and_ollama_uninstall_lifecycle(isolated_omm_h
     models_dir = tmp_path / "ollama"
     monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
     linker.link_ollama(source, "model", models_dir=models_dir)
-    blob = next((models_dir / "blobs").iterdir())
+    blob = models_dir / "blobs" / f"sha256-{linker.sha256_file(source)}"
     assert not blob.is_symlink()
     linker.unlink_ollama("model", models_dir=models_dir)
-    assert blob.exists()  # content-addressed blobs can be shared; Ollama GC owns them
+    assert not blob.exists()  # no remaining manifest references this omm-owned blob
+
+
+def test_windows_owned_blob_delete_retries_transient_file_lock(monkeypatch, tmp_path):
+    calls = []
+
+    def flaky_unlink(path):
+        calls.append(path)
+        if len(calls) < 3:
+            raise PermissionError("mapped file still open")
+        return True
+
+    monkeypatch.setattr(linker, "unlink_owned_link", flaky_unlink)
+    monkeypatch.setattr(linker.time, "sleep", lambda seconds: None)
+
+    assert linker._unlink_owned_link_with_retry(tmp_path / "blob") is True
+    assert len(calls) == 3
 
 
 def test_autoremove_preserves_registered_orphan_hardlink(isolated_omm_home, tmp_path, monkeypatch):

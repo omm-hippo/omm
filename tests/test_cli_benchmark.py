@@ -275,17 +275,19 @@ def test_benchmark_numeric_arg_without_ollama_tag(isolated_omm_home, monkeypatch
     assert "no Ollama tag" in result.stderr
 
 
-def test_benchmark_stops_when_ollama_is_not_running(isolated_omm_home, monkeypatch):
+def test_benchmark_reports_missing_ollama_as_missing(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
 
     result = runner.invoke(cli.app, ["benchmark", "small:latest"])
 
     assert result.exit_code == 1
-    assert "Ollama is not running" in result.stderr
+    assert "not installed" in result.stderr
 
 
 def test_benchmark_declines_starting_daemon_when_prompted(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama.exe"))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
     monkeypatch.setattr(
@@ -297,7 +299,7 @@ def test_benchmark_declines_starting_daemon_when_prompted(isolated_omm_home, mon
     result = runner.invoke(cli.app, ["benchmark", "small:latest"])
 
     assert result.exit_code == 1
-    assert "Ollama is not running" in result.stderr
+    assert "requires the Ollama API" in result.stderr
 
 
 def _mixed_report():
@@ -412,6 +414,7 @@ def test_benchmark_does_not_ask_to_upload_when_declined_for_mixed_outcomes(isola
 def test_benchmark_starts_and_stops_daemon_when_confirmed(isolated_omm_home, monkeypatch):
     reachable = {"value": False}
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: reachable["value"])
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama.exe"))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")

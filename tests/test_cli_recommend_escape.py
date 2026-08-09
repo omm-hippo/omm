@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 import questionary
 from prompt_toolkit.input import DummyInput
@@ -32,3 +33,14 @@ def test_escape_binding_triggers_keyboard_interrupt_style_exit():
     fake_event.app.exit.assert_called_once_with(
         exception=KeyboardInterrupt, style="class:aborting"
     )
+
+
+def test_contribute_escape_listener_uses_win32_console_keys(monkeypatch):
+    listener = __import__("omm.cli", fromlist=["_EscListener"])._EscListener()
+    keys = iter([True])
+    fake_msvcrt = SimpleNamespace(kbhit=lambda: next(keys), getwch=lambda: "\x1b")
+    monkeypatch.setitem(__import__("sys").modules, "msvcrt", fake_msvcrt)
+
+    listener._run_windows()
+
+    assert listener.stop_event.is_set()

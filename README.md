@@ -19,9 +19,54 @@ This bootstraps `python3`, `git`, and `pipx` if missing (Debian/Ubuntu via `apt`
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
 ```
 
-This bootstraps Python and git via [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) if missing (built into Windows 10 2004+ and Windows 11 — on older Windows, install [Python 3.10+](https://www.python.org/downloads/) and [git](https://git-scm.com/downloads) manually first), then installs `omm` the same way as above. Open a new PowerShell window afterward so your `PATH` picks up `omm`. Linking models into Ollama/LM Studio needs either [Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development) enabled or an elevated (Administrator) shell to create symlinks; without either, `omm` falls back to a hard link automatically as long as the model hub and the target app's folder are on the same drive.
+This bootstraps Python and git via [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) if missing (built into Windows 10 2004+ and Windows 11 — on older Windows, install [Python 3.10+](https://www.python.org/downloads/) and [git](https://git-scm.com/downloads) manually first), then installs `omm` through that exact validated Python interpreter. Open a new PowerShell window afterward so your `PATH` picks up `omm`. On Windows, model exposure tries an unprivileged same-volume hard link first, then a symbolic link (Developer Mode or Administrator), then an owned copy. Before copying, omm checks destination free space and reports that the model now consumes additional bytes. File junctions do not apply because model targets are files, not directories.
 
-Requirements: Python 3.10+. GPU detection extras (`omm[nvidia]`) are installed automatically on Windows and Linux.
+Requirements: Python 3.10+. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
+
+### Supported platforms
+
+`omm` is tested in CI on Windows, macOS, and Linux with Python 3.10+. Windows 10 22H2/11 is the supported Windows baseline because that matches Ollama's native Windows requirements. Hardware scan, install, linking, benchmark, update, and contribution flows are cross-platform; Ollama remains the only benchmark engine.
+
+Both installers clone to a versioned staging directory, verify the signed commit against a bootstrap trust anchor, and only then switch pipx to it. Do not replace this with an unverified `git clone` plus `pipx install` if commit authenticity matters.
+
+### Storage location
+
+The model hub and omm state default to `~/.omm`. Set `OMM_HOME` before installation and on later runs to put them on another volume:
+
+```powershell
+[Environment]::SetEnvironmentVariable("OMM_HOME", "D:\omm", "User")
+$env:OMM_HOME = "D:\omm"
+```
+
+```sh
+export OMM_HOME=/mnt/models/omm
+```
+
+Ollama's own model location follows `OLLAMA_MODELS`. LM Studio follows its home pointer; set `OMM_LMSTUDIO_MODELS_DIR` when LM Studio uses a custom directory that omm cannot discover automatically.
+
+### Completion and uninstall
+
+Install native shell completion once, then restart the shell:
+
+```powershell
+omm --install-completion powershell
+```
+
+```sh
+omm --install-completion bash  # or zsh/fish
+```
+
+To remove the CLI while preserving downloaded models and settings:
+
+```powershell
+irm https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.ps1 | iex
+```
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.sh | sh
+```
+
+Run a downloaded script with `-Purge` (PowerShell) or `--purge` (sh) to remove the model hub and settings too. Purge removes only known omm-owned paths and leaves unrelated files in a custom `OMM_HOME` untouched. Installers mark custom homes so uninstallers can refuse ambiguous or unsafe locations; shell profiles are never rewritten during uninstall.
 
 ## Usage
 
@@ -40,7 +85,7 @@ omm info <name> [--json]  # Show a model's name, version, size, and linked-progr
 omm upgrade <name>   # Refresh a model against its source if it has changed since install
 omm upgrade [--yes]  # Check every installed model for updates
 omm link             # Re-verify and repair every installed model's LM Studio/Ollama links
-omm link <directory> # Reuse central GGUF files in another app without copying them
+omm link <directory> # Reuse central GGUF files; Windows warns if a real copy is required
 omm autoremove       # Clean up broken symlinks and orphaned partial downloads
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
 omm update           # Git-pull the latest source into ~/.omm/src, then refresh rules/model data
@@ -76,6 +121,16 @@ CPU model, architecture, and core counts so speed predictions can distinguish
 otherwise identical Linux `x86_64` machines.
 Results are uploaded only after explicit opt-in. The pack is intentionally
 small and is not a leaderboard.
+
+On Windows, Ollama is detected by its HTTP API first, so a freshly installed
+tray app works even before the current terminal receives the new `PATH`.
+When the daemon is stopped, omm also checks Ollama's documented
+`%LOCALAPPDATA%\Programs\Ollama` location. It only stops daemon processes it
+started itself. Before deleting a contribution model, omm requests an Ollama
+unload, waits for `/api/ps` to confirm handle release, and uses bounded retries
+for Windows file locks. Real-time antivirus can still delay a first load; the
+benchmark uses repeated samples and reports their median. Do not disable your
+antivirus for omm.
 
 ## Self-hosted benchmark data
 

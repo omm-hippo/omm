@@ -9,7 +9,6 @@ from typing import Any
 
 from omm.atomic import atomic_write_text, backup_corrupt_file, locked
 
-
 def _resolve_omm_home() -> Path:
     """~/.omm by default; OMM_HOME overrides it for machines where the home
     directory's filesystem lacks room for GGUF models (e.g. contribute)."""

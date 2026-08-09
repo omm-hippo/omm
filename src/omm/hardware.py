@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
 import platform
+import re
 import subprocess
 from dataclasses import dataclass
 
@@ -147,6 +150,162 @@ def _linux_cpu_model() -> str | None:
     return None
 
 
+def _windows_cim(class_name: str, properties: list[str]) -> list[dict]:
+    """Read a small CIM projection without depending on pywin32/wmi."""
+    powershell = os.path.join(
+        os.environ.get("SystemRoot", r"C:\Windows"),
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+    )
+    projection = ",".join(properties)
+    command = (
+        f"Get-CimInstance {class_name} | Select-Object {projection} | "
+        "ConvertTo-Json -Compress"
+    )
+    try:
+        result = subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=True,
+        )
+        data = json.loads(result.stdout.lstrip("\ufeff"))
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return []
+    if isinstance(data, dict):
+        return [data]
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def _windows_cpu_model() -> str | None:
+    for item in _windows_cim("Win32_Processor", ["Name"]):
+        name = str(item.get("Name") or "").strip()
+        if name:
+            return " ".join(name.split())
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+        ) as key:
+            name = str(winreg.QueryValueEx(key, "ProcessorNameString")[0]).strip()
+            if name:
+                return " ".join(name.split())
+    except (ImportError, OSError):
+        pass
+    return None
+
+
+def _windows_registry_gpus() -> list[dict]:
+    """Registry fallback for locked-down machines where CIM is denied."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    base_path = r"SYSTEM\CurrentControlSet\Control\Video"
+    found = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base_path) as base:
+            guid_count = winreg.QueryInfoKey(base)[0]
+            for guid_index in range(guid_count):
+                guid = winreg.EnumKey(base, guid_index)
+                try:
+                    with winreg.OpenKey(base, guid) as adapter:
+                        child_count = winreg.QueryInfoKey(adapter)[0]
+                        children = [winreg.EnumKey(adapter, index) for index in range(child_count)]
+                except OSError:
+                    continue
+                for child in children:
+                    try:
+                        with winreg.OpenKey(base, f"{guid}\\{child}") as key:
+                            values = {}
+                            for field in (
+                                "DriverDesc",
+                                "HardwareInformation.AdapterString",
+                                "HardwareInformation.qwMemorySize",
+                            ):
+                                try:
+                                    values[field] = winreg.QueryValueEx(key, field)[0]
+                                except OSError:
+                                    pass
+                    except OSError:
+                        continue
+                    name = values.get("DriverDesc") or values.get("HardwareInformation.AdapterString")
+                    if name:
+                        found.append(
+                            {"Name": str(name), "AdapterRAM": values.get("HardwareInformation.qwMemorySize")}
+                        )
+    except OSError:
+        return []
+    unique = {}
+    for item in found:
+        unique.setdefault(item["Name"], item)
+    return list(unique.values())
+
+
+def _scan_windows_gpu() -> tuple[str | None, float | None, float | None]:
+    """Return the best physical Windows adapter when NVML is unavailable.
+
+    Win32_VideoController.AdapterRAM is useful for many discrete AMD cards,
+    but is not dedicated VRAM for Intel/shared adapters. Keep those totals
+    unknown rather than feeding a fabricated capacity to fit decisions.
+    """
+    adapters: dict[str, tuple[str, int | None]] = {}
+    # CIM frequently exposes every adapter but AdapterRAM is a legacy
+    # 32-bit field. Merge the registry's 64-bit qwMemorySize when available
+    # instead of treating CIM order or its truncated value as authoritative.
+    rows = _windows_cim("Win32_VideoController", ["Name", "AdapterRAM"])
+    rows.extend(_windows_registry_gpus())
+    for item in rows:
+        name = str(item.get("Name") or "").strip()
+        if not name or "microsoft basic" in name.lower() or "remote display" in name.lower():
+            continue
+        try:
+            raw_vram = int(item.get("AdapterRAM"))
+            if raw_vram <= 0:
+                raw_vram = None
+        except (TypeError, ValueError, OverflowError):
+            raw_vram = None
+        key = " ".join(name.lower().split())
+        previous = adapters.get(key)
+        if previous is None or (raw_vram or 0) > (previous[1] or 0):
+            adapters[key] = (name, raw_vram)
+    if not adapters:
+        return None, None, None
+
+    def is_integrated(name: str) -> bool:
+        lowered = name.lower()
+        if "intel" in lowered:
+            # Intel Arc A/B-series names denote discrete adapters; generic
+            # "Intel Arc Graphics", Iris, and UHD are integrated/shared.
+            return re.search(r"\barc\s+[ab]\d", lowered) is None
+        return "radeon(tm) graphics" in lowered or "radeon graphics" == lowered.strip()
+
+    # Hybrid laptops often enumerate the integrated adapter first. Prefer a
+    # likely discrete adapter, then the largest credible dedicated-memory
+    # value, while preserving stable input order for otherwise equal rows.
+    ranked = list(adapters.values())
+    ranked.sort(
+        key=lambda adapter: (
+            not is_integrated(adapter[0]),
+            adapter[1] is not None,
+            adapter[1] or 0,
+        ),
+        reverse=True,
+    )
+    name, raw_vram = ranked[0]
+    if is_integrated(name):
+        return name, None, None
+    total = raw_vram / (1024**3) if raw_vram is not None else 0.0
+    return name, total if total > 0 else None, None
+
+
 def _scan_nvidia_vram() -> tuple[str | None, float | None, float | None]:
     """Return (gpu_name, vram_total_gb, vram_free_gb) or (None, None, None) if unavailable."""
     try:
@@ -202,10 +361,14 @@ def scan_hardware() -> HardwareInfo:
         cpu = _mac_cpu_brand()
     elif raw_os_name == "Linux":
         cpu = _linux_cpu_model() or platform.processor() or cpu_arch
+    elif raw_os_name == "Windows":
+        cpu = _windows_cpu_model() or platform.processor() or cpu_arch
     else:
         cpu = platform.processor() or cpu_arch
 
     gpu_name, vram_total_gb, vram_free_gb = _scan_nvidia_vram()
+    if gpu_name is None and raw_os_name == "Windows":
+        gpu_name, vram_total_gb, vram_free_gb = _scan_windows_gpu()
 
     return HardwareInfo(
         os_name=os_name,

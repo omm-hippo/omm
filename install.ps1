@@ -6,7 +6,18 @@
 $ErrorActionPreference = "Stop"
 
 $RepoUrl = "https://github.com/omm-hippo/omm.git"
-$SrcDir = Join-Path $env:USERPROFILE ".omm\src"
+$OmmHome = if ($env:OMM_HOME) { $env:OMM_HOME } else { Join-Path $env:USERPROFILE ".omm" }
+$OmmHome = [IO.Path]::GetFullPath($OmmHome).TrimEnd('\')
+$profileHome = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
+if (-not $OmmHome -or $OmmHome -eq [IO.Path]::GetPathRoot($OmmHome).TrimEnd('\') -or $OmmHome -eq $profileHome) {
+    throw "Refusing unsafe OMM_HOME: $OmmHome"
+}
+$currentDirectory = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\')
+$homePrefix = $OmmHome + [IO.Path]::DirectorySeparatorChar
+if ($currentDirectory -eq $OmmHome -or $currentDirectory.StartsWith($homePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing OMM_HOME that contains the current directory: $OmmHome"
+}
+$SourcesDir = Join-Path $OmmHome "sources"
 
 # Set $env:OMM_INSTALL_BRANCH before piping this script into iex to install
 # from a branch other than the repo default (e.g. to try a beta build).
@@ -207,15 +218,10 @@ if (-not (Test-CommandExists "git")) {
 # --- pipx --------------------------------------------------------------
 
 function Invoke-Pipx {
-    if (Test-CommandExists "pipx") {
-        & pipx @args
-    } else {
-        Invoke-Python -m pipx @args
-    }
+    Invoke-Python -m pipx @args
 }
 
 function Test-PipxAvailable {
-    if (Test-CommandExists "pipx") { return $true }
     try {
         Invoke-Python -m pipx --version *> $null
         return $LASTEXITCODE -eq 0
@@ -232,17 +238,18 @@ if (-not (Test-PipxAvailable)) {
     Invoke-Pipx ensurepath
     Update-SessionPath
 }
+Invoke-Pipx ensurepath
+$PythonExecutable = (Invoke-Python -c "import sys; print(sys.executable)").Trim()
 
-Write-Host "Cloning omm source to $SrcDir ..."
-if (Test-Path $SrcDir) {
-    Remove-Item -Recurse -Force $SrcDir
-}
+New-Item -ItemType Directory -Force -Path $SourcesDir | Out-Null
+$StagingDir = Join-Path $SourcesDir ("checkout-" + $PID + "-" + [guid]::NewGuid().ToString("N"))
+Write-Host "Cloning omm source to a versioned staging directory ..."
 $CloneArgs = @("clone", "--filter=blob:none", "--quiet")
 if ($Branch) {
     Write-Host "Using branch: $Branch"
     $CloneArgs += @("-b", $Branch)
 }
-$CloneArgs += @($RepoUrl, $SrcDir)
+$CloneArgs += @($RepoUrl, $StagingDir)
 git @CloneArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Error "git clone failed."
@@ -250,7 +257,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Verifying commit signature ..."
-$headCommit = (git -C $SrcDir rev-parse HEAD).Trim()
+$headCommit = (git -C $StagingDir rev-parse HEAD).Trim()
 # Try the commit itself first - a maintainer can directly SSH-sign a merge
 # commit (e.g. syncing one branch into another outside GitHub's PR flow),
 # and that signature is trustworthy on its own. Only fall back to
@@ -258,30 +265,54 @@ $headCommit = (git -C $SrcDir rev-parse HEAD).Trim()
 # "create a merge commit" PRs, where GitHub signs the merge with a key
 # this script doesn't trust and the real signature is one hop down, on the
 # PR branch tip - when the direct check fails.
-$verified = Test-CommitSignature -Commit $headCommit -RepoDir $SrcDir -Quiet
+$verified = Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir -Quiet
 if (-not $verified) {
-    $signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $SrcDir
+    $signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $StagingDir
     if ($signedCommit -ne $headCommit) {
-        $verified = Test-CommitSignature -Commit $signedCommit -RepoDir $SrcDir
+        $verified = Test-CommitSignature -Commit $signedCommit -RepoDir $StagingDir
     } else {
-        $verified = Test-CommitSignature -Commit $headCommit -RepoDir $SrcDir
+        $verified = Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir
     }
 }
 if (-not $verified) {
-    Remove-Item -Recurse -Force $SrcDir
+    Remove-Item -Recurse -Force $StagingDir
     Write-Error "Signature verification failed - refusing to install untrusted code."
     exit 1
 }
+$SrcDir = Join-Path $SourcesDir $headCommit
+if (Test-Path $SrcDir) {
+    Remove-Item -Recurse -Force $StagingDir
+} else {
+    Move-Item -LiteralPath $StagingDir -Destination $SrcDir
+}
 
-# NVIDIA GPUs are common on Windows machines (unlike Mac, which hasn't
-# shipped one since 2016), so always pull in the VRAM-detection extra here.
-$InstallSpec = "$SrcDir[nvidia]"
+# Install NVML only when the machine actually exposes an NVIDIA driver.
+$InstallSpec = if (Test-CommandExists "nvidia-smi") { "$SrcDir[nvidia]" } else { $SrcDir }
 
 Write-Host "Installing omm (editable) from $SrcDir ..."
-Invoke-Pipx install --force --editable $InstallSpec
+Invoke-Pipx install --force --editable --python $PythonExecutable $InstallSpec
 if ($LASTEXITCODE -ne 0) {
     Write-Error "pipx install failed."
     exit 1
+}
+
+# Marks custom OMM_HOME directories as installer-managed. The uninstaller
+# requires this marker before removing anything from a non-default home.
+Set-Content -LiteralPath (Join-Path $OmmHome ".omm-managed") -Value "omm installer managed home v1" -Encoding Ascii
+
+# pipx now points at the verified checkout above. Best-effort cleanup of old
+# versioned checkouts is safe; a live old omm process may keep one locked on
+# Windows, in which case it remains available and a future reinstall retries.
+Get-ChildItem -LiteralPath $SourcesDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    if ([IO.Path]::GetFullPath($_.FullName) -ne [IO.Path]::GetFullPath($SrcDir)) {
+        try { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+        catch { Write-Warning "Could not remove old source checkout $($_.FullName): $_" }
+    }
+}
+$LegacySrcDir = Join-Path $OmmHome "src"
+if (Test-Path -LiteralPath $LegacySrcDir) {
+    try { Remove-Item -LiteralPath $LegacySrcDir -Recurse -Force }
+    catch { Write-Warning "Could not remove legacy source checkout ${LegacySrcDir}: $_" }
 }
 
 Write-Host ""

@@ -29,9 +29,9 @@ def test_relink_repairs_entry_missing_lmstudio_link(isolated_omm_home, monkeypat
     monkeypatch.setattr(
         linker,
         "link_lmstudio",
-        lambda gguf_path, repo_id: lmstudio_calls.append((gguf_path, repo_id)),
+        lambda gguf_path, repo_id, **kwargs: lmstudio_calls.append((gguf_path, repo_id)),
     )
-    monkeypatch.setattr(linker, "link_ollama", lambda gguf_path, model_name: True)
+    monkeypatch.setattr(linker, "link_ollama", lambda gguf_path, model_name, **kwargs: True)
 
     result = runner.invoke(cli.app, ["relink"])
 
@@ -70,12 +70,12 @@ def test_relink_reverifies_entry_already_marked_linked(isolated_omm_home, monkey
     monkeypatch.setattr(
         linker,
         "link_lmstudio",
-        lambda gguf_path, repo_id: lmstudio_calls.append((gguf_path, repo_id)),
+        lambda gguf_path, repo_id, **kwargs: lmstudio_calls.append((gguf_path, repo_id)),
     )
     monkeypatch.setattr(
         linker,
         "link_ollama",
-        lambda gguf_path, model_name: ollama_calls.append((gguf_path, model_name)) or True,
+        lambda gguf_path, model_name, **kwargs: ollama_calls.append((gguf_path, model_name)) or True,
     )
 
     result = runner.invoke(cli.app, ["relink"])
