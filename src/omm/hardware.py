@@ -183,6 +183,10 @@ def _windows_cim(class_name: str, properties: list[str]) -> list[dict]:
 
 
 def _windows_cpu_model() -> str | None:
+    for item in _windows_cim("Win32_Processor", ["Name"]):
+        name = str(item.get("Name") or "").strip()
+        if name:
+            return " ".join(name.split())
     try:
         import winreg
 
@@ -195,10 +199,6 @@ def _windows_cpu_model() -> str | None:
                 return " ".join(name.split())
     except (ImportError, OSError):
         pass
-    for item in _windows_cim("Win32_Processor", ["Name"]):
-        name = str(item.get("Name") or "").strip()
-        if name:
-            return " ".join(name.split())
     return None
 
 
