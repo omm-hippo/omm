@@ -107,6 +107,8 @@ All errors, warnings, and confirmation prompts print to stderr; `--json` output 
 
 Set `OMM_HOME` to store everything (models, config, catalog history) under a different directory instead of `~/.omm` — useful when `$HOME`'s filesystem doesn't have room for GGUF models, e.g. `OMM_HOME=/mnt/data/omm omm contribute --yes`.
 
+`omm contribute` refuses to start unless every model volume has at least 10 GiB free. Before each download it also budgets the central GGUF, a worst-case full Ollama import copy, any required Windows cross-volume copies, and safety headroom. Each model evaluation prints a heartbeat every 30 seconds and is terminated after an absolute 10-minute deadline instead of hanging an unattended session indefinitely.
+
 Localfit does not assume all installed memory belongs to the model. A live
 scan subtracts memory currently used by other applications, keeps at least
 2 GB (or 10% of RAM) for the OS and newly opened apps, and applies total-memory

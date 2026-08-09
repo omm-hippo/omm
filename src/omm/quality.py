@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import multiprocessing
 import platform
 import re
 import statistics
@@ -130,6 +131,10 @@ class QualityEvaluationError(RuntimeError):
         if failure_reason not in FAILURE_REASONS:
             failure_reason = FAILURE_REASON_UNKNOWN
         self.failure_reason = failure_reason
+
+
+class QualityEvaluationCancelled(RuntimeError):
+    """The parent contribution session requested an immediate stop."""
 
 
 @dataclass(frozen=True)
@@ -788,6 +793,123 @@ def evaluate_model(tag: str, pack: dict, speed_runs: int = 3, runtime_options: d
         },
         "runtime": runtime_snapshot(tag, metadata.get("digest"), runtime_options or {}),
     }
+
+
+def _evaluate_model_worker(
+    send_conn,
+    tag: str,
+    pack: dict,
+    speed_runs: int,
+    runtime_options: dict | None,
+    model_metadata: dict | None,
+) -> None:
+    """Spawn-safe worker for one killable Ollama evaluation."""
+    try:
+        result = evaluate_model(
+            tag,
+            pack,
+            speed_runs=speed_runs,
+            runtime_options=runtime_options,
+            model_metadata=model_metadata,
+        )
+        send_conn.send(("ok", result))
+    except QualityEvaluationError as error:
+        send_conn.send(("quality_error", str(error), error.failure_reason))
+    except BaseException as error:
+        send_conn.send(("unexpected_error", type(error).__name__))
+    finally:
+        send_conn.close()
+
+
+_DEFAULT_EVALUATE_MODEL = evaluate_model
+
+
+def evaluate_model_isolated(
+    tag: str,
+    pack: dict,
+    *,
+    speed_runs: int = 3,
+    runtime_options: dict | None = None,
+    model_metadata: dict | None = None,
+    timeout_seconds: float = 600,
+    stop_check: Callable[[], bool] | None = None,
+    progress_callback: Callable[[float, float], None] | None = None,
+) -> dict:
+    """Evaluate in a child process with an absolute wall-clock deadline.
+
+    Requests' read timeout is not a total operation deadline, and a wedged
+    native Ollama call must not hold an unattended contribution session for
+    hours. A separate process lets the parent terminate the entire evaluator
+    deterministically on Esc, Ctrl+C teardown, or deadline expiry.
+    """
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    context = multiprocessing.get_context("spawn")
+    receive_conn, send_conn = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_evaluate_model_worker,
+        args=(send_conn, tag, pack, speed_runs, runtime_options, model_metadata),
+        daemon=True,
+    )
+    started = time.monotonic()
+    next_progress = started + 30
+    process_started = False
+
+    def terminate() -> None:
+        if process_started and process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+            if process.is_alive() and hasattr(process, "kill"):
+                process.kill()
+                process.join(timeout=5)
+
+    try:
+        process.start()
+        process_started = True
+        send_conn.close()
+        deadline = started + timeout_seconds
+        while True:
+            if receive_conn.poll(0.2):
+                try:
+                    message = receive_conn.recv()
+                except EOFError as error:
+                    raise QualityEvaluationError(
+                        "Isolated benchmark worker closed without a result",
+                        failure_reason=FAILURE_REASON_UNKNOWN,
+                    ) from error
+                process.join(timeout=5)
+                kind = message[0]
+                if kind == "ok":
+                    return message[1]
+                if kind == "quality_error":
+                    raise QualityEvaluationError(message[1], failure_reason=message[2])
+                raise QualityEvaluationError(
+                    f"Isolated benchmark worker failed with {message[1]}",
+                    failure_reason=FAILURE_REASON_UNKNOWN,
+                )
+            now = time.monotonic()
+            if stop_check is not None and stop_check():
+                terminate()
+                raise QualityEvaluationCancelled(tag)
+            if now >= deadline:
+                terminate()
+                raise QualityEvaluationError(
+                    f"Benchmarking {tag} exceeded the {timeout_seconds:g}s session deadline",
+                    failure_reason=FAILURE_REASON_GENERATION_TIMEOUT,
+                )
+            if not process.is_alive():
+                process.join(timeout=1)
+                raise QualityEvaluationError(
+                    f"Isolated benchmark worker exited with code {process.exitcode}",
+                    failure_reason=FAILURE_REASON_UNKNOWN,
+                )
+            if progress_callback is not None and now >= next_progress:
+                progress_callback(now - started, timeout_seconds)
+                next_progress = now + 30
+    finally:
+        terminate()
+        receive_conn.close()
+        send_conn.close()
 
 
 def _build_failure_entry(

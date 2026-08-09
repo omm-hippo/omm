@@ -1,4 +1,5 @@
 import requests
+from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from omm import cli, config
@@ -16,6 +17,27 @@ class _FakeListener:
 
     def start(self):
         self.stop_event.set()
+
+
+def test_contribute_refuses_to_start_when_model_volume_has_less_than_ten_gib(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.linker, "storage_volume_key", lambda path: ("test", "volume"))
+    monkeypatch.setattr(
+        cli.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(free=9 * 1024**3),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_ensure_ollama_running",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must stop before engine start")),
+    )
+
+    result = runner.invoke(cli.app, ["contribute", "--yes"])
+
+    assert result.exit_code == 1
+    assert "will not start with low disk space" in result.stderr
 
 
 def test_engine_preflight_happens_before_expensive_work_consent(isolated_omm_home, monkeypatch):

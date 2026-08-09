@@ -46,6 +46,7 @@ for the project's own marker files (server.py, one_click.py).
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import os
 import platform
@@ -311,6 +312,43 @@ def autoremove_owned_link(path: Path) -> bool:
 CopyReporter = Callable[[Path, Path, int], None]
 
 
+class InsufficientLinkSpaceError(LinkError):
+    """An engine link would exhaust its destination volume."""
+
+
+def disk_safety_reserve(size_bytes: int) -> int:
+    """Keep enough headroom for metadata, logs, and concurrent small writes."""
+    return min(max(1024**3, size_bytes // 20), 4 * 1024**3)
+
+
+def _is_disk_full_error(error: OSError) -> bool:
+    return error.errno in {errno.ENOSPC, getattr(errno, "EDQUOT", -1)}
+
+
+def _existing_parent(path: Path) -> Path:
+    candidate = path.expanduser().resolve(strict=False)
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate
+
+
+def storage_volume_key(path: Path) -> tuple[str, str | int]:
+    """Stable volume identity for grouping preflight disk requirements."""
+    resolved = path.expanduser().resolve(strict=False)
+    if platform.system() == "Windows":
+        return ("windows", resolved.drive.casefold())
+    existing = _existing_parent(resolved)
+    try:
+        return ("device", existing.stat().st_dev)
+    except OSError:
+        return ("anchor", resolved.anchor)
+
+
+def disk_usage_path(path: Path) -> Path:
+    """Nearest existing path accepted by ``shutil.disk_usage``."""
+    return _existing_parent(path)
+
+
 def link_file(src: Path, dst: Path, *, on_copy: CopyReporter | None = None) -> str:
     """Expose ``src`` at ``dst`` and return symlink/hardlink/copy.
 
@@ -373,7 +411,7 @@ def link_file(src: Path, dst: Path, *, on_copy: CopyReporter | None = None) -> s
         reserve = min(max(64 * 1024**2, source_size // 20), 1024**3)
         required = source_size + reserve
         if free_bytes < required:
-            raise LinkError(
+            raise InsufficientLinkSpaceError(
                 f"A real copy is required at {dst}, but the destination has only "
                 f"{free_bytes / 1024**3:.1f} GiB free; the {source_size / 1024**3:.1f} GiB "
                 f"model needs at least {required / 1024**3:.1f} GiB including safety space."
@@ -393,6 +431,11 @@ def link_file(src: Path, dst: Path, *, on_copy: CopyReporter | None = None) -> s
         except OSError:
             pass
         errors.append(f"copy: {error}")
+        if _is_disk_full_error(error):
+            raise InsufficientLinkSpaceError(
+                f"The destination volume filled up while copying the model to {dst}. "
+                "The incomplete copy was removed."
+            ) from error
         raise LinkError(
             f"Could not expose the model at {dst} ({'; '.join(errors)})."
         ) from error
@@ -579,6 +622,11 @@ def link_ollama(
         config_blob = blobs_dir / f"sha256-{config_sha256}"
         if not config_blob.exists() and not config_blob.is_symlink():
             config_blob.write_bytes(config_bytes)
+            try:
+                _record_ownership(config_blob, None, "copy")
+            except Exception:
+                config_blob.unlink(missing_ok=True)
+                raise
 
         manifest = {
             "schemaVersion": 2,
@@ -714,6 +762,59 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
             f"Ollama's manifest format has changed and omm's link for {model_name} no "
             "longer works, but the `ollama` binary isn't on PATH to regenerate it natively."
         )
+    manifest_path = (
+        models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name / "latest"
+    )
+    if manifest_path.exists() or manifest_path.is_symlink():
+        if not _owned_manifest(manifest_path):
+            raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
+
+    source_size = gguf_path.stat().st_size
+    required = source_size + disk_safety_reserve(source_size)
+    try:
+        free_bytes = shutil.disk_usage(disk_usage_path(models_dir)).free
+    except OSError as error:
+        raise LinkError(
+            f"Could not verify free space before asking Ollama to import {model_name}: {error}."
+        ) from error
+    if free_bytes < required:
+        raise InsufficientLinkSpaceError(
+            f"Ollama must create a real copy of {model_name}, but its model volume has only "
+            f"{free_bytes / 1024**3:.1f} GiB free; it needs at least "
+            f"{required / 1024**3:.1f} GiB including safety space."
+        )
+
+    # Capacity is proven before replacing a currently working omm manifest.
+    # A failed preflight must never destroy the user's existing Ollama model.
+    if manifest_path.exists() or manifest_path.is_symlink():
+        unlink_ollama(model_name, models_dir=models_dir)
+
+    blobs_dir = models_dir / "blobs"
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+    before_blobs = {path.name for path in blobs_dir.iterdir() if path.is_file()}
+
+    def transaction_blobs() -> list[Path]:
+        try:
+            return [
+                path
+                for path in blobs_dir.iterdir()
+                if path.is_file() and path.name not in before_blobs
+            ]
+        except OSError:
+            return []
+
+    def cleanup_transaction() -> None:
+        try:
+            manifest_path.unlink(missing_ok=True)
+            _update_link_ownership(manifest_path, None)
+        except OSError:
+            pass
+        for blob in transaction_blobs():
+            try:
+                blob.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     with tempfile.TemporaryDirectory() as tmp:
         modelfile = Path(tmp) / "Modelfile"
         modelfile.write_text(f"FROM {gguf_path}\n")
@@ -725,16 +826,32 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
                 timeout=600,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
+            cleanup_transaction()
+            if isinstance(e, OSError) and _is_disk_full_error(e):
+                raise InsufficientLinkSpaceError(
+                    f"Ollama ran out of disk space while importing {model_name}. "
+                    "New transaction files were removed."
+                ) from e
             raise LinkError(f"Could not regenerate Ollama manifest for {model_name}: {e}") from e
+    new_blobs = transaction_blobs()
     if result.returncode != 0:
+        # The native importer is not transactional. Remove only files that
+        # appeared during this omm-owned invocation, never pre-existing user
+        # blobs. This is especially important after ENOSPC.
+        cleanup_transaction()
+        stderr = result.stderr.strip()
+        if "no space left" in stderr.lower() or "disk full" in stderr.lower():
+            raise InsufficientLinkSpaceError(
+                f"Ollama ran out of disk space while importing {model_name}. "
+                "New transaction files were removed."
+            )
         raise LinkError(
-            f"Ollama rejected {model_name} even via native `ollama create`: {result.stderr.strip()}"
+            f"Ollama rejected {model_name} even via native `ollama create`: {stderr}"
         )
-    manifest_path = (
-        models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name / "latest"
-    )
     try:
         _record_ownership(manifest_path, None, "manifest")
+        for blob in new_blobs:
+            _record_ownership(blob, None, "copy")
     except OSError:
         pass
 
@@ -759,8 +876,25 @@ def _ensure_ollama_accepts(
     _record_manifest_format_result(ollama_version, accepted)
     if accepted:
         return has_chat_template
+    # Remove the rejected hand-written manifest and its omm-owned model
+    # blob/copy before native import. Otherwise cross-volume installs can
+    # briefly consume two extra full model copies and the rejected blob can
+    # remain orphaned forever.
+    unlink_ollama(model_name, models_dir=models_dir)
     _fallback_to_native_create(gguf_path, model_name, models_dir)
     return True
+
+
+def _manifest_blob_digests(manifest: dict) -> set[str]:
+    digests = {
+        layer.get("digest", "").replace(":", "-")
+        for layer in manifest.get("layers", [])
+        if layer.get("digest")
+    }
+    config_digest = manifest.get("config", {}).get("digest")
+    if config_digest:
+        digests.add(config_digest.replace(":", "-"))
+    return digests
 
 
 def unlink_ollama(model_name: str, models_dir: Path | None = None) -> None:
@@ -780,11 +914,7 @@ def unlink_ollama(model_name: str, models_dir: Path | None = None) -> None:
         return
     try:
         manifest = json.loads(manifest_path.read_text())
-        model_digests = {
-            layer.get("digest", "").replace(":", "-")
-            for layer in manifest.get("layers", [])
-            if layer.get("mediaType") == "application/vnd.ollama.image.model"
-        }
+        model_digests = _manifest_blob_digests(manifest)
     except (OSError, json.JSONDecodeError):
         model_digests = set()
     # Blobs are content-addressed and can be shared by a user manifest or
@@ -814,11 +944,7 @@ def unlink_ollama(model_name: str, models_dir: Path | None = None) -> None:
                 data = json.loads(other.read_text())
             except (OSError, json.JSONDecodeError):
                 continue
-            referenced.update(
-                layer.get("digest", "").replace(":", "-")
-                for layer in data.get("layers", [])
-                if layer.get("mediaType") == "application/vnd.ollama.image.model"
-            )
+            referenced.update(_manifest_blob_digests(data))
     for digest in model_digests - referenced:
         _unlink_owned_link_with_retry(models_dir / "blobs" / digest)
 
@@ -1118,6 +1244,13 @@ class EngineSpec:
     label: str
 
 
+@dataclass(frozen=True)
+class DiskCopyRisk:
+    path: Path
+    engine: str
+    reason: str
+
+
 ENGINES: list[EngineSpec] = [
     EngineSpec("ollama", "Ollama"),
     EngineSpec("lmstudio", "LM Studio"),
@@ -1149,6 +1282,70 @@ def is_engine_installed(key: str) -> bool:
     if key == "koboldcpp":
         return is_koboldcpp_installed()
     raise ValueError(f"unknown engine: {key}")
+
+
+def _engine_storage_dir(key: str) -> Path | None:
+    if key == "ollama":
+        return ollama_models_dir()
+    if key == "lmstudio":
+        return lmstudio_models_dir()
+    if key == "anythingllm":
+        return anythingllm_ollama_models_dir()
+    if key == "mstystudio":
+        return mstystudio_models_dir()
+    if key == "textgenwebui":
+        return textgenwebui_models_dir()
+    if key == "koboldcpp":
+        return koboldcpp_models_dir()
+    # Jan stores only a tiny YAML file containing the central absolute path.
+    return None
+
+
+def ollama_native_copy_may_be_required() -> bool:
+    """Whether the current Ollama version could require ``ollama create``.
+
+    An unknown version is budgeted pessimistically: the compatibility probe
+    happens only after the GGUF exists, and a rejection makes Ollama write a
+    full native blob copy.
+    """
+    # Treat this as a worst-case capacity question, not a prediction. The
+    # Ollama binary/daemon can be upgraded between preflight and link, so a
+    # cached compatible version is not strong enough evidence to promise a
+    # zero-copy install during an unattended run.
+    return True
+
+
+def disk_copy_risks(source_path: Path, *, only_ollama: bool = False) -> list[DiskCopyRisk]:
+    """Return full-model copies that must be included in install preflight.
+
+    POSIX engines use symlinks. Windows destinations on another volume may
+    need a real copy when Developer Mode is unavailable. System Ollama is a
+    special case on every OS because its native compatibility fallback
+    imports a second full blob even when source and model store share a
+    volume.
+    """
+    risks: list[DiskCopyRisk] = []
+    source_volume = storage_volume_key(source_path)
+    for spec in ENGINES:
+        if only_ollama and spec.key != "ollama":
+            continue
+        if not is_engine_installed(spec.key):
+            continue
+        target = _engine_storage_dir(spec.key)
+        if target is None:
+            continue
+        cross_volume_windows = (
+            platform.system() == "Windows" and storage_volume_key(target) != source_volume
+        )
+        native_ollama = spec.key == "ollama" and ollama_native_copy_may_be_required()
+        if cross_volume_windows or native_ollama:
+            reason = (
+                "Ollama may need a native full-model import"
+                if native_ollama
+                else f"{spec.label} is on another Windows volume"
+            )
+            risks.append(DiskCopyRisk(target, spec.label, reason))
+    return risks
 
 
 def link_engine(key: str, gguf_path: Path, *, repo_id: str | None, ollama_tag: str) -> str | None:

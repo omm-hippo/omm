@@ -35,11 +35,23 @@ def test_escape_binding_triggers_keyboard_interrupt_style_exit():
     )
 
 
-def test_contribute_escape_listener_uses_win32_console_keys(monkeypatch):
+def test_contribute_escape_listener_polls_without_consuming_console_input(monkeypatch):
     listener = __import__("omm.cli", fromlist=["_EscListener"])._EscListener()
-    keys = iter([True])
-    fake_msvcrt = SimpleNamespace(kbhit=lambda: next(keys), getwch=lambda: "\x1b")
-    monkeypatch.setitem(__import__("sys").modules, "msvcrt", fake_msvcrt)
+
+    class FakeGetAsyncKeyState:
+        argtypes = None
+        restype = None
+
+        def __call__(self, key):
+            assert key == 0x1B
+            return 0x8000
+
+    fake_ctypes = SimpleNamespace(
+        windll=SimpleNamespace(user32=SimpleNamespace(GetAsyncKeyState=FakeGetAsyncKeyState())),
+        c_int=int,
+        c_short=int,
+    )
+    monkeypatch.setitem(__import__("sys").modules, "ctypes", fake_ctypes)
 
     listener._run_windows()
 

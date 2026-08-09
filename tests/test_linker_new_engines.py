@@ -271,7 +271,7 @@ def test_link_jan_raises_link_error_when_write_fails(tmp_path, monkeypatch):
         linker.link_jan(gguf_path, "model-id")
 
 
-def test_unlink_ollama_swallows_permission_error(tmp_path, monkeypatch):
+def test_unlink_ollama_swallows_permission_error(isolated_omm_home, tmp_path, monkeypatch):
     models_dir = tmp_path / "ollama"
     monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
     source = tmp_path / "source.gguf"

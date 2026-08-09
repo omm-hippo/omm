@@ -1425,6 +1425,19 @@ def _link_model(
             linked[spec.key] = True
             if warning:
                 err_console.print(f"[yellow]{warning}[/yellow]")
+        except linker.InsufficientLinkSpaceError:
+            # Roll back links created earlier in this install transaction.
+            # The central GGUF is removed by _install_impl only when that
+            # same transaction downloaded it.
+            cleanup_entry = {"repo_id": repo_id, "ollama_name": ollama_tag}
+            for previous in reversed(linker.ENGINES):
+                if not linked.get(previous.key):
+                    continue
+                try:
+                    linker.unlink_engine(previous.key, dest.name, cleanup_entry)
+                except (linker.LinkError, OSError):
+                    pass
+            raise
         except linker.LinkError as e:
             err_console.print(f"[yellow]{spec.label} link skipped: {e}[/yellow]")
 
@@ -1457,6 +1470,9 @@ class ContributionStopped(Exception):
 
 class _Interrupted(Exception):
     pass
+
+
+_CONTRIBUTE_EVALUATION_DEADLINE_SECONDS = 10 * 60
 
 
 def _run_interruptible(fn, stop_event: threading.Event | None):
@@ -1564,6 +1580,59 @@ def _fetch_sibling_candidates(boundary: dict) -> list[dict]:
     return siblings
 
 
+@dataclass
+class _VolumeRequirement:
+    path: Path
+    bytes_needed: int = 0
+    reasons: list[str] | None = None
+
+
+def _ensure_install_disk_capacity(
+    dest: Path,
+    size_bytes: int,
+    *,
+    include_download: bool,
+    only_ollama: bool,
+) -> None:
+    """Preflight the peak bytes omm may add on every affected volume."""
+    if size_bytes <= 0:
+        return
+
+    groups: dict[tuple[str, str | int], _VolumeRequirement] = {}
+
+    def add(path: Path, reason: str) -> None:
+        key = linker.storage_volume_key(path)
+        requirement = groups.setdefault(key, _VolumeRequirement(path=path, reasons=[]))
+        requirement.bytes_needed += size_bytes
+        assert requirement.reasons is not None
+        requirement.reasons.append(reason)
+
+    if include_download:
+        add(dest.parent, "central model download")
+    for risk in linker.disk_copy_risks(dest, only_ollama=only_ollama):
+        add(risk.path, risk.reason)
+
+    failures = []
+    for requirement in groups.values():
+        reserve = linker.disk_safety_reserve(requirement.bytes_needed)
+        required = requirement.bytes_needed + reserve
+        try:
+            free = shutil.disk_usage(linker.disk_usage_path(requirement.path)).free
+        except OSError as error:
+            raise InsufficientDiskSpaceError(
+                f"Could not verify free space on the volume containing {requirement.path}: {error}"
+            ) from error
+        if free < required:
+            reasons = ", ".join(requirement.reasons or [])
+            failures.append(
+                f"{requirement.path} needs up to {required / 1024**3:.1f} GiB "
+                f"({reasons}) but only {free / 1024**3:.1f} GiB is free"
+            )
+
+    if failures:
+        raise InsufficientDiskSpaceError("Not enough disk space: " + "; ".join(failures))
+
+
 def _install_impl(
     resolved,
     *,
@@ -1607,28 +1676,31 @@ def _install_impl(
             )
 
     dest = MODELS_DIR / filename
+    downloaded_now = False
     if dest.exists():
         err_console.print(f"[yellow]{filename} already downloaded, skipping fetch.[/yellow]")
     else:
         size_bytes = remote_file_size(resolved.provider or "huggingface", repo_id, filename) if repo_id else None
         if size_bytes:
-            free_gb = shutil.disk_usage(MODELS_DIR).free / (1024**3)
-            required_gb = size_bytes / (1024**3)
-            if required_gb > free_gb:
-                message = (
-                    f"{filename} needs ~{required_gb:.1f}GB but only "
-                    f"{free_gb:.1f}GB free on disk"
+            try:
+                _ensure_install_disk_capacity(
+                    dest,
+                    size_bytes,
+                    include_download=True,
+                    only_ollama=link_only_ollama,
                 )
+            except InsufficientDiskSpaceError as error:
                 if skip_unfit:
-                    err_console.print(f"[yellow]Skipping {message}.[/yellow]")
+                    err_console.print(f"[yellow]Skipping {error}.[/yellow]")
                     return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-                err_console.print(f"[red]Not enough disk space: {message}.[/red]")
-                raise typer.Exit(1)
+                err_console.print(f"[red]{error}.[/red]")
+                raise typer.Exit(1) from error
         try:
             if stop_event is not None:
                 download_file(url, dest, stop_check=stop_event.is_set)
             else:
                 download_file(url, dest)
+            downloaded_now = True
         except DownloadCancelled as e:
             raise ContributionStopped(filename) from e
         except InsufficientDiskSpaceError as e:
@@ -1641,11 +1713,36 @@ def _install_impl(
             err_console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from e
 
+    try:
+        _ensure_install_disk_capacity(
+            dest,
+            dest.stat().st_size,
+            include_download=False,
+            only_ollama=link_only_ollama,
+        )
+    except InsufficientDiskSpaceError as error:
+        if downloaded_now:
+            _cleanup_incomplete_install(filename)
+        if skip_unfit:
+            err_console.print(f"[yellow]Skipping {error}.[/yellow]")
+            return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
+        err_console.print(f"[red]{error}.[/red]")
+        raise typer.Exit(1) from error
+
     console.print("Verifying checksum...")
     sha256 = sha256_file(dest)
 
     ollama_tag = linker.sanitize_ollama_tag(filename)
-    linked = _link_model(dest, repo_id, ollama_tag, only_ollama=link_only_ollama)
+    try:
+        linked = _link_model(dest, repo_id, ollama_tag, only_ollama=link_only_ollama)
+    except linker.InsufficientLinkSpaceError as error:
+        if downloaded_now:
+            _cleanup_incomplete_install(filename)
+        if skip_unfit:
+            err_console.print(f"[yellow]Skipping {error}[/yellow]")
+            return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
+        err_console.print(f"[red]{error}[/red]")
+        raise typer.Exit(1) from error
 
     registry.upsert_entry(
         filename,
@@ -1691,15 +1788,40 @@ def _install_impl(
                         )
                     except TypeError:  # compatibility with older integrations
                         return quality_mod.evaluate_model(ollama_tag, quality_pack, speed_runs=3)
-                result = _run_interruptible(
-                    _evaluate_with_runtime,
-                    stop_event,
-                )
+
+                if (
+                    stop_event is not None
+                    and quality_mod.evaluate_model is quality_mod._DEFAULT_EVALUATE_MODEL
+                ):
+                    def report_progress(elapsed: float, deadline: float) -> None:
+                        console.print(
+                            f"[dim]Still benchmarking {filename}: {int(elapsed)}s elapsed "
+                            f"(automatic cutoff at {int(deadline)}s).[/dim]"
+                        )
+
+                    result = quality_mod.evaluate_model_isolated(
+                        ollama_tag,
+                        quality_pack,
+                        speed_runs=3,
+                        runtime_options=runtime_options,
+                        model_metadata=model_metadata,
+                        timeout_seconds=_CONTRIBUTE_EVALUATION_DEADLINE_SECONDS,
+                        stop_check=stop_event.is_set,
+                        progress_callback=report_progress,
+                    )
+                else:
+                    result = _run_interruptible(_evaluate_with_runtime, stop_event)
             except _Interrupted as e:
+                raise ContributionStopped(filename) from e
+            except quality_mod.QualityEvaluationCancelled as e:
                 raise ContributionStopped(filename) from e
             except quality_mod.QualityEvaluationError as error:
                 result = None
                 eval_error = error
+                err_console.print(
+                    f"[yellow]Benchmarking {filename} stopped: {error}. "
+                    "Cleaning up and moving on.[/yellow]"
+                )
             finally:
                 quality_mod.ensure_model_unloaded(ollama_tag)
             if result is not None:
@@ -3365,6 +3487,43 @@ _DAEMON_RESTART_BACKOFF_SECONDS = 5.0
 # daemon can't survive, a reproducible timeout, etc.) would otherwise
 # consume the entire unattended run without ever producing an upload.
 _MAX_CANDIDATE_BENCHMARK_FAILURES = 2
+_MIN_CONTRIBUTE_START_FREE_BYTES = 10 * 1024**3
+
+
+def _ensure_contribute_start_space() -> None:
+    """Refuse an unattended run when either model volume is already low."""
+    volumes: dict[tuple[str, str | int], Path] = {}
+    for path in (MODELS_DIR, linker.ollama_models_dir()):
+        volumes.setdefault(linker.storage_volume_key(path), path)
+
+    failures = []
+    free_values = []
+    for path in volumes.values():
+        try:
+            free = shutil.disk_usage(linker.disk_usage_path(path)).free
+        except OSError as error:
+            err_console.print(
+                f"[red]Could not verify free disk space for {path}: {error}[/red]"
+            )
+            raise typer.Exit(1) from error
+        free_values.append(free)
+        if free < _MIN_CONTRIBUTE_START_FREE_BYTES:
+            failures.append(f"{path}: {free / 1024**3:.1f} GiB free")
+
+    if failures:
+        err_console.print(
+            "[red]omm contribute will not start with low disk space. Keep at least "
+            f"{_MIN_CONTRIBUTE_START_FREE_BYTES / 1024**3:.0f} GiB free on every "
+            "model volume before an unattended run. "
+            + "; ".join(failures)
+            + ".[/red]"
+        )
+        raise typer.Exit(1)
+    if free_values:
+        console.print(
+            f"[dim]Disk preflight passed: {min(free_values) / 1024**3:.1f} GiB free "
+            "on the tightest model volume. Each candidate is checked again before download.[/dim]"
+        )
 
 
 def _telemetry_row_count(endpoint: str) -> int | None:
@@ -3405,19 +3564,20 @@ class _EscListener:
         self._thread.start()
 
     def _run_windows(self) -> None:
-        """Read one Win32 console key at a time without termios/select."""
+        """Poll Esc without consuming Ctrl+C or any other console input."""
         try:
-            import msvcrt
+            import ctypes
 
+            get_async_key_state = ctypes.windll.user32.GetAsyncKeyState
+            get_async_key_state.argtypes = [ctypes.c_int]
+            get_async_key_state.restype = ctypes.c_short
+            escape_was_down = False
             while not self.stop_event.is_set():
-                if msvcrt.kbhit():
-                    key = msvcrt.getwch()
-                    if key == "\x1b":
-                        self.stop_event.set()
-                        return
-                    # Consume the second code unit from function/arrow keys.
-                    if key in {"\x00", "\xe0"} and msvcrt.kbhit():
-                        msvcrt.getwch()
+                escape_is_down = bool(get_async_key_state(0x1B) & 0x8000)
+                if escape_is_down and not escape_was_down:
+                    self.stop_event.set()
+                    return
+                escape_was_down = escape_is_down
                 time.sleep(0.05)
         except Exception:
             pass  # best-effort; Ctrl+C still works as a fallback
@@ -3700,6 +3860,7 @@ def contribute(
             "Run `omm setting upload --enable` or `--ask` first.[/red]"
         )
         raise typer.Exit(1)
+    _ensure_contribute_start_space()
     # Engine availability is a preflight, not part of the expensive-work
     # consent. Do it first so users are never asked to approve bandwidth,
     # disk, and compute for a run this machine cannot start.
@@ -3722,6 +3883,12 @@ def contribute(
         "until you press Esc. It uses real bandwidth, disk space, and compute, "
         "runs unattended (no per-model confirmation), and uploads every benchmark "
         f"result to the server per your current upload policy ({policy}).[/yellow]"
+    )
+    err_console.print(
+        "[yellow]Before every download, omm reserves space for both the central GGUF and "
+        "a worst-case full Ollama copy plus safety headroom. A candidate that cannot fit "
+        "is never downloaded. Each model benchmark also has a 10-minute absolute cutoff "
+        "with a status line every 30 seconds.[/yellow]"
     )
     if platform.system() == "Windows":
         err_console.print(

@@ -601,6 +601,55 @@ def test_install_impl_skips_gracefully_when_not_enough_disk_space_and_skip_unfit
     assert download_calls == []
 
 
+def test_install_impl_budgets_download_and_ollama_native_copy_together(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda *args: 4 * 1024**3)
+    monkeypatch.setattr(
+        cli.linker,
+        "disk_copy_risks",
+        lambda dest, only_ollama=False: [
+            cli.linker.DiskCopyRisk(dest.parent, "Ollama", "native full-model import")
+        ],
+    )
+    monkeypatch.setattr(cli.linker, "storage_volume_key", lambda path: ("test", "same"))
+    monkeypatch.setattr(
+        cli.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(total=0, used=0, free=8 * 1024**3),
+    )
+    download_calls = []
+    monkeypatch.setattr(cli, "download_file", lambda *args, **kwargs: download_calls.append(args))
+
+    outcome = cli._install_impl(_resolved(), skip_unfit=True)
+
+    assert outcome.skipped_low_disk is True
+    assert download_calls == []
+
+
+def test_install_impl_removes_new_download_when_post_download_copy_budget_fails(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda *args: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"model"))
+    monkeypatch.setattr(
+        cli.linker,
+        "disk_copy_risks",
+        lambda dest, only_ollama=False: [
+            cli.linker.DiskCopyRisk(dest.parent, "Ollama", "native full-model import")
+        ],
+    )
+    monkeypatch.setattr(cli.linker, "storage_volume_key", lambda path: ("test", "same"))
+    monkeypatch.setattr(cli.shutil, "disk_usage", lambda path: SimpleNamespace(free=1))
+
+    outcome = cli._install_impl(_resolved(), skip_unfit=True)
+
+    assert outcome.skipped_low_disk is True
+    assert not (cli.MODELS_DIR / _resolved().filename).exists()
+
+
 def test_install_impl_proceeds_when_disk_space_check_is_inconclusive(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
