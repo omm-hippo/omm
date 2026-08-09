@@ -47,6 +47,7 @@ jobs:
           $env:PATH = "$stub;$env:PATH"
           $env:OMM_HOME = $managed
           & .\uninstall.ps1 -Purge
+          if ($LASTEXITCODE -ne 0) { throw "handled pipx failure leaked exit code $LASTEXITCODE" }
           if (Test-Path -LiteralPath (Join-Path $managed "models")) { throw "models survived purge" }
           if (Test-Path -LiteralPath (Join-Path $managed "config.json")) { throw "config survived purge" }
           if (-not (Test-Path -LiteralPath (Join-Path $managed "keep-me.txt"))) { throw "user file was removed" }

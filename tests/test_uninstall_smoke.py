@@ -30,10 +30,11 @@ def test_powershell_purge_preserves_unknown_files_and_refuses_cwd(tmp_path):
     env["PATH"] = str(stub) + os.pathsep + env.get("PATH", "")
     env["OMM_HOME"] = str(managed)
 
+    command = f"& '{ROOT / 'uninstall.ps1'}' -Purge; exit $LASTEXITCODE"
     result = subprocess.run(
         [
             "powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-File", str(ROOT / "uninstall.ps1"), "-Purge",
+            "-Command", command,
         ],
         cwd=ROOT,
         env=env,

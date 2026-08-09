@@ -23,19 +23,29 @@ if ((Test-Path -LiteralPath $resolvedHome -PathType Container) -and $resolvedHom
 
 $python = Get-Command python -ErrorAction SilentlyContinue
 $py = Get-Command py -ErrorAction SilentlyContinue
+$pipxExitCode = $null
 try {
     if ($python) {
         & $python.Source -m pipx uninstall omm
+        $pipxExitCode = $LASTEXITCODE
     } elseif ($py) {
         & $py.Source -3 -m pipx uninstall omm
+        $pipxExitCode = $LASTEXITCODE
     } elseif (Get-Command pipx -ErrorAction SilentlyContinue) {
         & pipx uninstall omm
+        $pipxExitCode = $LASTEXITCODE
     } else {
         Write-Warning "pipx was not found; removing installer-managed files only."
     }
 } catch {
     Write-Warning "pipx uninstall failed: $_"
 }
+if ($null -ne $pipxExitCode -and $pipxExitCode -ne 0) {
+    Write-Warning "pipx uninstall exited with code $pipxExitCode; removing installer-managed files only."
+}
+# A failed best-effort pipx probe must not leak its native exit code into a
+# caller such as a GitHub Actions pwsh step after cleanup itself succeeds.
+$global:LASTEXITCODE = 0
 
 foreach ($name in @("src", "sources")) {
     $target = Join-Path $resolvedHome $name
