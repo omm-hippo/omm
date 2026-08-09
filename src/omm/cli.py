@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import math
 import platform
@@ -39,6 +40,7 @@ from omm import (
     linker,
     predictor,
     quality as quality_mod,
+    recommend_ui,
     registry,
     rules as rules_mod,
     scan_import,
@@ -52,13 +54,21 @@ from omm import (
 from omm import contribute as contribute_mod
 from omm.completion import complete_install_name, complete_remove_filename
 from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
-from omm.downloader import DownloadCancelled, DownloadError, download_file
+from omm.downloader import (
+    DownloadCancelled,
+    DownloadError,
+    InsufficientDiskSpaceError,
+    _sidecar_path,
+    download_file,
+)
 from omm.hardware import HardwareInfo, calculate_memory_budget, scan_hardware
 from omm.hashutil import sha256_file
 from omm.featurize import (
     candidate_active_parameter_count_billions,
     candidate_parameter_count_billions,
     candidate_quant_bits,
+    is_mmproj_filename,
+    parse_chip_score,
     parse_param_count_billions,
     parse_quant_bits,
 )
@@ -70,6 +80,7 @@ from omm.hub import (
     ResolvedModel,
     best_filenames_by_tier,
     download_url,
+    fetch_repo_files,
     fetch_repo_param_count_b,
     rank_quant_variants,
     remote_file_size,
@@ -98,10 +109,44 @@ try:
 except ImportError:
     pass
 
+_ROOT_HELP_TEXT = """Example usage:
+  omm search TEXT
+  omm install MODEL
+  omm list
+  omm recommend
+  omm uninstall MODEL
+
+Tuning & quality:
+  omm tune MODEL
+  omm benchmark MODEL...
+  omm contribute
+
+Maintenance:
+  omm scan
+  omm upgrade [MODEL]
+  omm setting
+
+Further help:
+  omm help COMMAND      Show help for one command
+  omm help --all        List every command
+  https://github.com/omm-hippo/omm
+"""
+
+
+class _RootHelpGroup(typer.core.TyperGroup):
+    """Homebrew-style curated `omm --help`/`omm help` - a short list of
+    common commands instead of the full alphabetical listing of every
+    registered subcommand. Full list stays reachable via `omm help --all`."""
+
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        formatter.write(_ROOT_HELP_TEXT)
+
+
 app = typer.Typer(
     name="omm",
     help="Open source Model Manager - package manager for local LLMs (GGUF).",
     rich_markup_mode=None,
+    cls=_RootHelpGroup,
 )
 setting_app = typer.Typer(
     name="setting",
@@ -122,6 +167,7 @@ console = Console(safe_box=platform.system() == "Windows")
 err_console = Console(stderr=True, safe_box=platform.system() == "Windows")
 
 REPO_URL = "git+https://github.com/omm-hippo/omm.git"
+COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"
 
 
 def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bool]:
@@ -141,6 +187,14 @@ def _omm_version() -> str:
         return importlib.metadata.version("omm")
     except importlib.metadata.PackageNotFoundError:
         return "dev"
+
+
+def _version_line(commit: str | None) -> str:
+    """'0.1.23 (a1b2c3d, beta)' style summary, shared by the bare `omm`
+    banner and `omm update`'s before/after display."""
+    parts = [commit[:7]] if commit else []
+    parts.append(_update_channel())
+    return f"{_omm_version()} ({', '.join(parts)})"
 
 
 def _telemetry_destination_line() -> str:
@@ -165,10 +219,7 @@ def _telemetry_destination_line() -> str:
 def _root(ctx: typer.Context) -> None:
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
-        commit = _installed_commit()
-        parts = [commit[:7]] if commit else []
-        parts.append(_update_channel())
-        console.print(f"omm {_omm_version()} ({', '.join(parts)})")
+        console.print(f"omm {_version_line(_installed_commit())}")
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
     _maybe_auto_import(ctx)
@@ -183,10 +234,16 @@ def _root(ctx: typer.Context) -> None:
 def help_cmd(
     ctx: typer.Context,
     command: str = typer.Argument(None, help="Show help for a specific subcommand."),
+    all: bool = typer.Option(False, "--all", help="List every command, not just the common ones."),
 ) -> None:
     """Show help, same as --help."""
     root_ctx = ctx.find_root()
     if command is None:
+        if all:
+            formatter = root_ctx.make_formatter()
+            typer.core.TyperGroup.format_help(root_ctx.command, root_ctx, formatter)
+            console.print(formatter.getvalue().rstrip("\n"))
+            raise typer.Exit(0)
         console.print(root_ctx.get_help())
         raise typer.Exit(0)
 
@@ -248,6 +305,16 @@ def _reconcile_stale_link_records(reg: dict, installed: dict[str, bool]) -> list
     return cleaned
 
 
+def _missing_engines_note(installed: dict[str, bool]) -> str | None:
+    """One-line pointer to the compatibility wiki page for engines not
+    installed on this machine - `None` when every known engine is
+    installed, so info/scan tables don't print a useless zero-count line."""
+    missing = sum(1 for is_installed in installed.values() if not is_installed)
+    if missing == 0:
+        return None
+    return f"+ {missing} program(s) not installed — see the compatibility list: {COMPATIBLE_PROGRAMS_URL}"
+
+
 @app.command()
 def scan() -> None:
     """Scan current PC hardware (RAM, VRAM, OS) and print a summary table."""
@@ -287,9 +354,13 @@ def scan() -> None:
     engine_table.add_column("Program", style="cyan")
     engine_table.add_column("Status", style="white")
     for spec in linker.ENGINES:
-        engine_table.add_row(spec.label, "installed" if installed[spec.key] else "not detected")
+        if installed[spec.key]:
+            engine_table.add_row(spec.label, "installed")
     console.print()
     console.print(engine_table)
+    note = _missing_engines_note(installed)
+    if note:
+        console.print(note)
 
     reg = registry.load_registry()
     cleaned = _reconcile_stale_link_records(reg, installed)
@@ -342,8 +413,6 @@ def _refresh_data() -> None:
             console.print(f"[green]Updated rules.json ({len(fetched)} entries) from {rules_url}[/green]")
         except requests.RequestException as e:
             err_console.print(f"[red]Failed to fetch rules from {rules_url}: {e}[/red]")
-    else:
-        console.print("[dim]No rules_url configured - using bundled defaults.[/dim]")
 
     model_url = config.get("model_url")
     if model_url:
@@ -551,7 +620,11 @@ def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> No
     for group in groups:
         if group.sha256 not in selected_hashes:
             continue
-        result = scan_import.adopt_group(group)
+        try:
+            result = scan_import.adopt_group(group)
+        except (OSError, linker.LinkError) as e:
+            err_console.print(f"[yellow]Could not import {group.display_name}: {e}[/yellow]")
+            continue
         bytes_saved += result.bytes_saved
         console.print(f"  [green]Imported {result.filename}[/green]")
 
@@ -806,6 +879,9 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
             "  curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh"
         )
         raise typer.Exit(1)
+    except OSError as e:
+        err_console.print(f"[red]Update failed: {e}[/red]")
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -822,16 +898,18 @@ def update() -> None:
     if latest:
         version_check.record(latest, branch)
     if migrated and installed and latest and installed == latest:
-        console.print(f"[green]omm is already up to date ({installed[:7]}).[/green]")
+        console.print(f"[dim]omm is already up to date - {_version_line(installed)}[/dim]")
         _refresh_data()
         return
 
+    before = _version_line(installed)
     result = _perform_update(branch)
     if result.returncode != 0:
         err_console.print(f"[red]Update failed:[/red]\n{result.stderr}")
         raise typer.Exit(1)
 
-    console.print("[green]omm reinstalled from the latest source.[/green]")
+    after = _version_line(_installed_commit())
+    console.print(f"[bold green]✓ Updated: {before} -> {after}[/bold green]")
     _refresh_data()
 
 
@@ -872,18 +950,127 @@ def _ask_select(question: questionary.Question):
     return _add_escape_to_cancel(question).ask()
 
 
-def _ask_confirm(message: str, default: bool = False) -> bool:
-    """Yes/no prompt that answers on the y/n keypress itself (no Enter
-    needed) via questionary's auto_enter. questionary.confirm's internal
-    key bindings are already merged by the time we get the Question object,
-    so (unlike _ask_select) we can't bolt an Escape binding on here -
-    Ctrl+C/Ctrl+Q still cancel via questionary's own bindings."""
-    import questionary
+# Reverse of the standard 2-beolsik (두벌식) layout: what each jamo types as
+# on a physical QWERTY key. A single-key prompt (y/n/a/...) should accept
+# the jamo too, since pressing the key is what matters, not whether 한/영
+# happens to be toggled on at the time.
+_HANGUL_JAMO_TO_LATIN = {
+    "ㅂ": "q", "ㅈ": "w", "ㄷ": "e", "ㄱ": "r", "ㅅ": "t",
+    "ㅛ": "y", "ㅕ": "u", "ㅑ": "i", "ㅐ": "o", "ㅔ": "p",
+    "ㅁ": "a", "ㄴ": "s", "ㅇ": "d", "ㄹ": "f", "ㅎ": "g",
+    "ㅗ": "h", "ㅓ": "j", "ㅏ": "k", "ㅣ": "l",
+    "ㅋ": "z", "ㅌ": "x", "ㅊ": "c", "ㅍ": "v", "ㅠ": "b",
+    "ㅜ": "n", "ㅡ": "m",
+}
+
+
+def _build_single_key_bindings(
+    choices: list[tuple[str, str, object]],
+    default_value: object,
+    status: dict[str, object],
+):
+    """KeyBindings for _ask_single_key, split out so tests can drive
+    handlers directly with a fake event instead of running a real terminal
+    app (see test_cli_recommend_escape.py for the same pattern applied to
+    _add_escape_to_cancel). Each choice's key also responds to the jamo a
+    Korean IME produces on the same physical key (_HANGUL_JAMO_TO_LATIN),
+    so 한/영 toggle state doesn't matter. Written from scratch rather than
+    extending questionary.confirm because its key bindings are already
+    merged into the Question by the time we get it back, so extra bindings
+    can't be bolted on afterwards."""
+    from prompt_toolkit.key_binding import KeyBindings
+
+    by_key: dict[str, tuple[str, object]] = {}
+    for key, label, value in choices:
+        by_key[key.lower()] = (label, value)
+        by_key[key.upper()] = (label, value)
+
+    bindings = KeyBindings()
+
+    @bindings.add(Keys.Escape, eager=True)
+    @bindings.add(Keys.ControlQ, eager=True)
+    @bindings.add(Keys.ControlC, eager=True)
+    def _abort(event):
+        event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
+
+    def _accept(label: str, value: object):
+        def handler(event):
+            status["answer"] = (label, value)
+            event.app.exit(result=value)
+
+        return handler
+
+    for key, (label, value) in by_key.items():
+        bindings.add(key)(_accept(label, value))
+    for jamo, latin in _HANGUL_JAMO_TO_LATIN.items():
+        if latin in by_key:
+            label, value = by_key[latin]
+            bindings.add(jamo)(_accept(label, value))
+
+    @bindings.add(Keys.ControlM, eager=True)
+    def _enter(event):
+        event.app.exit(result=default_value)
+
+    @bindings.add(Keys.Any)
+    def _other(event):
+        """Disallow inserting other text."""
+
+    return bindings
+
+
+def _ask_single_key(
+    message: str,
+    choices: list[tuple[str, str, object]],
+    default_value: object,
+    instruction: str,
+) -> object:
+    """Single-keypress prompt: each choice is (key, label, value); answers
+    immediately on keypress (no Enter needed), like questionary.confirm but
+    with an arbitrary key->value map instead of a hardcoded y/n."""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import to_formatted_text
+    from questionary.styles import merge_styles_default
 
     _require_tty(message)
-    question = questionary.confirm(message, default=default, auto_enter=True)
-    answer = _add_escape_to_cancel(question).ask()
-    return bool(answer)
+    status: dict[str, object] = {"answer": None}
+    bindings = _build_single_key_bindings(choices, default_value, status)
+
+    def get_prompt_tokens():
+        tokens = [("class:qmark", "?"), ("class:question", f" {message} ")]
+        if status["answer"] is None:
+            tokens.append(("class:instruction", f"{instruction} "))
+        else:
+            tokens.append(("class:answer", status["answer"][0]))
+        return to_formatted_text(tokens)
+
+    merged_style = merge_styles_default([None])
+    return PromptSession(
+        get_prompt_tokens, key_bindings=bindings, style=merged_style
+    ).app.run()
+
+
+def _ask_confirm(message: str, default: bool = False) -> bool:
+    """Yes/no prompt that answers on the y/n keypress itself (no Enter
+    needed)."""
+    return bool(
+        _ask_single_key(
+            message,
+            [("y", "Yes", True), ("n", "No", False)],
+            default_value=default,
+            instruction="(y/n)",
+        )
+    )
+
+
+def _ask_upload_choice(prompt: str) -> str:
+    """The telemetry-upload confirm, split out from _resolve_upload_decision
+    so tests can stub it without going through a real terminal prompt."""
+    return _ask_single_key(
+        prompt,
+        [("y", "Yes", "yes"), ("n", "No", "no"), ("a", "Always", "always")],
+        default_value="no",
+        instruction="(y/n/a - a saves 'always' as the new default)",
+    )
 
 
 def _ensure_ollama_running(action: str, *, assume_yes: bool = False):
@@ -924,7 +1111,48 @@ def _resolve_upload_decision(prompt: str) -> bool:
         return True
     if policy == "never":
         return False
-    return _ask_confirm(prompt)
+    answer = _ask_upload_choice(prompt)
+    if answer == "always":
+        if load_config().get("telemetry_endpoint"):
+            config_mod.update_config(telemetry_send_policy="always")
+            console.print(
+                "[dim]Saved: omm will now always send benchmark results "
+                "(change with `omm setting upload`).[/dim]"
+            )
+        return True
+    return answer == "yes"
+
+
+def _select_recommended_model(
+    info: object,
+    ranked: list[tuple[dict, float | None]],
+    refs: list[str],
+) -> str | None:
+    import questionary
+
+    rows = recommend_ui.build_rows(ranked, refs)
+    recommend_ui.print_screen(console, info, len(rows))
+    choices = [
+        questionary.Choice(
+            title=recommend_ui.choice_title(row, console.size.width),
+            value=row.value,
+        )
+        for row in rows
+    ]
+    selected = _ask_select(
+        questionary.select(
+            "Choose a model",
+            choices=choices,
+            qmark="◆",
+            pointer="❯",
+            instruction="(↑↓ move · Enter select · Esc cancel)",
+            style=recommend_ui.SELECT_STYLE,
+        )
+    )
+    if selected is not None:
+        selected_row = next(row for row in rows if row.value == selected)
+        recommend_ui.print_detail(console, info, selected_row)
+    return selected
 
 
 @app.command()
@@ -932,7 +1160,6 @@ def recommend() -> None:
     """Scan hardware and suggest a model to install, ranked by a model
     trained on real install telemetry (falls back to static rules if the
     trained model can't be fetched)."""
-    import questionary
     import requests
 
     info = scan_hardware()
@@ -948,16 +1175,9 @@ def recommend() -> None:
             err_console.print("[red]No model is predicted to run on this hardware.[/red]")
             raise typer.Exit(1)
 
-        refs = [search_mod.install_ref(c) for c, speed in viable]
+        refs = [search_mod.exact_install_ref(c) for c, speed in viable]
         session_cache.record_seen(refs)
-        choices = [
-            questionary.Choice(
-                title=f"{c['name']} (~{speed:.0f} tok/s predicted) - {c.get('description', '')}",
-                value=ref,
-            )
-            for (c, speed), ref in zip(viable, refs)
-        ]
-        selected = _ask_select(questionary.select("Pick a model to install:", choices=choices))
+        selected = _select_recommended_model(info, viable, refs)
         if selected is None:
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
@@ -985,11 +1205,11 @@ def recommend() -> None:
         raise typer.Exit(1)
 
     session_cache.record_seen([r["name"] for r in matches])
-    choices = [
-        questionary.Choice(title=f"{r['name']} - {r['description']}", value=r["name"])
-        for r in matches
-    ]
-    selected = _ask_select(questionary.select("Pick a model to install:", choices=choices))
+    selected = _select_recommended_model(
+        info,
+        [(rule, None) for rule in matches],
+        [rule["name"] for rule in matches],
+    )
     if selected is None:
         err_console.print("[yellow]Cancelled.[/yellow]")
         raise typer.Exit(0)
@@ -1182,16 +1402,23 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
     )
 
 
-def _link_model(dest, repo_id: str | None, ollama_tag: str) -> dict[str, bool]:
-    """Link a downloaded .gguf into every installed engine, printing a skip
-    notice for whichever engine isn't installed or fails to link. Shared
-    by `install` and `update` since both need the exact same behavior
-    after a fresh (or refreshed) download."""
+def _link_model(
+    dest, repo_id: str | None, ollama_tag: str, *, only_ollama: bool = False
+) -> dict[str, bool]:
+    """Link a downloaded .gguf into every installed engine, printing a
+    warning only when an installed engine fails to link (uninstalled
+    engines are skipped silently). Shared by `install` and `update` since
+    both need the exact same behavior after a fresh (or refreshed) download.
+
+    `only_ollama` restricts linking to Ollama alone - `omm contribute` only
+    needs Ollama to benchmark, so linking into LM Studio/Jan/etc. for every
+    downloaded candidate is unnecessary churn."""
     linked = {spec.key: False for spec in linker.ENGINES}
 
     for spec in linker.ENGINES:
+        if only_ollama and spec.key != "ollama":
+            continue
         if not linker.is_engine_installed(spec.key):
-            console.print(f"[dim]{spec.label} not detected, skipping link.[/dim]")
             continue
         try:
             warning = linker.link_engine(spec.key, dest, repo_id=repo_id, ollama_tag=ollama_tag)
@@ -1213,6 +1440,7 @@ class InstallOutcome:
     tokens_per_sec: float | None = None
     telemetry_sent: bool = False
     skipped_unfit: bool = False
+    skipped_low_disk: bool = False
     sha256: str | None = None
     failure_reason: str | None = None
     model_metadata: dict | None = None
@@ -1283,16 +1511,57 @@ def _maybe_auto_calibrate(
         return
     if predicted <= 0:
         return
-    factor = calibration.record_calibration(
-        hardware,
-        measured_tokens_per_sec=tokens_per_sec,
-        predicted_tokens_per_sec=predicted,
-        engine="ollama",
-    )
+    try:
+        factor = calibration.record_calibration(
+            hardware,
+            measured_tokens_per_sec=tokens_per_sec,
+            predicted_tokens_per_sec=predicted,
+            engine="ollama",
+        )
+    except OSError:
+        return
     console.print(
         f"[dim]Local calibration updated: correction ×{factor:.2f} "
         "(not uploaded).[/dim]"
     )
+
+
+def _fetch_sibling_candidates(boundary: dict) -> list[dict]:
+    """Phase C helper for `omm contribute`: given the candidate dict that
+    was actually benchmarked at the fit/unfit boundary, look up every
+    other GGUF quantization in the same repo and hand back the unseen
+    ones closest to that quant level first, so the boundary search steps
+    outward one quant at a time instead of jumping to an extreme.
+    Best-effort - never raises, so it can't abort the contribution loop."""
+    provider = boundary.get("provider") or "huggingface"
+    repo_id = boundary["repo_id"]
+    tried_bits = parse_quant_bits(boundary["filename"])
+    if tried_bits is None:
+        return []
+    try:
+        filenames, _ = fetch_repo_files(provider, repo_id)
+    except ModelResolutionError:
+        return []
+
+    scored = []
+    for filename in filenames:
+        if filename == boundary["filename"] or is_mmproj_filename(filename):
+            continue
+        bits = parse_quant_bits(filename)
+        if bits is None:
+            continue
+        scored.append((abs(bits - tried_bits), filename))
+    scored.sort(key=lambda item: item[0])
+
+    siblings = []
+    for _, filename in scored:
+        candidate = dict(boundary)
+        candidate["provider"] = provider
+        candidate["filename"] = filename
+        candidate.pop("quant_bits", None)
+        candidate["size_bytes"] = remote_file_size(provider, repo_id, filename)
+        siblings.append(candidate)
+    return siblings
 
 
 def _install_impl(
@@ -1304,6 +1573,7 @@ def _install_impl(
     stop_event: threading.Event | None = None,
     use_quality_eval: bool = False,
     quality_pack: dict | None = None,
+    link_only_ollama: bool = False,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -1340,6 +1610,20 @@ def _install_impl(
     if dest.exists():
         err_console.print(f"[yellow]{filename} already downloaded, skipping fetch.[/yellow]")
     else:
+        size_bytes = remote_file_size(resolved.provider or "huggingface", repo_id, filename) if repo_id else None
+        if size_bytes:
+            free_gb = shutil.disk_usage(MODELS_DIR).free / (1024**3)
+            required_gb = size_bytes / (1024**3)
+            if required_gb > free_gb:
+                message = (
+                    f"{filename} needs ~{required_gb:.1f}GB but only "
+                    f"{free_gb:.1f}GB free on disk"
+                )
+                if skip_unfit:
+                    err_console.print(f"[yellow]Skipping {message}.[/yellow]")
+                    return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
+                err_console.print(f"[red]Not enough disk space: {message}.[/red]")
+                raise typer.Exit(1)
         try:
             if stop_event is not None:
                 download_file(url, dest, stop_check=stop_event.is_set)
@@ -1347,6 +1631,12 @@ def _install_impl(
                 download_file(url, dest)
         except DownloadCancelled as e:
             raise ContributionStopped(filename) from e
+        except InsufficientDiskSpaceError as e:
+            _cleanup_incomplete_install(filename)
+            err_console.print(f"[red]{e}[/red]")
+            if skip_unfit:
+                return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
+            raise typer.Exit(1) from e
         except DownloadError as e:
             err_console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from e
@@ -1355,7 +1645,7 @@ def _install_impl(
     sha256 = sha256_file(dest)
 
     ollama_tag = linker.sanitize_ollama_tag(filename)
-    linked = _link_model(dest, repo_id, ollama_tag)
+    linked = _link_model(dest, repo_id, ollama_tag, only_ollama=link_only_ollama)
 
     registry.upsert_entry(
         filename,
@@ -1560,11 +1850,18 @@ def _cleanup_incomplete_install(filename: str) -> bool:
     part = dest.with_suffix(dest.suffix + ".part")
     cleaned = False
     if part.exists():
-        part.unlink()
-        cleaned = True
+        try:
+            part.unlink()
+            cleaned = True
+        except OSError:
+            pass
+        _sidecar_path(part).unlink(missing_ok=True)
     if dest.exists():
-        dest.unlink()
-        cleaned = True
+        try:
+            dest.unlink()
+            cleaned = True
+        except OSError:
+            pass
     return cleaned
 
 
@@ -1574,9 +1871,9 @@ def _unlink_with_retry(path: Path, *, attempts: int = 8) -> None:
         try:
             path.unlink(missing_ok=True)
             return
-        except PermissionError:
+        except OSError:
             if attempt == attempts - 1:
-                raise
+                return
             time.sleep(min(0.1 * (2**attempt), 1.0))
 
 
@@ -1597,7 +1894,9 @@ def _remove_one(filename: str, entry: dict) -> None:
 
     dest = MODELS_DIR / filename
     _unlink_with_retry(dest)
-    _unlink_with_retry(dest.with_suffix(dest.suffix + ".part"))
+    part = dest.with_suffix(dest.suffix + ".part")
+    _unlink_with_retry(part)
+    _unlink_with_retry(_sidecar_path(part))
 
     registry.remove_entry(filename)
     console.print(f"[green]Removed {filename}[/green]")
@@ -1703,7 +2002,10 @@ def info(
     table.add_row("Version", _entry_version(entry))
     table.add_row("Size", f"{size_gb:.2f} GB")
     table.add_row("Installed at", entry.get("installed_at", "unknown"))
+    installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
     for spec in linker.ENGINES:
+        if not installed[spec.key]:
+            continue
         if spec.key == "ollama":
             table.add_row("Ollama", f"ollama run {ollama_tag}" if linked.get("ollama") else "not linked")
         else:
@@ -1713,6 +2015,9 @@ def info(
             )
 
     console.print(table)
+    note = _missing_engines_note(installed)
+    if note:
+        console.print(note)
 
 
 def _update_one(filename: str, entry: dict) -> str:
@@ -1756,14 +2061,21 @@ def _update_one(filename: str, entry: dict) -> str:
         except DownloadError as e:
             err_console.print(f"[red]{filename}: update download failed: {e}[/red]")
             tmp.unlink(missing_ok=True)
-            tmp.with_suffix(tmp.suffix + ".part").unlink(missing_ok=True)
+            tmp_part = tmp.with_suffix(tmp.suffix + ".part")
+            tmp_part.unlink(missing_ok=True)
+            _sidecar_path(tmp_part).unlink(missing_ok=True)
             return "skipped"
 
         new_sha256 = sha256_file(tmp)
         if new_sha256 == old_sha256:
             tmp.unlink(missing_ok=True)
             return "up_to_date"
-        tmp.replace(dest)
+        try:
+            tmp.replace(dest)
+        except OSError as e:
+            err_console.print(f"[red]{filename}: update failed to finalize: {e}[/red]")
+            tmp.unlink(missing_ok=True)
+            return "skipped"
 
     ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
     linked = _link_model(dest, repo_id, ollama_tag)
@@ -2022,12 +2334,16 @@ def calibrate(
     if measured is None or measured <= 0:
         err_console.print("[red]Calibration requires a running Ollama model server.[/red]")
         raise typer.Exit(1)
-    factor = calibration.record_calibration(
-        hardware,
-        measured_tokens_per_sec=measured,
-        predicted_tokens_per_sec=predicted,
-        engine="ollama",
-    )
+    try:
+        factor = calibration.record_calibration(
+            hardware,
+            measured_tokens_per_sec=measured,
+            predicted_tokens_per_sec=predicted,
+            engine="ollama",
+        )
+    except OSError as e:
+        err_console.print(f"[red]Could not save calibration: {e}[/red]")
+        raise typer.Exit(1) from e
     console.print(
         f"[green]Local calibration saved: {measured:.1f} tok/s measured, "
         f"{predicted:.1f} predicted, correction ×{factor:.2f}.[/green]"
@@ -2327,7 +2643,11 @@ def link_models(
 
     if directory is not None:
         directory = directory.expanduser()
-        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            err_console.print(f"[red]Could not create {directory}: {error}[/red]")
+            raise typer.Exit(1) from error
         linked_count = 0
         skipped_missing = 0
         copy_warnings: list[str] = []
@@ -2421,10 +2741,27 @@ def _autoremove_incomplete_installs() -> int:
             continue
         if path.suffix == ".part":
             if path.with_suffix("").name not in reg:
-                path.unlink()
+                try:
+                    path.unlink()
+                except OSError:
+                    continue
+                removed += 1
+                _sidecar_path(path).unlink(missing_ok=True)
+        elif path.name.endswith(".part.ranges.json"):
+            # Resume sidecar left behind after its .part was already
+            # removed some other way (e.g. `omm uninstall`).
+            part = path.with_name(path.name.removesuffix(".ranges.json"))
+            if not part.exists():
+                try:
+                    path.unlink()
+                except OSError:
+                    continue
                 removed += 1
         elif path.suffix == ".gguf" and path.name not in reg:
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError:
+                continue
             removed += 1
     return removed
 
@@ -2590,9 +2927,10 @@ def benchmark_cmd(
 
         console.print(f"[green]Saved reproducible local evidence to {output}.[/green]")
         console.print(
-            "[dim]No generated text is stored. v6/v7 telemetry includes CPU model, "
-            "architecture, and core counts; it excludes GPU names. "
-            "aggregate numbers may be shared below. Not a leaderboard.[/dim]"
+            "[dim]No generated text is stored. v8 telemetry includes a CPU/GPU "
+            "generation score (never the model name), plus CPU architecture and "
+            "core counts. aggregate numbers may be shared below. Not a "
+            "leaderboard.[/dim]"
         )
         if _resolve_upload_decision(
             "Send these benchmark results to the server to help train the recommendation model?"
@@ -2758,6 +3096,7 @@ def _report_telemetry(
     safe_filename = _safe_model_filename(model_filename or filename)
     complete_runtime = _complete_runtime(runtime)
     complete_cpu = _complete_cpu_metadata(info)
+    complete_gpu = _complete_gpu_metadata(info)
     client_version = _client_version()
     if (
         parameter_count is not None and active_parameter_count is not None and quant_bits is not None
@@ -2765,23 +3104,25 @@ def _report_telemetry(
         and isinstance(engine_version, str) and engine_version
         and client_version is not None and sample_count >= 3
     ):
-        # v7: same direct-metadata contract as the old v6 promotion, plus an
-        # explicit outcome so this measurement is unambiguously distinct
-        # from a v7 model_unfit/transient_error failure event (never sent
-        # from this function - see _report_failure_telemetry). Do not send
-        # v6 from new code: v6 stays a read-only, backward-compatible
-        # schema for historical data already in Firebase.
+        # v8: same direct-metadata contract as v7, except cpu_score/cpu_tier
+        # (locally computed, never the raw name) replace cpu_model, and
+        # gpu_score/gpu_tier (same parser, run on the GPU name instead) are
+        # attached whenever a GPU was detected at all. Do not send v6/v7
+        # from new code: both stay read-only, backward-compatible schemas
+        # for historical data already in Firebase.
         event.update(
             parameter_count_b=parameter_count,
             active_parameter_count_b=active_parameter_count,
             quant_bits=quant_bits,
             engine_version=engine_version,
             client_version=client_version,
-            benchmark_version=7,
+            benchmark_version=8,
             outcome="success",
             **complete_runtime,
             **complete_cpu,
         )
+        if complete_gpu:
+            event.update(complete_gpu)
         if safe_filename is not None:
             event["model_filename"] = safe_filename
         if digest is not None:
@@ -2826,7 +3167,7 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
         "unified_memory": info.unified_memory,
         "model_installed": _safe_model_filename(tag) or str(tag)[:512],
         "engine": "ollama",
-        "benchmark_version": 7,
+        "benchmark_version": 8,
         "outcome": outcome,
         "failure_reason": reason,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
@@ -2843,6 +3184,9 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     complete_cpu = _complete_cpu_metadata(info)
     if complete_cpu:
         event.update(complete_cpu)
+    complete_gpu = _complete_gpu_metadata(info)
+    if complete_gpu:
+        event.update(complete_gpu)
 
     # Best-effort model metadata: present whenever the failure happened after
     # /api/show succeeded (e.g. an out-of-memory load), absent when the model
@@ -2943,8 +3287,11 @@ def _safe_model_filename(value: object) -> str | None:
     return Path(value.replace("\\", "/")).name
 
 
-def _complete_cpu_metadata(info: HardwareInfo) -> dict[str, str | int] | None:
-    """Return direct-metadata (v6/v7) CPU data only when it is useful for training."""
+def _complete_cpu_metadata(info: HardwareInfo) -> dict[str, str | int | float] | None:
+    """Return direct-metadata (v8) CPU data only when it is useful for
+    training. Never includes the raw CPU model name - only a locally
+    computed ordinal score/tier from the same parser GPU names use (see
+    docs/telemetry-v8.md)."""
     model = getattr(info, "cpu", None)
     arch = getattr(info, "cpu_arch", None)
     physical = getattr(info, "cpu_physical_cores", None)
@@ -2959,12 +3306,26 @@ def _complete_cpu_metadata(info: HardwareInfo) -> dict[str, str | int] | None:
         or not 1 <= physical <= logical <= 1024
     ):
         return None
+    cpu_score, cpu_tier = parse_chip_score(model)
     return {
-        "cpu_model": model,
+        "cpu_score": cpu_score,
+        "cpu_tier": cpu_tier,
         "cpu_arch": arch,
         "cpu_physical_cores": physical,
         "cpu_logical_cores": logical,
     }
+
+
+def _complete_gpu_metadata(info: HardwareInfo) -> dict[str, float] | None:
+    """Return locally-computed v8 GPU chip score data, or None when no GPU
+    was detected at all. Never includes the raw GPU name (see
+    docs/telemetry-v8.md) - only the two numbers `parse_chip_score` derives
+    from it."""
+    name = getattr(info, "gpu_name", None)
+    if not isinstance(name, str) or not name.strip():
+        return None
+    gpu_score, gpu_tier = parse_chip_score(name)
+    return {"gpu_score": gpu_score, "gpu_tier": gpu_tier}
 
 
 def _complete_runtime(runtime: object) -> dict | None:
@@ -2988,6 +3349,7 @@ def _client_version() -> str | None:
 class _ContributionStats:
     benchmarked: list[tuple[str, float]]
     skipped_unfit: int = 0
+    skipped_low_disk: int = 0
     attempted_not_uploaded: int = 0
     daemon_restarts: int = 0
     given_up_on: int = 0
@@ -3023,15 +3385,20 @@ class _EscListener:
     """Background key-listener so Esc can interrupt `omm contribute` even
     mid-download/mid-benchmark, not just at a questionary prompt. No-ops
     (Ctrl+C is still the fallback) when stdin isn't a real terminal - tests,
-    CI, and piped input all fall into this path, mirroring session_cache.py's
-    tty-detection idiom."""
+    CI, and piped input all fall into this path. Uses `sys.stdin.isatty()`
+    rather than session_cache.py's `os.ttyname()` idiom: that call doesn't
+    exist on Windows at all, which used to skip starting this listener
+    there entirely and left Esc permanently dead on Windows."""
 
     def __init__(self) -> None:
         self.stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        if not sys.stdin.isatty():
+        try:
+            if not sys.stdin.isatty():
+                return
+        except (AttributeError, ValueError, OSError):
             return
         target = self._run_windows if platform.system() == "Windows" else self._run_posix
         self._thread = threading.Thread(target=target, daemon=True)
@@ -3057,19 +3424,29 @@ class _EscListener:
 
     def _run_posix(self) -> None:
         try:
-            import select
-
             from prompt_toolkit.input import create_input
 
             inp = create_input()
             with inp.raw_mode():
-                while not self.stop_event.is_set():
-                    ready, _, _ = select.select([inp.fileno()], [], [], 0.1)
-                    if not ready:
-                        continue
-                    for key_press in inp.read_keys():
-                        if key_press.key == Keys.Escape:
-                            self.stop_event.set()
+                if sys.platform == "win32":
+                    # Win32Input.read_keys() already polls the console input
+                    # buffer non-blockingly, so there's no fd to select() on
+                    # (Windows select() only works on sockets anyway).
+                    while not self.stop_event.is_set():
+                        for key_press in inp.read_keys():
+                            if key_press.key == Keys.Escape:
+                                self.stop_event.set()
+                        time.sleep(0.1)
+                else:
+                    import select
+
+                    while not self.stop_event.is_set():
+                        ready, _, _ = select.select([inp.fileno()], [], [], 0.1)
+                        if not ready:
+                            continue
+                        for key_press in inp.read_keys():
+                            if key_press.key == Keys.Escape:
+                                self.stop_event.set()
         except Exception:
             pass  # best-effort; Ctrl+C still works as a fallback
 
@@ -3080,6 +3457,7 @@ def _run_contribution_loop(
     refetch,
     quality_pack: dict | None = None,
     daemon_ref: dict | None = None,
+    fetch_siblings=None,
 ) -> _ContributionStats:
     stats = _ContributionStats(benchmarked=[])
     consecutive_daemon_failures = 0
@@ -3107,7 +3485,7 @@ def _run_contribution_loop(
             stats.daemon_restarts += 1
             consecutive_daemon_failures = 0
 
-        candidate = queue.next_candidate(refetch=refetch)
+        candidate = queue.next_candidate(refetch=refetch, fetch_siblings=fetch_siblings)
         if candidate is None:
             console.print("[dim]No more candidates available for this hardware.[/dim]")
             stats.exhausted = True
@@ -3132,6 +3510,7 @@ def _run_contribution_loop(
                 stop_event=stop_event,
                 use_quality_eval=True,
                 quality_pack=quality_pack,
+                link_only_ollama=True,
             )
         except ContributionStopped as e:
             _cleanup_incomplete_install(e.filename)
@@ -3173,6 +3552,7 @@ def _run_contribution_loop(
                         stop_event=stop_event,
                         use_quality_eval=True,
                         quality_pack=quality_pack,
+                        link_only_ollama=True,
                     )
                 except ContributionStopped as e:
                     _cleanup_incomplete_install(e.filename)
@@ -3195,6 +3575,14 @@ def _run_contribution_loop(
             # next_candidate() always has one more unfit entry to hand
             # back, so the loop spins at machine speed forever instead of
             # reaching "No more candidates" or trying refetch.
+            queue.mark_seen(ref_str)
+            continue
+
+        if outcome.skipped_low_disk:
+            stats.skipped_low_disk += 1
+            # Free space doesn't reliably change mid-session either, and a
+            # later `omm contribute` run will re-check it from scratch -
+            # same rationale as the skipped_unfit case just above.
             queue.mark_seen(ref_str)
             continue
 
@@ -3255,6 +3643,7 @@ def _print_contribution_summary(
     for name, tokens_per_sec in stats.benchmarked:
         console.print(f"  - {name:<40} {tokens_per_sec:.1f} tok/s")
     console.print(f"Skipped (predicted not to fit this hardware): {stats.skipped_unfit}")
+    console.print(f"Skipped (not enough disk space): {stats.skipped_low_disk}")
     console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
     if stats.given_up_on:
         console.print(
@@ -3389,7 +3778,12 @@ def contribute(
         start_time = time.monotonic()
         try:
             stats = _run_contribution_loop(
-                queue, listener.stop_event, refetch, quality_pack=quality_pack, daemon_ref=daemon_ref
+                queue,
+                listener.stop_event,
+                refetch,
+                quality_pack=quality_pack,
+                daemon_ref=daemon_ref,
+                fetch_siblings=_fetch_sibling_candidates,
             )
         finally:
             listener.stop_event.set()
@@ -3415,5 +3809,26 @@ def contribute(
             benchmark.stop_ollama_daemon(daemon_ref["proc"])
 
 
+def main() -> None:
+    """Console-script entry point (see pyproject.toml [project.scripts]).
+    Catches disk-full errors that escape every local handler - e.g. a JSON
+    write during `omm autoremove` - and prints one clean line instead of
+    Typer's default traceback. Everything else propagates untouched so a
+    genuine bug still surfaces as a normal traceback and can be reported."""
+    try:
+        app()
+    except InsufficientDiskSpaceError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise SystemExit(1) from None
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            err_console.print(
+                "[red]Not enough disk space to complete this operation. "
+                "Free up space and try again.[/red]"
+            )
+            raise SystemExit(1) from None
+        raise
+
+
 if __name__ == "__main__":
-    app()
+    main()

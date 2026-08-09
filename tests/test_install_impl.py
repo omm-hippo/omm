@@ -174,7 +174,7 @@ def test_plain_install_path_unaffected_by_stop_event_none(isolated_omm_home, mon
 
     monkeypatch.setattr(cli, "download_file", fake_download)
     _stub_common(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 10.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
 
@@ -188,7 +188,7 @@ def test_benchmark_always_runs_but_upload_needs_confirm(isolated_omm_home, monke
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     bench_calls = []
     monkeypatch.setattr(
         cli.benchmark, "benchmark_ollama", lambda tag: bench_calls.append(tag) or 42.0
@@ -230,7 +230,7 @@ def test_auto_calibrate_runs_silently_when_cached_model_available(isolated_omm_h
     )
     monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 30.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
     recorded = {}
@@ -255,7 +255,7 @@ def test_resolve_upload_decision_always_skips_prompt(isolated_omm_home):
 def test_resolve_upload_decision_never_skips_prompt(isolated_omm_home, monkeypatch):
     cli.config_mod.update_config(telemetry_send_policy="never")
     monkeypatch.setattr(
-        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+        cli, "_ask_upload_choice", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
     )
 
     assert cli._resolve_upload_decision("prompt") is False
@@ -263,10 +263,18 @@ def test_resolve_upload_decision_never_skips_prompt(isolated_omm_home, monkeypat
 
 def test_resolve_upload_decision_ask_falls_back_to_confirm(isolated_omm_home, monkeypatch):
     cli.config_mod.update_config(telemetry_send_policy="ask")
-    monkeypatch.setattr(cli, "_ask_confirm", lambda message, **k: message == "prompt")
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda message: "yes" if message == "prompt" else "no")
 
     assert cli._resolve_upload_decision("prompt") is True
     assert cli._resolve_upload_decision("other") is False
+
+
+def test_resolve_upload_decision_always_choice_persists_policy_and_uploads(isolated_omm_home, monkeypatch):
+    cli.config_mod.update_config(telemetry_send_policy="ask")
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "always")
+
+    assert cli._resolve_upload_decision("prompt") is True
+    assert cli.load_config()["telemetry_send_policy"] == "always"
 
 
 def test_install_auto_uploads_without_confirm_when_policy_always(isolated_omm_home, monkeypatch):
@@ -400,7 +408,7 @@ def test_report_telemetry_emits_v7_success_with_cpu_fields(
     )
 
     event = sent[0]
-    assert event["benchmark_version"] == 7
+    assert event["benchmark_version"] == 8
     assert event["outcome"] == "success"
     assert "failure_reason" not in event
     assert event["parameter_count_b"] == 7
@@ -410,10 +418,15 @@ def test_report_telemetry_emits_v7_success_with_cpu_fields(
     assert event["gpu_offload_percent"] == 75
     assert event["model_digest"] == "a" * 64
     assert "runtime" not in event
-    assert event["cpu_model"] == "private CPU name"
+    assert event["cpu_score"] == 0.0
+    assert event["cpu_tier"] == 0.0
     assert event["cpu_arch"] == "x86_64"
     assert event["cpu_physical_cores"] == 4
     assert event["cpu_logical_cores"] == 8
+    assert event["gpu_score"] == 0.0
+    assert event["gpu_tier"] == 0.0
+    assert "cpu_model" not in event
+    assert "private CPU name" not in json.dumps(event)
     assert "private GPU name" not in json.dumps(event)
 
 
@@ -555,3 +568,147 @@ def test_use_quality_eval_failure_reports_no_result(isolated_omm_home, monkeypat
 
     assert outcome.tokens_per_sec is None
     assert outcome.telemetry_sent is False
+
+
+def test_install_impl_exits_when_not_enough_disk_space_and_not_skip_unfit(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 50 * 1024**3)
+    monkeypatch.setattr(
+        cli.shutil, "disk_usage", lambda path: SimpleNamespace(total=0, used=0, free=10 * 1024**3)
+    )
+    download_calls = []
+    monkeypatch.setattr(cli, "download_file", lambda *a, **k: download_calls.append(a))
+
+    with pytest.raises(cli.typer.Exit) as exc_info:
+        cli._install_impl(_resolved())
+
+    assert exc_info.value.exit_code == 1
+    assert download_calls == []
+
+
+def test_install_impl_skips_gracefully_when_not_enough_disk_space_and_skip_unfit(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 50 * 1024**3)
+    monkeypatch.setattr(
+        cli.shutil, "disk_usage", lambda path: SimpleNamespace(total=0, used=0, free=10 * 1024**3)
+    )
+    download_calls = []
+    monkeypatch.setattr(cli, "download_file", lambda *a, **k: download_calls.append(a))
+
+    outcome = cli._install_impl(_resolved(), skip_unfit=True)
+
+    assert outcome.skipped_low_disk is True
+    assert download_calls == []
+
+
+def test_install_impl_proceeds_when_disk_space_check_is_inconclusive(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 10.0)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+
+    outcome = cli._install_impl(_resolved())
+
+    assert outcome.tokens_per_sec == 10.0
+
+
+def test_install_impl_cleans_up_partial_file_and_skips_on_insufficient_disk_space_mid_download(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
+
+    def fake_download(url, dest, **kwargs):
+        dest.with_suffix(dest.suffix + ".part").write_bytes(b"partial")
+        raise cli.InsufficientDiskSpaceError("disk full mid-download")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    outcome = cli._install_impl(_resolved(), skip_unfit=True)
+
+    assert outcome.skipped_low_disk is True
+    dest = cli.MODELS_DIR / "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    assert not dest.with_suffix(dest.suffix + ".part").exists()
+
+
+def test_install_impl_exits_cleanly_on_insufficient_disk_space_mid_download_without_skip_unfit(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
+    monkeypatch.setattr(
+        cli,
+        "download_file",
+        lambda *a, **k: (_ for _ in ()).throw(cli.InsufficientDiskSpaceError("disk full")),
+    )
+
+    with pytest.raises(cli.typer.Exit) as exc_info:
+        cli._install_impl(_resolved())
+
+    assert exc_info.value.exit_code == 1
+
+
+def test_auto_calibrate_does_not_crash_install_when_write_fails(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        cli.predictor, "load_cached_model", lambda: {"trees": [{"leaf": True, "value": 20.0}]}
+    )
+    hw_stub = SimpleNamespace(
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=16.0,
+        ram_available_gb=12.0,
+        vram_total_gb=None,
+        vram_free_gb=None,
+        unified_memory=False,
+        gpu_name=None,
+        gpu_tflops=None,
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: hw_stub)
+    monkeypatch.setattr(
+        cli.predictor, "predict_speed_interval", lambda *args, **kwargs: (20.0, 20.0, 20.0)
+    )
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 30.0)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+    monkeypatch.setattr(
+        cli.calibration,
+        "record_calibration",
+        lambda hardware, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    outcome = cli._install_impl(_resolved())  # must not raise
+
+    assert outcome.tokens_per_sec == 30.0
+
+
+def test_link_model_does_not_print_skip_notice_for_uninstalled_engines(
+    isolated_omm_home, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key == "ollama")
+    monkeypatch.setattr(
+        cli.linker,
+        "link_engine",
+        lambda key, dest, *, repo_id, ollama_tag: None,
+    )
+    dest = tmp_path / "model.gguf"
+    dest.write_bytes(b"x")
+
+    linked = cli._link_model(dest, "org/repo", "model-tag")
+
+    captured = capsys.readouterr()
+    assert "not detected, skipping link" not in captured.out
+    assert linked == {
+        "ollama": True,
+        "lmstudio": False,
+        "jan": False,
+        "anythingllm": False,
+        "mstystudio": False,
+        "textgenwebui": False,
+        "koboldcpp": False,
+    }

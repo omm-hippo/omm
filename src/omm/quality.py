@@ -1064,7 +1064,10 @@ def collect_evidence(
 
 
 def write_evidence(report: dict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
-    temporary.replace(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+        temporary.replace(path)
+    except OSError as e:
+        raise QualityEvaluationError(f"Could not write evidence to {path}: {e}") from e

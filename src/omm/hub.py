@@ -107,6 +107,10 @@ def download_url(provider: str, repo_id: str, filename: str) -> str:
     return _PROVIDER_MODULES[provider].download_url(repo_id, filename)
 
 
+def fetch_repo_files(provider: str, repo_id: str) -> tuple[list[str], float | None]:
+    return _PROVIDER_MODULES[provider].fetch_repo_files(repo_id)
+
+
 def remote_file_size(provider: str, repo_id: str, filename: str) -> int | None:
     return _PROVIDER_MODULES[provider].remote_file_size(repo_id, filename)
 

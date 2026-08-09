@@ -141,6 +141,19 @@ def test_validate_dataset_rejects_union_exceeding_the_sum_it_is_drawn_from():
         validate_dataset(audit, min_unique_configurations=1)
 
 
+def test_validate_dataset_accepts_v8_only_corpus():
+    # Steady-state future: telemetry is 100% v8 (no v6/v7 rows at all). The
+    # ceiling check must count v8 or this raises a bare ValueError instead of
+    # the caught InsufficientTelemetryError, hard-failing the training job.
+    audit = {
+        "raw_rows": 5, "rejected_rows": 0, "unique_configurations": 5,
+        "direct_v6_unique_configurations": 0, "direct_v7_unique_configurations": 0,
+        "direct_v8_unique_configurations": 5,
+        "direct_unique_configurations": 5,
+    }
+    validate_dataset(audit, min_unique_configurations=5)  # must not raise
+
+
 def test_dataset_rejection_rate_must_be_a_fraction():
     with pytest.raises(ValueError, match="at most 1"):
         validate_dataset(
@@ -289,3 +302,45 @@ def test_compare_artifacts_forwards_fit_examples_to_both_models():
     # explicit-False example is a false positive under the explicit labels.
     assert report["candidate"]["fit_false_positive_rate"] == 1.0
     assert report["baseline"]["fit_false_positive_rate"] == 1.0
+
+
+def test_compare_artifacts_ignores_fit_regression_with_too_few_negative_examples():
+    # Regression test for the 2026-08-07 incident: real telemetry had
+    # exactly one model_unfit/performance_unfit row, and a single flipped
+    # prediction on it swung fit_balanced_accuracy 0.994 -> 0.5 and
+    # fit_false_positive_rate 0.0 -> 1.0, hard-failing every nightly
+    # retrain. min_fit_negative_examples guards the fit metrics the same
+    # way min_selection_groups already guards the selection metrics.
+    inner = {
+        "feature": 0, "threshold": 6.0,
+        "left": {"leaf": True, "value": 0.0},
+        "right": {"leaf": True, "value": 3.0},
+    }
+
+    def outer(outlier_value: float) -> dict:
+        # ram_gb <= 50 reaches the shared `inner` subtree (both SELECTION_X
+        # rows have ram_gb=16), so candidate and baseline predict
+        # identically on SELECTION_X - only the single fit_examples row
+        # with ram_gb=999 can differ between them.
+        return {
+            "feature": 1, "threshold": 50.0,
+            "left": inner,
+            "right": {"leaf": True, "value": outlier_value},
+        }
+
+    baseline = artifact(0.0, feature_order=SELECTION_FEATURES, tree=outer(0.0))
+    candidate = artifact(0.0, feature_order=SELECTION_FEATURES, tree=outer(3.0))
+    fit_examples = [
+        ([8.0, 16.0, 7.0, 5.0, 7.0], True),
+        ([5.0, 999.0, 1.0, 1.0, 1.0], False),
+    ]
+
+    report = compare_artifacts(
+        candidate, baseline, SELECTION_X, SELECTION_Y,
+        min_selection_groups=1, fit_examples=fit_examples,
+    )
+
+    assert report["candidate"]["fit_false_positive_rate"] == 1.0
+    assert report["baseline"]["fit_false_positive_rate"] == 0.0
+    assert report["passed"] is True
+    assert report["failures"] == []

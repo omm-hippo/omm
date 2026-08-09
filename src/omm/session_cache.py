@@ -7,6 +7,7 @@ module. TTY-scoped so two terminal windows never see each other's results.
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -24,11 +25,38 @@ def _session_path() -> Path | None:
     # ever runs, which would short-circuit this to "no session" even when
     # fd 0 itself is a real tty.
     try:
-        tty = os.ttyname(0)
-    except (OSError, AttributeError):
-        # AttributeError: os.ttyname doesn't exist on Windows at all.
+        session_key = os.ttyname(0)
+    except OSError:
+        # Not a real tty (piped input, CI, non-interactive) - no session.
         return None
-    digest = hashlib.sha1(tty.encode()).hexdigest()
+    except AttributeError:
+        # os.ttyname doesn't exist on Windows at all. Fall back to the
+        # console window handle: pipx (and pip's other console-script
+        # shims) install `omm` as an .exe launcher stub that spawns
+        # python.exe as a *new child process* per invocation - Windows has
+        # no exec() to replace the process image in place - so the running
+        # process's direct parent is that ephemeral stub, not the
+        # persistent shell, and getppid() changes on every single call.
+        # GetConsoleWindow() instead returns the HWND of the console window
+        # the calling process is attached to, which stays constant across
+        # that whole stub -> python.exe hop (child processes inherit the
+        # console unless a step explicitly detaches), so it plays the same
+        # role ttyname() plays on POSIX: same window -> same key, different
+        # windows -> different keys.
+        try:
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()  # type: ignore[attr-defined]
+        except (AttributeError, OSError):
+            hwnd = 0
+        if hwnd:
+            session_key = str(hwnd)
+        else:
+            # No console attached (e.g. detached/GUI process) - fall back
+            # to the parent pid, best-effort.
+            try:
+                session_key = str(os.getppid())
+            except OSError:
+                return None
+    digest = hashlib.sha1(session_key.encode()).hexdigest()
     return config.OMM_HOME / "session" / f"{digest}.json"
 
 

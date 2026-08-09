@@ -13,6 +13,34 @@ def _no_tty(monkeypatch):
     monkeypatch.setattr(session_cache.os, "ttyname", _raise, raising=False)
 
 
+def _windows_no_ttyname(monkeypatch):
+    # Simulates os.ttyname not existing at all, the real situation on
+    # Windows - AttributeError, not OSError.
+    def _raise(fd):
+        raise AttributeError("module 'os' has no attribute 'ttyname'")
+
+    monkeypatch.setattr(session_cache.os, "ttyname", _raise, raising=False)
+
+
+class _FakeKernel32:
+    def __init__(self, hwnd):
+        self.hwnd = hwnd
+
+    def GetConsoleWindow(self):
+        return self.hwnd
+
+
+class _FakeWindll:
+    def __init__(self, hwnd):
+        self.kernel32 = _FakeKernel32(hwnd)
+
+
+def _fake_console_window(monkeypatch, hwnd):
+    monkeypatch.setattr(
+        session_cache.ctypes, "windll", _FakeWindll(hwnd), raising=False
+    )
+
+
 def test_record_and_load_seen_roundtrips(isolated_omm_home, monkeypatch):
     _fake_tty(monkeypatch)
 
@@ -74,6 +102,39 @@ def test_different_ttys_do_not_share_state(isolated_omm_home, monkeypatch):
 
     _fake_tty(monkeypatch, "/dev/tty-two")
     assert session_cache.load_last_results() == []
+
+
+def test_windows_session_survives_new_pid_per_invocation(
+    isolated_omm_home, monkeypatch
+):
+    # Regression test: pipx (and other console-script shims) install `omm`
+    # on Windows as an .exe launcher stub that spawns python.exe as a new
+    # child process on every invocation, so os.getppid() returns a
+    # different value each call even within the same console window. The
+    # console window handle must be used instead, so results recorded by
+    # one "invocation" are still visible to the next despite getppid()
+    # changing in between.
+    _windows_no_ttyname(monkeypatch)
+    _fake_console_window(monkeypatch, 999)
+    monkeypatch.setattr(session_cache.os, "getppid", lambda: 1111)
+
+    session_cache.record_results(["a", "b"])
+
+    monkeypatch.setattr(session_cache.os, "getppid", lambda: 2222)
+
+    assert session_cache.load_last_results() == ["a", "b"]
+
+
+def test_windows_falls_back_to_getppid_when_no_console(
+    isolated_omm_home, monkeypatch
+):
+    _windows_no_ttyname(monkeypatch)
+    _fake_console_window(monkeypatch, 0)
+    monkeypatch.setattr(session_cache.os, "getppid", lambda: 4242)
+
+    session_cache.record_results(["x"])
+
+    assert session_cache.load_last_results() == ["x"]
 
 
 def test_corrupted_cache_file_is_treated_as_empty(isolated_omm_home, monkeypatch):

@@ -47,3 +47,29 @@ def test_import_without_yes_errors_without_a_tty(isolated_omm_home, monkeypatch)
     result = runner.invoke(cli.app, ["import"])
 
     assert result.exit_code == 1
+
+
+def test_import_continues_after_one_group_fails(isolated_omm_home, monkeypatch):
+    failing_group = _fake_group(sha256="baadf00d")
+    ok_group = _fake_group(sha256="deadbeef")
+    monkeypatch.setattr(
+        cli.scan_import, "find_external_models", lambda extra_path=None: [object(), object()]
+    )
+    monkeypatch.setattr(cli.scan_import, "group_by_hash", lambda found: [failing_group, ok_group])
+
+    adopted = []
+
+    def fake_adopt(g):
+        if g.sha256 == "baadf00d":
+            raise OSError("disk full")
+        adopted.append(g.sha256)
+        return SimpleNamespace(filename="model.gguf", bytes_saved=0)
+
+    monkeypatch.setattr(cli.scan_import, "adopt_group", fake_adopt)
+    monkeypatch.setattr(cli.registry, "load_registry", lambda: {"model.gguf": {}})
+
+    result = runner.invoke(cli.app, ["import", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert adopted == ["deadbeef"]
+    assert "baadf00d" not in adopted

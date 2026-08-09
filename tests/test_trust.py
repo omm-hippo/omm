@@ -188,6 +188,39 @@ def test_verify_commit_rejects_nested_update_branch_merge(repo, signing_key, all
     assert "failed signature verification" in message
 
 
+def test_verify_commit_passes_when_merge_commit_itself_is_signed(
+    repo, signing_key, allowed_signers
+):
+    """Regression test: syncing one branch into another with a plain local
+    `git merge` (not a GitHub PR merge) produces a 2-parent commit that is
+    itself directly SSH-signed by the maintainer. The old one-level
+    resolver always redirected 2-parent commits to their second parent,
+    so it would ignore this valid signature and instead try to verify
+    whatever the second parent happens to be (here, deliberately
+    unverifiable) - and fail a perfectly trustworthy commit."""
+    _commit(repo, "base")
+    default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
+    _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
+    (repo / "file.txt").write_text("feature\n")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    _commit(repo, "feature work")  # unsigned - must not matter
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    _run(
+        ["git", "config", "user.signingkey", str(signing_key.with_suffix(".pub"))],
+        cwd=repo,
+    )
+    _run(
+        ["git", "merge", "-q", "--no-ff", "-S", "-m", "merge feature", "feature"],
+        cwd=repo,
+    )
+    merge_commit = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+
+    ok, message = trust.verify_commit(repo, merge_commit, allowed_signers)
+
+    assert ok, message
+    assert merge_commit[:7] in message
+
+
 def test_current_trust_anchor_points_at_bundled_file():
     anchor = trust.current_trust_anchor()
 

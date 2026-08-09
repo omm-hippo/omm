@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from omm import cli, registry
@@ -102,3 +104,24 @@ def test_remove_still_errors_when_nothing_on_disk(isolated_omm_home):
 
     assert result.exit_code == 1
     assert "is not installed via omm" in result.stderr
+
+
+def test_uninstall_tolerates_permission_error_removing_model_file(isolated_omm_home, monkeypatch):
+    filename = "a.gguf"
+    dest = cli.MODELS_DIR / filename
+    dest.write_bytes(b"fake-gguf")
+    registry.save_registry({filename: {"linked": {"lmstudio": False, "ollama": False}}})
+
+    real_unlink = Path.unlink
+
+    def _flaky_unlink(self, missing_ok=False):
+        if self == dest:
+            raise OSError("permission denied")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _flaky_unlink)
+
+    result = runner.invoke(cli.app, ["uninstall", filename])
+
+    assert result.exit_code == 0, result.stdout
+    assert filename not in registry.load_registry()

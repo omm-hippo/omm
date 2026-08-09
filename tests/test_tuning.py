@@ -54,7 +54,7 @@ def test_unified_memory_profile_offloads_all_layers():
     assert profile.ollama_options["num_gpu"] == -1
 
 
-def test_busy_unified_machine_downgrades_context_and_disables_impossible_offload():
+def test_busy_unified_machine_downgrades_context_but_keeps_full_offload():
     profile = recommend_runtime_settings(
         _hardware(
             ram_total_gb=24,
@@ -69,7 +69,10 @@ def test_busy_unified_machine_downgrades_context_and_disables_impossible_offload
 
     assert profile.available_memory_gb == pytest.approx(2.6)
     assert profile.context_length == 2048
-    assert profile.gpu_offload_percent == 0
+    # RAM and VRAM are the same pool on unified memory, so offload is kept
+    # at 100% even under memory pressure -- disabling it wouldn't free
+    # anything, only slow inference down.
+    assert profile.gpu_offload_percent == 100
 
 
 def test_discrete_gpu_profile_recommends_partial_offload_when_needed():

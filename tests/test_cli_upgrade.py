@@ -117,6 +117,28 @@ def test_upgrade_direct_url_install_swaps_in_new_file_atomically(isolated_omm_ho
     assert not (cli.MODELS_DIR / "model.gguf.update").exists()
 
 
+def test_upgrade_direct_url_install_reports_skipped_when_finalize_fails(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"old-bytes")
+    registry.save_registry({"model.gguf": _entry(repo_id=None, sha256="old-hash")})
+
+    def fake_download(url, dest_path):
+        Path(dest_path).write_bytes(b"brand-new-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+    monkeypatch.setattr(
+        Path, "replace", lambda self, target: (_ for _ in ()).throw(OSError("permission denied"))
+    )
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "failed to finalize" in result.stderr
+    assert dest.read_bytes() == b"old-bytes"
+    assert not (cli.MODELS_DIR / "model.gguf.update").exists()
+
+
 def test_upgrade_all_confirmation_cancelled_leaves_registry_untouched(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
     registry.save_registry({"model.gguf": _entry()})

@@ -52,11 +52,15 @@ import platform
 import re
 import shutil
 import time
+import struct
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
+from omm import config
 from omm.gguf import read_gguf_metadata
 from omm.hashutil import sha256_file
 from omm.atomic import atomic_write_text, backup_corrupt_file, locked
@@ -315,7 +319,10 @@ def link_file(src: Path, dst: Path, *, on_copy: CopyReporter | None = None) -> s
     Developer Mode; a symlink covers cross-volume destinations when
     permitted, and an ownership-recorded copy is the last-resort fallback.
     """
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise LinkError(f"Could not create directory {dst.parent}: {e}") from e
     if dst.exists() or dst.is_symlink():
         if not unlink_owned_link(dst):
             # Pre-ownership-registry omm links have no metadata. During an
@@ -481,6 +488,7 @@ def link_ollama(
     gguf_path: Path,
     model_name: str,
     models_dir: Path | None = None,
+    verify_compat: bool = True,
     *,
     on_copy: CopyReporter | None = None,
 ) -> bool:
@@ -489,13 +497,29 @@ def link_ollama(
     source GGUF has an embedded chat template (Ollama reads it from the
     model blob at runtime), False if none was found and the caller should
     warn the user about it.
+
+    `verify_compat` guards against Ollama's undocumented manifest format
+    (see module docstring) drifting out from under omm's hand-rolled
+    writer in a future Ollama release. Only meaningful for the real system
+    Ollama, since it shells out to the `ollama` CLI, which always talks to
+    the default daemon - callers linking into a different Ollama-format
+    instance (e.g. AnythingLLM's bundled one) pass False. Also forced off
+    whenever the caller passes an explicit models_dir (tests, or any
+    non-default target) - the `ollama` CLI has no way to point at a
+    specific models_dir, so verifying against it only makes sense when
+    models_dir is the real live default the system daemon actually uses.
     """
     if models_dir is None:
         models_dir = ollama_models_dir()
-    model_sha256 = sha256_file(gguf_path)
-    model_digest = f"sha256:{model_sha256}"
+    else:
+        verify_compat = False
 
-    gguf_meta = read_gguf_metadata(gguf_path, {"general.architecture", "tokenizer.chat_template"})
+    try:
+        gguf_meta = read_gguf_metadata(gguf_path, {"general.architecture", "tokenizer.chat_template"})
+    except (struct.error, KeyError) as e:
+        raise LinkError(
+            f"Could not read GGUF metadata from {gguf_path.name}: corrupted or truncated file ({e})."
+        ) from e
     architecture = gguf_meta.get("general.architecture", "unknown")
     has_chat_template = "tokenizer.chat_template" in gguf_meta
 
@@ -511,73 +535,232 @@ def link_ollama(
             "model - it can't run alone in Ollama, so omm won't link it there."
         )
 
+    ollama_version = _ollama_cli_version() if verify_compat else None
+    if ollama_version is not None and _manifest_format_known_good(ollama_version) is False:
+        # A previous link already found this Ollama version rejects omm's
+        # hand-rolled manifest shape - skip straight to the slower-but-
+        # correct native path instead of hashing the whole file and writing
+        # a manifest that's just going to be thrown away.
+        _fallback_to_native_create(gguf_path, model_name, models_dir)
+        return True
+
+    model_sha256 = sha256_file(gguf_path)
+    model_digest = f"sha256:{model_sha256}"
+
     blobs_dir = models_dir / "blobs"
-    blobs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        blobs_dir.mkdir(parents=True, exist_ok=True)
 
-    model_blob = blobs_dir / f"sha256-{model_sha256}"
-    # A matching content-addressed blob may be owned by Ollama or another
-    # manifest. It is already usable; never replace it.
-    if not model_blob.exists() and not model_blob.is_symlink():
-        link_file(gguf_path, model_blob, on_copy=on_copy)
+        model_blob = blobs_dir / f"sha256-{model_sha256}"
+        # A matching content-addressed blob may be owned by Ollama or another
+        # manifest. It is already usable; never replace it.
+        if not model_blob.exists() and not model_blob.is_symlink():
+            link_file(gguf_path, model_blob, on_copy=on_copy)
 
-    # Mirrors the config produced by `ollama create` for a bare GGUF (no
-    # Modelfile TEMPLATE override): a single model layer, config mediaType
-    # "application/vnd.docker.container.image.v1+json", and model_family
-    # taken from the GGUF's own general.architecture field. With this shape,
-    # Ollama reads tokenizer.chat_template straight from the GGUF at
-    # inference time - no separate template layer is needed or created by
-    # `ollama create` itself in this case.
-    config = {
-        "model_format": "gguf",
-        "model_family": architecture,
-        "model_families": [architecture],
-        "model_type": _guess_param_size(gguf_path.name),
-        "file_type": _guess_quant(gguf_path.name),
-        "architecture": "amd64",
-        "os": "linux",
-        "rootfs": {"type": "layers", "diff_ids": [model_digest]},
-    }
-    config_bytes = json.dumps(config).encode()
-    config_sha256 = hashlib.sha256(config_bytes).hexdigest()
-    config_blob = blobs_dir / f"sha256-{config_sha256}"
-    if not config_blob.exists() and not config_blob.is_symlink():
-        config_blob.write_bytes(config_bytes)
+        # Mirrors the config produced by `ollama create` for a bare GGUF (no
+        # Modelfile TEMPLATE override): a single model layer, config mediaType
+        # "application/vnd.docker.container.image.v1+json", and model_family
+        # taken from the GGUF's own general.architecture field. With this shape,
+        # Ollama reads tokenizer.chat_template straight from the GGUF at
+        # inference time - no separate template layer is needed or created by
+        # `ollama create` itself in this case.
+        config = {
+            "model_format": "gguf",
+            "model_family": architecture,
+            "model_families": [architecture],
+            "model_type": _guess_param_size(gguf_path.name),
+            "file_type": _guess_quant(gguf_path.name),
+            "architecture": "amd64",
+            "os": "linux",
+            "rootfs": {"type": "layers", "diff_ids": [model_digest]},
+        }
+        config_bytes = json.dumps(config).encode()
+        config_sha256 = hashlib.sha256(config_bytes).hexdigest()
+        config_blob = blobs_dir / f"sha256-{config_sha256}"
+        if not config_blob.exists() and not config_blob.is_symlink():
+            config_blob.write_bytes(config_bytes)
 
-    manifest = {
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-        "config": {
-            "mediaType": "application/vnd.docker.container.image.v1+json",
-            "digest": f"sha256:{config_sha256}",
-            "size": len(config_bytes),
-        },
-        "layers": [
-            {
-                "mediaType": "application/vnd.ollama.image.model",
-                "digest": model_digest,
-                "size": gguf_path.stat().st_size,
-            }
-        ],
-    }
+        manifest = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "digest": f"sha256:{config_sha256}",
+                "size": len(config_bytes),
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.ollama.image.model",
+                    "digest": model_digest,
+                    "size": gguf_path.stat().st_size,
+                }
+            ],
+        }
 
-    manifest_dir = (
-        models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name
+        manifest_dir = (
+            models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name
+        )
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = manifest_dir / "latest"
+        if manifest_path.exists() or manifest_path.is_symlink():
+            if not _owned_manifest(manifest_path):
+                raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
+            manifest_path.unlink()
+            _update_link_ownership(manifest_path, None)
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        try:
+            _record_ownership(manifest_path, None, "manifest")
+        except OSError:
+            manifest_path.unlink(missing_ok=True)
+            raise
+    except OSError as e:
+        raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
+
+    if ollama_version is not None:
+        has_chat_template = _ensure_ollama_accepts(
+            gguf_path, model_name, models_dir, has_chat_template, ollama_version
+        )
+
+    return has_chat_template
+
+
+def _ollama_manifest_compat_cache_path() -> Path:
+    return config.OMM_HOME / "ollama_manifest_compat.json"
+
+
+def _ollama_cli_version() -> str | None:
+    """Raw `ollama --version` output, used only as a cache key so the
+    compatibility probe below runs once per Ollama upgrade instead of on
+    every link. Works even with no daemon running (~15-30ms observed,
+    confirmed live) - it's a pure CLI query, not a network round trip."""
+    exe = shutil.which("ollama")
+    if exe is None:
+        return None
+    try:
+        result = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (result.stdout + result.stderr).strip() or None
+
+
+def _manifest_format_known_good(ollama_version: str) -> bool | None:
+    """True/False if this exact Ollama version was already probed; None if
+    unknown (never checked, or the cache is for a different version - an
+    Ollama upgrade can change the manifest shape)."""
+    path = _ollama_manifest_compat_cache_path()
+    if not path.exists():
+        return None
+    try:
+        cache = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if cache.get("ollama_version") != ollama_version:
+        return None
+    compatible = cache.get("compatible")
+    return compatible if isinstance(compatible, bool) else None
+
+
+def _record_manifest_format_result(ollama_version: str, compatible: bool) -> None:
+    try:
+        path = _ollama_manifest_compat_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"ollama_version": ollama_version, "compatible": compatible}))
+    except OSError:
+        pass
+
+
+def _ollama_accepts_manifest(model_name: str) -> bool | None:
+    """Ask the real `ollama` CLI to read back a manifest omm just wrote.
+    True if Ollama parses it fine, False if it rejects/can't find it (our
+    hand-rolled shape has drifted from what this Ollama version expects),
+    None if the daemon isn't reachable at all - nothing to compare against,
+    not a format problem."""
+    exe = shutil.which("ollama")
+    if exe is None:
+        return None
+    try:
+        result = subprocess.run(
+            [exe, "show", model_name], capture_output=True, text=True, timeout=5
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode == 0:
+        return True
+    if "could not connect" in result.stderr.lower():
+        return None
+    return False
+
+
+def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Path) -> None:
+    """Let the real `ollama` binary write its own manifest/blobs for this
+    model when omm's hand-rolled shape has drifted out of sync with what
+    this Ollama version expects. Confirmed empirically that `ollama create`
+    re-parses and rewrites the model layer under a fresh content-addressed
+    digest rather than reusing the source file's own hash, so this is a
+    real byte copy (not zero-duplication) - acceptable here because it only
+    runs after the fast path has already been confirmed broken, not on
+    every link.
+
+    Callers may reach this before ever writing (and ownership-recording) a
+    manifest of their own - e.g. the already-known-bad short-circuit in
+    link_ollama skips the hand-rolled write entirely - so this records
+    ownership of whatever `ollama create` produces itself, unconditionally.
+    Without this, `unlink_ollama`/`autoremove_ollama` would treat the
+    resulting manifest as unowned and silently refuse to ever clean it up.
+    """
+    exe = shutil.which("ollama")
+    if exe is None:
+        raise LinkError(
+            f"Ollama's manifest format has changed and omm's link for {model_name} no "
+            "longer works, but the `ollama` binary isn't on PATH to regenerate it natively."
+        )
+    with tempfile.TemporaryDirectory() as tmp:
+        modelfile = Path(tmp) / "Modelfile"
+        modelfile.write_text(f"FROM {gguf_path}\n")
+        try:
+            result = subprocess.run(
+                [exe, "create", model_name, "-f", str(modelfile)],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise LinkError(f"Could not regenerate Ollama manifest for {model_name}: {e}") from e
+    if result.returncode != 0:
+        raise LinkError(
+            f"Ollama rejected {model_name} even via native `ollama create`: {result.stderr.strip()}"
+        )
+    manifest_path = (
+        models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name / "latest"
     )
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = manifest_dir / "latest"
-    if manifest_path.exists() or manifest_path.is_symlink():
-        if not _owned_manifest(manifest_path):
-            raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
-        manifest_path.unlink()
-        _update_link_ownership(manifest_path, None)
-    manifest_path.write_text(json.dumps(manifest, indent=2))
     try:
         _record_ownership(manifest_path, None, "manifest")
     except OSError:
-        manifest_path.unlink(missing_ok=True)
-        raise
+        pass
 
-    return has_chat_template
+
+def _ensure_ollama_accepts(
+    gguf_path: Path,
+    model_name: str,
+    models_dir: Path,
+    has_chat_template: bool,
+    ollama_version: str,
+) -> bool:
+    """Verify the manifest just written is one this Ollama version actually
+    accepts, falling back to native `ollama create` if not. Cached per
+    Ollama version, so the common case (already-confirmed-compatible) costs
+    one dict lookup and no subprocess call at all."""
+    cached = _manifest_format_known_good(ollama_version)
+    if cached is True:
+        return has_chat_template
+    accepted = _ollama_accepts_manifest(model_name)
+    if accepted is None:
+        return has_chat_template
+    _record_manifest_format_result(ollama_version, accepted)
+    if accepted:
+        return has_chat_template
+    _fallback_to_native_create(gguf_path, model_name, models_dir)
+    return True
 
 
 def unlink_ollama(model_name: str, models_dir: Path | None = None) -> None:
@@ -604,7 +787,13 @@ def unlink_ollama(model_name: str, models_dir: Path | None = None) -> None:
         }
     except (OSError, json.JSONDecodeError):
         model_digests = set()
-    manifest_path.unlink()
+    # Blobs are content-addressed and can be shared by a user manifest or
+    # another omm model. Only remove an omm-owned blob after no remaining
+    # manifest references its content digest.
+    try:
+        manifest_path.unlink()
+    except OSError:
+        return
     _update_link_ownership(manifest_path, None)
     try:
         manifest_path.parent.rmdir()
@@ -684,7 +873,10 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
                 layer["digest"].replace(":", "-") for layer in manifest.get("layers", [])
             }
             if layer_digests & broken_digests and _owned_manifest(manifest_path):
-                manifest_path.unlink()
+                try:
+                    manifest_path.unlink()
+                except OSError:
+                    continue
                 _update_link_ownership(manifest_path, None)
                 manifests_removed += 1
                 try:
@@ -752,19 +944,25 @@ def link_jan(gguf_path: Path, model_id: str) -> Path:
     points model_path straight at it - no symlink needed, since Jan's own
     local-file import does the same (stores the absolute path as-is)."""
     config_path = _jan_model_yaml_path(model_id)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        f'model_path: "{gguf_path}"\n'
-        f'name: "{model_id}"\n'
-        f"size_bytes: {gguf_path.stat().st_size}\n"
-    )
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            f'model_path: "{gguf_path}"\n'
+            f'name: "{model_id}"\n'
+            f"size_bytes: {gguf_path.stat().st_size}\n"
+        )
+    except OSError as e:
+        raise LinkError(f"Could not write Jan manifest at {config_path}: {e}") from e
     return config_path
 
 
 def unlink_jan(model_id: str) -> None:
     config_path = _jan_model_yaml_path(model_id)
     if config_path.exists():
-        config_path.unlink()
+        try:
+            config_path.unlink()
+        except OSError:
+            return
     try:
         config_path.parent.rmdir()
     except OSError:
@@ -796,7 +994,10 @@ def autoremove_jan() -> int:
     for config_path in list(models_dir.glob("*/model.yml")):
         model_path = read_jan_model_path(config_path)
         if model_path and not Path(model_path).exists():
-            config_path.unlink()
+            try:
+                config_path.unlink()
+            except OSError:
+                continue
             removed += 1
             try:
                 config_path.parent.rmdir()
@@ -978,6 +1179,7 @@ def link_engine(key: str, gguf_path: Path, *, repo_id: str | None, ollama_tag: s
             gguf_path,
             ollama_tag,
             models_dir=anythingllm_ollama_models_dir(),
+            verify_compat=False,
             on_copy=report_copy,
         )
     elif key == "mstystudio":

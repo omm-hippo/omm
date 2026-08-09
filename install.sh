@@ -38,7 +38,8 @@ esac
 # the TOFU root for a brand new machine, since there's no prior install
 # to carry a trusted copy yet).
 ALLOWED_SIGNERS_CONTENT="seong381400@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh12ERbI3Yx6DPiaROPjCyI2GIQXb9Ihbp9J9L4bnpe
-ahseongchoi@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5UPWuM/1GxGo5TQ5nEJm9UvXShygIozjbvxB1VT9u6"
+ahseongchoi@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5UPWuM/1GxGo5TQ5nEJm9UvXShygIozjbvxB1VT9u6
+fakeminjun7321@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL4gaNZPEizBHr81LObieqSxd6HExCPK7UKupsTniJ8s"
 
 # Resolves $1 (a commit-ish) in the git repo at $2 to the commit whose
 # signature actually matters. The repo only accepts changes to main via a
@@ -70,6 +71,7 @@ signing_commit() {
 verify_commit_signature() {
     commit="$1"
     repo_dir="$2"
+    quiet="${3:-}"
 
     git_version=$(git --version | awk '{print $3}')
     git_major=$(echo "$git_version" | cut -d. -f1)
@@ -92,7 +94,9 @@ verify_commit_signature() {
         return 0
     fi
     rm -f "$signers_file"
-    echo "$verify_output" | sed 's/^/  /' >&2
+    if [ "$quiet" != "quiet" ]; then
+        echo "$verify_output" | sed 's/^/  /' >&2
+    fi
     return 1
 }
 
@@ -176,7 +180,26 @@ git clone --filter=blob:none --quiet "$REPO_URL" "$STAGING_DIR"
 
 echo "Verifying commit signature ..."
 head_commit=$(git -C "$STAGING_DIR" rev-parse HEAD)
-if ! verify_commit_signature "$(signing_commit "$head_commit" "$STAGING_DIR")" "$STAGING_DIR"; then
+# Try the commit itself first - a maintainer can directly SSH-sign a merge
+# commit (e.g. syncing one branch into another outside GitHub's PR flow),
+# and that signature is trustworthy on its own. Only fall back to
+# signing_commit's second-parent heuristic - for GitHub's own "create a
+# merge commit" PRs, where GitHub signs the merge with a key this script
+# doesn't trust and the real signature is one hop down, on the PR branch
+# tip - when the direct check fails.
+if verify_commit_signature "$head_commit" "$STAGING_DIR" quiet; then
+    verified=1
+else
+    resolved_commit=$(signing_commit "$head_commit" "$STAGING_DIR")
+    if [ "$resolved_commit" != "$head_commit" ] && verify_commit_signature "$resolved_commit" "$STAGING_DIR"; then
+        verified=1
+    elif [ "$resolved_commit" = "$head_commit" ] && verify_commit_signature "$head_commit" "$STAGING_DIR"; then
+        verified=1
+    else
+        verified=0
+    fi
+fi
+if [ "$verified" != "1" ]; then
     rm -rf "$STAGING_DIR"
     echo "Signature verification failed - refusing to install untrusted code." >&2
     exit 1

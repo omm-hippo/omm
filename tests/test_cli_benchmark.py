@@ -24,6 +24,23 @@ def _hardware() -> HardwareInfo:
     )
 
 
+def _hardware_with_chip_metadata() -> HardwareInfo:
+    return HardwareInfo(
+        os_name="Linux",
+        os_version="",
+        cpu="AMD Ryzen 5 5600X",
+        ram_total_gb=16,
+        ram_available_gb=12,
+        unified_memory=False,
+        gpu_name="NVIDIA GeForce RTX 4090",
+        vram_total_gb=24,
+        vram_free_gb=20,
+        cpu_arch="x86_64",
+        cpu_physical_cores=6,
+        cpu_logical_cores=12,
+    )
+
+
 def _full_report():
     return {
         "schema_version": 1,
@@ -49,7 +66,7 @@ def test_benchmark_saves_local_report_and_asks_before_upload(isolated_omm_home, 
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -75,7 +92,7 @@ def test_benchmark_all_expands_to_every_installed_tag(isolated_omm_home, monkeyp
         "collect_evidence",
         lambda tags, *a, **k: seen_tags.append(list(tags)) or _full_report(),
     )
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
 
     result = runner.invoke(cli.app, ["benchmark", "all"])
 
@@ -114,7 +131,7 @@ def test_benchmark_shows_progress_per_model(isolated_omm_home, monkeypatch):
         return _full_report()
 
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
 
     result = runner.invoke(cli.app, ["benchmark", "small:latest"])
 
@@ -126,7 +143,7 @@ def test_benchmark_uploads_when_confirmed(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -161,7 +178,7 @@ def test_benchmark_reports_model_provider_from_registry_entry(isolated_omm_home,
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -179,7 +196,7 @@ def test_benchmark_defaults_provider_to_huggingface_when_entry_not_found(isolate
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -354,7 +371,7 @@ def test_benchmark_summary_reports_mixed_outcomes_and_uploads_all_of_them(isolat
     assert "outcome" not in by_tag["small:latest"]
 
     unfit_event = by_tag["big:latest"]
-    assert unfit_event["benchmark_version"] == 7
+    assert unfit_event["benchmark_version"] == 8
     assert unfit_event["outcome"] == "model_unfit"
     assert unfit_event["failure_reason"] == "out_of_memory"
     assert "tokens_per_sec" not in unfit_event
@@ -362,7 +379,7 @@ def test_benchmark_summary_reports_mixed_outcomes_and_uploads_all_of_them(isolat
     assert unfit_event["context_length"] == 4096
 
     transient_event = by_tag["flaky:latest"]
-    assert transient_event["benchmark_version"] == 7
+    assert transient_event["benchmark_version"] == 8
     assert transient_event["outcome"] == "transient_error"
     assert transient_event["failure_reason"] == "connection_error"
     assert "tokens_per_sec" not in transient_event
@@ -372,7 +389,7 @@ def test_benchmark_exits_nonzero_only_when_every_model_fails(isolated_omm_home, 
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _all_failed_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
 
     result = runner.invoke(cli.app, ["benchmark", "big:latest", "flaky:latest"])
 
@@ -384,7 +401,7 @@ def test_benchmark_does_not_ask_to_upload_when_declined_for_mixed_outcomes(isola
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _mixed_report())
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
@@ -400,6 +417,7 @@ def test_benchmark_starts_and_stops_daemon_when_confirmed(isolated_omm_home, mon
     monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama.exe"))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
@@ -504,7 +522,7 @@ def test_benchmark_reports_and_uploads_performance_unfit_outcome(isolated_omm_ho
 
     assert len(sent) == 1  # 8. exactly one Firebase event for this tag - no duplicate upload
     event = sent[0]
-    assert event["benchmark_version"] == 7
+    assert event["benchmark_version"] == 8
     assert event["outcome"] == "performance_unfit"
     assert event["failure_reason"] == "confirmed_generation_timeout"
     assert event["confirmation_attempts"] == 2
@@ -549,3 +567,46 @@ def test_performance_unfit_upload_rejected_when_timeout_seconds_missing(isolated
     runner.invoke(cli.app, ["benchmark", "big:latest", "--confirm-performance-timeout"])
 
     assert sent == []
+
+
+def test_report_telemetry_v8_success_sends_chip_scores_not_raw_names(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
+    sent = []
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
+
+    cli._report_telemetry(
+        "model-7B-Q4.gguf", "org/model", 42.5,
+        size_bytes=4 * 1024**3, sample_count=3, speed_min=40.0, speed_max=45.0,
+        model_metadata={"parameter_size": "7B", "quantization_level": "Q4_K_M"},
+        runtime={
+            "runtime_profile": "explicit_ollama_options", "context_length": 4096,
+            "gpu_offload_percent": 100, "cpu_threads": 8, "num_batch": 512,
+        },
+        engine_version="0.32.1",
+    )
+
+    event = sent[0]
+    assert event["benchmark_version"] == 8
+    assert event["cpu_score"] == 5600.0
+    assert event["cpu_tier"] == 0.0
+    assert event["gpu_score"] == 4090.0
+    assert event["gpu_tier"] == 0.0
+    assert "cpu_model" not in event
+    assert "gpu_name" not in event
+
+
+def test_report_failure_telemetry_v8_sends_chip_scores_not_raw_names(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
+    sent = []
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
+
+    cli._report_failure_telemetry(
+        {"tag": "too-big:latest", "outcome": "model_unfit", "failure_reason": "out_of_memory"},
+        {},
+    )
+
+    event = sent[0]
+    assert event["benchmark_version"] == 8
+    assert event["cpu_score"] == 5600.0
+    assert event["gpu_score"] == 4090.0
+    assert "cpu_model" not in event

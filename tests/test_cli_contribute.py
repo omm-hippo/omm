@@ -164,7 +164,7 @@ def test_happy_path_runs_loop_cleans_up_and_prints_summary(isolated_omm_home, mo
 
     loop_calls = []
 
-    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None):
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None):
         loop_calls.append(1)
         return cli._ContributionStats(benchmarked=[("m", 12.5)], skipped_unfit=1, attempted_not_uploaded=0)
 
@@ -213,7 +213,7 @@ def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_ho
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
     monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
 
-    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None):
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None):
         return cli._ContributionStats(benchmarked=[], skipped_unfit=1, exhausted=True)
 
     monkeypatch.setattr(cli, "_run_contribution_loop", fake_loop)
@@ -393,7 +393,7 @@ def test_contribute_loads_quality_pack_and_passes_it_to_loop(isolated_omm_home, 
 
     captured = {}
 
-    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None):
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None):
         captured["quality_pack"] = quality_pack
         return cli._ContributionStats(benchmarked=[])
 
@@ -403,6 +403,38 @@ def test_contribute_loads_quality_pack_and_passes_it_to_loop(isolated_omm_home, 
 
     assert result.exit_code == 0, result.stdout
     assert captured["quality_pack"] == fake_pack
+
+
+def test_contribute_passes_fetch_sibling_candidates_to_loop(isolated_omm_home, monkeypatch):
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 0)
+    monkeypatch.setattr(cli, "autoremove", lambda: None)
+    fake_pack = {"pack_id": "pack-1", "pack_version": "1.1.0", "items": []}
+    monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: (fake_pack, "sha"))
+
+    captured = {}
+
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None):
+        captured["fetch_siblings"] = fetch_siblings
+        return cli._ContributionStats(benchmarked=[])
+
+    monkeypatch.setattr(cli, "_run_contribution_loop", fake_loop)
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["fetch_siblings"] is cli._fetch_sibling_candidates
 
 
 def test_contribute_refuses_when_policy_never(isolated_omm_home, monkeypatch):

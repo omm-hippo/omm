@@ -9,7 +9,7 @@ class _FakeQueue:
         self._candidates = list(candidates)
         self.marked_seen = []
 
-    def next_candidate(self, refetch=None):
+    def next_candidate(self, refetch=None, fetch_siblings=None):
         # Mirrors the real ContributionQueue: a candidate marked seen must
         # never be handed out again, even if it's still in the backing list.
         while self._candidates:
@@ -550,3 +550,36 @@ def test_run_contribution_loop_builds_url_via_provider_dispatch(isolated_omm_hom
     assert seen_urls == [
         "https://modelscope.cn/api/v1/models/org/repo/repo?Revision=master&FilePath=model.gguf"
     ]
+
+
+def test_skipped_low_disk_candidate_counted_and_not_deleted(isolated_omm_home, monkeypatch):
+    c = _candidate(filename="too-big.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+
+    def fake_install_impl(resolved, **kwargs):
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="too-big.gguf", repo_id="org/repo", linked={}, skipped_low_disk=True
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    removed = []
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert stats.skipped_low_disk == 1
+    assert stats.benchmarked == []
+    assert removed == []
+    assert queue.marked_seen == ["huggingface:org/repo:too-big.gguf"]
+
+
+def test_print_contribution_summary_includes_low_disk_skip_count(capsys):
+    stats = cli._ContributionStats(benchmarked=[], skipped_unfit=1, skipped_low_disk=2)
+
+    cli._print_contribution_summary(stats, 12.0, None, None)
+
+    captured = capsys.readouterr()
+    assert "not enough disk space): 2" in captured.out

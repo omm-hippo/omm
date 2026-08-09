@@ -1,5 +1,6 @@
 # Installs omm (Open source Model Manager) as an isolated CLI command via pipx.
 # Usage: [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
+# To install a non-default branch: $env:OMM_INSTALL_BRANCH = "beta"; irm ... | iex
 # Do not try to fix the first-download TLS problem inside this script: `irm`
 # fetches the script before PowerShell can execute any of its contents.
 $ErrorActionPreference = "Stop"
@@ -18,13 +19,18 @@ if ($currentDirectory -eq $OmmHome -or $currentDirectory.StartsWith($homePrefix,
 }
 $SourcesDir = Join-Path $OmmHome "sources"
 
+# Set $env:OMM_INSTALL_BRANCH before piping this script into iex to install
+# from a branch other than the repo default (e.g. to try a beta build).
+$Branch = $env:OMM_INSTALL_BRANCH
+
 # Trust anchor for the signature check below - must stay identical to
 # src/omm/trust/allowed_signers in the repo (that copy is what `omm
 # update` verifies future commits against once installed; this one is
 # the TOFU root for a brand new machine, since there's no prior install
 # to carry a trusted copy yet).
 $AllowedSignersContent = "seong381400@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh12ERbI3Yx6DPiaROPjCyI2GIQXb9Ihbp9J9L4bnpe
-ahseongchoi@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5UPWuM/1GxGo5TQ5nEJm9UvXShygIozjbvxB1VT9u6"
+ahseongchoi@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5UPWuM/1GxGo5TQ5nEJm9UvXShygIozjbvxB1VT9u6
+fakeminjun7321@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL4gaNZPEizBHr81LObieqSxd6HExCPK7UKupsTniJ8s"
 
 function Test-CommandExists {
     param([string]$Name)
@@ -81,7 +87,7 @@ function Resolve-SigningCommit {
 # treated the same as an actual bad signature - "can't verify" must never
 # silently mean "trust it anyway".
 function Test-CommitSignature {
-    param([string]$Commit, [string]$RepoDir)
+    param([string]$Commit, [string]$RepoDir, [switch]$Quiet)
 
     # Write-Warning, not Write-Error: with $ErrorActionPreference = "Stop"
     # a Write-Error here would terminate the whole script immediately,
@@ -102,21 +108,28 @@ function Test-CommitSignature {
     $signersFile = New-TemporaryFile
     Set-Content -Path $signersFile.FullName -Value $AllowedSignersContent -NoNewline
 
-    # git writes normal SSH signature success details to stderr. Under the
-    # script-wide "Stop" setting that would throw before its exit code can be
-    # checked, so scope a non-terminating preference to this native command.
+    # git/ssh-keygen write their "Good signature" status line to stderr even
+    # on success. PowerShell 7.3+ defaults $PSNativeCommandUseErrorActionPreference
+    # to $true, which - combined with the script-wide $ErrorActionPreference =
+    # "Stop" - promotes that single stderr line into a terminating
+    # NativeCommandError before $LASTEXITCODE is ever checked. Suppress both
+    # preferences for just this native call so a successful verification
+    # isn't mistaken for a crash.
     $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativePref = $PSNativeCommandUseErrorActionPreference
     $ok = $false
     try {
         $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
         $verifyOutput = git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$($signersFile.FullName)" `
             -C $RepoDir verify-commit $Commit 2>&1
         $ok = $LASTEXITCODE -eq 0
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $previousNativePref
         Remove-Item $signersFile.FullName -Force -ErrorAction SilentlyContinue
     }
-    if (-not $ok) {
+    if (-not $ok -and -not $Quiet) {
         Write-Warning ($verifyOutput | Out-String)
     }
     return $ok
@@ -231,7 +244,13 @@ $PythonExecutable = (Invoke-Python -c "import sys; print(sys.executable)").Trim(
 New-Item -ItemType Directory -Force -Path $SourcesDir | Out-Null
 $StagingDir = Join-Path $SourcesDir ("checkout-" + $PID + "-" + [guid]::NewGuid().ToString("N"))
 Write-Host "Cloning omm source to a versioned staging directory ..."
-git clone --filter=blob:none --quiet $RepoUrl $StagingDir
+$CloneArgs = @("clone", "--filter=blob:none", "--quiet")
+if ($Branch) {
+    Write-Host "Using branch: $Branch"
+    $CloneArgs += @("-b", $Branch)
+}
+$CloneArgs += @($RepoUrl, $StagingDir)
+git @CloneArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Error "git clone failed."
     exit 1
@@ -239,8 +258,23 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Verifying commit signature ..."
 $headCommit = (git -C $StagingDir rev-parse HEAD).Trim()
-$signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $StagingDir
-if (-not (Test-CommitSignature -Commit $signedCommit -RepoDir $StagingDir)) {
+# Try the commit itself first - a maintainer can directly SSH-sign a merge
+# commit (e.g. syncing one branch into another outside GitHub's PR flow),
+# and that signature is trustworthy on its own. Only fall back to
+# Resolve-SigningCommit's second-parent heuristic - for GitHub's own
+# "create a merge commit" PRs, where GitHub signs the merge with a key
+# this script doesn't trust and the real signature is one hop down, on the
+# PR branch tip - when the direct check fails.
+$verified = Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir -Quiet
+if (-not $verified) {
+    $signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $StagingDir
+    if ($signedCommit -ne $headCommit) {
+        $verified = Test-CommitSignature -Commit $signedCommit -RepoDir $StagingDir
+    } else {
+        $verified = Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir
+    }
+}
+if (-not $verified) {
     Remove-Item -Recurse -Force $StagingDir
     Write-Error "Signature verification failed - refusing to install untrusted code."
     exit 1

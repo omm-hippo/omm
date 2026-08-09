@@ -217,6 +217,46 @@ def test_install_ref_leaves_curated_names_unprefixed():
     assert search_mod.install_ref(candidate) == "tinyllama-1.1b-q4"
 
 
+def test_exact_install_ref_pins_the_specific_huggingface_file():
+    candidate = {
+        "name": "ibm-granite-granite-4-1-3b-gguf",
+        "repo_id": "ibm-granite/granite-4.1-3b-GGUF",
+        "filename": "granite-4.1-3b-Q4_K_M.gguf",
+    }
+
+    assert (
+        search_mod.exact_install_ref(candidate)
+        == "ibm-granite/granite-4.1-3b-GGUF:granite-4.1-3b-Q4_K_M.gguf"
+    )
+
+
+def test_exact_install_ref_prefixes_modelscope_candidates():
+    candidate = {
+        "name": "org/repo",
+        "repo_id": "org/repo",
+        "filename": "repo-Q4_K_M.gguf",
+        "provider": "modelscope",
+    }
+
+    assert search_mod.exact_install_ref(candidate) == "ms:org/repo:repo-Q4_K_M.gguf"
+
+
+def test_exact_install_ref_uses_short_name_for_curated_models():
+    candidate = {
+        "name": "tinyllama-1.1b-q4",
+        "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+        "filename": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+    }
+
+    assert search_mod.exact_install_ref(candidate) == "tinyllama-1.1b-q4"
+
+
+def test_exact_install_ref_falls_back_to_install_ref_when_filename_missing():
+    candidate = {"name": "x", "repo_id": "org/repo"}
+
+    assert search_mod.exact_install_ref(candidate) == "org/repo"
+
+
 def test_match_candidates_prefers_substring_match():
     pool = [
         {"name": "mistral-7b-instruct-q4", "repo_id": "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"},
