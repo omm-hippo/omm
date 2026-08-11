@@ -16,8 +16,15 @@ characters (no brackets, no inline percentage), then size / speed / ETA.
 ```
 
 - Spinner: rich `SpinnerColumn` (dots style), replaces the current bare filename start.
-- Bar: custom `ProgressColumn` rendering `"#" * filled + " " * empty` at a fixed
-  width (e.g. 20-24 chars), no brackets/percent — matches Homebrew's `curl -#` bar.
+- Bar: custom `ProgressColumn` rendering `"#" * filled + " " * empty`, no
+  brackets/percent — matches Homebrew's `curl -#` bar. Width is not fixed:
+  the column uses rich's ratio-based expansion (`ratio=1`, same mechanism the
+  default `BarColumn` already relies on) so it fills whatever space is left
+  in the terminal after filename/size/speed/ETA. Rich recomputes this on
+  every render, so a mid-download terminal resize is picked up for free —
+  no extra polling/debounce needed. Clamp to a sane `[10, 60]` char range so
+  it doesn't collapse on a very narrow terminal or look absurd on an
+  ultra-wide one.
 - Trailing columns: existing `DownloadColumn` (size) + `TransferSpeedColumn` (speed)
   stay; `TimeRemainingColumn` is replaced with a column labeled `ETA <time>` instead
   of rich's default bare `0:23:31`.
