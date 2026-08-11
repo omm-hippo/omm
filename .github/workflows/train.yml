@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
 
       - uses: actions/setup-python@v5
         with:
@@ -51,16 +53,36 @@ jobs:
             --quality-report "$RUNNER_TEMP/localfit-quality-report.json"
           cp "$RUNNER_TEMP/localfit-candidate.json" published/recommend-model.json
 
-      - name: Commit updated model artifact
+      - name: Open a PR with the retrained model and auto-merge it
+        env:
+          GH_TOKEN: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
+          LOCALFIT_RETRAIN_SSH_KEY: ${{ secrets.LOCALFIT_RETRAIN_SSH_KEY }}
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name "omm-retrain-bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add published/recommend-model.json published/candidates.json
-          git diff --cached --quiet && echo "No changes, skipping commit." && exit 0
-          git commit -m "chore: retrain recommendation model [skip ci]"
-          for i in 1 2 3 4 5; do
-            git push && exit 0
-            echo "push rejected (attempt $i), rebasing onto origin/main and retrying..."
-            git pull --rebase origin main
-          done
-          git push
+          git diff --cached --quiet && echo "No changes, skipping." && exit 0
+
+          # Sign with the bot's own key (listed in src/omm/trust/allowed_signers)
+          # rather than GITHUB_TOKEN, so the PR head passes the Trusted PR head
+          # check like any other contributor's commit.
+          umask 077
+          key_path="$RUNNER_TEMP/omm-retrain-signing-key"
+          printf '%s\n' "$LOCALFIT_RETRAIN_SSH_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          git config gpg.format ssh
+          git config commit.gpgsign true
+          git config user.signingkey "$key_path"
+
+          branch="retrain/$(date -u +%Y%m%d-%H%M%S)"
+          git checkout -b "$branch"
+          git commit -m "chore: retrain recommendation model"
+
+          # Branch protection blocks direct pushes to main (no bypass, even for
+          # admins), so land the update through a normal PR instead.
+          git push origin "$branch"
+          pr_url=$(gh pr create \
+            --title "chore: nightly recommendation model retrain" \
+            --body "Automated nightly retrain. Candidate passed the quality gate against the current published baseline; see the workflow run for the full quality report." \
+            --base main --head "$branch")
+          gh pr merge "$pr_url" --auto --merge

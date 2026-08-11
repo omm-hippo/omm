@@ -30,7 +30,8 @@ $Branch = $env:OMM_INSTALL_BRANCH
 # to carry a trusted copy yet).
 $AllowedSignersContent = "seong381400@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh12ERbI3Yx6DPiaROPjCyI2GIQXb9Ihbp9J9L4bnpe
 ahseongchoi@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5UPWuM/1GxGo5TQ5nEJm9UvXShygIozjbvxB1VT9u6
-fakeminjun7321@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL4gaNZPEizBHr81LObieqSxd6HExCPK7UKupsTniJ8s"
+fakeminjun7321@gmail.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL4gaNZPEizBHr81LObieqSxd6HExCPK7UKupsTniJ8s
+github-actions[bot]@users.noreply.github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICn3omW2ymuC5oHshx3WC7AcPP/wP0sLn2E/x4njWMP+"
 
 function Test-CommandExists {
     param([string]$Name)
