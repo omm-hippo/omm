@@ -96,7 +96,7 @@ _MODEL_FEATURES = {
     "model_size_gb",
     "active_param_count_b",
 }
-_RUNTIME_TUNING_FEATURES = {"gpu_offload_ratio", "cpu_threads", "num_batch"}
+_RUNTIME_TUNING_FEATURES = {"gpu_offload_ratio", "cpu_threads", "num_batch", "context_length"}
 
 
 def selection_context_key(feature_order: list[str], features: list[float]) -> tuple[float, ...]:
