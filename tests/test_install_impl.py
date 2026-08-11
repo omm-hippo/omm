@@ -71,6 +71,59 @@ def test_auto_upload_skips_confirm_prompt_and_sends_telemetry(isolated_omm_home,
     assert outcome.telemetry_sent is True
 
 
+def test_install_starts_and_stops_daemon_when_not_reachable(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 55.0)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    started_proc = object()
+    start_calls = []
+    stop_calls = []
+    monkeypatch.setattr(
+        cli.benchmark, "start_ollama_daemon", lambda: start_calls.append(1) or started_proc
+    )
+    monkeypatch.setattr(cli.benchmark, "stop_ollama_daemon", lambda proc: stop_calls.append(proc))
+
+    outcome = cli._install_impl(_resolved(), auto_upload=True)
+
+    assert outcome.tokens_per_sec == 55.0
+    assert start_calls == [1]
+    assert stop_calls == [started_proc]
+
+
+def test_install_skips_daemon_start_when_already_reachable(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 55.0)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.benchmark,
+        "start_ollama_daemon",
+        lambda: (_ for _ in ()).throw(AssertionError("should not start a daemon")),
+    )
+    monkeypatch.setattr(
+        cli.benchmark,
+        "stop_ollama_daemon",
+        lambda proc: (_ for _ in ()).throw(AssertionError("should not stop a daemon")),
+    )
+
+    outcome = cli._install_impl(_resolved(), auto_upload=True)
+
+    assert outcome.tokens_per_sec == 55.0
+
+
 # --- LM Studio load-verification reporting ------------------------------
 
 
