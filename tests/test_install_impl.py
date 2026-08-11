@@ -71,6 +71,55 @@ def test_auto_upload_skips_confirm_prompt_and_sends_telemetry(isolated_omm_home,
     assert outcome.telemetry_sent is True
 
 
+# --- LM Studio load-verification reporting ------------------------------
+
+
+def test_install_prints_warning_when_lmstudio_load_verification_fails(monkeypatch, capsys):
+    from omm import linker
+
+    outcome = cli.InstallOutcome(
+        filename="model.gguf",
+        repo_id="acme/widget",
+        linked={"lmstudio": True},
+    )
+    monkeypatch.setattr(linker, "verify_lmstudio_load", lambda gguf_path, repo_id: False)
+
+    cli._report_lmstudio_load_verification(outcome)
+
+    captured = capsys.readouterr()
+    assert "did not load successfully" in captured.out
+
+
+def test_install_silent_when_lmstudio_load_verification_inconclusive(monkeypatch, capsys):
+    from omm import linker
+
+    outcome = cli.InstallOutcome(
+        filename="model.gguf",
+        repo_id="acme/widget",
+        linked={"lmstudio": True},
+    )
+    monkeypatch.setattr(linker, "verify_lmstudio_load", lambda gguf_path, repo_id: None)
+
+    cli._report_lmstudio_load_verification(outcome)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+def test_install_skips_lmstudio_load_verification_when_not_linked(monkeypatch, capsys):
+    from omm import linker
+
+    outcome = cli.InstallOutcome(filename="model.gguf", repo_id=None, linked={"lmstudio": False})
+    called = {"count": 0}
+    monkeypatch.setattr(
+        linker, "verify_lmstudio_load", lambda *a, **k: called.__setitem__("count", called["count"] + 1)
+    )
+
+    cli._report_lmstudio_load_verification(outcome)
+
+    assert called["count"] == 0
+
+
 def test_install_impl_telemetry_includes_model_provider(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))

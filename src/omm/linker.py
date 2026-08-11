@@ -505,6 +505,222 @@ def unlink_lmstudio(filename: str, repo_id: str | None) -> None:
                 break
 
 
+# --- LM Studio load verification ----------------------------------------
+#
+# LM Studio has no benchmark path (unlike Ollama, where `omm benchmark`
+# already exercises real loading via /api/generate) - so nothing else ever
+# proves a linked model actually loads. These functions send a real short
+# generation request through LM Studio's own local server to check.
+# Everything here fails soft: only a confirmed bad generation returns
+# False; every other obstacle (lms missing, server unreachable, ambiguous
+# timeout) returns None, matching _ollama_accepts_manifest's convention.
+
+
+def _lms_cli_path() -> str | None:
+    """Locate the `lms` CLI LM Studio bootstraps on first run. Not
+    guaranteed to be on PATH in a non-interactive shell even when
+    installed, so also check the well-known bootstrap location directly -
+    confirmed via `lms bootstrap` against a real LM Studio 0.4.20 install,
+    which installs to <lmstudio_home_dir>/bin/lms."""
+    found = shutil.which("lms")
+    if found is not None:
+        return found
+    candidate = lmstudio_home_dir() / "bin" / "lms"
+    return str(candidate) if candidate.is_file() else None
+
+
+def _lmstudio_server_status(lms_path: str, timeout: float = 5) -> dict | None:
+    """Ask `lms` whether its local server is running and on what port -
+    the port is user-configurable, so this is the only reliable source for
+    it. None on any failure to ask (never guess a default port)."""
+    try:
+        result = subprocess.run(
+            [lms_path, "server", "status", "--json"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("running"), bool)
+        or not isinstance(data.get("port"), int)
+    ):
+        return None
+    return data
+
+
+_LMSTUDIO_SERVER_START_TIMEOUT_SECONDS = 30
+_LMSTUDIO_SERVER_START_POLL_INTERVAL_SECONDS = 1
+
+
+def _start_lmstudio_server(
+    lms_path: str, timeout: float = _LMSTUDIO_SERVER_START_TIMEOUT_SECONDS
+) -> bool:
+    """Best-effort `lms server start`, polling status until it reports
+    running or `timeout` elapses. Bounded - never waits indefinitely."""
+    try:
+        subprocess.run(
+            [lms_path, "server", "start"], capture_output=True, text=True, timeout=timeout
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    elapsed = 0.0
+    while elapsed < timeout:
+        status = _lmstudio_server_status(lms_path)
+        if status is not None and status.get("running"):
+            return True
+        time.sleep(_LMSTUDIO_SERVER_START_POLL_INTERVAL_SECONDS)
+        elapsed += _LMSTUDIO_SERVER_START_POLL_INTERVAL_SECONDS
+    return False
+
+
+def _stop_lmstudio_server(lms_path: str) -> None:
+    """Best-effort `lms server stop`. Only ever called for a server this
+    module started itself; failures here must never surface as an install
+    error."""
+    try:
+        subprocess.run([lms_path, "server", "stop"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _lmstudio_list_models(lms_path: str, timeout: float = 15) -> list[dict] | None:
+    """List models `lms` currently sees on disk. None on any failure."""
+    try:
+        result = subprocess.run(
+            [lms_path, "ls", "--json"], capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def _lmstudio_model_key(lms_path: str, publisher: str, repo: str, filename: str) -> str | None:
+    """Resolve the modelKey LM Studio's API and `lms load`/`lms unload`
+    actually expect for a just-linked model, by matching the on-disk path
+    link_lmstudio placed it at against `lms ls --json`'s own path field.
+    Never guess this from the publisher/repo folder name directly -
+    confirmed against a real LM Studio 0.4.20 instance that a repo folder
+    ending in a quantization suffix matching the GGUF's own detected
+    quantization (e.g. `tinyllama-1.1b-chat-v1.0.Q4_K_M`) gets that suffix
+    stripped in modelKey (`tinyllama-1.1b-chat-v1.0`) - the two are not
+    interchangeable."""
+    models = _lmstudio_list_models(lms_path)
+    if models is None:
+        return None
+    expected = f"{publisher}/{repo}/{filename}"
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if isinstance(path, str) and path.replace("\\", "/") == expected:
+            key = entry.get("modelKey")
+            return key if isinstance(key, str) else None
+    return None
+
+
+_LMSTUDIO_PROBE_TIMEOUT_SECONDS = 120
+_LMSTUDIO_PROBE_PROMPT = "Reply with the single word OK."
+_LMSTUDIO_PROBE_MAX_TOKENS = 8
+
+
+def _probe_lmstudio_generate(
+    port: int, model_key: str, timeout: float = _LMSTUDIO_PROBE_TIMEOUT_SECONDS
+) -> bool | None:
+    """Send a fixed short prompt to LM Studio's OpenAI-compatible endpoint,
+    which JIT-loads `model_key` if it isn't already resident - confirmed
+    against a real LM Studio 0.4.20 instance (a symlinked GGUF answered a
+    /v1/chat/completions request for its resolved modelKey with no
+    explicit `lms load` first). True on a real text response, False on an
+    HTTP/response-shape failure (model didn't load), None on a network
+    error - inconclusive, not proof of failure. `timeout` is generous
+    because first-load time on a large model, not just generation time, is
+    included."""
+    import requests
+
+    try:
+        response = requests.post(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            json={
+                "model": model_key,
+                "messages": [{"role": "user", "content": _LMSTUDIO_PROBE_PROMPT}],
+                "max_tokens": _LMSTUDIO_PROBE_MAX_TOKENS,
+                "stream": False,
+            },
+            timeout=timeout,
+        )
+    except requests.RequestException:
+        return None
+    if not response.ok:
+        return False
+    try:
+        data = response.json()
+    except ValueError:
+        return False
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return False
+    message = choices[0].get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return isinstance(content, str) and len(content.strip()) > 0
+
+
+def _lms_unload(lms_path: str, model_key: str) -> None:
+    """Best-effort isolation cleanup after a probe, mirroring
+    quality.unload_model's role for Ollama. Confirmed against a real LM
+    Studio instance that unloading a not-currently-loaded identifier exits
+    cleanly rather than raising, but this still never propagates a
+    failure either way."""
+    try:
+        subprocess.run([lms_path, "unload", model_key], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def verify_lmstudio_load(gguf_path: Path, repo_id: str | None) -> bool | None:
+    """Prove a just-linked LM Studio model actually loads. Called once per
+    successful link_lmstudio - LM Studio has no benchmark path to exercise
+    this later the way Ollama's does. Soft-fails everywhere: only a
+    confirmed bad generation returns False; every other obstacle returns
+    None so a caller never turns "couldn't check" into "definitely
+    broken."""
+    publisher, repo = _lmstudio_publisher_repo(repo_id, gguf_path.name)
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return None
+    status = _lmstudio_server_status(lms_path)
+    if status is None:
+        return None
+    model_key = _lmstudio_model_key(lms_path, publisher, repo, gguf_path.name)
+    if model_key is None:
+        return None
+
+    started_by_us = False
+    if not status["running"]:
+        if not _start_lmstudio_server(lms_path):
+            return None
+        started_by_us = True
+
+    try:
+        return _probe_lmstudio_generate(status["port"], model_key)
+    finally:
+        _lms_unload(lms_path, model_key)
+        if started_by_us:
+            _stop_lmstudio_server(lms_path)
+
+
 # --- Ollama ------------------------------------------------------------
 
 
