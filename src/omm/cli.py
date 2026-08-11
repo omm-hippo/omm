@@ -1904,6 +1904,23 @@ def _install_impl(
     )
 
 
+def _report_lmstudio_load_verification(outcome: InstallOutcome) -> None:
+    """Best-effort proof that a just-linked LM Studio model actually
+    loads - LM Studio has no benchmark path to exercise this later the way
+    `omm benchmark` does for Ollama. Only a confirmed failure is reported;
+    "couldn't check" (lms missing, server unreachable, timeout) stays
+    silent, matching the existing Ollama compat-check convention of never
+    surfacing an inconclusive result as a warning."""
+    if not outcome.linked.get("lmstudio"):
+        return
+    result = linker.verify_lmstudio_load(MODELS_DIR / outcome.filename, outcome.repo_id)
+    if result is False:
+        console.print(
+            "[yellow]Warning: LM Studio linked this model but it did not "
+            "load successfully in a live test.[/yellow]"
+        )
+
+
 @app.command()
 def install(
     model_name: str = typer.Argument(..., autocompletion=complete_install_name),
@@ -1965,6 +1982,7 @@ def install(
         if spec.key != "ollama" and outcome.linked.get(spec.key):
             console.print(f"  {spec.label}: visible in your local models list")
     console.print(f"  Uninstall with: [cyan]omm uninstall {outcome.filename}[/cyan]")
+    _report_lmstudio_load_verification(outcome)
 
 
 def _cleanup_incomplete_install(filename: str) -> bool:
