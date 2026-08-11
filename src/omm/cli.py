@@ -181,6 +181,20 @@ def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bo
 
 
 def _omm_version() -> str:
+    """Reads the freshly-pulled SRC_DIR/pyproject.toml when this is a
+    migrated editable install: dist-info is frozen at the last full `pipx
+    install` (see _deps_satisfied's docstring), so importlib.metadata would
+    keep reporting a stale version after every git-pull-only `omm update`
+    even though the commit hash and code have moved on."""
+    try:
+        text = (SRC_DIR / "pyproject.toml").read_text()
+    except OSError:
+        text = None
+    if text is not None:
+        match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+        if match:
+            return match.group(1)
+
     import importlib.metadata
 
     try:
