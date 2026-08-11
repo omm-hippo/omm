@@ -76,7 +76,7 @@ jobs:
 
           branch="retrain/$(date -u +%Y%m%d-%H%M%S)"
           git checkout -b "$branch"
-          git commit -m "chore: retrain recommendation model [skip ci]"
+          git commit -m "chore: retrain recommendation model"
 
           # Branch protection blocks direct pushes to main (no bypass, even for
           # admins), so land the update through a normal PR instead.
