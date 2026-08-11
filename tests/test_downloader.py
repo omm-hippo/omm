@@ -1,9 +1,12 @@
 import errno
+import io
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import requests
+from rich.console import Console
 
 from omm import downloader
 
@@ -624,3 +627,85 @@ def test_download_file_parallel_path_converts_enospc_write_error_to_insufficient
     assert len(server.requests) >= 2  # Probe + at least one range worker before ENOSPC.
     # Verify part_path still exists (not cleaned up yet, pending next retry).
     assert dest.with_suffix(dest.suffix + ".part").exists()
+
+
+def _render_bar(completed, total, console_width, min_width=10, max_width=60):
+    column = downloader.HashBarColumn(min_width=min_width, max_width=max_width)
+    bar = column.render(SimpleNamespace(completed=completed, total=total))
+    console = Console(file=io.StringIO(), width=console_width, color_system=None)
+    options = console.options.update(max_width=console_width)
+    segments = list(bar.__rich_console__(console, options))
+    return "".join(segment.text for segment in segments)
+
+
+def test_hash_bar_fills_proportionally_to_completed_ratio():
+    text = _render_bar(completed=50, total=100, console_width=40)
+    assert text == "#" * 20 + " " * 20
+
+
+def test_hash_bar_uses_only_hash_and_space_no_brackets_or_percent():
+    text = _render_bar(completed=30, total=100, console_width=40)
+    assert set(text) <= {"#", " "}
+
+
+def test_hash_bar_clamps_to_max_width_on_wide_terminal():
+    text = _render_bar(completed=50, total=100, console_width=200)
+    assert len(text) == 60
+    assert text == "#" * 30 + " " * 30
+
+
+def test_hash_bar_clamps_to_min_width_on_narrow_terminal():
+    text = _render_bar(completed=50, total=100, console_width=5)
+    assert len(text) == 10
+    assert text == "#" * 5 + " " * 5
+
+
+def test_hash_bar_fully_filled_at_completion():
+    text = _render_bar(completed=100, total=100, console_width=40)
+    assert text == "#" * 40
+
+
+def test_hash_bar_renders_empty_when_total_unknown():
+    text = _render_bar(completed=0, total=None, console_width=40)
+    assert text == " " * 40
+
+
+def _fake_task(**overrides):
+    fields = dict(finished=False, finished_time=None, time_remaining=None, total=100)
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def test_eta_column_shows_eta_prefixed_compact_minutes_seconds():
+    task = _fake_task(time_remaining=95)  # 1:35
+    assert downloader.EtaColumn().render(task).plain == "ETA 01:35"
+
+
+def test_eta_column_shows_placeholder_when_time_remaining_unknown():
+    task = _fake_task(time_remaining=None, total=100)
+    assert downloader.EtaColumn().render(task).plain == "ETA --:--"
+
+
+def test_eta_column_shows_nothing_when_total_unknown():
+    task = _fake_task(time_remaining=None, total=None)
+    assert downloader.EtaColumn().render(task).plain == ""
+
+
+def test_progress_factory_renders_single_line_without_percent_or_legacy_bar_chars():
+    progress = downloader._progress()
+    task_id = progress.add_task(
+        "download", total=5_600_000_000, completed=700_000_000, filename="ornith-1.0-9b-Q4_K_M.gguf"
+    )
+    console = Console(file=io.StringIO(), width=120, color_system=None)
+    console.print(progress.make_tasks_table(progress.tasks))
+    output = console.file.getvalue()
+
+    lines = [line for line in output.splitlines() if line.strip()]
+    assert len(lines) == 1
+    line = lines[0]
+    assert "ornith-1.0-9b-Q4_K_M.gguf" in line
+    assert "#" in line
+    assert "%" not in line
+    assert "[" not in line and "]" not in line
+    assert not any(ch in line for ch in "━╸╺")
+    assert task_id is not None

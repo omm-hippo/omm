@@ -265,12 +265,12 @@ from omm.downloader import _progress
 
 def test_progress_factory_renders_single_line_without_percent_or_legacy_bar_chars():
     progress = _progress()
-    progress.console = Console(file=io.StringIO(), width=120, color_system=None)
     task_id = progress.add_task(
         "download", total=5_600_000_000, completed=700_000_000, filename="ornith-1.0-9b-Q4_K_M.gguf"
     )
-    progress.console.print(progress.make_tasks_table(progress.tasks))
-    output = progress.console.file.getvalue()
+    console = Console(file=io.StringIO(), width=120, color_system=None)
+    console.print(progress.make_tasks_table(progress.tasks))
+    output = console.file.getvalue()
 
     lines = [line for line in output.splitlines() if line.strip()]
     assert len(lines) == 1
