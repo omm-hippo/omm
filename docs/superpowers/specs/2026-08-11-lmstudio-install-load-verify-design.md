@@ -25,11 +25,21 @@ layout) currently looks identical to a working one — this is GitHub issue
   model** if it isn't already loaded — confirmed against a real symlinked
   GGUF (`tinyllama-test`). No explicit `lms load` call needed, mirroring
   Ollama's `/api/generate` auto-load behavior.
-- The model identifier LM Studio expects is exactly the `repo` value omm
-  already computes via `_lmstudio_publisher_repo()` (`linker.py:452`) —
-  confirmed via `/v1/models` returning `"id": "tinyllama-test"` for a
-  `models/local/tinyllama-test/tinyllama-1.1b-...gguf` layout.
-- `lms unload <repo>` unloads a specific model by that same identifier.
+- The model identifier LM Studio expects is **not always** the `repo`
+  value `_lmstudio_publisher_repo()` computes (`linker.py:452`). It
+  matched for a dot-free folder name (`tinyllama-test` → API id
+  `tinyllama-test`), but a repo folder ending in a quantization suffix
+  that matches the GGUF's own detected quantization gets that suffix
+  stripped: folder `tinyllama-1.1b-chat-v1.0.Q4_K_M` (the common case,
+  since real GGUF filenames are usually `<name>.<QUANT>.gguf`) resolves to
+  API id `tinyllama-1.1b-chat-v1.0` — confirmed live, and confirmed that
+  probing with the *folder* name instead returns LM Studio's generic "No
+  models loaded" error rather than a not-found error. The real identifier
+  (`modelKey`) must be read from `lms ls --json`, matched by its `path`
+  field against the known `<publisher>/<repo>/<filename>` link location —
+  never derived by string manipulation.
+- `lms unload <modelKey>` unloads a specific model by that same
+  identifier.
 - The background LM Studio service answers `lms` commands even without the
   GUI window focused.
 

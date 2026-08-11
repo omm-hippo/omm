@@ -590,30 +590,71 @@ def _stop_lmstudio_server(lms_path: str) -> None:
         pass
 
 
+def _lmstudio_list_models(lms_path: str, timeout: float = 15) -> list[dict] | None:
+    """List models `lms` currently sees on disk. None on any failure."""
+    try:
+        result = subprocess.run(
+            [lms_path, "ls", "--json"], capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def _lmstudio_model_key(lms_path: str, publisher: str, repo: str, filename: str) -> str | None:
+    """Resolve the modelKey LM Studio's API and `lms load`/`lms unload`
+    actually expect for a just-linked model, by matching the on-disk path
+    link_lmstudio placed it at against `lms ls --json`'s own path field.
+    Never guess this from the publisher/repo folder name directly -
+    confirmed against a real LM Studio 0.4.20 instance that a repo folder
+    ending in a quantization suffix matching the GGUF's own detected
+    quantization (e.g. `tinyllama-1.1b-chat-v1.0.Q4_K_M`) gets that suffix
+    stripped in modelKey (`tinyllama-1.1b-chat-v1.0`) - the two are not
+    interchangeable."""
+    models = _lmstudio_list_models(lms_path)
+    if models is None:
+        return None
+    expected = f"{publisher}/{repo}/{filename}"
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if isinstance(path, str) and path.replace("\\", "/") == expected:
+            key = entry.get("modelKey")
+            return key if isinstance(key, str) else None
+    return None
+
+
 _LMSTUDIO_PROBE_TIMEOUT_SECONDS = 120
 _LMSTUDIO_PROBE_PROMPT = "Reply with the single word OK."
 _LMSTUDIO_PROBE_MAX_TOKENS = 8
 
 
 def _probe_lmstudio_generate(
-    port: int, repo: str, timeout: float = _LMSTUDIO_PROBE_TIMEOUT_SECONDS
+    port: int, model_key: str, timeout: float = _LMSTUDIO_PROBE_TIMEOUT_SECONDS
 ) -> bool | None:
     """Send a fixed short prompt to LM Studio's OpenAI-compatible endpoint,
-    which JIT-loads `repo` if it isn't already resident - confirmed
-    against a real LM Studio 0.4.20 instance (a symlinked GGUF at
-    models/<publisher>/<repo>/<file>.gguf answered a /v1/chat/completions
-    request for model=<repo> with no explicit `lms load` first). True on a
-    real text response, False on an HTTP/response-shape failure (model
-    didn't load), None on a network error - inconclusive, not proof of
-    failure. `timeout` is generous because first-load time on a large
-    model, not just generation time, is included."""
+    which JIT-loads `model_key` if it isn't already resident - confirmed
+    against a real LM Studio 0.4.20 instance (a symlinked GGUF answered a
+    /v1/chat/completions request for its resolved modelKey with no
+    explicit `lms load` first). True on a real text response, False on an
+    HTTP/response-shape failure (model didn't load), None on a network
+    error - inconclusive, not proof of failure. `timeout` is generous
+    because first-load time on a large model, not just generation time, is
+    included."""
     import requests
 
     try:
         response = requests.post(
             f"http://127.0.0.1:{port}/v1/chat/completions",
             json={
-                "model": repo,
+                "model": model_key,
                 "messages": [{"role": "user", "content": _LMSTUDIO_PROBE_PROMPT}],
                 "max_tokens": _LMSTUDIO_PROBE_MAX_TOKENS,
                 "stream": False,
@@ -636,14 +677,14 @@ def _probe_lmstudio_generate(
     return isinstance(content, str) and len(content.strip()) > 0
 
 
-def _lms_unload(lms_path: str, repo: str) -> None:
+def _lms_unload(lms_path: str, model_key: str) -> None:
     """Best-effort isolation cleanup after a probe, mirroring
     quality.unload_model's role for Ollama. Confirmed against a real LM
     Studio instance that unloading a not-currently-loaded identifier exits
     cleanly rather than raising, but this still never propagates a
     failure either way."""
     try:
-        subprocess.run([lms_path, "unload", repo], capture_output=True, text=True, timeout=15)
+        subprocess.run([lms_path, "unload", model_key], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         pass
 
@@ -655,12 +696,15 @@ def verify_lmstudio_load(gguf_path: Path, repo_id: str | None) -> bool | None:
     confirmed bad generation returns False; every other obstacle returns
     None so a caller never turns "couldn't check" into "definitely
     broken."""
-    _, repo = _lmstudio_publisher_repo(repo_id, gguf_path.name)
+    publisher, repo = _lmstudio_publisher_repo(repo_id, gguf_path.name)
     lms_path = _lms_cli_path()
     if lms_path is None:
         return None
     status = _lmstudio_server_status(lms_path)
     if status is None:
+        return None
+    model_key = _lmstudio_model_key(lms_path, publisher, repo, gguf_path.name)
+    if model_key is None:
         return None
 
     started_by_us = False
@@ -670,9 +714,9 @@ def verify_lmstudio_load(gguf_path: Path, repo_id: str | None) -> bool | None:
         started_by_us = True
 
     try:
-        return _probe_lmstudio_generate(status["port"], repo)
+        return _probe_lmstudio_generate(status["port"], model_key)
     finally:
-        _lms_unload(lms_path, repo)
+        _lms_unload(lms_path, model_key)
         if started_by_us:
             _stop_lmstudio_server(lms_path)
 

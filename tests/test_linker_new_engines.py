@@ -366,6 +366,54 @@ def test_lmstudio_server_status_returns_none_on_timeout(monkeypatch):
     assert linker._lmstudio_server_status("lms") is None
 
 
+_LMS_LS_JSON = (
+    '[{"type": "llm", "modelKey": "tinyllama-1.1b-chat-v1.0", '
+    '"path": "local/tinyllama-1.1b-chat-v1.0.Q4_K_M/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"}, '
+    '{"type": "embedding", "modelKey": "nomic-embed-text-v1.5", '
+    '"path": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"}]'
+)
+
+
+def test_lmstudio_list_models_parses_json_array(monkeypatch):
+    monkeypatch.setattr(linker.subprocess, "run", lambda cmd, **kw: _FakeResult(stdout=_LMS_LS_JSON))
+    models = linker._lmstudio_list_models("lms")
+    assert models is not None
+    assert models[0]["modelKey"] == "tinyllama-1.1b-chat-v1.0"
+
+
+def test_lmstudio_list_models_returns_none_on_nonzero_exit(monkeypatch):
+    monkeypatch.setattr(linker.subprocess, "run", lambda cmd, **kw: _FakeResult(returncode=1))
+    assert linker._lmstudio_list_models("lms") is None
+
+
+def test_lmstudio_list_models_returns_none_on_bad_json(monkeypatch):
+    monkeypatch.setattr(linker.subprocess, "run", lambda cmd, **kw: _FakeResult(stdout="not json"))
+    assert linker._lmstudio_list_models("lms") is None
+
+
+def test_lmstudio_model_key_resolves_by_matching_path(monkeypatch):
+    monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: [
+        {"modelKey": "tinyllama-1.1b-chat-v1.0",
+         "path": "local/tinyllama-1.1b-chat-v1.0.Q4_K_M/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"},
+    ])
+    key = linker._lmstudio_model_key(
+        "lms", "local", "tinyllama-1.1b-chat-v1.0.Q4_K_M", "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    )
+    assert key == "tinyllama-1.1b-chat-v1.0"
+
+
+def test_lmstudio_model_key_none_when_path_not_found(monkeypatch):
+    monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: [
+        {"modelKey": "other-model", "path": "local/other/other.gguf"},
+    ])
+    assert linker._lmstudio_model_key("lms", "local", "repo", "file.gguf") is None
+
+
+def test_lmstudio_model_key_none_when_list_unavailable(monkeypatch):
+    monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: None)
+    assert linker._lmstudio_model_key("lms", "local", "repo", "file.gguf") is None
+
+
 def test_start_lmstudio_server_returns_true_once_status_reports_running(monkeypatch):
     calls = {"n": 0}
 
@@ -481,14 +529,25 @@ def test_verify_lmstudio_load_none_when_server_unreachable(tmp_path, monkeypatch
     assert linker.verify_lmstudio_load(tmp_path / "model.gguf", None) is None
 
 
+def test_verify_lmstudio_load_none_when_model_key_not_resolved(tmp_path, monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: {"running": True, "port": 1234})
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda *a, **k: None)
+    probed = {"called": False}
+    monkeypatch.setattr(linker, "_probe_lmstudio_generate", lambda *a, **k: probed.__setitem__("called", True))
+    assert linker.verify_lmstudio_load(tmp_path / "model.gguf", None) is None
+    assert probed["called"] is False
+
+
 def test_verify_lmstudio_load_leaves_already_running_server_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
     monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: {"running": True, "port": 1234})
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda *a, **k: "tinyllama-1.1b-chat-v1.0")
     started = {"called": False}
     stopped = {"called": False}
     monkeypatch.setattr(linker, "_start_lmstudio_server", lambda *a, **k: started.__setitem__("called", True))
     monkeypatch.setattr(linker, "_stop_lmstudio_server", lambda *a, **k: stopped.__setitem__("called", True))
-    monkeypatch.setattr(linker, "_probe_lmstudio_generate", lambda port, repo, **k: True)
+    monkeypatch.setattr(linker, "_probe_lmstudio_generate", lambda port, model_key, **k: True)
     monkeypatch.setattr(linker, "_lms_unload", lambda *a, **k: None)
 
     assert linker.verify_lmstudio_load(tmp_path / "model.gguf", None) is True
@@ -499,22 +558,24 @@ def test_verify_lmstudio_load_leaves_already_running_server_alone(tmp_path, monk
 def test_verify_lmstudio_load_starts_and_stops_server_when_not_running(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
     monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: {"running": False, "port": 1234})
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda *a, **k: "widget")
     monkeypatch.setattr(linker, "_start_lmstudio_server", lambda lms_path: True)
     stopped = {"called": False}
     monkeypatch.setattr(linker, "_stop_lmstudio_server", lambda lms_path: stopped.__setitem__("called", True))
-    monkeypatch.setattr(linker, "_probe_lmstudio_generate", lambda port, repo, **k: True)
-    unloaded = {"repo": None}
-    monkeypatch.setattr(linker, "_lms_unload", lambda lms_path, repo: unloaded.__setitem__("repo", repo))
+    monkeypatch.setattr(linker, "_probe_lmstudio_generate", lambda port, model_key, **k: True)
+    unloaded = {"model_key": None}
+    monkeypatch.setattr(linker, "_lms_unload", lambda lms_path, model_key: unloaded.__setitem__("model_key", model_key))
 
     result = linker.verify_lmstudio_load(tmp_path / "model.gguf", "acme/widget")
     assert result is True
     assert stopped["called"] is True
-    assert unloaded["repo"] == "widget"
+    assert unloaded["model_key"] == "widget"
 
 
 def test_verify_lmstudio_load_none_when_server_start_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
     monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: {"running": False, "port": 1234})
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda *a, **k: "widget")
     monkeypatch.setattr(linker, "_start_lmstudio_server", lambda lms_path: False)
     probed = {"called": False}
     monkeypatch.setattr(linker, "_probe_lmstudio_generate", lambda *a, **k: probed.__setitem__("called", True))
@@ -525,7 +586,8 @@ def test_verify_lmstudio_load_none_when_server_start_fails(tmp_path, monkeypatch
 def test_verify_lmstudio_load_false_propagates_and_still_unloads(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
     monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: {"running": True, "port": 1234})
-    monkeypatch.setattr(linker, "_probe_lmstudio_generate", lambda port, repo, **k: False)
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda *a, **k: "widget")
+    monkeypatch.setattr(linker, "_probe_lmstudio_generate", lambda port, model_key, **k: False)
     unloaded = {"called": False}
     monkeypatch.setattr(linker, "_lms_unload", lambda *a, **k: unloaded.__setitem__("called", True))
     assert linker.verify_lmstudio_load(tmp_path / "model.gguf", None) is False
