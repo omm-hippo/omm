@@ -38,6 +38,7 @@ from omm import (
     config as config_mod,
     contribute_state,
     linker,
+    onboarding,
     predictor,
     quality as quality_mod,
     recommend_ui,
@@ -123,6 +124,7 @@ Tuning & quality:
 
 Maintenance:
   omm scan
+  omm setup
   omm upgrade [MODEL]
   omm setting
 
@@ -233,6 +235,7 @@ def _telemetry_destination_line() -> str:
 def _root(ctx: typer.Context) -> None:
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
+        _maybe_run_onboarding()
         console.print(f"omm {_version_line(_installed_commit())}")
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
@@ -413,6 +416,13 @@ def scan() -> None:
         )
 
 
+@app.command(name="setup")
+def setup_cmd() -> None:
+    """Re-run the first-time setup wizard (hardware scan + engine checklist)."""
+    onboarding.run_wizard(console)
+    config_mod.update_config(onboarding_completed=True)
+
+
 def _refresh_data() -> None:
     """Unconditionally re-fetch rules.json and recommend-model.json from
     their configured URLs (used by `omm update` for a full data sync)."""
@@ -548,6 +558,18 @@ def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch:
     version_check.record(latest, branch)
     if latest != installed:
         err_console.print("[yellow]Update available! Run: [bold]omm update[/bold][/yellow]")
+
+
+def _maybe_run_onboarding() -> None:
+    """Runs the first-time setup wizard exactly once, only for a genuinely
+    fresh install (see config.load_config()'s migration handling) and only
+    when there's a real terminal to drive questionary's checklist."""
+    if load_config().get("onboarding_completed", True):
+        return
+    if not _stdin_is_tty():
+        return
+    onboarding.run_wizard(console)
+    config_mod.update_config(onboarding_completed=True)
 
 
 def _maybe_start_update_check(ctx: typer.Context) -> None:
