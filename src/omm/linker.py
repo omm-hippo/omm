@@ -1377,12 +1377,14 @@ def is_mstystudio_installed() -> bool:
 # (the koboldcpp binary itself; text-generation-webui's own source files)
 # in a short list of common places a user would keep them.
 
+_ENGINE_INSTALL_DIR = Path.home() / "Applications"
+
 _HEURISTIC_SEARCH_ROOTS = [
     Path.home(),
     Path.home() / "Downloads",
     Path.home() / "Documents",
     Path.home() / "Desktop",
-    Path.home() / "Applications",
+    _ENGINE_INSTALL_DIR,
     Path("/Applications"),
 ]
 
@@ -1529,6 +1531,8 @@ def has_automated_installer(key: str) -> bool:
         return True
     if key == "mstystudio":
         return True
+    if key == "koboldcpp":
+        return True
     return False
 
 
@@ -1537,7 +1541,7 @@ def install_engine(
 ) -> EngineInstallResult:
     """Dispatch table mirroring is_engine_installed()'s if/elif style so
     individual branches stay monkeypatchable in tests. "ollama", "lmstudio",
-    "jan", "anythingllm", and "mstystudio" have automated installers (see
+    "jan", "anythingllm", "mstystudio", and "koboldcpp" have automated installers (see
     has_automated_installer); the rest raise until a follow-up PR adds them
     one at a time behind this same interface."""
     if key == "ollama":
@@ -1550,6 +1554,8 @@ def install_engine(
         return _install_anythingllm(on_output=on_output)
     if key == "mstystudio":
         return _install_mstystudio(on_output=on_output)
+    if key == "koboldcpp":
+        return _install_koboldcpp(on_output=on_output)
     raise NotImplementedError(f"no automated installer for engine: {key}")
 
 
@@ -1764,6 +1770,54 @@ def _install_mstystudio(*, on_output: Callable[[str], None] | None = None) -> En
         is_installed=is_mstystudio_installed,
         on_output=on_output,
         brew_cask="mstystudio",
+    )
+
+
+_KOBOLDCPP_ASSET_BY_PLATFORM: dict[tuple[str, str], str] = {
+    ("Darwin", "arm64"): "koboldcpp-mac-arm64",  # no Intel Mac build exists, confirmed
+    ("Linux", "x86_64"): "koboldcpp-linux-x64",
+    ("Windows", "AMD64"): "koboldcpp.exe",
+}
+
+
+def _install_koboldcpp(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
+    system = platform.system()
+    machine = platform.machine()
+    asset = _KOBOLDCPP_ASSET_BY_PLATFORM.get((system, machine))
+    if asset is None:
+        return EngineInstallResult(
+            "koboldcpp",
+            "unsupported_platform",
+            f"No koboldcpp build for {system}/{machine} - see https://github.com/LostRuins/koboldcpp/releases",
+        )
+
+    dest_dir = _ENGINE_INSTALL_DIR / "koboldcpp"
+    dest_name = "koboldcpp.exe" if system == "Windows" else "koboldcpp"
+    dest_path = dest_dir / dest_name
+    url = f"https://github.com/LostRuins/koboldcpp/releases/latest/download/{asset}"
+
+    returncode: int | None = None
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        returncode = _stream_subprocess(["curl", "-fsSL", url, "-o", str(dest_path)], on_output)
+    except OSError as e:
+        return EngineInstallResult("koboldcpp", "failed", f"Could not download koboldcpp: {e}")
+
+    if system != "Windows" and dest_path.exists():
+        try:
+            dest_path.chmod(dest_path.stat().st_mode | 0o111)
+        except OSError:
+            pass
+
+    find_koboldcpp_binary.cache_clear()
+    if is_koboldcpp_installed():
+        return EngineInstallResult("koboldcpp", "installed", "KoboldCpp downloaded successfully.")
+    detail = f" (curl exited with code {returncode})" if returncode else ""
+    return EngineInstallResult(
+        "koboldcpp",
+        "failed",
+        f"Download ran but koboldcpp still isn't detected{detail}. "
+        "Get it manually from https://github.com/LostRuins/koboldcpp/releases",
     )
 
 

@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from omm import linker
 
@@ -14,7 +15,7 @@ class _FakeProc:
 
 def test_install_engine_raises_for_unimplemented_engine():
     with pytest.raises(NotImplementedError):
-        linker.install_engine("koboldcpp")
+        linker.install_engine("textgenwebui")
 
 
 def test_install_ollama_mac_streams_output_and_reports_installed(monkeypatch):
@@ -396,3 +397,59 @@ def test_install_mstystudio_linux_is_unsupported(monkeypatch):
     result = linker.install_engine("mstystudio")
 
     assert result.status == "unsupported_platform"
+
+
+def test_has_automated_installer_true_for_koboldcpp():
+    assert linker.has_automated_installer("koboldcpp") is True
+
+
+def test_install_koboldcpp_downloads_to_applications_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
+    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
+    linker.find_koboldcpp_binary.cache_clear()
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        # Simulate curl actually creating the file, like the real download would.
+        dest = Path(args[args.index("-o") + 1])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"fake binary")
+        return _FakeProc([])
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker.install_engine("koboldcpp")
+
+    assert result.status == "installed"
+    assert "koboldcpp-mac-arm64" in calls[0][calls[0].index("-o") - 1]
+    assert (tmp_path / "koboldcpp" / "koboldcpp").exists()
+    linker.find_koboldcpp_binary.cache_clear()
+
+
+def test_install_koboldcpp_unsupported_arch_is_unsupported_platform(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")  # Intel Mac - no build exists
+
+    result = linker.install_engine("koboldcpp")
+
+    assert result.status == "unsupported_platform"
+    assert "koboldcpp" in result.message.lower()
+
+
+def test_install_koboldcpp_reports_failed_when_still_not_detected(tmp_path, monkeypatch):
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
+    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
+    linker.find_koboldcpp_binary.cache_clear()
+    # curl "succeeds" (no exception) but never actually writes the file -
+    # simulates a network failure that curl itself doesn't turn into an OSError.
+    monkeypatch.setattr(linker.subprocess, "Popen", lambda *a, **k: _FakeProc([]))
+
+    result = linker.install_engine("koboldcpp")
+
+    assert result.status == "failed"
+    linker.find_koboldcpp_binary.cache_clear()
