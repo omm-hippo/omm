@@ -1525,6 +1525,8 @@ def has_automated_installer(key: str) -> bool:
         return True
     if key == "jan":
         return True
+    if key == "anythingllm":
+        return True
     return False
 
 
@@ -1533,15 +1535,17 @@ def install_engine(
 ) -> EngineInstallResult:
     """Dispatch table mirroring is_engine_installed()'s if/elif style so
     individual branches stay monkeypatchable in tests. "ollama", "lmstudio",
-    and "jan" have automated installers (see has_automated_installer);
-    the rest raise until a follow-up PR adds them one at a time behind this
-    same interface."""
+    "jan", and "anythingllm" have automated installers (see
+    has_automated_installer); the rest raise until a follow-up PR adds them
+    one at a time behind this same interface."""
     if key == "ollama":
         return _install_ollama(on_output=on_output)
     if key == "lmstudio":
         return _install_lmstudio(on_output=on_output)
     if key == "jan":
         return _install_jan(on_output=on_output)
+    if key == "anythingllm":
+        return _install_anythingllm(on_output=on_output)
     raise NotImplementedError(f"no automated installer for engine: {key}")
 
 
@@ -1724,6 +1728,23 @@ def _install_jan(*, on_output: Callable[[str], None] | None = None) -> EngineIns
         brew_cask="jan",
         winget_id="Jan.Jan",
         flatpak_id="ai.jan.Jan",
+    )
+
+
+def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
+    # Linux deliberately has no flatpak_id/download path here: the only
+    # official Linux install method is an interactive installer.sh (sudo
+    # AppArmor-profile prompt, no documented silent flag) - same risk
+    # class the original design excluded text-generation-webui's git-clone
+    # path for. Falls through to unsupported_platform on Linux.
+    return _install_via_package_manager(
+        key="anythingllm",
+        label="AnythingLLM",
+        manual_url="https://docs.anythingllm.com/installation-desktop/overview",
+        is_installed=is_anythingllm_installed,
+        on_output=on_output,
+        brew_cask="anythingllm",
+        winget_id="MintplexLabs.AnythingLLM",
     )
 
 

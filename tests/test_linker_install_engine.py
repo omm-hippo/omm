@@ -14,7 +14,7 @@ class _FakeProc:
 
 def test_install_engine_raises_for_unimplemented_engine():
     with pytest.raises(NotImplementedError):
-        linker.install_engine("anythingllm")
+        linker.install_engine("msty")
 
 
 def test_install_ollama_mac_streams_output_and_reports_installed(monkeypatch):
@@ -131,7 +131,7 @@ def test_has_automated_installer_true_for_ollama():
 
 
 def test_has_automated_installer_false_for_engine_without_installer():
-    assert linker.has_automated_installer("anythingllm") is False
+    assert linker.has_automated_installer("msty") is False
 
 
 def test_is_lmstudio_installed_detects_headless_cli(monkeypatch, tmp_path):
@@ -302,3 +302,55 @@ def test_install_engine_jan_dispatches_to_package_manager_helper(monkeypatch):
     result = linker.install_engine("jan")
 
     assert result == linker.EngineInstallResult("jan", "installed", "Jan installed successfully.")
+
+
+def test_has_automated_installer_true_for_anythingllm():
+    assert linker.has_automated_installer("anythingllm") is True
+
+
+def test_install_anythingllm_mac_uses_brew_cask(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/local/bin/brew" if name == "brew" else None)
+    monkeypatch.setattr(linker, "is_anythingllm_installed", lambda: True)
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        return _FakeProc([])
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker.install_engine("anythingllm")
+
+    assert result.status == "installed"
+    assert calls[0] == ["brew", "install", "--cask", "anythingllm"]
+
+
+def test_install_anythingllm_windows_uses_winget(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "winget.exe" if name == "winget" else None)
+    monkeypatch.setattr(linker, "is_anythingllm_installed", lambda: True)
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        return _FakeProc([])
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker.install_engine("anythingllm")
+
+    assert result.status == "installed"
+    assert calls[0] == ["winget", "install", "-e", "--id", "MintplexLabs.AnythingLLM", "--silent"]
+
+
+def test_install_anythingllm_linux_is_unsupported(monkeypatch):
+    """The official Linux installer.sh is interactive (sudo AppArmor
+    prompt) with no documented non-interactive flag - automating it is
+    explicitly out of scope for this plan."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+
+    result = linker.install_engine("anythingllm")
+
+    assert result.status == "unsupported_platform"
+    assert "anythingllm.com" in result.message
