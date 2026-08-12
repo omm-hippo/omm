@@ -13,7 +13,8 @@ locally rather than extracting a new shared module for it."""
 from __future__ import annotations
 
 import sys
-from typing import Callable
+from contextlib import contextmanager
+from typing import Callable, Iterator
 
 import typer
 from rich.console import Console
@@ -94,6 +95,32 @@ def _build_empty_selection_validator() -> Callable[[list[str]], bool | str]:
     return _validate
 
 
+@contextmanager
+def _bracket_checkbox_indicators() -> Iterator[None]:
+    """Swap questionary's default checked/unchecked glyphs (`●`/`○`) for
+    `[x]`/`[ ]` for the duration of one checkbox prompt.
+
+    questionary hardcodes these as module-level constants rather than a
+    per-call parameter, and `questionary.prompts.common` binds them via
+    `from questionary.constants import ...` at import time - patching
+    `questionary.constants` itself has no effect on rendering, since that
+    module's own copy of the names is what the render function reads.
+    Scoped to just this call (restored in `finally`) so other checkbox
+    prompts elsewhere in the app (e.g. `omm import`'s model picker) keep
+    the default look unless changed separately."""
+    import questionary.prompts.common as qcommon
+
+    original_selected = qcommon.INDICATOR_SELECTED
+    original_unselected = qcommon.INDICATOR_UNSELECTED
+    qcommon.INDICATOR_SELECTED = "[x]"
+    qcommon.INDICATOR_UNSELECTED = "[ ]"
+    try:
+        yield
+    finally:
+        qcommon.INDICATOR_SELECTED = original_selected
+        qcommon.INDICATOR_UNSELECTED = original_unselected
+
+
 def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
@@ -148,7 +175,8 @@ def run_engine_checklist(console: Console) -> list[str] | None:
             validate=_build_empty_selection_validator(),
         )
     )
-    return question.ask()
+    with _bracket_checkbox_indicators():
+        return question.ask()
 
 
 def _install_selected_engines(console: Console, selected: list[str]) -> None:

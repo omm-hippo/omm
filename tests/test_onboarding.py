@@ -105,6 +105,32 @@ def test_empty_selection_validator_allows_nonempty_immediately():
     assert validate(["ollama"]) is True
 
 
+def test_bracket_checkbox_indicators_swap_and_restore():
+    import questionary.prompts.common as qcommon
+
+    original_selected = qcommon.INDICATOR_SELECTED
+    original_unselected = qcommon.INDICATOR_UNSELECTED
+
+    with onboarding._bracket_checkbox_indicators():
+        assert qcommon.INDICATOR_SELECTED == "[x]"
+        assert qcommon.INDICATOR_UNSELECTED == "[ ]"
+
+    assert qcommon.INDICATOR_SELECTED == original_selected
+    assert qcommon.INDICATOR_UNSELECTED == original_unselected
+
+
+def test_bracket_checkbox_indicators_restore_on_exception():
+    import questionary.prompts.common as qcommon
+
+    original_selected = qcommon.INDICATOR_SELECTED
+
+    with pytest.raises(ValueError):
+        with onboarding._bracket_checkbox_indicators():
+            raise ValueError("boom")
+
+    assert qcommon.INDICATOR_SELECTED == original_selected
+
+
 def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
     console = _console()
     monkeypatch.setattr(
