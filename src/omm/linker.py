@@ -1500,6 +1500,81 @@ def is_engine_installed(key: str) -> bool:
     raise ValueError(f"unknown engine: {key}")
 
 
+@dataclass(frozen=True)
+class EngineInstallResult:
+    key: str
+    status: str  # "installed" | "failed" | "unsupported_platform"
+    message: str
+
+
+def install_engine(
+    key: str, *, on_output: Callable[[str], None] | None = None
+) -> EngineInstallResult:
+    """Dispatch table mirroring is_engine_installed()'s if/elif style so
+    individual branches stay monkeypatchable in tests. Only "ollama" has an
+    automated installer today; the rest raise until a follow-up PR adds
+    them one at a time behind this same interface."""
+    if key == "ollama":
+        return _install_ollama(on_output=on_output)
+    raise NotImplementedError(f"no automated installer for engine: {key}")
+
+
+def _stream_subprocess(
+    args: list[str], on_output: Callable[[str], None] | None
+) -> tuple[int, str] | None:
+    """Runs args, streaming each stdout line to on_output as it arrives.
+    Returns (returncode, None-marker) via the process wait(), or None if
+    the process itself couldn't start (caller turns that into a result)."""
+    try:
+        proc = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        )
+    except OSError:
+        raise
+    for line in proc.stdout:
+        if on_output is not None:
+            on_output(line.rstrip("\n"))
+    return proc.wait()
+
+
+def _install_ollama(
+    *, on_output: Callable[[str], None] | None = None
+) -> EngineInstallResult:
+    system = platform.system()
+    if system in ("Darwin", "Linux"):
+        try:
+            _stream_subprocess(
+                ["/bin/sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"],
+                on_output,
+            )
+        except OSError as e:
+            return EngineInstallResult("ollama", "failed", f"Could not start installer: {e}")
+    elif system == "Windows":
+        if shutil.which("winget") is None:
+            return EngineInstallResult(
+                "ollama",
+                "unsupported_platform",
+                "winget not found - install Ollama manually from https://ollama.com/download",
+            )
+        try:
+            _stream_subprocess(
+                ["winget", "install", "-e", "--id", "Ollama.Ollama", "--silent"],
+                on_output,
+            )
+        except OSError as e:
+            return EngineInstallResult("ollama", "failed", f"Could not start installer: {e}")
+    else:
+        return EngineInstallResult(
+            "ollama", "unsupported_platform", f"No automated installer for {system}."
+        )
+
+    if is_ollama_installed():
+        return EngineInstallResult("ollama", "installed", "Ollama installed successfully.")
+    return EngineInstallResult(
+        "ollama", "failed", "Installer ran but Ollama still isn't detected."
+    )
+
+
 def _engine_storage_dir(key: str) -> Path | None:
     if key == "ollama":
         return ollama_models_dir()
