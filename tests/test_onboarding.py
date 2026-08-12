@@ -177,9 +177,17 @@ def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
 
 
 def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
+    """This exercises a defensive branch in _install_selected_engines that
+    stays in the code for any future engine that ships without automation
+    - every currently-registered linker.ENGINES key has automation now, so
+    force the branch via has_automated_installer rather than relying on a
+    real key being unautomated (which would otherwise fall through to a
+    real, unmocked linker.install_engine() call - including a real network
+    request)."""
     console = _console()
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: False)
 
-    onboarding._install_selected_engines(console, ["textgenwebui"])
+    onboarding._install_selected_engines(console, ["koboldcpp"])
 
     output = console.file.getvalue()
     assert "isn't auto-installable yet" in output

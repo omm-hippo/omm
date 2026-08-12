@@ -14,8 +14,12 @@ class _FakeProc:
 
 
 def test_install_engine_raises_for_unimplemented_engine():
+    """Tests the dispatch function's fallback for a key that isn't wired
+    up at all - not any particular real engine (every linker.ENGINES key
+    has automation now), so this uses an obviously-synthetic key that can
+    never collide with a real EngineSpec."""
     with pytest.raises(NotImplementedError):
-        linker.install_engine("textgenwebui")
+        linker.install_engine("totally-unknown-engine")
 
 
 def test_install_ollama_mac_streams_output_and_reports_installed(monkeypatch):
@@ -132,7 +136,9 @@ def test_has_automated_installer_true_for_ollama():
 
 
 def test_has_automated_installer_false_for_engine_without_installer():
-    assert linker.has_automated_installer("textgenwebui") is False
+    """Same rationale as test_install_engine_raises_for_unimplemented_engine
+    above: this tests the fallback branch, not a specific real engine."""
+    assert linker.has_automated_installer("totally-unknown-engine") is False
 
 
 def test_is_lmstudio_installed_detects_headless_cli(monkeypatch, tmp_path):
