@@ -13,6 +13,7 @@ locally rather than extracting a new shared module for it."""
 from __future__ import annotations
 
 import sys
+from typing import Callable
 
 import typer
 from rich.console import Console
@@ -60,19 +61,37 @@ def print_hardware_summary(console: Console) -> None:
     console.print()
 
 
-def _engine_choices() -> list[tuple[str, str]]:
-    """(key, label) pairs for engines not yet detected on this machine."""
-    choices = []
-    for spec in linker.ENGINES:
-        if linker.is_engine_installed(spec.key):
-            continue
-        tag = (
-            "auto-install"
-            if linker.has_automated_installer(spec.key)
-            else "not yet automated - see compatibility wiki"
+def _engine_choices() -> list[tuple[str, str, bool]]:
+    """(key, label, already_installed) for every known engine - installed
+    ones are still listed (as a non-selectable "installed" entry) rather
+    than disappearing from the screen, so the wizard shows what it already
+    detected instead of only what's missing."""
+    return [
+        (spec.key, spec.label, linker.is_engine_installed(spec.key))
+        for spec in linker.ENGINES
+    ]
+
+
+def _build_empty_selection_validator() -> Callable[[list[str]], bool | str]:
+    """A bare Enter with nothing checked is easy to hit by accident (it's
+    the same key that confirms a selection). The first such submission
+    shows a warning instead of silently finishing the wizard; a second
+    Enter with still nothing checked is treated as a deliberate "install
+    nothing" and allowed through."""
+    warned = {"once": False}
+
+    def _validate(selected: list[str]) -> bool | str:
+        if selected:
+            return True
+        if warned["once"]:
+            return True
+        warned["once"] = True
+        return (
+            "Nothing selected - press Enter again to continue without "
+            "installing anything, or Space to select an engine."
         )
-        choices.append((spec.key, f"{spec.label}  ({tag})"))
-    return choices
+
+    return _validate
 
 
 def _stdin_is_tty() -> bool:
@@ -105,7 +124,7 @@ def run_engine_checklist(console: Console) -> list[str] | None:
     import questionary
 
     choices = _engine_choices()
-    if not choices:
+    if all(installed for _, _, installed in choices):
         console.print("[dim]All known local AI runners are already installed.[/dim]\n")
         return []
 
@@ -119,7 +138,14 @@ def run_engine_checklist(console: Console) -> list[str] | None:
     question = _add_escape_to_cancel(
         questionary.checkbox(
             "Install any local AI runners you'd like to use? (space to select, enter to confirm)",
-            choices=[questionary.Choice(title=label, value=key) for key, label in choices],
+            choices=[
+                questionary.Choice(
+                    title=label, value=key, disabled="installed" if installed else None
+                )
+                for key, label, installed in choices
+            ],
+            instruction="",
+            validate=_build_empty_selection_validator(),
         )
     )
     return question.ask()

@@ -57,23 +57,52 @@ def test_print_hardware_summary_shows_os_and_ram(monkeypatch):
     assert "Test GPU" in output
 
 
-def test_engine_choices_skip_already_installed_engines(monkeypatch):
+def test_engine_choices_includes_installed_engines_flagged(monkeypatch):
     monkeypatch.setattr(linker, "is_engine_installed", lambda key: key == "ollama")
 
     choices = onboarding._engine_choices()
 
-    keys = [key for key, _ in choices]
-    assert "ollama" not in keys
-    assert "lmstudio" in keys
+    by_key = {key: installed for key, _, installed in choices}
+    assert by_key["ollama"] is True
+    assert by_key["lmstudio"] is False
+    assert len(choices) == len(linker.ENGINES)
 
 
-def test_engine_choices_tags_automation_level(monkeypatch):
+def test_engine_choices_labels_carry_no_automation_tag(monkeypatch):
     monkeypatch.setattr(linker, "is_engine_installed", lambda key: False)
 
-    choices = dict(onboarding._engine_choices())
+    choices = onboarding._engine_choices()
 
-    assert "auto-install" in choices["ollama"]
-    assert "not yet automated" in choices["lmstudio"]
+    for _, label, _ in choices:
+        assert "auto-install" not in label
+        assert "not yet automated" not in label
+
+
+def test_run_engine_checklist_all_installed_skips_prompt(monkeypatch):
+    monkeypatch.setattr(linker, "is_engine_installed", lambda key: True)
+    console = _console()
+
+    result = onboarding.run_engine_checklist(console)
+
+    assert result == []
+    assert "already installed" in console.file.getvalue()
+
+
+def test_empty_selection_validator_warns_once_then_allows():
+    validate = onboarding._build_empty_selection_validator()
+
+    first = validate([])
+    assert first is not True
+    assert "space" in first.lower()
+
+    second = validate([])
+    assert second is True
+
+
+def test_empty_selection_validator_allows_nonempty_immediately():
+    validate = onboarding._build_empty_selection_validator()
+
+    assert validate(["ollama"]) is True
 
 
 def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
