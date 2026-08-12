@@ -465,6 +465,48 @@ def test_has_automated_installer_true_for_textgenwebui():
     assert linker.has_automated_installer("textgenwebui") is True
 
 
+def test_extract_textgenwebui_archive_handles_zip(tmp_path):
+    """Real zip bytes, no mocking - exercises the .zip branch and the
+    top-level-folder inference for real."""
+    import zipfile
+
+    archive_path = tmp_path / "textgen-portable-4.9-windows-cpu.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("textgen-4.9/app/server.py", "# fake")
+        zf.writestr("textgen-4.9/user_data/models/place-your-models-here.txt", "")
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    result = linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert result == dest_dir / "textgen-4.9"
+    assert (result / "app" / "server.py").exists()
+    assert (result / "user_data" / "models" / "place-your-models-here.txt").exists()
+
+
+def test_extract_textgenwebui_archive_handles_tar_gz(tmp_path):
+    """Real tar.gz bytes, no mocking - exercises the tarfile branch (the
+    else clause covering everything that isn't .zip)."""
+    import tarfile
+
+    src_dir = tmp_path / "textgen-4.9"
+    (src_dir / "app").mkdir(parents=True)
+    (src_dir / "app" / "server.py").write_text("# fake")
+
+    archive_path = tmp_path / "textgen-portable-4.9-linux-cpu.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        tf.add(src_dir, arcname="textgen-4.9")
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    result = linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert result == dest_dir / "textgen-4.9"
+    assert (result / "app" / "server.py").exists()
+
+
 def test_install_textgenwebui_picks_cpu_variant_with_no_gpu(monkeypatch, tmp_path):
     from omm.hardware import HardwareInfo
 
