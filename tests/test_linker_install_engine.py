@@ -14,7 +14,7 @@ class _FakeProc:
 
 def test_install_engine_raises_for_unimplemented_engine():
     with pytest.raises(NotImplementedError):
-        linker.install_engine("msty")
+        linker.install_engine("koboldcpp")
 
 
 def test_install_ollama_mac_streams_output_and_reports_installed(monkeypatch):
@@ -131,7 +131,7 @@ def test_has_automated_installer_true_for_ollama():
 
 
 def test_has_automated_installer_false_for_engine_without_installer():
-    assert linker.has_automated_installer("msty") is False
+    assert linker.has_automated_installer("textgenwebui") is False
 
 
 def test_is_lmstudio_installed_detects_headless_cli(monkeypatch, tmp_path):
@@ -354,3 +354,45 @@ def test_install_anythingllm_linux_is_unsupported(monkeypatch):
 
     assert result.status == "unsupported_platform"
     assert "anythingllm.com" in result.message
+
+
+def test_has_automated_installer_true_for_mstystudio():
+    assert linker.has_automated_installer("mstystudio") is True
+
+
+def test_install_mstystudio_mac_uses_brew_cask(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/local/bin/brew" if name == "brew" else None)
+    monkeypatch.setattr(linker, "is_mstystudio_installed", lambda: True)
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        return _FakeProc([])
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker.install_engine("mstystudio")
+
+    assert result.status == "installed"
+    assert calls[0] == ["brew", "install", "--cask", "mstystudio"]
+
+
+def test_install_mstystudio_windows_is_unsupported(monkeypatch):
+    """No current winget package exists for Msty Studio - the only one in
+    winget-pkgs (CloudStack.Msty) targets the deprecated legacy app and
+    must not be used."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+
+    result = linker.install_engine("mstystudio")
+
+    assert result.status == "unsupported_platform"
+    assert "msty.ai" in result.message
+
+
+def test_install_mstystudio_linux_is_unsupported(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+
+    result = linker.install_engine("mstystudio")
+
+    assert result.status == "unsupported_platform"

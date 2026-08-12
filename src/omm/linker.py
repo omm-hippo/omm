@@ -1527,6 +1527,8 @@ def has_automated_installer(key: str) -> bool:
         return True
     if key == "anythingllm":
         return True
+    if key == "mstystudio":
+        return True
     return False
 
 
@@ -1535,7 +1537,7 @@ def install_engine(
 ) -> EngineInstallResult:
     """Dispatch table mirroring is_engine_installed()'s if/elif style so
     individual branches stay monkeypatchable in tests. "ollama", "lmstudio",
-    "jan", and "anythingllm" have automated installers (see
+    "jan", "anythingllm", and "mstystudio" have automated installers (see
     has_automated_installer); the rest raise until a follow-up PR adds them
     one at a time behind this same interface."""
     if key == "ollama":
@@ -1546,6 +1548,8 @@ def install_engine(
         return _install_jan(on_output=on_output)
     if key == "anythingllm":
         return _install_anythingllm(on_output=on_output)
+    if key == "mstystudio":
+        return _install_mstystudio(on_output=on_output)
     raise NotImplementedError(f"no automated installer for engine: {key}")
 
 
@@ -1745,6 +1749,21 @@ def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> E
         on_output=on_output,
         brew_cask="anythingllm",
         winget_id="MintplexLabs.AnythingLLM",
+    )
+
+
+def _install_mstystudio(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
+    # No winget_id/flatpak_id: the only winget entry for this app family
+    # (CloudStack.Msty) targets the deprecated pre-rebrand "Msty" app, not
+    # current "Msty Studio" - using it would install the wrong software.
+    # No Linux package manager exists at all.
+    return _install_via_package_manager(
+        key="mstystudio",
+        label="Msty",
+        manual_url="https://msty.ai/download",
+        is_installed=is_mstystudio_installed,
+        on_output=on_output,
+        brew_cask="mstystudio",
     )
 
 

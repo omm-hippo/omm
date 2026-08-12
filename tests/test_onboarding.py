@@ -179,7 +179,7 @@ def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
 def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
     console = _console()
 
-    onboarding._install_selected_engines(console, ["mstystudio"])
+    onboarding._install_selected_engines(console, ["koboldcpp"])
 
     output = console.file.getvalue()
     assert "isn't auto-installable yet" in output
