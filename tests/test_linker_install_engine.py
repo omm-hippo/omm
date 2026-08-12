@@ -14,7 +14,7 @@ class _FakeProc:
 
 def test_install_engine_raises_for_unimplemented_engine():
     with pytest.raises(NotImplementedError):
-        linker.install_engine("lmstudio")
+        linker.install_engine("jan")
 
 
 def test_install_ollama_mac_streams_output_and_reports_installed(monkeypatch):
@@ -131,4 +131,75 @@ def test_has_automated_installer_true_for_ollama():
 
 
 def test_has_automated_installer_false_for_engine_without_installer():
-    assert linker.has_automated_installer("lmstudio") is False
+    assert linker.has_automated_installer("jan") is False
+
+
+def test_is_lmstudio_installed_detects_headless_cli(monkeypatch, tmp_path):
+    """A headless llmster install has no GUI app bundle, but is still a
+    real, usable install - detection must not require the GUI app."""
+    monkeypatch.setattr(linker, "_app_bundle_installed", lambda name: False)
+    monkeypatch.setattr(linker, "lmstudio_home_dir", lambda: tmp_path / "nope")
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "/usr/local/bin/lms")
+
+    assert linker.is_lmstudio_installed() is True
+
+
+def test_has_automated_installer_true_for_lmstudio():
+    assert linker.has_automated_installer("lmstudio") is True
+
+
+def test_install_lmstudio_mac_linux_streams_output_and_reports_installed(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: True)
+    monkeypatch.setattr(
+        linker.subprocess, "Popen", lambda *a, **k: _FakeProc(["Downloading llmster...\n"])
+    )
+    captured = []
+
+    result = linker.install_engine("lmstudio", on_output=captured.append)
+
+    assert result == linker.EngineInstallResult(
+        "lmstudio", "installed", "LM Studio installed successfully."
+    )
+    assert captured == ["Downloading llmster..."]
+
+
+def test_install_lmstudio_linux_reports_failed_when_still_not_detected(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
+    monkeypatch.setattr(linker.subprocess, "Popen", lambda *a, **k: _FakeProc([]))
+
+    result = linker.install_engine("lmstudio")
+
+    assert result.status == "failed"
+    assert "lmstudio.ai/download" in result.message
+
+
+def test_install_lmstudio_windows_uses_powershell(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        linker.shutil, "which", lambda name: "C:\\powershell.exe" if name == "powershell" else None
+    )
+    monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: True)
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        return _FakeProc([])
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker.install_engine("lmstudio")
+
+    assert result.status == "installed"
+    assert calls[0][0] == "C:\\powershell.exe"
+    assert "irm https://lmstudio.ai/install.ps1 | iex" in calls[0]
+
+
+def test_install_lmstudio_windows_without_powershell_is_unsupported(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: None)
+
+    result = linker.install_engine("lmstudio")
+
+    assert result.status == "unsupported_platform"

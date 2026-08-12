@@ -114,6 +114,10 @@ def _app_bundle_installed(app_name: str) -> bool:
 
 
 def is_lmstudio_installed() -> bool:
+    # A headless llmster install (the `lms` CLI + daemon, no GUI) is a
+    # real, usable install with no app bundle at all - check it first.
+    if _lms_cli_path() is not None:
+        return True
     if platform.system() == "Darwin":
         return _app_bundle_installed("LM Studio")
     return lmstudio_home_dir().exists()
@@ -1515,19 +1519,25 @@ def has_automated_installer(key: str) -> bool:
     install_engine() on a key that just raises NotImplementedError.
     Deliberately mirrors install_engine()'s own if/elif shape (add one line
     here per new branch added there)."""
-    return key == "ollama"
+    if key == "ollama":
+        return True
+    if key == "lmstudio":
+        return True
+    return False
 
 
 def install_engine(
     key: str, *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
     """Dispatch table mirroring is_engine_installed()'s if/elif style so
-    individual branches stay monkeypatchable in tests. Only "ollama" has an
-    automated installer today (see has_automated_installer); the rest raise
-    until a follow-up PR adds them one at a time behind this same
-    interface."""
+    individual branches stay monkeypatchable in tests. Only "ollama" and
+    "lmstudio" have automated installers today (see has_automated_installer);
+    the rest raise until a follow-up PR adds them one at a time behind this
+    same interface."""
     if key == "ollama":
         return _install_ollama(on_output=on_output)
+    if key == "lmstudio":
+        return _install_lmstudio(on_output=on_output)
     raise NotImplementedError(f"no automated installer for engine: {key}")
 
 
@@ -1550,6 +1560,7 @@ def _stream_subprocess(
 
 
 _OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
+_LMSTUDIO_DOWNLOAD_URL = "https://lmstudio.ai/download"
 
 
 def _install_ollama(
@@ -1592,6 +1603,54 @@ def _install_ollama(
         "failed",
         f"Installer ran but Ollama still isn't detected{detail}. "
         f"Install manually from {_OLLAMA_DOWNLOAD_URL}",
+    )
+
+
+def _install_lmstudio(
+    *, on_output: Callable[[str], None] | None = None
+) -> EngineInstallResult:
+    """Installs llmster, LM Studio's headless CLI+daemon core - not the
+    GUI app. Same official-script pattern as Ollama's installer; see
+    is_lmstudio_installed()'s CLI check for why that's still a real
+    install."""
+    system = platform.system()
+    returncode: int | None = None
+    if system in ("Darwin", "Linux"):
+        try:
+            returncode = _stream_subprocess(
+                ["/bin/sh", "-c", "curl -fsSL https://lmstudio.ai/install.sh | bash"],
+                on_output,
+            )
+        except OSError as e:
+            return EngineInstallResult("lmstudio", "failed", f"Could not start installer: {e}")
+    elif system == "Windows":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if powershell is None:
+            return EngineInstallResult(
+                "lmstudio",
+                "unsupported_platform",
+                f"PowerShell not found - install manually from {_LMSTUDIO_DOWNLOAD_URL}",
+            )
+        try:
+            returncode = _stream_subprocess(
+                [powershell, "-NoProfile", "-Command", "irm https://lmstudio.ai/install.ps1 | iex"],
+                on_output,
+            )
+        except OSError as e:
+            return EngineInstallResult("lmstudio", "failed", f"Could not start installer: {e}")
+    else:
+        return EngineInstallResult(
+            "lmstudio", "unsupported_platform", f"No automated installer for {system}."
+        )
+
+    if is_lmstudio_installed():
+        return EngineInstallResult("lmstudio", "installed", "LM Studio installed successfully.")
+    detail = f" (installer exited with code {returncode})" if returncode else ""
+    return EngineInstallResult(
+        "lmstudio",
+        "failed",
+        f"Installer ran but LM Studio still isn't detected{detail}. "
+        f"Install manually from {_LMSTUDIO_DOWNLOAD_URL}",
     )
 
 
