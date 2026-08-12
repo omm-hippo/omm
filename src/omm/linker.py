@@ -1507,13 +1507,25 @@ class EngineInstallResult:
     message: str
 
 
+def has_automated_installer(key: str) -> bool:
+    """Single source of truth for "does install_engine() have a real branch
+    for this engine key" - onboarding.py calls this instead of keeping its
+    own separate set of automated engine keys, so a future engine added to
+    one place without the other can't leave the wizard calling
+    install_engine() on a key that just raises NotImplementedError.
+    Deliberately mirrors install_engine()'s own if/elif shape (add one line
+    here per new branch added there)."""
+    return key == "ollama"
+
+
 def install_engine(
     key: str, *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
     """Dispatch table mirroring is_engine_installed()'s if/elif style so
     individual branches stay monkeypatchable in tests. Only "ollama" has an
-    automated installer today; the rest raise until a follow-up PR adds
-    them one at a time behind this same interface."""
+    automated installer today (see has_automated_installer); the rest raise
+    until a follow-up PR adds them one at a time behind this same
+    interface."""
     if key == "ollama":
         return _install_ollama(on_output=on_output)
     raise NotImplementedError(f"no automated installer for engine: {key}")
@@ -1537,13 +1549,17 @@ def _stream_subprocess(
     return proc.wait()
 
 
+_OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
+
+
 def _install_ollama(
     *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
     system = platform.system()
+    returncode: int | None = None
     if system in ("Darwin", "Linux"):
         try:
-            _stream_subprocess(
+            returncode = _stream_subprocess(
                 ["/bin/sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"],
                 on_output,
             )
@@ -1554,10 +1570,10 @@ def _install_ollama(
             return EngineInstallResult(
                 "ollama",
                 "unsupported_platform",
-                "winget not found - install Ollama manually from https://ollama.com/download",
+                f"winget not found - install Ollama manually from {_OLLAMA_DOWNLOAD_URL}",
             )
         try:
-            _stream_subprocess(
+            returncode = _stream_subprocess(
                 ["winget", "install", "-e", "--id", "Ollama.Ollama", "--silent"],
                 on_output,
             )
@@ -1570,8 +1586,12 @@ def _install_ollama(
 
     if is_ollama_installed():
         return EngineInstallResult("ollama", "installed", "Ollama installed successfully.")
+    detail = f" (installer exited with code {returncode})" if returncode else ""
     return EngineInstallResult(
-        "ollama", "failed", "Installer ran but Ollama still isn't detected."
+        "ollama",
+        "failed",
+        f"Installer ran but Ollama still isn't detected{detail}. "
+        f"Install manually from {_OLLAMA_DOWNLOAD_URL}",
     )
 
 

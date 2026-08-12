@@ -1,5 +1,7 @@
 import io
 
+import pytest
+import typer
 from rich.console import Console
 
 from omm import linker, onboarding
@@ -107,3 +109,55 @@ def test_run_wizard_completes_with_no_engines_selected(monkeypatch):
     onboarding.run_wizard(console)
 
     assert "Setup complete" in console.file.getvalue()
+
+
+def test_run_wizard_aborts_when_engine_checklist_is_cancelled(monkeypatch):
+    """A Ctrl+C/Escape abort during the checklist must surface as
+    `None`, not `[]` - `run_wizard` must not print "Setup complete" or let
+    the caller mark onboarding_completed=True on cancel."""
+    console = _console()
+    monkeypatch.setattr(onboarding, "print_hardware_summary", lambda c: None)
+    monkeypatch.setattr(onboarding, "run_engine_checklist", lambda c: None)
+
+    with pytest.raises(typer.Abort):
+        onboarding.run_wizard(console)
+
+    assert "Setup complete" not in console.file.getvalue()
+
+
+def test_run_engine_checklist_requires_tty(monkeypatch):
+    """Non-interactive stdin must exit cleanly with a clear message rather
+    than falling through to a raw questionary crash/traceback."""
+    console = _console()
+    monkeypatch.setattr(linker, "is_engine_installed", lambda key: False)
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: False)
+
+    with pytest.raises(typer.Exit):
+        onboarding.run_engine_checklist(console)
+
+    assert "interactive terminal" in console.file.getvalue()
+
+
+def test_install_selected_engines_prints_raw_installer_output_without_markup_errors(monkeypatch):
+    """Installer output must pass through Rich's console.print raw (no
+    markup interpretation): a `[sudo] password:` line must not have its
+    bracketed token eaten, and a line shaped like `[/dim]` must not raise
+    rich.errors.MarkupError and crash the wizard."""
+    console = _console()
+    captured = {}
+
+    def fake_install_engine(key, on_output=None):
+        captured["on_output"] = on_output
+        return linker.EngineInstallResult(key, "installed", "ok")
+
+    monkeypatch.setattr(linker, "install_engine", fake_install_engine)
+
+    onboarding._install_selected_engines(console, ["ollama"])
+
+    on_output = captured["on_output"]
+    on_output("[sudo] password:")
+    on_output("weird [/dim] text")
+
+    output = console.file.getvalue()
+    assert "[sudo] password:" in output
+    assert "weird [/dim] text" in output

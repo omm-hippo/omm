@@ -95,3 +95,40 @@ def test_install_ollama_unknown_platform_is_unsupported(monkeypatch):
     result = linker.install_engine("ollama")
 
     assert result.status == "unsupported_platform"
+
+
+def test_install_ollama_linux_failure_message_includes_manual_link(monkeypatch):
+    """Every other failure path already gives a manual next step; the
+    mac/linux "installer ran but still not detected" case must too,
+    instead of leaving the user stuck with no fallback."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
+    monkeypatch.setattr(
+        linker.subprocess, "Popen", lambda *a, **k: _FakeProc([], returncode=1)
+    )
+
+    result = linker.install_engine("ollama")
+
+    assert result.status == "failed"
+    assert "https://ollama.com/download" in result.message
+
+
+def test_install_ollama_mac_failure_message_includes_manual_link(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
+    monkeypatch.setattr(
+        linker.subprocess, "Popen", lambda *a, **k: _FakeProc([], returncode=1)
+    )
+
+    result = linker.install_engine("ollama")
+
+    assert result.status == "failed"
+    assert "https://ollama.com/download" in result.message
+
+
+def test_has_automated_installer_true_for_ollama():
+    assert linker.has_automated_installer("ollama") is True
+
+
+def test_has_automated_installer_false_for_engine_without_installer():
+    assert linker.has_automated_installer("lmstudio") is False
