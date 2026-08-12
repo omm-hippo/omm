@@ -112,7 +112,7 @@ def test_bracket_checkbox_indicators_swap_and_restore():
     original_unselected = qcommon.INDICATOR_UNSELECTED
 
     with onboarding._bracket_checkbox_indicators():
-        assert qcommon.INDICATOR_SELECTED == "[x]"
+        assert qcommon.INDICATOR_SELECTED == "[*]"
         assert qcommon.INDICATOR_UNSELECTED == "[ ]"
 
     assert qcommon.INDICATOR_SELECTED == original_selected

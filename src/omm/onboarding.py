@@ -98,7 +98,7 @@ def _build_empty_selection_validator() -> Callable[[list[str]], bool | str]:
 @contextmanager
 def _bracket_checkbox_indicators() -> Iterator[None]:
     """Swap questionary's default checked/unchecked glyphs (`●`/`○`) for
-    `[x]`/`[ ]` for the duration of one checkbox prompt.
+    `[*]`/`[ ]` for the duration of one checkbox prompt.
 
     questionary hardcodes these as module-level constants rather than a
     per-call parameter, and `questionary.prompts.common` binds them via
@@ -112,7 +112,7 @@ def _bracket_checkbox_indicators() -> Iterator[None]:
 
     original_selected = qcommon.INDICATOR_SELECTED
     original_unselected = qcommon.INDICATOR_UNSELECTED
-    qcommon.INDICATOR_SELECTED = "[x]"
+    qcommon.INDICATOR_SELECTED = "[*]"
     qcommon.INDICATOR_UNSELECTED = "[ ]"
     try:
         yield
