@@ -1523,6 +1523,8 @@ def has_automated_installer(key: str) -> bool:
         return True
     if key == "lmstudio":
         return True
+    if key == "jan":
+        return True
     return False
 
 
@@ -1530,14 +1532,16 @@ def install_engine(
     key: str, *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
     """Dispatch table mirroring is_engine_installed()'s if/elif style so
-    individual branches stay monkeypatchable in tests. Only "ollama" and
-    "lmstudio" have automated installers today (see has_automated_installer);
+    individual branches stay monkeypatchable in tests. "ollama", "lmstudio",
+    and "jan" have automated installers (see has_automated_installer);
     the rest raise until a follow-up PR adds them one at a time behind this
     same interface."""
     if key == "ollama":
         return _install_ollama(on_output=on_output)
     if key == "lmstudio":
         return _install_lmstudio(on_output=on_output)
+    if key == "jan":
+        return _install_jan(on_output=on_output)
     raise NotImplementedError(f"no automated installer for engine: {key}")
 
 
@@ -1651,6 +1655,75 @@ def _install_lmstudio(
         "failed",
         f"Installer ran but LM Studio still isn't detected{detail}. "
         f"Install manually from {_LMSTUDIO_DOWNLOAD_URL}",
+    )
+
+
+def _install_via_package_manager(
+    *,
+    key: str,
+    label: str,
+    manual_url: str,
+    is_installed: Callable[[], bool],
+    on_output: Callable[[str], None] | None = None,
+    brew_cask: str | None = None,
+    winget_id: str | None = None,
+    flatpak_id: str | None = None,
+) -> EngineInstallResult:
+    """Shared shape for engines whose only automated path is a package
+    manager: brew cask on macOS, winget on Windows, flatpak on Linux. Any
+    platform without a configured option (a None kwarg, or the package
+    manager itself missing) falls back to unsupported_platform with a
+    manual link - never guesses a direct download URL."""
+    system = platform.system()
+    args: list[str] | None = None
+    if system == "Darwin" and brew_cask is not None:
+        if shutil.which("brew") is None:
+            return EngineInstallResult(
+                key, "unsupported_platform", f"Homebrew not found - install manually from {manual_url}"
+            )
+        args = ["brew", "install", "--cask", brew_cask]
+    elif system == "Windows" and winget_id is not None:
+        if shutil.which("winget") is None:
+            return EngineInstallResult(
+                key, "unsupported_platform", f"winget not found - install manually from {manual_url}"
+            )
+        args = ["winget", "install", "-e", "--id", winget_id, "--silent"]
+    elif system == "Linux" and flatpak_id is not None:
+        if shutil.which("flatpak") is None:
+            return EngineInstallResult(
+                key, "unsupported_platform", f"flatpak not found - install manually from {manual_url}"
+            )
+        args = ["flatpak", "install", "-y", "flathub", flatpak_id]
+    else:
+        return EngineInstallResult(
+            key, "unsupported_platform", f"No automated installer for {system} - install manually from {manual_url}"
+        )
+
+    try:
+        returncode = _stream_subprocess(args, on_output)
+    except OSError as e:
+        return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
+
+    if is_installed():
+        return EngineInstallResult(key, "installed", f"{label} installed successfully.")
+    detail = f" (installer exited with code {returncode})" if returncode else ""
+    return EngineInstallResult(
+        key,
+        "failed",
+        f"Installer ran but {label} still isn't detected{detail}. Install manually from {manual_url}",
+    )
+
+
+def _install_jan(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
+    return _install_via_package_manager(
+        key="jan",
+        label="Jan",
+        manual_url="https://jan.ai/download",
+        is_installed=is_jan_installed,
+        on_output=on_output,
+        brew_cask="jan",
+        winget_id="Jan.Jan",
+        flatpak_id="ai.jan.Jan",
     )
 
 

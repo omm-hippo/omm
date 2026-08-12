@@ -14,7 +14,7 @@ class _FakeProc:
 
 def test_install_engine_raises_for_unimplemented_engine():
     with pytest.raises(NotImplementedError):
-        linker.install_engine("jan")
+        linker.install_engine("anythingllm")
 
 
 def test_install_ollama_mac_streams_output_and_reports_installed(monkeypatch):
@@ -131,7 +131,7 @@ def test_has_automated_installer_true_for_ollama():
 
 
 def test_has_automated_installer_false_for_engine_without_installer():
-    assert linker.has_automated_installer("jan") is False
+    assert linker.has_automated_installer("anythingllm") is False
 
 
 def test_is_lmstudio_installed_detects_headless_cli(monkeypatch, tmp_path):
@@ -203,3 +203,102 @@ def test_install_lmstudio_windows_without_powershell_is_unsupported(monkeypatch)
     result = linker.install_engine("lmstudio")
 
     assert result.status == "unsupported_platform"
+
+
+def test_install_via_package_manager_mac_uses_brew(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/local/bin/brew" if name == "brew" else None)
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        return _FakeProc([])
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker._install_via_package_manager(
+        key="jan", label="Jan", manual_url="https://jan.ai/download",
+        is_installed=lambda: True, brew_cask="jan",
+    )
+
+    assert result.status == "installed"
+    assert calls[0] == ["brew", "install", "--cask", "jan"]
+
+
+def test_install_via_package_manager_mac_without_brew_is_unsupported(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: None)
+
+    result = linker._install_via_package_manager(
+        key="jan", label="Jan", manual_url="https://jan.ai/download",
+        is_installed=lambda: False, brew_cask="jan",
+    )
+
+    assert result.status == "unsupported_platform"
+    assert "jan.ai/download" in result.message
+
+
+def test_install_via_package_manager_windows_uses_winget(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "winget.exe" if name == "winget" else None)
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        return _FakeProc([])
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker._install_via_package_manager(
+        key="jan", label="Jan", manual_url="https://jan.ai/download",
+        is_installed=lambda: True, winget_id="Jan.Jan",
+    )
+
+    assert result.status == "installed"
+    assert calls[0] == ["winget", "install", "-e", "--id", "Jan.Jan", "--silent"]
+
+
+def test_install_via_package_manager_linux_uses_flatpak(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/flatpak" if name == "flatpak" else None)
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        return _FakeProc([])
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker._install_via_package_manager(
+        key="jan", label="Jan", manual_url="https://jan.ai/download",
+        is_installed=lambda: True, flatpak_id="ai.jan.Jan",
+    )
+
+    assert result.status == "installed"
+    assert calls[0] == ["flatpak", "install", "-y", "flathub", "ai.jan.Jan"]
+
+
+def test_install_via_package_manager_no_option_for_platform_is_unsupported(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+
+    result = linker._install_via_package_manager(
+        key="anythingllm", label="AnythingLLM", manual_url="https://docs.anythingllm.com/x",
+        is_installed=lambda: False, brew_cask="anythingllm", winget_id="MintplexLabs.AnythingLLM",
+    )
+
+    assert result.status == "unsupported_platform"
+
+
+def test_has_automated_installer_true_for_jan():
+    assert linker.has_automated_installer("jan") is True
+
+
+def test_install_engine_jan_dispatches_to_package_manager_helper(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/local/bin/brew" if name == "brew" else None)
+    monkeypatch.setattr(linker, "is_jan_installed", lambda: True)
+    monkeypatch.setattr(linker.subprocess, "Popen", lambda *a, **k: _FakeProc([]))
+
+    result = linker.install_engine("jan")
+
+    assert result == linker.EngineInstallResult("jan", "installed", "Jan installed successfully.")
