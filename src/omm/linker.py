@@ -52,17 +52,22 @@ import os
 import platform
 import re
 import shutil
+import tarfile
 import time
 import struct
 import subprocess
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
+import requests
+
 from omm import config
 from omm.gguf import read_gguf_metadata
+from omm.hardware import HardwareInfo, scan_hardware
 from omm.hashutil import sha256_file
 from omm.atomic import atomic_write_text, backup_corrupt_file, locked
 from omm.config import LINK_OWNERSHIP_PATH
@@ -1424,7 +1429,9 @@ def koboldcpp_models_dir() -> Path | None:
     return binary.parent / "models" if binary is not None else None
 
 
-_TEXTGENWEBUI_NAME_HINT = re.compile(r"text-generation-webui|oobabooga", re.IGNORECASE)
+_TEXTGENWEBUI_NAME_HINT = re.compile(
+    r"text-generation-webui|oobabooga|textgen", re.IGNORECASE
+)
 
 
 @lru_cache(maxsize=1)
@@ -1435,12 +1442,15 @@ def find_textgenwebui_root() -> Path | None:
         except OSError:
             continue
         for entry in entries:
-            if (
-                entry.is_dir()
-                and _TEXTGENWEBUI_NAME_HINT.search(entry.name)
-                and (entry / "server.py").exists()
-                and (entry / "one_click.py").exists()
-            ):
+            if not (entry.is_dir() and _TEXTGENWEBUI_NAME_HINT.search(entry.name)):
+                continue
+            # Old git-clone install: server.py + one_click.py at the root.
+            if (entry / "server.py").exists() and (entry / "one_click.py").exists():
+                return entry
+            # Portable prebuilt release: server.py lives under app/, and
+            # there's no one_click.py at all (verified against a real
+            # release archive, not the docs).
+            if (entry / "app" / "server.py").exists():
                 return entry
     return None
 
@@ -1533,6 +1543,8 @@ def has_automated_installer(key: str) -> bool:
         return True
     if key == "koboldcpp":
         return True
+    if key == "textgenwebui":
+        return True
     return False
 
 
@@ -1541,9 +1553,9 @@ def install_engine(
 ) -> EngineInstallResult:
     """Dispatch table mirroring is_engine_installed()'s if/elif style so
     individual branches stay monkeypatchable in tests. "ollama", "lmstudio",
-    "jan", "anythingllm", "mstystudio", and "koboldcpp" have automated installers (see
-    has_automated_installer); the rest raise until a follow-up PR adds them
-    one at a time behind this same interface."""
+    "jan", "anythingllm", "mstystudio", "koboldcpp", and "textgenwebui" have
+    automated installers (see has_automated_installer); the rest raise until
+    a follow-up PR adds them one at a time behind this same interface."""
     if key == "ollama":
         return _install_ollama(on_output=on_output)
     if key == "lmstudio":
@@ -1556,6 +1568,8 @@ def install_engine(
         return _install_mstystudio(on_output=on_output)
     if key == "koboldcpp":
         return _install_koboldcpp(on_output=on_output)
+    if key == "textgenwebui":
+        return _install_textgenwebui(on_output=on_output)
     raise NotImplementedError(f"no automated installer for engine: {key}")
 
 
@@ -1818,6 +1832,127 @@ def _install_koboldcpp(*, on_output: Callable[[str], None] | None = None) -> Eng
         "failed",
         f"Download ran but koboldcpp still isn't detected{detail}. "
         "Get it manually from https://github.com/LostRuins/koboldcpp/releases",
+    )
+
+
+_TEXTGENWEBUI_RELEASES_API = (
+    "https://api.github.com/repos/oobabooga/text-generation-webui/releases/latest"
+)
+
+
+def _textgenwebui_variant(hw: HardwareInfo) -> str:
+    """Best-effort GPU-variant choice from already-collected hardware info.
+    A wrong guess just means slower (or CPU-mode) inference, never a
+    broken install, so this favors safe/broad compatibility over squeezing
+    out maximum performance: cuda12.4 over the newer cuda13.1 (needs a
+    newer driver), vulkan over guessing at ROCm on Windows (research found
+    ROCm offered as Linux-only in the app's own GPU picker)."""
+    gpu_name = (hw.gpu_name or "").lower()
+    system = platform.system()
+    if "nvidia" in gpu_name:
+        return "cuda12.4"
+    if "amd" in gpu_name or "radeon" in gpu_name:
+        return "rocm7.2" if system == "Linux" else "vulkan"
+    if gpu_name:
+        return "vulkan"
+    return "cpu"
+
+
+def _textgenwebui_asset_name(hw: HardwareInfo) -> str | None:
+    system = platform.system()
+    if system == "Darwin":
+        machine = platform.machine()
+        arch = "arm64" if machine == "arm64" else "x86_64"
+        return f"macos-{arch}"
+    if system == "Windows":
+        return f"windows-{_textgenwebui_variant(hw)}"
+    if system == "Linux":
+        return f"linux-{_textgenwebui_variant(hw)}"
+    return None
+
+
+def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
+    """Extracts the portable release into dest_dir and returns the
+    resulting top-level folder (named textgen-<version> by the archive
+    itself - verified against real release bytes)."""
+    if archive_path.suffix == ".zip":
+        with zipfile.ZipFile(archive_path) as zf:
+            top_level = {name.split("/")[0] for name in zf.namelist()}
+            zf.extractall(dest_dir)
+    else:
+        with tarfile.open(archive_path) as tf:
+            top_level = {member.name.split("/")[0] for member in tf.getmembers()}
+            tf.extractall(dest_dir)
+    return dest_dir / next(iter(top_level))
+
+
+def _install_textgenwebui(
+    *, on_output: Callable[[str], None] | None = None
+) -> EngineInstallResult:
+    hw = scan_hardware()
+    platform_tag = _textgenwebui_asset_name(hw)
+    if platform_tag is None:
+        return EngineInstallResult(
+            "textgenwebui",
+            "unsupported_platform",
+            f"No automated installer for {platform.system()}.",
+        )
+
+    try:
+        response = requests.get(_TEXTGENWEBUI_RELEASES_API, timeout=10)
+        response.raise_for_status()
+        assets = response.json().get("assets", [])
+    except (requests.RequestException, ValueError) as e:
+        return EngineInstallResult("textgenwebui", "failed", f"Could not check for a release: {e}")
+
+    match = next(
+        (
+            a
+            for a in assets
+            if platform_tag in a["name"]
+            and a["name"].startswith("textgen-portable-")
+            and "-ik-" not in a["name"]
+        ),
+        None,
+    )
+    if match is None:
+        return EngineInstallResult(
+            "textgenwebui",
+            "failed",
+            f"No release build found for {platform_tag} - see https://github.com/oobabooga/text-generation-webui/releases",
+        )
+
+    dest_root = _ENGINE_INSTALL_DIR
+    dest_root.mkdir(parents=True, exist_ok=True)
+    archive_path = dest_root / match["name"]
+
+    try:
+        returncode = _stream_subprocess(
+            ["curl", "-fsSL", "-o", str(archive_path), match["browser_download_url"]], on_output
+        )
+    except OSError as e:
+        return EngineInstallResult("textgenwebui", "failed", f"Could not download: {e}")
+
+    if not archive_path.exists():
+        return EngineInstallResult("textgenwebui", "failed", "Download did not complete.")
+
+    try:
+        _extract_textgenwebui_archive(archive_path, dest_root)
+    except (zipfile.BadZipFile, tarfile.TarError, OSError) as e:
+        return EngineInstallResult("textgenwebui", "failed", f"Could not extract archive: {e}")
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+    find_textgenwebui_root.cache_clear()
+    if is_textgenwebui_installed():
+        return EngineInstallResult(
+            "textgenwebui", "installed", "text-generation-webui installed successfully."
+        )
+    detail = f" (curl exited with code {returncode})" if returncode else ""
+    return EngineInstallResult(
+        "textgenwebui",
+        "failed",
+        f"Download ran but text-generation-webui still isn't detected{detail}.",
     )
 
 

@@ -242,6 +242,41 @@ def test_link_engine_raises_link_error_when_textgenwebui_not_found(tmp_path, mon
         linker.link_engine("textgenwebui", gguf_path, repo_id=None, ollama_tag="model")
 
 
+def test_find_textgenwebui_root_recognizes_portable_build_layout(tmp_path, monkeypatch):
+    """Portable releases extract to a `textgen-<version>` folder with
+    `app/server.py` (not root-level server.py+one_click.py like the old
+    git-clone layout) - verified directly against a real release archive."""
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
+    portable_root = tmp_path / "textgen-4.9"
+    (portable_root / "app").mkdir(parents=True)
+    (portable_root / "app" / "server.py").touch()
+    (portable_root / "user_data" / "models").mkdir(parents=True)
+
+    assert linker.find_textgenwebui_root() == portable_root
+    assert linker.textgenwebui_models_dir() == portable_root / "user_data" / "models"
+
+
+def test_find_textgenwebui_root_still_recognizes_old_git_clone_layout(tmp_path, monkeypatch):
+    """Regression guard: existing users with the old git-clone install
+    (root-level server.py + one_click.py) must not stop being detected."""
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
+    old_root = tmp_path / "text-generation-webui"
+    old_root.mkdir()
+    (old_root / "server.py").touch()
+    (old_root / "one_click.py").touch()
+
+    assert linker.find_textgenwebui_root() == old_root
+
+
+def test_find_textgenwebui_root_portable_layout_requires_name_hint(tmp_path, monkeypatch):
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
+    wrong_name = tmp_path / "some-other-4.9"
+    (wrong_name / "app").mkdir(parents=True)
+    (wrong_name / "app" / "server.py").touch()
+
+    assert linker.find_textgenwebui_root() is None
+
+
 # --- Engine dispatch table ------------------------------------------------
 
 

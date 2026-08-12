@@ -453,3 +453,190 @@ def test_install_koboldcpp_reports_failed_when_still_not_detected(tmp_path, monk
 
     assert result.status == "failed"
     linker.find_koboldcpp_binary.cache_clear()
+
+
+def test_has_automated_installer_true_for_textgenwebui():
+    assert linker.has_automated_installer("textgenwebui") is True
+
+
+def test_install_textgenwebui_picks_cpu_variant_with_no_gpu(monkeypatch, tmp_path):
+    from omm.hardware import HardwareInfo
+
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
+    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    linker.find_textgenwebui_root.cache_clear()
+
+    # No GPU: use a fake HardwareInfo rather than relying on the real
+    # scan_hardware() reflecting "no GPU", which isn't true on every
+    # dev/CI machine this test suite runs on (e.g. Apple Silicon laptops
+    # always report a GPU regardless of the mocked platform.system()).
+    fake_hw = HardwareInfo(
+        os_name="Linux", os_version="", cpu="Test CPU",
+        ram_total_gb=16.0, ram_available_gb=8.0, unified_memory=False,
+        gpu_name=None, vram_total_gb=None, vram_free_gb=None,
+    )
+    monkeypatch.setattr(linker, "scan_hardware", lambda: fake_hw)
+
+    fake_release = {
+        "assets": [
+            {"name": "textgen-portable-4.9-linux-cpu.tar.gz", "browser_download_url": "https://example.test/cpu.tar.gz"},
+            {"name": "textgen-portable-4.9-linux-cuda12.4.tar.gz", "browser_download_url": "https://example.test/cuda.tar.gz"},
+        ]
+    }
+
+    class _FakeResponse:
+        def json(self):
+            return fake_release
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(linker.requests, "get", lambda *a, **k: _FakeResponse())
+
+    downloaded_urls = []
+
+    def fake_stream_subprocess(args, on_output):
+        downloaded_urls.append(args[-1])
+        # Simulate the download landing where curl -o would put it.
+        dest = Path(args[args.index("-o") + 1])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"fake archive")
+        return 0
+
+    monkeypatch.setattr(linker, "_stream_subprocess", fake_stream_subprocess)
+
+    def fake_extract(archive_path, dest_dir):
+        extracted = dest_dir / "textgen-4.9"
+        (extracted / "app").mkdir(parents=True)
+        (extracted / "app" / "server.py").touch()
+        return extracted
+
+    monkeypatch.setattr(linker, "_extract_textgenwebui_archive", fake_extract)
+
+    result = linker.install_engine("textgenwebui")
+
+    assert result.status == "installed"
+    assert downloaded_urls == ["https://example.test/cpu.tar.gz"]
+    linker.find_textgenwebui_root.cache_clear()
+
+
+def test_install_textgenwebui_picks_cuda_variant_with_nvidia_gpu(monkeypatch, tmp_path):
+    from omm.hardware import HardwareInfo
+
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
+    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    linker.find_textgenwebui_root.cache_clear()
+
+    fake_hw = HardwareInfo(
+        os_name="Windows", os_version="11", cpu="Test CPU",
+        ram_total_gb=32.0, ram_available_gb=16.0, unified_memory=False,
+        gpu_name="NVIDIA GeForce RTX 4090", vram_total_gb=24.0, vram_free_gb=20.0,
+    )
+    monkeypatch.setattr(linker, "scan_hardware", lambda: fake_hw)
+
+    fake_release = {
+        "assets": [
+            {"name": "textgen-portable-4.9-windows-cpu.zip", "browser_download_url": "https://example.test/cpu.zip"},
+            {"name": "textgen-portable-4.9-windows-cuda12.4.zip", "browser_download_url": "https://example.test/cuda.zip"},
+        ]
+    }
+
+    class _FakeResponse:
+        def json(self):
+            return fake_release
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(linker.requests, "get", lambda *a, **k: _FakeResponse())
+
+    downloaded_urls = []
+
+    def fake_stream_subprocess(args, on_output):
+        downloaded_urls.append(args[-1])
+        dest = Path(args[args.index("-o") + 1])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"fake archive")
+        return 0
+
+    monkeypatch.setattr(linker, "_stream_subprocess", fake_stream_subprocess)
+
+    def fake_extract(archive_path, dest_dir):
+        extracted = dest_dir / "textgen-4.9"
+        (extracted / "app").mkdir(parents=True)
+        (extracted / "app" / "server.py").touch()
+        return extracted
+
+    monkeypatch.setattr(linker, "_extract_textgenwebui_archive", fake_extract)
+
+    result = linker.install_engine("textgenwebui")
+
+    assert result.status == "installed"
+    assert downloaded_urls == ["https://example.test/cuda.zip"]
+    linker.find_textgenwebui_root.cache_clear()
+
+
+def test_install_textgenwebui_mac_uses_arch_specific_asset(monkeypatch, tmp_path):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
+    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    linker.find_textgenwebui_root.cache_clear()
+
+    fake_release = {
+        "assets": [
+            {"name": "textgen-portable-4.9-macos-arm64.tar.gz", "browser_download_url": "https://example.test/arm64.tar.gz"},
+            {"name": "textgen-portable-4.9-macos-x86_64.tar.gz", "browser_download_url": "https://example.test/x86_64.tar.gz"},
+        ]
+    }
+
+    class _FakeResponse:
+        def json(self):
+            return fake_release
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(linker.requests, "get", lambda *a, **k: _FakeResponse())
+    downloaded_urls = []
+
+    def fake_stream_subprocess(args, on_output):
+        downloaded_urls.append(args[-1])
+        dest = Path(args[args.index("-o") + 1])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"fake archive")
+        return 0
+
+    monkeypatch.setattr(linker, "_stream_subprocess", fake_stream_subprocess)
+    monkeypatch.setattr(
+        linker,
+        "_extract_textgenwebui_archive",
+        lambda archive_path, dest_dir: (dest_dir / "textgen-4.9"),
+    )
+
+    linker.install_engine("textgenwebui")
+
+    assert downloaded_urls == ["https://example.test/arm64.tar.gz"]
+    linker.find_textgenwebui_root.cache_clear()
+
+
+def test_install_textgenwebui_reports_failed_when_asset_not_found(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
+
+    class _FakeResponse:
+        def json(self):
+            return {"assets": []}
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(linker.requests, "get", lambda *a, **k: _FakeResponse())
+
+    result = linker.install_engine("textgenwebui")
+
+    assert result.status == "failed"
