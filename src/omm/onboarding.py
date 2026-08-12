@@ -173,6 +173,13 @@ def run_engine_checklist(console: Console) -> list[str] | None:
             ],
             instruction="",
             validate=_build_empty_selection_validator(),
+            # prompt_toolkit's own base style hardcodes ("selected", "reverse")
+            # (checked rows render in reverse video); questionary's default
+            # style never overrides it since an empty class rule doesn't
+            # reset an inherited attribute. Cancel it explicitly - the
+            # `[*]` indicator already marks a checked row, reverse video
+            # on top of that is redundant.
+            style=questionary.Style([("selected", "noreverse")]),
         )
     )
     with _bracket_checkbox_indicators():

@@ -119,6 +119,36 @@ def test_bracket_checkbox_indicators_swap_and_restore():
     assert qcommon.INDICATOR_UNSELECTED == original_unselected
 
 
+def test_run_engine_checklist_cancels_reverse_video_on_checked_items(monkeypatch):
+    """prompt_toolkit's own base style hardcodes ("selected", "reverse") for
+    checked checkbox rows; questionary never overrides it by default. The
+    wizard must pass its own style cancelling that attribute."""
+    import questionary
+
+    monkeypatch.setattr(linker, "is_engine_installed", lambda key: False)
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(onboarding, "_add_escape_to_cancel", lambda q: q)
+    captured = {}
+
+    class _FakeQuestion:
+        def ask(self):
+            return []
+
+    def fake_checkbox(*args, **kwargs):
+        captured["style"] = kwargs.get("style")
+        return _FakeQuestion()
+
+    monkeypatch.setattr(questionary, "checkbox", fake_checkbox)
+    console = _console()
+
+    onboarding.run_engine_checklist(console)
+
+    style = captured["style"]
+    assert style is not None
+    rules = dict(style.style_rules)
+    assert "noreverse" in rules.get("selected", "")
+
+
 def test_bracket_checkbox_indicators_restore_on_exception():
     import questionary.prompts.common as qcommon
 
