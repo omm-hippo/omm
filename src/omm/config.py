@@ -51,6 +51,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "catalog_public_key": None,
     "contribute_always_ack": False,
     "update_channel": "stable",
+    "onboarding_completed": True,
 }
 
 
@@ -81,8 +82,9 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
 def load_config() -> dict[str, Any]:
     ensure_omm_home()
     if not CONFIG_PATH.exists():
-        save_config(DEFAULT_CONFIG)
-        return dict(DEFAULT_CONFIG)
+        fresh = {**DEFAULT_CONFIG, "onboarding_completed": False}
+        save_config(fresh)
+        return fresh
     try:
         data = json.loads(CONFIG_PATH.read_text())
     except (OSError, json.JSONDecodeError):
