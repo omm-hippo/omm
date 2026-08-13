@@ -99,7 +99,7 @@ def test_search_json_before_subcommand(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {
                 "name": "tinyllama-1.1b-q4",
                 "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
@@ -170,7 +170,7 @@ def test_search_limit_stops_mid_family_before_later_candidates(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {"name": "llama-7b-model", "repo_id": "org/llama-7b-model", "description": "d"},
             {"name": "llama-13b-model", "repo_id": "org/llama-13b-model", "description": "d"},
             {"name": "llama-30b-model", "repo_id": "org/llama-30b-model", "description": "d"},
@@ -192,7 +192,7 @@ def test_search_limit_stops_family_headers_once_reached(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {"name": "gemma-model-a", "repo_id": "org/gemma-model-a", "description": "d"},
             {"name": "mistral-model-b", "repo_id": "org/mistral-model-b", "description": "d"},
             {"name": "qwen-model-c", "repo_id": "org/qwen-model-c", "description": "d"},
@@ -215,7 +215,7 @@ def test_search_provider_curated_filters_out_remote_results(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {"name": "mistral-curated", "repo_id": "org/mistral-curated", "description": "d"},
         ],
     )
@@ -256,7 +256,7 @@ def test_search_provider_curated_filters_out_remote_results(monkeypatch):
 
 def test_search_provider_bogus_value_errors(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
-    monkeypatch.setattr(cli.search_mod, "local_candidate_pool", lambda model_url: [])
+    monkeypatch.setattr(cli.search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
     monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
 
