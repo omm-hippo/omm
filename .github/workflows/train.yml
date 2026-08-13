@@ -53,6 +53,17 @@ jobs:
             --quality-report "$RUNNER_TEMP/localfit-quality-report.json"
           cp "$RUNNER_TEMP/localfit-candidate.json" published/recommend-model.json
 
+      - name: Sign published catalog
+        env:
+          LOCALFIT_CATALOG_SIGNING_KEY: ${{ secrets.LOCALFIT_CATALOG_SIGNING_KEY }}
+        run: |
+          umask 077
+          key_path="$RUNNER_TEMP/omm-catalog-signing-key"
+          printf '%s\n' "$LOCALFIT_CATALOG_SIGNING_KEY" > "$key_path"
+          python scripts/sign_catalog.py sign published/recommend-model.json \
+            --private "$key_path" \
+            --manifest published/recommend-model.manifest.json
+
       - name: Open a PR with the retrained model and auto-merge it
         env:
           GH_TOKEN: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
@@ -60,7 +71,7 @@ jobs:
         run: |
           git config user.name "omm-retrain-bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add published/recommend-model.json published/candidates.json
+          git add published/recommend-model.json published/candidates.json published/recommend-model.manifest.json
           git diff --cached --quiet && echo "No changes, skipping." && exit 0
 
           # Sign with the bot's own key (listed in src/omm/trust/allowed_signers)
