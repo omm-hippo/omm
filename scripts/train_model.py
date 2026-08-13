@@ -849,7 +849,18 @@ def main() -> None:
                 atomic_write_text(args.output, baseline_text)
             return
         if not evaluation["passed"]:
-            raise SystemExit("quality gate rejected candidate: " + "; ".join(evaluation["failures"]))
+            # Candidate underperformed the baseline on real metrics - the gate
+            # is working as intended, not a CI failure. Same "keep current
+            # model unchanged" treatment as the data-volume skip paths above.
+            print(
+                "Quality gate: candidate rejected ("
+                + "; ".join(evaluation["failures"])
+                + "). Keeping current model unchanged."
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with locked(args.output):
+                atomic_write_text(args.output, baseline_text)
+            return
         artifact = train_artifact(
             real_X,
             real_y,

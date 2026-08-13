@@ -536,7 +536,7 @@ def test_quality_gate_split_rejects_too_few_selection_contexts():
         train_model.stable_holdout_split([[0.0] * len(train_model.FEATURE_ORDER)], [1.0], 0.2)
 
 
-def test_quality_gate_regression_does_not_overwrite_output(tmp_path, monkeypatch):
+def test_quality_gate_regression_republishes_baseline_unchanged(tmp_path, monkeypatch):
     telemetry = tmp_path / "telemetry.json"
     telemetry.write_text(json.dumps([_v6_row(10), _v6_row(20, vram_gb=6)]))
     output = tmp_path / "model.json"
@@ -569,10 +569,9 @@ def test_quality_gate_regression_does_not_overwrite_output(tmp_path, monkeypatch
         ),
     )
 
-    with pytest.raises(SystemExit, match="quality gate rejected"):
-        train_model.main()
+    train_model.main()  # must not raise: gate rejection is expected, not a code bug
 
-    assert output.read_text() == "incumbent-output"
+    assert output.read_text() == baseline.read_text()
 
 
 def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchanged(tmp_path, monkeypatch):
