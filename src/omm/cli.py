@@ -152,7 +152,7 @@ app = typer.Typer(
 )
 setting_app = typer.Typer(
     name="setting",
-    help="View or change omm settings (UI mode, telemetry, upload policy, catalog trust).",
+    help="View or change omm settings (telemetry, upload policy, catalog trust).",
     invoke_without_command=True,
     rich_markup_mode=None,
 )
