@@ -67,6 +67,17 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
         }
     merged = {**DEFAULT_CONFIG, **data}
     merged.pop("telemetry_opt_in", None)
+    if data.get("catalog_manifest_url") is None and data.get("catalog_public_key") is None:
+        # Configs written before this branch always had these two keys
+        # explicitly set to null (they've been in DEFAULT_CONFIG since an
+        # earlier commit). There is currently no user-facing way to
+        # explicitly clear them back to null, so seeing both null here means
+        # "pre-signing config", not "user opted out" - migrate it forward to
+        # the new signed-by-default catalog. A real (non-None) value in
+        # either key means the user has run `omm setting catalog-trust` and
+        # their custom value must win, so this migration is skipped then.
+        merged["catalog_manifest_url"] = DEFAULT_CONFIG["catalog_manifest_url"]
+        merged["catalog_public_key"] = DEFAULT_CONFIG["catalog_public_key"]
     if "telemetry_backend" not in data:
         endpoint = data.get("telemetry_endpoint")
         if endpoint == LEGACY_FIREBASE_ENDPOINT and merged.get("telemetry_send_policy") != "always":
