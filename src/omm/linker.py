@@ -38,9 +38,11 @@ default install path, so it heuristically looks for the binary in common
 locations and links into a `models` folder next to it; the user still needs
 to launch koboldcpp with --admindir pointed at that folder themselves.
 
-text-generation-webui likewise has no fixed OS install location (a git
-clone anywhere), so omm heuristically looks for its directory by checking
-for the project's own marker files (server.py, one_click.py).
+text-generation-webui likewise has no fixed OS install location, so omm
+heuristically looks for its directory by checking for either of two known
+layouts: an old-style git clone (server.py + one_click.py at the root) or
+the portable prebuilt release omm itself installs (server.py under app/,
+no one_click.py at all).
 """
 
 from __future__ import annotations
@@ -62,8 +64,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable
-
-import requests
 
 from omm import config
 from omm.gguf import read_gguf_metadata
@@ -1525,12 +1525,21 @@ class EngineInstallResult:
 
 def has_automated_installer(key: str) -> bool:
     """Single source of truth for "does install_engine() have a real branch
-    for this engine key" - onboarding.py calls this instead of keeping its
-    own separate set of automated engine keys, so a future engine added to
-    one place without the other can't leave the wizard calling
-    install_engine() on a key that just raises NotImplementedError.
-    Deliberately mirrors install_engine()'s own if/elif shape (add one line
-    here per new branch added there)."""
+    for this engine key, on the CURRENT platform" - onboarding.py calls
+    this instead of keeping its own separate set of automated engine keys,
+    so a future engine added to one place without the other can't leave
+    the wizard calling install_engine() on a key that just raises
+    NotImplementedError. Deliberately mirrors install_engine()'s own
+    if/elif shape (add one line here per new branch added there).
+
+    Platform/arch-aware for the engines whose automation is not universal:
+    mirrors the exact same checks their _install_<engine> function uses to
+    decide unsupported_platform vs. actually attempting an install, so the
+    onboarding checklist never labels an engine "(auto-install)" only for
+    the actual attempt to fail with unsupported_platform. Deliberately
+    cheap and side-effect-free (string/tuple comparisons only, no
+    filesystem or network access) since it's called just to build labels,
+    not to attempt anything."""
     if key == "ollama":
         return True
     if key == "lmstudio":
@@ -1538,13 +1547,17 @@ def has_automated_installer(key: str) -> bool:
     if key == "jan":
         return True
     if key == "anythingllm":
-        return True
+        # No flatpak/Linux path was ever built for this one (see
+        # _install_anythingllm) - only brew (Darwin) and winget (Windows).
+        return platform.system() in ("Darwin", "Windows")
     if key == "mstystudio":
-        return True
+        # Brew-cask only - no winget package targets the current app (see
+        # _install_mstystudio) and no Linux package manager exists at all.
+        return platform.system() == "Darwin"
     if key == "koboldcpp":
-        return True
+        return (platform.system(), platform.machine()) in _KOBOLDCPP_ASSET_BY_PLATFORM
     if key == "textgenwebui":
-        return True
+        return _textgenwebui_platform_supported(platform.system(), platform.machine())
     return False
 
 
@@ -1552,10 +1565,12 @@ def install_engine(
     key: str, *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
     """Dispatch table mirroring is_engine_installed()'s if/elif style so
-    individual branches stay monkeypatchable in tests. "ollama", "lmstudio",
-    "jan", "anythingllm", "mstystudio", "koboldcpp", and "textgenwebui" have
-    automated installers (see has_automated_installer); the rest raise until
-    a follow-up PR adds them one at a time behind this same interface."""
+    individual branches stay monkeypatchable in tests. Every engine in
+    ENGINES ("ollama", "lmstudio", "jan", "anythingllm", "mstystudio",
+    "koboldcpp", and "textgenwebui") has an automated installer here, though
+    not every platform/arch combo is covered for every engine - see
+    has_automated_installer for which ones are. A key not in ENGINES at all
+    still raises NotImplementedError."""
     if key == "ollama":
         return _install_ollama(on_output=on_output)
     if key == "lmstudio":
@@ -1780,7 +1795,7 @@ def _install_mstystudio(*, on_output: Callable[[str], None] | None = None) -> En
     return _install_via_package_manager(
         key="mstystudio",
         label="Msty",
-        manual_url="https://msty.ai/download",
+        manual_url="https://msty.ai/products/studio/",
         is_installed=is_mstystudio_installed,
         on_output=on_output,
         brew_cask="mstystudio",
@@ -1817,6 +1832,21 @@ def _install_koboldcpp(*, on_output: Callable[[str], None] | None = None) -> Eng
     except OSError as e:
         return EngineInstallResult("koboldcpp", "failed", f"Could not download koboldcpp: {e}")
 
+    if returncode != 0:
+        # curl can exit nonzero after already writing a partial file (e.g. a
+        # connection dropped mid-transfer) - that partial file's name still
+        # starts with "koboldcpp", which is is_koboldcpp_installed()'s only
+        # detection signal, so it must be removed before that check ever
+        # runs or a truncated/corrupt binary gets reported as installed and
+        # permanently satisfies detection going forward.
+        dest_path.unlink(missing_ok=True)
+        return EngineInstallResult(
+            "koboldcpp",
+            "failed",
+            f"Download failed (curl exited with code {returncode}). "
+            "Get it manually from https://github.com/LostRuins/koboldcpp/releases",
+        )
+
     if system != "Windows" and dest_path.exists():
         try:
             dest_path.chmod(dest_path.stat().st_mode | 0o111)
@@ -1838,6 +1868,35 @@ def _install_koboldcpp(*, on_output: Callable[[str], None] | None = None) -> Eng
 _TEXTGENWEBUI_RELEASES_API = (
     "https://api.github.com/repos/oobabooga/text-generation-webui/releases/latest"
 )
+_TEXTGENWEBUI_RELEASES_URL = "https://github.com/oobabooga/text-generation-webui/releases"
+
+# The real release only ships one narrow ARM build (linux-arm64-cuda13.1) -
+# not worth the complexity of supporting yet, but guessing an x86_64 asset
+# name for an ARM machine would silently install the wrong architecture
+# (confirmed live: an ARM Linux machine matched against linux-cpu/
+# linux-cuda12.4/linux-rocm7.2, all of which are x86_64-only builds). So
+# Linux/Windows require a recognized x86_64 identifier; anything else - and
+# any OS other than Darwin/Linux/Windows - is unsupported_platform instead
+# of a guessed match.
+_TEXTGENWEBUI_X86_64_MACHINES = {"x86_64", "amd64"}
+
+
+def _textgenwebui_is_x86_64(machine: str) -> bool:
+    return machine.lower() in _TEXTGENWEBUI_X86_64_MACHINES
+
+
+def _textgenwebui_platform_supported(system: str, machine: str) -> bool:
+    """Whether a real release asset exists for this OS/arch combo. Split out
+    from _textgenwebui_asset_name (which also needs HardwareInfo to pick a
+    GPU variant) so has_automated_installer can reuse the exact same
+    OS/arch gate while staying cheap and side-effect-free - no
+    scan_hardware() call needed just to answer "is this supported at
+    all"."""
+    if system == "Darwin":
+        return True
+    if system in ("Windows", "Linux"):
+        return _textgenwebui_is_x86_64(machine)
+    return False
 
 
 def _textgenwebui_variant(hw: HardwareInfo) -> str:
@@ -1860,15 +1919,15 @@ def _textgenwebui_variant(hw: HardwareInfo) -> str:
 
 def _textgenwebui_asset_name(hw: HardwareInfo) -> str | None:
     system = platform.system()
+    machine = platform.machine()
+    if not _textgenwebui_platform_supported(system, machine):
+        return None
     if system == "Darwin":
-        machine = platform.machine()
         arch = "arm64" if machine == "arm64" else "x86_64"
         return f"macos-{arch}"
     if system == "Windows":
         return f"windows-{_textgenwebui_variant(hw)}"
-    if system == "Linux":
-        return f"linux-{_textgenwebui_variant(hw)}"
-    return None
+    return f"linux-{_textgenwebui_variant(hw)}"
 
 
 def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
@@ -1889,13 +1948,16 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
 def _install_textgenwebui(
     *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
+    import requests
+
     hw = scan_hardware()
     platform_tag = _textgenwebui_asset_name(hw)
     if platform_tag is None:
         return EngineInstallResult(
             "textgenwebui",
             "unsupported_platform",
-            f"No automated installer for {platform.system()}.",
+            f"No automated installer for {platform.system()}/{platform.machine()} - "
+            f"see {_TEXTGENWEBUI_RELEASES_URL}",
         )
 
     try:
@@ -1903,7 +1965,11 @@ def _install_textgenwebui(
         response.raise_for_status()
         assets = response.json().get("assets", [])
     except (requests.RequestException, ValueError) as e:
-        return EngineInstallResult("textgenwebui", "failed", f"Could not check for a release: {e}")
+        return EngineInstallResult(
+            "textgenwebui",
+            "failed",
+            f"Could not check for a release: {e}. See {_TEXTGENWEBUI_RELEASES_URL}",
+        )
 
     match = next(
         (
@@ -1919,7 +1985,7 @@ def _install_textgenwebui(
         return EngineInstallResult(
             "textgenwebui",
             "failed",
-            f"No release build found for {platform_tag} - see https://github.com/oobabooga/text-generation-webui/releases",
+            f"No release build found for {platform_tag} - see {_TEXTGENWEBUI_RELEASES_URL}",
         )
 
     dest_root = _ENGINE_INSTALL_DIR
@@ -1933,13 +1999,35 @@ def _install_textgenwebui(
     except OSError as e:
         return EngineInstallResult("textgenwebui", "failed", f"Could not download: {e}")
 
+    if returncode != 0:
+        # As with koboldcpp: curl can exit nonzero after already writing a
+        # partial archive (e.g. a connection dropped mid-transfer). A
+        # truncated archive usually fails to extract anyway, but that's
+        # incidental, not a real safeguard - gate on the returncode
+        # explicitly and never attempt extraction on a known-bad download.
+        archive_path.unlink(missing_ok=True)
+        return EngineInstallResult(
+            "textgenwebui",
+            "failed",
+            f"Download failed (curl exited with code {returncode}). "
+            f"Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
+        )
+
     if not archive_path.exists():
-        return EngineInstallResult("textgenwebui", "failed", "Download did not complete.")
+        return EngineInstallResult(
+            "textgenwebui",
+            "failed",
+            f"Download did not complete. Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
+        )
 
     try:
         _extract_textgenwebui_archive(archive_path, dest_root)
     except (zipfile.BadZipFile, tarfile.TarError, OSError) as e:
-        return EngineInstallResult("textgenwebui", "failed", f"Could not extract archive: {e}")
+        return EngineInstallResult(
+            "textgenwebui",
+            "failed",
+            f"Could not extract archive: {e}. Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
+        )
     finally:
         archive_path.unlink(missing_ok=True)
 
@@ -1948,11 +2036,11 @@ def _install_textgenwebui(
         return EngineInstallResult(
             "textgenwebui", "installed", "text-generation-webui installed successfully."
         )
-    detail = f" (curl exited with code {returncode})" if returncode else ""
     return EngineInstallResult(
         "textgenwebui",
         "failed",
-        f"Download ran but text-generation-webui still isn't detected{detail}.",
+        f"Download and extraction ran but text-generation-webui still isn't detected. "
+        f"Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
     )
 
 

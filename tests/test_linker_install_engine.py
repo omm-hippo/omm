@@ -1,4 +1,5 @@
 import pytest
+import requests
 from pathlib import Path
 
 from omm import linker
@@ -311,8 +312,19 @@ def test_install_engine_jan_dispatches_to_package_manager_helper(monkeypatch):
     assert result == linker.EngineInstallResult("jan", "installed", "Jan installed successfully.")
 
 
-def test_has_automated_installer_true_for_anythingllm():
+def test_has_automated_installer_true_for_anythingllm(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     assert linker.has_automated_installer("anythingllm") is True
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    assert linker.has_automated_installer("anythingllm") is True
+
+
+def test_has_automated_installer_false_for_anythingllm_on_linux(monkeypatch):
+    """No flatpak/Linux path was ever built for AnythingLLM (see
+    _install_anythingllm) - the onboarding checklist must not claim
+    auto-install is available there."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    assert linker.has_automated_installer("anythingllm") is False
 
 
 def test_install_anythingllm_mac_uses_brew_cask(monkeypatch):
@@ -363,8 +375,19 @@ def test_install_anythingllm_linux_is_unsupported(monkeypatch):
     assert "anythingllm.com" in result.message
 
 
-def test_has_automated_installer_true_for_mstystudio():
+def test_has_automated_installer_true_for_mstystudio(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     assert linker.has_automated_installer("mstystudio") is True
+
+
+def test_has_automated_installer_false_for_mstystudio_on_windows_and_linux(monkeypatch):
+    """Brew-cask only - no winget package targets current Msty Studio (the
+    only winget entry targets the deprecated pre-rebrand app) and no Linux
+    package manager exists at all."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    assert linker.has_automated_installer("mstystudio") is False
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    assert linker.has_automated_installer("mstystudio") is False
 
 
 def test_install_mstystudio_mac_uses_brew_cask(monkeypatch):
@@ -405,8 +428,19 @@ def test_install_mstystudio_linux_is_unsupported(monkeypatch):
     assert result.status == "unsupported_platform"
 
 
-def test_has_automated_installer_true_for_koboldcpp():
+def test_has_automated_installer_true_for_koboldcpp(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
     assert linker.has_automated_installer("koboldcpp") is True
+
+
+def test_has_automated_installer_false_for_koboldcpp_unsupported_platform(monkeypatch):
+    """No koboldcpp build exists for Intel Mac - reuses
+    _KOBOLDCPP_ASSET_BY_PLATFORM directly rather than duplicating the tuple
+    list, so this must return False for any (system, machine) not in it."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
+    assert linker.has_automated_installer("koboldcpp") is False
 
 
 def test_install_koboldcpp_downloads_to_applications_dir(tmp_path, monkeypatch):
@@ -461,8 +495,50 @@ def test_install_koboldcpp_reports_failed_when_still_not_detected(tmp_path, monk
     linker.find_koboldcpp_binary.cache_clear()
 
 
-def test_has_automated_installer_true_for_textgenwebui():
+def test_install_koboldcpp_truncated_download_is_cleaned_up_and_reported_failed(tmp_path, monkeypatch):
+    """Reproduces the reviewer's live-verified bug: curl can write a
+    partial file and still exit nonzero (e.g. a mid-transfer timeout
+    against the real koboldcpp asset). That partial file's name alone
+    satisfies is_koboldcpp_installed()'s detection, so a truncated/corrupt
+    binary must never reach that check - it must be deleted and reported
+    "failed" first."""
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
+    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
+    linker.find_koboldcpp_binary.cache_clear()
+
+    def fake_stream_subprocess(args, on_output):
+        dest = Path(args[args.index("-o") + 1])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"partial-truncated-bytes")  # far short of a real binary
+        return 18  # curl's real "transfer closed with outstanding read data" code
+
+    monkeypatch.setattr(linker, "_stream_subprocess", fake_stream_subprocess)
+
+    result = linker.install_engine("koboldcpp")
+
+    assert result.status == "failed"
+    assert not (tmp_path / "koboldcpp" / "koboldcpp").exists()
+    linker.find_koboldcpp_binary.cache_clear()
+
+
+def test_has_automated_installer_true_for_textgenwebui(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
     assert linker.has_automated_installer("textgenwebui") is True
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
+    assert linker.has_automated_installer("textgenwebui") is True
+
+
+def test_has_automated_installer_false_for_textgenwebui_on_arm_linux(monkeypatch):
+    """The real release only has one narrow ARM build
+    (linux-arm64-cuda13.1) - not supported, so this must be False rather
+    than guessing an x86_64 asset name for an ARM machine."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "aarch64")
+    assert linker.has_automated_installer("textgenwebui") is False
 
 
 def test_extract_textgenwebui_archive_handles_zip(tmp_path):
@@ -541,7 +617,7 @@ def test_install_textgenwebui_picks_cpu_variant_with_no_gpu(monkeypatch, tmp_pat
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr(linker.requests, "get", lambda *a, **k: _FakeResponse())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse())
 
     downloaded_urls = []
 
@@ -600,7 +676,7 @@ def test_install_textgenwebui_picks_cuda_variant_with_nvidia_gpu(monkeypatch, tm
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr(linker.requests, "get", lambda *a, **k: _FakeResponse())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse())
 
     downloaded_urls = []
 
@@ -649,7 +725,7 @@ def test_install_textgenwebui_mac_uses_arch_specific_asset(monkeypatch, tmp_path
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr(linker.requests, "get", lambda *a, **k: _FakeResponse())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse())
     downloaded_urls = []
 
     def fake_stream_subprocess(args, on_output):
@@ -683,8 +759,92 @@ def test_install_textgenwebui_reports_failed_when_asset_not_found(monkeypatch):
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr(linker.requests, "get", lambda *a, **k: _FakeResponse())
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse())
 
     result = linker.install_engine("textgenwebui")
 
     assert result.status == "failed"
+
+
+def test_install_textgenwebui_arm_linux_is_unsupported_platform_without_network_call(monkeypatch):
+    """Reproduces the reviewer's live-verified bug: on ARM Linux,
+    _textgenwebui_asset_name used to ignore architecture entirely and
+    silently match against an x86_64-only build (linux-cpu/linux-cuda12.4/
+    linux-rocm7.2). Must report unsupported_platform instead of guessing,
+    and must never even reach the network (no requests.get call)."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "aarch64")
+
+    def fail_if_called(*a, **k):
+        raise AssertionError("must not call requests.get for an unsupported arch")
+
+    monkeypatch.setattr(requests, "get", fail_if_called)
+
+    result = linker.install_engine("textgenwebui")
+
+    assert result.status == "unsupported_platform"
+    assert "text-generation-webui/releases" in result.message
+
+
+def test_install_textgenwebui_arm_windows_is_unsupported_platform_without_network_call(monkeypatch):
+    """Same arch-gating bug, Windows side: ARM64 Windows must not silently
+    match an x86_64-only build either."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "ARM64")
+
+    def fail_if_called(*a, **k):
+        raise AssertionError("must not call requests.get for an unsupported arch")
+
+    monkeypatch.setattr(requests, "get", fail_if_called)
+
+    result = linker.install_engine("textgenwebui")
+
+    assert result.status == "unsupported_platform"
+    assert "text-generation-webui/releases" in result.message
+
+
+def test_install_textgenwebui_truncated_download_is_cleaned_up_and_reported_failed(monkeypatch, tmp_path):
+    """Same class of bug as koboldcpp's (finding 1): curl can write a
+    partial archive and still exit nonzero. A truncated archive usually
+    fails to extract on its own, but that's incidental - the returncode
+    must be checked explicitly and extraction must never even be
+    attempted on a known-bad download."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+
+    fake_release = {
+        "assets": [
+            {"name": "textgen-portable-4.9-linux-cpu.tar.gz", "browser_download_url": "https://example.test/cpu.tar.gz"},
+        ]
+    }
+
+    class _FakeResponse:
+        def json(self):
+            return fake_release
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse())
+
+    archive_path = tmp_path / "textgen-portable-4.9-linux-cpu.tar.gz"
+
+    def fake_stream_subprocess(args, on_output):
+        archive_path.write_bytes(b"partial-truncated-bytes")
+        return 18  # curl's real "transfer closed with outstanding read data" code
+
+    monkeypatch.setattr(linker, "_stream_subprocess", fake_stream_subprocess)
+
+    extract_called = []
+    monkeypatch.setattr(
+        linker,
+        "_extract_textgenwebui_archive",
+        lambda *a, **k: extract_called.append(True),
+    )
+
+    result = linker.install_engine("textgenwebui")
+
+    assert result.status == "failed"
+    assert not extract_called
+    assert not archive_path.exists()
