@@ -366,6 +366,57 @@ def _root(
     opts.pending_telemetry_notice = telemetry.flush_pending()
 
 
+def _print_full_command_reference(root_ctx: click.Context, *, _prefix: str = "") -> None:
+    """Print every command's own --help text, recursing one level into
+    nested groups (currently just `setting`). Reuses each Command's real
+    get_help() output instead of a separate summary format, so every flag
+    a command actually accepts always shows up here too."""
+    names = sorted(root_ctx.command.commands.keys())
+    first = True
+    for name in names:
+        cmd_obj = root_ctx.command.commands[name]
+        if cmd_obj.hidden:
+            continue
+        if not first:
+            console.print()
+            console.print("---")
+            console.print()
+        first = False
+        if hasattr(cmd_obj, "commands"):
+            # Typer >=0.16 vendors its own click fork (typer._click), so
+            # TyperGroup subclasses that fork's Command directly rather
+            # than the standalone `click` package's Group/MultiCommand -
+            # isinstance(cmd_obj, click.Group) silently never matches.
+            # Duck-type on the `.commands` dict every group (real or
+            # vendored) exposes instead, same attribute used to enumerate
+            # above.
+            console.print(f"[bold]{_prefix}{name}[/bold] (command group)")
+            console.print()
+            _print_full_command_reference_group(cmd_obj, root_ctx, f"{_prefix}{name} ")
+            continue
+        sub_ctx = cmd_obj.make_context(name, [], parent=root_ctx, resilient_parsing=True)
+        console.print(cmd_obj.get_help(sub_ctx))
+
+
+def _print_full_command_reference_group(
+    group: click.Group, parent_ctx: click.Context, prefix: str
+) -> None:
+    group_ctx = group.make_context(prefix.strip(), [], parent=parent_ctx, resilient_parsing=True)
+    names = sorted(group.commands.keys())
+    for idx, name in enumerate(names):
+        cmd_obj = group.commands[name]
+        if cmd_obj.hidden:
+            continue
+        if idx:
+            console.print()
+        # Note: just `name`, not f"{prefix}{name}" - group_ctx's own
+        # info_name ("setting") already contributes the prefix when Click
+        # walks the context chain to build the usage line, so re-adding it
+        # here doubled it into "setting setting calibrate".
+        sub_ctx = cmd_obj.make_context(name, [], parent=group_ctx, resilient_parsing=True)
+        console.print(cmd_obj.get_help(sub_ctx))
+
+
 @app.command(name="help")
 def help_cmd(
     ctx: typer.Context,
@@ -376,9 +427,7 @@ def help_cmd(
     root_ctx = ctx.find_root()
     if command is None:
         if all:
-            formatter = root_ctx.make_formatter()
-            typer.core.TyperGroup.format_help(root_ctx.command, root_ctx, formatter)
-            console.print(formatter.getvalue().rstrip("\n"))
+            _print_full_command_reference(root_ctx)
             raise typer.Exit(0)
         console.print(root_ctx.get_help())
         raise typer.Exit(0)
