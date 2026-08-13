@@ -188,6 +188,25 @@ def test_install_aborts_when_declined_after_hardware_warning(isolated_omm_home, 
     assert download_calls == []
 
 
+def test_install_yes_flag_bypasses_hardware_warning_prompt_without_a_tty(isolated_omm_home, monkeypatch):
+    """--yes (the global flag) must let a script install an unfit model
+    without ever touching the confirm prompt, same as --skip-unfit but
+    proceeding with the install instead of skipping it."""
+    _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "predict_speed", lambda trees, hw, candidate: 0.0)
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no interactive prompt"))
+    )
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "predicted not to run" in result.stderr
+    assert "Installed" in result.stdout
+
+
 def test_install_skip_unfit_flag_bypasses_prompt_without_a_tty(isolated_omm_home, monkeypatch):
     """--skip-unfit must let a script install a batch of models on hardware
     that can't run all of them without ever touching the confirm prompt -

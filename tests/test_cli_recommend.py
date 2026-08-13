@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import questionary
+from typer.testing import CliRunner
 
 from omm import cli
+
+runner = CliRunner()
 
 
 def test_recommend_builds_choice_values_via_exact_install_ref(monkeypatch, isolated_omm_home):
@@ -40,11 +43,8 @@ def test_recommend_builds_choice_values_via_exact_install_ref(monkeypatch, isola
     monkeypatch.setattr(questionary, "select", fake_select)
     monkeypatch.setattr(cli, "_ask_select", lambda select_obj: None)  # cancel path, avoids install()
 
-    try:
-        cli.recommend()
-    except cli.typer.Exit:
-        pass  # typer.Exit(0) on the cancel path is expected - not a real SystemExit
-              # when recommend() is called directly instead of via CliRunner
+    result = runner.invoke(cli.app, ["recommend"])
+    assert result.exit_code == 0, result.stdout
 
     assert captured_choices[0].value == "ms:org/repo:model.gguf"
     assert captured_options["pointer"] == "❯"

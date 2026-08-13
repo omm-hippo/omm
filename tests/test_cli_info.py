@@ -78,6 +78,20 @@ def test_info_json_is_parseable_and_has_expected_fields(isolated_omm_home):
     assert data["ollama_run_command"] == "ollama run repo-q4"
 
 
+def test_info_json_before_subcommand(isolated_omm_home):
+    registry.save_registry({"model.gguf": _entry()})
+
+    result = runner.invoke(cli.app, ["--json", "info", "model.gguf"])
+
+    assert result.exit_code == 0, result.stdout
+    data = json.loads(result.stdout)
+    assert data["filename"] == "model.gguf"
+    assert data["version"] == "abc1234"
+    assert data["size_bytes"] == 2 * 1024**3
+    assert data["linked"] == _all_linked(lmstudio=True, ollama=True)
+    assert data["ollama_run_command"] == "ollama run repo-q4"
+
+
 def test_info_errors_for_uninstalled_model(isolated_omm_home):
     result = runner.invoke(cli.app, ["info", "nothing-here.gguf"])
 

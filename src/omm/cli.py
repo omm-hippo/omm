@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import errno
+import functools
+import inspect
 import json
 import math
 import platform
@@ -15,6 +17,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 
 import click
 import typer
@@ -110,6 +113,103 @@ try:
 except ImportError:
     pass
 
+@dataclass
+class GlobalOptions:
+    """Merged state for the 4 global flags, shared via ctx.obj. A value
+    given after the subcommand name always overrides one given before it;
+    see global_flags()."""
+
+    json: bool = False
+    yes: bool = False
+    quiet: bool = False
+    no_color: bool = False
+    pending_telemetry_notice: int = 0
+
+
+def _global_opts() -> GlobalOptions:
+    """Read the merged GlobalOptions for the command currently running.
+    Only valid while a Click/Typer command is executing."""
+    from typer._click.globals import get_current_context
+
+    return get_current_context().ensure_object(GlobalOptions)
+
+
+def global_flags(func):
+    """Attach --json/--yes/--quiet/--no-color to a command so they also
+    work positioned after the subcommand name (the root callback already
+    covers positioning before it). Rewrites the wrapped function's
+    inspect.Signature so Typer registers 4 extra Click options without
+    every command function having to redeclare them. Values merge into
+    the same GlobalOptions ctx.obj the root callback populated; a value
+    given here (post-subcommand) always wins over one given before the
+    subcommand name, since this wrapper runs after the root callback."""
+    original_sig = inspect.signature(func, eval_str=True)
+    new_params = list(original_sig.parameters.values()) + [
+        inspect.Parameter(
+            "json_flag",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=False,
+            annotation=Annotated[
+                bool, typer.Option("--json", help="Print output as JSON where supported.")
+            ],
+        ),
+        inspect.Parameter(
+            "yes_flag",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=False,
+            annotation=Annotated[
+                bool,
+                typer.Option("--yes", "-y", help="Skip confirmation prompts. For scripting."),
+            ],
+        ),
+        inspect.Parameter(
+            "quiet_flag",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=False,
+            annotation=Annotated[
+                bool,
+                typer.Option(
+                    "--quiet", "-q", help="Suppress banners and informational output."
+                ),
+            ],
+        ),
+        inspect.Parameter(
+            "no_color_flag",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=False,
+            annotation=Annotated[bool, typer.Option("--no-color", help="Disable colored output.")],
+        ),
+    ]
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        from typer._click.globals import get_current_context
+
+        ctx = get_current_context()
+        opts = ctx.ensure_object(GlobalOptions)
+        if kwargs.pop("json_flag", False):
+            opts.json = True
+        if kwargs.pop("yes_flag", False):
+            opts.yes = True
+        if kwargs.pop("quiet_flag", False):
+            opts.quiet = True
+        if kwargs.pop("no_color_flag", False):
+            opts.no_color = True
+        if opts.no_color:
+            console.no_color = True
+            err_console.no_color = True
+        if opts.pending_telemetry_notice and not (opts.json or opts.quiet):
+            console.print(
+                f"[dim]Sent {opts.pending_telemetry_notice} queued telemetry "
+                "event(s) from a previous session.[/dim]"
+            )
+        opts.pending_telemetry_notice = 0
+        return func(*args, **kwargs)
+
+    wrapper.__signature__ = original_sig.replace(parameters=new_params)
+    return wrapper
+
+
 _ROOT_HELP_TEXT = """Example usage:
   omm search TEXT
   omm install MODEL
@@ -134,14 +234,23 @@ Further help:
   https://github.com/omm-hippo/omm
 """
 
+_COMMAND_ALIASES = {"rm": "uninstall", "ls": "list", "up": "upgrade"}
+
 
 class _RootHelpGroup(typer.core.TyperGroup):
     """Homebrew-style curated `omm --help`/`omm help` - a short list of
     common commands instead of the full alphabetical listing of every
-    registered subcommand. Full list stays reachable via `omm help --all`."""
+    registered subcommand. Full list stays reachable via `omm help --all`.
+    Also resolves a handful of conventional short aliases (rm/ls/up) to
+    their real command name - aliases are never registered as their own
+    Click commands, so they never appear in a `commands` listing."""
 
     def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         formatter.write(_ROOT_HELP_TEXT)
+
+    def get_command(self, ctx: click.Context, cmd_name: str):
+        cmd_name = _COMMAND_ALIASES.get(cmd_name, cmd_name)
+        return super().get_command(ctx, cmd_name)
 
 
 app = typer.Typer(
@@ -232,7 +341,21 @@ def _telemetry_destination_line() -> str:
 
 
 @app.callback(invoke_without_command=True)
-def _root(ctx: typer.Context) -> None:
+def _root(
+    ctx: typer.Context,
+    json_flag: Annotated[bool, typer.Option("--json", help="Print output as JSON where supported.")] = False,
+    yes_flag: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompts. For scripting.")] = False,
+    quiet_flag: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress banners and informational output.")] = False,
+    no_color_flag: Annotated[bool, typer.Option("--no-color", help="Disable colored output.")] = False,
+) -> None:
+    opts = ctx.ensure_object(GlobalOptions)
+    opts.json = opts.json or json_flag
+    opts.yes = opts.yes or yes_flag
+    opts.quiet = opts.quiet or quiet_flag
+    opts.no_color = opts.no_color or no_color_flag
+    if opts.no_color:
+        console.no_color = True
+        err_console.no_color = True
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
         _maybe_run_onboarding()
@@ -240,11 +363,58 @@ def _root(ctx: typer.Context) -> None:
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
     _maybe_auto_import(ctx)
-    resent = telemetry.flush_pending()
-    if resent:
-        console.print(
-            f"[dim]Sent {resent} queued telemetry event(s) from a previous session.[/dim]"
-        )
+    opts.pending_telemetry_notice = telemetry.flush_pending()
+
+
+def _print_full_command_reference(root_ctx: click.Context, *, _prefix: str = "") -> None:
+    """Print every command's own --help text, recursing one level into
+    nested groups (currently just `setting`). Reuses each Command's real
+    get_help() output instead of a separate summary format, so every flag
+    a command actually accepts always shows up here too."""
+    names = sorted(root_ctx.command.commands.keys())
+    first = True
+    for name in names:
+        cmd_obj = root_ctx.command.commands[name]
+        if cmd_obj.hidden:
+            continue
+        if not first:
+            console.print()
+            console.print("---")
+            console.print()
+        first = False
+        if hasattr(cmd_obj, "commands"):
+            # Typer >=0.16 vendors its own click fork (typer._click), so
+            # TyperGroup subclasses that fork's Command directly rather
+            # than the standalone `click` package's Group/MultiCommand -
+            # isinstance(cmd_obj, click.Group) silently never matches.
+            # Duck-type on the `.commands` dict every group (real or
+            # vendored) exposes instead, same attribute used to enumerate
+            # above.
+            console.print(f"[bold]{_prefix}{name}[/bold] (command group)")
+            console.print()
+            _print_full_command_reference_group(cmd_obj, root_ctx, f"{_prefix}{name} ")
+            continue
+        sub_ctx = cmd_obj.make_context(name, [], parent=root_ctx, resilient_parsing=True)
+        console.print(cmd_obj.get_help(sub_ctx))
+
+
+def _print_full_command_reference_group(
+    group: click.Group, parent_ctx: click.Context, prefix: str
+) -> None:
+    group_ctx = group.make_context(prefix.strip(), [], parent=parent_ctx, resilient_parsing=True)
+    names = sorted(group.commands.keys())
+    for idx, name in enumerate(names):
+        cmd_obj = group.commands[name]
+        if cmd_obj.hidden:
+            continue
+        if idx:
+            console.print()
+        # Note: just `name`, not f"{prefix}{name}" - group_ctx's own
+        # info_name ("setting") already contributes the prefix when Click
+        # walks the context chain to build the usage line, so re-adding it
+        # here doubled it into "setting setting calibrate".
+        sub_ctx = cmd_obj.make_context(name, [], parent=group_ctx, resilient_parsing=True)
+        console.print(cmd_obj.get_help(sub_ctx))
 
 
 @app.command(name="help")
@@ -257,9 +427,7 @@ def help_cmd(
     root_ctx = ctx.find_root()
     if command is None:
         if all:
-            formatter = root_ctx.make_formatter()
-            typer.core.TyperGroup.format_help(root_ctx.command, root_ctx, formatter)
-            console.print(formatter.getvalue().rstrip("\n"))
+            _print_full_command_reference(root_ctx)
             raise typer.Exit(0)
         console.print(root_ctx.get_help())
         raise typer.Exit(0)
@@ -338,9 +506,50 @@ def _missing_engines_note(installed: dict[str, bool]) -> str | None:
 
 
 @app.command()
+@global_flags
 def scan() -> None:
     """Scan current PC hardware (RAM, VRAM, OS) and print a summary table."""
+    opts = _global_opts()
     info = scan_hardware()
+    installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
+    reg = registry.load_registry()
+    cleaned = _reconcile_stale_link_records(reg, installed)
+    external = scan_import.find_external_models()
+
+    if opts.json:
+        console.print_json(
+            data={
+                "os": f"{info.os_name} {info.os_version}",
+                "cpu": info.cpu,
+                "ram_total_gb": info.ram_total_gb,
+                "ram_available_gb": info.ram_available_gb,
+                "model_budget_gb": calculate_memory_budget(info).model_budget_gb,
+                "gpu_name": info.gpu_name,
+                "unified_memory": info.unified_memory,
+                "vram_total_gb": info.vram_total_gb,
+                "vram_free_gb": info.vram_free_gb,
+                "engines_installed": [spec.key for spec in linker.ENGINES if installed[spec.key]],
+                "models": [
+                    {
+                        "filename": filename,
+                        "location": "hub",
+                        "engines": [name for name, on in entry.get("linked", {}).items() if on],
+                        "managed_by_omm": True,
+                    }
+                    for filename, entry in reg.items()
+                ]
+                + [
+                    {
+                        "filename": item.display_name,
+                        "location": str(item.path),
+                        "engines": [item.engine],
+                        "managed_by_omm": False,
+                    }
+                    for item in external
+                ],
+            }
+        )
+        return
 
     table = Table(title="omm hardware scan")
     table.add_column("Field", style="cyan")
@@ -370,8 +579,6 @@ def scan() -> None:
 
     console.print(table)
 
-    installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
-
     engine_table = Table(title="Local AI runners", box=None)
     engine_table.add_column("Program", style="cyan")
     engine_table.add_column("Status", style="white")
@@ -383,10 +590,6 @@ def scan() -> None:
     note = _missing_engines_note(installed)
     if note:
         console.print(note)
-
-    reg = registry.load_registry()
-    cleaned = _reconcile_stale_link_records(reg, installed)
-    external = scan_import.find_external_models()
 
     model_table = Table(title="Local AI models", box=None)
     model_table.add_column("Model", style="cyan")
@@ -422,6 +625,7 @@ def scan() -> None:
 
 
 @app.command(name="setup")
+@global_flags
 def setup_cmd() -> None:
     """Re-run the first-time setup wizard (hardware scan + engine checklist)."""
     onboarding.run_wizard(console)
@@ -677,15 +881,10 @@ def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> No
 
 
 @app.command(name="import")
+@global_flags
 def import_cmd(
     path: str = typer.Argument(
         None, help="Optional extra directory to also scan for stray .gguf files."
-    ),
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Don't ask for confirmation and import every model found. For scripting.",
     ),
 ) -> None:
     """Scan every supported local AI app (and optionally PATH) for .gguf
@@ -696,7 +895,7 @@ def import_cmd(
         if not extra_path.is_dir():
             err_console.print(f"[red]Not a directory: {extra_path}[/red]")
             raise typer.Exit(1)
-    _run_import_flow(extra_path, yes=yes)
+    _run_import_flow(extra_path, yes=_global_opts().yes)
 
 
 # pipx gives no byte-level install progress, but it does print a fixed,
@@ -778,6 +977,7 @@ def _run_pipx_install_with_progress(args: list[str]) -> subprocess.CompletedProc
         TaskProgressColumn(),
         TimeElapsedColumn(),
         console=console,
+        disable=_global_opts().quiet,
     ) as progress:
         task_id = progress.add_task("upgrade", total=len(_PIPX_INSTALL_STAGES))
         result = _run_pipx_install(args, progress, task_id)
@@ -926,6 +1126,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
 
 
 @app.command()
+@global_flags
 def update() -> None:
     """Reinstall omm from the latest source, then refresh rules/model data.
     Uses a persistent editable clone (SRC_DIR) for a git-pull-speed update
@@ -1197,6 +1398,7 @@ def _select_recommended_model(
 
 
 @app.command()
+@global_flags
 def recommend() -> None:
     """Scan hardware and suggest a model to install, ranked by a model
     trained on real install telemetry (falls back to static rules if the
@@ -1277,6 +1479,7 @@ def _print_runtime_profile(profile: tuning.RuntimeProfile) -> None:
 
 
 @app.command()
+@global_flags
 def tune(
     model_name: str = typer.Argument(..., autocompletion=complete_install_name),
 ) -> None:
@@ -1314,10 +1517,23 @@ def tune(
                 candidate,
             )
 
+    profile = tuning.recommend_runtime_settings(scan_hardware(), candidate)
+    if _global_opts().json:
+        console.print_json(
+            data={
+                "model": candidate.get("filename") or candidate.get("name"),
+                "profile_name": profile.profile_name,
+                "context_length": profile.context_length,
+                "gpu_offload_label": profile.gpu_offload_label,
+                "cpu_threads": profile.cpu_threads,
+                "num_batch": profile.num_batch,
+                "available_memory_gb": profile.available_memory_gb,
+                "headroom_gb": profile.headroom_gb,
+            }
+        )
+        return
     console.print(f"[bold]{candidate.get('filename') or candidate.get('name')}[/bold]")
-    _print_runtime_profile(
-        tuning.recommend_runtime_settings(scan_hardware(), candidate)
-    )
+    _print_runtime_profile(profile)
 
 
 def _resolve_ref(arg: str) -> str:
@@ -1684,6 +1900,8 @@ def _install_impl(
     use_quality_eval: bool = False,
     quality_pack: dict | None = None,
     link_only_ollama: bool = False,
+    assume_yes: bool = False,
+    force: bool = False,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -1703,7 +1921,7 @@ def _install_impl(
             )
             if skip_unfit:
                 return InstallOutcome(filename, repo_id, linked={}, skipped_unfit=True)
-            if not _ask_confirm("Install anyway?"):
+            if not assume_yes and not _ask_confirm("Install anyway?"):
                 err_console.print("[yellow]Cancelled.[/yellow]")
                 raise typer.Exit(0)
         else:
@@ -1718,9 +1936,16 @@ def _install_impl(
 
     dest = MODELS_DIR / filename
     downloaded_now = False
-    if dest.exists():
+    if dest.exists() and not force:
         err_console.print(f"[yellow]{filename} already downloaded, skipping fetch.[/yellow]")
     else:
+        if force:
+            # Guarantee a genuinely fresh download: remove any existing
+            # completed file and any stale `.part` sidecar so we never
+            # resume stale bytes, and never hit Path.rename's
+            # FileExistsError on Windows when the fresh download finalizes
+            # onto an already-existing dest.
+            _cleanup_incomplete_install(filename)
         size_bytes = remote_file_size(resolved.provider or "huggingface", repo_id, filename) if repo_id else None
         if size_bytes:
             try:
@@ -1970,6 +2195,7 @@ def _report_lmstudio_load_verification(outcome: InstallOutcome) -> None:
 
 
 @app.command()
+@global_flags
 def install(
     model_name: str = typer.Argument(..., autocompletion=complete_install_name),
     skip_unfit: bool = typer.Option(
@@ -1985,6 +2211,11 @@ def install(
         "telemetry server, without asking. Unset defers to the current "
         "`omm setting upload` policy.",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-download even if this model is already installed.",
+    ),
 ) -> None:
     """Download a model into the central hub and link it into installed engines."""
     import questionary
@@ -1997,7 +2228,7 @@ def install(
         if chosen is None:
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
-        install(f"{e.provider}:{e.repo_id}:{chosen}", skip_unfit=skip_unfit, upload=upload)
+        install(f"{e.provider}:{e.repo_id}:{chosen}", skip_unfit=skip_unfit, upload=upload, force=force)
         return
     except AmbiguousProviderError as e:
         choices = [
@@ -2009,7 +2240,7 @@ def install(
         if chosen_provider is None:
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
-        install(f"{chosen_provider}:{e.repo_id}", skip_unfit=skip_unfit, upload=upload)
+        install(f"{chosen_provider}:{e.repo_id}", skip_unfit=skip_unfit, upload=upload, force=force)
         return
     except ModelResolutionError as e:
         err_console.print(f"[red]{e}[/red]")
@@ -2021,6 +2252,8 @@ def install(
         skip_unfit=skip_unfit,
         auto_upload=upload is True,
         no_upload=upload is False,
+        assume_yes=_global_opts().yes,
+        force=force,
     )
 
     console.print(f"[green]Installed {outcome.filename}[/green]")
@@ -2091,23 +2324,27 @@ def _remove_one(filename: str, entry: dict) -> None:
 
 
 @app.command(name="uninstall")
+@global_flags
 def remove(
     filename: str = typer.Argument(..., autocompletion=complete_remove_filename),
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Don't ask for confirmation before uninstalling `all`. For scripting.",
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be uninstalled without removing anything."
     ),
 ) -> None:
     """Uninstall a model and clean up all symlinks/manifests. Pass `all` to
-    uninstall every model installed via omm."""
+    uninstall every model installed via omm.
+
+    Alias: rm"""
     if filename.lower() == "all":
         reg = registry.load_registry()
         if not reg:
             console.print("No models installed via omm yet.")
             raise typer.Exit(0)
-        if not yes and not _ask_confirm(f"Uninstall all {len(reg)} model(s)?"):
+        if dry_run:
+            for name in reg:
+                console.print(f"Would uninstall: {name}")
+            raise typer.Exit(0)
+        if not _global_opts().yes and not _ask_confirm(f"Uninstall all {len(reg)} model(s)?"):
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
         for name, entry in list(reg.items()):
@@ -2121,12 +2358,24 @@ def remove(
         filename = f"{filename}.gguf"
         entry = reg.get(filename)
     if entry is None:
+        dest = MODELS_DIR / filename
+        part = dest.with_suffix(dest.suffix + ".part")
+        incomplete_install_exists = dest.exists() or part.exists()
+        if dry_run:
+            if incomplete_install_exists:
+                console.print(f"Would clean up incomplete install of {filename}")
+                raise typer.Exit(0)
+            err_console.print(f"[red]{filename} is not installed via omm. See `omm list`.[/red]")
+            raise typer.Exit(1)
         if _cleanup_incomplete_install(filename):
             console.print(f"[green]Cleaned up incomplete install of {filename}[/green]")
             raise typer.Exit(0)
         err_console.print(f"[red]{filename} is not installed via omm. See `omm list`.[/red]")
         raise typer.Exit(1)
 
+    if dry_run:
+        console.print(f"Would uninstall: {filename}")
+        raise typer.Exit(0)
     _remove_one(filename, entry)
 
 
@@ -2147,11 +2396,12 @@ def _entry_version(entry: dict) -> str:
 
 
 @app.command()
+@global_flags
 def info(
     model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
-    json_output: bool = typer.Option(False, "--json", help="Print result as JSON instead of a table."),
 ) -> None:
     """Show name, version, size, and linked-program run commands for an installed model."""
+    json_output = _global_opts().json
     model_name = _resolve_ref(model_name)
     reg = registry.load_registry()
     filename, entry = _lookup_entry(model_name, reg)
@@ -2281,25 +2531,29 @@ def _update_one(filename: str, entry: dict) -> str:
 
 
 @app.command()
+@global_flags
 def upgrade(
     model_name: str = typer.Argument(None, autocompletion=complete_remove_filename),
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Don't ask for confirmation before checking all models. For scripting.",
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be checked for updates without downloading anything."
     ),
 ) -> None:
     """Refresh an installed model against its source, re-downloading only
     if the source has changed since install. With no argument (or `all`),
-    checks every model installed via omm."""
+    checks every model installed via omm.
+
+    Alias: up"""
     reg = registry.load_registry()
 
     if model_name is None or model_name.lower() == "all":
         if not reg:
             console.print("No models installed via omm yet.")
             raise typer.Exit(0)
-        if not yes and not _ask_confirm(f"Check {len(reg)} model(s) for updates?"):
+        if dry_run:
+            for filename in reg:
+                console.print(f"Would check for updates: {filename}")
+            raise typer.Exit(0)
+        if not _global_opts().yes and not _ask_confirm(f"Check {len(reg)} model(s) for updates?"):
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
 
@@ -2318,6 +2572,9 @@ def upgrade(
         err_console.print(f"[red]{resolved} is not installed via omm. See `omm list`.[/red]")
         raise typer.Exit(1)
 
+    if dry_run:
+        console.print(f"Would check for updates: {filename}")
+        raise typer.Exit(0)
     result = _update_one(filename, entry)
     if result == "up_to_date":
         console.print(f"[green]{filename} is already up to date ({_entry_version(entry)}).[/green]")
@@ -2327,11 +2584,29 @@ def upgrade(
 
 
 @app.command(name="list")
+@global_flags
 def list_models(
-    json_output: bool = typer.Option(False, "--json", help="Print results as JSON instead of a table."),
+    engine: str | None = typer.Option(
+        None, "--engine", help="Only show models linked into this engine."
+    ),
 ) -> None:
-    """Show models installed via omm and their linked status."""
+    """Show models installed via omm and their linked status.
+
+    Alias: ls"""
+    valid_engines = {spec.key for spec in linker.ENGINES}
+    if engine is not None and engine not in valid_engines:
+        err_console.print(
+            f"[red]--engine must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/red]"
+        )
+        raise typer.Exit(2)
+    json_output = _global_opts().json
     reg = registry.load_registry()
+    if engine is not None:
+        reg = {
+            filename: entry
+            for filename, entry in reg.items()
+            if entry.get("linked", {}).get(engine)
+        }
     if not reg:
         if json_output:
             console.print_json(data=[])
@@ -2371,6 +2646,7 @@ def list_models(
 
 
 @setting_app.command(name="telemetry")
+@global_flags
 def configure_telemetry(
     endpoint: str = typer.Option(
         None,
@@ -2405,6 +2681,7 @@ def configure_telemetry(
 
 
 @setting_app.command(name="upload")
+@global_flags
 def configure_upload(
     enable: bool = typer.Option(False, "--enable", help="Always send benchmark results without asking."),
     disable: bool = typer.Option(False, "--disable", help="Never send benchmark results."),
@@ -2437,6 +2714,7 @@ def configure_upload(
 
 
 @setting_app.command(name="version")
+@global_flags
 def configure_version(
     stable: bool = typer.Option(False, "--stable", help="Track the stable channel (main branch)."),
     beta: bool = typer.Option(False, "--beta", help="Track the beta channel (beta branch)."),
@@ -2472,6 +2750,7 @@ def configure_version(
 
 
 @setting_app.command(name="calibrate")
+@global_flags
 def calibrate(
     model_name: str = typer.Argument(
         None,
@@ -2540,6 +2819,7 @@ def calibrate(
 
 
 @setting_app.command(name="catalog-trust")
+@global_flags
 def catalog_trust(
     manifest_url: str = typer.Option(..., "--manifest-url", help="HTTPS manifest URL."),
     public_key: str = typer.Option(..., "--public-key", help="Base64 Ed25519 public key."),
@@ -2561,6 +2841,7 @@ def catalog_trust(
 
 
 @setting_app.command(name="catalog-status")
+@global_flags
 def catalog_status() -> None:
     """Show recommendation-catalog trust and rollback state."""
     current = load_config()
@@ -2581,6 +2862,7 @@ def catalog_status() -> None:
 
 
 @setting_app.command(name="catalog-rollback")
+@global_flags
 def catalog_rollback() -> None:
     """Restore the most recent different recommendation snapshot."""
     try:
@@ -2683,17 +2965,31 @@ def setting_menu(ctx: typer.Context) -> None:
 
 
 @app.command()
+@global_flags
 def search(
     query: str,
-    json_output: bool = typer.Option(False, "--json", help="Print results as JSON instead of a table."),
     skip_unfit: bool = typer.Option(
         False,
         "--skip-unfit",
         help="If this hardware is predicted not to run a model, omit it "
         "from the results instead of listing it.",
     ),
+    limit: int | None = typer.Option(
+        None, "--limit", min=1, help="Show at most this many results."
+    ),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help="Only show results from this source: curated, huggingface, or modelscope.",
+    ),
 ) -> None:
     """Search curated models, cached candidates, and HuggingFace by name."""
+    if provider is not None and provider not in ("curated", "huggingface", "modelscope"):
+        err_console.print(
+            f"[red]--provider must be one of: curated, huggingface, modelscope (got '{provider}').[/red]"
+        )
+        raise typer.Exit(2)
+    json_output = _global_opts().json
     config = load_config()
     pool = search_mod.local_candidate_pool(
         config.get("model_url"),
@@ -2715,6 +3011,11 @@ def search(
     ]
 
     combined = search_mod.dedupe_by_base_repo(local_matches + hf_matches + ms_matches)
+    if provider is not None:
+        if provider == "curated":
+            combined = [c for c in combined if not c.get("provider")]
+        else:
+            combined = [c for c in combined if c.get("provider") == provider]
     if not combined:
         err_console.print(f"[yellow]No models found matching '{query}'.[/yellow]")
         raise typer.Exit(1)
@@ -2758,6 +3059,8 @@ def search(
             )
             if skip_unfit and not fits_hardware:
                 continue
+            if limit is not None and len(refs) >= limit:
+                break
             seen_refs.add(ref)
             refs.append(ref)
             if json_output:
@@ -2780,6 +3083,8 @@ def search(
                     console.print(f"  [{len(refs)}] [red]{ref}  (predicted not to run on this hardware)[/red]")
         if not json_output and header_printed:
             console.print()
+        if limit is not None and len(refs) >= limit:
+            break
 
     session_cache.record_results(refs)
     if json_output:
@@ -2815,10 +3120,14 @@ def _print_install_suggestions(query: str) -> None:
 
 
 @app.command(name="link")
+@global_flags
 def link_models(
     directory: Path = typer.Argument(
         None,
         help="Optional model directory for an unsupported local AI app.",
+    ),
+    engine: str | None = typer.Option(
+        None, "--engine", help="Only re-verify/repair links for this engine."
     ),
 ) -> None:
     """Link models into an arbitrary directory or repair known app links.
@@ -2832,6 +3141,15 @@ def link_models(
     `linked` flag. With a directory, reuse the central GGUF through
     zero-copy links when possible, with an explicit copy warning when Windows
     permissions and volume boundaries make that impossible."""
+    valid_engines = {spec.key for spec in linker.ENGINES}
+    if engine is not None and engine not in valid_engines:
+        err_console.print(
+            f"[red]--engine must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/red]"
+        )
+        raise typer.Exit(2)
+    if directory is not None and engine is not None:
+        err_console.print("[red]--engine only applies without a directory argument.[/red]")
+        raise typer.Exit(2)
     reg = registry.load_registry()
     if not reg:
         console.print("No models installed via omm yet.")
@@ -2882,6 +3200,9 @@ def link_models(
     relinked_count = 0
     skipped_missing = 0
     skipped_conflict = 0
+    engines_to_process = (
+        [s for s in linker.ENGINES if s.key == engine] if engine else linker.ENGINES
+    )
 
     for filename, entry in reg.items():
         dest = MODELS_DIR / filename
@@ -2894,7 +3215,7 @@ def link_models(
         blocked = set(entry.get("link_blocked") or [])
         changed = False
 
-        for spec in linker.ENGINES:
+        for spec in engines_to_process:
             if not linker.is_engine_installed(spec.key):
                 continue
             try:
@@ -2931,7 +3252,7 @@ def link_models(
 def relink() -> None:
     """Deprecated alias for `omm link`."""
     err_console.print("[yellow]`omm relink` is deprecated; use `omm link`.[/yellow]")
-    link_models(directory=None)
+    link_models(directory=None, engine=None)
 
 
 def _autoremove_incomplete_installs() -> int:
@@ -2971,6 +3292,7 @@ def _autoremove_incomplete_installs() -> int:
 
 
 @app.command()
+@global_flags
 def autoremove() -> None:
     """Remove broken symlinks left behind when a model's source .gguf was
     deleted without going through `omm uninstall`, plus any orphaned partial or
@@ -3000,6 +3322,7 @@ def autoremove() -> None:
 
 
 @app.command(name="benchmark")
+@global_flags
 def benchmark_cmd(
     models: list[str] = typer.Argument(
         ...,
@@ -3016,11 +3339,6 @@ def benchmark_cmd(
         help="Write evidence to this JSON path.",
     ),
     speed_runs: int = typer.Option(3, "--speed-runs", min=1, max=10),
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Also print the evidence JSON.",
-    ),
     confirm_performance_timeout: bool = typer.Option(
         False,
         "--confirm-performance-timeout",
@@ -3035,6 +3353,7 @@ def benchmark_cmd(
     ),
 ) -> None:
     """Measure a small reproducible quality pack and decode speed."""
+    json_output = _global_opts().json
     models = [_resolve_benchmark_tag(m) for m in models]
     if "all" in models and models != ["all"]:
         err_console.print("[red]`all` must be the only argument.[/red]")
@@ -3056,6 +3375,7 @@ def benchmark_cmd(
                 TextColumn("[cyan]{task.description}[/cyan]"),
                 TimeElapsedColumn(),
                 console=console,
+                disable=_global_opts().quiet,
             ) as progress:
                 task_id = progress.add_task(
                     f"Benchmarking ({len(models)} model(s))...", total=len(models)
@@ -3923,18 +4243,13 @@ def _print_contribution_summary(
 
 
 @app.command()
-def contribute(
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Don't ask for confirmation before starting. For scripting/unattended runs.",
-    ),
-) -> None:
+@global_flags
+def contribute() -> None:
     """Repeatedly install, benchmark, and upload telemetry for hardware-fit
     models until Esc is pressed, to help grow the training dataset behind
     `omm recommend`. Deletes each model after benchmarking it (even
     successful ones) to keep disk usage bounded."""
+    yes = _global_opts().yes
     policy = load_config().get("telemetry_send_policy", "ask")
     if policy == "never":
         err_console.print(

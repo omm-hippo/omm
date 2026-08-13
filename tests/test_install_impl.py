@@ -802,6 +802,103 @@ def test_install_impl_exits_cleanly_on_insufficient_disk_space_mid_download_with
     assert exc_info.value.exit_code == 1
 
 
+def test_force_redownloads_even_when_already_present(isolated_omm_home, monkeypatch):
+    """Without --force, an existing file at dest short-circuits the fetch
+    (see the 'already downloaded, skipping fetch' branch); force=True must
+    bypass that and re-run the size check + download."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    resolved = _resolved()
+    dest = cli.MODELS_DIR / resolved.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"stale-bytes")
+
+    size_calls = []
+    monkeypatch.setattr(
+        cli,
+        "remote_file_size",
+        lambda provider, repo_id, filename: size_calls.append(filename) or None,
+    )
+    download_calls = []
+
+    def fake_download(url, dst):
+        download_calls.append(dst)
+        dst.write_bytes(b"fresh-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    outcome = cli._install_impl(resolved, force=True)
+
+    assert size_calls == [resolved.filename]
+    assert download_calls == [dest]
+    assert dest.read_bytes() == b"fresh-bytes"
+    assert outcome.filename == resolved.filename
+
+
+def test_force_clears_stale_dest_and_part_before_redownloading(isolated_omm_home, monkeypatch):
+    """--force must guarantee a genuinely fresh download: a leftover
+    completed `dest` and a stale `.part` sidecar from an earlier, unrelated
+    partial download must both be gone before `download_file` is invoked.
+    This is what would have caught the Windows `Path.rename` FileExistsError
+    (rename onto an existing dest) and the "resumes a stale partial instead
+    of starting fresh" bug, without needing to run on Windows."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    resolved = _resolved()
+    dest = cli.MODELS_DIR / resolved.filename
+    part = dest.with_suffix(dest.suffix + ".part")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"stale-complete-bytes")
+    part.write_bytes(b"stale-partial-bytes")
+
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
+
+    dest_existed_at_download_time = []
+
+    def fake_download(url, dst):
+        dest_existed_at_download_time.append(dst.exists())
+        assert not part.exists(), "stale .part must be cleared before a fresh --force download"
+        dst.write_bytes(b"fresh-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    cli._install_impl(resolved, force=True)
+
+    assert dest_existed_at_download_time == [False]
+    assert not part.exists()
+    assert dest.read_bytes() == b"fresh-bytes"
+
+
+def test_without_force_skips_fetch_when_already_present(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    resolved = _resolved()
+    dest = cli.MODELS_DIR / resolved.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"stale-bytes")
+
+    monkeypatch.setattr(
+        cli, "remote_file_size", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no size check"))
+    )
+    monkeypatch.setattr(
+        cli, "download_file", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no download"))
+    )
+
+    outcome = cli._install_impl(resolved)
+
+    assert dest.read_bytes() == b"stale-bytes"
+    assert outcome.filename == resolved.filename
+
+
 def test_auto_calibrate_does_not_crash_install_when_write_fails(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(
         cli.predictor, "load_cached_model", lambda: {"trees": [{"leaf": True, "value": 20.0}]}

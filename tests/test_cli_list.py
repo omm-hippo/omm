@@ -47,6 +47,24 @@ def test_list_json_is_parseable_and_has_expected_fields(isolated_omm_home):
     ]
 
 
+def test_list_json_before_subcommand(isolated_omm_home):
+    registry.save_registry(
+        {
+            "a.gguf": {"size_bytes": 5, "linked": {"lmstudio": False, "ollama": False}},
+            "b.gguf": {"size_bytes": 9, "linked": {"lmstudio": False, "ollama": True}},
+        }
+    )
+
+    result = runner.invoke(cli.app, ["--json", "list"])
+
+    assert result.exit_code == 0, result.stdout
+    data = json.loads(result.stdout)
+    assert data == [
+        {"index": 1, "filename": "a.gguf", "size_bytes": 5, "linked": _all_linked()},
+        {"index": 2, "filename": "b.gguf", "size_bytes": 9, "linked": _all_linked(ollama=True)},
+    ]
+
+
 def test_list_json_empty_registry_prints_empty_array(isolated_omm_home):
     result = runner.invoke(cli.app, ["list", "--json"])
 
@@ -62,3 +80,25 @@ def test_list_empty_registry_does_not_touch_session(isolated_omm_home, monkeypat
 
     assert result.exit_code == 0, result.stdout
     assert recorded == []
+
+
+def test_list_engine_filters_to_only_linked_models(isolated_omm_home):
+    registry.save_registry(
+        {
+            "a.gguf": {"size_bytes": 0, "linked": {"lmstudio": False, "ollama": False}},
+            "b.gguf": {"size_bytes": 0, "linked": {"lmstudio": False, "ollama": True}},
+        }
+    )
+
+    result = runner.invoke(cli.app, ["list", "--engine", "ollama"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "b.gguf" in result.stdout
+    assert "a.gguf" not in result.stdout
+
+
+def test_list_engine_bogus_value_errors(isolated_omm_home):
+    result = runner.invoke(cli.app, ["list", "--engine", "bogus"])
+
+    assert result.exit_code == 2
+    assert "--engine must be one of" in result.stderr

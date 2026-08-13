@@ -165,6 +165,17 @@ def test_upgrade_all_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monk
     assert "0 updated, 1 up to date, 0 skipped" in result.stdout
 
 
+def test_upgrade_all_yes_flag_before_subcommand_skips_prompt(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    registry.save_registry({"model.gguf": _entry(sha256="same-hash")})
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "same-hash")
+
+    result = runner.invoke(cli.app, ["--yes", "upgrade"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "0 updated, 1 up to date, 0 skipped" in result.stdout
+
+
 def test_upgrade_all_without_yes_errors_without_a_tty(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
     registry.save_registry({"model.gguf": _entry()})
@@ -214,3 +225,44 @@ def test_upgrade_errors_for_uninstalled_model(isolated_omm_home):
 
     assert result.exit_code == 1
     assert "is not installed via omm" in result.stderr
+
+
+def test_upgrade_all_dry_run_reports_without_checking(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    registry.save_registry(
+        {
+            "a.gguf": _entry(repo_id="org/a"),
+            "b.gguf": _entry(repo_id="org/b"),
+        }
+    )
+    monkeypatch.setattr(
+        cli,
+        "remote_file_sha256",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not check")),
+    )
+
+    result = runner.invoke(cli.app, ["upgrade", "--dry-run"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Would check for updates: a.gguf" in result.stdout
+    assert "Would check for updates: b.gguf" in result.stdout
+    assert registry.load_registry()["a.gguf"]["sha256"] == "old-hash"
+
+
+def test_upgrade_single_model_dry_run_reports_without_checking(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    registry.save_registry({"model.gguf": _entry(repo_id="org/repo")})
+    monkeypatch.setattr(
+        cli,
+        "remote_file_sha256",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not check")),
+    )
+    calls = []
+    monkeypatch.setattr(cli, "_update_one", lambda filename, entry: calls.append(filename))
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf", "--dry-run"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Would check for updates: model.gguf" in result.stdout
+    assert calls == []
+    assert registry.load_registry()["model.gguf"]["sha256"] == "old-hash"
