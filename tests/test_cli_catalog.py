@@ -2,7 +2,7 @@ import json
 
 from typer.testing import CliRunner
 
-from omm import catalog, cli, config
+from omm import catalog, cli, config, predictor
 
 runner = CliRunner()
 
@@ -62,3 +62,61 @@ def test_catalog_trust_saves_verified_public_key(isolated_omm_home, monkeypatch)
     saved = config.load_config()
     assert saved["catalog_manifest_url"] == "https://example.com/manifest.json"
     assert saved["catalog_public_key"] == "key"
+
+
+def test_load_recommendation_with_change_note_forwards_manifest_and_public_key(monkeypatch):
+    captured = {}
+
+    def fake_load_model_with_change_note(url, manifest_url=None, public_key=None):
+        captured["url"] = url
+        captured["manifest_url"] = manifest_url
+        captured["public_key"] = public_key
+        return {"candidates": []}, True
+
+    monkeypatch.setattr(predictor, "load_model_with_change_note", fake_load_model_with_change_note)
+
+    cli._load_recommendation_with_change_note(
+        {
+            "model_url": "https://example.com/model.json",
+            "catalog_manifest_url": "https://example.com/manifest.json",
+            "catalog_public_key": "the-key",
+        }
+    )
+
+    assert captured == {
+        "url": "https://example.com/model.json",
+        "manifest_url": "https://example.com/manifest.json",
+        "public_key": "the-key",
+    }
+
+
+def test_refresh_data_forwards_manifest_and_public_key_to_fetch_and_cache_model(
+    isolated_omm_home, monkeypatch
+):
+    captured = {}
+
+    def fake_fetch_and_cache_model(url, manifest_url=None, public_key=None):
+        captured["url"] = url
+        captured["manifest_url"] = manifest_url
+        captured["public_key"] = public_key
+        return {"candidates": []}
+
+    monkeypatch.setattr(predictor, "fetch_and_cache_model", fake_fetch_and_cache_model)
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: {
+            "rules_url": None,
+            "model_url": "https://example.com/model.json",
+            "catalog_manifest_url": "https://example.com/manifest.json",
+            "catalog_public_key": "the-key",
+        },
+    )
+
+    cli._refresh_data()
+
+    assert captured == {
+        "url": "https://example.com/model.json",
+        "manifest_url": "https://example.com/manifest.json",
+        "public_key": "the-key",
+    }
