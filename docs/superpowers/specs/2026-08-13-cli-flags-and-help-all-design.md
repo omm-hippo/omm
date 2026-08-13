@@ -36,8 +36,8 @@ if all:
 ## Scope
 
 포함:
-- 전역 플래그 5개 (`--json`, `-y`/`--yes`, `-v`/`--verbose`, `-q`/`--quiet`,
-  `--no-color`), 커맨드 앞/뒤 양쪽 위치 모두 허용
+- 전역 플래그 4개 (`--json`, `-y`/`--yes`, `-q`/`--quiet`, `--no-color`),
+  커맨드 앞/뒤 양쪽 위치 모두 허용
 - 커맨드 별칭 3개 (`rm`, `ls`, `up`)
 - 커맨드별 세부 옵션 추가 (아래 표)
 - `--json` 지원 범위 확장 (`tune`, `scan`)
@@ -51,16 +51,21 @@ if all:
   더 잘 보이게 문서화한다.
 - `contribute`/`recommend`처럼 대화형/루프형 커맨드의 `--json` 구조화 출력 —
   의미가 안 맞아 제외.
+- `-v`/`--verbose` — 코드 확인 결과 지금 omm엔 "숨겨진 상세 로그"가 없다.
+  미처리 예외는 이미 일반 traceback으로 흘러가고(`main()`, `cli.py:4056`),
+  대신 ~30곳의 `except` 블록이 짧은 에러 메시지만 찍고 원래 traceback을
+  버린다. `-v`를 의미 있게 만들려면 그 30곳을 개별적으로 손봐야 해서
+  범위가 크고 회귀 리스크도 있다 — 별도 과제로 분리, 이번 플랜에서 제외.
 - Typer → 순수 Click 재작성 — 기존 4078줄 파일이 이미 Typer/Click 내부(포매터,
   `TyperGroup`)에 직접 손을 댄 상태라, 전체 재작성은 리스크 대비 이득이 없다.
 
 ## Global flags
 
-**방식**: root callback(`_root`)에서 5개 옵션을 eager 파싱해 `ctx.obj`(dataclass
+**방식**: root callback(`_root`)에서 4개 옵션을 eager 파싱해 `ctx.obj`(dataclass
 `GlobalOptions`)에 저장한다. 각 서브커맨드에도 동일 옵션을 데코레이터
 (`@global_flags`, `cli.py` 상단에 신규 정의)로 자동 주입해 커맨드 뒤 위치도
-받는다. 이미 각 함수 시그니처에 반복 선언하는 대신, 데코레이터가 Click 파라미터를
-命령 객체에 얹고 함수엔 `ctx: typer.Context`로 병합된 값을 조회하게 한다.
+받는다. 각 함수 시그니처에 반복 선언하는 대신, 데코레이터가 Click 파라미터를
+커맨드 객체에 얹고 함수는 `ctx: typer.Context`로 병합된 값을 조회하게 한다.
 
 병합 규칙: 커맨드 뒤에 명시적으로 값이 오면 그 값 우선, 없으면 `ctx.obj`(앞쪽에서
 설정된 값), 둘 다 없으면 기본값(`False`/`None`).
@@ -69,7 +74,6 @@ if all:
 |---|---|---|
 | `--json` | — | 지원 커맨드에서 구조화 출력. 활성 시 stdout엔 JSON만 나가도록 배너/알림류는 전부 stderr로 |
 | `--yes` | `-y` | 확인 프롬프트 전부 생략. 기존 `import`/`uninstall`/`upgrade`/`contribute`에 더해 `install`/`autoremove`에도 적용 |
-| `--verbose` | `-v` | 현재 숨겨진 상세 로그 노출 |
 | `--quiet` | `-q` | 배너·진행 표시줄·안내 메시지 억제, 에러만 stderr로 |
 | `--no-color` | — | ANSI 제거. `NO_COLOR` 환경변수도 동일하게 취급 |
 
