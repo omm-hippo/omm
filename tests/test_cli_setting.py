@@ -257,3 +257,9 @@ def test_setting_bare_menu_version_submenu_switches_channel(isolated_omm_home, m
     version_labels = [choice.title for choice in captured_choices[1]]
     assert version_labels[-1] == "← Back"
     assert config.load_config()["update_channel"] == "beta"
+
+
+def test_setting_catalog_status_accepts_quiet_flag(isolated_omm_home):
+    result = runner.invoke(cli.app, ["setting", "catalog-status", "--quiet"])
+
+    assert result.exit_code == 0, result.stdout

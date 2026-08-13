@@ -598,3 +598,15 @@ def test_run_pipx_install_stalls_at_last_reached_stage_when_lines_missing(monkey
     # "creating virtual environment" (stage 1) then "done!" (stage 4) -
     # stages 2/3 never printed, so we jump straight to 4, not fabricate 2/3.
     assert completed == 4
+
+
+def test_update_with_quiet_flag_does_not_crash(monkeypatch):
+    same_commit = "abc1234" * 5 + "abc12345"
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_installed_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: same_commit)
+    monkeypatch.setattr(cli, "_refresh_data", lambda: None)
+
+    result = runner.invoke(cli.app, ["update", "--quiet"])
+
+    assert result.exit_code == 0, result.stdout

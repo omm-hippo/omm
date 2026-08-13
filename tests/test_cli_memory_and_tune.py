@@ -152,3 +152,23 @@ def test_tune_uses_live_budget_for_installed_model(monkeypatch):
     assert "Safe model budget now" in result.stdout
     assert "7.6 GB" in result.stdout
     assert "Context length" in result.stdout
+
+
+def test_tune_json_output(monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(
+        cli.registry,
+        "load_registry",
+        lambda: {
+            "model-7B-Q4.gguf": {
+                "repo_id": "org/model-GGUF",
+                "size_bytes": 4 * 1024**3,
+            }
+        },
+    )
+
+    result = runner.invoke(cli.app, ["tune", "model-7B-Q4.gguf", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout.strip().startswith("{"), result.stdout
+    assert '"profile_name"' in result.stdout

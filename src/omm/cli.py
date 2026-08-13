@@ -567,6 +567,7 @@ def scan() -> None:
 
 
 @app.command(name="setup")
+@global_flags
 def setup_cmd() -> None:
     """Re-run the first-time setup wizard (hardware scan + engine checklist)."""
     onboarding.run_wizard(console)
@@ -918,6 +919,7 @@ def _run_pipx_install_with_progress(args: list[str]) -> subprocess.CompletedProc
         TaskProgressColumn(),
         TimeElapsedColumn(),
         console=console,
+        disable=_global_opts().quiet,
     ) as progress:
         task_id = progress.add_task("upgrade", total=len(_PIPX_INSTALL_STAGES))
         result = _run_pipx_install(args, progress, task_id)
@@ -1066,6 +1068,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
 
 
 @app.command()
+@global_flags
 def update() -> None:
     """Reinstall omm from the latest source, then refresh rules/model data.
     Uses a persistent editable clone (SRC_DIR) for a git-pull-speed update
@@ -1337,6 +1340,7 @@ def _select_recommended_model(
 
 
 @app.command()
+@global_flags
 def recommend() -> None:
     """Scan hardware and suggest a model to install, ranked by a model
     trained on real install telemetry (falls back to static rules if the
@@ -1417,6 +1421,7 @@ def _print_runtime_profile(profile: tuning.RuntimeProfile) -> None:
 
 
 @app.command()
+@global_flags
 def tune(
     model_name: str = typer.Argument(..., autocompletion=complete_install_name),
 ) -> None:
@@ -1454,10 +1459,23 @@ def tune(
                 candidate,
             )
 
+    profile = tuning.recommend_runtime_settings(scan_hardware(), candidate)
+    if _global_opts().json:
+        console.print_json(
+            data={
+                "model": candidate.get("filename") or candidate.get("name"),
+                "profile_name": profile.profile_name,
+                "context_length": profile.context_length,
+                "gpu_offload_label": profile.gpu_offload_label,
+                "cpu_threads": profile.cpu_threads,
+                "num_batch": profile.num_batch,
+                "available_memory_gb": profile.available_memory_gb,
+                "headroom_gb": profile.headroom_gb,
+            }
+        )
+        return
     console.print(f"[bold]{candidate.get('filename') or candidate.get('name')}[/bold]")
-    _print_runtime_profile(
-        tuning.recommend_runtime_settings(scan_hardware(), candidate)
-    )
+    _print_runtime_profile(profile)
 
 
 def _resolve_ref(arg: str) -> str:
@@ -2512,6 +2530,7 @@ def list_models() -> None:
 
 
 @setting_app.command(name="telemetry")
+@global_flags
 def configure_telemetry(
     endpoint: str = typer.Option(
         None,
@@ -2546,6 +2565,7 @@ def configure_telemetry(
 
 
 @setting_app.command(name="upload")
+@global_flags
 def configure_upload(
     enable: bool = typer.Option(False, "--enable", help="Always send benchmark results without asking."),
     disable: bool = typer.Option(False, "--disable", help="Never send benchmark results."),
@@ -2578,6 +2598,7 @@ def configure_upload(
 
 
 @setting_app.command(name="version")
+@global_flags
 def configure_version(
     stable: bool = typer.Option(False, "--stable", help="Track the stable channel (main branch)."),
     beta: bool = typer.Option(False, "--beta", help="Track the beta channel (beta branch)."),
@@ -2613,6 +2634,7 @@ def configure_version(
 
 
 @setting_app.command(name="calibrate")
+@global_flags
 def calibrate(
     model_name: str = typer.Argument(
         None,
@@ -2681,6 +2703,7 @@ def calibrate(
 
 
 @setting_app.command(name="catalog-trust")
+@global_flags
 def catalog_trust(
     manifest_url: str = typer.Option(..., "--manifest-url", help="HTTPS manifest URL."),
     public_key: str = typer.Option(..., "--public-key", help="Base64 Ed25519 public key."),
@@ -2702,6 +2725,7 @@ def catalog_trust(
 
 
 @setting_app.command(name="catalog-status")
+@global_flags
 def catalog_status() -> None:
     """Show recommendation-catalog trust and rollback state."""
     current = load_config()
@@ -2722,6 +2746,7 @@ def catalog_status() -> None:
 
 
 @setting_app.command(name="catalog-rollback")
+@global_flags
 def catalog_rollback() -> None:
     """Restore the most recent different recommendation snapshot."""
     try:
@@ -2952,6 +2977,7 @@ def _print_install_suggestions(query: str) -> None:
 
 
 @app.command(name="link")
+@global_flags
 def link_models(
     directory: Path = typer.Argument(
         None,
@@ -3108,6 +3134,7 @@ def _autoremove_incomplete_installs() -> int:
 
 
 @app.command()
+@global_flags
 def autoremove() -> None:
     """Remove broken symlinks left behind when a model's source .gguf was
     deleted without going through `omm uninstall`, plus any orphaned partial or
