@@ -38,9 +38,11 @@ default install path, so it heuristically looks for the binary in common
 locations and links into a `models` folder next to it; the user still needs
 to launch koboldcpp with --admindir pointed at that folder themselves.
 
-text-generation-webui likewise has no fixed OS install location (a git
-clone anywhere), so omm heuristically looks for its directory by checking
-for the project's own marker files (server.py, one_click.py).
+text-generation-webui likewise has no fixed OS install location, so omm
+heuristically looks for its directory by checking for either of two known
+layouts: an old-style git clone (server.py + one_click.py at the root) or
+the portable prebuilt release omm itself installs (server.py under app/,
+no one_click.py at all).
 """
 
 from __future__ import annotations
@@ -52,10 +54,12 @@ import os
 import platform
 import re
 import shutil
+import tarfile
 import time
 import struct
 import subprocess
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -63,6 +67,7 @@ from typing import Callable
 
 from omm import config
 from omm.gguf import read_gguf_metadata
+from omm.hardware import HardwareInfo, scan_hardware
 from omm.hashutil import sha256_file
 from omm.atomic import atomic_write_text, backup_corrupt_file, locked
 from omm.config import LINK_OWNERSHIP_PATH
@@ -114,6 +119,10 @@ def _app_bundle_installed(app_name: str) -> bool:
 
 
 def is_lmstudio_installed() -> bool:
+    # A headless llmster install (the `lms` CLI + daemon, no GUI) is a
+    # real, usable install with no app bundle at all - check it first.
+    if _lms_cli_path() is not None:
+        return True
     if platform.system() == "Darwin":
         return _app_bundle_installed("LM Studio")
     return lmstudio_home_dir().exists()
@@ -1373,12 +1382,14 @@ def is_mstystudio_installed() -> bool:
 # (the koboldcpp binary itself; text-generation-webui's own source files)
 # in a short list of common places a user would keep them.
 
+_ENGINE_INSTALL_DIR = Path.home() / "Applications"
+
 _HEURISTIC_SEARCH_ROOTS = [
     Path.home(),
     Path.home() / "Downloads",
     Path.home() / "Documents",
     Path.home() / "Desktop",
-    Path.home() / "Applications",
+    _ENGINE_INSTALL_DIR,
     Path("/Applications"),
 ]
 
@@ -1418,7 +1429,9 @@ def koboldcpp_models_dir() -> Path | None:
     return binary.parent / "models" if binary is not None else None
 
 
-_TEXTGENWEBUI_NAME_HINT = re.compile(r"text-generation-webui|oobabooga", re.IGNORECASE)
+_TEXTGENWEBUI_NAME_HINT = re.compile(
+    r"text-generation-webui|oobabooga|textgen", re.IGNORECASE
+)
 
 
 @lru_cache(maxsize=1)
@@ -1429,12 +1442,15 @@ def find_textgenwebui_root() -> Path | None:
         except OSError:
             continue
         for entry in entries:
-            if (
-                entry.is_dir()
-                and _TEXTGENWEBUI_NAME_HINT.search(entry.name)
-                and (entry / "server.py").exists()
-                and (entry / "one_click.py").exists()
-            ):
+            if not (entry.is_dir() and _TEXTGENWEBUI_NAME_HINT.search(entry.name)):
+                continue
+            # Old git-clone install: server.py + one_click.py at the root.
+            if (entry / "server.py").exists() and (entry / "one_click.py").exists():
+                return entry
+            # Portable prebuilt release: server.py lives under app/, and
+            # there's no one_click.py at all (verified against a real
+            # release archive, not the docs).
+            if (entry / "app" / "server.py").exists():
                 return entry
     return None
 
@@ -1498,6 +1514,534 @@ def is_engine_installed(key: str) -> bool:
     if key == "koboldcpp":
         return is_koboldcpp_installed()
     raise ValueError(f"unknown engine: {key}")
+
+
+@dataclass(frozen=True)
+class EngineInstallResult:
+    key: str
+    status: str  # "installed" | "failed" | "unsupported_platform"
+    message: str
+
+
+def has_automated_installer(key: str) -> bool:
+    """Single source of truth for "does install_engine() have a real branch
+    for this engine key, on the CURRENT platform" - onboarding.py calls
+    this instead of keeping its own separate set of automated engine keys,
+    so a future engine added to one place without the other can't leave
+    the wizard calling install_engine() on a key that just raises
+    NotImplementedError. Deliberately mirrors install_engine()'s own
+    if/elif shape (add one line here per new branch added there).
+
+    Platform/arch-aware for the engines whose automation is not universal:
+    mirrors the exact same checks their _install_<engine> function uses to
+    decide unsupported_platform vs. actually attempting an install, so the
+    onboarding checklist never labels an engine "(auto-install)" only for
+    the actual attempt to fail with unsupported_platform. Deliberately
+    cheap and side-effect-free (string/tuple comparisons only, no
+    filesystem or network access) since it's called just to build labels,
+    not to attempt anything."""
+    if key == "ollama":
+        return True
+    if key == "lmstudio":
+        return True
+    if key == "jan":
+        return True
+    if key == "anythingllm":
+        # No flatpak/Linux path was ever built for this one (see
+        # _install_anythingllm) - only brew (Darwin) and winget (Windows).
+        return platform.system() in ("Darwin", "Windows")
+    if key == "mstystudio":
+        # Brew-cask only - no winget package targets the current app (see
+        # _install_mstystudio) and no Linux package manager exists at all.
+        return platform.system() == "Darwin"
+    if key == "koboldcpp":
+        return (platform.system(), platform.machine()) in _KOBOLDCPP_ASSET_BY_PLATFORM
+    if key == "textgenwebui":
+        return _textgenwebui_platform_supported(platform.system(), platform.machine())
+    return False
+
+
+def install_engine(
+    key: str, *, on_output: Callable[[str], None] | None = None
+) -> EngineInstallResult:
+    """Dispatch table mirroring is_engine_installed()'s if/elif style so
+    individual branches stay monkeypatchable in tests. Every engine in
+    ENGINES ("ollama", "lmstudio", "jan", "anythingllm", "mstystudio",
+    "koboldcpp", and "textgenwebui") has an automated installer here, though
+    not every platform/arch combo is covered for every engine - see
+    has_automated_installer for which ones are. A key not in ENGINES at all
+    still raises NotImplementedError."""
+    if key == "ollama":
+        return _install_ollama(on_output=on_output)
+    if key == "lmstudio":
+        return _install_lmstudio(on_output=on_output)
+    if key == "jan":
+        return _install_jan(on_output=on_output)
+    if key == "anythingllm":
+        return _install_anythingllm(on_output=on_output)
+    if key == "mstystudio":
+        return _install_mstystudio(on_output=on_output)
+    if key == "koboldcpp":
+        return _install_koboldcpp(on_output=on_output)
+    if key == "textgenwebui":
+        return _install_textgenwebui(on_output=on_output)
+    raise NotImplementedError(f"no automated installer for engine: {key}")
+
+
+def _stream_subprocess(
+    args: list[str], on_output: Callable[[str], None] | None
+) -> tuple[int, str] | None:
+    """Runs args, streaming each stdout line to on_output as it arrives.
+    Returns (returncode, None-marker) via the process wait(), or None if
+    the process itself couldn't start (caller turns that into a result)."""
+    try:
+        proc = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        )
+    except OSError:
+        raise
+    for line in proc.stdout:
+        if on_output is not None:
+            on_output(line.rstrip("\n"))
+    return proc.wait()
+
+
+_OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
+_LMSTUDIO_DOWNLOAD_URL = "https://lmstudio.ai/download"
+
+
+def _install_ollama(
+    *, on_output: Callable[[str], None] | None = None
+) -> EngineInstallResult:
+    system = platform.system()
+    returncode: int | None = None
+    if system in ("Darwin", "Linux"):
+        try:
+            returncode = _stream_subprocess(
+                ["/bin/sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"],
+                on_output,
+            )
+        except OSError as e:
+            return EngineInstallResult("ollama", "failed", f"Could not start installer: {e}")
+    elif system == "Windows":
+        if shutil.which("winget") is None:
+            return EngineInstallResult(
+                "ollama",
+                "unsupported_platform",
+                f"winget not found - install Ollama manually from {_OLLAMA_DOWNLOAD_URL}",
+            )
+        try:
+            returncode = _stream_subprocess(
+                ["winget", "install", "-e", "--id", "Ollama.Ollama", "--silent"],
+                on_output,
+            )
+        except OSError as e:
+            return EngineInstallResult("ollama", "failed", f"Could not start installer: {e}")
+    else:
+        return EngineInstallResult(
+            "ollama", "unsupported_platform", f"No automated installer for {system}."
+        )
+
+    if is_ollama_installed():
+        return EngineInstallResult("ollama", "installed", "Ollama installed successfully.")
+    detail = f" (installer exited with code {returncode})" if returncode else ""
+    return EngineInstallResult(
+        "ollama",
+        "failed",
+        f"Installer ran but Ollama still isn't detected{detail}. "
+        f"Install manually from {_OLLAMA_DOWNLOAD_URL}",
+    )
+
+
+def _install_lmstudio(
+    *, on_output: Callable[[str], None] | None = None
+) -> EngineInstallResult:
+    """Installs llmster, LM Studio's headless CLI+daemon core - not the
+    GUI app. Same official-script pattern as Ollama's installer; see
+    is_lmstudio_installed()'s CLI check for why that's still a real
+    install."""
+    system = platform.system()
+    returncode: int | None = None
+    if system in ("Darwin", "Linux"):
+        try:
+            returncode = _stream_subprocess(
+                ["/bin/sh", "-c", "curl -fsSL https://lmstudio.ai/install.sh | bash"],
+                on_output,
+            )
+        except OSError as e:
+            return EngineInstallResult("lmstudio", "failed", f"Could not start installer: {e}")
+    elif system == "Windows":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if powershell is None:
+            return EngineInstallResult(
+                "lmstudio",
+                "unsupported_platform",
+                f"PowerShell not found - install manually from {_LMSTUDIO_DOWNLOAD_URL}",
+            )
+        try:
+            returncode = _stream_subprocess(
+                [powershell, "-NoProfile", "-Command", "irm https://lmstudio.ai/install.ps1 | iex"],
+                on_output,
+            )
+        except OSError as e:
+            return EngineInstallResult("lmstudio", "failed", f"Could not start installer: {e}")
+    else:
+        return EngineInstallResult(
+            "lmstudio", "unsupported_platform", f"No automated installer for {system}."
+        )
+
+    if is_lmstudio_installed():
+        return EngineInstallResult("lmstudio", "installed", "LM Studio installed successfully.")
+    detail = f" (installer exited with code {returncode})" if returncode else ""
+    return EngineInstallResult(
+        "lmstudio",
+        "failed",
+        f"Installer ran but LM Studio still isn't detected{detail}. "
+        f"Install manually from {_LMSTUDIO_DOWNLOAD_URL}",
+    )
+
+
+def _install_via_package_manager(
+    *,
+    key: str,
+    label: str,
+    manual_url: str,
+    is_installed: Callable[[], bool],
+    on_output: Callable[[str], None] | None = None,
+    brew_cask: str | None = None,
+    winget_id: str | None = None,
+    flatpak_id: str | None = None,
+) -> EngineInstallResult:
+    """Shared shape for engines whose only automated path is a package
+    manager: brew cask on macOS, winget on Windows, flatpak on Linux. Any
+    platform without a configured option (a None kwarg, or the package
+    manager itself missing) falls back to unsupported_platform with a
+    manual link - never guesses a direct download URL."""
+    system = platform.system()
+    args: list[str] | None = None
+    if system == "Darwin" and brew_cask is not None:
+        if shutil.which("brew") is None:
+            return EngineInstallResult(
+                key, "unsupported_platform", f"Homebrew not found - install manually from {manual_url}"
+            )
+        args = ["brew", "install", "--cask", brew_cask]
+    elif system == "Windows" and winget_id is not None:
+        if shutil.which("winget") is None:
+            return EngineInstallResult(
+                key, "unsupported_platform", f"winget not found - install manually from {manual_url}"
+            )
+        args = ["winget", "install", "-e", "--id", winget_id, "--silent"]
+    elif system == "Linux" and flatpak_id is not None:
+        if shutil.which("flatpak") is None:
+            return EngineInstallResult(
+                key, "unsupported_platform", f"flatpak not found - install manually from {manual_url}"
+            )
+        args = ["flatpak", "install", "-y", "flathub", flatpak_id]
+    else:
+        return EngineInstallResult(
+            key, "unsupported_platform", f"No automated installer for {system} - install manually from {manual_url}"
+        )
+
+    try:
+        returncode = _stream_subprocess(args, on_output)
+    except OSError as e:
+        return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
+
+    if is_installed():
+        return EngineInstallResult(key, "installed", f"{label} installed successfully.")
+    detail = f" (installer exited with code {returncode})" if returncode else ""
+    return EngineInstallResult(
+        key,
+        "failed",
+        f"Installer ran but {label} still isn't detected{detail}. Install manually from {manual_url}",
+    )
+
+
+def _install_jan(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
+    return _install_via_package_manager(
+        key="jan",
+        label="Jan",
+        manual_url="https://jan.ai/download",
+        is_installed=is_jan_installed,
+        on_output=on_output,
+        brew_cask="jan",
+        winget_id="Jan.Jan",
+        flatpak_id="ai.jan.Jan",
+    )
+
+
+def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
+    # Linux deliberately has no flatpak_id/download path here: the only
+    # official Linux install method is an interactive installer.sh (sudo
+    # AppArmor-profile prompt, no documented silent flag) - same risk
+    # class the original design excluded text-generation-webui's git-clone
+    # path for. Falls through to unsupported_platform on Linux.
+    return _install_via_package_manager(
+        key="anythingllm",
+        label="AnythingLLM",
+        manual_url="https://docs.anythingllm.com/installation-desktop/overview",
+        is_installed=is_anythingllm_installed,
+        on_output=on_output,
+        brew_cask="anythingllm",
+        winget_id="MintplexLabs.AnythingLLM",
+    )
+
+
+def _install_mstystudio(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
+    # No winget_id/flatpak_id: the only winget entry for this app family
+    # (CloudStack.Msty) targets the deprecated pre-rebrand "Msty" app, not
+    # current "Msty Studio" - using it would install the wrong software.
+    # No Linux package manager exists at all.
+    return _install_via_package_manager(
+        key="mstystudio",
+        label="Msty",
+        manual_url="https://msty.ai/products/studio/",
+        is_installed=is_mstystudio_installed,
+        on_output=on_output,
+        brew_cask="mstystudio",
+    )
+
+
+_KOBOLDCPP_ASSET_BY_PLATFORM: dict[tuple[str, str], str] = {
+    ("Darwin", "arm64"): "koboldcpp-mac-arm64",  # no Intel Mac build exists, confirmed
+    ("Linux", "x86_64"): "koboldcpp-linux-x64",
+    ("Windows", "AMD64"): "koboldcpp.exe",
+}
+
+
+def _install_koboldcpp(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
+    system = platform.system()
+    machine = platform.machine()
+    asset = _KOBOLDCPP_ASSET_BY_PLATFORM.get((system, machine))
+    if asset is None:
+        return EngineInstallResult(
+            "koboldcpp",
+            "unsupported_platform",
+            f"No koboldcpp build for {system}/{machine} - see https://github.com/LostRuins/koboldcpp/releases",
+        )
+
+    dest_dir = _ENGINE_INSTALL_DIR / "koboldcpp"
+    dest_name = "koboldcpp.exe" if system == "Windows" else "koboldcpp"
+    dest_path = dest_dir / dest_name
+    url = f"https://github.com/LostRuins/koboldcpp/releases/latest/download/{asset}"
+
+    returncode: int | None = None
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        returncode = _stream_subprocess(["curl", "-fsSL", url, "-o", str(dest_path)], on_output)
+    except OSError as e:
+        return EngineInstallResult("koboldcpp", "failed", f"Could not download koboldcpp: {e}")
+
+    if returncode != 0:
+        # curl can exit nonzero after already writing a partial file (e.g. a
+        # connection dropped mid-transfer) - that partial file's name still
+        # starts with "koboldcpp", which is is_koboldcpp_installed()'s only
+        # detection signal, so it must be removed before that check ever
+        # runs or a truncated/corrupt binary gets reported as installed and
+        # permanently satisfies detection going forward.
+        dest_path.unlink(missing_ok=True)
+        return EngineInstallResult(
+            "koboldcpp",
+            "failed",
+            f"Download failed (curl exited with code {returncode}). "
+            "Get it manually from https://github.com/LostRuins/koboldcpp/releases",
+        )
+
+    if system != "Windows" and dest_path.exists():
+        try:
+            dest_path.chmod(dest_path.stat().st_mode | 0o111)
+        except OSError:
+            pass
+
+    find_koboldcpp_binary.cache_clear()
+    if is_koboldcpp_installed():
+        return EngineInstallResult("koboldcpp", "installed", "KoboldCpp downloaded successfully.")
+    detail = f" (curl exited with code {returncode})" if returncode else ""
+    return EngineInstallResult(
+        "koboldcpp",
+        "failed",
+        f"Download ran but koboldcpp still isn't detected{detail}. "
+        "Get it manually from https://github.com/LostRuins/koboldcpp/releases",
+    )
+
+
+_TEXTGENWEBUI_RELEASES_API = (
+    "https://api.github.com/repos/oobabooga/text-generation-webui/releases/latest"
+)
+_TEXTGENWEBUI_RELEASES_URL = "https://github.com/oobabooga/text-generation-webui/releases"
+
+# The real release only ships one narrow ARM build (linux-arm64-cuda13.1) -
+# not worth the complexity of supporting yet, but guessing an x86_64 asset
+# name for an ARM machine would silently install the wrong architecture
+# (confirmed live: an ARM Linux machine matched against linux-cpu/
+# linux-cuda12.4/linux-rocm7.2, all of which are x86_64-only builds). So
+# Linux/Windows require a recognized x86_64 identifier; anything else - and
+# any OS other than Darwin/Linux/Windows - is unsupported_platform instead
+# of a guessed match.
+_TEXTGENWEBUI_X86_64_MACHINES = {"x86_64", "amd64"}
+
+
+def _textgenwebui_is_x86_64(machine: str) -> bool:
+    return machine.lower() in _TEXTGENWEBUI_X86_64_MACHINES
+
+
+def _textgenwebui_platform_supported(system: str, machine: str) -> bool:
+    """Whether a real release asset exists for this OS/arch combo. Split out
+    from _textgenwebui_asset_name (which also needs HardwareInfo to pick a
+    GPU variant) so has_automated_installer can reuse the exact same
+    OS/arch gate while staying cheap and side-effect-free - no
+    scan_hardware() call needed just to answer "is this supported at
+    all"."""
+    if system == "Darwin":
+        return True
+    if system in ("Windows", "Linux"):
+        return _textgenwebui_is_x86_64(machine)
+    return False
+
+
+def _textgenwebui_variant(hw: HardwareInfo) -> str:
+    """Best-effort GPU-variant choice from already-collected hardware info.
+    A wrong guess just means slower (or CPU-mode) inference, never a
+    broken install, so this favors safe/broad compatibility over squeezing
+    out maximum performance: cuda12.4 over the newer cuda13.1 (needs a
+    newer driver), vulkan over guessing at ROCm on Windows (research found
+    ROCm offered as Linux-only in the app's own GPU picker)."""
+    gpu_name = (hw.gpu_name or "").lower()
+    system = platform.system()
+    if "nvidia" in gpu_name:
+        return "cuda12.4"
+    if "amd" in gpu_name or "radeon" in gpu_name:
+        return "rocm7.2" if system == "Linux" else "vulkan"
+    if gpu_name:
+        return "vulkan"
+    return "cpu"
+
+
+def _textgenwebui_asset_name(hw: HardwareInfo) -> str | None:
+    system = platform.system()
+    machine = platform.machine()
+    if not _textgenwebui_platform_supported(system, machine):
+        return None
+    if system == "Darwin":
+        arch = "arm64" if machine == "arm64" else "x86_64"
+        return f"macos-{arch}"
+    if system == "Windows":
+        return f"windows-{_textgenwebui_variant(hw)}"
+    return f"linux-{_textgenwebui_variant(hw)}"
+
+
+def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
+    """Extracts the portable release into dest_dir and returns the
+    resulting top-level folder (named textgen-<version> by the archive
+    itself - verified against real release bytes)."""
+    if archive_path.suffix == ".zip":
+        with zipfile.ZipFile(archive_path) as zf:
+            top_level = {name.split("/")[0] for name in zf.namelist()}
+            zf.extractall(dest_dir)
+    else:
+        with tarfile.open(archive_path) as tf:
+            top_level = {member.name.split("/")[0] for member in tf.getmembers()}
+            tf.extractall(dest_dir)
+    return dest_dir / next(iter(top_level))
+
+
+def _install_textgenwebui(
+    *, on_output: Callable[[str], None] | None = None
+) -> EngineInstallResult:
+    import requests
+
+    hw = scan_hardware()
+    platform_tag = _textgenwebui_asset_name(hw)
+    if platform_tag is None:
+        return EngineInstallResult(
+            "textgenwebui",
+            "unsupported_platform",
+            f"No automated installer for {platform.system()}/{platform.machine()} - "
+            f"see {_TEXTGENWEBUI_RELEASES_URL}",
+        )
+
+    try:
+        response = requests.get(_TEXTGENWEBUI_RELEASES_API, timeout=10)
+        response.raise_for_status()
+        assets = response.json().get("assets", [])
+    except (requests.RequestException, ValueError) as e:
+        return EngineInstallResult(
+            "textgenwebui",
+            "failed",
+            f"Could not check for a release: {e}. See {_TEXTGENWEBUI_RELEASES_URL}",
+        )
+
+    match = next(
+        (
+            a
+            for a in assets
+            if platform_tag in a["name"]
+            and a["name"].startswith("textgen-portable-")
+            and "-ik-" not in a["name"]
+        ),
+        None,
+    )
+    if match is None:
+        return EngineInstallResult(
+            "textgenwebui",
+            "failed",
+            f"No release build found for {platform_tag} - see {_TEXTGENWEBUI_RELEASES_URL}",
+        )
+
+    dest_root = _ENGINE_INSTALL_DIR
+    dest_root.mkdir(parents=True, exist_ok=True)
+    archive_path = dest_root / match["name"]
+
+    try:
+        returncode = _stream_subprocess(
+            ["curl", "-fsSL", "-o", str(archive_path), match["browser_download_url"]], on_output
+        )
+    except OSError as e:
+        return EngineInstallResult("textgenwebui", "failed", f"Could not download: {e}")
+
+    if returncode != 0:
+        # As with koboldcpp: curl can exit nonzero after already writing a
+        # partial archive (e.g. a connection dropped mid-transfer). A
+        # truncated archive usually fails to extract anyway, but that's
+        # incidental, not a real safeguard - gate on the returncode
+        # explicitly and never attempt extraction on a known-bad download.
+        archive_path.unlink(missing_ok=True)
+        return EngineInstallResult(
+            "textgenwebui",
+            "failed",
+            f"Download failed (curl exited with code {returncode}). "
+            f"Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
+        )
+
+    if not archive_path.exists():
+        return EngineInstallResult(
+            "textgenwebui",
+            "failed",
+            f"Download did not complete. Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
+        )
+
+    try:
+        _extract_textgenwebui_archive(archive_path, dest_root)
+    except (zipfile.BadZipFile, tarfile.TarError, OSError) as e:
+        return EngineInstallResult(
+            "textgenwebui",
+            "failed",
+            f"Could not extract archive: {e}. Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
+        )
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+    find_textgenwebui_root.cache_clear()
+    if is_textgenwebui_installed():
+        return EngineInstallResult(
+            "textgenwebui", "installed", "text-generation-webui installed successfully."
+        )
+    return EngineInstallResult(
+        "textgenwebui",
+        "failed",
+        f"Download and extraction ran but text-generation-webui still isn't detected. "
+        f"Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
+    )
 
 
 def _engine_storage_dir(key: str) -> Path | None:

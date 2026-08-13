@@ -1,6 +1,6 @@
 # omm — Open source Model Manager
 
-`omm` is an apt/brew-style package manager for local LLMs (GGUF). It installs models into a central hub, links them into LM Studio and Ollama automatically, and can recommend a model that fits your hardware.
+`omm` is an apt/brew-style package manager for local LLMs (GGUF). It installs models into a central hub, links them into seven local AI runners automatically (Ollama, LM Studio, Jan, AnythingLLM, Msty, text-generation-webui, KoboldCpp), and can recommend a model that fits your hardware.
 
 ## Install
 
@@ -28,6 +28,22 @@ Requirements: Python 3.10+. The optional NVIDIA detector is installed only when 
 `omm` is tested in CI on Windows, macOS, and Linux with Python 3.10+. Windows 10 22H2/11 is the supported Windows baseline because that matches Ollama's native Windows requirements. Hardware scan, install, linking, benchmark, update, and contribution flows are cross-platform; Ollama remains the only benchmark engine.
 
 Both installers clone to a versioned staging directory, verify the signed commit against a bootstrap trust anchor, and only then switch pipx to it. Do not replace this with an unverified `git clone` plus `pipx install` if commit authenticity matters.
+
+### Local AI runners
+
+The first bare `omm` run on a fresh install (or `omm setup` any time after) shows a hardware summary and a checklist of local AI runners. Checking one that omm knows how to install runs its official installer with live progress in the terminal; checking one it doesn't yet automate on your platform prints a link instead. Automation coverage today:
+
+| Runner | Automated on | Manual elsewhere |
+|---|---|---|
+| Ollama | macOS, Linux, Windows | — |
+| LM Studio | macOS, Linux, Windows (headless `lms` CLI) | — |
+| Jan | macOS (Homebrew), Windows (winget), Linux (Flatpak) | wherever that package manager isn't installed |
+| AnythingLLM | macOS (Homebrew), Windows (winget) | Linux |
+| Msty | macOS (Homebrew) | Windows, Linux |
+| KoboldCpp | macOS (Apple Silicon), Linux (x86_64), Windows | Intel Mac, other architectures |
+| text-generation-webui | macOS (any arch), Linux/Windows (x86_64) | ARM Linux/Windows |
+
+Every currently-installed runner is also listed (marked as already installed, not selectable) rather than hidden, so the checklist always reflects what omm actually detects on the machine.
 
 ### Storage location
 
@@ -71,6 +87,7 @@ Run a downloaded script with `-Purge` (PowerShell) or `--purge` (sh) to remove t
 ## Usage
 
 ```sh
+omm setup            # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
 omm scan             # Print a hardware, runner, and model summary (RAM, VRAM, OS)
 omm recommend        # Suggest a model that fits this machine, then offer to install it
 omm tune <name>      # Recommend context, GPU offload, threads, and batch size

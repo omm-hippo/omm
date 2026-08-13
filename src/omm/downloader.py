@@ -18,18 +18,24 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from rich.console import Console
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.progress import (
-    BarColumn,
     DownloadColumn,
     Progress,
+    ProgressColumn,
+    SpinnerColumn,
     TextColumn,
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
+from rich.segment import Segment
+from rich.style import StyleType
+from rich.table import Column
+from rich.text import Text
 
 _CHUNK_SIZE = 1024 * 1024
 _DEFAULT_THREADS = 4
@@ -81,13 +87,67 @@ def _write_sidecar(sidecar_path: Path, total_size: int, ranges: list[dict]) -> N
     tmp.replace(sidecar_path)
 
 
+@dataclass
+class _HashBar:
+    """Homebrew-style '#'-filled bar (plain ASCII, not rich's default Unicode
+    half-block chars) so it matches `curl -#`. Clamped to
+    [min_width, max_width] so it neither collapses on a narrow terminal nor
+    stretches absurdly wide on an ultra-wide one."""
+
+    completed: float
+    total: float | None
+    min_width: int = 10
+    max_width: int = 60
+    complete_style: StyleType = "bar.complete"
+    back_style: StyleType = "bar.back"
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        width = max(self.min_width, min(self.max_width, options.max_width))
+        filled = min(width, round(width * self.completed / self.total)) if self.total else 0
+        empty = width - filled
+        if filled:
+            yield Segment("#" * filled, console.get_style(self.complete_style))
+        if empty:
+            yield Segment(" " * empty, console.get_style(self.back_style))
+
+
+class HashBarColumn(ProgressColumn):
+    """Renders `_HashBar`, expanding to fill the space `Progress(expand=True)`
+    hands its ratio-1 table column - same mechanism `BarColumn` itself uses
+    for a full-width bar, just with '#' instead of Unicode blocks."""
+
+    def __init__(self, min_width: int = 10, max_width: int = 60) -> None:
+        self.min_width = min_width
+        self.max_width = max_width
+        super().__init__(table_column=Column(ratio=1))
+
+    def render(self, task) -> _HashBar:
+        return _HashBar(task.completed, task.total, self.min_width, self.max_width)
+
+
+class EtaColumn(TimeRemainingColumn):
+    """`TimeRemainingColumn(compact=True)` prefixed with 'ETA ' so it reads
+    clearly next to size/speed instead of a bare, easy-to-miss timestamp."""
+
+    def __init__(self) -> None:
+        super().__init__(compact=True)
+
+    def render(self, task) -> Text:
+        inner = super().render(task)
+        if not inner.plain:
+            return inner
+        return Text(f"ETA {inner.plain}", style=inner.style)
+
+
 def _progress() -> Progress:
     return Progress(
-        TextColumn("[cyan]{task.fields[filename]}"),
-        BarColumn(),
+        SpinnerColumn(),
+        TextColumn("[cyan]{task.fields[filename]}", table_column=Column(no_wrap=True)),
+        HashBarColumn(),
         DownloadColumn(),
         TransferSpeedColumn(),
-        TimeRemainingColumn(),
+        EtaColumn(),
+        expand=True,
     )
 
 

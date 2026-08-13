@@ -38,6 +38,7 @@ from omm import (
     config as config_mod,
     contribute_state,
     linker,
+    onboarding,
     predictor,
     quality as quality_mod,
     recommend_ui,
@@ -123,6 +124,7 @@ Tuning & quality:
 
 Maintenance:
   omm scan
+  omm setup
   omm upgrade [MODEL]
   omm setting
 
@@ -181,6 +183,20 @@ def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bo
 
 
 def _omm_version() -> str:
+    """Reads the freshly-pulled SRC_DIR/pyproject.toml when this is a
+    migrated editable install: dist-info is frozen at the last full `pipx
+    install` (see _deps_satisfied's docstring), so importlib.metadata would
+    keep reporting a stale version after every git-pull-only `omm update`
+    even though the commit hash and code have moved on."""
+    try:
+        text = (SRC_DIR / "pyproject.toml").read_text()
+    except OSError:
+        text = None
+    if text is not None:
+        match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+        if match:
+            return match.group(1)
+
     import importlib.metadata
 
     try:
@@ -219,6 +235,7 @@ def _telemetry_destination_line() -> str:
 def _root(ctx: typer.Context) -> None:
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
+        _maybe_run_onboarding()
         console.print(f"omm {_version_line(_installed_commit())}")
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
@@ -399,6 +416,13 @@ def scan() -> None:
         )
 
 
+@app.command(name="setup")
+def setup_cmd() -> None:
+    """Re-run the first-time setup wizard (hardware scan + engine checklist)."""
+    onboarding.run_wizard(console)
+    config_mod.update_config(onboarding_completed=True)
+
+
 def _refresh_data() -> None:
     """Unconditionally re-fetch rules.json and recommend-model.json from
     their configured URLs (used by `omm update` for a full data sync)."""
@@ -534,6 +558,18 @@ def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch:
     version_check.record(latest, branch)
     if latest != installed:
         err_console.print("[yellow]Update available! Run: [bold]omm update[/bold][/yellow]")
+
+
+def _maybe_run_onboarding() -> None:
+    """Runs the first-time setup wizard exactly once, only for a genuinely
+    fresh install (see config.load_config()'s migration handling) and only
+    when there's a real terminal to drive questionary's checklist."""
+    if load_config().get("onboarding_completed", True):
+        return
+    if not _stdin_is_tty():
+        return
+    onboarding.run_wizard(console)
+    config_mod.update_config(onboarding_completed=True)
 
 
 def _maybe_start_update_check(ctx: typer.Context) -> None:
@@ -1769,95 +1805,102 @@ def _install_impl(
     eval_error: quality_mod.QualityEvaluationError | None = None
     if linked["ollama"]:
         console.print("Benchmarking...")
-        runtime_hw = scan_hardware()
-        runtime_candidate = {
-            "filename": filename, "repo_id": repo_id, "size_bytes": dest.stat().st_size,
-        }
+        started_daemon = None
+        if not benchmark.ollama_daemon_reachable():
+            started_daemon = benchmark.start_ollama_daemon()
         try:
-            model_metadata = quality_mod._model_metadata(ollama_tag)
-            runtime_candidate.update(model_metadata)
-        except quality_mod.QualityEvaluationError:
-            model_metadata = None
-        runtime_options = tuning.recommend_runtime_settings(runtime_hw, runtime_candidate).ollama_options
-        if use_quality_eval:
+            runtime_hw = scan_hardware()
+            runtime_candidate = {
+                "filename": filename, "repo_id": repo_id, "size_bytes": dest.stat().st_size,
+            }
             try:
-                def _evaluate_with_runtime():
-                    try:
-                        return quality_mod.evaluate_model(
-                            ollama_tag, quality_pack, speed_runs=3, runtime_options=runtime_options
-                        )
-                    except TypeError:  # compatibility with older integrations
-                        return quality_mod.evaluate_model(ollama_tag, quality_pack, speed_runs=3)
+                model_metadata = quality_mod._model_metadata(ollama_tag)
+                runtime_candidate.update(model_metadata)
+            except quality_mod.QualityEvaluationError:
+                model_metadata = None
+            runtime_options = tuning.recommend_runtime_settings(runtime_hw, runtime_candidate).ollama_options
+            if use_quality_eval:
+                try:
+                    def _evaluate_with_runtime():
+                        try:
+                            return quality_mod.evaluate_model(
+                                ollama_tag, quality_pack, speed_runs=3, runtime_options=runtime_options
+                            )
+                        except TypeError:  # compatibility with older integrations
+                            return quality_mod.evaluate_model(ollama_tag, quality_pack, speed_runs=3)
 
-                if (
-                    stop_event is not None
-                    and quality_mod.evaluate_model is quality_mod._DEFAULT_EVALUATE_MODEL
-                ):
-                    def report_progress(elapsed: float, deadline: float) -> None:
-                        console.print(
-                            f"[dim]Still benchmarking {filename}: {int(elapsed)}s elapsed "
-                            f"(automatic cutoff at {int(deadline)}s).[/dim]"
-                        )
+                    if (
+                        stop_event is not None
+                        and quality_mod.evaluate_model is quality_mod._DEFAULT_EVALUATE_MODEL
+                    ):
+                        def report_progress(elapsed: float, deadline: float) -> None:
+                            console.print(
+                                f"[dim]Still benchmarking {filename}: {int(elapsed)}s elapsed "
+                                f"(automatic cutoff at {int(deadline)}s).[/dim]"
+                            )
 
-                    result = quality_mod.evaluate_model_isolated(
-                        ollama_tag,
-                        quality_pack,
-                        speed_runs=3,
-                        runtime_options=runtime_options,
-                        model_metadata=model_metadata,
-                        timeout_seconds=_CONTRIBUTE_EVALUATION_DEADLINE_SECONDS,
-                        stop_check=stop_event.is_set,
-                        progress_callback=report_progress,
+                        result = quality_mod.evaluate_model_isolated(
+                            ollama_tag,
+                            quality_pack,
+                            speed_runs=3,
+                            runtime_options=runtime_options,
+                            model_metadata=model_metadata,
+                            timeout_seconds=_CONTRIBUTE_EVALUATION_DEADLINE_SECONDS,
+                            stop_check=stop_event.is_set,
+                            progress_callback=report_progress,
+                        )
+                    else:
+                        result = _run_interruptible(_evaluate_with_runtime, stop_event)
+                except _Interrupted as e:
+                    raise ContributionStopped(filename) from e
+                except quality_mod.QualityEvaluationCancelled as e:
+                    raise ContributionStopped(filename) from e
+                except quality_mod.QualityEvaluationError as error:
+                    result = None
+                    eval_error = error
+                    err_console.print(
+                        f"[yellow]Benchmarking {filename} stopped: {error}. "
+                        "Cleaning up and moving on.[/yellow]"
                     )
-                else:
-                    result = _run_interruptible(_evaluate_with_runtime, stop_event)
-            except _Interrupted as e:
-                raise ContributionStopped(filename) from e
-            except quality_mod.QualityEvaluationCancelled as e:
-                raise ContributionStopped(filename) from e
-            except quality_mod.QualityEvaluationError as error:
-                result = None
-                eval_error = error
-                err_console.print(
-                    f"[yellow]Benchmarking {filename} stopped: {error}. "
-                    "Cleaning up and moving on.[/yellow]"
-                )
-            finally:
-                quality_mod.ensure_model_unloaded(ollama_tag)
-            if result is not None:
-                tokens_per_sec = result["speed"]["median_tokens_per_sec"]
-                samples = result["speed"]["samples_tokens_per_sec"]
-                sample_count = result["speed"]["runs"]
-                speed_min, speed_max = min(samples), max(samples)
-                quality_summary = {
-                    "pack_id": quality_pack["pack_id"],
-                    "pack_version": quality_pack.get("pack_version"),
-                    "correct": result["quality"]["correct"],
-                    "total": result["quality"]["total"],
-                    "accuracy": result["quality"]["accuracy"],
-                }
-                runtime = result.get("runtime")
-                model_metadata = result
-                engine_version = quality_mod.ollama_version()
-        else:
-            try:
-                sampled = _run_interruptible(
-                    lambda: benchmark.benchmark_ollama_samples(
-                        ollama_tag, runs=3, options=runtime_options
-                    ), stop_event
-                )
-                if sampled is not None:
-                    tokens_per_sec = sampled["median_tokens_per_sec"]
-                    sample_count = sampled["count"]
-                    speed_min, speed_max = sampled["min_tokens_per_sec"], sampled["max_tokens_per_sec"]
-                    runtime = quality_mod.runtime_snapshot(
-                        ollama_tag, (model_metadata or {}).get("digest"), runtime_options
-                    )
+                finally:
+                    quality_mod.ensure_model_unloaded(ollama_tag)
+                if result is not None:
+                    tokens_per_sec = result["speed"]["median_tokens_per_sec"]
+                    samples = result["speed"]["samples_tokens_per_sec"]
+                    sample_count = result["speed"]["runs"]
+                    speed_min, speed_max = min(samples), max(samples)
+                    quality_summary = {
+                        "pack_id": quality_pack["pack_id"],
+                        "pack_version": quality_pack.get("pack_version"),
+                        "correct": result["quality"]["correct"],
+                        "total": result["quality"]["total"],
+                        "accuracy": result["quality"]["accuracy"],
+                    }
+                    runtime = result.get("runtime")
+                    model_metadata = result
                     engine_version = quality_mod.ollama_version()
-            except _Interrupted as e:
-                raise ContributionStopped(filename) from e
-            finally:
-                quality_mod.unload_model(ollama_tag)
+            else:
+                try:
+                    sampled = _run_interruptible(
+                        lambda: benchmark.benchmark_ollama_samples(
+                            ollama_tag, runs=3, options=runtime_options
+                        ), stop_event
+                    )
+                    if sampled is not None:
+                        tokens_per_sec = sampled["median_tokens_per_sec"]
+                        sample_count = sampled["count"]
+                        speed_min, speed_max = sampled["min_tokens_per_sec"], sampled["max_tokens_per_sec"]
+                        runtime = quality_mod.runtime_snapshot(
+                            ollama_tag, (model_metadata or {}).get("digest"), runtime_options
+                        )
+                        engine_version = quality_mod.ollama_version()
+                except _Interrupted as e:
+                    raise ContributionStopped(filename) from e
+                finally:
+                    quality_mod.unload_model(ollama_tag)
+        finally:
+            if started_daemon is not None:
+                benchmark.stop_ollama_daemon(started_daemon)
 
         if tokens_per_sec:
             console.print(f"[cyan]{tokens_per_sec:.1f} tok/s[/cyan]")
