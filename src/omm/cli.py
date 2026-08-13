@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import errno
+import functools
+import inspect
 import json
 import math
 import platform
@@ -15,6 +17,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 
 import click
 import typer
@@ -109,6 +112,103 @@ try:
     _TyperClickContext.formatter_class = PlainHelpFormatter
 except ImportError:
     pass
+
+@dataclass
+class GlobalOptions:
+    """Merged state for the 4 global flags, shared via ctx.obj. A value
+    given after the subcommand name always overrides one given before it;
+    see global_flags()."""
+
+    json: bool = False
+    yes: bool = False
+    quiet: bool = False
+    no_color: bool = False
+    pending_telemetry_notice: int = 0
+
+
+def _global_opts() -> GlobalOptions:
+    """Read the merged GlobalOptions for the command currently running.
+    Only valid while a Click/Typer command is executing."""
+    from typer._click.globals import get_current_context
+
+    return get_current_context().ensure_object(GlobalOptions)
+
+
+def global_flags(func):
+    """Attach --json/--yes/--quiet/--no-color to a command so they also
+    work positioned after the subcommand name (the root callback already
+    covers positioning before it). Rewrites the wrapped function's
+    inspect.Signature so Typer registers 4 extra Click options without
+    every command function having to redeclare them. Values merge into
+    the same GlobalOptions ctx.obj the root callback populated; a value
+    given here (post-subcommand) always wins over one given before the
+    subcommand name, since this wrapper runs after the root callback."""
+    original_sig = inspect.signature(func, eval_str=True)
+    new_params = list(original_sig.parameters.values()) + [
+        inspect.Parameter(
+            "json_flag",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=False,
+            annotation=Annotated[
+                bool, typer.Option("--json", help="Print output as JSON where supported.")
+            ],
+        ),
+        inspect.Parameter(
+            "yes_flag",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=False,
+            annotation=Annotated[
+                bool,
+                typer.Option("--yes", "-y", help="Skip confirmation prompts. For scripting."),
+            ],
+        ),
+        inspect.Parameter(
+            "quiet_flag",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=False,
+            annotation=Annotated[
+                bool,
+                typer.Option(
+                    "--quiet", "-q", help="Suppress banners and informational output."
+                ),
+            ],
+        ),
+        inspect.Parameter(
+            "no_color_flag",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=False,
+            annotation=Annotated[bool, typer.Option("--no-color", help="Disable colored output.")],
+        ),
+    ]
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        from typer._click.globals import get_current_context
+
+        ctx = get_current_context()
+        opts = ctx.ensure_object(GlobalOptions)
+        if kwargs.pop("json_flag", False):
+            opts.json = True
+        if kwargs.pop("yes_flag", False):
+            opts.yes = True
+        if kwargs.pop("quiet_flag", False):
+            opts.quiet = True
+        if kwargs.pop("no_color_flag", False):
+            opts.no_color = True
+        if opts.no_color:
+            console.no_color = True
+            err_console.no_color = True
+        if opts.pending_telemetry_notice and not (opts.json or opts.quiet):
+            console.print(
+                f"[dim]Sent {opts.pending_telemetry_notice} queued telemetry "
+                "event(s) from a previous session.[/dim]"
+            )
+        opts.pending_telemetry_notice = 0
+        return func(*args, **kwargs)
+
+    wrapper.__signature__ = original_sig.replace(parameters=new_params)
+    return wrapper
+
 
 _ROOT_HELP_TEXT = """Example usage:
   omm search TEXT
@@ -232,7 +332,21 @@ def _telemetry_destination_line() -> str:
 
 
 @app.callback(invoke_without_command=True)
-def _root(ctx: typer.Context) -> None:
+def _root(
+    ctx: typer.Context,
+    json_flag: Annotated[bool, typer.Option("--json", help="Print output as JSON where supported.")] = False,
+    yes_flag: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompts. For scripting.")] = False,
+    quiet_flag: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress banners and informational output.")] = False,
+    no_color_flag: Annotated[bool, typer.Option("--no-color", help="Disable colored output.")] = False,
+) -> None:
+    opts = ctx.ensure_object(GlobalOptions)
+    opts.json = opts.json or json_flag
+    opts.yes = opts.yes or yes_flag
+    opts.quiet = opts.quiet or quiet_flag
+    opts.no_color = opts.no_color or no_color_flag
+    if opts.no_color:
+        console.no_color = True
+        err_console.no_color = True
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
         _maybe_run_onboarding()
@@ -240,11 +354,7 @@ def _root(ctx: typer.Context) -> None:
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
     _maybe_auto_import(ctx)
-    resent = telemetry.flush_pending()
-    if resent:
-        console.print(
-            f"[dim]Sent {resent} queued telemetry event(s) from a previous session.[/dim]"
-        )
+    opts.pending_telemetry_notice = telemetry.flush_pending()
 
 
 @app.command(name="help")
@@ -338,9 +448,50 @@ def _missing_engines_note(installed: dict[str, bool]) -> str | None:
 
 
 @app.command()
+@global_flags
 def scan() -> None:
     """Scan current PC hardware (RAM, VRAM, OS) and print a summary table."""
+    opts = _global_opts()
     info = scan_hardware()
+    installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
+    reg = registry.load_registry()
+    cleaned = _reconcile_stale_link_records(reg, installed)
+    external = scan_import.find_external_models()
+
+    if opts.json:
+        console.print_json(
+            data={
+                "os": f"{info.os_name} {info.os_version}",
+                "cpu": info.cpu,
+                "ram_total_gb": info.ram_total_gb,
+                "ram_available_gb": info.ram_available_gb,
+                "model_budget_gb": calculate_memory_budget(info).model_budget_gb,
+                "gpu_name": info.gpu_name,
+                "unified_memory": info.unified_memory,
+                "vram_total_gb": info.vram_total_gb,
+                "vram_free_gb": info.vram_free_gb,
+                "engines_installed": [spec.key for spec in linker.ENGINES if installed[spec.key]],
+                "models": [
+                    {
+                        "filename": filename,
+                        "location": "hub",
+                        "engines": [name for name, on in entry.get("linked", {}).items() if on],
+                        "managed_by_omm": True,
+                    }
+                    for filename, entry in reg.items()
+                ]
+                + [
+                    {
+                        "filename": item.display_name,
+                        "location": str(item.path),
+                        "engines": [item.engine],
+                        "managed_by_omm": False,
+                    }
+                    for item in external
+                ],
+            }
+        )
+        return
 
     table = Table(title="omm hardware scan")
     table.add_column("Field", style="cyan")
@@ -370,8 +521,6 @@ def scan() -> None:
 
     console.print(table)
 
-    installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
-
     engine_table = Table(title="Local AI runners", box=None)
     engine_table.add_column("Program", style="cyan")
     engine_table.add_column("Status", style="white")
@@ -383,10 +532,6 @@ def scan() -> None:
     note = _missing_engines_note(installed)
     if note:
         console.print(note)
-
-    reg = registry.load_registry()
-    cleaned = _reconcile_stale_link_records(reg, installed)
-    external = scan_import.find_external_models()
 
     model_table = Table(title="Local AI models", box=None)
     model_table.add_column("Model", style="cyan")
