@@ -58,7 +58,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "default_engine": None,
     "external_scan_done": False,
     "catalog_manifest_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.manifest.json",
-    "catalog_public_key": "z6tdGIAocCKvH/dREXOaSe50uQ5TJo26mWEG5JYwVqY=",
+    "catalog_public_key": "p8uo6GFXDcg8Rp7/t8GGl5hwPsXhObY5vI1sll5KpaI=",
     "contribute_always_ack": False,
     "update_channel": "stable",
     "onboarding_completed": True,
