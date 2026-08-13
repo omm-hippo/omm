@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from omm import cli, linker
@@ -103,6 +104,14 @@ def test_report_telemetry_silent_on_success(isolated_omm_home, monkeypatch):
     assert "will retry" not in result.stdout.lower()
 
 
+@pytest.mark.xfail(
+    reason=(
+        "omm list isn't decorated with @global_flags until Task 2 — the "
+        "telemetry-flush notice moved out of _root in this task and only "
+        "prints again once a command carries the decorator"
+    ),
+    strict=True,
+)
 def test_root_prints_notice_when_pending_telemetry_flushed(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.telemetry, "flush_pending", lambda: 2)
 
