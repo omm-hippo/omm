@@ -2507,6 +2507,9 @@ def upgrade(
         err_console.print(f"[red]{resolved} is not installed via omm. See `omm list`.[/red]")
         raise typer.Exit(1)
 
+    if dry_run:
+        console.print(f"Would check for updates: {filename}")
+        raise typer.Exit(0)
     result = _update_one(filename, entry)
     if result == "up_to_date":
         console.print(f"[green]{filename} is already up to date ({_entry_version(entry)}).[/green]")

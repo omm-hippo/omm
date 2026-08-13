@@ -247,3 +247,22 @@ def test_upgrade_all_dry_run_reports_without_checking(isolated_omm_home, monkeyp
     assert "Would check for updates: a.gguf" in result.stdout
     assert "Would check for updates: b.gguf" in result.stdout
     assert registry.load_registry()["a.gguf"]["sha256"] == "old-hash"
+
+
+def test_upgrade_single_model_dry_run_reports_without_checking(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    registry.save_registry({"model.gguf": _entry(repo_id="org/repo")})
+    monkeypatch.setattr(
+        cli,
+        "remote_file_sha256",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not check")),
+    )
+    calls = []
+    monkeypatch.setattr(cli, "_update_one", lambda filename, entry: calls.append(filename))
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf", "--dry-run"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Would check for updates: model.gguf" in result.stdout
+    assert calls == []
+    assert registry.load_registry()["model.gguf"]["sha256"] == "old-hash"
