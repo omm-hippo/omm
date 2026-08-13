@@ -12,7 +12,7 @@ def test_search_groups_results_by_family(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {
                 "name": "tinyllama-1.1b-q4",
                 "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
@@ -42,7 +42,7 @@ def test_search_prints_numbered_refs_and_records_session(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {
                 "name": "tinyllama-1.1b-q4",
                 "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
@@ -67,7 +67,7 @@ def test_search_json_is_parseable_and_has_expected_fields(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {
                 "name": "tinyllama-1.1b-q4",
                 "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
@@ -96,7 +96,7 @@ def test_search_json_is_parseable_and_has_expected_fields(monkeypatch):
 
 def test_search_command_includes_modelscope_results(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
-    monkeypatch.setattr(cli.search_mod, "local_candidate_pool", lambda model_url: [])
+    monkeypatch.setattr(cli.search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
     monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
     monkeypatch.setattr(
         cli.search_mod,
@@ -123,7 +123,7 @@ def test_search_command_includes_modelscope_results(monkeypatch):
 
 def test_search_exits_nonzero_when_nothing_matches(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
-    monkeypatch.setattr(search_mod, "local_candidate_pool", lambda model_url: [])
+    monkeypatch.setattr(search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
     monkeypatch.setattr(search_mod, "search_huggingface", lambda query, **kwargs: [])
     monkeypatch.setattr(search_mod, "search_modelscope", lambda query, **kwargs: [])
 

@@ -11,7 +11,7 @@ def test_search_marks_hardware_unfit_candidates_in_red(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {"name": "fits-model", "repo_id": "org/fits", "description": "d"},
             {"name": "too-big-model", "repo_id": "org/big", "description": "d"},
         ],
@@ -39,7 +39,7 @@ def test_search_skip_unfit_hides_unfit_candidates(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {"name": "llama-fits-model", "repo_id": "org/fits", "description": "d"},
             {"name": "llama-too-big-model", "repo_id": "org/big", "description": "d"},
         ],
@@ -67,7 +67,7 @@ def test_search_skip_unfit_omits_header_for_all_unfit_family(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {"name": "llama-too-big-model", "repo_id": "org/big", "description": "d"},
             {"name": "qwen-fits-model", "repo_id": "org/fits", "description": "d"},
         ],
@@ -94,7 +94,7 @@ def test_search_skip_unfit_json_omits_unfit_rows(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {"name": "llama-fits-model", "repo_id": "org/fits", "description": "d"},
             {"name": "llama-too-big-model", "repo_id": "org/big", "description": "d"},
         ],
@@ -125,7 +125,7 @@ def test_search_skips_hardware_fit_check_without_cached_model(monkeypatch):
     monkeypatch.setattr(
         cli.search_mod,
         "local_candidate_pool",
-        lambda model_url: [{"name": "some-model", "repo_id": "org/some", "description": "d"}],
+        lambda model_url, **kwargs: [{"name": "some-model", "repo_id": "org/some", "description": "d"}],
     )
     monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
