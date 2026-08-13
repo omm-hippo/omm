@@ -64,6 +64,38 @@ def test_scan_leaves_link_record_untouched_when_engine_still_installed(isolated_
     assert reg["model.gguf"]["linked"] == {"jan": True, "ollama": True}
 
 
+def test_scan_repeats_link_nag_for_unblocked_engine(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key == "ollama")
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"fake-gguf")
+    cli.registry.upsert_entry("model.gguf", linked={"ollama": False})
+
+    result = runner.invoke(cli.app, ["scan"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Run: omm link" in result.stdout
+
+
+def test_scan_stops_nagging_once_link_is_recorded_as_blocked(isolated_omm_home, monkeypatch):
+    """A model whose only unlinked engine already failed with an unowned-
+    manifest conflict (recorded by a prior `omm link` run) shouldn't keep
+    telling the user to re-run `omm link` - that retry can't succeed until
+    they resolve the conflict by hand."""
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key == "ollama")
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"fake-gguf")
+    cli.registry.upsert_entry(
+        "model.gguf", linked={"ollama": False}, link_blocked=["ollama"]
+    )
+
+    result = runner.invoke(cli.app, ["scan"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Run: omm link" not in result.stdout
+
+
 def test_scan_runner_table_shows_only_installed_engines(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])

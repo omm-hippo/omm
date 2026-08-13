@@ -158,6 +158,23 @@ def test_setting_bare_menu_can_change_catalog_trust(isolated_omm_home, monkeypat
     answers = iter(["catalog-status", None])
     monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+
+
+def test_setting_bare_menu_declining_another_change_exits_after_one_action(
+    isolated_omm_home, monkeypatch
+):
+    # Only one _ask_select answer is queued ("catalog-status"); if the
+    # "change another setting?" confirm is not honored the loop would call
+    # _ask_select again and raise StopIteration instead of exiting cleanly.
+    answers = iter(["catalog-status"])
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
 
     result = runner.invoke(cli.app, ["setting"])
 
@@ -207,6 +224,7 @@ def test_setting_bare_menu_upload_submenu_has_back_option(isolated_omm_home, mon
 
     monkeypatch.setattr(questionary, "select", fake_select)
     monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
 
     result = runner.invoke(cli.app, ["setting"])
 
@@ -231,6 +249,7 @@ def test_setting_bare_menu_version_submenu_switches_channel(isolated_omm_home, m
     )
     monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "beta_sha")
     monkeypatch.setattr(cli, "_refresh_data", lambda: None)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
 
     result = runner.invoke(cli.app, ["setting"])
 

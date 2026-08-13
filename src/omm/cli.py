@@ -292,14 +292,19 @@ def _shorten_home(path: Path) -> str:
 
 def _link_repair_needed(reg: dict) -> bool:
     """True if some omm-hub model isn't yet symlinked into an installed
-    engine (e.g. Ollama/LM Studio was installed after the model was)."""
+    engine (e.g. Ollama/LM Studio was installed after the model was).
+    Engines already recorded as blocked by a prior `omm link` attempt
+    (e.g. an unowned Ollama manifest) are excluded - `omm link` itself
+    still retries them every run, but the scan nag would otherwise repeat
+    forever for a conflict the user can't resolve by re-running it."""
     installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
     for filename, entry in reg.items():
         if not (MODELS_DIR / filename).exists():
             continue
         linked = entry.get("linked", {})
+        blocked = entry.get("link_blocked") or []
         for key, is_installed in installed.items():
-            if is_installed and not linked.get(key):
+            if is_installed and not linked.get(key) and key not in blocked:
                 return True
     return False
 
@@ -2676,6 +2681,9 @@ def setting_menu(ctx: typer.Context) -> None:
             if _ask_confirm("Roll back the recommendation catalog?"):
                 catalog_rollback()
 
+        if not _ask_confirm("Change another setting?", default=True):
+            return
+
 
 @app.command()
 def search(
@@ -2868,6 +2876,7 @@ def link_models(
 
     relinked_count = 0
     skipped_missing = 0
+    skipped_conflict = 0
 
     for filename, entry in reg.items():
         dest = MODELS_DIR / filename
@@ -2877,6 +2886,7 @@ def link_models(
 
         ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
         new_linked: dict[str, bool] = {}
+        blocked = set(entry.get("link_blocked") or [])
         changed = False
 
         for spec in linker.ENGINES:
@@ -2891,18 +2901,24 @@ def link_models(
                 )
                 new_linked[spec.key] = True
                 changed = True
+                blocked.discard(spec.key)
                 if warning:
                     err_console.print(f"[yellow]{warning}[/yellow]")
             except linker.LinkError as e:
                 err_console.print(f"[yellow]{filename}: {spec.label} link skipped: {e}[/yellow]")
+                blocked.add(spec.key)
 
+        if blocked != set(entry.get("link_blocked") or []):
+            registry.upsert_entry(filename, link_blocked=sorted(blocked))
         if changed:
             registry.upsert_entry(filename, linked=new_linked, ollama_name=ollama_tag)
             relinked_count += 1
+        elif blocked:
+            skipped_conflict += 1
 
     console.print(
         f"[green]{relinked_count} model(s) relinked/verified.[/green] "
-        f"{skipped_missing} skipped (file missing)."
+        f"{skipped_conflict} skipped (conflict). {skipped_missing} skipped (file missing)."
     )
 
 
