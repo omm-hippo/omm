@@ -104,9 +104,13 @@ if all:
 | `search` | `--limit N`, `--provider curated\|hf\|modelscope` | 결과 개수 제한, 소스 필터 |
 | `uninstall` | `--dry-run` | 뭐가 지워질지만 표시, 실제 삭제 안 함 (`all` 인자와 조합 시 특히 유용) |
 | `upgrade` | `--dry-run` | 뭐가 업그레이드될지만 표시 |
-| `autoremove` | `--dry-run` | 뭐가 정리될지만 표시 |
 | `list` | `--engine NAME` | 특정 엔진에 링크된 것만 표시 |
 | `link` | `--engine NAME` | 특정 엔진만 재검증/복구 |
+
+`autoremove`엔 `--dry-run`을 넣지 않는다: `linker.autoremove_engine`/`autoremove_owned_link`
+등 실제 정리 로직이 미리보기 모드 없이 바로 삭제하고 카운트만 반환하는 구조라, 여러
+linker 함수에 `dry_run`을 배관해야 해서 이번 스코프 밖 — 실제 감지 로직 없이 "몇 개
+지워질지"를 흉내 내면 사용자에게 잘못된 정보를 줄 위험이 있다.
 
 ## Scripting contract
 
