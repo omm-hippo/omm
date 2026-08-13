@@ -60,3 +60,22 @@ def test_fresh_config_defaults_to_ask_policy(isolated_omm_home):
 
     assert loaded["telemetry_send_policy"] == "ask"
     assert loaded["contribute_always_ack"] is False
+
+
+def test_legacy_model_url_migrates_to_current_default(isolated_omm_home):
+    for legacy_url in config.LEGACY_MODEL_URLS:
+        config.CONFIG_PATH.write_text(json.dumps({"model_url": legacy_url}))
+
+        loaded = config.load_config()
+
+        assert loaded["model_url"] == config.DEFAULT_CONFIG["model_url"]
+
+
+def test_custom_model_url_is_preserved(isolated_omm_home):
+    config.CONFIG_PATH.write_text(
+        json.dumps({"model_url": "https://example.com/custom-model.json"})
+    )
+
+    loaded = config.load_config()
+
+    assert loaded["model_url"] == "https://example.com/custom-model.json"

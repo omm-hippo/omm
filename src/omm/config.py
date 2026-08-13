@@ -34,6 +34,16 @@ CATALOG_HISTORY_DIR = OMM_HOME / "catalog-history"
 LEGACY_FIREBASE_ENDPOINT = (
     "https://localfit-8ab57-default-rtdb.firebaseio.com/telemetry.json"
 )
+# model_url has gone through two GitHub org renames (minigu5/Localfit ->
+# minigu5/Omm -> omm-hippo/omm). It's never user-settable, so any config
+# still holding one of the earlier defaults is stale, not a deliberate
+# override, and should be migrated forward.
+LEGACY_MODEL_URLS = frozenset(
+    {
+        "https://raw.githubusercontent.com/minigu5/Localfit/main/published/recommend-model.json",
+        "https://raw.githubusercontent.com/minigu5/Omm/main/published/recommend-model.json",
+    }
+)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "telemetry_send_policy": "ask",
@@ -78,6 +88,8 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
         # their custom value must win, so this migration is skipped then.
         merged["catalog_manifest_url"] = DEFAULT_CONFIG["catalog_manifest_url"]
         merged["catalog_public_key"] = DEFAULT_CONFIG["catalog_public_key"]
+    if data.get("model_url") in LEGACY_MODEL_URLS:
+        merged["model_url"] = DEFAULT_CONFIG["model_url"]
     if "telemetry_backend" not in data:
         endpoint = data.get("telemetry_endpoint")
         if endpoint == LEGACY_FIREBASE_ENDPOINT and merged.get("telemetry_send_policy") != "always":
