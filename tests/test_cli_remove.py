@@ -36,6 +36,16 @@ def test_uninstall_all_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, mo
     assert registry.load_registry() == {}
 
 
+def test_uninstall_all_yes_flag_before_subcommand_skips_prompt(isolated_omm_home, monkeypatch):
+    (cli.MODELS_DIR / "a.gguf").write_bytes(b"fake-gguf")
+    registry.save_registry({"a.gguf": {"linked": {"lmstudio": False, "ollama": False}}})
+
+    result = runner.invoke(cli.app, ["--yes", "uninstall", "all"])
+
+    assert result.exit_code == 0, result.stdout
+    assert registry.load_registry() == {}
+
+
 def test_uninstall_all_without_yes_errors_without_a_tty(isolated_omm_home):
     registry.save_registry({"a.gguf": {"linked": {"lmstudio": False, "ollama": False}}})
 

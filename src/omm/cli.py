@@ -822,15 +822,10 @@ def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> No
 
 
 @app.command(name="import")
+@global_flags
 def import_cmd(
     path: str = typer.Argument(
         None, help="Optional extra directory to also scan for stray .gguf files."
-    ),
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Don't ask for confirmation and import every model found. For scripting.",
     ),
 ) -> None:
     """Scan every supported local AI app (and optionally PATH) for .gguf
@@ -841,7 +836,7 @@ def import_cmd(
         if not extra_path.is_dir():
             err_console.print(f"[red]Not a directory: {extra_path}[/red]")
             raise typer.Exit(1)
-    _run_import_flow(extra_path, yes=yes)
+    _run_import_flow(extra_path, yes=_global_opts().yes)
 
 
 # pipx gives no byte-level install progress, but it does print a fixed,
@@ -1829,6 +1824,8 @@ def _install_impl(
     use_quality_eval: bool = False,
     quality_pack: dict | None = None,
     link_only_ollama: bool = False,
+    assume_yes: bool = False,
+    force: bool = False,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -1848,7 +1845,7 @@ def _install_impl(
             )
             if skip_unfit:
                 return InstallOutcome(filename, repo_id, linked={}, skipped_unfit=True)
-            if not _ask_confirm("Install anyway?"):
+            if not assume_yes and not _ask_confirm("Install anyway?"):
                 err_console.print("[yellow]Cancelled.[/yellow]")
                 raise typer.Exit(0)
         else:
@@ -1863,7 +1860,7 @@ def _install_impl(
 
     dest = MODELS_DIR / filename
     downloaded_now = False
-    if dest.exists():
+    if dest.exists() and not force:
         err_console.print(f"[yellow]{filename} already downloaded, skipping fetch.[/yellow]")
     else:
         size_bytes = remote_file_size(resolved.provider or "huggingface", repo_id, filename) if repo_id else None
@@ -2115,6 +2112,7 @@ def _report_lmstudio_load_verification(outcome: InstallOutcome) -> None:
 
 
 @app.command()
+@global_flags
 def install(
     model_name: str = typer.Argument(..., autocompletion=complete_install_name),
     skip_unfit: bool = typer.Option(
@@ -2130,6 +2128,11 @@ def install(
         "telemetry server, without asking. Unset defers to the current "
         "`omm setting upload` policy.",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-download even if this model is already installed.",
+    ),
 ) -> None:
     """Download a model into the central hub and link it into installed engines."""
     import questionary
@@ -2142,7 +2145,7 @@ def install(
         if chosen is None:
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
-        install(f"{e.provider}:{e.repo_id}:{chosen}", skip_unfit=skip_unfit, upload=upload)
+        install(f"{e.provider}:{e.repo_id}:{chosen}", skip_unfit=skip_unfit, upload=upload, force=force)
         return
     except AmbiguousProviderError as e:
         choices = [
@@ -2154,7 +2157,7 @@ def install(
         if chosen_provider is None:
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
-        install(f"{chosen_provider}:{e.repo_id}", skip_unfit=skip_unfit, upload=upload)
+        install(f"{chosen_provider}:{e.repo_id}", skip_unfit=skip_unfit, upload=upload, force=force)
         return
     except ModelResolutionError as e:
         err_console.print(f"[red]{e}[/red]")
@@ -2166,6 +2169,8 @@ def install(
         skip_unfit=skip_unfit,
         auto_upload=upload is True,
         no_upload=upload is False,
+        assume_yes=_global_opts().yes,
+        force=force,
     )
 
     console.print(f"[green]Installed {outcome.filename}[/green]")
@@ -2236,14 +2241,9 @@ def _remove_one(filename: str, entry: dict) -> None:
 
 
 @app.command(name="uninstall")
+@global_flags
 def remove(
     filename: str = typer.Argument(..., autocompletion=complete_remove_filename),
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Don't ask for confirmation before uninstalling `all`. For scripting.",
-    ),
 ) -> None:
     """Uninstall a model and clean up all symlinks/manifests. Pass `all` to
     uninstall every model installed via omm."""
@@ -2252,7 +2252,7 @@ def remove(
         if not reg:
             console.print("No models installed via omm yet.")
             raise typer.Exit(0)
-        if not yes and not _ask_confirm(f"Uninstall all {len(reg)} model(s)?"):
+        if not _global_opts().yes and not _ask_confirm(f"Uninstall all {len(reg)} model(s)?"):
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
         for name, entry in list(reg.items()):
@@ -2427,14 +2427,9 @@ def _update_one(filename: str, entry: dict) -> str:
 
 
 @app.command()
+@global_flags
 def upgrade(
     model_name: str = typer.Argument(None, autocompletion=complete_remove_filename),
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Don't ask for confirmation before checking all models. For scripting.",
-    ),
 ) -> None:
     """Refresh an installed model against its source, re-downloading only
     if the source has changed since install. With no argument (or `all`),
@@ -2445,7 +2440,7 @@ def upgrade(
         if not reg:
             console.print("No models installed via omm yet.")
             raise typer.Exit(0)
-        if not yes and not _ask_confirm(f"Check {len(reg)} model(s) for updates?"):
+        if not _global_opts().yes and not _ask_confirm(f"Check {len(reg)} model(s) for updates?"):
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
 
@@ -4063,18 +4058,13 @@ def _print_contribution_summary(
 
 
 @app.command()
-def contribute(
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Don't ask for confirmation before starting. For scripting/unattended runs.",
-    ),
-) -> None:
+@global_flags
+def contribute() -> None:
     """Repeatedly install, benchmark, and upload telemetry for hardware-fit
     models until Esc is pressed, to help grow the training dataset behind
     `omm recommend`. Deletes each model after benchmarking it (even
     successful ones) to keep disk usage bounded."""
+    yes = _global_opts().yes
     policy = load_config().get("telemetry_send_policy", "ask")
     if policy == "never":
         err_console.print(

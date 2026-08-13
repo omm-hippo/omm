@@ -43,8 +43,9 @@ def test_install_prompts_for_provider_on_ambiguous_match(monkeypatch, isolated_o
         ),
     )
 
-    cli.install("org/repo", skip_unfit=False, upload=None)
+    result = runner.invoke(cli.app, ["install", "org/repo"])
 
+    assert result.exit_code == 0, result.stdout
     assert calls == ["modelscope:org/repo"]
 
 

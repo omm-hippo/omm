@@ -34,6 +34,24 @@ def test_import_yes_flag_skips_prompts_without_a_tty(isolated_omm_home, monkeypa
     assert adopted == ["deadbeef"]
 
 
+def test_import_yes_flag_before_subcommand_skips_prompts(isolated_omm_home, monkeypatch):
+    group = _fake_group()
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda extra_path=None: [object()])
+    monkeypatch.setattr(cli.scan_import, "group_by_hash", lambda found: [group])
+    adopted = []
+    monkeypatch.setattr(
+        cli.scan_import,
+        "adopt_group",
+        lambda g: adopted.append(g.sha256) or SimpleNamespace(filename="model.gguf", bytes_saved=0),
+    )
+    monkeypatch.setattr(cli.registry, "load_registry", lambda: {"model.gguf": {}})
+
+    result = runner.invoke(cli.app, ["--yes", "import"])
+
+    assert result.exit_code == 0, result.stdout
+    assert adopted == ["deadbeef"]
+
+
 def test_import_without_yes_errors_without_a_tty(isolated_omm_home, monkeypatch):
     group = _fake_group()
     monkeypatch.setattr(cli.scan_import, "find_external_models", lambda extra_path=None: [object()])

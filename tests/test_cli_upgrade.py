@@ -165,6 +165,17 @@ def test_upgrade_all_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monk
     assert "0 updated, 1 up to date, 0 skipped" in result.stdout
 
 
+def test_upgrade_all_yes_flag_before_subcommand_skips_prompt(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    registry.save_registry({"model.gguf": _entry(sha256="same-hash")})
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "same-hash")
+
+    result = runner.invoke(cli.app, ["--yes", "upgrade"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "0 updated, 1 up to date, 0 skipped" in result.stdout
+
+
 def test_upgrade_all_without_yes_errors_without_a_tty(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
     registry.save_registry({"model.gguf": _entry()})
