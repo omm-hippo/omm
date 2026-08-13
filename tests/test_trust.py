@@ -221,6 +221,55 @@ def test_verify_commit_passes_when_merge_commit_itself_is_signed(
     assert merge_commit[:7] in message
 
 
+def test_verify_update_follows_skipped_trust_rotation(
+    repo, signing_key, other_signing_key, allowed_signers
+):
+    base = _commit(repo, "base", signing_key=signing_key)
+    new_pub_key = other_signing_key.with_suffix(".pub").read_text().strip()
+    anchor_in_repo = repo / trust.TRUST_ANCHOR_REPO_PATH
+    anchor_in_repo.parent.mkdir(parents=True)
+    anchor_in_repo.write_text(
+        allowed_signers.read_text() + f"bot@example.com {new_pub_key}\n"
+    )
+    _run(["git", "add", trust.TRUST_ANCHOR_REPO_PATH], cwd=repo)
+    transition = _commit(repo, "add bot signer", signing_key=signing_key)
+    (repo / "file.txt").write_text("generated data\n")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    target = _commit(repo, "bot update", signing_key=other_signing_key)
+
+    direct_ok, _ = trust.verify_commit(repo, target, allowed_signers)
+    ok, message = trust.verify_update(repo, base, target, allowed_signers)
+
+    assert not direct_ok
+    assert ok, message
+    assert target[:7] in message
+    assert "1 trust transition" in message
+    assert transition != target
+
+
+def test_verify_update_rejects_key_that_approves_itself(
+    repo, signing_key, other_signing_key, allowed_signers
+):
+    base = _commit(repo, "base", signing_key=signing_key)
+    new_pub_key = other_signing_key.with_suffix(".pub").read_text().strip()
+    anchor_in_repo = repo / trust.TRUST_ANCHOR_REPO_PATH
+    anchor_in_repo.parent.mkdir(parents=True)
+    anchor_in_repo.write_text(
+        allowed_signers.read_text() + f"stranger@example.com {new_pub_key}\n"
+    )
+    _run(["git", "add", trust.TRUST_ANCHOR_REPO_PATH], cwd=repo)
+    transition = _commit(repo, "stranger adds itself", signing_key=other_signing_key)
+    (repo / "file.txt").write_text("malicious update\n")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    target = _commit(repo, "stranger update", signing_key=other_signing_key)
+
+    ok, message = trust.verify_update(repo, base, target, allowed_signers)
+
+    assert not ok
+    assert transition[:7] in message
+    assert "trust chain stopped" in message
+
+
 def test_current_trust_anchor_points_at_bundled_file():
     anchor = trust.current_trust_anchor()
 
