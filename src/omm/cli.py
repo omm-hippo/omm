@@ -1939,6 +1939,13 @@ def _install_impl(
     if dest.exists() and not force:
         err_console.print(f"[yellow]{filename} already downloaded, skipping fetch.[/yellow]")
     else:
+        if force:
+            # Guarantee a genuinely fresh download: remove any existing
+            # completed file and any stale `.part` sidecar so we never
+            # resume stale bytes, and never hit Path.rename's
+            # FileExistsError on Windows when the fresh download finalizes
+            # onto an already-existing dest.
+            _cleanup_incomplete_install(filename)
         size_bytes = remote_file_size(resolved.provider or "huggingface", repo_id, filename) if repo_id else None
         if size_bytes:
             try:
@@ -2351,6 +2358,15 @@ def remove(
         filename = f"{filename}.gguf"
         entry = reg.get(filename)
     if entry is None:
+        dest = MODELS_DIR / filename
+        part = dest.with_suffix(dest.suffix + ".part")
+        incomplete_install_exists = dest.exists() or part.exists()
+        if dry_run:
+            if incomplete_install_exists:
+                console.print(f"Would clean up incomplete install of {filename}")
+                raise typer.Exit(0)
+            err_console.print(f"[red]{filename} is not installed via omm. See `omm list`.[/red]")
+            raise typer.Exit(1)
         if _cleanup_incomplete_install(filename):
             console.print(f"[green]Cleaned up incomplete install of {filename}[/green]")
             raise typer.Exit(0)

@@ -146,6 +146,47 @@ def test_remove_cleans_up_unregistered_complete_download(isolated_omm_home):
     assert not dest.exists()
 
 
+def test_uninstall_unregistered_part_dry_run_does_not_delete(isolated_omm_home, monkeypatch):
+    part = cli.MODELS_DIR / "ghost.gguf.part"
+    cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    part.write_bytes(b"partial")
+
+    def _fail_if_called(filename):
+        raise AssertionError("dry-run must not invoke real cleanup")
+
+    monkeypatch.setattr(cli, "_cleanup_incomplete_install", _fail_if_called)
+
+    result = runner.invoke(cli.app, ["uninstall", "ghost.gguf", "--dry-run"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Would clean up incomplete install of ghost.gguf" in result.stdout
+    assert part.exists()
+
+
+def test_uninstall_unregistered_complete_download_dry_run_does_not_delete(isolated_omm_home, monkeypatch):
+    dest = cli.MODELS_DIR / "ghost.gguf"
+    cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"complete-but-unregistered")
+
+    def _fail_if_called(filename):
+        raise AssertionError("dry-run must not invoke real cleanup")
+
+    monkeypatch.setattr(cli, "_cleanup_incomplete_install", _fail_if_called)
+
+    result = runner.invoke(cli.app, ["uninstall", "ghost.gguf", "--dry-run"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Would clean up incomplete install of ghost.gguf" in result.stdout
+    assert dest.exists()
+
+
+def test_uninstall_unregistered_dry_run_still_errors_when_nothing_on_disk(isolated_omm_home):
+    result = runner.invoke(cli.app, ["uninstall", "nothing-here.gguf", "--dry-run"])
+
+    assert result.exit_code == 1
+    assert "is not installed via omm" in result.stderr
+
+
 def test_remove_still_errors_when_nothing_on_disk(isolated_omm_home):
     result = runner.invoke(cli.app, ["uninstall", "nothing-here.gguf"])
 
