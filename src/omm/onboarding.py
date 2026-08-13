@@ -204,7 +204,7 @@ def _install_selected_engines(console: Console, selected: list[str]) -> None:
             ),
         )
         style = "green" if result.status == "installed" else "red"
-        console.print(f"[{style}]{result.message}[/{style}]")
+        console.print(result.message, style=style, markup=False, highlight=False)
 
 
 def run_wizard(console: Console) -> None:

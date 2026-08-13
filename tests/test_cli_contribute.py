@@ -95,7 +95,7 @@ def test_starts_and_stops_ollama_daemon_when_confirmed(isolated_omm_home, monkey
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+        lambda url, *a, **k: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
@@ -132,7 +132,7 @@ def test_yes_flag_auto_starts_ollama_daemon_without_prompting(isolated_omm_home,
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+        lambda url, *a, **k: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
@@ -161,7 +161,7 @@ def test_yes_flag_auto_starts_ollama_daemon_without_prompting(isolated_omm_home,
 def test_requires_trained_recommendation_model(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    monkeypatch.setattr(cli.predictor, "load_model_with_change_note", lambda url: (None, False))
+    monkeypatch.setattr(cli.predictor, "load_model_with_change_note", lambda url, *a, **k: (None, False))
 
     result = runner.invoke(cli.app, ["contribute"])
 
@@ -176,7 +176,7 @@ def test_happy_path_runs_loop_cleans_up_and_prints_summary(isolated_omm_home, mo
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+        lambda url, *a, **k: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
@@ -211,7 +211,7 @@ def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_ho
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: (
+        lambda url, *a, **k: (
             {
                 "trees": [{}],
                 "candidates": [
@@ -258,7 +258,7 @@ def test_no_heads_up_warning_on_first_ever_session(isolated_omm_home, monkeypatc
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "a.gguf"}]}, False),
+        lambda url, *a, **k: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "a.gguf"}]}, False),
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
@@ -287,7 +287,7 @@ def test_heads_up_warning_when_prior_session_already_covered_same_catalog(
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "a.gguf"}]}, False),
+        lambda url, *a, **k: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "a.gguf"}]}, False),
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
@@ -317,7 +317,7 @@ def test_no_heads_up_warning_when_catalog_grew_since_last_exhaustion(
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: (
+        lambda url, *a, **k: (
             {
                 "trees": [{}],
                 "candidates": [
@@ -351,7 +351,7 @@ def test_contribute_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monke
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+        lambda url, *a, **k: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
@@ -402,7 +402,7 @@ def test_contribute_loads_quality_pack_and_passes_it_to_loop(isolated_omm_home, 
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+        lambda url, *a, **k: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
@@ -434,7 +434,7 @@ def test_contribute_passes_fetch_sibling_candidates_to_loop(isolated_omm_home, m
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+        lambda url, *a, **k: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
@@ -484,7 +484,7 @@ def test_contribute_warns_once_when_policy_always(isolated_omm_home, monkeypatch
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+        lambda url, *a, **k: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
@@ -508,7 +508,7 @@ def test_contribute_skips_always_warning_once_acknowledged(isolated_omm_home, mo
     monkeypatch.setattr(
         cli.predictor,
         "load_model_with_change_note",
-        lambda url: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
+        lambda url, *a, **k: ({"trees": [{}], "candidates": [{"repo_id": "o", "filename": "m.gguf"}]}, False),
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])

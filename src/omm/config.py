@@ -34,6 +34,16 @@ CATALOG_HISTORY_DIR = OMM_HOME / "catalog-history"
 LEGACY_FIREBASE_ENDPOINT = (
     "https://localfit-8ab57-default-rtdb.firebaseio.com/telemetry.json"
 )
+# model_url has gone through two GitHub org renames (minigu5/Localfit ->
+# minigu5/Omm -> omm-hippo/omm). It's never user-settable, so any config
+# still holding one of the earlier defaults is stale, not a deliberate
+# override, and should be migrated forward.
+LEGACY_MODEL_URLS = frozenset(
+    {
+        "https://raw.githubusercontent.com/minigu5/Localfit/main/published/recommend-model.json",
+        "https://raw.githubusercontent.com/minigu5/Omm/main/published/recommend-model.json",
+    }
+)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "telemetry_send_policy": "ask",
@@ -47,8 +57,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.json",
     "default_engine": None,
     "external_scan_done": False,
-    "catalog_manifest_url": None,
-    "catalog_public_key": None,
+    "catalog_manifest_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.manifest.json",
+    "catalog_public_key": "p8uo6GFXDcg8Rp7/t8GGl5hwPsXhObY5vI1sll5KpaI=",
     "contribute_always_ack": False,
     "update_channel": "stable",
     "onboarding_completed": True,
@@ -67,6 +77,19 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
         }
     merged = {**DEFAULT_CONFIG, **data}
     merged.pop("telemetry_opt_in", None)
+    if data.get("catalog_manifest_url") is None and data.get("catalog_public_key") is None:
+        # Configs written before this branch always had these two keys
+        # explicitly set to null (they've been in DEFAULT_CONFIG since an
+        # earlier commit). There is currently no user-facing way to
+        # explicitly clear them back to null, so seeing both null here means
+        # "pre-signing config", not "user opted out" - migrate it forward to
+        # the new signed-by-default catalog. A real (non-None) value in
+        # either key means the user has run `omm setting catalog-trust` and
+        # their custom value must win, so this migration is skipped then.
+        merged["catalog_manifest_url"] = DEFAULT_CONFIG["catalog_manifest_url"]
+        merged["catalog_public_key"] = DEFAULT_CONFIG["catalog_public_key"]
+    if data.get("model_url") in LEGACY_MODEL_URLS:
+        merged["model_url"] = DEFAULT_CONFIG["model_url"]
     if "telemetry_backend" not in data:
         endpoint = data.get("telemetry_endpoint")
         if endpoint == LEGACY_FIREBASE_ENDPOINT and merged.get("telemetry_send_policy") != "always":

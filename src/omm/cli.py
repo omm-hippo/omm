@@ -152,7 +152,7 @@ app = typer.Typer(
 )
 setting_app = typer.Typer(
     name="setting",
-    help="View or change omm settings (UI mode, telemetry, upload policy, catalog trust).",
+    help="View or change omm settings (telemetry, upload policy, catalog trust).",
     invoke_without_command=True,
     rich_markup_mode=None,
 )
@@ -2620,7 +2620,6 @@ def setting_menu(ctx: typer.Context) -> None:
                     questionary.Choice(
                         f"Catalog trust (current: {catalog_manifest})", value="catalog-trust"
                     ),
-                    questionary.Choice("Catalog status", value="catalog-status"),
                     questionary.Choice("Catalog rollback", value="catalog-rollback"),
                     questionary.Choice("← Back", value="back"),
                 ],
@@ -2675,8 +2674,6 @@ def setting_menu(ctx: typer.Context) -> None:
             public_key = questionary.text("Base64 Ed25519 public key:").ask()
             if manifest_url and public_key:
                 catalog_trust(manifest_url=manifest_url, public_key=public_key)
-        elif choice == "catalog-status":
-            catalog_status()
         elif choice == "catalog-rollback":
             if _ask_confirm("Roll back the recommendation catalog?"):
                 catalog_rollback()
@@ -2698,7 +2695,11 @@ def search(
 ) -> None:
     """Search curated models, cached candidates, and HuggingFace by name."""
     config = load_config()
-    pool = search_mod.local_candidate_pool(config.get("model_url"))
+    pool = search_mod.local_candidate_pool(
+        config.get("model_url"),
+        manifest_url=config.get("catalog_manifest_url"),
+        public_key=config.get("catalog_public_key"),
+    )
     local_matches = search_mod.match_candidates(pool, query)
 
     local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
@@ -2787,7 +2788,11 @@ def search(
 
 def _print_install_suggestions(query: str) -> None:
     config = load_config()
-    pool = search_mod.local_candidate_pool(config.get("model_url"))
+    pool = search_mod.local_candidate_pool(
+        config.get("model_url"),
+        manifest_url=config.get("catalog_manifest_url"),
+        public_key=config.get("catalog_public_key"),
+    )
     suggestions = search_mod.dedupe_by_base_repo(search_mod.suggest_similar(query, pool, limit=3))
 
     existing_labels = {s.get("name") or s.get("repo_id") for s in suggestions}
