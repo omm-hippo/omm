@@ -2698,7 +2698,11 @@ def search(
 ) -> None:
     """Search curated models, cached candidates, and HuggingFace by name."""
     config = load_config()
-    pool = search_mod.local_candidate_pool(config.get("model_url"))
+    pool = search_mod.local_candidate_pool(
+        config.get("model_url"),
+        manifest_url=config.get("catalog_manifest_url"),
+        public_key=config.get("catalog_public_key"),
+    )
     local_matches = search_mod.match_candidates(pool, query)
 
     local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
@@ -2787,7 +2791,11 @@ def search(
 
 def _print_install_suggestions(query: str) -> None:
     config = load_config()
-    pool = search_mod.local_candidate_pool(config.get("model_url"))
+    pool = search_mod.local_candidate_pool(
+        config.get("model_url"),
+        manifest_url=config.get("catalog_manifest_url"),
+        public_key=config.get("catalog_public_key"),
+    )
     suggestions = search_mod.dedupe_by_base_repo(search_mod.suggest_similar(query, pool, limit=3))
 
     existing_labels = {s.get("name") or s.get("repo_id") for s in suggestions}

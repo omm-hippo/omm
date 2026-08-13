@@ -10,7 +10,7 @@ def test_install_unknown_model_prints_did_you_mean_suggestions(monkeypatch):
     monkeypatch.setattr(
         search_mod,
         "local_candidate_pool",
-        lambda model_url: [
+        lambda model_url, **kwargs: [
             {"name": "tinyllama-1.1b-q4", "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF"},
         ],
     )
@@ -25,7 +25,7 @@ def test_install_unknown_model_prints_did_you_mean_suggestions(monkeypatch):
 
 def test_install_unknown_model_with_no_suggestions_still_exits_cleanly(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
-    monkeypatch.setattr(search_mod, "local_candidate_pool", lambda model_url: [])
+    monkeypatch.setattr(search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
     monkeypatch.setattr(search_mod, "search_huggingface", lambda query, **kwargs: [])
 
     result = runner.invoke(cli.app, ["install", "totally-unrelated-xyz"])

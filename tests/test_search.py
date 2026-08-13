@@ -39,7 +39,7 @@ def test_local_candidate_pool_merges_curated_and_cached_and_dedupes(monkeypatch)
     monkeypatch.setattr(
         search_mod.predictor,
         "load_model",
-        lambda url: {
+        lambda url, *args, **kwargs: {
             "candidates": [
                 {
                     "name": "tinyllama-1.1b-q4",
@@ -64,6 +64,30 @@ def test_local_candidate_pool_merges_curated_and_cached_and_dedupes(monkeypatch)
     assert "Qwen/Qwen2.5-7B-Instruct-GGUF" in repo_ids
     # 3 curated (tinyllama/llama3.1/mistral) + 1 new qwen from the cache = 4
     assert len(pool) == 4
+
+
+def test_local_candidate_pool_forwards_manifest_and_public_key_to_load_model(monkeypatch):
+    captured = {}
+
+    def fake_load_model(url, manifest_url=None, public_key=None):
+        captured["url"] = url
+        captured["manifest_url"] = manifest_url
+        captured["public_key"] = public_key
+        return {"candidates": []}
+
+    monkeypatch.setattr(search_mod.predictor, "load_model", fake_load_model)
+
+    search_mod.local_candidate_pool(
+        "https://example.com/model.json",
+        manifest_url="https://example.com/manifest.json",
+        public_key="the-key",
+    )
+
+    assert captured == {
+        "url": "https://example.com/model.json",
+        "manifest_url": "https://example.com/manifest.json",
+        "public_key": "the-key",
+    }
 
 
 def test_search_huggingface_returns_empty_list_on_request_error(monkeypatch):

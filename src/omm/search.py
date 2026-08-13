@@ -181,9 +181,13 @@ def _curated_as_candidates() -> list[dict]:
     ]
 
 
-def local_candidate_pool(model_url: str | None) -> list[dict]:
+def local_candidate_pool(
+    model_url: str | None,
+    manifest_url: str | None = None,
+    public_key: str | None = None,
+) -> list[dict]:
     pool = _curated_as_candidates()
-    artifact = predictor.load_model(model_url)
+    artifact = predictor.load_model(model_url, manifest_url, public_key)
     if artifact:
         pool.extend(artifact.get("candidates", []))
 
