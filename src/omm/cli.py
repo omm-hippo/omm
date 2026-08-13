@@ -879,6 +879,9 @@ def _git_update_src(branch: str = "main") -> subprocess.CompletedProcess:
     if remote_url.returncode == 0 and remote_url.stdout.strip() != _BARE_REPO_URL:
         _run_git(["git", "-C", str(SRC_DIR), "remote", "set-url", "origin", _BARE_REPO_URL], timeout=10)
 
+    current = _run_git(["git", "-C", str(SRC_DIR), "rev-parse", "HEAD"], timeout=10)
+    current_commit = current.stdout.strip() if current.returncode == 0 else None
+
     fetch = _run_git(
         ["git", "-C", str(SRC_DIR), "fetch", "--quiet", "origin", f"{branch}:refs/remotes/origin/{branch}"]
     )
@@ -890,7 +893,9 @@ def _git_update_src(branch: str = "main") -> subprocess.CompletedProcess:
         return rev_parse
     target_commit = rev_parse.stdout.strip()
 
-    ok, message = trust.verify_commit(SRC_DIR, target_commit, trust.current_trust_anchor())
+    ok, message = trust.verify_update(
+        SRC_DIR, current_commit, target_commit, trust.current_trust_anchor()
+    )
     if not ok:
         return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
 

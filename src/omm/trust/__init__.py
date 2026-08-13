@@ -32,8 +32,10 @@ from __future__ import annotations
 import subprocess
 from importlib.resources import files
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 MIN_GIT_VERSION = (2, 34)  # first release with SSH commit-signature support
+TRUST_ANCHOR_REPO_PATH = "src/omm/trust/allowed_signers"
 
 
 def current_trust_anchor() -> Path | None:
@@ -143,3 +145,103 @@ def verify_commit(
     if target == commit:
         return ok, message
     return _verify_signature(repo_dir, target, allowed_signers)
+
+
+def verify_update(
+    repo_dir: Path,
+    current_commit: str | None,
+    target_commit: str,
+    allowed_signers: Path | None,
+) -> tuple[bool, str]:
+    """Verify an update while safely following skipped trust rotations.
+
+    The common case remains a single verification of ``target_commit``
+    against the anchor bundled with the running install.  If that fails,
+    and the current commit is an ancestor of the target, inspect only the
+    first-parent commits that changed :data:`TRUST_ANCHOR_REPO_PATH`.
+    Each anchor-changing commit must be accepted by the anchor that came
+    before it; only then is its new anchor used for the next transition and
+    finally for the target.
+
+    This lets an infrequently updated client cross a maintainer-approved key
+    rotation without letting a target commit add a key and approve itself.
+    Non-ancestral channel switches retain ``verify_commit``'s direct-target
+    behavior.
+    """
+    ok, direct_message = verify_commit(repo_dir, target_commit, allowed_signers)
+    if ok or allowed_signers is None or not current_commit:
+        return ok, direct_message
+
+    try:
+        ancestor = subprocess.run(
+            [
+                "git", "-C", str(repo_dir), "merge-base", "--is-ancestor",
+                current_commit, target_commit,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False, direct_message
+    if ancestor.returncode != 0:
+        return False, direct_message
+
+    try:
+        changed = subprocess.run(
+            [
+                "git", "-C", str(repo_dir), "log", "--first-parent",
+                "--reverse", "--format=%H",
+                f"{current_commit}..{target_commit}", "--",
+                TRUST_ANCHOR_REPO_PATH,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return False, direct_message
+    if changed.returncode != 0:
+        return False, direct_message
+
+    transitions = [line.strip() for line in changed.stdout.splitlines() if line.strip()]
+    if not transitions:
+        return False, direct_message
+
+    candidates = list(transitions)
+    if candidates[-1] != target_commit:
+        candidates.append(target_commit)
+    transition_set = set(transitions)
+
+    try:
+        original_anchor = allowed_signers.read_bytes()
+    except OSError as exc:
+        return False, f"could not read current trust anchor: {exc}"
+
+    with TemporaryDirectory(prefix="omm-trust-") as tmp:
+        evolving_anchor = Path(tmp) / "allowed_signers"
+        evolving_anchor.write_bytes(original_anchor)
+
+        for candidate in candidates:
+            verified, message = verify_commit(repo_dir, candidate, evolving_anchor)
+            if not verified:
+                return False, f"update trust chain stopped at {candidate[:7]}: {message}"
+            if candidate not in transition_set:
+                continue
+            try:
+                anchor_at_commit = subprocess.run(
+                    [
+                        "git", "-C", str(repo_dir), "show",
+                        f"{candidate}:{TRUST_ANCHOR_REPO_PATH}",
+                    ],
+                    capture_output=True,
+                    timeout=15,
+                )
+            except subprocess.TimeoutExpired:
+                return False, f"reading trust anchor from {candidate[:7]} timed out"
+            if anchor_at_commit.returncode != 0 or not anchor_at_commit.stdout.strip():
+                detail = anchor_at_commit.stderr.decode(errors="replace").strip()
+                return False, f"trusted commit {candidate[:7]} has no usable trust anchor: {detail}"
+            evolving_anchor.write_bytes(anchor_at_commit.stdout)
+
+    return True, f"commit {target_commit[:7]} signature verified through {len(transitions)} trust transition(s)"

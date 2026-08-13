@@ -496,7 +496,9 @@ def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):
 
     def fake_run(args, **kwargs):
         run_calls.append(args)
-        if args[-2:] == ["rev-parse", "origin/main"]:
+        if args[-2:] == ["rev-parse", "HEAD"]:
+            stdout = "oldcommit\n"
+        elif args[-2:] == ["rev-parse", "origin/main"]:
             stdout = "newcommit\n"
         elif args[-2:] == ["get-url", "origin"]:
             stdout = cli._BARE_REPO_URL + "\n"
@@ -508,8 +510,10 @@ def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):
     verify_calls = []
     monkeypatch.setattr(
         cli.trust,
-        "verify_commit",
-        lambda repo_dir, commit, anchor: verify_calls.append((repo_dir, commit, anchor)) or (True, "ok"),
+        "verify_update",
+        lambda repo_dir, current, target, anchor: verify_calls.append(
+            (repo_dir, current, target, anchor)
+        ) or (True, "ok"),
     )
 
     result = cli._git_update_src()
@@ -517,11 +521,14 @@ def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):
     assert result.returncode == 0
     assert run_calls == [
         ["git", "-C", str(src), "remote", "get-url", "origin"],
+        ["git", "-C", str(src), "rev-parse", "HEAD"],
         ["git", "-C", str(src), "fetch", "--quiet", "origin", "main:refs/remotes/origin/main"],
         ["git", "-C", str(src), "rev-parse", "origin/main"],
         ["git", "-C", str(src), "checkout", "-B", "main", "origin/main", "--force", "--quiet"],
     ]
-    assert verify_calls == [(src, "newcommit", cli.trust.current_trust_anchor())]
+    assert verify_calls == [
+        (src, "oldcommit", "newcommit", cli.trust.current_trust_anchor())
+    ]
 
 
 def test_git_update_src_skips_reset_when_signature_verification_fails(monkeypatch, tmp_path):
@@ -535,7 +542,7 @@ def test_git_update_src_skips_reset_when_signature_verification_fails(monkeypatc
         return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(cli.trust, "verify_commit", lambda *a, **k: (False, "commit newcomm failed signature verification"))
+    monkeypatch.setattr(cli.trust, "verify_update", lambda *a, **k: (False, "commit newcomm failed signature verification"))
 
     result = cli._git_update_src()
 
@@ -562,6 +569,7 @@ def test_git_update_src_stops_after_fetch_failure(monkeypatch, tmp_path):
     assert result.returncode == 1
     assert run_calls == [
         ["git", "-C", str(src), "remote", "get-url", "origin"],
+        ["git", "-C", str(src), "rev-parse", "HEAD"],
         ["git", "-C", str(src), "fetch", "--quiet", "origin", "main:refs/remotes/origin/main"],
     ]
 
