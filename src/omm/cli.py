@@ -2681,6 +2681,9 @@ def setting_menu(ctx: typer.Context) -> None:
             if _ask_confirm("Roll back the recommendation catalog?"):
                 catalog_rollback()
 
+        if not _ask_confirm("Change another setting?", default=True):
+            return
+
 
 @app.command()
 def search(
