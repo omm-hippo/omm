@@ -94,6 +94,38 @@ def test_search_json_is_parseable_and_has_expected_fields(monkeypatch):
     ]
 
 
+def test_search_json_before_subcommand(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url: [
+            {
+                "name": "tinyllama-1.1b-q4",
+                "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+                "description": "Curated default",
+            },
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+
+    result = runner.invoke(cli.app, ["--json", "search", "tiny"])
+
+    assert result.exit_code == 0, result.stdout
+    data = json.loads(result.stdout)
+    assert data == [
+        {
+            "index": 1,
+            "family": "TinyLlama",
+            "ref": "tinyllama-1.1b-q4",
+            "description": "Curated default",
+            "fits_hardware": True,
+        }
+    ]
+
+
 def test_search_command_includes_modelscope_results(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
     monkeypatch.setattr(cli.search_mod, "local_candidate_pool", lambda model_url: [])

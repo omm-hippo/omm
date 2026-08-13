@@ -2292,11 +2292,12 @@ def _entry_version(entry: dict) -> str:
 
 
 @app.command()
+@global_flags
 def info(
     model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
-    json_output: bool = typer.Option(False, "--json", help="Print result as JSON instead of a table."),
 ) -> None:
     """Show name, version, size, and linked-program run commands for an installed model."""
+    json_output = _global_opts().json
     model_name = _resolve_ref(model_name)
     reg = registry.load_registry()
     filename, entry = _lookup_entry(model_name, reg)
@@ -2472,10 +2473,10 @@ def upgrade(
 
 
 @app.command(name="list")
-def list_models(
-    json_output: bool = typer.Option(False, "--json", help="Print results as JSON instead of a table."),
-) -> None:
+@global_flags
+def list_models() -> None:
     """Show models installed via omm and their linked status."""
+    json_output = _global_opts().json
     reg = registry.load_registry()
     if not reg:
         if json_output:
@@ -2831,9 +2832,9 @@ def setting_menu(ctx: typer.Context) -> None:
 
 
 @app.command()
+@global_flags
 def search(
     query: str,
-    json_output: bool = typer.Option(False, "--json", help="Print results as JSON instead of a table."),
     skip_unfit: bool = typer.Option(
         False,
         "--skip-unfit",
@@ -2842,6 +2843,7 @@ def search(
     ),
 ) -> None:
     """Search curated models, cached candidates, and HuggingFace by name."""
+    json_output = _global_opts().json
     config = load_config()
     pool = search_mod.local_candidate_pool(config.get("model_url"))
     local_matches = search_mod.match_candidates(pool, query)
@@ -3140,6 +3142,7 @@ def autoremove() -> None:
 
 
 @app.command(name="benchmark")
+@global_flags
 def benchmark_cmd(
     models: list[str] = typer.Argument(
         ...,
@@ -3156,11 +3159,6 @@ def benchmark_cmd(
         help="Write evidence to this JSON path.",
     ),
     speed_runs: int = typer.Option(3, "--speed-runs", min=1, max=10),
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Also print the evidence JSON.",
-    ),
     confirm_performance_timeout: bool = typer.Option(
         False,
         "--confirm-performance-timeout",
@@ -3175,6 +3173,7 @@ def benchmark_cmd(
     ),
 ) -> None:
     """Measure a small reproducible quality pack and decode speed."""
+    json_output = _global_opts().json
     models = [_resolve_benchmark_tag(m) for m in models]
     if "all" in models and models != ["all"]:
         err_console.print("[red]`all` must be the only argument.[/red]")
@@ -3196,6 +3195,7 @@ def benchmark_cmd(
                 TextColumn("[cyan]{task.description}[/cyan]"),
                 TimeElapsedColumn(),
                 console=console,
+                disable=_global_opts().quiet,
             ) as progress:
                 task_id = progress.add_task(
                     f"Benchmarking ({len(models)} model(s))...", total=len(models)

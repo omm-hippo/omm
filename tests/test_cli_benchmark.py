@@ -82,6 +82,30 @@ def test_benchmark_saves_local_report_and_asks_before_upload(isolated_omm_home, 
     assert sent == []
 
 
+def test_benchmark_json_before_subcommand(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+
+    result = runner.invoke(cli.app, ["--json", "benchmark", "small:latest"])
+
+    assert result.exit_code == 0, result.stdout
+    # Extract JSON from output (it's at the end)
+    lines = result.stdout.split('\n')
+    # Find the line that starts with '{' which is the start of the JSON
+    json_start = None
+    for i, line in enumerate(lines):
+        if line.strip().startswith('{'):
+            json_start = i
+            break
+    assert json_start is not None, "JSON output not found"
+    json_text = '\n'.join(lines[json_start:])
+    data = json.loads(json_text)
+    assert data == _full_report()
+
+
 def test_benchmark_all_expands_to_every_installed_tag(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)

@@ -47,6 +47,24 @@ def test_list_json_is_parseable_and_has_expected_fields(isolated_omm_home):
     ]
 
 
+def test_list_json_before_subcommand(isolated_omm_home):
+    registry.save_registry(
+        {
+            "a.gguf": {"size_bytes": 5, "linked": {"lmstudio": False, "ollama": False}},
+            "b.gguf": {"size_bytes": 9, "linked": {"lmstudio": False, "ollama": True}},
+        }
+    )
+
+    result = runner.invoke(cli.app, ["--json", "list"])
+
+    assert result.exit_code == 0, result.stdout
+    data = json.loads(result.stdout)
+    assert data == [
+        {"index": 1, "filename": "a.gguf", "size_bytes": 5, "linked": _all_linked()},
+        {"index": 2, "filename": "b.gguf", "size_bytes": 9, "linked": _all_linked(ollama=True)},
+    ]
+
+
 def test_list_json_empty_registry_prints_empty_array(isolated_omm_home):
     result = runner.invoke(cli.app, ["list", "--json"])
 
