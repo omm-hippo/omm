@@ -254,3 +254,25 @@ def test_install_selected_engines_prints_raw_installer_output_without_markup_err
     output = console.file.getvalue()
     assert "[sudo] password:" in output
     assert "weird [/dim] text" in output
+
+
+def test_install_selected_engines_prints_result_message_without_markup_errors(monkeypatch):
+    """result.message can contain arbitrary text (exception text, raw
+    system/machine strings, tarfile/zipfile errors) - it must pass through
+    Rich's console.print raw, same as the on_output callback above. A
+    message shaped like a markup tag must not be eaten or raise
+    rich.errors.MarkupError and crash the wizard."""
+    console = _console()
+
+    monkeypatch.setattr(
+        linker,
+        "install_engine",
+        lambda key, on_output=None: linker.EngineInstallResult(
+            key, "failed", "Could not download: weird [/red] text with [brackets]"
+        ),
+    )
+
+    onboarding._install_selected_engines(console, ["ollama"])
+
+    output = console.file.getvalue()
+    assert "weird [/red] text with [brackets]" in output
