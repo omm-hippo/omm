@@ -234,14 +234,23 @@ Further help:
   https://github.com/omm-hippo/omm
 """
 
+_COMMAND_ALIASES = {"rm": "uninstall", "ls": "list", "up": "upgrade"}
+
 
 class _RootHelpGroup(typer.core.TyperGroup):
     """Homebrew-style curated `omm --help`/`omm help` - a short list of
     common commands instead of the full alphabetical listing of every
-    registered subcommand. Full list stays reachable via `omm help --all`."""
+    registered subcommand. Full list stays reachable via `omm help --all`.
+    Also resolves a handful of conventional short aliases (rm/ls/up) to
+    their real command name - aliases are never registered as their own
+    Click commands, so they never appear in a `commands` listing."""
 
     def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         formatter.write(_ROOT_HELP_TEXT)
+
+    def get_command(self, ctx: click.Context, cmd_name: str):
+        cmd_name = _COMMAND_ALIASES.get(cmd_name, cmd_name)
+        return super().get_command(ctx, cmd_name)
 
 
 app = typer.Typer(
@@ -2264,7 +2273,9 @@ def remove(
     filename: str = typer.Argument(..., autocompletion=complete_remove_filename),
 ) -> None:
     """Uninstall a model and clean up all symlinks/manifests. Pass `all` to
-    uninstall every model installed via omm."""
+    uninstall every model installed via omm.
+
+    Alias: rm"""
     if filename.lower() == "all":
         reg = registry.load_registry()
         if not reg:
@@ -2451,7 +2462,9 @@ def upgrade(
 ) -> None:
     """Refresh an installed model against its source, re-downloading only
     if the source has changed since install. With no argument (or `all`),
-    checks every model installed via omm."""
+    checks every model installed via omm.
+
+    Alias: up"""
     reg = registry.load_registry()
 
     if model_name is None or model_name.lower() == "all":
@@ -2488,7 +2501,9 @@ def upgrade(
 @app.command(name="list")
 @global_flags
 def list_models() -> None:
-    """Show models installed via omm and their linked status."""
+    """Show models installed via omm and their linked status.
+
+    Alias: ls"""
     json_output = _global_opts().json
     reg = registry.load_registry()
     if not reg:
