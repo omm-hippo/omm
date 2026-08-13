@@ -72,6 +72,43 @@ def test_uninstall_all_with_empty_registry_reports_nothing_to_do(isolated_omm_ho
     assert "No models installed" in result.stdout
 
 
+def test_uninstall_all_dry_run_reports_without_removing(isolated_omm_home, monkeypatch):
+    for filename in ("a.gguf", "b.gguf"):
+        (cli.MODELS_DIR / filename).write_bytes(b"fake-gguf")
+    registry.save_registry(
+        {
+            "a.gguf": {"linked": {"lmstudio": False, "ollama": False}},
+            "b.gguf": {"linked": {"lmstudio": False, "ollama": False}},
+        }
+    )
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda message, default=False: (_ for _ in ()).throw(AssertionError("should not prompt"))
+    )
+
+    result = runner.invoke(cli.app, ["uninstall", "all", "--dry-run"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Would uninstall: a.gguf" in result.stdout
+    assert "Would uninstall: b.gguf" in result.stdout
+    assert set(registry.load_registry().keys()) == {"a.gguf", "b.gguf"}
+    assert (cli.MODELS_DIR / "a.gguf").exists()
+    assert (cli.MODELS_DIR / "b.gguf").exists()
+
+
+def test_uninstall_single_dry_run_reports_without_removing(isolated_omm_home):
+    filename = "model.gguf"
+    dest = cli.MODELS_DIR / filename
+    dest.write_bytes(b"fake-gguf")
+    registry.save_registry({filename: {"linked": {"lmstudio": False, "ollama": False}}})
+
+    result = runner.invoke(cli.app, ["uninstall", filename, "--dry-run"])
+
+    assert result.exit_code == 0, result.stdout
+    assert f"Would uninstall: {filename}" in result.stdout
+    assert filename in registry.load_registry()
+    assert dest.exists()
+
+
 def test_remove_accepts_filename_without_gguf_suffix(isolated_omm_home):
     filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
     dest = cli.MODELS_DIR / filename

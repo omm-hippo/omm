@@ -80,3 +80,25 @@ def test_list_empty_registry_does_not_touch_session(isolated_omm_home, monkeypat
 
     assert result.exit_code == 0, result.stdout
     assert recorded == []
+
+
+def test_list_engine_filters_to_only_linked_models(isolated_omm_home):
+    registry.save_registry(
+        {
+            "a.gguf": {"size_bytes": 0, "linked": {"lmstudio": False, "ollama": False}},
+            "b.gguf": {"size_bytes": 0, "linked": {"lmstudio": False, "ollama": True}},
+        }
+    )
+
+    result = runner.invoke(cli.app, ["list", "--engine", "ollama"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "b.gguf" in result.stdout
+    assert "a.gguf" not in result.stdout
+
+
+def test_list_engine_bogus_value_errors(isolated_omm_home):
+    result = runner.invoke(cli.app, ["list", "--engine", "bogus"])
+
+    assert result.exit_code == 2
+    assert "--engine must be one of" in result.stderr

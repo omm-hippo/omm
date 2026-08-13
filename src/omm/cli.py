@@ -2271,6 +2271,9 @@ def _remove_one(filename: str, entry: dict) -> None:
 @global_flags
 def remove(
     filename: str = typer.Argument(..., autocompletion=complete_remove_filename),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be uninstalled without removing anything."
+    ),
 ) -> None:
     """Uninstall a model and clean up all symlinks/manifests. Pass `all` to
     uninstall every model installed via omm.
@@ -2280,6 +2283,10 @@ def remove(
         reg = registry.load_registry()
         if not reg:
             console.print("No models installed via omm yet.")
+            raise typer.Exit(0)
+        if dry_run:
+            for name in reg:
+                console.print(f"Would uninstall: {name}")
             raise typer.Exit(0)
         if not _global_opts().yes and not _ask_confirm(f"Uninstall all {len(reg)} model(s)?"):
             err_console.print("[yellow]Cancelled.[/yellow]")
@@ -2301,6 +2308,9 @@ def remove(
         err_console.print(f"[red]{filename} is not installed via omm. See `omm list`.[/red]")
         raise typer.Exit(1)
 
+    if dry_run:
+        console.print(f"Would uninstall: {filename}")
+        raise typer.Exit(0)
     _remove_one(filename, entry)
 
 
@@ -2459,6 +2469,9 @@ def _update_one(filename: str, entry: dict) -> str:
 @global_flags
 def upgrade(
     model_name: str = typer.Argument(None, autocompletion=complete_remove_filename),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be checked for updates without downloading anything."
+    ),
 ) -> None:
     """Refresh an installed model against its source, re-downloading only
     if the source has changed since install. With no argument (or `all`),
@@ -2470,6 +2483,10 @@ def upgrade(
     if model_name is None or model_name.lower() == "all":
         if not reg:
             console.print("No models installed via omm yet.")
+            raise typer.Exit(0)
+        if dry_run:
+            for filename in reg:
+                console.print(f"Would check for updates: {filename}")
             raise typer.Exit(0)
         if not _global_opts().yes and not _ask_confirm(f"Check {len(reg)} model(s) for updates?"):
             err_console.print("[yellow]Cancelled.[/yellow]")
@@ -2500,12 +2517,28 @@ def upgrade(
 
 @app.command(name="list")
 @global_flags
-def list_models() -> None:
+def list_models(
+    engine: str | None = typer.Option(
+        None, "--engine", help="Only show models linked into this engine."
+    ),
+) -> None:
     """Show models installed via omm and their linked status.
 
     Alias: ls"""
+    valid_engines = {spec.key for spec in linker.ENGINES}
+    if engine is not None and engine not in valid_engines:
+        err_console.print(
+            f"[red]--engine must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/red]"
+        )
+        raise typer.Exit(2)
     json_output = _global_opts().json
     reg = registry.load_registry()
+    if engine is not None:
+        reg = {
+            filename: entry
+            for filename, entry in reg.items()
+            if entry.get("linked", {}).get(engine)
+        }
     if not reg:
         if json_output:
             console.print_json(data=[])
@@ -2876,8 +2909,21 @@ def search(
         help="If this hardware is predicted not to run a model, omit it "
         "from the results instead of listing it.",
     ),
+    limit: int | None = typer.Option(
+        None, "--limit", min=1, help="Show at most this many results."
+    ),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help="Only show results from this source: curated, huggingface, or modelscope.",
+    ),
 ) -> None:
     """Search curated models, cached candidates, and HuggingFace by name."""
+    if provider is not None and provider not in ("curated", "huggingface", "modelscope"):
+        err_console.print(
+            f"[red]--provider must be one of: curated, huggingface, modelscope (got '{provider}').[/red]"
+        )
+        raise typer.Exit(2)
     json_output = _global_opts().json
     config = load_config()
     pool = search_mod.local_candidate_pool(config.get("model_url"))
@@ -2896,6 +2942,11 @@ def search(
     ]
 
     combined = search_mod.dedupe_by_base_repo(local_matches + hf_matches + ms_matches)
+    if provider is not None:
+        if provider == "curated":
+            combined = [c for c in combined if not c.get("provider")]
+        else:
+            combined = [c for c in combined if c.get("provider") == provider]
     if not combined:
         err_console.print(f"[yellow]No models found matching '{query}'.[/yellow]")
         raise typer.Exit(1)
@@ -2939,6 +2990,8 @@ def search(
             )
             if skip_unfit and not fits_hardware:
                 continue
+            if limit is not None and len(refs) >= limit:
+                break
             seen_refs.add(ref)
             refs.append(ref)
             if json_output:
@@ -2961,6 +3014,8 @@ def search(
                     console.print(f"  [{len(refs)}] [red]{ref}  (predicted not to run on this hardware)[/red]")
         if not json_output and header_printed:
             console.print()
+        if limit is not None and len(refs) >= limit:
+            break
 
     session_cache.record_results(refs)
     if json_output:
@@ -2998,6 +3053,9 @@ def link_models(
         None,
         help="Optional model directory for an unsupported local AI app.",
     ),
+    engine: str | None = typer.Option(
+        None, "--engine", help="Only re-verify/repair links for this engine."
+    ),
 ) -> None:
     """Link models into an arbitrary directory or repair known app links.
 
@@ -3010,6 +3068,15 @@ def link_models(
     `linked` flag. With a directory, reuse the central GGUF through
     zero-copy links when possible, with an explicit copy warning when Windows
     permissions and volume boundaries make that impossible."""
+    valid_engines = {spec.key for spec in linker.ENGINES}
+    if engine is not None and engine not in valid_engines:
+        err_console.print(
+            f"[red]--engine must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/red]"
+        )
+        raise typer.Exit(2)
+    if directory is not None and engine is not None:
+        err_console.print("[red]--engine only applies without a directory argument.[/red]")
+        raise typer.Exit(2)
     reg = registry.load_registry()
     if not reg:
         console.print("No models installed via omm yet.")
@@ -3060,6 +3127,9 @@ def link_models(
     relinked_count = 0
     skipped_missing = 0
     skipped_conflict = 0
+    engines_to_process = (
+        [s for s in linker.ENGINES if s.key == engine] if engine else linker.ENGINES
+    )
 
     for filename, entry in reg.items():
         dest = MODELS_DIR / filename
@@ -3072,7 +3142,7 @@ def link_models(
         blocked = set(entry.get("link_blocked") or [])
         changed = False
 
-        for spec in linker.ENGINES:
+        for spec in engines_to_process:
             if not linker.is_engine_installed(spec.key):
                 continue
             try:
@@ -3109,7 +3179,7 @@ def link_models(
 def relink() -> None:
     """Deprecated alias for `omm link`."""
     err_console.print("[yellow]`omm relink` is deprecated; use `omm link`.[/yellow]")
-    link_models(directory=None)
+    link_models(directory=None, engine=None)
 
 
 def _autoremove_incomplete_installs() -> int:

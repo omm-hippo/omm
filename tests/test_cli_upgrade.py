@@ -225,3 +225,25 @@ def test_upgrade_errors_for_uninstalled_model(isolated_omm_home):
 
     assert result.exit_code == 1
     assert "is not installed via omm" in result.stderr
+
+
+def test_upgrade_all_dry_run_reports_without_checking(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    registry.save_registry(
+        {
+            "a.gguf": _entry(repo_id="org/a"),
+            "b.gguf": _entry(repo_id="org/b"),
+        }
+    )
+    monkeypatch.setattr(
+        cli,
+        "remote_file_sha256",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not check")),
+    )
+
+    result = runner.invoke(cli.app, ["upgrade", "--dry-run"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Would check for updates: a.gguf" in result.stdout
+    assert "Would check for updates: b.gguf" in result.stdout
+    assert registry.load_registry()["a.gguf"]["sha256"] == "old-hash"
