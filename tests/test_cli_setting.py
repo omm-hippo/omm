@@ -257,3 +257,22 @@ def test_setting_bare_menu_version_submenu_switches_channel(isolated_omm_home, m
     version_labels = [choice.title for choice in captured_choices[1]]
     assert version_labels[-1] == "← Back"
     assert config.load_config()["update_channel"] == "beta"
+
+
+def test_setting_bare_menu_no_longer_offers_catalog_status(isolated_omm_home, monkeypatch):
+    captured_choices: list = []
+
+    def fake_select(message, choices=None, **kwargs):
+        captured_choices.append(choices)
+        return None
+
+    monkeypatch.setattr(questionary, "select", fake_select)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: None)
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    labels = [choice.title for choice in captured_choices[0]]
+    assert not any("Catalog status" in label for label in labels)
+    assert any("Catalog trust" in label for label in labels)
+    assert any("Catalog rollback" in label for label in labels)
