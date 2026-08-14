@@ -126,6 +126,16 @@ class GlobalOptions:
     pending_telemetry_notice: int = 0
 
 
+# Commands whose output --json actually restructures. Every other command
+# silently ignores the flag - warn instead so a script piping --json from
+# one of them doesn't get plain-text garbage with exit code 0 (see #81).
+_JSON_CAPABLE = {"search", "list", "info", "benchmark", "tune", "scan"}
+
+# Commands with a confirmation prompt --yes/-y can skip. Every other
+# command has nothing for it to do.
+_YES_CAPABLE = {"install", "import", "uninstall", "upgrade", "contribute"}
+
+
 def _global_opts() -> GlobalOptions:
     """Read the merged GlobalOptions for the command currently running.
     Falls back to defaults when called outside an active Click/Typer
@@ -202,6 +212,15 @@ def global_flags(func):
         if opts.no_color:
             console.no_color = True
             err_console.no_color = True
+        command_name = ctx.command.name
+        if opts.json and command_name not in _JSON_CAPABLE:
+            err_console.print(
+                f"[yellow]--json has no effect on `omm {command_name}` - ignoring it.[/yellow]"
+            )
+        if opts.yes and command_name not in _YES_CAPABLE:
+            err_console.print(
+                f"[yellow]--yes has no effect on `omm {command_name}` - it has no confirmation prompt to skip.[/yellow]"
+            )
         if opts.pending_telemetry_notice and not (opts.json or opts.quiet):
             console.print(
                 f"[dim]Sent {opts.pending_telemetry_notice} queued telemetry "

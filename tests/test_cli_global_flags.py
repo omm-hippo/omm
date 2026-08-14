@@ -48,3 +48,37 @@ def test_no_color_flag_disables_ansi_codes(isolated_omm_home, monkeypatch):
     without_color = runner.invoke(cli.app, ["--no-color", "scan"])
     assert without_color.exit_code == 0, without_color.stdout
     assert "\x1b[36m" not in without_color.stdout
+
+
+def test_json_on_unsupported_command_warns_instead_of_silently_no_opping(isolated_omm_home):
+    # `omm autoremove --json` previously exited 0 and printed plain text -
+    # a script piping that expecting JSON would get garbage silently (see
+    # #81). autoremove doesn't restructure its output for --json.
+    result = runner.invoke(cli.app, ["autoremove", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "--json has no effect on `omm autoremove`" in result.stderr
+
+
+def test_json_on_supported_command_does_not_warn(isolated_omm_home):
+    result = runner.invoke(cli.app, ["scan", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "has no effect" not in result.stderr
+
+
+def test_yes_on_unsupported_command_warns_instead_of_silently_no_opping(isolated_omm_home):
+    result = runner.invoke(cli.app, ["autoremove", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "--yes has no effect on `omm autoremove`" in result.stderr
+
+
+def test_yes_on_supported_command_does_not_warn(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "resolve_model", lambda name: (_ for _ in ()).throw(
+        cli.ModelResolutionError("nope")
+    ))
+
+    result = runner.invoke(cli.app, ["install", "no-such-model", "--yes"])
+
+    assert "has no effect" not in result.stderr
