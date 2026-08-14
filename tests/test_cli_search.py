@@ -298,3 +298,45 @@ def test_search_provider_bogus_value_errors(monkeypatch):
 
     assert result.exit_code == 2
     assert "--provider must be one of" in result.stderr
+
+
+def test_search_skip_ms_never_calls_modelscope(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(cli.search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
+    monkeypatch.setattr(
+        cli.search_mod,
+        "search_huggingface",
+        lambda query, **kwargs: [
+            {
+                "name": "mistral-hf",
+                "repo_id": "org/mistral-hf",
+                "filename": "model.gguf",
+                "description": "d",
+                "provider": "huggingface",
+            }
+        ],
+    )
+
+    def _fail_if_called(query, **kwargs):
+        raise AssertionError("search_modelscope should not be called with --skip-ms")
+
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", _fail_if_called)
+
+    result = runner.invoke(cli.app, ["search", "mistral", "--skip-ms"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "mistral-hf" in result.stdout
+
+
+def test_search_skip_ms_conflicts_with_provider_modelscope(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(cli.search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
+
+    result = runner.invoke(
+        cli.app, ["search", "model", "--skip-ms", "--provider", "modelscope"]
+    )
+
+    assert result.exit_code == 2
+    assert "--skip-ms conflicts with --provider modelscope" in result.stderr

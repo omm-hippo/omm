@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from omm import hub, predictor
 from omm.providers import modelscope
@@ -260,28 +261,38 @@ def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list
     models = (payload.get("data") or {}).get("models", [])
     gguf_tagged = [m for m in models if "library:gguf" in m.get("tags", [])]
 
-    results = []
-    for item in gguf_tagged[:15]:
-        repo_id = item.get("id")
-        if not repo_id or _claims_fake_provenance(repo_id):
-            continue
+    candidates = [
+        item
+        for item in gguf_tagged[:15]
+        if item.get("id") and not _claims_fake_provenance(item["id"])
+    ]
+    if not candidates:
+        return []
+
+    def _resolve(item: dict) -> dict | None:
+        repo_id = item["id"]
         try:
             files, _ = modelscope.fetch_repo_files(repo_id, timeout=timeout)
         except Exception:  # noqa: BLE001 - a single bad repo shouldn't kill the search
-            continue
+            return None
         filename = pick_gguf_file([{"rfilename": f} for f in files])
         if filename is None:
-            continue
-        results.append(
-            {
-                "name": repo_id,
-                "repo_id": repo_id,
-                "filename": filename,
-                "description": f"{item.get('downloads', 0):,} downloads on ModelScope",
-                "provider": "modelscope",
-            }
-        )
-    return results
+            return None
+        return {
+            "name": repo_id,
+            "repo_id": repo_id,
+            "filename": filename,
+            "description": f"{item.get('downloads', 0):,} downloads on ModelScope",
+            "provider": "modelscope",
+        }
+
+    # Each repo needs its own file-listing call - ModelScope's list API has
+    # no HF-style full=true that inlines siblings - but the calls are
+    # independent, so fan them out instead of paying N sequential round
+    # trips (this alone made `omm search` take ~15s).
+    with ThreadPoolExecutor(max_workers=len(candidates)) as executor:
+        resolved = executor.map(_resolve, candidates)
+        return [r for r in resolved if r is not None]
 
 
 def match_candidates(pool: list[dict], query: str) -> list[dict]:

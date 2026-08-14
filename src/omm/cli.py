@@ -3053,12 +3053,21 @@ def search(
         help="Only show results from this source: curated (omm's built-in/cached "
         "catalog, not a real host), huggingface, or modelscope.",
     ),
+    skip_ms: bool = typer.Option(
+        False,
+        "--skip-ms",
+        help="Don't query ModelScope. Its results need one extra network "
+        "request per candidate repo, which can noticeably slow down search.",
+    ),
 ) -> None:
     """Search curated models, cached candidates, and HuggingFace by name."""
     if provider is not None and provider not in ("curated", "huggingface", "modelscope"):
         err_console.print(
             f"[red]--provider must be one of: curated, huggingface, modelscope (got '{provider}').[/red]"
         )
+        raise typer.Exit(2)
+    if skip_ms and provider == "modelscope":
+        err_console.print("[red]--skip-ms conflicts with --provider modelscope.[/red]")
         raise typer.Exit(2)
     json_output = _global_opts().json
     config = load_config()
@@ -3077,7 +3086,7 @@ def search(
     ]
     ms_matches = [
         c
-        for c in search_mod.search_modelscope(query)
+        for c in (search_mod.search_modelscope(query) if not skip_ms else [])
         if c.get("repo_id") not in local_repo_ids
     ]
 
