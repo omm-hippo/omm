@@ -578,6 +578,7 @@ def scan() -> None:
                 "vram_total_gb": info.vram_total_gb,
                 "vram_free_gb": info.vram_free_gb,
                 "engines_installed": [spec.key for spec in linker.ENGINES if installed[spec.key]],
+                "stale_links": cleaned,
                 "models": [
                     {
                         "filename": filename,

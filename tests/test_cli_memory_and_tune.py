@@ -50,6 +50,24 @@ def test_scan_clears_stale_link_record_for_uninstalled_engine(isolated_omm_home,
     assert reg["model.gguf"]["linked"] == {"jan": False, "ollama": True}
 
 
+def test_scan_json_includes_stale_links_key(isolated_omm_home, monkeypatch):
+    # The table path surfaces cleared stale link records as a "Cleared
+    # stale link record(s) for: ..." hint line; --json dropped the same
+    # signal entirely (see #81).
+    import json
+
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key != "jan")
+    cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
+
+    result = runner.invoke(cli.app, ["scan", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    data = json.loads(result.stdout)
+    assert data["stale_links"] == ["model.gguf"]
+
+
 def test_scan_quiet_suppresses_hints_but_keeps_the_tables(isolated_omm_home, monkeypatch):
     # --quiet should drop the "Cleared stale link record.../Run: omm link"
     # style hints but keep the actual hardware/runner/model tables, which
