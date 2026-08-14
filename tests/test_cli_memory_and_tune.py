@@ -50,6 +50,22 @@ def test_scan_clears_stale_link_record_for_uninstalled_engine(isolated_omm_home,
     assert reg["model.gguf"]["linked"] == {"jan": False, "ollama": True}
 
 
+def test_scan_quiet_suppresses_hints_but_keeps_the_tables(isolated_omm_home, monkeypatch):
+    # --quiet should drop the "Cleared stale link record.../Run: omm link"
+    # style hints but keep the actual hardware/runner/model tables, which
+    # are the result the user asked for, not decorative filler (see #80).
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _hardware())
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key != "jan")
+    cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
+
+    result = runner.invoke(cli.app, ["scan", "--quiet"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Cleared stale link record" not in result.stdout
+    assert "omm hardware scan" in result.stdout.lower()
+
+
 def test_scan_leaves_link_record_untouched_when_engine_still_installed(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])

@@ -67,6 +67,25 @@ def test_import_without_yes_errors_without_a_tty(isolated_omm_home, monkeypatch)
     assert result.exit_code == 1
 
 
+def test_import_quiet_suppresses_status_lines_but_keeps_the_summary(isolated_omm_home, monkeypatch):
+    group = _fake_group()
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda extra_path=None: [object()])
+    monkeypatch.setattr(cli.scan_import, "group_by_hash", lambda found: [group])
+    monkeypatch.setattr(
+        cli.scan_import,
+        "adopt_group",
+        lambda g: SimpleNamespace(filename="model.gguf", bytes_saved=0),
+    )
+    monkeypatch.setattr(cli.registry, "load_registry", lambda: {"model.gguf": {}})
+
+    result = runner.invoke(cli.app, ["import", "--yes", "--quiet"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Found 1 model" not in result.stdout
+    assert "Imported model.gguf" not in result.stdout
+    assert "Done:" in result.stdout
+
+
 def test_import_continues_after_one_group_fails(isolated_omm_home, monkeypatch):
     failing_group = _fake_group(sha256="baadf00d")
     ok_group = _fake_group(sha256="deadbeef")

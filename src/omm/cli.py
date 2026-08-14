@@ -603,7 +603,7 @@ def scan() -> None:
     console.print()
     console.print(engine_table)
     note = _missing_engines_note(installed)
-    if note:
+    if note and not opts.quiet:
         console.print(note)
 
     model_table = Table(title="Local AI models", box=None)
@@ -620,6 +620,8 @@ def scan() -> None:
     console.print()
     console.print(model_table)
 
+    if opts.quiet:
+        return
     if cleaned:
         console.print()
         console.print(
@@ -845,17 +847,20 @@ def _maybe_auto_import(ctx: typer.Context) -> None:
 def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> None:
     import questionary
 
+    opts = _global_opts()
     found = scan_import.find_external_models(extra_path)
     groups = scan_import.group_by_hash(found)
     if not groups:
-        console.print("[dim]No externally-managed .gguf files found.[/dim]")
+        if not opts.quiet:
+            console.print("[dim]No externally-managed .gguf files found.[/dim]")
         return
 
     total_gb = sum(g.size_bytes for g in groups) / (1024**3)
-    console.print(
-        f"Found {len(groups)} model(s) ({len(found)} file(s), ~{total_gb:.1f} GB) "
-        "in supported local AI apps not yet managed by omm."
-    )
+    if not opts.quiet:
+        console.print(
+            f"Found {len(groups)} model(s) ({len(found)} file(s), ~{total_gb:.1f} GB) "
+            "in supported local AI apps not yet managed by omm."
+        )
     if not yes and not _ask_confirm(f"Import {len(groups)} model(s) into the omm hub?"):
         err_console.print("[yellow]Skipped.[/yellow]")
         return
@@ -886,7 +891,8 @@ def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> No
             err_console.print(f"[yellow]Could not import {group.display_name}: {e}[/yellow]")
             continue
         bytes_saved += result.bytes_saved
-        console.print(f"  [green]Imported {result.filename}[/green]")
+        if not opts.quiet:
+            console.print(f"  [green]Imported {result.filename}[/green]")
 
     final_count = len(registry.load_registry())
     console.print(
@@ -1945,10 +1951,11 @@ def _install_impl(
                 _, speed_low, speed_high = predictor.predict_speed_interval(trees, hw, candidate)
             except (ValueError, KeyError, TypeError, IndexError):
                 speed_low = speed_high = speed
-            console.print(
-                f"[dim]Predicted speed: {speed:.1f} tok/s "
-                f"(range {speed_low:.1f}–{speed_high:.1f}).[/dim]"
-            )
+            if not opts.quiet:
+                console.print(
+                    f"[dim]Predicted speed: {speed:.1f} tok/s "
+                    f"(range {speed_low:.1f}–{speed_high:.1f}).[/dim]"
+                )
 
     dest = MODELS_DIR / filename
     downloaded_now = False
@@ -2014,7 +2021,8 @@ def _install_impl(
         err_console.print(f"[red]{error}.[/red]")
         raise typer.Exit(1) from error
 
-    console.print("Verifying checksum...")
+    if not opts.quiet:
+        console.print("Verifying checksum...")
     sha256 = sha256_file(dest)
 
     ollama_tag = linker.sanitize_ollama_tag(filename)
@@ -2053,7 +2061,8 @@ def _install_impl(
     runtime_options = None
     eval_error: quality_mod.QualityEvaluationError | None = None
     if linked["ollama"]:
-        console.print("Benchmarking...")
+        if not opts.quiet:
+            console.print("Benchmarking...")
         started_daemon = None
         if not benchmark.ollama_daemon_reachable():
             started_daemon = benchmark.start_ollama_daemon()
@@ -2083,6 +2092,8 @@ def _install_impl(
                         and quality_mod.evaluate_model is quality_mod._DEFAULT_EVALUATE_MODEL
                     ):
                         def report_progress(elapsed: float, deadline: float) -> None:
+                            if opts.quiet:
+                                return
                             console.print(
                                 f"[dim]Still benchmarking {filename}: {int(elapsed)}s elapsed "
                                 f"(automatic cutoff at {int(deadline)}s).[/dim]"
@@ -4051,6 +4062,7 @@ def _run_contribution_loop(
     daemon_ref: dict | None = None,
     fetch_siblings=None,
 ) -> _ContributionStats:
+    opts = _global_opts()
     stats = _ContributionStats(benchmarked=[])
     consecutive_daemon_failures = 0
     benchmark_failure_counts: dict[str, int] = {}
@@ -4079,7 +4091,8 @@ def _run_contribution_loop(
 
         candidate = queue.next_candidate(refetch=refetch, fetch_siblings=fetch_siblings)
         if candidate is None:
-            console.print("[dim]No more candidates available for this hardware.[/dim]")
+            if not opts.quiet:
+                console.print("[dim]No more candidates available for this hardware.[/dim]")
             stats.exhausted = True
             break
 
@@ -4092,7 +4105,8 @@ def _run_contribution_loop(
         )
         display_name = candidate.get("name", candidate["filename"])
         ref_str = contribute_mod.ref(candidate)
-        console.print(f"[cyan]Trying {display_name}...[/cyan]")
+        if not opts.quiet:
+            console.print(f"[cyan]Trying {display_name}...[/cyan]")
 
         try:
             outcome = _install_impl(
