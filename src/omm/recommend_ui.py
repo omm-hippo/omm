@@ -16,12 +16,10 @@ from rich.text import Text
 from omm import predictor
 from omm.hardware import HardwareInfo, calculate_memory_budget
 
-ACCENT = "#22d3ee"
-SUCCESS = "#4ade80"
-WARNING = "#fbbf24"
-METRIC = "#60a5fa"
-SIZE = "#f472b6"
-MUTED = "#6b7280"
+ACCENT = "cyan"
+SUCCESS = "green"
+WARNING = "yellow"
+MUTED = "#808080"
 COLORS_ENABLED = "NO_COLOR" not in os.environ
 
 SELECT_STYLE = (
@@ -30,7 +28,7 @@ SELECT_STYLE = (
             ("qmark", f"fg:{ACCENT} bold"),
             ("question", f"fg:{ACCENT} bold"),
             ("pointer", f"fg:{ACCENT} bold"),
-            ("highlighted", "fg:#ffffff bg:#164e63 bold"),
+            ("highlighted", "fg:black bg:cyan bold"),
             ("selected", f"fg:{SUCCESS}"),
             ("instruction", f"fg:{MUTED}"),
         ]
@@ -148,7 +146,7 @@ def build_rows(
         elif curated:
             badge, badge_style = "OMM PICK", f"fg:{SUCCESS} bold"
         elif "downloads" in str(candidate.get("description") or "").lower():
-            badge, badge_style = "POPULAR", f"fg:{METRIC} bold"
+            badge, badge_style = "POPULAR", f"fg:{ACCENT} bold"
         else:
             badge, badge_style = "COMPATIBLE", f"fg:{MUTED} bold"
         rows.append(
@@ -261,10 +259,10 @@ def choice_title(row: RecommendationRow, width: int) -> list[tuple[str, str]]:
             _clip(row.display_name, model_width - 1).ljust(model_width),
         ),
         (_prompt_style(row.badge_style), _clip(row.badge, badge_width - 1).ljust(badge_width)),
-        (_prompt_style(f"fg:{METRIC}"), speed.ljust(13)),
+        (_prompt_style(f"fg:{ACCENT}"), speed.ljust(13)),
     ]
     if memory_width:
-        parts.append((_prompt_style(f"fg:{SIZE}"), memory.ljust(memory_width)))
+        parts.append((_prompt_style(f"fg:{MUTED}"), memory.ljust(memory_width)))
     parts.append(("", _clip(row.use_case, use_width).ljust(use_width)))
     return parts
 

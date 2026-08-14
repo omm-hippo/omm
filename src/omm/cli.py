@@ -297,8 +297,8 @@ if platform.system() == "Windows":
         reconfigure = getattr(_stream, "reconfigure", None)
         if reconfigure is not None:
             reconfigure(errors="replace")
-console = Console(safe_box=platform.system() == "Windows")
-err_console = Console(stderr=True, safe_box=platform.system() == "Windows")
+console = Console(safe_box=platform.system() == "Windows", highlight=False)
+err_console = Console(stderr=True, safe_box=platform.system() == "Windows", highlight=False)
 
 REPO_URL = "git+https://github.com/omm-hippo/omm.git"
 COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"

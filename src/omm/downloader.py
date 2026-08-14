@@ -42,7 +42,7 @@ _DEFAULT_THREADS = 4
 _MIN_CHUNK_SIZE = 8 * 1024 * 1024  # minimum work per thread
 _MIN_PARALLEL_TOTAL = 20 * 1024 * 1024  # below this, not worth parallelizing
 
-_err_console = Console(stderr=True)
+_err_console = Console(stderr=True, highlight=False)
 
 _RETRY_DELAYS = [1, 1, 3, 5, 10, 10, 10, 10, 10]
 _MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
