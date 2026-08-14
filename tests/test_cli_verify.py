@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+from typer.testing import CliRunner
+
+from omm import cli, registry, runtime_compatibility
+from omm.engines import (
+    LoadReceipt,
+    ProbeResult,
+    RuntimeHealth,
+    RuntimeModel,
+    UnloadResult,
+)
+
+runner = CliRunner()
+
+
+class _CliAdapter:
+    key = "ollama"
+
+    def __init__(self, *, loaded=False):
+        self.loaded = loaded
+
+    def health(self):
+        return RuntimeHealth(True, "1.0")
+
+    def list_models(self):
+        return [RuntimeModel("model", "model", self.loaded, "model" if self.loaded else None)]
+
+    def load(self, model, options):
+        runtime_model = RuntimeModel("model", "model", True, "model")
+        return LoadReceipt(runtime_model, "model", self.loaded, not self.loaded)
+
+    def generate(self, receipt, request):
+        return ProbeResult("OK")
+
+    def unload(self, receipt):
+        return UnloadResult(True)
+
+
+def _entry(**overrides):
+    entry = {
+        "linked": {"ollama": True, "lmstudio": False},
+        "ollama_name": "model",
+        "size_bytes": 4,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_verify_success_records_and_reports_result(isolated_omm_home, monkeypatch):
+    registry.save_registry({"model.gguf": _entry()})
+    adapter = _CliAdapter()
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+
+    result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "ollama", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Compatible" in result.stdout
+    saved = registry.load_registry()["model.gguf"]["compatibility"]["ollama"]
+    assert saved["status"] == "passed"
+
+
+def test_verify_asks_before_loading_and_cancel_keeps_registry_unchanged(
+    isolated_omm_home, monkeypatch
+):
+    registry.save_registry({"model.gguf": _entry()})
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _CliAdapter())
+    monkeypatch.setattr(cli, "_ask_confirm", lambda prompt: False)
+
+    result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "ollama"])
+
+    assert result.exit_code == 0
+    assert "cancelled" in result.stderr.lower()
+    assert "compatibility" not in registry.load_registry()["model.gguf"]
+
+
+def test_verify_does_not_ask_for_preloaded_model(isolated_omm_home, monkeypatch):
+    registry.save_registry({"model.gguf": _entry()})
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _CliAdapter(loaded=True))
+    monkeypatch.setattr(
+        cli,
+        "_ask_confirm",
+        lambda prompt: (_ for _ in ()).throw(AssertionError("asked")),
+    )
+
+    result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "ollama"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_verify_failure_keeps_model_file_and_records_reason(isolated_omm_home, monkeypatch):
+    registry.save_registry({"model.gguf": _entry()})
+    model_file = cli.MODELS_DIR / "model.gguf"
+    model_file.write_bytes(b"gguf")
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _CliAdapter())
+    failed = runtime_compatibility.CompatibilityResult(
+        "ollama",
+        "failed",
+        "2026-07-31T12:00:00+00:00",
+        1,
+        "1.0",
+        "out_of_memory",
+    )
+
+    def record(filename, adapter, model_ref, **kwargs):
+        registry.record_compatibility(filename, adapter.key, failed.registry_payload())
+        return failed
+
+    monkeypatch.setattr(cli, "verify_and_record", record)
+
+    result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "ollama", "--yes"])
+
+    assert result.exit_code == 1
+    assert "not enough memory" in result.stderr
+    assert model_file.read_bytes() == b"gguf"
+    assert registry.load_registry()["model.gguf"]["compatibility"]["ollama"]["failure_reason"] == "out_of_memory"
+
+
+def test_verify_rejects_unlinked_and_uninstalled_models(isolated_omm_home):
+    registry.save_registry({"model.gguf": _entry(linked={"ollama": False, "lmstudio": False})})
+
+    unlinked = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "ollama", "--yes"])
+    missing = runner.invoke(cli.app, ["verify", "missing.gguf", "--engine", "ollama", "--yes"])
+
+    assert unlinked.exit_code == 1
+    assert "not linked" in unlinked.stderr
+    assert missing.exit_code == 1
+    assert "not installed" in missing.stderr
+
+
+def test_info_json_includes_compatibility_without_breaking_old_entries(isolated_omm_home):
+    registry.save_registry({"model.gguf": _entry()})
+
+    result = runner.invoke(cli.app, ["info", "model.gguf", "--json"])
+
+    assert result.exit_code == 0
+    assert '"compatibility": {}' in result.stdout

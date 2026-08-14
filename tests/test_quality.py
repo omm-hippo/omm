@@ -537,7 +537,7 @@ def test_classify_error_response_maps_ollama_error_bodies(body, expected):
 
 def test_request_json_classifies_connect_timeout_as_ollama_unavailable(monkeypatch):
     monkeypatch.setattr(
-        requests, "request",
+        requests.Session, "request",
         lambda *a, **k: (_ for _ in ()).throw(requests.exceptions.ConnectTimeout("no route")),
     )
     with pytest.raises(quality.QualityEvaluationError) as excinfo:
@@ -547,7 +547,7 @@ def test_request_json_classifies_connect_timeout_as_ollama_unavailable(monkeypat
 
 def test_request_json_classifies_read_timeout_as_generation_timeout(monkeypatch):
     monkeypatch.setattr(
-        requests, "request",
+        requests.Session, "request",
         lambda *a, **k: (_ for _ in ()).throw(requests.exceptions.ReadTimeout("slow")),
     )
     with pytest.raises(quality.QualityEvaluationError) as excinfo:
@@ -557,7 +557,7 @@ def test_request_json_classifies_read_timeout_as_generation_timeout(monkeypatch)
 
 def test_request_json_classifies_connection_error_as_connection_error(monkeypatch):
     monkeypatch.setattr(
-        requests, "request",
+        requests.Session, "request",
         lambda *a, **k: (_ for _ in ()).throw(requests.exceptions.ConnectionError("reset by peer")),
     )
     with pytest.raises(quality.QualityEvaluationError) as excinfo:
@@ -567,7 +567,7 @@ def test_request_json_classifies_connection_error_as_connection_error(monkeypatc
 
 def test_request_json_classifies_oom_response_as_out_of_memory(monkeypatch):
     monkeypatch.setattr(
-        requests, "request",
+        requests.Session, "request",
         lambda *a, **k: _FakeResponse(500, {"error": "model requires more system memory than is available"}),
     )
     with pytest.raises(quality.QualityEvaluationError) as excinfo:
@@ -577,7 +577,9 @@ def test_request_json_classifies_oom_response_as_out_of_memory(monkeypatch):
 
 def test_request_json_defaults_unclassified_http_errors_to_unknown(monkeypatch):
     monkeypatch.setattr(
-        requests, "request", lambda *a, **k: _FakeResponse(503, {"error": "temporarily busy"})
+        requests.Session,
+        "request",
+        lambda *a, **k: _FakeResponse(503, {"error": "temporarily busy"}),
     )
     with pytest.raises(quality.QualityEvaluationError) as excinfo:
         quality._request_json("GET", "/api/tags")
