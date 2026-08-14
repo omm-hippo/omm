@@ -29,8 +29,7 @@ def test_no_color_flag_disables_ansi_codes(isolated_omm_home, monkeypatch):
     # ANSI color on it regardless of --no-color - asserting a color code
     # absent against the unforced console would pass even if --no-color
     # did nothing. Force color on first (same pattern as
-    # tests/test_onboarding.py's _console() and
-    # tests/test_recommend_ui.py's force_terminal usage) so the
+    # tests/test_onboarding.py's _console() at line 11) so the
     # "stripped by --no-color" assertion actually exercises the flag.
     #
     # Rich's Console.no_color only strips color SGR codes, not every
