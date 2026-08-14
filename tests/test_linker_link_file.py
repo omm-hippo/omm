@@ -150,6 +150,19 @@ def test_link_file_replaces_existing_destination(isolated_omm_home, tmp_path):
     assert dst.read_bytes() == b"stale"
 
 
+def test_link_file_force_reclaims_unowned_destination(isolated_omm_home, tmp_path):
+    src = tmp_path / "model.gguf"
+    src.write_bytes(b"weights")
+    dst = tmp_path / "dst" / "model.gguf"
+    dst.parent.mkdir(parents=True)
+    dst.write_bytes(b"stale")
+
+    linker.link_file(src, dst, force=True)
+
+    assert dst.is_symlink() or dst.samefile(src)
+    assert dst.read_bytes() == b"weights"
+
+
 def _force_windows_hardlinks(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
@@ -271,6 +284,26 @@ def test_ollama_preserves_unowned_manifest_and_existing_blob(isolated_omm_home, 
         linker.link_ollama(source, "model", models_dir=models_dir)
     assert blob.read_bytes() == b"user blob"
     assert manifest.read_text() == "user manifest"
+
+
+def test_ollama_force_reclaims_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
+    """A manifest omm itself wrote in the past but whose ownership record was
+    lost (e.g. link_ownership.json reset) looks identical to a stranger's
+    manifest - force must still be able to reclaim it on request."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("stale manifest, no ownership record")
+
+    result = linker.link_ollama(source, "model", models_dir=models_dir, force=True)
+
+    assert result is False  # no tokenizer.chat_template in the stubbed metadata
+    new_manifest = json.loads(manifest.read_text())
+    assert new_manifest["layers"][0]["digest"] == f"sha256:{linker.sha256_file(source)}"
+    assert linker._owned_manifest(manifest)
 
 
 def test_link_file_raises_link_error_when_mkdir_fails(tmp_path, monkeypatch):

@@ -3140,6 +3140,14 @@ def link_models(
     engine: str | None = typer.Option(
         None, "--engine", help="Only re-verify/repair links for this engine."
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Reclaim a destination omm doesn't recognize as its own "
+        "(e.g. lost ownership record, or a file placed there by something "
+        "else) by deleting it and relinking, instead of skipping it as a "
+        "conflict.",
+    ),
 ) -> None:
     """Link models into an arbitrary directory or repair known app links.
 
@@ -3190,7 +3198,7 @@ def link_models(
                 continue
             try:
                 destination = linker.link_custom_directory(
-                    source, directory, on_copy=report_copy
+                    source, directory, on_copy=report_copy, force=force
                 )
             except linker.LinkError as error:
                 err_console.print(f"[yellow]{filename}: custom link skipped: {error}[/yellow]")
@@ -3235,6 +3243,7 @@ def link_models(
                     dest,
                     repo_id=entry.get("repo_id"),
                     ollama_tag=ollama_tag,
+                    force=force,
                 )
                 new_linked[spec.key] = True
                 changed = True

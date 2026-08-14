@@ -358,13 +358,20 @@ def disk_usage_path(path: Path) -> Path:
     return _existing_parent(path)
 
 
-def link_file(src: Path, dst: Path, *, on_copy: CopyReporter | None = None) -> str:
+def link_file(
+    src: Path, dst: Path, *, on_copy: CopyReporter | None = None, force: bool = False
+) -> str:
     """Expose ``src`` at ``dst`` and return symlink/hardlink/copy.
 
     Windows file junctions are not applicable here (they only target
     directories). A hard link is attempted first because it needs no
     Developer Mode; a symlink covers cross-volume destinations when
     permitted, and an ownership-recorded copy is the last-resort fallback.
+
+    `force` reclaims a destination omm does not recognize as its own
+    (e.g. the ownership registry was lost, or the file was linked by
+    something else) by deleting it outright instead of raising. Callers
+    pass this through only when the user explicitly opted in.
     """
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -375,13 +382,15 @@ def link_file(src: Path, dst: Path, *, on_copy: CopyReporter | None = None) -> s
             # Pre-ownership-registry omm links have no metadata. During an
             # explicit relink, adopt only a destination proved to be this
             # exact source; never infer ownership from a matching filename.
-            if not _matches_requested_link(src, dst):
+            if _matches_requested_link(src, dst):
+                if dst.is_symlink():
+                    _record_symlink(dst, src)
+                else:
+                    _record_hardlink(dst, src)
+                return "symlink" if dst.is_symlink() else "hardlink"
+            if not force:
                 raise LinkError(f"Refusing to replace unowned existing file at {dst}.")
-            if dst.is_symlink():
-                _record_symlink(dst, src)
-            else:
-                _record_hardlink(dst, src)
-            return "symlink" if dst.is_symlink() else "hardlink"
+            dst.unlink()
 
     errors = []
     if platform.system() == "Windows":
@@ -466,20 +475,28 @@ def _lmstudio_publisher_repo(repo_id: str | None, filename: str) -> tuple[str, s
 
 
 def link_lmstudio(
-    gguf_path: Path, repo_id: str | None, *, on_copy: CopyReporter | None = None
+    gguf_path: Path,
+    repo_id: str | None,
+    *,
+    on_copy: CopyReporter | None = None,
+    force: bool = False,
 ) -> Path:
     publisher, repo = _lmstudio_publisher_repo(repo_id, gguf_path.name)
     dst = lmstudio_models_dir() / publisher / repo / gguf_path.name
-    link_file(gguf_path, dst, on_copy=on_copy)
+    link_file(gguf_path, dst, on_copy=on_copy, force=force)
     return dst
 
 
 def link_custom_directory(
-    gguf_path: Path, directory: Path, *, on_copy: CopyReporter | None = None
+    gguf_path: Path,
+    directory: Path,
+    *,
+    on_copy: CopyReporter | None = None,
+    force: bool = False,
 ) -> Path:
     """Expose a central GGUF in an arbitrary local application's model directory."""
     destination = directory.expanduser() / gguf_path.name
-    link_file(gguf_path, destination, on_copy=on_copy)
+    link_file(gguf_path, destination, on_copy=on_copy, force=force)
     return destination
 
 
@@ -759,6 +776,7 @@ def link_ollama(
     verify_compat: bool = True,
     *,
     on_copy: CopyReporter | None = None,
+    force: bool = False,
 ) -> bool:
     """Link into Ollama (or an Ollama-format engine at a different
     models_dir, e.g. AnythingLLM's bundled instance). Returns True if the
@@ -876,7 +894,7 @@ def link_ollama(
         manifest_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = manifest_dir / "latest"
         if manifest_path.exists() or manifest_path.is_symlink():
-            if not _owned_manifest(manifest_path):
+            if not _owned_manifest(manifest_path) and not force:
                 raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
             manifest_path.unlink()
             _update_link_ownership(manifest_path, None)
@@ -2108,10 +2126,20 @@ def disk_copy_risks(source_path: Path, *, only_ollama: bool = False) -> list[Dis
     return risks
 
 
-def link_engine(key: str, gguf_path: Path, *, repo_id: str | None, ollama_tag: str) -> str | None:
+def link_engine(
+    key: str,
+    gguf_path: Path,
+    *,
+    repo_id: str | None,
+    ollama_tag: str,
+    force: bool = False,
+) -> str | None:
     """Link `gguf_path` into the named engine (must already be confirmed
     installed via is_engine_installed). Returns an optional warning message
-    to surface to the user; raises LinkError on failure."""
+    to surface to the user; raises LinkError on failure.
+
+    `force` reclaims a destination not recognized as omm's own (see
+    `link_file`/`link_ollama`) instead of raising a conflict LinkError."""
     messages: list[str] = []
 
     def report_copy(_source: Path, destination: Path, size_bytes: int) -> None:
@@ -2121,14 +2149,14 @@ def link_engine(key: str, gguf_path: Path, *, repo_id: str | None, ollama_tag: s
         )
 
     if key == "ollama":
-        has_chat_template = link_ollama(gguf_path, ollama_tag, on_copy=report_copy)
+        has_chat_template = link_ollama(gguf_path, ollama_tag, on_copy=report_copy, force=force)
         if not has_chat_template:
             messages.append(
                 "This GGUF has no embedded chat template - Ollama will fall "
                 "back to raw completion (no chat formatting)."
             )
     elif key == "lmstudio":
-        link_lmstudio(gguf_path, repo_id, on_copy=report_copy)
+        link_lmstudio(gguf_path, repo_id, on_copy=report_copy, force=force)
     elif key == "jan":
         link_jan(gguf_path, ollama_tag)
     elif key == "anythingllm":
@@ -2138,19 +2166,20 @@ def link_engine(key: str, gguf_path: Path, *, repo_id: str | None, ollama_tag: s
             models_dir=anythingllm_ollama_models_dir(),
             verify_compat=False,
             on_copy=report_copy,
+            force=force,
         )
     elif key == "mstystudio":
-        link_custom_directory(gguf_path, mstystudio_models_dir(), on_copy=report_copy)
+        link_custom_directory(gguf_path, mstystudio_models_dir(), on_copy=report_copy, force=force)
     elif key == "textgenwebui":
         models_dir = textgenwebui_models_dir()
         if models_dir is None:
             raise LinkError("text-generation-webui not found.")
-        link_custom_directory(gguf_path, models_dir, on_copy=report_copy)
+        link_custom_directory(gguf_path, models_dir, on_copy=report_copy, force=force)
     elif key == "koboldcpp":
         models_dir = koboldcpp_models_dir()
         if models_dir is None:
             raise LinkError("KoboldCpp not found.")
-        link_custom_directory(gguf_path, models_dir, on_copy=report_copy)
+        link_custom_directory(gguf_path, models_dir, on_copy=report_copy, force=force)
     else:
         raise ValueError(f"unknown engine: {key}")
     return "\n".join(messages) or None

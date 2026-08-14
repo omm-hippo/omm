@@ -15,7 +15,7 @@ def test_link_engine_flag_only_touches_that_engine(isolated_omm_home, monkeypatc
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key in ("ollama", "lmstudio"))
     calls = []
 
-    def fake_link_engine(key, dest, repo_id=None, ollama_tag=None):
+    def fake_link_engine(key, dest, repo_id=None, ollama_tag=None, force=False):
         calls.append(key)
         return None
 
