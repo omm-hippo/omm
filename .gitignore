@@ -13,3 +13,6 @@ build/
 .worktrees/
 no_upload/
 .superpowers/
+.agents/
+agent/
+skills-lock.json
