@@ -26,6 +26,7 @@ from typing import Callable
 
 from omm.hardware import HardwareInfo
 from omm import benchmark, tuning
+from omm.engines.base import LoopbackJsonClient, RuntimeAdapterError
 
 OLLAMA_HOST = "http://localhost:11434"
 MAX_PACK_BYTES = 1_000_000
@@ -284,47 +285,34 @@ def _classify_error_response(response) -> str:
 def _request_json(
     method: str, path: str, payload: dict | None = None, timeout: int = DEFAULT_GENERATION_TIMEOUT_SECONDS
 ) -> dict:
-    import requests
-
     try:
-        response = requests.request(
+        return LoopbackJsonClient(OLLAMA_HOST).request(
             method,
-            f"{OLLAMA_HOST}{path}",
-            json=payload,
+            path,
+            payload=payload,
             timeout=timeout,
-        )
-    except requests.exceptions.ConnectTimeout as error:
+            default_failure="unknown",
+            timeout_failure="generation_timeout",
+        ).data
+    except RuntimeAdapterError as error:
+        if error.transport_kind == "connection_error":
+            failure_reason = FAILURE_REASON_CONNECTION_ERROR
+        elif error.transport_kind == "connect_timeout" or error.reason == "server_unavailable":
+            failure_reason = FAILURE_REASON_OLLAMA_UNAVAILABLE
+        elif error.reason == "generation_timeout":
+            failure_reason = FAILURE_REASON_GENERATION_TIMEOUT
+        elif error.reason == "out_of_memory":
+            failure_reason = FAILURE_REASON_OUT_OF_MEMORY
+        elif error.reason in {"load_failed", "model_not_visible"}:
+            failure_reason = FAILURE_REASON_MODEL_LOAD_FAILED
+        elif error.reason == "unsupported_runtime":
+            failure_reason = FAILURE_REASON_UNSUPPORTED_RUNTIME
+        else:
+            failure_reason = FAILURE_REASON_UNKNOWN
         raise QualityEvaluationError(
-            f"Ollama {path} did not accept a connection", failure_reason=FAILURE_REASON_OLLAMA_UNAVAILABLE
+            f"Ollama {path} request failed",
+            failure_reason=failure_reason,
         ) from error
-    except requests.exceptions.ReadTimeout as error:
-        raise QualityEvaluationError(
-            f"Ollama {path} did not respond in time", failure_reason=FAILURE_REASON_GENERATION_TIMEOUT
-        ) from error
-    except requests.exceptions.ConnectionError as error:
-        raise QualityEvaluationError(
-            f"Ollama {path} connection was interrupted", failure_reason=FAILURE_REASON_CONNECTION_ERROR
-        ) from error
-    except requests.RequestException as error:
-        raise QualityEvaluationError(
-            f"Ollama {path} request failed", failure_reason=FAILURE_REASON_UNKNOWN
-        ) from error
-    if not response.ok:
-        raise QualityEvaluationError(
-            f"Ollama {path} returned HTTP {response.status_code}",
-            failure_reason=_classify_error_response(response),
-        )
-    try:
-        data = response.json()
-    except ValueError as error:
-        raise QualityEvaluationError(
-            f"Ollama {path} returned invalid JSON", failure_reason=FAILURE_REASON_UNKNOWN
-        ) from error
-    if not isinstance(data, dict):
-        raise QualityEvaluationError(
-            f"Ollama {path} returned a non-object response", failure_reason=FAILURE_REASON_UNKNOWN
-        )
-    return data
 
 
 def ollama_version() -> str | None:

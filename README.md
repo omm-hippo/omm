@@ -93,12 +93,13 @@ omm recommend  # Suggest a model that fits this machine, then offer to install i
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm benchmark <name>...  # Local quality + speed smoke evidence for one or more installed models
 omm search <query> [--json] [--skip-unfit] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated models, cached candidates, and HuggingFace
-omm install <name> [--skip-unfit] [--upload/--no-upload] [--force]  # Download a model and link it into LM Studio / Ollama
+omm install <name> [--skip-unfit] [--upload/--no-upload] [--force] [--verify-runtime|--no-verify-runtime]  # Download, link, and optionally verify a model
 omm import [directory] [--yes]  # Adopt GGUF files already sitting in Ollama/LM Studio (or a given directory) into the hub
 omm uninstall <name> [--dry-run]  # Uninstall a model and clean up its symlinks/manifests (alias: rm)
 omm uninstall all [--yes] [--dry-run]  # Uninstall every model installed via omm
 omm list [--json] [--engine NAME]  # Show models installed via omm and their linked status (alias: ls)
 omm info <name> [--json]  # Show a model's name, version, size, and linked-program run commands
+omm verify <name> [--engine ollama|lmstudio] [--keep-loaded]  # Prove local load + generation works
 omm upgrade <name> [--dry-run]  # Refresh a model against its source if it has changed since install (alias: up)
 omm upgrade [--yes] [--dry-run]  # Check every installed model for updates
 omm link [--engine NAME]  # Re-verify and repair every installed model's LM Studio/Ollama links
@@ -118,6 +119,15 @@ omm help [command]  # Show help, same as --help
 ```
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `search`/`install` mark models predicted not to run on this machine's hardware in red.
+
+`omm verify` checks more than a link: it asks before loading an unloaded model,
+sends one short deterministic prompt to a server already running on this
+computer, requires a non-empty answer, and releases only a model that OMM
+loaded for the check. It never starts Ollama or LM Studio, deletes the model,
+or stores the generated answer. LM Studio API authentication reads
+`LM_API_TOKEN` from the process environment and never writes it to
+`config.json`. Compatibility status is stored locally in `models.json` and is
+shown by `omm info`.
 
 ### Scripting
 

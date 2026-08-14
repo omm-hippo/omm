@@ -4,9 +4,20 @@ import requests
 from typer.testing import CliRunner
 
 from omm import cli, config, linker
+from omm.engines import RuntimeHealth, RuntimeModel
 from omm.hub import ResolvedModel
 
 runner = CliRunner()
+
+
+class _InstallAdapter:
+    key = "ollama"
+
+    def health(self):
+        return RuntimeHealth(True, "1.0")
+
+    def list_models(self):
+        return [RuntimeModel("tinyllama", "tinyllama", False)]
 
 
 def _stub_successful_install(monkeypatch, ollama_installed=True):
@@ -35,6 +46,7 @@ def _stub_successful_install(monkeypatch, ollama_installed=True):
         lambda dest, tag, models_dir=None, **kwargs: ollama_installed,
     )
     monkeypatch.setattr(linker, "sanitize_ollama_tag", lambda filename: "tinyllama")
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _InstallAdapter())
     return filename
 
 
@@ -48,9 +60,16 @@ def _log_outcomes(isolated_omm_home):
 def test_declining_upload_confirm_logs_declined_by_user(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(
+        cli,
+        "_ask_confirm",
+        lambda message, default=False: "Load " in message,
+    )
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
 
-    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+    result = runner.invoke(
+        cli.app, ["install", "tinyllama-1.1b-q4", "--verify-runtime"]
+    )
 
     assert result.exit_code == 0, result.stdout
     assert _log_outcomes(isolated_omm_home) == ["declined_by_user"]
@@ -86,7 +105,9 @@ def test_one_shot_upload_failure_is_not_described_as_queued(isolated_omm_home, m
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: False)
 
-    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+    result = runner.invoke(
+        cli.app, ["install", "tinyllama-1.1b-q4", "--verify-runtime"]
+    )
 
     assert result.exit_code == 0, result.stdout
     assert "not queued" in result.stdout.lower()
@@ -99,7 +120,9 @@ def test_report_telemetry_silent_on_success(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
 
-    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+    result = runner.invoke(
+        cli.app, ["install", "tinyllama-1.1b-q4", "--verify-runtime"]
+    )
 
     assert result.exit_code == 0, result.stdout
     assert "queued" not in result.stdout.lower()

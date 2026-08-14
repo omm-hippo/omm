@@ -8,6 +8,7 @@ import pytest
 
 from omm import cli, registry
 from omm.downloader import DownloadCancelled
+from omm.engines import RuntimeHealth, RuntimeModel
 from omm.hub import ResolvedModel
 
 
@@ -393,6 +394,83 @@ def test_benchmark_always_runs_but_upload_needs_confirm(isolated_omm_home, monke
     assert outcome.tokens_per_sec == 42.0
     assert sent == []
     assert outcome.telemetry_sent is False
+
+
+class _InstallCompatibilityAdapter:
+    key = "ollama"
+
+    def __init__(self, *, loaded=False):
+        self.loaded = loaded
+
+    def health(self):
+        return RuntimeHealth(True, "1.0")
+
+    def list_models(self):
+        return [RuntimeModel("tinyllama", "tinyllama", self.loaded)]
+
+
+def test_post_install_declined_load_runs_no_benchmark_and_records_nothing(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(
+        cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x")
+    )
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_compatibility_adapter", lambda engine: _InstallCompatibilityAdapter()
+    )
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    calls = []
+    monkeypatch.setattr(
+        cli.benchmark, "benchmark_ollama", lambda tag: calls.append(tag) or 42.0
+    )
+
+    outcome = cli._install_impl(
+        _resolved(),
+        verify_runtime_after_install=True,
+        runtime_load_consent=None,
+        no_upload=True,
+    )
+
+    assert calls == []
+    assert outcome.runtime_load_declined is True
+    assert "compatibility" not in cli.registry.load_registry()[outcome.filename]
+
+
+def test_post_install_preserves_preloaded_model_and_records_compatibility(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(
+        cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x")
+    )
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "_compatibility_adapter",
+        lambda engine: _InstallCompatibilityAdapter(loaded=True),
+    )
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked"))
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+    unloads = []
+    monkeypatch.setattr(
+        cli.quality_mod, "unload_model", lambda tag: unloads.append(tag) or True
+    )
+
+    outcome = cli._install_impl(
+        _resolved(),
+        verify_runtime_after_install=True,
+        runtime_load_consent=None,
+        no_upload=True,
+    )
+
+    assert outcome.compatibility_status == "passed"
+    assert unloads == []
+    saved = cli.registry.load_registry()[outcome.filename]["compatibility"]["ollama"]
+    assert saved["status"] == "passed"
 
 
 def test_auto_calibrate_runs_silently_when_cached_model_available(isolated_omm_home, monkeypatch):
