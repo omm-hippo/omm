@@ -162,7 +162,9 @@ def test_scan_jan_resolves_absolute_and_relative_model_paths(tmp_path, monkeypat
     absolute_gguf.parent.mkdir(parents=True)
     absolute_gguf.write_bytes(b"abs-bytes")
     (models_dir / "abs-entry").mkdir(parents=True)
-    (models_dir / "abs-entry" / "model.yml").write_text(f'model_path: "{absolute_gguf}"\nname: "abs-entry"\n')
+    (models_dir / "abs-entry" / "model.yml").write_text(
+        f"model_path: {json.dumps(str(absolute_gguf))}\nname: \"abs-entry\"\n"
+    )
 
     rel_gguf = jan_data_dir / "llamacpp" / "models" / "rel-entry" / "model.gguf"
     rel_gguf.parent.mkdir(parents=True)

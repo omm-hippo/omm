@@ -50,3 +50,12 @@ def test_remote_file_sha256_returns_none_on_bad_json(monkeypatch):
     )
 
     assert huggingface.remote_file_sha256("org/repo", "model.gguf") is None
+
+
+def test_download_url_quotes_filename_without_flattening_nested_paths():
+    assert huggingface.download_url(
+        "org/repo", "nested/model #1?.gguf"
+    ) == (
+        "https://huggingface.co/org/repo/resolve/main/"
+        "nested/model%20%231%3F.gguf"
+    )

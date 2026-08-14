@@ -70,7 +70,7 @@ from omm.gguf import read_gguf_metadata
 from omm.hardware import HardwareInfo, scan_hardware
 from omm.hashutil import sha256_file
 from omm.atomic import atomic_write_text, backup_corrupt_file, locked
-from omm.config import LINK_OWNERSHIP_PATH
+from omm.config import LINK_OWNERSHIP_PATH, MODELS_DIR
 
 
 def lmstudio_home_dir() -> Path:
@@ -190,6 +190,8 @@ def _record_ownership(dst: Path, src: Path | None, kind: str) -> None:
     record.update({"device": stat.st_dev, "inode": stat.st_ino})
     if kind == "copy":
         record.update({"size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+    if kind == "manifest":
+        record["content_sha256"] = sha256_file(dst)
     _update_link_ownership(
         dst,
         record,
@@ -268,20 +270,34 @@ def _matches_requested_link(src: Path, dst: Path) -> bool:
         return False
 
 
-def _owned_manifest(path: Path) -> bool:
+def _owned_manifest(path: Path, expected_source: Path | None = None) -> bool:
     record = _load_link_ownership().get(_link_key(path))
     if not record or record.get("kind") != "manifest" or not path.exists() or path.is_symlink():
         return False
-    stat = path.stat()
-    return record.get("device") == stat.st_dev and record.get("inode") == stat.st_ino
+    if expected_source is not None and record.get("source") != _link_key(expected_source):
+        return False
+    try:
+        stat = path.stat()
+        content_sha256 = sha256_file(path)
+    except OSError:
+        return False
+    return (
+        record.get("device") == stat.st_dev
+        and record.get("inode") == stat.st_ino
+        and record.get("content_sha256") == content_sha256
+    )
 
 
-def unlink_owned_link(path: Path) -> bool:
+def unlink_owned_link(path: Path, expected_source: Path | None = None) -> bool:
     """Remove an omm symlink or a recorded, unchanged omm hard link.
 
     Never removes an unrecorded regular file.  Returns whether a link was
     removed so callers can preserve ordinary user files at managed paths.
     """
+    if expected_source is not None:
+        record = _load_link_ownership().get(_link_key(path))
+        if not record or record.get("source") != _link_key(expected_source):
+            return False
     if _owned_symlink(path):
         path.unlink()
         _update_link_ownership(path, None)
@@ -378,7 +394,12 @@ def link_file(
     except OSError as e:
         raise LinkError(f"Could not create directory {dst.parent}: {e}") from e
     if dst.exists() or dst.is_symlink():
-        if not unlink_owned_link(dst):
+        if not unlink_owned_link(dst, expected_source=src):
+            record = _load_link_ownership().get(_link_key(dst))
+            if record and record.get("kind") in {"symlink", "hardlink"}:
+                raise LinkError(
+                    f"Refusing to replace an omm link for a different model at {dst}."
+                )
             # Pre-ownership-registry omm links have no metadata. During an
             # explicit relink, adopt only a destination proved to be this
             # exact source; never infer ownership from a matching filename.
@@ -468,8 +489,19 @@ def link_file(
 
 
 def _lmstudio_publisher_repo(repo_id: str | None, filename: str) -> tuple[str, str]:
-    if repo_id and "/" in repo_id:
-        publisher, repo = repo_id.split("/", 1)
+    if repo_id:
+        parts = repo_id.split("/")
+        if (
+            len(parts) != 2
+            or any(
+                not part
+                or part in {".", ".."}
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part)
+                for part in parts
+            )
+        ):
+            raise LinkError("Unsafe model repository id.")
+        publisher, repo = parts
         return publisher, repo
     return "local", Path(filename).stem
 
@@ -482,7 +514,17 @@ def link_lmstudio(
     force: bool = False,
 ) -> Path:
     publisher, repo = _lmstudio_publisher_repo(repo_id, gguf_path.name)
-    dst = lmstudio_models_dir() / publisher / repo / gguf_path.name
+    root = lmstudio_models_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    publisher_dir = root / publisher
+    if publisher_dir.is_symlink():
+        raise LinkError(f"Refusing LM Studio symlinked publisher directory: {publisher_dir}.")
+    publisher_dir.mkdir(exist_ok=True)
+    repo_dir = publisher_dir / repo
+    if repo_dir.is_symlink():
+        raise LinkError(f"Refusing LM Studio symlinked repository directory: {repo_dir}.")
+    repo_dir.mkdir(exist_ok=True)
+    dst = repo_dir / gguf_path.name
     link_file(gguf_path, dst, on_copy=on_copy, force=force)
     return dst
 
@@ -501,8 +543,8 @@ def link_custom_directory(
 
 
 def unlink_custom_directory(filename: str, directory: Path) -> None:
-    dst = directory.expanduser() / filename
-    unlink_owned_link(dst)
+    dst = directory.expanduser() / Path(filename.replace("\\", "/")).name
+    unlink_owned_link(dst, expected_source=MODELS_DIR / filename)
 
 
 def autoremove_custom_directory(directory: Path) -> int:
@@ -522,8 +564,11 @@ def autoremove_custom_directory(directory: Path) -> int:
 
 def unlink_lmstudio(filename: str, repo_id: str | None) -> None:
     publisher, repo = _lmstudio_publisher_repo(repo_id, filename)
-    dst = lmstudio_models_dir() / publisher / repo / filename
-    if unlink_owned_link(dst):
+    root = lmstudio_models_dir()
+    dst = root / publisher / repo / Path(filename.replace("\\", "/")).name
+    if not dst.parent.resolve().is_relative_to(root.resolve()):
+        raise LinkError("Refusing LM Studio path outside the managed model directory.")
+    if unlink_owned_link(dst, expected_source=MODELS_DIR / filename):
         for parent in (dst.parent, dst.parent.parent):
             try:
                 parent.rmdir()
@@ -756,7 +801,22 @@ def sanitize_ollama_tag(filename: str) -> str:
     if name.lower().endswith(".gguf"):
         name = name[: -len(".gguf")]
     name = name.lower()
-    return re.sub(r"[^a-z0-9._-]+", "-", name).strip("-")
+    tag = re.sub(r"[^a-z0-9._-]+", "-", name).strip("-")
+    if tag in {"", ".", ".."}:
+        tag = f"model-{hashlib.sha256(filename.encode()).hexdigest()[:12]}"
+    return tag
+
+
+def validate_ollama_tag(model_name: str) -> str:
+    """Validate one local Ollama library name before constructing paths."""
+    if (
+        not isinstance(model_name, str)
+        or len(model_name) > 200
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", model_name) is None
+        or model_name in {".", ".."}
+    ):
+        raise LinkError("Unsafe Ollama model name.")
+    return model_name
 
 
 def _guess_param_size(filename: str) -> str:
@@ -799,6 +859,7 @@ def link_ollama(
         models_dir = ollama_models_dir()
     else:
         verify_compat = False
+    model_name = validate_ollama_tag(model_name)
 
     try:
         gguf_meta = read_gguf_metadata(gguf_path, {"general.architecture", "tokenizer.chat_template"})
@@ -840,7 +901,20 @@ def link_ollama(
         model_blob = blobs_dir / f"sha256-{model_sha256}"
         # A matching content-addressed blob may be owned by Ollama or another
         # manifest. It is already usable; never replace it.
-        if not model_blob.exists() and not model_blob.is_symlink():
+        if model_blob.exists():
+            try:
+                blob_matches = model_blob.samefile(gguf_path) or (
+                    sha256_file(model_blob) == model_sha256
+                )
+            except OSError:
+                blob_matches = False
+            if not blob_matches:
+                raise LinkError(
+                    f"Existing Ollama model blob does not match its digest: {model_blob}."
+                )
+        elif model_blob.is_symlink():
+            raise LinkError(f"Refusing broken Ollama model blob symlink: {model_blob}.")
+        else:
             link_file(gguf_path, model_blob, on_copy=on_copy)
 
         # Mirrors the config produced by `ollama create` for a bare GGUF (no
@@ -863,7 +937,18 @@ def link_ollama(
         config_bytes = json.dumps(config).encode()
         config_sha256 = hashlib.sha256(config_bytes).hexdigest()
         config_blob = blobs_dir / f"sha256-{config_sha256}"
-        if not config_blob.exists() and not config_blob.is_symlink():
+        if config_blob.exists():
+            try:
+                config_matches = config_blob.read_bytes() == config_bytes
+            except OSError:
+                config_matches = False
+            if not config_matches:
+                raise LinkError(
+                    f"Existing Ollama config blob does not match its digest: {config_blob}."
+                )
+        elif config_blob.is_symlink():
+            raise LinkError(f"Refusing broken Ollama config blob symlink: {config_blob}.")
+        else:
             config_blob.write_bytes(config_bytes)
             try:
                 _record_ownership(config_blob, None, "copy")
@@ -888,19 +973,23 @@ def link_ollama(
             ],
         }
 
-        manifest_dir = (
-            models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name
-        )
+        manifest_root = models_dir / "manifests" / "registry.ollama.ai" / "library"
+        manifest_root.mkdir(parents=True, exist_ok=True)
+        manifest_dir = manifest_root / model_name
+        if manifest_dir.is_symlink():
+            raise LinkError(f"Refusing Ollama symlinked manifest directory: {manifest_dir}.")
+        if not manifest_dir.resolve().is_relative_to(manifest_root.resolve()):
+            raise LinkError("Refusing Ollama manifest path outside the models directory.")
         manifest_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = manifest_dir / "latest"
         if manifest_path.exists() or manifest_path.is_symlink():
-            if not _owned_manifest(manifest_path) and not force:
+            if not _owned_manifest(manifest_path, expected_source=gguf_path):
                 raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
             manifest_path.unlink()
             _update_link_ownership(manifest_path, None)
         manifest_path.write_text(json.dumps(manifest, indent=2))
         try:
-            _record_ownership(manifest_path, None, "manifest")
+            _record_ownership(manifest_path, gguf_path, "manifest")
         except OSError:
             manifest_path.unlink(missing_ok=True)
             raise
@@ -1140,20 +1229,23 @@ def _manifest_blob_digests(manifest: dict) -> set[str]:
     return digests
 
 
-def unlink_ollama(model_name: str, models_dir: Path | None = None) -> None:
+def unlink_ollama(
+    model_name: str,
+    models_dir: Path | None = None,
+    expected_source: Path | None = None,
+) -> None:
     if models_dir is None:
         models_dir = ollama_models_dir()
+    model_name = validate_ollama_tag(model_name)
+    manifest_root = models_dir / "manifests" / "registry.ollama.ai" / "library"
     manifest_path = (
-        models_dir
-        / "manifests"
-        / "registry.ollama.ai"
-        / "library"
-        / model_name
-        / "latest"
+        manifest_root / model_name / "latest"
     )
+    if not manifest_path.parent.resolve().is_relative_to(manifest_root.resolve()):
+        return
     if not manifest_path.exists():
         return
-    if not _owned_manifest(manifest_path):
+    if not _owned_manifest(manifest_path, expected_source=expected_source):
         return
     try:
         manifest = json.loads(manifest_path.read_text())
@@ -1305,6 +1397,15 @@ def is_jan_installed() -> bool:
 
 
 def _jan_model_yaml_path(model_id: str) -> Path:
+    if (
+        not model_id
+        or model_id in {".", ".."}
+        or "/" in model_id
+        or "\\" in model_id
+        or ":" in model_id
+        or any(ord(character) < 32 for character in model_id)
+    ):
+        raise LinkError("Unsafe Jan model id.")
     return jan_models_dir() / model_id / "model.yml"
 
 
@@ -1314,22 +1415,47 @@ def link_jan(gguf_path: Path, model_id: str) -> Path:
     local-file import does the same (stores the absolute path as-is)."""
     config_path = _jan_model_yaml_path(model_id)
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(
-            f'model_path: "{gguf_path}"\n'
-            f'name: "{model_id}"\n'
+        # JSON string literals are valid YAML scalars and correctly escape
+        # quotes/control characters in otherwise-valid local paths.
+        content = (
+            f"model_path: {json.dumps(str(gguf_path))}\n"
+            f"name: {json.dumps(model_id)}\n"
             f"size_bytes: {gguf_path.stat().st_size}\n"
         )
+        root = jan_models_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        if config_path.parent.is_symlink():
+            raise LinkError(
+                f"Refusing Jan symlinked model directory: {config_path.parent}."
+            )
+        if not config_path.parent.resolve().is_relative_to(root.resolve()):
+            raise LinkError("Refusing Jan manifest path outside the models directory.")
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if config_path.exists() and not _owned_manifest(
+            config_path, expected_source=gguf_path
+        ):
+            raise LinkError(
+                f"Refusing to replace unowned Jan manifest at {config_path}."
+            )
+        atomic_write_text(config_path, content)
+        try:
+            _record_ownership(config_path, gguf_path, "manifest")
+        except Exception:
+            config_path.unlink(missing_ok=True)
+            raise
     except OSError as e:
         raise LinkError(f"Could not write Jan manifest at {config_path}: {e}") from e
     return config_path
 
 
-def unlink_jan(model_id: str) -> None:
+def unlink_jan(model_id: str, expected_source: Path | None = None) -> None:
     config_path = _jan_model_yaml_path(model_id)
-    if config_path.exists():
+    if not config_path.parent.resolve().is_relative_to(jan_models_dir().resolve()):
+        return
+    if _owned_manifest(config_path, expected_source=expected_source):
         try:
             config_path.unlink()
+            _update_link_ownership(config_path, None)
         except OSError:
             return
     try:
@@ -1338,7 +1464,7 @@ def unlink_jan(model_id: str) -> None:
         pass
 
 
-_JAN_MODEL_PATH_RE = re.compile(r'^model_path:\s*"?([^"\n]*)"?\s*$', re.MULTILINE)
+_JAN_MODEL_PATH_RE = re.compile(r"^model_path:\s*(.*?)\s*$", re.MULTILINE)
 
 
 def read_jan_model_path(config_path: Path) -> str | None:
@@ -1350,7 +1476,16 @@ def read_jan_model_path(config_path: Path) -> str | None:
     except OSError:
         return None
     match = _JAN_MODEL_PATH_RE.search(text)
-    return match.group(1) if match else None
+    if match is None:
+        return None
+    value = match.group(1)
+    if value.startswith('"'):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return decoded if isinstance(decoded, str) else None
+    return value
 
 
 def autoremove_jan() -> int:
@@ -1361,10 +1496,13 @@ def autoremove_jan() -> int:
         return 0
     removed = 0
     for config_path in list(models_dir.glob("*/model.yml")):
+        if not config_path.parent.resolve().is_relative_to(models_dir.resolve()):
+            continue
         model_path = read_jan_model_path(config_path)
-        if model_path and not Path(model_path).exists():
+        if model_path and not Path(model_path).exists() and _owned_manifest(config_path):
             try:
                 config_path.unlink()
+                _update_link_ownership(config_path, None)
             except OSError:
                 continue
             removed += 1
@@ -2187,14 +2325,19 @@ def link_engine(
 
 def unlink_engine(key: str, filename: str, entry: dict) -> None:
     ollama_tag = entry.get("ollama_name") or sanitize_ollama_tag(filename)
+    expected_source = MODELS_DIR / filename
     if key == "ollama":
-        unlink_ollama(ollama_tag)
+        unlink_ollama(ollama_tag, expected_source=expected_source)
     elif key == "lmstudio":
         unlink_lmstudio(filename, entry.get("repo_id"))
     elif key == "jan":
-        unlink_jan(ollama_tag)
+        unlink_jan(ollama_tag, expected_source=expected_source)
     elif key == "anythingllm":
-        unlink_ollama(ollama_tag, models_dir=anythingllm_ollama_models_dir())
+        unlink_ollama(
+            ollama_tag,
+            models_dir=anythingllm_ollama_models_dir(),
+            expected_source=expected_source,
+        )
     elif key == "mstystudio":
         unlink_custom_directory(filename, mstystudio_models_dir())
     elif key == "textgenwebui":

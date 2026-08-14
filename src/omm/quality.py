@@ -8,6 +8,7 @@ run and compare it with Localfit's speed recommendations.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import multiprocessing
@@ -974,24 +975,27 @@ def _evaluate_tag_once(
     failure: QualityEvaluationError | None = None
     result: dict | None = None
     try:
+        metadata = _model_metadata(tag)
+        profile = tuning.recommend_runtime_settings(hardware, metadata)
+        options = profile.ollama_options
         try:
-            metadata = _model_metadata(tag)
-            profile = tuning.recommend_runtime_settings(hardware, metadata)
-            options = profile.ollama_options
-            try:
-                result = evaluate_model(tag, pack, speed_runs=speed_runs,
-                                        runtime_options=options, model_metadata=metadata)
-            except TypeError:  # third-party/legacy monkeypatch compatibility
-                result = evaluate_model(tag, pack, speed_runs=speed_runs)
-        except QualityEvaluationError:
-            # Preserve the public evaluator hook for callers which provide
-            # their own metadata/evaluator; it simply cannot emit v5 runtime.
-            result = evaluate_model(tag, pack, speed_runs=speed_runs)
+            parameters = inspect.signature(evaluate_model).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        accepts_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        kwargs = {"speed_runs": speed_runs}
+        if accepts_kwargs or "runtime_options" in parameters:
+            kwargs["runtime_options"] = options
+        if accepts_kwargs or "model_metadata" in parameters:
+            kwargs["model_metadata"] = metadata
+        result = evaluate_model(tag, pack, **kwargs)
     except QualityEvaluationError as error:
-        # Both the runtime-aware attempt and the plain fallback failed:
-        # this model genuinely could not be benchmarked. Record it as a
-        # structured failure instead of aborting the whole batch, so
-        # sibling models already evaluated (or still to come) survive.
+        # A real evaluator failure is one attempt and one outcome. Retrying
+        # without runtime options would silently rerun timeouts/OOMs and could
+        # exceed the documented two-attempt confirmation ceiling.
         failure = error
     finally:
         unloaded = unload_model(tag)

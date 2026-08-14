@@ -1,5 +1,9 @@
+import pytest
+
+from omm import hub
 from omm.hub import resolve_model
 from omm.providers import huggingface
+from omm.providers.base import ModelResolutionError
 
 
 def test_resolve_model_bare_repo_with_filename_makes_zero_network_calls(monkeypatch):
@@ -40,3 +44,39 @@ def test_resolve_model_leaves_existing_gguf_suffix_untouched():
     resolved = resolve_model("bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf")
 
     assert resolved.filename == "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "hf:org/repo:../../outside",
+        "hf:org/repo:./model.gguf",
+        "hf:org/repo:a/./model.gguf",
+        "hf:org/repo:a//model.gguf",
+        "hf:org/repo:e\u0301.gguf",
+        r"hf:org/repo:..\..\outside.gguf",
+        "hf:../repo:model.gguf",
+        "hf:org/repo#fragment:model.gguf",
+        "hf:org/repo?query:model.gguf",
+        "hf:org/repo name:model.gguf",
+        "https://example.com/not-a-model.txt",
+        r"https://example.com/..\..\outside.gguf",
+    ],
+)
+def test_resolve_model_rejects_paths_that_can_escape_managed_directories(reference):
+    with pytest.raises(ModelResolutionError, match="safe|unsafe"):
+        resolve_model(reference)
+
+
+def test_resolve_model_allows_safe_nested_provider_filename():
+    resolved = resolve_model("hf:org/repo:quantized/model.gguf")
+
+    assert resolved.filename == "quantized/model.gguf"
+
+
+@pytest.mark.parametrize(
+    "provider", [["huggingface"], {"name": "huggingface"}, "unknown"]
+)
+def test_validate_provider_rejects_non_string_and_unknown_values(provider):
+    with pytest.raises(ModelResolutionError):
+        hub.validate_provider(provider)

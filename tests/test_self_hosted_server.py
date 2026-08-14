@@ -55,6 +55,19 @@ def test_self_hosted_collector_rejects_unknown_or_private_fields(tmp_path, monke
     server_app.get_store.cache_clear()
 
 
+def test_self_hosted_collector_rejects_future_unknown_benchmark_version(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
+    server_app.get_store.cache_clear()
+    client = TestClient(server_app.app)
+    event = _event()
+    event["benchmark_version"] = 9
+
+    assert client.post("/v1/benchmarks", json=event).status_code == 422
+    server_app.get_store.cache_clear()
+
+
 def test_self_hosted_collector_rejects_inconsistent_sample_summary(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
     server_app.get_store.cache_clear()
@@ -98,6 +111,34 @@ def _v5_event():
         tokens_per_sec_min=18.0,
         tokens_per_sec_max=20.0,
     )
+    return event
+
+
+def _v7_success_event():
+    event = _v5_event()
+    event.update(
+        benchmark_version=7,
+        engine="ollama",
+        outcome="success",
+        model_provider="huggingface",
+        cpu_model="Apple M4 Pro",
+        cpu_arch="arm64",
+        cpu_physical_cores=12,
+        cpu_logical_cores=12,
+    )
+    return event
+
+
+def _v8_success_event():
+    event = _v7_success_event()
+    event.update(
+        benchmark_version=8,
+        cpu_score=4100.0,
+        cpu_tier=1.0,
+        gpu_score=3200.0,
+        gpu_tier=0.0,
+    )
+    event.pop("cpu_model")
     return event
 
 
@@ -173,4 +214,150 @@ def test_v5_rejects_missing_or_invalid_requirements_and_quality_mismatch(tmp_pat
     assert client.post("/v1/benchmarks", json=event).status_code == 422
     event["quality_accuracy"] = 0.75005
     assert client.post("/v1/benchmarks", json=event).status_code == 201
+    server_app.get_store.cache_clear()
+
+
+def test_self_hosted_collector_accepts_current_v7_success_contract(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")
+    server_app.get_store.cache_clear()
+    client = TestClient(server_app.app)
+
+    response = client.post("/v1/benchmarks", json=_v7_success_event())
+    exported = client.get(
+        "/v1/benchmarks/export", headers={"Authorization": "Bearer secret"}
+    )
+
+    assert response.status_code == 201
+    assert exported.status_code == 200
+    assert exported.json()["benchmarks"][0]["outcome"] == "success"
+    assert exported.json()["benchmarks"][0]["model_provider"] == "huggingface"
+    server_app.get_store.cache_clear()
+
+
+def test_self_hosted_collector_accepts_current_v7_failure_without_fake_speed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")
+    server_app.get_store.cache_clear()
+    client = TestClient(server_app.app)
+    event = {
+        "ram_gb": 16,
+        "vram_gb": 8,
+        "unified_memory": False,
+        "model_installed": "model.gguf",
+        "engine": "ollama",
+        "benchmark_version": 7,
+        "outcome": "model_unfit",
+        "failure_reason": "out_of_memory",
+        "recorded_at": "2026-07-31T00:00:00Z",
+    }
+
+    response = client.post("/v1/benchmarks", json=event)
+    exported = client.get(
+        "/v1/benchmarks/export", headers={"Authorization": "Bearer secret"}
+    )
+
+    assert response.status_code == 201
+    stored = exported.json()["benchmarks"][0]
+    assert stored["outcome"] == "model_unfit"
+    assert "tokens_per_sec" not in stored
+    server_app.get_store.cache_clear()
+
+
+def test_self_hosted_collector_accepts_current_v8_success_contract(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")
+    server_app.get_store.cache_clear()
+    client = TestClient(server_app.app)
+
+    response = client.post("/v1/benchmarks", json=_v8_success_event())
+    exported = client.get(
+        "/v1/benchmarks/export", headers={"Authorization": "Bearer secret"}
+    )
+
+    assert response.status_code == 201
+    stored = exported.json()["benchmarks"][0]
+    assert stored["benchmark_version"] == 8
+    assert stored["cpu_score"] == 4100.0
+    assert "cpu_model" not in stored
+    server_app.get_store.cache_clear()
+
+
+def test_self_hosted_collector_accepts_current_v8_failure_without_raw_cpu(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")
+    server_app.get_store.cache_clear()
+    client = TestClient(server_app.app)
+    event = {
+        "ram_gb": 16,
+        "vram_gb": 8,
+        "unified_memory": False,
+        "model_installed": "model.gguf",
+        "engine": "ollama",
+        "benchmark_version": 8,
+        "outcome": "model_unfit",
+        "failure_reason": "out_of_memory",
+        "recorded_at": "2026-08-15T00:00:00Z",
+        "cpu_score": 4100.0,
+        "cpu_tier": 1.0,
+        "cpu_arch": "arm64",
+        "cpu_physical_cores": 10,
+        "cpu_logical_cores": 10,
+    }
+
+    response = client.post("/v1/benchmarks", json=event)
+    exported = client.get(
+        "/v1/benchmarks/export", headers={"Authorization": "Bearer secret"}
+    )
+
+    assert response.status_code == 201
+    stored = exported.json()["benchmarks"][0]
+    assert stored["outcome"] == "model_unfit"
+    assert "tokens_per_sec" not in stored
+    assert "cpu_model" not in stored
+    server_app.get_store.cache_clear()
+
+
+def test_self_hosted_collector_rejects_raw_cpu_model_in_v8(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
+    server_app.get_store.cache_clear()
+    client = TestClient(server_app.app)
+    event = _v8_success_event()
+    event["cpu_model"] = "Apple M4 Pro"
+
+    assert client.post("/v1/benchmarks", json=event).status_code == 422
+    server_app.get_store.cache_clear()
+
+
+def test_self_hosted_collector_rejects_invalid_v7_outcome_combinations(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
+    server_app.get_store.cache_clear()
+    client = TestClient(server_app.app)
+
+    success = _v7_success_event()
+    success["failure_reason"] = "out_of_memory"
+    assert client.post("/v1/benchmarks", json=success).status_code == 422
+
+    failure_with_speed = {
+        "ram_gb": 16,
+        "unified_memory": True,
+        "model_installed": "model.gguf",
+        "engine": "ollama",
+        "benchmark_version": 7,
+        "outcome": "model_unfit",
+        "failure_reason": "out_of_memory",
+        "recorded_at": "2026-07-31T00:00:00Z",
+        "tokens_per_sec": 1,
+    }
+    assert client.post("/v1/benchmarks", json=failure_with_speed).status_code == 422
     server_app.get_store.cache_clear()
