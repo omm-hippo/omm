@@ -128,10 +128,14 @@ class GlobalOptions:
 
 def _global_opts() -> GlobalOptions:
     """Read the merged GlobalOptions for the command currently running.
-    Only valid while a Click/Typer command is executing."""
+    Falls back to defaults when called outside an active Click/Typer
+    context (e.g. a test calling an `_impl` function directly)."""
     from typer._click.globals import get_current_context
 
-    return get_current_context().ensure_object(GlobalOptions)
+    try:
+        return get_current_context().ensure_object(GlobalOptions)
+    except RuntimeError:
+        return GlobalOptions()
 
 
 def global_flags(func):
