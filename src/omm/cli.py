@@ -602,7 +602,7 @@ def scan() -> None:
         return
 
     table = Table(title="omm hardware scan")
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value", style="white")
 
     table.add_row("OS", f"{info.os_name} {info.os_version}")
@@ -630,7 +630,7 @@ def scan() -> None:
     console.print(table)
 
     engine_table = Table(title="Local AI runners", box=None)
-    engine_table.add_column("Program", style="cyan")
+    engine_table.add_column("Program", style="blue")
     engine_table.add_column("Status", style="white")
     for spec in linker.ENGINES:
         if installed[spec.key]:
@@ -642,7 +642,7 @@ def scan() -> None:
         console.print(note)
 
     model_table = Table(title="Local AI models", box=None)
-    model_table.add_column("Model", style="cyan")
+    model_table.add_column("Model", style="blue")
     model_table.add_column("Location", style="white")
     model_table.add_column("Engine(s)")
     model_table.add_column("Managed by omm")
@@ -1028,7 +1028,7 @@ def _deps_satisfied() -> bool:
 def _run_pipx_install_with_progress(args: list[str]) -> subprocess.CompletedProcess:
     with Progress(
         SpinnerColumn(),
-        TextColumn("[cyan]Reinstalling omm via pipx...[/cyan]"),
+        TextColumn("[blue]Reinstalling omm via pipx...[/blue]"),
         BarColumn(),
         TaskProgressColumn(),
         TimeElapsedColumn(),
@@ -1058,7 +1058,7 @@ def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedPr
     working editable install - previously an rmtree-then-clone order left
     `omm` permanently broken with ModuleNotFoundError until reinstalled
     from scratch."""
-    console.print("[cyan]Migrating to fast-update mode (one-time)...[/cyan]")
+    console.print("[blue]Migrating to fast-update mode (one-time)...[/blue]")
     tmp_dir = SRC_DIR.with_name(SRC_DIR.name + ".new")
     shutil.rmtree(tmp_dir, ignore_errors=True)
     try:
@@ -1523,7 +1523,7 @@ def recommend() -> None:
 
 def _print_runtime_profile(profile: tuning.RuntimeProfile) -> None:
     table = Table(title=f"Recommended {profile.profile_name} runtime profile")
-    table.add_column("Setting", style="cyan")
+    table.add_column("Setting", style="blue")
     table.add_column("Starting value")
     table.add_row("Context length", f"{profile.context_length:,} tokens")
     table.add_row("GPU offload", profile.gpu_offload_label)
@@ -2203,7 +2203,7 @@ def _install_impl(
                 benchmark.stop_ollama_daemon(started_daemon)
 
         if tokens_per_sec:
-            console.print(f"[cyan]{tokens_per_sec:.1f} tok/s[/cyan]")
+            console.print(f"[blue]{tokens_per_sec:.1f} tok/s[/blue]")
             _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec)
 
             want_upload = not no_upload and (
@@ -2332,7 +2332,7 @@ def install(
     for spec in linker.ENGINES:
         if spec.key != "ollama" and outcome.linked.get(spec.key):
             console.print(f"  {spec.label}: visible in your local models list")
-    console.print(f"  Uninstall with: [cyan]omm uninstall {outcome.filename}[/cyan]")
+    console.print(f"  Uninstall with: [blue]omm uninstall {outcome.filename}[/blue]")
     _report_lmstudio_load_verification(outcome)
 
 
@@ -2500,7 +2500,7 @@ def info(
         return
 
     table = Table(title=filename, show_header=False)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value")
     repo_label = entry.get("repo_id") or "(direct URL install)"
     provider = entry.get("provider")
@@ -2700,7 +2700,7 @@ def list_models(
 
     table = Table(title="omm models")
     table.add_column("#", justify="right")
-    table.add_column("Filename", style="cyan")
+    table.add_column("Filename", style="blue")
     table.add_column("Size", justify="right")
     table.add_column("Links")
 
@@ -2743,7 +2743,7 @@ def configure_telemetry(
     if changes:
         current = config_mod.update_config(**changes)
     table = Table(title="Telemetry destination", show_header=False)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value")
     table.add_row("Backend", str(current.get("telemetry_backend") or "local"))
     table.add_row("Endpoint", str(current.get("telemetry_endpoint") or "not configured"))
@@ -2776,7 +2776,7 @@ def configure_upload(
     if changes:
         current = config_mod.update_config(**changes)
     table = Table(title="Benchmark upload policy", show_header=False)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value")
     policy = current.get("telemetry_send_policy", "ask")
     table.add_row("Uploads", {"always": "always", "never": "never", "ask": "ask (default)"}[policy])
@@ -2812,7 +2812,7 @@ def configure_version(
     channel = current.get("update_channel") or "stable"
     commit = _installed_commit()
     table = Table(title="Update channel", show_header=False)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value")
     table.add_row("Channel", f"{channel} ({_channel_branch(channel)})")
     table.add_row("Commit", commit[:7] if commit else "unknown")
@@ -2923,7 +2923,7 @@ def catalog_status() -> None:
         except catalog.CatalogVerificationError:
             fingerprint = "invalid"
     table = Table(title="Recommendation catalog", show_header=False)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value")
     table.add_row("Signed manifest", str(current.get("catalog_manifest_url") or "not configured"))
     table.add_row("Trusted key", fingerprint)
@@ -3155,7 +3155,7 @@ def search(
                 )
             else:
                 if not header_printed:
-                    console.print(f"[bold cyan]==> {family}[/bold cyan]")
+                    console.print(f"[bold blue]==> {family}[/bold blue]")
                     header_printed = True
                 if fits_hardware:
                     console.print(f"  [{len(refs)}] {ref}  [dim]{desc}[/dim]")
@@ -3460,7 +3460,7 @@ def benchmark_cmd(
         try:
             with Progress(
                 SpinnerColumn(),
-                TextColumn("[cyan]{task.description}[/cyan]"),
+                TextColumn("[blue]{task.description}[/blue]"),
                 TimeElapsedColumn(),
                 console=console,
                 disable=_global_opts().quiet,
@@ -3501,7 +3501,7 @@ def benchmark_cmd(
 
         if successes:
             table = Table(title="Localfit reproducible quality evidence")
-            table.add_column("Model", style="cyan")
+            table.add_column("Model", style="blue")
             table.add_column("Parameters")
             table.add_column("Quantization")
             table.add_column("Quality", justify="right")
@@ -4153,7 +4153,7 @@ def _run_contribution_loop(
         display_name = candidate.get("name", candidate["filename"])
         ref_str = contribute_mod.ref(candidate)
         if not opts.quiet:
-            console.print(f"[cyan]Trying {display_name}...[/cyan]")
+            console.print(f"[blue]Trying {display_name}...[/blue]")
 
         try:
             outcome = _install_impl(

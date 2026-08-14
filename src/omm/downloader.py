@@ -142,7 +142,7 @@ class EtaColumn(TimeRemainingColumn):
 def _progress(*, quiet: bool = False, no_color: bool = False) -> Progress:
     return Progress(
         SpinnerColumn(),
-        TextColumn("[cyan]{task.fields[filename]}", table_column=Column(no_wrap=True)),
+        TextColumn("[blue]{task.fields[filename]}", table_column=Column(no_wrap=True)),
         HashBarColumn(),
         DownloadColumn(),
         TransferSpeedColumn(),

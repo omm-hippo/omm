@@ -35,18 +35,20 @@ def test_no_color_flag_disables_ansi_codes(isolated_omm_home, monkeypatch):
     # Rich's Console.no_color only strips color SGR codes, not every
     # escape sequence - bold/italic/reset codes (used for the table's
     # title and header row) legitimately survive --no-color, so this
-    # checks for the "Field" column's cyan color code (\x1b[36m)
+    # checks for the "Field" column's blue color code (\x1b[34m)
     # specifically rather than for "\x1b[" being absent entirely.
-    monkeypatch.setattr(cli, "console", Console(force_terminal=True))
-    monkeypatch.setattr(cli, "err_console", Console(stderr=True, force_terminal=True))
+    monkeypatch.setattr(cli, "console", Console(force_terminal=True, highlight=False))
+    monkeypatch.setattr(
+        cli, "err_console", Console(stderr=True, force_terminal=True, highlight=False)
+    )
 
     with_color = runner.invoke(cli.app, ["scan"])
     assert with_color.exit_code == 0, with_color.stdout
-    assert "\x1b[36m" in with_color.stdout
+    assert "\x1b[34m" in with_color.stdout
 
     without_color = runner.invoke(cli.app, ["--no-color", "scan"])
     assert without_color.exit_code == 0, without_color.stdout
-    assert "\x1b[36m" not in without_color.stdout
+    assert "\x1b[34m" not in without_color.stdout
 
 
 def test_json_on_unsupported_command_warns_instead_of_silently_no_opping(isolated_omm_home):

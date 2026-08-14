@@ -16,7 +16,7 @@ from rich.text import Text
 from omm import predictor
 from omm.hardware import HardwareInfo, calculate_memory_budget
 
-ACCENT = "cyan"
+ACCENT = "blue"
 SUCCESS = "green"
 WARNING = "yellow"
 MUTED = "#808080"
@@ -28,7 +28,7 @@ SELECT_STYLE = (
             ("qmark", f"fg:{ACCENT} bold"),
             ("question", f"fg:{ACCENT} bold"),
             ("pointer", f"fg:{ACCENT} bold"),
-            ("highlighted", "fg:black bg:cyan bold"),
+            ("highlighted", "bold reverse"),
             ("selected", f"fg:{SUCCESS}"),
             ("instruction", f"fg:{MUTED}"),
         ]
@@ -168,7 +168,7 @@ def build_rows(
 
 def _hardware_value(label: str, value: str) -> Text:
     text = Text()
-    text.append(f"{label}  ", style=f"bold {ACCENT}")
+    text.append(f"{label}  ", style=ACCENT)
     text.append(value, style="bold white")
     return text
 
@@ -305,7 +305,7 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
             ),
             title=Text(row.display_name, style=f"bold {ACCENT}"),
             title_align="left",
-            border_style=ACCENT,
+            border_style="bright_black",
             box=box.ROUNDED,
             padding=(0, 1),
         )
