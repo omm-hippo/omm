@@ -3044,7 +3044,8 @@ def search(
     provider: str | None = typer.Option(
         None,
         "--provider",
-        help="Only show results from this source: curated, huggingface, or modelscope.",
+        help="Only show results from this source: curated (omm's built-in/cached "
+        "catalog, not a real host), huggingface, or modelscope.",
     ),
 ) -> None:
     """Search curated models, cached candidates, and HuggingFace by name."""
