@@ -127,6 +127,32 @@ def test_install_skips_daemon_start_when_already_reachable(isolated_omm_home, mo
     assert outcome.tokens_per_sec == 55.0
 
 
+def test_memory_guard_block_prevents_ollama_benchmark(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli.tuning,
+        "recommend_runtime_settings",
+        lambda *args, **kwargs: SimpleNamespace(ollama_options={}, required_memory_gb=1.0),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_guard_ollama_load",
+        lambda tag, required_gb: (False, object(), False),
+    )
+    monkeypatch.setattr(
+        cli.benchmark,
+        "benchmark_ollama_samples",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not benchmark")),
+    )
+
+    outcome = cli._install_impl(_resolved(), enforce_memory_guard=True)
+
+    assert outcome.tokens_per_sec is None
+    assert outcome.failure_reason == "memory_guard_blocked"
+
+
 # --- LM Studio load-verification reporting ------------------------------
 
 
@@ -471,6 +497,42 @@ def test_post_install_preserves_preloaded_model_and_records_compatibility(
     assert unloads == []
     saved = cli.registry.load_registry()[outcome.filename]["compatibility"]["ollama"]
     assert saved["status"] == "passed"
+
+
+def test_memory_guard_preloaded_observation_prevents_cleanup_race(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(
+        cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x")
+    )
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "_compatibility_adapter",
+        lambda engine: _InstallCompatibilityAdapter(loaded=False),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_guard_ollama_load",
+        lambda tag, required_gb: (True, object(), True),
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+    unloads = []
+    monkeypatch.setattr(
+        cli.quality_mod, "unload_model", lambda tag: unloads.append(tag) or True
+    )
+
+    outcome = cli._install_impl(
+        _resolved(),
+        verify_runtime_after_install=True,
+        runtime_load_consent=True,
+        enforce_memory_guard=True,
+        no_upload=True,
+    )
+
+    assert outcome.tokens_per_sec == 42.0
+    assert unloads == []
 
 
 def test_auto_calibrate_runs_silently_when_cached_model_available(isolated_omm_home, monkeypatch):

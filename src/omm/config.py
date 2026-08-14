@@ -62,6 +62,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "contribute_always_ack": False,
     "update_channel": "stable",
     "onboarding_completed": True,
+    "memory_guard_policy": "ask",
+    "memory_guard_poll_seconds": 1.0,
+    "memory_guard_low_memory_seconds": 3.0,
 }
 
 
@@ -99,6 +102,22 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
             merged["telemetry_backend"] = "firebase_legacy"
         elif endpoint:
             merged["telemetry_backend"] = "self_hosted"
+    if merged.get("memory_guard_policy") not in {"ask", "block", "observe"}:
+        merged["memory_guard_policy"] = "ask"
+    poll_seconds = merged.get("memory_guard_poll_seconds")
+    if (
+        isinstance(poll_seconds, bool)
+        or not isinstance(poll_seconds, (int, float))
+        or not 0.1 <= poll_seconds <= 60
+    ):
+        merged["memory_guard_poll_seconds"] = 1.0
+    low_seconds = merged.get("memory_guard_low_memory_seconds")
+    if (
+        isinstance(low_seconds, bool)
+        or not isinstance(low_seconds, (int, float))
+        or not 0 <= low_seconds <= 300
+    ):
+        merged["memory_guard_low_memory_seconds"] = 3.0
     return merged
 
 

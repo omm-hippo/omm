@@ -111,6 +111,7 @@ omm setting  # Interactive menu for telemetry, upload policy, version, calibrati
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
 omm setting upload --enable|--disable|--ask  # Configure the benchmark-upload send policy
+omm setting memory-guard --policy ask|block|observe  # Protect Ollama loads from live memory pressure
 omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
 omm setting catalog-status  # Show signed recommendation data and rollback snapshots
