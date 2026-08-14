@@ -21,7 +21,7 @@ _HARDWARE = HardwareInfo(
 
 
 def _stub_download_and_links(monkeypatch):
-    def fake_download(url, dest):
+    def fake_download(url, dest, **_kw):
         dest.write_bytes(b"fake-gguf")
 
     monkeypatch.setattr(cli, "download_file", fake_download)
@@ -57,6 +57,43 @@ def test_install_with_repo_only_prompts_quant_and_recurses_with_choice(isolated_
     assert result.exit_code == 0, result.stdout
     assert calls == [repo_id, f"huggingface:{repo_id}:{chosen_filename}"]
     assert "Installed" in result.stdout
+
+
+def test_install_force_flag_reaches_install_impl_through_ambiguous_quant_recursion(
+    isolated_omm_home, monkeypatch
+):
+    # `install --force` on an ambiguous repo re-enters install() recursively
+    # once the quant is picked (see the `install(...)` call inside the
+    # AmbiguousModelError branch) - force has to survive that re-entry and
+    # still reach _install_impl. Only _install_impl's direct-call test
+    # covered force=True before this (see #81).
+    repo_id = "TheBloke/Llama-2-7B-GGUF"
+    chosen_filename = "llama-2-7b.Q4_K_M.gguf"
+    candidates = ["llama-2-7b.Q2_K.gguf", chosen_filename]
+
+    def fake_resolve(name):
+        if name == repo_id:
+            raise AmbiguousModelError(repo_id, candidates)
+        return ResolvedModel(url="https://example.com/x.gguf", filename=chosen_filename, repo_id=repo_id)
+
+    monkeypatch.setattr(cli, "resolve_model", fake_resolve)
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _HARDWARE)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: chosen_filename)
+
+    install_impl_calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        install_impl_calls.append(kwargs)
+        return cli.InstallOutcome(filename=resolved.filename, repo_id=resolved.repo_id, linked={})
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+
+    result = runner.invoke(cli.app, ["install", repo_id, "--force"])
+
+    assert result.exit_code == 0, result.stdout
+    assert len(install_impl_calls) == 1
+    assert install_impl_calls[0]["force"] is True
 
 
 def test_install_cancels_cleanly_when_quant_prompt_is_escaped(isolated_omm_home, monkeypatch):

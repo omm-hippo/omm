@@ -139,8 +139,94 @@ def test_relink_skips_entry_whose_source_file_is_missing(isolated_omm_home, monk
     assert "1 skipped" in result.stdout
 
 
+def test_link_force_flag_reaches_link_engine(isolated_omm_home, monkeypatch):
+    """--force must reach linker.link_engine so a conflict that would
+    otherwise be skipped gets reclaimed instead."""
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    dest = cli.MODELS_DIR / filename
+    dest.write_bytes(b"fake-gguf")
+
+    registry.save_registry(
+        {
+            filename: {
+                "linked": {"ollama": False},
+                "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+                "ollama_name": "tinyllama",
+            }
+        }
+    )
+
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
+    for key in ("lmstudio", "jan", "anythingllm", "mstystudio", "textgenwebui", "koboldcpp"):
+        monkeypatch.setattr(linker, f"is_{key}_installed", lambda: False)
+
+    seen_force = []
+
+    def fake_link_engine(key, gguf_path, *, repo_id, ollama_tag, force=False):
+        seen_force.append(force)
+        return None
+
+    monkeypatch.setattr(linker, "link_engine", fake_link_engine)
+
+    result = runner.invoke(cli.app, ["link", "--force"])
+
+    assert result.exit_code == 0, result.stdout
+    assert seen_force == [True]
+    assert "1 model(s) relinked/verified" in result.stdout
+
+
+def test_link_without_force_flag_defaults_to_false(isolated_omm_home, monkeypatch):
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    dest = cli.MODELS_DIR / filename
+    dest.write_bytes(b"fake-gguf")
+
+    registry.save_registry(
+        {
+            filename: {
+                "linked": {"ollama": False},
+                "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+                "ollama_name": "tinyllama",
+            }
+        }
+    )
+
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
+    for key in ("lmstudio", "jan", "anythingllm", "mstystudio", "textgenwebui", "koboldcpp"):
+        monkeypatch.setattr(linker, f"is_{key}_installed", lambda: False)
+
+    seen_force = []
+
+    def fake_link_engine(key, gguf_path, *, repo_id, ollama_tag, force=False):
+        seen_force.append(force)
+        return None
+
+    monkeypatch.setattr(linker, "link_engine", fake_link_engine)
+
+    result = runner.invoke(cli.app, ["link"])
+
+    assert result.exit_code == 0, result.stdout
+    assert seen_force == [False]
+
+
 def test_relink_with_empty_registry_reports_nothing_to_do(isolated_omm_home):
     result = runner.invoke(cli.app, ["relink"])
 
     assert result.exit_code == 0, result.stdout
     assert "No models installed" in result.stdout
+
+
+def test_link_engine_not_installed_prints_filter_aware_message(isolated_omm_home, monkeypatch):
+    # --engine names a real engine that just isn't installed on this
+    # machine - the generic "0 model(s) relinked" summary would be
+    # confusing, and looping over every model to relink 0 of them is
+    # wasted work (see #81).
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    (cli.MODELS_DIR / filename).write_bytes(b"fake-gguf")
+    registry.save_registry({filename: {"linked": {"ollama": False}}})
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
+
+    result = runner.invoke(cli.app, ["link", "--engine", "ollama"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "ollama isn't installed" in result.stdout
+    assert "0 model(s) relinked" not in result.stdout

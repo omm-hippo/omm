@@ -57,7 +57,7 @@ def test_skip_unfit_returns_outcome_without_prompting_or_downloading(isolated_om
 
 def test_auto_upload_skips_confirm_prompt_and_sends_telemetry(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
@@ -73,7 +73,7 @@ def test_auto_upload_skips_confirm_prompt_and_sends_telemetry(isolated_omm_home,
 
 def test_install_starts_and_stops_daemon_when_not_reachable(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
@@ -99,7 +99,7 @@ def test_install_starts_and_stops_daemon_when_not_reachable(isolated_omm_home, m
 
 def test_install_skips_daemon_start_when_already_reachable(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
@@ -175,7 +175,7 @@ def test_install_skips_lmstudio_load_verification_when_not_linked(monkeypatch, c
 
 def test_install_impl_telemetry_includes_model_provider(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
@@ -193,7 +193,7 @@ def test_install_impl_telemetry_includes_model_provider(isolated_omm_home, monke
 
 def test_install_impl_telemetry_defaults_provider_to_huggingface(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
@@ -214,7 +214,7 @@ def test_no_upload_skips_confirm_prompt_and_does_not_send_telemetry(isolated_omm
 
     config_mod.update_config(telemetry_send_policy="ask")
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
@@ -233,7 +233,7 @@ def test_no_upload_skips_confirm_prompt_and_does_not_send_telemetry(isolated_omm
 def test_stop_event_set_before_download_raises_contribution_stopped(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
 
-    def fake_download(url, dest, stop_check=None):
+    def fake_download(url, dest, stop_check=None, **_kw):
         assert stop_check is not None
         raise DownloadCancelled("interrupted")
 
@@ -250,7 +250,7 @@ def test_stop_event_set_before_download_raises_contribution_stopped(isolated_omm
 def test_stop_event_set_during_benchmark_raises_contribution_stopped(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(
-        cli, "download_file", lambda url, dest, stop_check=None: dest.write_bytes(b"x")
+        cli, "download_file", lambda url, dest, stop_check=None, **_kw: dest.write_bytes(b"x")
     )
     _stub_common(monkeypatch)
 
@@ -270,7 +270,7 @@ def test_plain_install_path_unaffected_by_stop_event_none(isolated_omm_home, mon
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     calls = []
 
-    def fake_download(url, dest):
+    def fake_download(url, dest, **_kw):
         calls.append("no-kwargs")
         dest.write_bytes(b"x")
 
@@ -288,7 +288,7 @@ def test_plain_install_path_unaffected_by_stop_event_none(isolated_omm_home, mon
 
 def test_benchmark_always_runs_but_upload_needs_confirm(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     bench_calls = []
@@ -330,7 +330,7 @@ def test_auto_calibrate_runs_silently_when_cached_model_available(isolated_omm_h
         "predict_speed_interval",
         lambda *args, **kwargs: (20.0, 20.0, 20.0),
     )
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 30.0)
@@ -382,7 +382,7 @@ def test_resolve_upload_decision_always_choice_persists_policy_and_uploads(isola
 def test_install_auto_uploads_without_confirm_when_policy_always(isolated_omm_home, monkeypatch):
     cli.config_mod.update_config(telemetry_send_policy="always")
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
@@ -402,7 +402,7 @@ def test_install_auto_uploads_without_confirm_when_policy_always(isolated_omm_ho
 def test_install_never_uploads_without_confirm_when_policy_never(isolated_omm_home, monkeypatch):
     cli.config_mod.update_config(telemetry_send_policy="never")
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
@@ -610,7 +610,7 @@ def test_report_telemetry_falls_back_to_v4_when_runtime_is_unverified(
 
 def test_use_quality_eval_reports_median_speed_and_quality_summary(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest, stop_check=None: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, stop_check=None, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     fake_result = {
         "quality": {"correct": 6, "total": 8, "accuracy": 0.75},
@@ -648,7 +648,7 @@ def test_use_quality_eval_reports_median_speed_and_quality_summary(isolated_omm_
 
 def test_use_quality_eval_failure_reports_no_result(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest, stop_check=None: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, stop_check=None, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
 
     def raise_eval(tag, pack, speed_runs=3):
@@ -735,7 +735,7 @@ def test_install_impl_removes_new_download_when_post_download_copy_budget_fails(
 ):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "remote_file_size", lambda *args: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"model"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"model"))
     monkeypatch.setattr(
         cli.linker,
         "disk_copy_risks",
@@ -755,7 +755,7 @@ def test_install_impl_removes_new_download_when_post_download_copy_budget_fails(
 def test_install_impl_proceeds_when_disk_space_check_is_inconclusive(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 10.0)
@@ -802,6 +802,103 @@ def test_install_impl_exits_cleanly_on_insufficient_disk_space_mid_download_with
     assert exc_info.value.exit_code == 1
 
 
+def test_force_redownloads_even_when_already_present(isolated_omm_home, monkeypatch):
+    """Without --force, an existing file at dest short-circuits the fetch
+    (see the 'already downloaded, skipping fetch' branch); force=True must
+    bypass that and re-run the size check + download."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    resolved = _resolved()
+    dest = cli.MODELS_DIR / resolved.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"stale-bytes")
+
+    size_calls = []
+    monkeypatch.setattr(
+        cli,
+        "remote_file_size",
+        lambda provider, repo_id, filename: size_calls.append(filename) or None,
+    )
+    download_calls = []
+
+    def fake_download(url, dst, **_kw):
+        download_calls.append(dst)
+        dst.write_bytes(b"fresh-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    outcome = cli._install_impl(resolved, force=True)
+
+    assert size_calls == [resolved.filename]
+    assert download_calls == [dest]
+    assert dest.read_bytes() == b"fresh-bytes"
+    assert outcome.filename == resolved.filename
+
+
+def test_force_clears_stale_dest_and_part_before_redownloading(isolated_omm_home, monkeypatch):
+    """--force must guarantee a genuinely fresh download: a leftover
+    completed `dest` and a stale `.part` sidecar from an earlier, unrelated
+    partial download must both be gone before `download_file` is invoked.
+    This is what would have caught the Windows `Path.rename` FileExistsError
+    (rename onto an existing dest) and the "resumes a stale partial instead
+    of starting fresh" bug, without needing to run on Windows."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    resolved = _resolved()
+    dest = cli.MODELS_DIR / resolved.filename
+    part = dest.with_suffix(dest.suffix + ".part")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"stale-complete-bytes")
+    part.write_bytes(b"stale-partial-bytes")
+
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
+
+    dest_existed_at_download_time = []
+
+    def fake_download(url, dst, **_kw):
+        dest_existed_at_download_time.append(dst.exists())
+        assert not part.exists(), "stale .part must be cleared before a fresh --force download"
+        dst.write_bytes(b"fresh-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    cli._install_impl(resolved, force=True)
+
+    assert dest_existed_at_download_time == [False]
+    assert not part.exists()
+    assert dest.read_bytes() == b"fresh-bytes"
+
+
+def test_without_force_skips_fetch_when_already_present(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    resolved = _resolved()
+    dest = cli.MODELS_DIR / resolved.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"stale-bytes")
+
+    monkeypatch.setattr(
+        cli, "remote_file_size", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no size check"))
+    )
+    monkeypatch.setattr(
+        cli, "download_file", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no download"))
+    )
+
+    outcome = cli._install_impl(resolved)
+
+    assert dest.read_bytes() == b"stale-bytes"
+    assert outcome.filename == resolved.filename
+
+
 def test_auto_calibrate_does_not_crash_install_when_write_fails(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(
         cli.predictor, "load_cached_model", lambda: {"trees": [{"leaf": True, "value": 20.0}]}
@@ -822,7 +919,7 @@ def test_auto_calibrate_does_not_crash_install_when_write_fails(isolated_omm_hom
     monkeypatch.setattr(
         cli.predictor, "predict_speed_interval", lambda *args, **kwargs: (20.0, 20.0, 20.0)
     )
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 30.0)

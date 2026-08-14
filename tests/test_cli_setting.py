@@ -276,3 +276,15 @@ def test_setting_bare_menu_no_longer_offers_catalog_status(isolated_omm_home, mo
     assert not any("Catalog status" in label for label in labels)
     assert any("Catalog trust" in label for label in labels)
     assert any("Catalog rollback" in label for label in labels)
+
+
+def test_setting_catalog_status_accepts_quiet_flag_after_subcommand(isolated_omm_home):
+    result = runner.invoke(cli.app, ["setting", "catalog-status", "--quiet"])
+
+    assert result.exit_code == 0, result.stdout
+
+
+def test_setting_catalog_status_accepts_quiet_flag_before_subcommand(isolated_omm_home):
+    result = runner.invoke(cli.app, ["--quiet", "setting", "catalog-status"])
+
+    assert result.exit_code == 0, result.stdout

@@ -34,6 +34,24 @@ def test_import_yes_flag_skips_prompts_without_a_tty(isolated_omm_home, monkeypa
     assert adopted == ["deadbeef"]
 
 
+def test_import_yes_flag_before_subcommand_skips_prompts(isolated_omm_home, monkeypatch):
+    group = _fake_group()
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda extra_path=None: [object()])
+    monkeypatch.setattr(cli.scan_import, "group_by_hash", lambda found: [group])
+    adopted = []
+    monkeypatch.setattr(
+        cli.scan_import,
+        "adopt_group",
+        lambda g: adopted.append(g.sha256) or SimpleNamespace(filename="model.gguf", bytes_saved=0),
+    )
+    monkeypatch.setattr(cli.registry, "load_registry", lambda: {"model.gguf": {}})
+
+    result = runner.invoke(cli.app, ["--yes", "import"])
+
+    assert result.exit_code == 0, result.stdout
+    assert adopted == ["deadbeef"]
+
+
 def test_import_without_yes_errors_without_a_tty(isolated_omm_home, monkeypatch):
     group = _fake_group()
     monkeypatch.setattr(cli.scan_import, "find_external_models", lambda extra_path=None: [object()])
@@ -47,6 +65,25 @@ def test_import_without_yes_errors_without_a_tty(isolated_omm_home, monkeypatch)
     result = runner.invoke(cli.app, ["import"])
 
     assert result.exit_code == 1
+
+
+def test_import_quiet_suppresses_status_lines_but_keeps_the_summary(isolated_omm_home, monkeypatch):
+    group = _fake_group()
+    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda extra_path=None: [object()])
+    monkeypatch.setattr(cli.scan_import, "group_by_hash", lambda found: [group])
+    monkeypatch.setattr(
+        cli.scan_import,
+        "adopt_group",
+        lambda g: SimpleNamespace(filename="model.gguf", bytes_saved=0),
+    )
+    monkeypatch.setattr(cli.registry, "load_registry", lambda: {"model.gguf": {}})
+
+    result = runner.invoke(cli.app, ["import", "--yes", "--quiet"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Found 1 model" not in result.stdout
+    assert "Imported model.gguf" not in result.stdout
+    assert "Done:" in result.stdout
 
 
 def test_import_continues_after_one_group_fails(isolated_omm_home, monkeypatch):

@@ -16,7 +16,7 @@ def _stub_successful_install(monkeypatch, ollama_installed=True):
         lambda name: ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo"),
     )
 
-    def fake_download(url, dest):
+    def fake_download(url, dest, **_kw):
         dest.write_bytes(b"fake-gguf")
 
     monkeypatch.setattr(cli, "download_file", fake_download)
