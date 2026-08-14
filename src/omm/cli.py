@@ -3101,6 +3101,8 @@ def search(
             ref = search_mod.install_ref(c)
             if ref in seen_refs:
                 continue
+            if limit is not None and len(refs) >= limit:
+                break
             desc = c.get("description") or ""
             candidate = c
             if (
@@ -3123,8 +3125,6 @@ def search(
             )
             if skip_unfit and not fits_hardware:
                 continue
-            if limit is not None and len(refs) >= limit:
-                break
             seen_refs.add(ref)
             refs.append(ref)
             if json_output:

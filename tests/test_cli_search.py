@@ -210,6 +210,40 @@ def test_search_limit_stops_family_headers_once_reached(monkeypatch):
     assert "qwen-model-c" not in result.stdout
 
 
+def test_search_limit_skips_param_count_network_fallback_past_the_limit(monkeypatch):
+    # The per-candidate parameter-count fallback (fetch_repo_param_count_b)
+    # is a network call. Once --limit results are already collected, later
+    # candidates must never reach it - the limit check has to run before the
+    # fallback, not after (see #81).
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {"name": "llama-7b-model", "repo_id": "org/llama-7b-model", "description": "d"},
+            {"name": "llama-13b-model", "repo_id": "org/llama-13b-model", "description": "d"},
+            {"name": "llama-30b-model", "repo_id": "org/llama-30b-model", "description": "d"},
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "predict_speed", lambda trees, hw, candidate: 1.0)
+    monkeypatch.setattr(cli, "candidate_parameter_count_billions", lambda c: None)
+    fallback_calls = []
+    monkeypatch.setattr(
+        cli,
+        "fetch_repo_param_count_b",
+        lambda provider, repo_id: fallback_calls.append(repo_id) or 7.0,
+    )
+
+    result = runner.invoke(cli.app, ["search", "model", "--limit", "2"])
+
+    assert result.exit_code == 0, result.stdout
+    assert fallback_calls == ["org/llama-7b-model", "org/llama-13b-model"]
+
+
 def test_search_provider_curated_filters_out_remote_results(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
     monkeypatch.setattr(
