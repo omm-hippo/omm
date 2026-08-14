@@ -87,34 +87,34 @@ Run a downloaded script with `-Purge` (PowerShell) or `--purge` (sh) to remove t
 ## Usage
 
 ```sh
-omm setup            # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
-omm scan [--json]             # Print a hardware, runner, and model summary (RAM, VRAM, OS)
-omm recommend        # Suggest a model that fits this machine, then offer to install it
+omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
+omm scan [--json]  # Print a hardware, runner, and model summary (RAM, VRAM, OS)
+omm recommend  # Suggest a model that fits this machine, then offer to install it
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm benchmark <name>...  # Local quality + speed smoke evidence for one or more installed models
 omm search <query> [--json] [--skip-unfit] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated models, cached candidates, and HuggingFace
 omm install <name> [--skip-unfit] [--upload/--no-upload] [--force]  # Download a model and link it into LM Studio / Ollama
 omm import [directory] [--yes]  # Adopt GGUF files already sitting in Ollama/LM Studio (or a given directory) into the hub
-omm uninstall <name> [--dry-run] # Uninstall a model and clean up its symlinks/manifests (alias: rm)
+omm uninstall <name> [--dry-run]  # Uninstall a model and clean up its symlinks/manifests (alias: rm)
 omm uninstall all [--yes] [--dry-run]  # Uninstall every model installed via omm
-omm list [--json] [--engine NAME]    # Show models installed via omm and their linked status (alias: ls)
+omm list [--json] [--engine NAME]  # Show models installed via omm and their linked status (alias: ls)
 omm info <name> [--json]  # Show a model's name, version, size, and linked-program run commands
-omm upgrade <name> [--dry-run]   # Refresh a model against its source if it has changed since install (alias: up)
+omm upgrade <name> [--dry-run]  # Refresh a model against its source if it has changed since install (alias: up)
 omm upgrade [--yes] [--dry-run]  # Check every installed model for updates
-omm link [--engine NAME]             # Re-verify and repair every installed model's LM Studio/Ollama links
-omm link <directory> # Reuse central GGUF files; Windows warns if a real copy is required
-omm autoremove       # Clean up broken symlinks and orphaned partial downloads
+omm link [--engine NAME]  # Re-verify and repair every installed model's LM Studio/Ollama links
+omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
+omm autoremove  # Clean up broken symlinks and orphaned partial downloads
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
-omm update           # Git-pull the latest source into ~/.omm/src, then refresh rules/model data
-omm setting          # Interactive menu for telemetry, upload policy, version channel, and catalog trust
+omm update  # Git-pull the latest source into ~/.omm/src, then refresh rules/model data
+omm setting  # Interactive menu for telemetry, upload policy, version channel, and catalog trust
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
 omm setting upload --enable|--disable|--ask  # Configure the benchmark-upload send policy
-omm setting calibrate <name>    # Locally correct predicted speed with an installed Ollama model
+omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
-omm setting catalog-status      # Show signed recommendation data and rollback snapshots
-omm setting catalog-rollback    # Restore the most recent different recommendation snapshot
-omm help [command]   # Show help, same as --help
+omm setting catalog-status  # Show signed recommendation data and rollback snapshots
+omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
+omm help [command]  # Show help, same as --help
 ```
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `search`/`install` mark models predicted not to run on this machine's hardware in red.
