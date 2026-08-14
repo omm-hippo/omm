@@ -411,12 +411,12 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
     grouped_names = {name for _, names in _HELP_ALL_GROUPS for name in names}
 
     for title, names in _HELP_ALL_GROUPS:
+        visible = [n for n in names if n in commands and not commands[n].hidden]
+        if not visible:
+            continue
         console.print(f"[bold]{title}:[/bold]")
-        for name in names:
-            cmd_obj = commands.get(name)
-            if cmd_obj is None or cmd_obj.hidden:
-                continue
-            _print_command_line(name, cmd_obj, width)
+        for name in visible:
+            _print_command_line(name, commands[name], width)
         console.print()
 
     setting_cmd = commands.get("setting")
@@ -427,15 +427,15 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
         # isinstance(setting_cmd, click.Group) silently never matches.
         # Duck-type on the `.commands` dict every group (real or vendored)
         # exposes instead.
-        console.print("[bold]Settings (omm setting SUBCOMMAND):[/bold]")
-        sub_names = sorted(setting_cmd.commands.keys())
-        sub_width = max((len(n) for n in sub_names if not setting_cmd.commands[n].hidden), default=0)
-        for name in sub_names:
-            sub_obj = setting_cmd.commands[name]
-            if sub_obj.hidden:
-                continue
-            _print_command_line(f"setting {name}", sub_obj, len("setting ") + sub_width)
-        console.print()
+        sub_names = [n for n in sorted(setting_cmd.commands) if not setting_cmd.commands[n].hidden]
+        if sub_names:
+            console.print("[bold]Settings (omm setting SUBCOMMAND):[/bold]")
+            console.print(f"  {setting_cmd.help}")
+            sub_width = max(len(n) for n in sub_names)
+            for name in sub_names:
+                sub_obj = setting_cmd.commands[name]
+                _print_command_line(f"setting {name}", sub_obj, len("setting ") + sub_width)
+            console.print()
 
     # Safety net: any top-level command not yet slotted into a group above
     # (e.g. a newly added one) still shows up here instead of vanishing.
@@ -449,9 +449,11 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
         console.print()
 
     console.print("[dim]Run `omm COMMAND --help` for a command's full option list.[/dim]")
+    console.print("[dim]Exit codes: 0 success, 1 failure, 2 usage error (bad flag/argument).[/dim]")
 
 
 @app.command(name="help")
+@global_flags
 def help_cmd(
     ctx: typer.Context,
     command: str = typer.Argument(None, help="Show help for a specific subcommand."),
