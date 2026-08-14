@@ -144,9 +144,9 @@ def build_rows(
         elif warning:
             badge, badge_style = "⚠ CAUTION", f"fg:{WARNING} bold"
         elif curated:
-            badge, badge_style = "OMM PICK", f"fg:{SUCCESS} bold"
+            badge, badge_style = "OMM PICK", f"fg:black bg:{SUCCESS} bold"
         elif "downloads" in str(candidate.get("description") or "").lower():
-            badge, badge_style = "POPULAR", f"fg:{ACCENT} bold"
+            badge, badge_style = "POPULAR", f"fg:{ACCENT}"
         else:
             badge, badge_style = "COMPATIBLE", f"fg:{MUTED} bold"
         rows.append(
@@ -168,7 +168,7 @@ def build_rows(
 
 def _hardware_value(label: str, value: str) -> Text:
     text = Text()
-    text.append(f"{label}  ", style=ACCENT)
+    text.append(f"{label}  ", style=MUTED)
     text.append(value, style="bold white")
     return text
 
@@ -259,7 +259,7 @@ def choice_title(row: RecommendationRow, width: int) -> list[tuple[str, str]]:
             _clip(row.display_name, model_width - 1).ljust(model_width),
         ),
         (_prompt_style(row.badge_style), _clip(row.badge, badge_width - 1).ljust(badge_width)),
-        (_prompt_style(f"fg:{ACCENT}"), speed.ljust(13)),
+        (_prompt_style(f"fg:{MUTED}"), speed.ljust(13)),
     ]
     if memory_width:
         parts.append((_prompt_style(f"fg:{MUTED}"), memory.ljust(memory_width)))
