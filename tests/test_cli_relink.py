@@ -213,3 +213,20 @@ def test_relink_with_empty_registry_reports_nothing_to_do(isolated_omm_home):
 
     assert result.exit_code == 0, result.stdout
     assert "No models installed" in result.stdout
+
+
+def test_link_engine_not_installed_prints_filter_aware_message(isolated_omm_home, monkeypatch):
+    # --engine names a real engine that just isn't installed on this
+    # machine - the generic "0 model(s) relinked" summary would be
+    # confusing, and looping over every model to relink 0 of them is
+    # wasted work (see #81).
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    (cli.MODELS_DIR / filename).write_bytes(b"fake-gguf")
+    registry.save_registry({filename: {"linked": {"ollama": False}}})
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
+
+    result = runner.invoke(cli.app, ["link", "--engine", "ollama"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "ollama isn't installed" in result.stdout
+    assert "0 model(s) relinked" not in result.stdout

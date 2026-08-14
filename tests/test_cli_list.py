@@ -102,3 +102,18 @@ def test_list_engine_bogus_value_errors(isolated_omm_home):
 
     assert result.exit_code == 2
     assert "--engine must be one of" in result.stderr
+
+
+def test_list_engine_with_no_matches_prints_filter_aware_message(isolated_omm_home):
+    # Models exist but none are linked into ollama - the generic "No models
+    # installed via omm yet" message would be actively misleading here
+    # (see #81).
+    registry.save_registry(
+        {"a.gguf": {"size_bytes": 0, "linked": {"lmstudio": False, "ollama": False}}}
+    )
+
+    result = runner.invoke(cli.app, ["list", "--engine", "ollama"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "No models linked into ollama" in result.stdout
+    assert "No models installed via omm yet" not in result.stdout

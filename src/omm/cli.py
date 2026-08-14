@@ -531,6 +531,19 @@ def _reconcile_stale_link_records(reg: dict, installed: dict[str, bool]) -> list
     return cleaned
 
 
+def _validate_engine(engine: str | None) -> None:
+    """Shared `--engine` check for `list`/`link`: exits 2 with a usage
+    error when a value is given but isn't a known engine key."""
+    if engine is None:
+        return
+    valid_engines = {spec.key for spec in linker.ENGINES}
+    if engine not in valid_engines:
+        err_console.print(
+            f"[red]--engine must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/red]"
+        )
+        raise typer.Exit(2)
+
+
 def _missing_engines_note(installed: dict[str, bool]) -> str | None:
     """One-line pointer to the compatibility wiki page for engines not
     installed on this machine - `None` when every known engine is
@@ -2646,14 +2659,10 @@ def list_models(
     """Show models installed via omm and their linked status.
 
     Alias: ls"""
-    valid_engines = {spec.key for spec in linker.ENGINES}
-    if engine is not None and engine not in valid_engines:
-        err_console.print(
-            f"[red]--engine must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/red]"
-        )
-        raise typer.Exit(2)
+    _validate_engine(engine)
     json_output = _global_opts().json
     reg = registry.load_registry()
+    had_any_models = bool(reg)
     if engine is not None:
         reg = {
             filename: entry
@@ -2663,6 +2672,8 @@ def list_models(
     if not reg:
         if json_output:
             console.print_json(data=[])
+        elif engine is not None and had_any_models:
+            console.print(f"No models linked into {engine} yet. Try `omm link --engine {engine}`.")
         else:
             console.print("No models installed via omm yet. Try `omm recommend` or `omm install`.")
         raise typer.Exit(0)
@@ -3202,18 +3213,16 @@ def link_models(
     `linked` flag. With a directory, reuse the central GGUF through
     zero-copy links when possible, with an explicit copy warning when Windows
     permissions and volume boundaries make that impossible."""
-    valid_engines = {spec.key for spec in linker.ENGINES}
-    if engine is not None and engine not in valid_engines:
-        err_console.print(
-            f"[red]--engine must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/red]"
-        )
-        raise typer.Exit(2)
+    _validate_engine(engine)
     if directory is not None and engine is not None:
         err_console.print("[red]--engine only applies without a directory argument.[/red]")
         raise typer.Exit(2)
     reg = registry.load_registry()
     if not reg:
         console.print("No models installed via omm yet.")
+        raise typer.Exit(0)
+    if engine is not None and not linker.is_engine_installed(engine):
+        console.print(f"{engine} isn't installed on this machine, so there's nothing to link into it.")
         raise typer.Exit(0)
 
     if directory is not None:
@@ -3304,8 +3313,9 @@ def link_models(
         elif blocked:
             skipped_conflict += 1
 
+    engine_suffix = f" (--engine {engine})" if engine is not None else ""
     console.print(
-        f"[green]{relinked_count} model(s) relinked/verified.[/green] "
+        f"[green]{relinked_count} model(s) relinked/verified{engine_suffix}.[/green] "
         f"{skipped_conflict} skipped (conflict). {skipped_missing} skipped (file missing)."
     )
 
