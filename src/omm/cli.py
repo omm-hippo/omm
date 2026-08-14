@@ -173,7 +173,7 @@ def global_flags(func):
             annotation=Annotated[
                 bool,
                 typer.Option(
-                    "--quiet", "-q", help="Suppress banners and informational output."
+                    "--quiet", "-q", help="Suppress progress bars and background status/hint lines (errors and results still print)."
                 ),
             ],
         ),
@@ -349,7 +349,7 @@ def _root(
     ctx: typer.Context,
     json_flag: Annotated[bool, typer.Option("--json", help="Print output as JSON where supported.")] = False,
     yes_flag: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompts. For scripting.")] = False,
-    quiet_flag: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress banners and informational output.")] = False,
+    quiet_flag: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress progress bars and background status/hint lines (errors and results still print).")] = False,
     no_color_flag: Annotated[bool, typer.Option("--no-color", help="Disable colored output.")] = False,
 ) -> None:
     opts = ctx.ensure_object(GlobalOptions)
