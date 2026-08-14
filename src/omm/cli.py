@@ -41,6 +41,7 @@ from omm import (
     config as config_mod,
     contribute_state,
     linker,
+    memory_guard as memory_guard_mod,
     onboarding,
     predictor,
     quality as quality_mod,
@@ -2017,6 +2018,84 @@ def _ensure_install_disk_capacity(
         raise InsufficientDiskSpaceError("Not enough disk space: " + "; ".join(failures))
 
 
+def _guard_ollama_load(
+    tag: str, required_gb: float
+) -> tuple[bool, memory_guard_mod.OllamaManagedRuntime, bool]:
+    """Check live memory before an Ollama load and release only OMM-owned models."""
+    runtime = memory_guard_mod.OllamaManagedRuntime(registry.load_registry())
+    latest_residents: tuple[memory_guard_mod.ResidentModel, ...] = ()
+    target_preloaded = False
+
+    def _plan():
+        nonlocal latest_residents, target_preloaded
+        latest_residents = runtime.list_residents()
+        target_preloaded = any(
+            memory_guard_mod._same_ollama_id(resident.model_id, tag)
+            for resident in latest_residents
+        )
+        candidates = tuple(
+            resident
+            for resident in latest_residents
+            if not memory_guard_mod._same_ollama_id(resident.model_id, tag)
+        )
+        return memory_guard_mod.plan_memory_guard(
+            required_gb,
+            scan_hardware(),
+            candidates,
+        )
+
+    plan = _plan()
+    # A resident target will not allocate a second model-sized footprint, and
+    # must never be selected as reclamation collateral under an alias.
+    if target_preloaded:
+        return True, runtime, True
+
+    policy = memory_guard_mod.normalize_policy(load_config().get("memory_guard_policy", "ask"))
+    if plan.decision is memory_guard_mod.GuardDecision.SAFE:
+        return True, runtime, False
+    if policy is memory_guard_mod.GuardPolicy.OBSERVE:
+        err_console.print(
+            f"[yellow]Memory Guard warning: {required_gb:.1f} GB requested, "
+            f"{plan.available_gb:.1f} GB safely available. Observe mode will not unload anything.[/yellow]"
+        )
+        return True, runtime, False
+
+    def _consent(candidate_plan) -> bool:
+        if not _stdin_is_tty():
+            return False
+        names = ", ".join(resident.model_id for resident in candidate_plan.managed_residents)
+        return _ask_confirm(
+            f"Memory Guard can free OMM-managed model(s) ({names}) before loading {tag}. Continue?"
+        )
+
+    execution = memory_guard_mod.execute_guard(
+        plan,
+        policy,
+        runtime,
+        consent=_consent,
+        recalculate=_plan,
+    )
+    if not execution.allowed:
+        if execution.unloaded:
+            err_console.print(
+                "[yellow]Memory Guard already released OMM-managed model(s): "
+                + ", ".join(resident.model_id for resident in execution.unloaded)
+                + ".[/yellow]"
+            )
+        err_console.print(
+            f"[red]Memory Guard blocked the load: {required_gb:.1f} GB requested, "
+            f"{plan.available_gb:.1f} GB safely available ({', '.join(execution.reasons)}).[/red]"
+        )
+        return False, runtime, False
+    if execution.unloaded:
+        console.print(
+            "[green]Memory Guard released and verified OMM-managed model(s): "
+            + ", ".join(resident.model_id for resident in execution.unloaded)
+            + ".[/green]"
+        )
+    return True, runtime, False
+
+
 def _post_install_runtime(linked: dict[str, bool], preferred: str | None) -> str | None:
     """Select one linked local runtime without starting any application."""
     available = [engine for engine in ("ollama", "lmstudio") if linked.get(engine)]
@@ -2121,6 +2200,7 @@ def _install_impl(
     verify_runtime_after_install: bool = False,
     runtime_load_consent: bool | None = None,
     preferred_runtime: str | None = None,
+    enforce_memory_guard: bool = False,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -2304,6 +2384,7 @@ def _install_impl(
     model_metadata = None
     engine_version = None
     runtime_options = None
+    guard_failure_reason = None
     eval_error: quality_mod.QualityEvaluationError | None = None
     run_ollama_benchmark = linked["ollama"] and selected_runtime != "lmstudio"
     ollama_was_preloaded = False
@@ -2355,6 +2436,7 @@ def _install_impl(
         if not opts.quiet:
             console.print("Benchmarking...")
         started_daemon = None
+        pressure_watcher = None
         if (
             not verify_runtime_after_install
             and not benchmark.ollama_daemon_reachable()
@@ -2370,7 +2452,47 @@ def _install_impl(
                 runtime_candidate.update(model_metadata)
             except quality_mod.QualityEvaluationError:
                 model_metadata = None
-            runtime_options = tuning.recommend_runtime_settings(runtime_hw, runtime_candidate).ollama_options
+            runtime_profile = tuning.recommend_runtime_settings(runtime_hw, runtime_candidate)
+            runtime_options = runtime_profile.ollama_options
+            if enforce_memory_guard:
+                required_gb = runtime_profile.required_memory_gb or (
+                    dest.stat().st_size / (1024**3) * 1.2
+                )
+                guard_allowed, _guard_runtime, target_was_preloaded = _guard_ollama_load(
+                    ollama_tag, required_gb
+                )
+                ollama_was_preloaded = ollama_was_preloaded or target_was_preloaded
+                if not guard_allowed:
+                    guard_failure_reason = "memory_guard_blocked"
+                    return InstallOutcome(
+                        filename,
+                        repo_id,
+                        linked,
+                        ollama_tag,
+                        None,
+                        False,
+                        sha256=sha256,
+                        failure_reason=guard_failure_reason,
+                        model_metadata=model_metadata,
+                        compatibility_engine=selected_runtime,
+                        compatibility_status=compatibility_status,
+                        runtime_load_declined=runtime_load_declined,
+                    )
+                guard_config = load_config()
+                live_budget = calculate_memory_budget(scan_hardware())
+                pressure_watcher = memory_guard_mod.RuntimePressureWatcher(
+                    memory_guard_mod.SustainedPressureMonitor(
+                        live_budget.ram_safety_reserve_gb,
+                        low_memory_seconds=float(
+                            guard_config.get("memory_guard_low_memory_seconds", 3.0)
+                        ),
+                    ),
+                    sample_available_gb=lambda: scan_hardware().ram_available_gb,
+                    operation_owned_by_omm=not target_was_preloaded,
+                    cancel_owned_operation=lambda: quality_mod.unload_model(ollama_tag),
+                    poll_seconds=float(guard_config.get("memory_guard_poll_seconds", 1.0)),
+                )
+                pressure_watcher.__enter__()
             if use_quality_eval:
                 try:
                     def _evaluate_with_runtime():
@@ -2455,8 +2577,30 @@ def _install_impl(
                     if not ollama_was_preloaded:
                         quality_mod.unload_model(ollama_tag)
         finally:
+            if pressure_watcher is not None:
+                pressure_watcher.__exit__(None, None, None)
             if started_daemon is not None:
                 benchmark.stop_ollama_daemon(started_daemon)
+
+        if pressure_watcher is not None and pressure_watcher.pressure_triggered:
+            pressure_watcher.cancelled = bool(
+                pressure_watcher.cancelled
+                and quality_mod._model_is_loaded(ollama_tag) is False
+            )
+            tokens_per_sec = None
+            guard_failure_reason = (
+                "memory_pressure_cancelled"
+                if pressure_watcher.cancelled
+                else "memory_pressure_unload_failed"
+            )
+            err_console.print(
+                "[red]Memory Guard detected sustained low memory and "
+                + (
+                    "cancelled OMM's model operation.[/red]"
+                    if pressure_watcher.cancelled
+                    else "could not confirm cancellation of OMM's model operation.[/red]"
+                )
+            )
 
         if tokens_per_sec:
             console.print(f"[blue]{tokens_per_sec:.1f} tok/s[/blue]")
@@ -2491,7 +2635,10 @@ def _install_impl(
                 repo_id,
                 tokens_per_sec,
                 provider=resolved.provider,
-                failure_reason=eval_error.failure_reason if eval_error is not None else None,
+                failure_reason=(
+                    guard_failure_reason
+                    or (eval_error.failure_reason if eval_error is not None else None)
+                ),
             )
         if verify_runtime_after_install:
             compatibility_status = "passed" if tokens_per_sec else "failed"
@@ -2501,7 +2648,8 @@ def _install_impl(
                 status=compatibility_status,
                 runtime_version=ollama_runtime_version or engine_version,
                 failure_reason=None if tokens_per_sec else (
-                    eval_error.failure_reason if eval_error is not None else "empty_response"
+                    guard_failure_reason
+                    or (eval_error.failure_reason if eval_error is not None else "empty_response")
                 ),
             )
     elif not runtime_load_declined and selected_runtime is None and not linked["ollama"]:
@@ -2509,7 +2657,10 @@ def _install_impl(
 
     return InstallOutcome(
         filename, repo_id, linked, ollama_tag, tokens_per_sec, telemetry_sent, sha256=sha256,
-        failure_reason=eval_error.failure_reason if eval_error is not None else None,
+        failure_reason=(
+            guard_failure_reason
+            or (eval_error.failure_reason if eval_error is not None else None)
+        ),
         model_metadata=model_metadata,
         compatibility_engine=selected_runtime,
         compatibility_status=compatibility_status,
@@ -2623,6 +2774,7 @@ def install(
                 else (True if _global_opts().yes else None)
             ),
             preferred_runtime=load_config().get("default_engine"),
+            enforce_memory_guard=True,
         )
     except DownloadError as error:
         err_console.print(f"[red]{error}[/red]")
@@ -2902,6 +3054,7 @@ def verify(
     adapter = _compatibility_adapter(selected_engine)
     model_ref = _compatibility_model_ref(filename, entry, selected_engine)
     health = adapter.health()
+    visible = None
     if health.reachable:
         try:
             visible = find_runtime_model(adapter.list_models(), model_ref)
@@ -2914,6 +3067,30 @@ def verify(
             ):
                 err_console.print("[yellow]Verification cancelled; nothing was loaded.[/yellow]")
                 raise typer.Exit(0)
+
+    if health.reachable and selected_engine == "ollama" and (visible is None or not visible.loaded):
+        size_bytes = entry.get("size_bytes")
+        if (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, (int, float))
+            or size_bytes <= 0
+        ):
+            try:
+                size_bytes = _managed_model_path(filename).stat().st_size
+            except (ModelResolutionError, OSError):
+                size_bytes = None
+        if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+            err_console.print(
+                "[red]Memory Guard could not determine the model size; "
+                "the Ollama load was blocked.[/red]"
+            )
+            raise typer.Exit(1)
+        guard_allowed, _runtime, _preloaded = _guard_ollama_load(
+            model_ref.key,
+            float(size_bytes) / (1024**3) * 1.2,
+        )
+        if not guard_allowed:
+            raise typer.Exit(1)
 
     console.print(f"Verifying {filename} with {selected_engine}...")
     result = verify_and_record(
@@ -3297,6 +3474,53 @@ def configure_upload(
     table.add_column("Value")
     policy = current.get("telemetry_send_policy", "ask")
     table.add_row("Uploads", {"always": "always", "never": "never", "ask": "ask (default)"}[policy])
+    console.print(table)
+
+
+@setting_app.command(name="memory-guard")
+def configure_memory_guard(
+    policy: str = typer.Option(
+        None,
+        "--policy",
+        help="Memory Guard policy: ask, block, or observe.",
+    ),
+    poll_seconds: float = typer.Option(
+        None,
+        "--poll-seconds",
+        min=0.1,
+        max=60.0,
+        help="Seconds between live-memory checks during a long operation.",
+    ),
+    low_memory_seconds: float = typer.Option(
+        None,
+        "--low-memory-seconds",
+        min=0.0,
+        max=300.0,
+        help="How long low memory must persist before OMM cancels its own operation.",
+    ),
+) -> None:
+    """Show or change the consent-aware runtime memory protection policy."""
+    changes = {}
+    if policy is not None:
+        normalized = policy.casefold()
+        if normalized not in {"ask", "block", "observe"}:
+            err_console.print("[red]--policy must be ask, block, or observe.[/red]")
+            raise typer.Exit(1)
+        changes["memory_guard_policy"] = normalized
+    if poll_seconds is not None:
+        changes["memory_guard_poll_seconds"] = poll_seconds
+    if low_memory_seconds is not None:
+        changes["memory_guard_low_memory_seconds"] = low_memory_seconds
+    current = config_mod.update_config(**changes) if changes else load_config()
+    table = Table(title="Memory Guard", show_header=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    table.add_row("Policy", str(current["memory_guard_policy"]))
+    table.add_row("Poll interval", f"{current['memory_guard_poll_seconds']} seconds")
+    table.add_row(
+        "Sustained pressure",
+        f"{current['memory_guard_low_memory_seconds']} seconds",
+    )
     console.print(table)
 
 
@@ -3943,6 +4167,28 @@ def autoremove() -> None:
     )
 
 
+def _guard_benchmark_models(models: list[str]) -> None:
+    entries = registry.load_registry()
+    for tag in models:
+        entry = next(
+            (
+                value
+                for value in entries.values()
+                if isinstance(value, dict)
+                and isinstance(value.get("ollama_name"), str)
+                and memory_guard_mod._same_ollama_id(value["ollama_name"], tag)
+            ),
+            None,
+        )
+        size_bytes = entry.get("size_bytes") if isinstance(entry, dict) else None
+        if not isinstance(size_bytes, (int, float)) or isinstance(size_bytes, bool) or size_bytes <= 0:
+            continue
+        required_gb = float(size_bytes) / (1024**3) * 1.2
+        allowed, _runtime, _preloaded = _guard_ollama_load(tag, required_gb)
+        if not allowed:
+            raise typer.Exit(1)
+
+
 @app.command(name="benchmark")
 @global_flags
 def benchmark_cmd(
@@ -3987,6 +4233,7 @@ def benchmark_cmd(
             err_console.print("[red]No models are installed in Ollama to benchmark.[/red]")
             raise typer.Exit(1)
         console.print(f"[dim]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/dim]")
+    _guard_benchmark_models(models)
     if output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output = config_mod.EVALUATIONS_DIR / f"quality-{stamp}.json"
@@ -4718,6 +4965,7 @@ def _run_contribution_loop(
                 use_quality_eval=True,
                 quality_pack=quality_pack,
                 link_only_ollama=True,
+                enforce_memory_guard=True,
             )
         except ContributionStopped as e:
             _cleanup_incomplete_install(e.filename)
@@ -4760,6 +5008,7 @@ def _run_contribution_loop(
                         use_quality_eval=True,
                         quality_pack=quality_pack,
                         link_only_ollama=True,
+                        enforce_memory_guard=True,
                     )
                 except ContributionStopped as e:
                     _cleanup_incomplete_install(e.filename)

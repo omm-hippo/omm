@@ -116,6 +116,26 @@ def test_verify_failure_keeps_model_file_and_records_reason(isolated_omm_home, m
     assert registry.load_registry()["model.gguf"]["compatibility"]["ollama"]["failure_reason"] == "out_of_memory"
 
 
+def test_verify_memory_guard_block_prevents_runtime_load(isolated_omm_home, monkeypatch):
+    registry.save_registry({"model.gguf": _entry()})
+    adapter = _CliAdapter()
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    monkeypatch.setattr(
+        cli,
+        "_guard_ollama_load",
+        lambda tag, required_gb: (False, object(), False),
+    )
+    monkeypatch.setattr(
+        cli,
+        "verify_and_record",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not load")),
+    )
+
+    result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "ollama", "--yes"])
+
+    assert result.exit_code == 1
+
+
 def test_verify_rejects_unlinked_and_uninstalled_models(isolated_omm_home):
     registry.save_registry({"model.gguf": _entry(linked={"ollama": False, "lmstudio": False})})
 
