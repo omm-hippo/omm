@@ -37,7 +37,10 @@ def test_aliases_do_not_appear_in_help_all(isolated_omm_home):
         assert f"USAGE: omm {alias} " not in result.stdout
 
 
-def test_uninstall_help_all_entry_documents_its_alias(isolated_omm_home):
-    result = runner.invoke(cli.app, ["help", "--all"])
+def test_uninstall_help_documents_its_alias(isolated_omm_home):
+    # `help --all` only shows a one-line summary per command now (see
+    # test_help_all_is_a_compact_listing_not_a_full_flag_dump), so the
+    # alias note lives in uninstall's own help text instead.
+    result = runner.invoke(cli.app, ["help", "uninstall"])
     assert result.exit_code == 0, result.stdout
     assert "Alias: rm" in result.stdout

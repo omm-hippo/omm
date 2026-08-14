@@ -366,55 +366,66 @@ def _root(
     opts.pending_telemetry_notice = telemetry.flush_pending()
 
 
-def _print_full_command_reference(root_ctx: click.Context, *, _prefix: str = "") -> None:
-    """Print every command's own --help text, recursing one level into
-    nested groups (currently just `setting`). Reuses each Command's real
-    get_help() output instead of a separate summary format, so every flag
-    a command actually accepts always shows up here too."""
-    names = sorted(root_ctx.command.commands.keys())
-    first = True
-    for name in names:
-        cmd_obj = root_ctx.command.commands[name]
-        if cmd_obj.hidden:
-            continue
-        if not first:
-            console.print()
-            console.print("---")
-            console.print()
-        first = False
-        if hasattr(cmd_obj, "commands"):
-            # Typer >=0.16 vendors its own click fork (typer._click), so
-            # TyperGroup subclasses that fork's Command directly rather
-            # than the standalone `click` package's Group/MultiCommand -
-            # isinstance(cmd_obj, click.Group) silently never matches.
-            # Duck-type on the `.commands` dict every group (real or
-            # vendored) exposes instead, same attribute used to enumerate
-            # above.
-            console.print(f"[bold]{_prefix}{name}[/bold] (command group)")
-            console.print()
-            _print_full_command_reference_group(cmd_obj, root_ctx, f"{_prefix}{name} ")
-            continue
-        sub_ctx = cmd_obj.make_context(name, [], parent=root_ctx, resilient_parsing=True)
-        console.print(cmd_obj.get_help(sub_ctx))
+_HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
+    ("Core", ["search", "install", "list", "recommend", "uninstall", "info", "upgrade"]),
+    ("Tuning & quality", ["tune", "benchmark", "contribute"]),
+    ("Maintenance", ["scan", "setup", "import", "autoremove", "link", "update", "help"]),
+]
 
 
-def _print_full_command_reference_group(
-    group: click.Group, parent_ctx: click.Context, prefix: str
-) -> None:
-    group_ctx = group.make_context(prefix.strip(), [], parent=parent_ctx, resilient_parsing=True)
-    names = sorted(group.commands.keys())
-    for idx, name in enumerate(names):
-        cmd_obj = group.commands[name]
-        if cmd_obj.hidden:
-            continue
-        if idx:
-            console.print()
-        # Note: just `name`, not f"{prefix}{name}" - group_ctx's own
-        # info_name ("setting") already contributes the prefix when Click
-        # walks the context chain to build the usage line, so re-adding it
-        # here doubled it into "setting setting calibrate".
-        sub_ctx = cmd_obj.make_context(name, [], parent=group_ctx, resilient_parsing=True)
-        console.print(cmd_obj.get_help(sub_ctx))
+def _print_command_line(name: str, cmd_obj: click.Command, width: int) -> None:
+    console.print(f"  omm {name:<{width}}  {cmd_obj.get_short_help_str(limit=1000)}")
+
+
+def _print_full_command_reference(root_ctx: click.Context) -> None:
+    """Homebrew/git-`-a`-style listing: every non-hidden command plus its
+    one-line summary, grouped like the curated root help - not each
+    command's full flag reference, which is what `omm <command> --help`
+    is for. A prior version dumped every command's complete --help text
+    here (~400 lines); this mirrors how git/docker/gh expand `-a` instead."""
+    commands = root_ctx.command.commands
+    width = max((len(n) for n in commands if not commands[n].hidden), default=0)
+    grouped_names = {name for _, names in _HELP_ALL_GROUPS for name in names}
+
+    for title, names in _HELP_ALL_GROUPS:
+        console.print(f"[bold]{title}:[/bold]")
+        for name in names:
+            cmd_obj = commands.get(name)
+            if cmd_obj is None or cmd_obj.hidden:
+                continue
+            _print_command_line(name, cmd_obj, width)
+        console.print()
+
+    setting_cmd = commands.get("setting")
+    if setting_cmd is not None and hasattr(setting_cmd, "commands"):
+        # Typer >=0.16 vendors its own click fork (typer._click), so
+        # TyperGroup subclasses that fork's Command directly rather than
+        # the standalone `click` package's Group/MultiCommand -
+        # isinstance(setting_cmd, click.Group) silently never matches.
+        # Duck-type on the `.commands` dict every group (real or vendored)
+        # exposes instead.
+        console.print("[bold]Settings (omm setting SUBCOMMAND):[/bold]")
+        sub_names = sorted(setting_cmd.commands.keys())
+        sub_width = max((len(n) for n in sub_names if not setting_cmd.commands[n].hidden), default=0)
+        for name in sub_names:
+            sub_obj = setting_cmd.commands[name]
+            if sub_obj.hidden:
+                continue
+            _print_command_line(f"setting {name}", sub_obj, len("setting ") + sub_width)
+        console.print()
+
+    # Safety net: any top-level command not yet slotted into a group above
+    # (e.g. a newly added one) still shows up here instead of vanishing.
+    leftover = sorted(
+        n for n in commands if n not in grouped_names and n != "setting" and not commands[n].hidden
+    )
+    if leftover:
+        console.print("[bold]Other:[/bold]")
+        for name in leftover:
+            _print_command_line(name, commands[name], width)
+        console.print()
+
+    console.print("[dim]Run `omm COMMAND --help` for a command's full option list.[/dim]")
 
 
 @app.command(name="help")

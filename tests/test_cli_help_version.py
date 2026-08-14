@@ -50,20 +50,20 @@ def test_help_all_expands_nested_setting_subcommands():
 
     assert result.exit_code == 0, result.stdout
     for name in ("telemetry", "upload", "version", "calibrate", "catalog-trust", "catalog-status", "catalog-rollback"):
-        assert name in result.stdout, f"missing setting subcommand: {name}"
-    # Not just names from the group's own summary table - actual per-
-    # subcommand flags too, proving the renderer recursed into each
-    # setting subcommand's own --help rather than stopping at `setting`.
-    assert "--manifest-url" in result.stdout  # catalog-trust only
-    assert "--enable" in result.stdout and "--disable" in result.stdout  # upload only
+        assert f"setting {name}" in result.stdout, f"missing setting subcommand: {name}"
 
 
-def test_help_all_shows_flags_not_just_command_names():
+def test_help_all_is_a_compact_listing_not_a_full_flag_dump():
+    # `help --all` lists command names with a one-line summary (git/docker/
+    # gh `-a` style), not each command's complete --help text. Per-command
+    # flags belong to `omm <command> --help`, which this points readers at.
     result = runner.invoke(cli.app, ["help", "--all"])
 
     assert result.exit_code == 0, result.stdout
-    assert "--skip-unfit" in result.stdout
-    assert "--json" in result.stdout
+    assert "--skip-unfit" not in result.stdout
+    assert "--manifest-url" not in result.stdout
+    assert "full option list" in result.stdout
+    assert len(result.stdout.splitlines()) < 100
 
 
 def test_help_all_excludes_hidden_commands():
