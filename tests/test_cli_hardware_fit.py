@@ -144,7 +144,7 @@ def _stub_successful_install(monkeypatch, isolated_omm_home):
         "resolve_model",
         lambda name: ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo"),
     )
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"fake-gguf"))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"fake-gguf"))
     monkeypatch.setattr(cli, "sha256_file", lambda dest: "deadbeef")
     monkeypatch.setattr(cli.linker, "is_lmstudio_installed", lambda: False)
     monkeypatch.setattr(cli.linker, "is_ollama_installed", lambda: False)
@@ -179,7 +179,7 @@ def test_install_aborts_when_declined_after_hardware_warning(isolated_omm_home, 
     monkeypatch.setattr(cli.predictor, "predict_speed", lambda trees, hw, candidate: 0.0)
     monkeypatch.setattr(cli, "_ask_confirm", lambda message, default=False: False)
     download_calls = []
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: download_calls.append(dest))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: download_calls.append(dest))
 
     result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
 
@@ -216,7 +216,7 @@ def test_install_skip_unfit_flag_bypasses_prompt_without_a_tty(isolated_omm_home
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "predict_speed", lambda trees, hw, candidate: 0.0)
     download_calls = []
-    monkeypatch.setattr(cli, "download_file", lambda url, dest: download_calls.append(dest))
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: download_calls.append(dest))
 
     result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4", "--skip-unfit"])
 

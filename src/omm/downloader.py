@@ -139,7 +139,7 @@ class EtaColumn(TimeRemainingColumn):
         return Text(f"ETA {inner.plain}", style=inner.style)
 
 
-def _progress() -> Progress:
+def _progress(*, quiet: bool = False, no_color: bool = False) -> Progress:
     return Progress(
         SpinnerColumn(),
         TextColumn("[cyan]{task.fields[filename]}", table_column=Column(no_wrap=True)),
@@ -148,6 +148,8 @@ def _progress() -> Progress:
         TransferSpeedColumn(),
         EtaColumn(),
         expand=True,
+        disable=quiet,
+        console=Console(no_color=True) if no_color else None,
     )
 
 
@@ -268,6 +270,9 @@ def _run_range_workers(
     total_size: int,
     ranges_state: list[dict],
     stop_check: Callable[[], bool] | None,
+    *,
+    quiet: bool = False,
+    no_color: bool = False,
 ) -> None:
     """Download whichever ranges in `ranges_state` aren't yet `done`, in
     parallel, updating the sidecar after every chunk so a future resume
@@ -277,7 +282,7 @@ def _run_range_workers(
     completed = sum(r["done"] for r in ranges_state)
     pending = [r for r in ranges_state if r["done"] < (r["end"] - r["start"] + 1)]
 
-    with _progress() as progress:
+    with _progress(quiet=quiet, no_color=no_color) as progress:
         task_id = progress.add_task(
             "download", total=total_size, completed=completed, filename=dest.name
         )
@@ -334,6 +339,9 @@ def _download_parallel(
     total_size: int,
     thread_count: int,
     stop_check: Callable[[], bool] | None,
+    *,
+    quiet: bool = False,
+    no_color: bool = False,
 ) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     with part_path.open("wb") as f:
@@ -342,7 +350,10 @@ def _download_parallel(
     ranges_state = [{"start": start, "end": end, "done": 0} for start, end in _plan_ranges(total_size, thread_count)]
     _write_sidecar(sidecar_path, total_size, ranges_state)
 
-    _run_range_workers(url, dest, part_path, sidecar_path, total_size, ranges_state, stop_check)
+    _run_range_workers(
+        url, dest, part_path, sidecar_path, total_size, ranges_state, stop_check,
+        quiet=quiet, no_color=no_color,
+    )
 
 
 def _download_parallel_resume(
@@ -352,14 +363,24 @@ def _download_parallel_resume(
     sidecar_path: Path,
     state: dict,
     stop_check: Callable[[], bool] | None,
+    *,
+    quiet: bool = False,
+    no_color: bool = False,
 ) -> None:
     _run_range_workers(
-        url, dest, part_path, sidecar_path, state["total_size"], state["ranges"], stop_check
+        url, dest, part_path, sidecar_path, state["total_size"], state["ranges"], stop_check,
+        quiet=quiet, no_color=no_color,
     )
 
 
 def _download_single_stream(
-    url: str, dest: Path, part_path: Path, stop_check: Callable[[], bool] | None
+    url: str,
+    dest: Path,
+    part_path: Path,
+    stop_check: Callable[[], bool] | None,
+    *,
+    quiet: bool = False,
+    no_color: bool = False,
 ) -> None:
     import requests
 
@@ -385,7 +406,7 @@ def _download_single_stream(
 
     total = int(resp.headers.get("Content-Length", 0)) + resume_pos
 
-    with _progress() as progress:
+    with _progress(quiet=quiet, no_color=no_color) as progress:
         task = progress.add_task("download", total=total or None, completed=resume_pos, filename=dest.name)
         with part_path.open(mode) as f:
             for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
@@ -406,7 +427,13 @@ def _download_single_stream(
 
 
 def _attempt_download(
-    url: str, dest: Path, part_path: Path, stop_check: Callable[[], bool] | None
+    url: str,
+    dest: Path,
+    part_path: Path,
+    stop_check: Callable[[], bool] | None,
+    *,
+    quiet: bool = False,
+    no_color: bool = False,
 ) -> None:
     sidecar_path = _sidecar_path(part_path)
 
@@ -414,7 +441,10 @@ def _attempt_download(
         state = _read_sidecar(sidecar_path)
         if state and state.get("total_size") == part_path.stat().st_size:
             try:
-                _download_parallel_resume(url, dest, part_path, sidecar_path, state, stop_check)
+                _download_parallel_resume(
+                    url, dest, part_path, sidecar_path, state, stop_check,
+                    quiet=quiet, no_color=no_color,
+                )
                 return
             except (DownloadCancelled, InsufficientDiskSpaceError):
                 raise
@@ -441,7 +471,8 @@ def _attempt_download(
             if thread_count > 1:
                 try:
                     _download_parallel(
-                        url, dest, part_path, sidecar_path, total_size, thread_count, stop_check
+                        url, dest, part_path, sidecar_path, total_size, thread_count, stop_check,
+                        quiet=quiet, no_color=no_color,
                     )
                     return
                 except (DownloadCancelled, InsufficientDiskSpaceError):
@@ -453,7 +484,7 @@ def _attempt_download(
                     sidecar_path.unlink(missing_ok=True)
                     # fall through to a clean single-stream retry
 
-    _download_single_stream(url, dest, part_path, stop_check)
+    _download_single_stream(url, dest, part_path, stop_check, quiet=quiet, no_color=no_color)
 
 
 def _is_retryable_network_error(exc: BaseException) -> bool:
@@ -480,7 +511,14 @@ def _sleep_with_stop_check(seconds: float, stop_check: Callable[[], bool] | None
         remaining -= wait
 
 
-def download_file(url: str, dest: Path, stop_check: Callable[[], bool] | None = None) -> None:
+def download_file(
+    url: str,
+    dest: Path,
+    stop_check: Callable[[], bool] | None = None,
+    *,
+    quiet: bool = False,
+    no_color: bool = False,
+) -> None:
     """Download `url` to `dest`.
 
     A fresh, range-capable download above `_MIN_PARALLEL_TOTAL` bytes is
@@ -497,13 +535,19 @@ def download_file(url: str, dest: Path, stop_check: Callable[[], bool] | None = 
     If `stop_check` is given, it's polled regularly during the transfer and
     during backoff waits; a truthy result raises `DownloadCancelled` and
     leaves the `.part` file in place for a later resume (used by `omm
-    contribute`'s Esc-to-stop)."""
+    contribute`'s Esc-to-stop).
+
+    `quiet` disables the progress bar (the retry warning below still prints -
+    it's a warning, not decorative). `no_color` disables ANSI styling on both
+    the progress bar and the retry warning."""
     part_path = dest.with_suffix(dest.suffix + ".part")
     last_error: Exception | None = None
+    if no_color:
+        _err_console.no_color = True
 
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            _attempt_download(url, dest, part_path, stop_check)
+            _attempt_download(url, dest, part_path, stop_check, quiet=quiet, no_color=no_color)
             return
         except DownloadCancelled:
             raise

@@ -21,7 +21,7 @@ _HARDWARE = HardwareInfo(
 
 
 def _stub_download_and_links(monkeypatch):
-    def fake_download(url, dest):
+    def fake_download(url, dest, **_kw):
         dest.write_bytes(b"fake-gguf")
 
     monkeypatch.setattr(cli, "download_file", fake_download)

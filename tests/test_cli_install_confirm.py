@@ -16,7 +16,7 @@ def _stub_successful_install(monkeypatch, isolated_omm_home):
         lambda name: ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo"),
     )
 
-    def fake_download(url, dest):
+    def fake_download(url, dest, **_kw):
         dest.write_bytes(b"fake-gguf")
 
     monkeypatch.setattr(cli, "download_file", fake_download)
@@ -91,6 +91,46 @@ def test_install_upload_flag_sends_telemetry_without_a_tty(isolated_omm_home, mo
     assert result.exit_code == 0, result.stdout
     assert len(sent) == 1
     assert sent[0][1] is True
+
+
+def test_install_threads_quiet_and_no_color_into_download_file(isolated_omm_home, monkeypatch):
+    # --quiet/--no-color must reach download_file() so its progress bar and
+    # retry warning respect them too, not just cli.py's own console (see #80).
+    _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+    calls = []
+
+    def fake_download(url, dest, **kwargs):
+        calls.append(kwargs)
+        dest.write_bytes(b"fake-gguf")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    result = runner.invoke(
+        cli.app, ["install", "tinyllama-1.1b-q4", "--quiet", "--no-color"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert calls and calls[0].get("quiet") is True
+    assert calls[0].get("no_color") is True
+
+
+def test_install_quiet_suppresses_status_lines_but_keeps_the_result(isolated_omm_home, monkeypatch):
+    # --quiet should drop the "Verifying checksum.../Benchmarking..."
+    # status-style lines but still confirm what actually happened, same as
+    # apt/brew -q (see #80).
+    _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4", "--quiet"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Verifying checksum" not in result.stdout
+    assert "Benchmarking" not in result.stdout
+    assert "Installed" in result.stdout
 
 
 def _handler_for(bindings, key):

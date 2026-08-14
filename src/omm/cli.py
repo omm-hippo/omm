@@ -1922,6 +1922,7 @@ def _install_impl(
     automatically, optionally report telemetry. Shared by the plain
     `install` command and `omm contribute`'s unattended loop via the
     kwargs above."""
+    opts = _global_opts()
     url, filename, repo_id = resolved.url, resolved.filename, resolved.repo_id
 
     artifact = predictor.load_cached_model()
@@ -1978,9 +1979,12 @@ def _install_impl(
                 raise typer.Exit(1) from error
         try:
             if stop_event is not None:
-                download_file(url, dest, stop_check=stop_event.is_set)
+                download_file(
+                    url, dest, stop_check=stop_event.is_set,
+                    quiet=opts.quiet, no_color=opts.no_color,
+                )
             else:
-                download_file(url, dest)
+                download_file(url, dest, quiet=opts.quiet, no_color=opts.no_color)
             downloaded_now = True
         except DownloadCancelled as e:
             raise ContributionStopped(filename) from e
@@ -2496,8 +2500,9 @@ def _update_one(filename: str, entry: dict) -> str:
             return "up_to_date"
 
         url = download_url(provider, repo_id, filename)
+        opts = _global_opts()
         try:
-            download_file(url, dest)
+            download_file(url, dest, quiet=opts.quiet, no_color=opts.no_color)
         except DownloadError as e:
             err_console.print(f"[red]{filename}: update download failed: {e}[/red]")
             return "skipped"
@@ -2509,8 +2514,9 @@ def _update_one(filename: str, entry: dict) -> str:
             return "skipped"
 
         tmp = dest.with_name(dest.name + ".update")
+        opts = _global_opts()
         try:
-            download_file(source, tmp)
+            download_file(source, tmp, quiet=opts.quiet, no_color=opts.no_color)
         except DownloadError as e:
             err_console.print(f"[red]{filename}: update download failed: {e}[/red]")
             tmp.unlink(missing_ok=True)

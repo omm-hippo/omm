@@ -45,7 +45,7 @@ def test_upgrade_single_repo_model_redownloads_on_hash_mismatch(isolated_omm_hom
     registry.save_registry({"model.gguf": _entry(sha256="old-hash")})
     monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "new-hash")
 
-    def fake_download(url, dest):
+    def fake_download(url, dest, **_kw):
         Path(dest).write_bytes(b"new-bytes-from-upstream")
 
     monkeypatch.setattr(cli, "download_file", fake_download)
@@ -85,7 +85,7 @@ def test_upgrade_direct_url_install_matches_hash_leaves_file_untouched(isolated_
     same_hash = hashlib.sha256(b"same-bytes").hexdigest()
     registry.save_registry({"model.gguf": _entry(repo_id=None, sha256=same_hash)})
 
-    def fake_download(url, dest_path):
+    def fake_download(url, dest_path, **_kw):
         Path(dest_path).write_bytes(b"same-bytes")
 
     monkeypatch.setattr(cli, "download_file", fake_download)
@@ -104,7 +104,7 @@ def test_upgrade_direct_url_install_swaps_in_new_file_atomically(isolated_omm_ho
     dest.write_bytes(b"old-bytes")
     registry.save_registry({"model.gguf": _entry(repo_id=None, sha256="old-hash")})
 
-    def fake_download(url, dest_path):
+    def fake_download(url, dest_path, **_kw):
         Path(dest_path).write_bytes(b"brand-new-bytes")
 
     monkeypatch.setattr(cli, "download_file", fake_download)
@@ -123,7 +123,7 @@ def test_upgrade_direct_url_install_reports_skipped_when_finalize_fails(isolated
     dest.write_bytes(b"old-bytes")
     registry.save_registry({"model.gguf": _entry(repo_id=None, sha256="old-hash")})
 
-    def fake_download(url, dest_path):
+    def fake_download(url, dest_path, **_kw):
         Path(dest_path).write_bytes(b"brand-new-bytes")
 
     monkeypatch.setattr(cli, "download_file", fake_download)
@@ -202,7 +202,7 @@ def test_upgrade_all_reports_summary_counts(isolated_omm_home, monkeypatch):
 
     monkeypatch.setattr(cli, "remote_file_sha256", fake_remote_hash)
 
-    def fake_download(url, dest):
+    def fake_download(url, dest, **_kw):
         Path(dest).write_bytes(b"new-content")
 
     monkeypatch.setattr(cli, "download_file", fake_download)

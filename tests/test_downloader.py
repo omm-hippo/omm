@@ -709,3 +709,58 @@ def test_progress_factory_renders_single_line_without_percent_or_legacy_bar_char
     assert "[" not in line and "]" not in line
     assert not any(ch in line for ch in "━╸╺")
     assert task_id is not None
+
+
+def test_progress_factory_disables_bar_when_quiet():
+    assert downloader._progress(quiet=True).disable is True
+    assert downloader._progress().disable is False
+
+
+def test_progress_factory_forces_no_color_console_when_requested():
+    assert downloader._progress(no_color=True).console.no_color is True
+
+
+def test_download_file_quiet_disables_progress_bar(tmp_path, monkeypatch):
+    dest = tmp_path / "model.gguf"
+    monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp(200, [b"hello"]))
+    seen = {}
+    real_progress = downloader._progress
+
+    def spy_progress(*, quiet=False, no_color=False):
+        seen["quiet"] = quiet
+        seen["no_color"] = no_color
+        return real_progress(quiet=quiet, no_color=no_color)
+
+    monkeypatch.setattr(downloader, "_progress", spy_progress)
+
+    downloader.download_file("https://example.com/model.gguf", dest, quiet=True, no_color=True)
+
+    assert seen == {"quiet": True, "no_color": True}
+
+
+def test_download_file_retry_warning_still_prints_when_quiet(tmp_path, monkeypatch):
+    """quiet suppresses the progress bar, not the network-retry warning -
+    that's a warning, and warnings always print (see #80)."""
+    dest = tmp_path / "model.gguf"
+    monkeypatch.setattr(downloader, "_probe_range_support", lambda url: (0, False))
+    monkeypatch.setattr(downloader, "_sleep_with_stop_check", lambda seconds, stop_check: None)
+    attempts = [
+        requests.exceptions.ConnectionError("boom"),
+        _FakeResp(200, [b"hello"]),
+    ]
+
+    def fake_get(*a, **k):
+        result = attempts.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    printed = []
+    monkeypatch.setattr(downloader._err_console, "print", lambda msg: printed.append(msg))
+
+    downloader.download_file("https://example.com/model.gguf", dest, quiet=True)
+
+    assert len(printed) == 1
+    assert "재시도" in printed[0]
