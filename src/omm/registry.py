@@ -45,6 +45,22 @@ def upsert_entry(filename: str, **fields: Any) -> None:
         _save_registry_unlocked(registry)
 
 
+def record_compatibility(filename: str, engine: str, result: dict[str, Any]) -> None:
+    """Atomically store one engine result without replacing sibling engines."""
+    ensure_omm_home()
+    with locked(REGISTRY_PATH):
+        registry = load_registry()
+        entry = registry.get(filename)
+        if not isinstance(entry, dict):
+            raise KeyError(filename)
+        compatibility = entry.get("compatibility")
+        if not isinstance(compatibility, dict):
+            compatibility = {}
+            entry["compatibility"] = compatibility
+        compatibility[engine] = dict(result)
+        _save_registry_unlocked(registry)
+
+
 def remove_entry(filename: str) -> None:
     ensure_omm_home()
     with locked(REGISTRY_PATH):

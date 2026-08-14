@@ -65,6 +65,9 @@ from omm.downloader import (
     _sidecar_path,
     download_file,
 )
+from omm.engines import RuntimeAdapterError, RuntimeModelRef, find_runtime_model
+from omm.engines.lmstudio import LMStudioAdapter
+from omm.engines.ollama import OllamaAdapter
 from omm.hardware import HardwareInfo, calculate_memory_budget, scan_hardware
 from omm.hashutil import sha256_file
 from omm.featurize import (
@@ -95,6 +98,8 @@ from omm.hub import (
     validate_provider,
     validate_repo_id,
 )
+from omm.runtime_compatibility import CompatibilityResult, PROBE_VERSION, verify_and_record
+
 
 class PlainHelpFormatter(click.HelpFormatter):
     """Homebrew-style help formatter: no panels/borders, uppercase section headers."""
@@ -1833,6 +1838,9 @@ class InstallOutcome:
     sha256: str | None = None
     failure_reason: str | None = None
     model_metadata: dict | None = None
+    compatibility_engine: str | None = None
+    compatibility_status: str | None = None
+    runtime_load_declined: bool = False
 
 
 class ContributionStopped(Exception):
@@ -2009,6 +2017,95 @@ def _ensure_install_disk_capacity(
         raise InsufficientDiskSpaceError("Not enough disk space: " + "; ".join(failures))
 
 
+def _post_install_runtime(linked: dict[str, bool], preferred: str | None) -> str | None:
+    """Select one linked local runtime without starting any application."""
+    available = [engine for engine in ("ollama", "lmstudio") if linked.get(engine)]
+    if preferred in available:
+        return preferred
+    reachable = []
+    for engine in available:
+        try:
+            if _compatibility_adapter(engine).health().reachable:
+                reachable.append(engine)
+        except (RuntimeAdapterError, ValueError):
+            continue
+    if reachable:
+        return reachable[0]
+    return available[0] if available else None
+
+
+def _record_install_compatibility(
+    filename: str,
+    engine: str,
+    *,
+    status: str,
+    runtime_version: str | None,
+    failure_reason: str | None,
+) -> None:
+    result = CompatibilityResult(
+        engine=engine,
+        status=status,
+        checked_at=datetime.now(timezone.utc).isoformat(),
+        probe_version=PROBE_VERSION,
+        runtime_version=runtime_version,
+        failure_reason=failure_reason,
+    )
+    registry.record_compatibility(filename, engine, result.registry_payload())
+
+
+def _verify_lmstudio_after_install(
+    filename: str,
+    entry: dict,
+    *,
+    allow_load: bool | None,
+) -> tuple[str | None, bool]:
+    """Run the bounded LM Studio probe; return (status, consent_declined)."""
+    adapter = _compatibility_adapter("lmstudio")
+    model_ref = _compatibility_model_ref(filename, entry, "lmstudio")
+    health = adapter.health()
+    if not health.reachable:
+        result = verify_and_record(filename, adapter, model_ref)
+        reason = result.failure_reason or "server_unavailable"
+        err_console.print(
+            "[yellow]LM Studio compatibility could not be verified: "
+            f"{_COMPATIBILITY_FAILURE_MESSAGES.get(reason, reason)}. "
+            "The downloaded model was kept.[/yellow]"
+        )
+        return result.status, False
+    model_loaded = False
+    try:
+        visible = find_runtime_model(adapter.list_models(), model_ref)
+        model_loaded = bool(visible and visible.loaded)
+    except RuntimeAdapterError:
+        pass
+    if not model_loaded:
+        consent = allow_load
+        if consent is None:
+            consent = _ask_confirm(
+                f"Load {filename} into LM Studio memory for a short local test?"
+            )
+        if not consent:
+            err_console.print(
+                "[yellow]Runtime verification skipped; the model was not loaded.[/yellow]"
+            )
+            return None, True
+
+    console.print(f"Verifying {filename} with lmstudio...")
+    result = verify_and_record(filename, adapter, model_ref)
+    if result.status == "passed":
+        console.print(
+            "[green]LM Studio compatibility verified; the test load was released.[/green]"
+        )
+    else:
+        reason = result.failure_reason or "unknown"
+        err_console.print(
+            "[yellow]LM Studio compatibility could not be verified: "
+            f"{_COMPATIBILITY_FAILURE_MESSAGES.get(reason, reason)}. "
+            "The downloaded model was kept.[/yellow]"
+        )
+    return result.status, False
+
+
 def _install_impl(
     resolved,
     *,
@@ -2021,6 +2118,9 @@ def _install_impl(
     link_only_ollama: bool = False,
     assume_yes: bool = False,
     force: bool = False,
+    verify_runtime_after_install: bool = False,
+    runtime_load_consent: bool | None = None,
+    preferred_runtime: str | None = None,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -2180,6 +2280,21 @@ def _install_impl(
         linked=linked,
     )
 
+    selected_runtime = (
+        _post_install_runtime(linked, preferred_runtime)
+        if verify_runtime_after_install
+        else None
+    )
+    compatibility_status = None
+    runtime_load_declined = False
+    if selected_runtime == "lmstudio":
+        entry = registry.load_registry().get(filename, {})
+        compatibility_status, runtime_load_declined = _verify_lmstudio_after_install(
+            filename,
+            entry,
+            allow_load=runtime_load_consent,
+        )
+
     tokens_per_sec = None
     telemetry_sent = False
     sample_count = 1
@@ -2190,11 +2305,60 @@ def _install_impl(
     engine_version = None
     runtime_options = None
     eval_error: quality_mod.QualityEvaluationError | None = None
-    if linked["ollama"]:
+    run_ollama_benchmark = linked["ollama"] and selected_runtime != "lmstudio"
+    ollama_was_preloaded = False
+    ollama_runtime_version = None
+    if run_ollama_benchmark and verify_runtime_after_install:
+        adapter = _compatibility_adapter("ollama")
+        health = adapter.health()
+        ollama_runtime_version = health.version
+        if not health.reachable:
+            _record_install_compatibility(
+                filename,
+                "ollama",
+                status="failed",
+                runtime_version=health.version,
+                failure_reason=health.failure_reason or "server_unavailable",
+            )
+            compatibility_status = "failed"
+            reason = health.failure_reason or "server_unavailable"
+            err_console.print(
+                "[yellow]Ollama compatibility could not be verified: "
+                f"{_COMPATIBILITY_FAILURE_MESSAGES.get(reason, reason)}. "
+                "The downloaded model was kept.[/yellow]"
+            )
+            run_ollama_benchmark = False
+        else:
+            model_ref = _compatibility_model_ref(
+                filename, registry.load_registry().get(filename, {}), "ollama"
+            )
+            try:
+                visible = find_runtime_model(adapter.list_models(), model_ref)
+            except RuntimeAdapterError:
+                visible = None
+            ollama_was_preloaded = bool(visible and visible.loaded)
+            if not ollama_was_preloaded:
+                consent = runtime_load_consent
+                if consent is None:
+                    consent = _ask_confirm(
+                        f"Load {filename} into Ollama memory for a local benchmark "
+                        "and compatibility test?"
+                    )
+                if not consent:
+                    err_console.print(
+                        "[yellow]Runtime verification skipped; the model was not loaded.[/yellow]"
+                    )
+                    runtime_load_declined = True
+                    run_ollama_benchmark = False
+
+    if run_ollama_benchmark:
         if not opts.quiet:
             console.print("Benchmarking...")
         started_daemon = None
-        if not benchmark.ollama_daemon_reachable():
+        if (
+            not verify_runtime_after_install
+            and not benchmark.ollama_daemon_reachable()
+        ):
             started_daemon = benchmark.start_ollama_daemon()
         try:
             runtime_hw = scan_hardware()
@@ -2253,7 +2417,8 @@ def _install_impl(
                         "Cleaning up and moving on.[/yellow]"
                     )
                 finally:
-                    quality_mod.ensure_model_unloaded(ollama_tag)
+                    if not ollama_was_preloaded:
+                        quality_mod.ensure_model_unloaded(ollama_tag)
                 if result is not None:
                     tokens_per_sec = result["speed"]["median_tokens_per_sec"]
                     samples = result["speed"]["samples_tokens_per_sec"]
@@ -2287,7 +2452,8 @@ def _install_impl(
                 except _Interrupted as e:
                     raise ContributionStopped(filename) from e
                 finally:
-                    quality_mod.unload_model(ollama_tag)
+                    if not ollama_was_preloaded:
+                        quality_mod.unload_model(ollama_tag)
         finally:
             if started_daemon is not None:
                 benchmark.stop_ollama_daemon(started_daemon)
@@ -2327,13 +2493,27 @@ def _install_impl(
                 provider=resolved.provider,
                 failure_reason=eval_error.failure_reason if eval_error is not None else None,
             )
-    else:
+        if verify_runtime_after_install:
+            compatibility_status = "passed" if tokens_per_sec else "failed"
+            _record_install_compatibility(
+                filename,
+                "ollama",
+                status=compatibility_status,
+                runtime_version=ollama_runtime_version or engine_version,
+                failure_reason=None if tokens_per_sec else (
+                    eval_error.failure_reason if eval_error is not None else "empty_response"
+                ),
+            )
+    elif not runtime_load_declined and selected_runtime is None and not linked["ollama"]:
         telemetry.log_attempt("not_attempted_no_ollama_link", filename)
 
     return InstallOutcome(
         filename, repo_id, linked, ollama_tag, tokens_per_sec, telemetry_sent, sha256=sha256,
         failure_reason=eval_error.failure_reason if eval_error is not None else None,
         model_metadata=model_metadata,
+        compatibility_engine=selected_runtime,
+        compatibility_status=compatibility_status,
+        runtime_load_declined=runtime_load_declined,
     )
 
 
@@ -2376,9 +2556,18 @@ def install(
         "--force",
         help="Re-download even if this model is already installed.",
     ),
+    verify_runtime: bool | None = typer.Option(
+        None,
+        "--verify-runtime/--no-verify-runtime",
+        help="Run (or skip) a short local load/generation check after linking. "
+        "Unset asks before loading an unloaded model.",
+    ),
 ) -> None:
     """Download a model into the central hub and link it into installed engines."""
     import questionary
+
+    if not isinstance(verify_runtime, (bool, type(None))):
+        verify_runtime = None
 
     model_name = _resolve_ref(model_name)
     try:
@@ -2388,7 +2577,13 @@ def install(
         if chosen is None:
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
-        install(f"{e.provider}:{e.repo_id}:{chosen}", skip_unfit=skip_unfit, upload=upload, force=force)
+        install(
+            f"{e.provider}:{e.repo_id}:{chosen}",
+            skip_unfit=skip_unfit,
+            upload=upload,
+            force=force,
+            verify_runtime=verify_runtime,
+        )
         return
     except AmbiguousProviderError as e:
         choices = [
@@ -2400,7 +2595,13 @@ def install(
         if chosen_provider is None:
             err_console.print("[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0)
-        install(f"{chosen_provider}:{e.repo_id}", skip_unfit=skip_unfit, upload=upload, force=force)
+        install(
+            f"{chosen_provider}:{e.repo_id}",
+            skip_unfit=skip_unfit,
+            upload=upload,
+            force=force,
+            verify_runtime=verify_runtime,
+        )
         return
     except ModelResolutionError as e:
         err_console.print(f"[red]{e}[/red]")
@@ -2415,6 +2616,13 @@ def install(
             no_upload=upload is False,
             assume_yes=_global_opts().yes,
             force=force,
+            verify_runtime_after_install=True,
+            runtime_load_consent=(
+                verify_runtime
+                if verify_runtime is not None
+                else (True if _global_opts().yes else None)
+            ),
+            preferred_runtime=load_config().get("default_engine"),
         )
     except DownloadError as error:
         err_console.print(f"[red]{error}[/red]")
@@ -2582,6 +2790,152 @@ def _entry_version(entry: dict) -> str:
     return entry.get("version") or (entry.get("sha256") or "")[:7] or "unknown"
 
 
+_VERIFY_ENGINES = {"ollama", "lmstudio"}
+
+
+def _compatibility_adapter(engine: str):
+    if engine == "ollama":
+        return OllamaAdapter()
+    if engine == "lmstudio":
+        return LMStudioAdapter()
+    raise ValueError(f"unsupported verification engine: {engine}")
+
+
+def _compatibility_model_ref(filename: str, entry: dict, engine: str) -> RuntimeModelRef:
+    if engine == "ollama":
+        tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+        return RuntimeModelRef(tag, (tag.removesuffix(":latest"),))
+    repo_id = entry.get("repo_id")
+    key = repo_id if isinstance(repo_id, str) and "/" in repo_id else f"local/{Path(filename).stem}"
+    aliases = tuple(
+        value
+        for value in (repo_id, filename, Path(filename).stem)
+        if isinstance(value, str) and value
+    )
+    return RuntimeModelRef(key, aliases)
+
+
+def _select_compatibility_engine(entry: dict, requested: str | None) -> str:
+    linked = entry.get("linked") if isinstance(entry.get("linked"), dict) else {}
+    available = [engine for engine in ("ollama", "lmstudio") if linked.get(engine)]
+    if requested is not None:
+        requested = requested.casefold()
+        if requested not in _VERIFY_ENGINES:
+            raise ValueError("--engine must be ollama or lmstudio")
+        if requested not in available:
+            raise ValueError(f"the model is not linked to {requested}")
+        return requested
+    if not available:
+        raise ValueError("the model is not linked to Ollama or LM Studio")
+    configured = load_config().get("default_engine")
+    if configured in available:
+        return configured
+    reachable = [
+        engine for engine in available if _compatibility_adapter(engine).health().reachable
+    ]
+    if len(reachable) == 1:
+        return reachable[0]
+    choices = reachable or available
+    if len(choices) == 1:
+        return choices[0]
+    import questionary
+
+    selected = _ask_select(
+        questionary.select(
+            "Runtime to verify:",
+            choices=[
+                questionary.Choice("Ollama" if value == "ollama" else "LM Studio", value=value)
+                for value in choices
+            ],
+        )
+    )
+    if selected is None:
+        raise typer.Abort()
+    return selected
+
+
+_COMPATIBILITY_FAILURE_MESSAGES = {
+    "server_unavailable": "the local server is not running or reachable",
+    "model_not_visible": "the linked model is not visible to the runtime",
+    "load_failed": "the runtime could not load the model",
+    "out_of_memory": "there was not enough memory to load or run the model",
+    "generation_timeout": "the short test response timed out",
+    "empty_response": "the runtime returned an empty response",
+    "unload_failed": "OMM could not confirm that its test load was released",
+    "unsupported_runtime": "this runtime version or model type is unsupported",
+    "unknown": "the runtime returned an unrecognized error; check its server settings and LM_API_TOKEN if authentication is enabled",
+}
+
+
+@app.command()
+def verify(
+    model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
+    engine: str = typer.Option(
+        None,
+        "--engine",
+        help="Local runtime to test: ollama or lmstudio.",
+    ),
+    keep_loaded: bool = typer.Option(
+        False,
+        "--keep-loaded",
+        help="Keep a model loaded only when this command loaded it.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Load the model without asking. For scripting.",
+    ),
+) -> None:
+    """Prove that an installed model can load and return local text."""
+    model_name = _resolve_ref(model_name)
+    filename, entry = _lookup_entry(model_name, registry.load_registry())
+    if entry is None:
+        err_console.print(f"[red]{model_name} is not installed via omm. See `omm list`.[/red]")
+        raise typer.Exit(1)
+    try:
+        selected_engine = _select_compatibility_engine(entry, engine)
+    except ValueError as error:
+        err_console.print(f"[red]{error}.[/red]")
+        raise typer.Exit(1) from error
+
+    adapter = _compatibility_adapter(selected_engine)
+    model_ref = _compatibility_model_ref(filename, entry, selected_engine)
+    health = adapter.health()
+    if health.reachable:
+        try:
+            visible = find_runtime_model(adapter.list_models(), model_ref)
+        except RuntimeAdapterError:
+            visible = None
+        if (visible is None or not visible.loaded) and not yes:
+            label = "Ollama" if selected_engine == "ollama" else "LM Studio"
+            if not _ask_confirm(
+                f"Load {filename} into {label} memory for a short local test?"
+            ):
+                err_console.print("[yellow]Verification cancelled; nothing was loaded.[/yellow]")
+                raise typer.Exit(0)
+
+    console.print(f"Verifying {filename} with {selected_engine}...")
+    result = verify_and_record(
+        filename,
+        adapter,
+        model_ref,
+        keep_loaded=keep_loaded,
+    )
+    if result.status == "passed":
+        detail = "already loaded and preserved" if result.model_was_preloaded else (
+            "left loaded as requested" if result.model_left_loaded else "test load released"
+        )
+        console.print(f"[green]Compatible: local text generation succeeded ({detail}).[/green]")
+        return
+    reason = result.failure_reason or "unknown"
+    err_console.print(
+        f"[red]Compatibility check failed: {_COMPATIBILITY_FAILURE_MESSAGES.get(reason, reason)}.[/red]"
+    )
+    err_console.print("[dim]The downloaded model was kept; no model file was deleted.[/dim]")
+    raise typer.Exit(1)
+
+
 @app.command()
 @global_flags
 def info(
@@ -2612,6 +2966,7 @@ def info(
                 "installed_at": entry.get("installed_at", "unknown"),
                 "linked": {spec.key: bool(linked.get(spec.key)) for spec in linker.ENGINES},
                 "ollama_run_command": f"ollama run {ollama_tag}" if linked.get("ollama") else None,
+                "compatibility": entry.get("compatibility", {}),
             }
         )
         return
@@ -2627,6 +2982,17 @@ def info(
     table.add_row("Version", _entry_version(entry))
     table.add_row("Size", f"{size_gb:.2f} GB")
     table.add_row("Installed at", entry.get("installed_at", "unknown"))
+    compatibility = entry.get("compatibility")
+    if isinstance(compatibility, dict):
+        for engine_key in ("ollama", "lmstudio"):
+            result = compatibility.get(engine_key)
+            if isinstance(result, dict):
+                status = result.get("status", "unknown")
+                reason = result.get("failure_reason")
+                table.add_row(
+                    f"{engine_key} verification",
+                    f"{status} ({reason})" if reason else str(status),
+                )
     installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
     for spec in linker.ENGINES:
         if not installed[spec.key]:

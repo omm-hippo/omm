@@ -3,9 +3,23 @@ from unittest.mock import MagicMock
 from typer.testing import CliRunner
 
 from omm import cli, linker
+from omm.engines import RuntimeHealth, RuntimeModel
 from omm.hub import ResolvedModel
 
 runner = CliRunner()
+
+
+class _InstallAdapter:
+    key = "ollama"
+
+    def __init__(self, *, loaded=False):
+        self.loaded = loaded
+
+    def health(self):
+        return RuntimeHealth(True, "1.0")
+
+    def list_models(self):
+        return [RuntimeModel("tinyllama", "tinyllama", self.loaded)]
 
 
 def _stub_successful_install(monkeypatch, isolated_omm_home):
@@ -32,6 +46,7 @@ def _stub_successful_install(monkeypatch, isolated_omm_home):
         linker, "link_ollama", lambda dest, tag, models_dir=None, **kwargs: True
     )
     monkeypatch.setattr(linker, "sanitize_ollama_tag", lambda filename: "tinyllama")
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _InstallAdapter())
     return filename
 
 
@@ -42,7 +57,9 @@ def test_install_runs_benchmark_and_telemetry_on_yes(isolated_omm_home, monkeypa
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append((event, force)))
 
-    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+    result = runner.invoke(
+        cli.app, ["install", "tinyllama-1.1b-q4", "--verify-runtime"]
+    )
 
     assert result.exit_code == 0, result.stdout
     assert "42.0" in result.stdout or "42" in result.stdout
@@ -50,7 +67,7 @@ def test_install_runs_benchmark_and_telemetry_on_yes(isolated_omm_home, monkeypa
     assert sent[0][1] is True
 
 
-def test_install_runs_benchmark_but_skips_upload_on_no(isolated_omm_home, monkeypatch):
+def test_install_declined_runtime_load_skips_benchmark_and_upload(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch, isolated_omm_home)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     bench_calls = []
@@ -58,11 +75,14 @@ def test_install_runs_benchmark_but_skips_upload_on_no(isolated_omm_home, monkey
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append((event, force)))
 
-    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+    result = runner.invoke(
+        cli.app, ["install", "tinyllama-1.1b-q4", "--no-verify-runtime"]
+    )
 
     assert result.exit_code == 0, result.stdout
-    assert bench_calls == ["tinyllama"] * 3
+    assert bench_calls == []
     assert sent == []
+    assert "model was not loaded" in result.stderr
 
 
 def test_install_no_upload_flag_skips_prompt_without_a_tty(isolated_omm_home, monkeypatch):
@@ -74,7 +94,10 @@ def test_install_no_upload_flag_skips_prompt_without_a_tty(isolated_omm_home, mo
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append((event, force)))
 
-    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4", "--no-upload"])
+    result = runner.invoke(
+        cli.app,
+        ["install", "tinyllama-1.1b-q4", "--no-upload", "--verify-runtime"],
+    )
 
     assert result.exit_code == 0, result.stdout
     assert sent == []
@@ -86,11 +109,32 @@ def test_install_upload_flag_sends_telemetry_without_a_tty(isolated_omm_home, mo
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append((event, force)))
 
-    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4", "--upload"])
+    result = runner.invoke(
+        cli.app,
+        ["install", "tinyllama-1.1b-q4", "--upload", "--verify-runtime"],
+    )
 
     assert result.exit_code == 0, result.stdout
     assert len(sent) == 1
     assert sent[0][1] is True
+
+
+def test_install_global_yes_consents_to_runtime_load_without_a_tty(
+    isolated_omm_home, monkeypatch
+):
+    _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(
+        cli,
+        "_ask_confirm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("prompted")),
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    result = runner.invoke(
+        cli.app, ["install", "tinyllama-1.1b-q4", "--yes", "--no-upload"]
+    )
+
+    assert result.exit_code == 0, result.stdout
 
 
 def test_install_threads_quiet_and_no_color_into_download_file(isolated_omm_home, monkeypatch):
@@ -108,7 +152,14 @@ def test_install_threads_quiet_and_no_color_into_download_file(isolated_omm_home
     monkeypatch.setattr(cli, "download_file", fake_download)
 
     result = runner.invoke(
-        cli.app, ["install", "tinyllama-1.1b-q4", "--quiet", "--no-color"]
+        cli.app,
+        [
+            "install",
+            "tinyllama-1.1b-q4",
+            "--verify-runtime",
+            "--quiet",
+            "--no-color",
+        ],
     )
 
     assert result.exit_code == 0, result.stdout
@@ -125,7 +176,10 @@ def test_install_quiet_suppresses_status_lines_but_keeps_the_result(isolated_omm
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
 
-    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4", "--quiet"])
+    result = runner.invoke(
+        cli.app,
+        ["install", "tinyllama-1.1b-q4", "--verify-runtime", "--quiet"],
+    )
 
     assert result.exit_code == 0, result.stdout
     assert "Verifying checksum" not in result.stdout
