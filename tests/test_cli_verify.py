@@ -10,8 +10,29 @@ from omm.engines import (
     RuntimeModel,
     UnloadResult,
 )
+from omm.hardware import HardwareInfo
 
 runner = CliRunner()
+
+
+def _hardware() -> HardwareInfo:
+    # Verify loads a model into the runtime, so its memory-guard pre-flight
+    # check (like install's and benchmark's) reads live available RAM via
+    # `cli.scan_hardware()`. Tests must supply deterministic hardware here
+    # instead of falling through to the real machine's live state, or the
+    # guard's decision - and these tests - become dependent on how much RAM
+    # happens to be free on whatever host runs the suite.
+    return HardwareInfo(
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=16,
+        ram_available_gb=12,
+        unified_memory=False,
+        gpu_name=None,
+        vram_total_gb=None,
+        vram_free_gb=None,
+    )
 
 
 class _CliAdapter:
@@ -51,6 +72,7 @@ def test_verify_success_records_and_reports_result(isolated_omm_home, monkeypatc
     registry.save_registry({"model.gguf": _entry()})
     adapter = _CliAdapter()
     monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
 
     result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "ollama", "--yes"])
 
@@ -93,6 +115,7 @@ def test_verify_failure_keeps_model_file_and_records_reason(isolated_omm_home, m
     model_file = cli.MODELS_DIR / "model.gguf"
     model_file.write_bytes(b"gguf")
     monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _CliAdapter())
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     failed = runtime_compatibility.CompatibilityResult(
         "ollama",
         "failed",
