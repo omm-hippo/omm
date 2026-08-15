@@ -408,7 +408,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "list", "recommend", "uninstall", "info", "upgrade"]),
+    ("Core", ["search", "install", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
     ("Maintenance", ["scan", "setup", "import", "autoremove", "link", "update", "help"]),
 ]
