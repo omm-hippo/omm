@@ -126,29 +126,46 @@ class OllamaAdapter:
             raise original
 
     def generate(self, receipt: LoadReceipt, request: ProbeRequest) -> ProbeResult:
-        response = self._client.request(
-            "POST",
-            "/api/generate",
-            payload={
-                "model": receipt.model.key,
-                "prompt": request.prompt,
-                "stream": False,
-                "keep_alive": -1,
+        base_payload = {
+            "model": receipt.model.key,
+            "prompt": request.prompt,
+            "stream": False,
+            "keep_alive": -1,
+            "options": {
+                "temperature": 0,
+                "seed": 0,
+                "num_predict": request.max_output_tokens,
+            },
+        }
+        try:
+            response = self._client.request(
+                "POST",
+                "/api/generate",
                 # Reasoning models can spend the entire bounded probe budget
                 # in Ollama's separate `thinking` field and leave `response`
                 # empty. The compatibility probe needs a short observable
                 # answer, not hidden chain-of-thought.
-                "think": False,
-                "options": {
-                    "temperature": 0,
-                    "seed": 0,
-                    "num_predict": request.max_output_tokens,
-                },
-            },
-            timeout=request.timeout_seconds,
-            default_failure="unknown",
-            timeout_failure="generation_timeout",
-        ).data
+                payload={**base_payload, "think": False},
+                timeout=request.timeout_seconds,
+                default_failure="unknown",
+                timeout_failure="generation_timeout",
+            ).data
+        except RuntimeAdapterError as error:
+            # Ollama rejects the top-level `think` field with a "does not
+            # support thinking" 400 for any model whose capabilities don't
+            # list thinking - even when the value is False. That surfaces
+            # here as "unsupported_runtime" and is not a real compatibility
+            # failure, so retry once without the field before giving up.
+            if error.reason != "unsupported_runtime":
+                raise
+            response = self._client.request(
+                "POST",
+                "/api/generate",
+                payload=base_payload,
+                timeout=request.timeout_seconds,
+                default_failure="unknown",
+                timeout_failure="generation_timeout",
+            ).data
         text = response.get("response")
         if not isinstance(text, str) or not text.strip():
             raise RuntimeAdapterError("empty_response", "Ollama returned no text")

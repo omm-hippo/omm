@@ -88,6 +88,9 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
                     self.state["loaded"] = False
                 self._json(200, {"response": ""})
                 return
+            if self.state.get("no_thinking_support") and "think" in payload:
+                self._json(400, {"error": "\"local-model\" does not support thinking"})
+                return
             self.state["loaded"] = True
             response = "" if not payload.get("prompt") or self.state.get("empty") else "OK"
             if self.state.get("reasoning_model") and payload.get("think") is not False:
@@ -188,6 +191,21 @@ def test_ollama_probe_disables_thinking_for_bounded_visible_answer(runtime_serve
         if method == "POST" and path == "/api/generate" and payload.get("prompt")
     )
     assert probe_payload["think"] is False
+
+
+def test_ollama_probe_retries_without_think_for_non_thinking_model(runtime_server):
+    base_url, state = runtime_server
+    state["no_thinking_support"] = True
+    adapter = OllamaAdapter(base_url)
+    receipt = adapter.load(RuntimeModelRef("local-model"), LoadOptions())
+
+    assert adapter.generate(receipt, ProbeRequest()).text == "OK"
+    probe_payloads = [
+        payload
+        for method, path, payload in state["calls"]
+        if method == "POST" and path == "/api/generate" and payload.get("prompt")
+    ]
+    assert "think" not in probe_payloads[-1]
 
 
 @pytest.mark.parametrize(
