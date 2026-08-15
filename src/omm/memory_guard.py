@@ -7,6 +7,7 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Callable, Mapping, Protocol, Sequence
 
 from omm.hardware import HardwareInfo, calculate_memory_budget
@@ -332,6 +333,122 @@ class OllamaManagedRuntime:
         from omm import quality
 
         return quality._model_is_loaded(resident.model_id)
+
+
+def _lmstudio_registry_refs(
+    registry_data: Mapping[str, object],
+) -> dict[str, tuple["RuntimeModelRef", float]]:
+    """Build the same key/alias identity `cli._compatibility_model_ref` uses
+    for every OMM-installed, LM-Studio-linked filename, plus a size estimate
+    (the installed GGUF's file size) to use as this resident's reclaimable
+    footprint - LM Studio's API exposes no live per-model memory figure."""
+    from omm.engines.base import RuntimeModelRef
+
+    refs: dict[str, tuple[RuntimeModelRef, float]] = {}
+    for filename, raw_entry in registry_data.items():
+        if not isinstance(raw_entry, dict):
+            continue
+        linked = raw_entry.get("linked")
+        if not isinstance(linked, dict) or linked.get("lmstudio") is not True:
+            continue
+        repo_id = raw_entry.get("repo_id")
+        stem = Path(filename).stem
+        key = repo_id if isinstance(repo_id, str) and "/" in repo_id else f"local/{stem}"
+        aliases = tuple(
+            value for value in (repo_id, filename, stem) if isinstance(value, str) and value
+        )
+        size_bytes = raw_entry.get("size_bytes")
+        size_gb = (
+            float(size_bytes) / (1024**3)
+            if isinstance(size_bytes, (int, float))
+            and not isinstance(size_bytes, bool)
+            and size_bytes > 0
+            else 0.0
+        )
+        refs[filename] = (RuntimeModelRef(key, aliases), size_gb)
+    return refs
+
+
+class LMStudioManagedRuntime:
+    """LM Studio bridge that uses only its API and OMM's ownership registry.
+
+    Mirrors `OllamaManagedRuntime`'s contract, but LM Studio has no daemon
+    endpoint reporting live per-model memory use the way Ollama's `/api/ps`
+    does, so a resident's reclaimable size is estimated from the installed
+    GGUF's file size on disk (looked up through the registry) rather than
+    measured live.
+    """
+
+    def __init__(self, registry_data: Mapping[str, object]) -> None:
+        self._refs = _lmstudio_registry_refs(registry_data)
+        self._live_models: dict[str, object] = {}
+
+    @staticmethod
+    def _adapter():
+        from omm.engines.lmstudio import LMStudioAdapter
+
+        return LMStudioAdapter()
+
+    def list_residents(self) -> tuple[ResidentModel, ...]:
+        from omm.engines.base import RuntimeAdapterError, find_runtime_model
+
+        try:
+            models = self._adapter().list_models()
+        except RuntimeAdapterError:
+            return ()
+        residents = []
+        self._live_models = {}
+        for model in models:
+            if not model.loaded:
+                continue
+            instance_id = model.instance_id or model.key
+            self._live_models[instance_id] = model
+            owned = False
+            size_gb = 0.0
+            for ref, ref_size_gb in self._refs.values():
+                if find_runtime_model([model], ref) is not None:
+                    owned = True
+                    size_gb = ref_size_gb
+                    break
+            residents.append(
+                ResidentModel(
+                    engine="lmstudio",
+                    model_id=model.key,
+                    size_gb=size_gb,
+                    owned_by_omm=owned,
+                    receipt_id=instance_id,
+                )
+            )
+        return tuple(residents)
+
+    def unload(self, resident: ResidentModel) -> bool:
+        if not resident.owned_by_omm or resident.engine != "lmstudio":
+            return False
+        from omm.engines.base import LoadReceipt, RuntimeAdapterError, RuntimeModel
+
+        instance_id = resident.receipt_id or resident.model_id
+        live = self._live_models.get(instance_id)
+        model = live if live is not None else RuntimeModel(
+            resident.model_id, resident.model_id, True, instance_id
+        )
+        receipt = LoadReceipt(model, instance_id, False, True)
+        try:
+            return self._adapter().unload(receipt).unloaded
+        except RuntimeAdapterError:
+            return False
+
+    def is_resident(self, resident: ResidentModel) -> bool | None:
+        from omm.engines.base import RuntimeAdapterError, RuntimeModelRef, find_runtime_model
+
+        try:
+            models = self._adapter().list_models()
+        except RuntimeAdapterError:
+            return None
+        aliases = (resident.receipt_id,) if resident.receipt_id else ()
+        match = find_runtime_model(models, RuntimeModelRef(resident.model_id, aliases))
+        if match is None:
+            return None
+        return match.loaded
 
 
 class PressureAction(Enum):

@@ -2018,25 +2018,23 @@ def _ensure_install_disk_capacity(
         raise InsufficientDiskSpaceError("Not enough disk space: " + "; ".join(failures))
 
 
-def _guard_ollama_load(
-    tag: str, required_gb: float
-) -> tuple[bool, memory_guard_mod.OllamaManagedRuntime, bool]:
-    """Check live memory before an Ollama load and release only OMM-owned models."""
-    runtime = memory_guard_mod.OllamaManagedRuntime(registry.load_registry())
+def _run_memory_guard(
+    runtime, *, target_key: str, matches_target, required_gb: float
+) -> tuple[bool, object, bool]:
+    """Check live memory before a load and release only OMM-owned models of
+    `runtime`'s engine. Shared body for `_guard_ollama_load` and
+    `_guard_lmstudio_load` - both engines follow the identical ask/block/
+    observe policy semantics, differing only in how a resident is matched
+    to the load target and how residents/unloads are performed."""
     latest_residents: tuple[memory_guard_mod.ResidentModel, ...] = ()
     target_preloaded = False
 
     def _plan():
         nonlocal latest_residents, target_preloaded
         latest_residents = runtime.list_residents()
-        target_preloaded = any(
-            memory_guard_mod._same_ollama_id(resident.model_id, tag)
-            for resident in latest_residents
-        )
+        target_preloaded = any(matches_target(resident.model_id) for resident in latest_residents)
         candidates = tuple(
-            resident
-            for resident in latest_residents
-            if not memory_guard_mod._same_ollama_id(resident.model_id, tag)
+            resident for resident in latest_residents if not matches_target(resident.model_id)
         )
         return memory_guard_mod.plan_memory_guard(
             required_gb,
@@ -2065,7 +2063,7 @@ def _guard_ollama_load(
             return False
         names = ", ".join(resident.model_id for resident in candidate_plan.managed_residents)
         return _ask_confirm(
-            f"Memory Guard can free OMM-managed model(s) ({names}) before loading {tag}. Continue?"
+            f"Memory Guard can free OMM-managed model(s) ({names}) before loading {target_key}. Continue?"
         )
 
     execution = memory_guard_mod.execute_guard(
@@ -2094,6 +2092,41 @@ def _guard_ollama_load(
             + ".[/green]"
         )
     return True, runtime, False
+
+
+def _guard_ollama_load(
+    tag: str, required_gb: float
+) -> tuple[bool, memory_guard_mod.OllamaManagedRuntime, bool]:
+    """Check live memory before an Ollama load and release only OMM-owned models."""
+    runtime = memory_guard_mod.OllamaManagedRuntime(registry.load_registry())
+    return _run_memory_guard(
+        runtime,
+        target_key=tag,
+        matches_target=lambda resident_id: memory_guard_mod._same_ollama_id(resident_id, tag),
+        required_gb=required_gb,
+    )
+
+
+def _guard_lmstudio_load(
+    model_key: str, required_gb: float
+) -> tuple[bool, memory_guard_mod.LMStudioManagedRuntime, bool]:
+    """Check live memory before an LM Studio load and release only OMM-owned models."""
+    runtime = memory_guard_mod.LMStudioManagedRuntime(registry.load_registry())
+    return _run_memory_guard(
+        runtime,
+        target_key=model_key,
+        matches_target=lambda resident_id: resident_id.casefold() == model_key.casefold(),
+        required_gb=required_gb,
+    )
+
+
+def _guard_engine_load(engine: str, target_key: str, required_gb: float) -> tuple[bool, object, bool]:
+    """Dispatch to the engine-specific memory guard."""
+    if engine == "ollama":
+        return _guard_ollama_load(target_key, required_gb)
+    if engine == "lmstudio":
+        return _guard_lmstudio_load(target_key, required_gb)
+    raise ValueError(f"unsupported guard engine: {engine}")
 
 
 def _post_install_runtime(linked: dict[str, bool], preferred: str | None) -> str | None:
@@ -2137,8 +2170,9 @@ def _verify_lmstudio_after_install(
     entry: dict,
     *,
     allow_load: bool | None,
-) -> tuple[str | None, bool]:
-    """Run the bounded LM Studio probe; return (status, consent_declined)."""
+    enforce_memory_guard: bool = False,
+) -> tuple[str | None, bool, bool]:
+    """Run the bounded LM Studio probe; return (status, consent_declined, guard_blocked)."""
     adapter = _compatibility_adapter("lmstudio")
     model_ref = _compatibility_model_ref(filename, entry, "lmstudio")
     health = adapter.health()
@@ -2150,7 +2184,7 @@ def _verify_lmstudio_after_install(
             f"{_COMPATIBILITY_FAILURE_MESSAGES.get(reason, reason)}. "
             "The downloaded model was kept.[/yellow]"
         )
-        return result.status, False
+        return result.status, False, False
     model_loaded = False
     try:
         visible = find_runtime_model(adapter.list_models(), model_ref)
@@ -2167,7 +2201,44 @@ def _verify_lmstudio_after_install(
             err_console.print(
                 "[yellow]Runtime verification skipped; the model was not loaded.[/yellow]"
             )
-            return None, True
+            return None, True, False
+        if enforce_memory_guard:
+            size_bytes = entry.get("size_bytes")
+            if (
+                isinstance(size_bytes, bool)
+                or not isinstance(size_bytes, (int, float))
+                or size_bytes <= 0
+            ):
+                try:
+                    size_bytes = _managed_model_path(filename).stat().st_size
+                except (ModelResolutionError, OSError):
+                    size_bytes = None
+            if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+                err_console.print(
+                    "[red]Memory Guard could not determine the model size; "
+                    "the LM Studio load was blocked.[/red]"
+                )
+                _record_install_compatibility(
+                    filename,
+                    "lmstudio",
+                    status="failed",
+                    runtime_version=health.version,
+                    failure_reason="memory_guard_blocked",
+                )
+                return "failed", False, True
+            guard_allowed, _guard_runtime, _preloaded = _guard_lmstudio_load(
+                model_ref.key,
+                float(size_bytes) / (1024**3) * 1.2,
+            )
+            if not guard_allowed:
+                _record_install_compatibility(
+                    filename,
+                    "lmstudio",
+                    status="failed",
+                    runtime_version=health.version,
+                    failure_reason="memory_guard_blocked",
+                )
+                return "failed", False, True
 
     console.print(f"Verifying {filename} with lmstudio...")
     result = verify_and_record(filename, adapter, model_ref)
@@ -2182,7 +2253,7 @@ def _verify_lmstudio_after_install(
             f"{_COMPATIBILITY_FAILURE_MESSAGES.get(reason, reason)}. "
             "The downloaded model was kept.[/yellow]"
         )
-    return result.status, False
+    return result.status, False, False
 
 
 def _install_impl(
@@ -2367,12 +2438,16 @@ def _install_impl(
     )
     compatibility_status = None
     runtime_load_declined = False
+    lmstudio_guard_blocked = False
     if selected_runtime == "lmstudio":
         entry = registry.load_registry().get(filename, {})
-        compatibility_status, runtime_load_declined = _verify_lmstudio_after_install(
-            filename,
-            entry,
-            allow_load=runtime_load_consent,
+        compatibility_status, runtime_load_declined, lmstudio_guard_blocked = (
+            _verify_lmstudio_after_install(
+                filename,
+                entry,
+                allow_load=runtime_load_consent,
+                enforce_memory_guard=enforce_memory_guard,
+            )
         )
 
     tokens_per_sec = None
@@ -2384,7 +2459,7 @@ def _install_impl(
     model_metadata = None
     engine_version = None
     runtime_options = None
-    guard_failure_reason = None
+    guard_failure_reason = "memory_guard_blocked" if lmstudio_guard_blocked else None
     eval_error: quality_mod.QualityEvaluationError | None = None
     run_ollama_benchmark = linked["ollama"] and selected_runtime != "lmstudio"
     ollama_was_preloaded = False
@@ -2674,8 +2749,19 @@ def _report_lmstudio_load_verification(outcome: InstallOutcome) -> None:
     `omm benchmark` does for Ollama. Only a confirmed failure is reported;
     "couldn't check" (lms missing, server unreachable, timeout) stays
     silent, matching the existing Ollama compat-check convention of never
-    surfacing an inconclusive result as a warning."""
+    surfacing an inconclusive result as a warning.
+
+    This is the older `lms`-CLI-based probe. When `_verify_lmstudio_after_install`
+    already ran the newer HTTP-adapter probe in this same install
+    (`outcome.compatibility_engine == "lmstudio"`), that probe already loaded
+    and released the model - running this one too would load/unload it a
+    second time for no extra signal, so it's skipped. This older probe still
+    has unique value when LM Studio was linked but never selected for
+    adapter-based verification (e.g. another runtime was verified instead, or
+    `--no-verify-runtime` was used)."""
     if not outcome.linked.get("lmstudio"):
+        return
+    if outcome.compatibility_engine == "lmstudio":
         return
     result = linker.verify_lmstudio_load(MODELS_DIR / outcome.filename, outcome.repo_id)
     if result is False:
@@ -3068,7 +3154,7 @@ def verify(
                 err_console.print("[yellow]Verification cancelled; nothing was loaded.[/yellow]")
                 raise typer.Exit(0)
 
-    if health.reachable and selected_engine == "ollama" and (visible is None or not visible.loaded):
+    if health.reachable and (visible is None or not visible.loaded):
         size_bytes = entry.get("size_bytes")
         if (
             isinstance(size_bytes, bool)
@@ -3080,12 +3166,14 @@ def verify(
             except (ModelResolutionError, OSError):
                 size_bytes = None
         if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+            label = "Ollama" if selected_engine == "ollama" else "LM Studio"
             err_console.print(
-                "[red]Memory Guard could not determine the model size; "
-                "the Ollama load was blocked.[/red]"
+                f"[red]Memory Guard could not determine the model size; "
+                f"the {label} load was blocked.[/red]"
             )
             raise typer.Exit(1)
-        guard_allowed, _runtime, _preloaded = _guard_ollama_load(
+        guard_allowed, _runtime, _preloaded = _guard_engine_load(
+            selected_engine,
             model_ref.key,
             float(size_bytes) / (1024**3) * 1.2,
         )

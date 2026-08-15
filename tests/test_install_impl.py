@@ -8,7 +8,7 @@ import pytest
 
 from omm import cli, registry
 from omm.downloader import DownloadCancelled
-from omm.engines import RuntimeHealth, RuntimeModel
+from omm.engines import LoadReceipt, ProbeResult, RuntimeHealth, RuntimeModel, UnloadResult
 from omm.hub import ResolvedModel
 
 
@@ -153,6 +153,89 @@ def test_memory_guard_block_prevents_ollama_benchmark(isolated_omm_home, monkeyp
     assert outcome.failure_reason == "memory_guard_blocked"
 
 
+class _FakeLmStudioAdapter:
+    key = "lmstudio"
+
+    def __init__(self, *, loaded=False):
+        self.loaded = loaded
+
+    def health(self):
+        return RuntimeHealth(True, "0.4.1")
+
+    def list_models(self):
+        return [RuntimeModel("org/repo", "org/repo", self.loaded, "org/repo" if self.loaded else None)]
+
+    def load(self, model, options):
+        runtime_model = RuntimeModel("org/repo", "org/repo", True, "org/repo")
+        return LoadReceipt(runtime_model, "org/repo", self.loaded, not self.loaded)
+
+    def generate(self, receipt, request):
+        return ProbeResult("OK")
+
+    def unload(self, receipt):
+        return UnloadResult(True)
+
+
+def test_memory_guard_blocks_lmstudio_load_verification(isolated_omm_home, monkeypatch):
+    """When LM Studio is the selected runtime for post-install verification,
+    `_verify_lmstudio_after_install` must consult the memory guard before
+    letting the adapter load the model - mirrors
+    `test_memory_guard_block_prevents_ollama_benchmark` for the Ollama path."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch, ollama=False, lmstudio=True)
+    monkeypatch.setattr(
+        cli.linker, "link_engine", lambda key, dest, *, repo_id, ollama_tag: None
+    )
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _FakeLmStudioAdapter())
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(
+        cli,
+        "_guard_lmstudio_load",
+        lambda model_key, required_gb: (False, object(), False),
+    )
+    monkeypatch.setattr(
+        cli,
+        "verify_and_record",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not load")),
+    )
+
+    outcome = cli._install_impl(
+        _resolved(), verify_runtime_after_install=True, enforce_memory_guard=True
+    )
+
+    assert outcome.compatibility_engine == "lmstudio"
+    assert outcome.compatibility_status == "failed"
+    assert outcome.failure_reason == "memory_guard_blocked"
+
+
+def test_lmstudio_load_verification_proceeds_when_guard_allows(isolated_omm_home, monkeypatch):
+    """Sanity check for the same wiring: when the guard allows the load,
+    the adapter-based probe still runs normally."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch, ollama=False, lmstudio=True)
+    monkeypatch.setattr(
+        cli.linker, "link_engine", lambda key, dest, *, repo_id, ollama_tag: None
+    )
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _FakeLmStudioAdapter())
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    guard_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_guard_lmstudio_load",
+        lambda model_key, required_gb: (guard_calls.append(model_key) or True, object(), False),
+    )
+
+    outcome = cli._install_impl(
+        _resolved(), verify_runtime_after_install=True, enforce_memory_guard=True
+    )
+
+    assert guard_calls == ["org/repo"]
+    assert outcome.compatibility_engine == "lmstudio"
+    assert outcome.compatibility_status == "passed"
+
+
 # --- LM Studio load-verification reporting ------------------------------
 
 
@@ -200,6 +283,55 @@ def test_install_skips_lmstudio_load_verification_when_not_linked(monkeypatch, c
     cli._report_lmstudio_load_verification(outcome)
 
     assert called["count"] == 0
+
+
+def test_install_skips_old_lmstudio_probe_when_new_adapter_probe_already_ran(monkeypatch):
+    """Regression test for the install-time double-load bug: when LM Studio
+    was the runtime `_verify_lmstudio_after_install` already probed via the
+    new HTTP adapter (`compatibility_engine == "lmstudio"`), the older
+    `lms`-CLI-based `linker.verify_lmstudio_load` probe must not run too -
+    that would load/unload the model into LM Studio a second time."""
+    from omm import linker
+
+    outcome = cli.InstallOutcome(
+        filename="model.gguf",
+        repo_id="acme/widget",
+        linked={"lmstudio": True},
+        compatibility_engine="lmstudio",
+    )
+    called = {"count": 0}
+    monkeypatch.setattr(
+        linker,
+        "verify_lmstudio_load",
+        lambda *a, **k: called.__setitem__("count", called["count"] + 1),
+    )
+
+    cli._report_lmstudio_load_verification(outcome)
+
+    assert called["count"] == 0
+
+
+def test_install_still_runs_old_lmstudio_probe_when_lmstudio_not_the_verified_runtime(
+    monkeypatch, capsys
+):
+    """The old probe still has unique value when LM Studio was linked but a
+    different runtime (or none) was selected for adapter-based verification
+    - e.g. Ollama was verified instead. That's the one case the task
+    description calls out as still needing the old check."""
+    from omm import linker
+
+    outcome = cli.InstallOutcome(
+        filename="model.gguf",
+        repo_id="acme/widget",
+        linked={"lmstudio": True, "ollama": True},
+        compatibility_engine="ollama",
+    )
+    monkeypatch.setattr(linker, "verify_lmstudio_load", lambda gguf_path, repo_id: False)
+
+    cli._report_lmstudio_load_verification(outcome)
+
+    captured = capsys.readouterr()
+    assert "did not load successfully" in captured.out
 
 
 def test_install_impl_telemetry_includes_model_provider(isolated_omm_home, monkeypatch):

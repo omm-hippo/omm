@@ -159,6 +159,81 @@ def test_verify_memory_guard_block_prevents_runtime_load(isolated_omm_home, monk
     assert result.exit_code == 1
 
 
+class _LmStudioCliAdapter:
+    key = "lmstudio"
+
+    def __init__(self, *, loaded=False):
+        self.loaded = loaded
+
+    def health(self):
+        return RuntimeHealth(True, "0.4.1")
+
+    def list_models(self):
+        return [RuntimeModel("org/repo", "org/repo", self.loaded, "org/repo" if self.loaded else None)]
+
+    def load(self, model, options):
+        runtime_model = RuntimeModel("org/repo", "org/repo", True, "org/repo")
+        return LoadReceipt(runtime_model, "org/repo", self.loaded, not self.loaded)
+
+    def generate(self, receipt, request):
+        return ProbeResult("OK")
+
+    def unload(self, receipt):
+        return UnloadResult(True)
+
+
+def test_verify_lmstudio_memory_guard_block_prevents_runtime_load(isolated_omm_home, monkeypatch):
+    """Mirrors test_verify_memory_guard_block_prevents_runtime_load, but for
+    the LM Studio engine - LM Studio previously had no memory guard coverage
+    at all on this command."""
+    registry.save_registry(
+        {
+            "model.gguf": _entry(
+                linked={"ollama": False, "lmstudio": True}, repo_id="org/repo"
+            )
+        }
+    )
+    adapter = _LmStudioCliAdapter()
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    monkeypatch.setattr(
+        cli,
+        "_guard_lmstudio_load",
+        lambda model_key, required_gb: (False, object(), False),
+    )
+    monkeypatch.setattr(
+        cli,
+        "verify_and_record",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not load")),
+    )
+
+    result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "lmstudio", "--yes"])
+
+    assert result.exit_code == 1
+
+
+def test_verify_lmstudio_memory_guard_allows_runtime_load(isolated_omm_home, monkeypatch):
+    registry.save_registry(
+        {
+            "model.gguf": _entry(
+                linked={"ollama": False, "lmstudio": True}, repo_id="org/repo"
+            )
+        }
+    )
+    adapter = _LmStudioCliAdapter()
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    guard_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_guard_lmstudio_load",
+        lambda model_key, required_gb: (guard_calls.append(model_key) or True, object(), False),
+    )
+
+    result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "lmstudio", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert guard_calls == ["org/repo"]
+
+
 def test_verify_rejects_unlinked_and_uninstalled_models(isolated_omm_home):
     registry.save_registry({"model.gguf": _entry(linked={"ollama": False, "lmstudio": False})})
 
