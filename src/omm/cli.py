@@ -5169,23 +5169,21 @@ def contribute() -> None:
             raise typer.Exit(0)
         config_mod.update_config(contribute_always_ack=True)
 
-    err_console.print(
-        "[yellow]This will repeatedly download, benchmark, and delete GGUF models "
-        "until you press Esc. It uses real bandwidth, disk space, and compute, "
-        "runs unattended (no per-model confirmation), and uploads every benchmark "
-        f"result to the server per your current upload policy ({policy}).[/yellow]"
-    )
-    err_console.print(
-        "[yellow]Before every download, omm reserves space for both the central GGUF and "
-        "a worst-case full Ollama copy plus safety headroom. A candidate that cannot fit "
-        "is never downloaded. Each model benchmark also has a 10-minute absolute cutoff "
-        "with a status line every 30 seconds.[/yellow]"
-    )
+    err_console.print("[yellow]omm contribute - before you start:[/yellow]")
+    for line in [
+        "Downloads, benchmarks, and deletes GGUF models repeatedly until you press Esc",
+        "Uses real bandwidth, disk space, and compute; runs unattended (no per-model confirmation)",
+        f"Uploads every benchmark result per your current upload policy ({policy})",
+        "Reserves space per candidate (central GGUF + worst-case Ollama copy + headroom); "
+        "skips anything that won't fit",
+        "Each benchmark has a 10-minute cutoff, with a status line every 30s",
+    ]:
+        err_console.print(f"  [yellow]- {line}[/yellow]")
     if platform.system() == "Windows":
         err_console.print(
-            "[yellow]Windows real-time antivirus scanning can delay first model loads. "
-            "omm uses repeated samples and reports their median; do not disable Defender, "
-            "but avoid other heavy disk activity if you want comparable results.[/yellow]"
+            "  [yellow]- Windows: antivirus scanning may delay first model loads - don't "
+            "disable Defender, but avoid other heavy disk activity for comparable "
+            "results[/yellow]"
         )
     if not yes and not _ask_confirm("Start contributing compute now?"):
         if started_daemon is not None:
