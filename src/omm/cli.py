@@ -4849,6 +4849,7 @@ class _ContributionStats:
     benchmarked: list[tuple[str, float]]
     skipped_unfit: int = 0
     skipped_low_disk: int = 0
+    skipped_low_memory: int = 0
     attempted_not_uploaded: int = 0
     daemon_restarts: int = 0
     given_up_on: int = 0
@@ -4865,6 +4866,87 @@ _DAEMON_RESTART_BACKOFF_SECONDS = 5.0
 # consume the entire unattended run without ever producing an upload.
 _MAX_CANDIDATE_BENCHMARK_FAILURES = 2
 _MIN_CONTRIBUTE_START_FREE_BYTES = 10 * 1024**3
+
+
+def _contribute_candidate_memory_plan(
+    candidate: dict,
+    *,
+    hw: HardwareInfo | None = None,
+    residents: tuple[memory_guard_mod.ResidentModel, ...] | None = None,
+) -> memory_guard_mod.MemoryGuardPlan | None:
+    """Plan a contribution load before any model bytes are downloaded.
+
+    Published candidates normally carry ``size_bytes``; the tuning helper
+    can also estimate size from a parameter count and quantization in the
+    name.  Unknown-size candidates keep the old runtime guard as a fallback
+    rather than being rejected on an estimate OMM cannot make.
+    """
+    model_size_gb = tuning.candidate_model_size_gb(candidate)
+    if model_size_gb is None:
+        return None
+    required_gb = model_size_gb * tuning.MEMORY_OVERHEAD
+    current_hw = hw if hw is not None else scan_hardware()
+    if residents is None:
+        residents = memory_guard_mod.OllamaManagedRuntime(
+            registry.load_registry()
+        ).list_residents()
+    return memory_guard_mod.plan_memory_guard(
+        required_gb,
+        current_hw,
+        residents,
+    )
+
+
+def _ensure_contribute_candidate_memory(
+    artifact: dict,
+    hw: HardwareInfo,
+    history_refs: set[str],
+) -> None:
+    """Abort before the loop when every pending candidate is blocked now."""
+    pending = [
+        candidate
+        for candidate in artifact.get("candidates", [])
+        if not contribute_mod.matches_history(candidate, history_refs)
+    ]
+    if not pending:
+        return
+
+    # If even one pending candidate has no reliable estimate, retain the
+    # existing post-link guard for that candidate instead of claiming the
+    # whole session is impossible.  This also avoids touching the runtime
+    # API merely to discover that preflight is inconclusive.
+    if any(tuning.candidate_model_size_gb(candidate) is None for candidate in pending):
+        return
+
+    residents = memory_guard_mod.OllamaManagedRuntime(
+        registry.load_registry()
+    ).list_residents()
+    blocked_plans = []
+    for candidate in pending:
+        plan = _contribute_candidate_memory_plan(
+            candidate,
+            hw=hw,
+            residents=residents,
+        )
+        # An unknown estimate must fall through to the existing post-link
+        # guard.  SAFE and WARN can proceed; WARN may release an OMM-owned
+        # resident under the configured guard policy.
+        if plan is None or plan.decision is not memory_guard_mod.GuardDecision.BLOCK:
+            return
+        blocked_plans.append(plan)
+
+    if not blocked_plans:
+        return
+    smallest = min(blocked_plans, key=lambda plan: plan.required_gb)
+    err_console.print(
+        "[red]omm contribute will not start because no unbenchmarked candidate "
+        "can be loaded with current live memory. "
+        f"The smallest candidate needs about {smallest.required_gb:.1f} GiB, "
+        f"but only {smallest.available_gb:.1f} GiB is safely available after "
+        f"the {smallest.reserve_gb:.1f} GiB safety reserve. Close memory-heavy "
+        "apps or reboot, then try again. No model was downloaded.[/red]"
+    )
+    raise typer.Exit(1)
 
 
 def _ensure_contribute_start_space() -> None:
@@ -5035,6 +5117,24 @@ def _run_contribution_loop(
         if not opts.quiet:
             console.print(f"[blue]Trying {display_name}...[/blue]")
 
+        memory_plan = _contribute_candidate_memory_plan(candidate)
+        if (
+            memory_plan is not None
+            and memory_plan.decision is memory_guard_mod.GuardDecision.BLOCK
+        ):
+            stats.skipped_low_memory += 1
+            err_console.print(
+                f"[yellow]Skipping {candidate['filename']} before download: needs "
+                f"about {memory_plan.required_gb:.1f} GiB but only "
+                f"{memory_plan.available_gb:.1f} GiB is safely available in live "
+                "memory.[/yellow]"
+            )
+            # Live memory may change between sessions, but retrying this same
+            # candidate in the current unattended run would only spin.  A new
+            # `omm contribute` invocation rebuilds the queue and checks again.
+            queue.mark_seen(ref_str)
+            continue
+
         try:
             provider = validate_provider(candidate.get("provider") or "huggingface")
             repo_id = validate_repo_id(candidate["repo_id"])
@@ -5188,6 +5288,7 @@ def _print_contribution_summary(
         console.print(f"  - {name:<40} {tokens_per_sec:.1f} tok/s")
     console.print(f"Skipped (predicted not to fit this hardware): {stats.skipped_unfit}")
     console.print(f"Skipped (not enough disk space): {stats.skipped_low_disk}")
+    console.print(f"Skipped before download (not enough live memory): {stats.skipped_low_memory}")
     console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
     if stats.given_up_on:
         console.print(
@@ -5313,6 +5414,7 @@ def contribute() -> None:
         hw = scan_hardware()
         history_refs = benchmark_history.loaded_refs()
         queue = contribute_mod.ContributionQueue(artifact, hw, history_refs)
+        _ensure_contribute_candidate_memory(artifact, hw, history_refs)
 
         def refetch():
             return _load_recommendation_with_change_note(config)

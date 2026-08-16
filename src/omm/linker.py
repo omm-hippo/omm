@@ -1017,7 +1017,14 @@ def _ollama_cli_version() -> str | None:
     if exe is None:
         return None
     try:
-        result = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=3)
+        result = subprocess.run(
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     return (result.stdout + result.stderr).strip() or None
@@ -1060,7 +1067,12 @@ def _ollama_accepts_manifest(model_name: str) -> bool | None:
         return None
     try:
         result = subprocess.run(
-            [exe, "show", model_name], capture_output=True, text=True, timeout=5
+            [exe, "show", model_name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -1155,6 +1167,8 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
                 [exe, "create", model_name, "-f", str(modelfile)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=600,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
