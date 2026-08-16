@@ -16,23 +16,30 @@ from rich.text import Text
 from omm import predictor
 from omm.hardware import HardwareInfo, calculate_memory_budget
 
-ACCENT = "#22d3ee"
-SUCCESS = "#4ade80"
-WARNING = "#fbbf24"
-METRIC = "#60a5fa"
-SIZE = "#f472b6"
-MUTED = "#6b7280"
+ACCENT = "blue"
+SUCCESS = "green"
+WARNING = "yellow"
+MUTED = "#808080"
 COLORS_ENABLED = "NO_COLOR" not in os.environ
+
+# The arrow-navigable choice list (picker chrome below, plus each row's
+# badge/speed/memory colors in build_rows()/choice_title()) keeps its
+# original palette - only the static hardware panel above it was retuned.
+_ROW_SUCCESS = "#4ade80"
+_ROW_WARNING = "#fbbf24"
+_ROW_METRIC = "#60a5fa"
+_ROW_SIZE = "#f472b6"
+_ROW_MUTED = "#6b7280"
 
 SELECT_STYLE = (
     Style(
         [
-            ("qmark", f"fg:{ACCENT} bold"),
-            ("question", f"fg:{ACCENT} bold"),
-            ("pointer", f"fg:{ACCENT} bold"),
+            ("qmark", "fg:#22d3ee bold"),
+            ("question", "fg:#22d3ee bold"),
+            ("pointer", "fg:#22d3ee bold"),
             ("highlighted", "fg:#ffffff bg:#164e63 bold"),
-            ("selected", f"fg:{SUCCESS}"),
-            ("instruction", f"fg:{MUTED}"),
+            ("selected", f"fg:{_ROW_SUCCESS}"),
+            ("instruction", f"fg:{_ROW_MUTED}"),
         ]
     )
     if COLORS_ENABLED
@@ -142,15 +149,15 @@ def build_rows(
         warning = _warning(candidate)
         curated = str(candidate.get("description") or "").lower() == "curated default"
         if index == 0 and not warning:
-            badge, badge_style = "BEST FIT", f"fg:{SUCCESS} bold"
+            badge, badge_style = "BEST FIT", f"fg:{_ROW_SUCCESS} bold"
         elif warning:
-            badge, badge_style = "⚠ CAUTION", f"fg:{WARNING} bold"
+            badge, badge_style = "⚠ CAUTION", f"fg:{_ROW_WARNING} bold"
         elif curated:
-            badge, badge_style = "OMM PICK", f"fg:{SUCCESS} bold"
+            badge, badge_style = "OMM PICK", f"fg:{_ROW_SUCCESS} bold"
         elif "downloads" in str(candidate.get("description") or "").lower():
-            badge, badge_style = "POPULAR", f"fg:{METRIC} bold"
+            badge, badge_style = "POPULAR", f"fg:{_ROW_METRIC} bold"
         else:
-            badge, badge_style = "COMPATIBLE", f"fg:{MUTED} bold"
+            badge, badge_style = "COMPATIBLE", f"fg:{_ROW_MUTED} bold"
         rows.append(
             RecommendationRow(
                 candidate=candidate,
@@ -170,7 +177,7 @@ def build_rows(
 
 def _hardware_value(label: str, value: str) -> Text:
     text = Text()
-    text.append(f"{label}  ", style=f"bold {ACCENT}")
+    text.append(f"{label}  ", style=MUTED)
     text.append(value, style="bold white")
     return text
 
@@ -261,10 +268,10 @@ def choice_title(row: RecommendationRow, width: int) -> list[tuple[str, str]]:
             _clip(row.display_name, model_width - 1).ljust(model_width),
         ),
         (_prompt_style(row.badge_style), _clip(row.badge, badge_width - 1).ljust(badge_width)),
-        (_prompt_style(f"fg:{METRIC}"), speed.ljust(13)),
+        (_prompt_style(f"fg:{_ROW_METRIC}"), speed.ljust(13)),
     ]
     if memory_width:
-        parts.append((_prompt_style(f"fg:{SIZE}"), memory.ljust(memory_width)))
+        parts.append((_prompt_style(f"fg:{_ROW_SIZE}"), memory.ljust(memory_width)))
     parts.append(("", _clip(row.use_case, use_width).ljust(use_width)))
     return parts
 
@@ -307,7 +314,7 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
             ),
             title=Text(row.display_name, style=f"bold {ACCENT}"),
             title_align="left",
-            border_style=ACCENT,
+            border_style="bright_black",
             box=box.ROUNDED,
             padding=(0, 1),
         )

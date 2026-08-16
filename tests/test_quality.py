@@ -136,7 +136,7 @@ def test_evaluate_model_stores_parsed_answers_not_raw_text(monkeypatch):
     )
     answers = iter(item["expected"] for item in pack["items"])
 
-    def fake_generate(tag, prompt, generation, num_predict=None):
+    def fake_generate(tag, prompt, generation, num_predict=None, **_kwargs):
         answer = next(answers) if num_predict is None else "1"
         return {
             "response": f"private reasoning must not persist\nFINAL: {answer}",
@@ -151,6 +151,24 @@ def test_evaluate_model_stores_parsed_answers_not_raw_text(monkeypatch):
     assert result["quality"]["raw_responses_stored"] is False
     assert all("response" not in item for item in result["quality"]["items"])
     assert result["speed"]["samples_tokens_per_sec"] == [100.0, 100.0]
+
+
+def test_generate_omits_think_field_for_model_without_thinking_capability(monkeypatch):
+    captured = []
+
+    def fake_request_json(method, path, payload=None, timeout=quality.DEFAULT_GENERATION_TIMEOUT_SECONDS):
+        captured.append(payload)
+        return {"response": "OK"}
+
+    monkeypatch.setattr(quality, "_request_json", fake_request_json)
+    pack, _digest = quality.load_pack()
+    generation = pack["generation"]
+
+    quality._generate("model:latest", "hi", generation, supports_thinking=False)
+    quality._generate("model:latest", "hi", generation, supports_thinking=True)
+
+    assert "think" not in captured[0]
+    assert captured[1]["think"] is generation["think"]
 
 
 def test_collect_evidence_redacts_hardware_names(monkeypatch):

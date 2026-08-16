@@ -5,9 +5,30 @@ from typer.testing import CliRunner
 
 from omm import cli, config, linker
 from omm.engines import RuntimeHealth, RuntimeModel
+from omm.hardware import HardwareInfo
 from omm.hub import ResolvedModel
 
 runner = CliRunner()
+
+
+def _hardware() -> HardwareInfo:
+    # install with runtime-load consent granted routes through the
+    # memory-guard pre-flight check, which reads live available RAM via
+    # `cli.scan_hardware()`. Tests must supply deterministic hardware here
+    # instead of falling through to the real machine's live state, or the
+    # guard's decision - and these tests - become dependent on how much RAM
+    # happens to be free on whatever host runs the suite.
+    return HardwareInfo(
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=16,
+        ram_available_gb=12,
+        unified_memory=False,
+        gpu_name=None,
+        vram_total_gb=None,
+        vram_free_gb=None,
+    )
 
 
 class _InstallAdapter:
@@ -59,6 +80,7 @@ def _log_outcomes(isolated_omm_home):
 
 def test_declining_upload_confirm_logs_declined_by_user(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     monkeypatch.setattr(
         cli,
@@ -89,6 +111,7 @@ def test_no_ollama_link_logs_not_attempted(isolated_omm_home, monkeypatch):
 
 def test_report_telemetry_notice_and_log_when_daemon_unreachable(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "_ask_confirm", lambda message, default=False: True)
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: None)
 
@@ -101,6 +124,7 @@ def test_report_telemetry_notice_and_log_when_daemon_unreachable(isolated_omm_ho
 
 def test_one_shot_upload_failure_is_not_described_as_queued(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: False)
@@ -116,6 +140,7 @@ def test_one_shot_upload_failure_is_not_described_as_queued(isolated_omm_home, m
 
 def test_report_telemetry_silent_on_success(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)

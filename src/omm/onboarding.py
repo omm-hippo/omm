@@ -39,9 +39,9 @@ _ASCII_ART_WIDTH = max(len(line) for line in _ASCII_ART.splitlines())
 
 def print_banner(console: Console) -> None:
     if console.size.width >= _ASCII_ART_WIDTH:
-        console.print(f"[bold cyan]{_ASCII_ART}[/bold cyan]")
+        console.print(f"[bold blue]{_ASCII_ART}[/bold blue]")
     else:
-        console.print("[bold cyan]omm[/bold cyan] - local LLM package manager")
+        console.print("[bold blue]omm[/bold blue] - local LLM package manager")
     console.print("[dim]Let's get you set up.[/dim]\n")
 
 
@@ -50,7 +50,7 @@ def print_hardware_summary(console: Console) -> None:
     budget = calculate_memory_budget(info)
 
     table = Table(title="Your machine", box=None)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value", style="white")
     table.add_row("OS", f"{info.os_name} {info.os_version}")
     table.add_row("CPU", info.cpu)

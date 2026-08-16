@@ -273,6 +273,108 @@ def test_registry_ownership_is_required_and_model_names_are_not_guessed():
     assert guard.omm_managed_model_ids(registry_data, "ollama") == {"owned"}
 
 
+class _FakeLmStudioAdapter:
+    def __init__(self, models):
+        self._models = models
+        self.unload_calls = []
+
+    def list_models(self):
+        return self._models
+
+    def unload(self, receipt):
+        from omm.engines.base import UnloadResult
+
+        self.unload_calls.append(receipt.instance_id)
+        return UnloadResult(True)
+
+
+def test_lmstudio_runtime_marks_registry_linked_models_owned_with_file_size():
+    from omm.engines.base import RuntimeModel
+
+    registry_data = {
+        "model.gguf": {
+            "linked": {"lmstudio": True},
+            "repo_id": "acme/widget",
+            "size_bytes": 4 * 1024**3,
+        },
+        "not-linked.gguf": {
+            "linked": {"lmstudio": False},
+            "repo_id": "other/other",
+            "size_bytes": 8 * 1024**3,
+        },
+    }
+    runtime = guard.LMStudioManagedRuntime(registry_data)
+    fake_adapter = _FakeLmStudioAdapter(
+        [
+            RuntimeModel("acme/widget", "Widget", True, "instance-1"),
+            RuntimeModel("some/unmanaged-model", "Unmanaged", True, "instance-2"),
+            RuntimeModel("acme/widget", "Widget", False, None),
+        ]
+    )
+    runtime._adapter = lambda: fake_adapter
+
+    residents = runtime.list_residents()
+
+    assert len(residents) == 2  # only the two `loaded=True` rows
+    owned = next(r for r in residents if r.model_id == "acme/widget")
+    unmanaged = next(r for r in residents if r.model_id == "some/unmanaged-model")
+    assert owned.owned_by_omm is True
+    assert owned.size_gb == pytest.approx(4.0)
+    assert owned.receipt_id == "instance-1"
+    assert unmanaged.owned_by_omm is False
+    assert unmanaged.size_gb == 0.0
+
+
+def test_lmstudio_runtime_unload_forces_release_of_an_owned_resident():
+    runtime = guard.LMStudioManagedRuntime({})
+    fake_adapter = _FakeLmStudioAdapter([])
+    runtime._adapter = lambda: fake_adapter
+    resident = guard.ResidentModel(
+        "lmstudio", "acme/widget", 4.0, True, receipt_id="instance-1"
+    )
+
+    assert runtime.unload(resident) is True
+    assert fake_adapter.unload_calls == ["instance-1"]
+
+
+def test_lmstudio_runtime_unload_refuses_unowned_residents_without_calling_the_adapter():
+    runtime = guard.LMStudioManagedRuntime({})
+    fake_adapter = _FakeLmStudioAdapter([])
+    runtime._adapter = lambda: fake_adapter
+    resident = guard.ResidentModel(
+        "lmstudio", "acme/widget", 4.0, False, receipt_id="instance-1"
+    )
+
+    assert runtime.unload(resident) is False
+    assert fake_adapter.unload_calls == []
+
+
+def test_lmstudio_runtime_is_resident_reflects_the_live_list():
+    from omm.engines.base import RuntimeModel
+
+    runtime = guard.LMStudioManagedRuntime({})
+    resident = guard.ResidentModel(
+        "lmstudio", "acme/widget", 4.0, True, receipt_id="instance-1"
+    )
+
+    runtime._adapter = lambda: _FakeLmStudioAdapter(
+        [RuntimeModel("acme/widget", "Widget", True, "instance-1")]
+    )
+    assert runtime.is_resident(resident) is True
+
+    runtime._adapter = lambda: _FakeLmStudioAdapter([])
+    assert runtime.is_resident(resident) is None
+
+
+def test_registry_ownership_is_required_and_model_names_are_not_guessed_for_lmstudio():
+    registry_data = {
+        "owned.gguf": {"linked": {"lmstudio": True}, "repo_id": "acme/owned"},
+        "not-linked.gguf": {"linked": {"lmstudio": False}, "repo_id": "acme/other"},
+    }
+
+    assert guard.omm_managed_model_ids(registry_data, "lmstudio") == {"owned.gguf"}
+
+
 def test_module_has_no_process_kill_or_privilege_escalation_path():
     source = inspect.getsource(guard)
 

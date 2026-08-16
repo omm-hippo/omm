@@ -177,6 +177,25 @@ function Test-PythonCommand {
 }
 
 function Get-PythonCommand {
+    # Resolve concrete python/python3 executables ahead of the bare-name
+    # probe below. A WindowsApps python.exe/python3.exe alias stub can sit
+    # earlier on PATH than a just-installed real Python (winget's install
+    # appends to PATH, it doesn't reorder it), so a bare-name probe run
+    # right after a successful winget install can still resolve to the
+    # Store alias and report "not found" - even though Python is now
+    # actually there. Get-Command -All sees every match on PATH; filtering
+    # out WindowsApps and probing each remaining Source directly sidesteps
+    # the PATH-order problem instead of just detecting the stub (which
+    # Test-PythonCommand's timeout/kill already does for the bare-name path).
+    $resolved = @()
+    foreach ($name in @("python", "python3")) {
+        $resolved += (Get-Command $name -All -ErrorAction SilentlyContinue) |
+            Where-Object { $_.Source -and ($_.Source -notmatch '\\WindowsApps\\') } |
+            ForEach-Object { [pscustomobject]@{ Executable = $_.Source; Arguments = @() } }
+    }
+    foreach ($candidate in $resolved) {
+        if (Test-PythonCommand $candidate) { return $candidate }
+    }
     # Probe execution, rather than trusting Get-Command. Prefer python.org /
     # winget's `python`, then the py launcher, before asking winget to install.
     foreach ($candidate in @(

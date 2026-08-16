@@ -179,12 +179,21 @@ def benchmark_ollama_samples(
     """
     if not isinstance(runs, int) or isinstance(runs, bool) or not 1 <= runs <= 10:
         raise ValueError("runs must be an integer from 1 to 10")
+    # Resolve the module-global once, up front, rather than re-looking it up
+    # on every iteration. If a caller running on a background thread gets
+    # abandoned mid-loop (see cli._run_interruptible), a later monkeypatch
+    # (or, in production, a hot-swapped implementation) of module-level
+    # ``benchmark_ollama`` must not get silently picked up partway through
+    # an in-flight call - that's what let one leaked worker thread's
+    # straggling iterations start invoking whatever function an unrelated,
+    # later caller had since installed.
+    _benchmark_ollama = benchmark_ollama
     samples: list[float] = []
     for _ in range(runs):
         try:
-            value = benchmark_ollama(tag, options=options)
+            value = _benchmark_ollama(tag, options=options)
         except TypeError:  # compatibility with old monkeypatched callables
-            value = benchmark_ollama(tag)
+            value = _benchmark_ollama(tag)
         if value is None:
             return None
         samples.append(float(value))

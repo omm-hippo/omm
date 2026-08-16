@@ -10,8 +10,29 @@ from omm.engines import (
     RuntimeModel,
     UnloadResult,
 )
+from omm.hardware import HardwareInfo
 
 runner = CliRunner()
+
+
+def _hardware() -> HardwareInfo:
+    # Verify loads a model into the runtime, so its memory-guard pre-flight
+    # check (like install's and benchmark's) reads live available RAM via
+    # `cli.scan_hardware()`. Tests must supply deterministic hardware here
+    # instead of falling through to the real machine's live state, or the
+    # guard's decision - and these tests - become dependent on how much RAM
+    # happens to be free on whatever host runs the suite.
+    return HardwareInfo(
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=16,
+        ram_available_gb=12,
+        unified_memory=False,
+        gpu_name=None,
+        vram_total_gb=None,
+        vram_free_gb=None,
+    )
 
 
 class _CliAdapter:
@@ -51,6 +72,7 @@ def test_verify_success_records_and_reports_result(isolated_omm_home, monkeypatc
     registry.save_registry({"model.gguf": _entry()})
     adapter = _CliAdapter()
     monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
 
     result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "ollama", "--yes"])
 
@@ -93,6 +115,7 @@ def test_verify_failure_keeps_model_file_and_records_reason(isolated_omm_home, m
     model_file = cli.MODELS_DIR / "model.gguf"
     model_file.write_bytes(b"gguf")
     monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _CliAdapter())
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     failed = runtime_compatibility.CompatibilityResult(
         "ollama",
         "failed",
@@ -134,6 +157,81 @@ def test_verify_memory_guard_block_prevents_runtime_load(isolated_omm_home, monk
     result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "ollama", "--yes"])
 
     assert result.exit_code == 1
+
+
+class _LmStudioCliAdapter:
+    key = "lmstudio"
+
+    def __init__(self, *, loaded=False):
+        self.loaded = loaded
+
+    def health(self):
+        return RuntimeHealth(True, "0.4.1")
+
+    def list_models(self):
+        return [RuntimeModel("org/repo", "org/repo", self.loaded, "org/repo" if self.loaded else None)]
+
+    def load(self, model, options):
+        runtime_model = RuntimeModel("org/repo", "org/repo", True, "org/repo")
+        return LoadReceipt(runtime_model, "org/repo", self.loaded, not self.loaded)
+
+    def generate(self, receipt, request):
+        return ProbeResult("OK")
+
+    def unload(self, receipt):
+        return UnloadResult(True)
+
+
+def test_verify_lmstudio_memory_guard_block_prevents_runtime_load(isolated_omm_home, monkeypatch):
+    """Mirrors test_verify_memory_guard_block_prevents_runtime_load, but for
+    the LM Studio engine - LM Studio previously had no memory guard coverage
+    at all on this command."""
+    registry.save_registry(
+        {
+            "model.gguf": _entry(
+                linked={"ollama": False, "lmstudio": True}, repo_id="org/repo"
+            )
+        }
+    )
+    adapter = _LmStudioCliAdapter()
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    monkeypatch.setattr(
+        cli,
+        "_guard_lmstudio_load",
+        lambda model_key, required_gb: (False, object(), False),
+    )
+    monkeypatch.setattr(
+        cli,
+        "verify_and_record",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not load")),
+    )
+
+    result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "lmstudio", "--yes"])
+
+    assert result.exit_code == 1
+
+
+def test_verify_lmstudio_memory_guard_allows_runtime_load(isolated_omm_home, monkeypatch):
+    registry.save_registry(
+        {
+            "model.gguf": _entry(
+                linked={"ollama": False, "lmstudio": True}, repo_id="org/repo"
+            )
+        }
+    )
+    adapter = _LmStudioCliAdapter()
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    guard_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_guard_lmstudio_load",
+        lambda model_key, required_gb: (guard_calls.append(model_key) or True, object(), False),
+    )
+
+    result = runner.invoke(cli.app, ["verify", "model.gguf", "--engine", "lmstudio", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert guard_calls == ["org/repo"]
 
 
 def test_verify_rejects_unlinked_and_uninstalled_models(isolated_omm_home):

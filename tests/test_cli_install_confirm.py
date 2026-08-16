@@ -4,9 +4,30 @@ from typer.testing import CliRunner
 
 from omm import cli, linker
 from omm.engines import RuntimeHealth, RuntimeModel
+from omm.hardware import HardwareInfo
 from omm.hub import ResolvedModel
 
 runner = CliRunner()
+
+
+def _hardware() -> HardwareInfo:
+    # install with runtime-load consent granted routes through the
+    # memory-guard pre-flight check, which reads live available RAM via
+    # `cli.scan_hardware()`. Tests must supply deterministic hardware here
+    # instead of falling through to the real machine's live state, or the
+    # guard's decision - and these tests - become dependent on how much RAM
+    # happens to be free on whatever host runs the suite.
+    return HardwareInfo(
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=16,
+        ram_available_gb=12,
+        unified_memory=False,
+        gpu_name=None,
+        vram_total_gb=None,
+        vram_free_gb=None,
+    )
 
 
 class _InstallAdapter:
@@ -52,6 +73,7 @@ def _stub_successful_install(monkeypatch, isolated_omm_home):
 
 def test_install_runs_benchmark_and_telemetry_on_yes(isolated_omm_home, monkeypatch):
     filename = _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     sent = []
@@ -90,6 +112,7 @@ def test_install_no_upload_flag_skips_prompt_without_a_tty(isolated_omm_home, mo
     upload confirm prompt, which errors out immediately without a tty
     (see P0 fix) under the default 'ask' policy."""
     _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append((event, force)))
@@ -105,6 +128,7 @@ def test_install_no_upload_flag_skips_prompt_without_a_tty(isolated_omm_home, mo
 
 def test_install_upload_flag_sends_telemetry_without_a_tty(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append((event, force)))
@@ -123,6 +147,7 @@ def test_install_global_yes_consents_to_runtime_load_without_a_tty(
     isolated_omm_home, monkeypatch
 ):
     _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(
         cli,
         "_ask_confirm",
@@ -141,6 +166,7 @@ def test_install_threads_quiet_and_no_color_into_download_file(isolated_omm_home
     # --quiet/--no-color must reach download_file() so its progress bar and
     # retry warning respect them too, not just cli.py's own console (see #80).
     _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     calls = []
@@ -172,6 +198,7 @@ def test_install_quiet_suppresses_status_lines_but_keeps_the_result(isolated_omm
     # status-style lines but still confirm what actually happened, same as
     # apt/brew -q (see #80).
     _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)

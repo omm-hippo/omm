@@ -656,7 +656,7 @@ def ensure_model_unloaded(
 
 
 def _generate(tag: str, prompt: str, generation: dict, num_predict: int | None = None,
-              runtime_options: dict | None = None) -> dict:
+              runtime_options: dict | None = None, supports_thinking: bool = True) -> dict:
     options = {
         "temperature": generation["temperature"],
         "seed": generation["seed"],
@@ -664,17 +664,19 @@ def _generate(tag: str, prompt: str, generation: dict, num_predict: int | None =
         "num_predict": num_predict or generation["num_predict"],
     }
     options.update(runtime_options or {})
-    data = _request_json(
-        "POST",
-        "/api/generate",
-        {
-            "model": tag,
-            "prompt": prompt,
-            "stream": False,
-            "think": generation["think"],
-            "options": options,
-        },
-    )
+    payload = {
+        "model": tag,
+        "prompt": prompt,
+        "stream": False,
+        "options": options,
+    }
+    if supports_thinking:
+        # Ollama rejects the top-level `think` field outright - HTTP 400
+        # "does not support thinking" - for any model whose capabilities
+        # don't list "thinking", even when the value is False. Omitting the
+        # field entirely is the documented-safe choice for those models.
+        payload["think"] = generation["think"]
+    data = _request_json("POST", "/api/generate", payload)
     if not isinstance(data.get("response"), str):
         raise QualityEvaluationError(
             f"Ollama returned no text response for '{tag}'", failure_reason=FAILURE_REASON_UNKNOWN
@@ -683,12 +685,16 @@ def _generate(tag: str, prompt: str, generation: dict, num_predict: int | None =
 
 
 def _generate_with_runtime(
-    tag: str, prompt: str, generation: dict, num_predict: int | None, runtime_options: dict | None
+    tag: str, prompt: str, generation: dict, num_predict: int | None, runtime_options: dict | None,
+    supports_thinking: bool = True,
 ) -> dict:
     """Avoid changing the call shape used by older test/integration fakes."""
-    if runtime_options is None:
-        return _generate(tag, prompt, generation, num_predict=num_predict)
-    return _generate(tag, prompt, generation, num_predict=num_predict, runtime_options=runtime_options)
+    kwargs = {}
+    if runtime_options is not None:
+        kwargs["runtime_options"] = runtime_options
+    if not supports_thinking:
+        kwargs["supports_thinking"] = False
+    return _generate(tag, prompt, generation, num_predict=num_predict, **kwargs)
 
 
 def _tokens_per_second(response: dict) -> float | None:
@@ -706,13 +712,17 @@ def _tokens_per_second(response: dict) -> float | None:
     return None
 
 
-def _speed_probe(tag: str, generation: dict, runs: int, runtime_options: dict | None = None) -> SpeedSummary:
+def _speed_probe(
+    tag: str, generation: dict, runs: int, runtime_options: dict | None = None, supports_thinking: bool = True
+) -> SpeedSummary:
     _bounded_int(runs, 1, 10, "speed runs")
     prompt = "Explain what an operating system is in a concise paragraph."
-    _generate_with_runtime(tag, prompt, generation, 8, runtime_options)
+    _generate_with_runtime(tag, prompt, generation, 8, runtime_options, supports_thinking)
     samples = []
     for _ in range(runs):
-        speed = _tokens_per_second(_generate_with_runtime(tag, prompt, generation, 64, runtime_options))
+        speed = _tokens_per_second(
+            _generate_with_runtime(tag, prompt, generation, 64, runtime_options, supports_thinking)
+        )
         if speed is None:
             raise QualityEvaluationError(
                 f"Ollama returned no timing metrics for '{tag}'",
@@ -725,13 +735,14 @@ def _speed_probe(tag: str, generation: dict, runs: int, runtime_options: dict | 
 def evaluate_model(tag: str, pack: dict, speed_runs: int = 3, runtime_options: dict | None = None,
                    model_metadata: dict | None = None) -> dict:
     metadata = model_metadata or _model_metadata(tag)
+    supports_thinking = "thinking" in (metadata.get("capabilities") or [])
     template = pack["prompt_template"]
     generation = pack["generation"]
     item_results = []
     quality_speeds = []
     for item in pack["items"]:
         response = _generate_with_runtime(
-            tag, template.format(question=item["question"]), generation, None, runtime_options
+            tag, template.format(question=item["question"]), generation, None, runtime_options, supports_thinking
         )
         predicted = parse_numeric_answer(response["response"])
         expected = _normalize_number(item["expected"])
@@ -753,7 +764,7 @@ def evaluate_model(tag: str, pack: dict, speed_runs: int = 3, runtime_options: d
     correct_count = sum(1 for item in item_results if item["correct"])
     category_total = Counter(item["category"] for item in item_results)
     category_correct = Counter(item["category"] for item in item_results if item["correct"])
-    speed = _speed_probe(tag, generation, speed_runs, runtime_options=runtime_options)
+    speed = _speed_probe(tag, generation, speed_runs, runtime_options=runtime_options, supports_thinking=supports_thinking)
     return {
         **metadata,
         "quality": {

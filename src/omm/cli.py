@@ -307,8 +307,8 @@ if platform.system() == "Windows":
         reconfigure = getattr(_stream, "reconfigure", None)
         if reconfigure is not None:
             reconfigure(errors="replace")
-console = Console(safe_box=platform.system() == "Windows")
-err_console = Console(stderr=True, safe_box=platform.system() == "Windows")
+console = Console(safe_box=platform.system() == "Windows", highlight=False)
+err_console = Console(stderr=True, safe_box=platform.system() == "Windows", highlight=False)
 
 REPO_URL = "git+https://github.com/omm-hippo/omm.git"
 COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"
@@ -408,7 +408,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "list", "recommend", "uninstall", "info", "upgrade"]),
+    ("Core", ["search", "install", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
     ("Maintenance", ["scan", "setup", "import", "autoremove", "link", "update", "help"]),
 ]
@@ -666,7 +666,7 @@ def scan() -> None:
         return
 
     table = Table(title="omm hardware scan")
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value", style="white")
 
     table.add_row("OS", f"{info.os_name} {info.os_version}")
@@ -694,7 +694,7 @@ def scan() -> None:
     console.print(table)
 
     engine_table = Table(title="Local AI runners", box=None)
-    engine_table.add_column("Program", style="cyan")
+    engine_table.add_column("Program", style="blue")
     engine_table.add_column("Status", style="white")
     for spec in linker.ENGINES:
         if installed[spec.key]:
@@ -706,7 +706,7 @@ def scan() -> None:
         console.print(note)
 
     model_table = Table(title="Local AI models", box=None)
-    model_table.add_column("Model", style="cyan")
+    model_table.add_column("Model", style="blue")
     model_table.add_column("Location", style="white")
     model_table.add_column("Engine(s)")
     model_table.add_column("Managed by omm")
@@ -1092,7 +1092,7 @@ def _deps_satisfied() -> bool:
 def _run_pipx_install_with_progress(args: list[str]) -> subprocess.CompletedProcess:
     with Progress(
         SpinnerColumn(),
-        TextColumn("[cyan]Reinstalling omm via pipx...[/cyan]"),
+        TextColumn("[blue]Reinstalling omm via pipx...[/blue]"),
         BarColumn(),
         TaskProgressColumn(),
         TimeElapsedColumn(),
@@ -1122,7 +1122,7 @@ def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedPr
     working editable install - previously an rmtree-then-clone order left
     `omm` permanently broken with ModuleNotFoundError until reinstalled
     from scratch."""
-    console.print("[cyan]Migrating to fast-update mode (one-time)...[/cyan]")
+    console.print("[blue]Migrating to fast-update mode (one-time)...[/blue]")
     tmp_dir = SRC_DIR.with_name(SRC_DIR.name + ".new")
     shutil.rmtree(tmp_dir, ignore_errors=True)
     try:
@@ -1587,7 +1587,7 @@ def recommend() -> None:
 
 def _print_runtime_profile(profile: tuning.RuntimeProfile) -> None:
     table = Table(title=f"Recommended {profile.profile_name} runtime profile")
-    table.add_column("Setting", style="cyan")
+    table.add_column("Setting", style="blue")
     table.add_column("Starting value")
     table.add_row("Context length", f"{profile.context_length:,} tokens")
     table.add_row("GPU offload", profile.gpu_offload_label)
@@ -2018,25 +2018,23 @@ def _ensure_install_disk_capacity(
         raise InsufficientDiskSpaceError("Not enough disk space: " + "; ".join(failures))
 
 
-def _guard_ollama_load(
-    tag: str, required_gb: float
-) -> tuple[bool, memory_guard_mod.OllamaManagedRuntime, bool]:
-    """Check live memory before an Ollama load and release only OMM-owned models."""
-    runtime = memory_guard_mod.OllamaManagedRuntime(registry.load_registry())
+def _run_memory_guard(
+    runtime, *, target_key: str, matches_target, required_gb: float
+) -> tuple[bool, object, bool]:
+    """Check live memory before a load and release only OMM-owned models of
+    `runtime`'s engine. Shared body for `_guard_ollama_load` and
+    `_guard_lmstudio_load` - both engines follow the identical ask/block/
+    observe policy semantics, differing only in how a resident is matched
+    to the load target and how residents/unloads are performed."""
     latest_residents: tuple[memory_guard_mod.ResidentModel, ...] = ()
     target_preloaded = False
 
     def _plan():
         nonlocal latest_residents, target_preloaded
         latest_residents = runtime.list_residents()
-        target_preloaded = any(
-            memory_guard_mod._same_ollama_id(resident.model_id, tag)
-            for resident in latest_residents
-        )
+        target_preloaded = any(matches_target(resident.model_id) for resident in latest_residents)
         candidates = tuple(
-            resident
-            for resident in latest_residents
-            if not memory_guard_mod._same_ollama_id(resident.model_id, tag)
+            resident for resident in latest_residents if not matches_target(resident.model_id)
         )
         return memory_guard_mod.plan_memory_guard(
             required_gb,
@@ -2065,7 +2063,7 @@ def _guard_ollama_load(
             return False
         names = ", ".join(resident.model_id for resident in candidate_plan.managed_residents)
         return _ask_confirm(
-            f"Memory Guard can free OMM-managed model(s) ({names}) before loading {tag}. Continue?"
+            f"Memory Guard can free OMM-managed model(s) ({names}) before loading {target_key}. Continue?"
         )
 
     execution = memory_guard_mod.execute_guard(
@@ -2094,6 +2092,41 @@ def _guard_ollama_load(
             + ".[/green]"
         )
     return True, runtime, False
+
+
+def _guard_ollama_load(
+    tag: str, required_gb: float
+) -> tuple[bool, memory_guard_mod.OllamaManagedRuntime, bool]:
+    """Check live memory before an Ollama load and release only OMM-owned models."""
+    runtime = memory_guard_mod.OllamaManagedRuntime(registry.load_registry())
+    return _run_memory_guard(
+        runtime,
+        target_key=tag,
+        matches_target=lambda resident_id: memory_guard_mod._same_ollama_id(resident_id, tag),
+        required_gb=required_gb,
+    )
+
+
+def _guard_lmstudio_load(
+    model_key: str, required_gb: float
+) -> tuple[bool, memory_guard_mod.LMStudioManagedRuntime, bool]:
+    """Check live memory before an LM Studio load and release only OMM-owned models."""
+    runtime = memory_guard_mod.LMStudioManagedRuntime(registry.load_registry())
+    return _run_memory_guard(
+        runtime,
+        target_key=model_key,
+        matches_target=lambda resident_id: resident_id.casefold() == model_key.casefold(),
+        required_gb=required_gb,
+    )
+
+
+def _guard_engine_load(engine: str, target_key: str, required_gb: float) -> tuple[bool, object, bool]:
+    """Dispatch to the engine-specific memory guard."""
+    if engine == "ollama":
+        return _guard_ollama_load(target_key, required_gb)
+    if engine == "lmstudio":
+        return _guard_lmstudio_load(target_key, required_gb)
+    raise ValueError(f"unsupported guard engine: {engine}")
 
 
 def _post_install_runtime(linked: dict[str, bool], preferred: str | None) -> str | None:
@@ -2137,8 +2170,9 @@ def _verify_lmstudio_after_install(
     entry: dict,
     *,
     allow_load: bool | None,
-) -> tuple[str | None, bool]:
-    """Run the bounded LM Studio probe; return (status, consent_declined)."""
+    enforce_memory_guard: bool = False,
+) -> tuple[str | None, bool, bool]:
+    """Run the bounded LM Studio probe; return (status, consent_declined, guard_blocked)."""
     adapter = _compatibility_adapter("lmstudio")
     model_ref = _compatibility_model_ref(filename, entry, "lmstudio")
     health = adapter.health()
@@ -2150,7 +2184,7 @@ def _verify_lmstudio_after_install(
             f"{_COMPATIBILITY_FAILURE_MESSAGES.get(reason, reason)}. "
             "The downloaded model was kept.[/yellow]"
         )
-        return result.status, False
+        return result.status, False, False
     model_loaded = False
     try:
         visible = find_runtime_model(adapter.list_models(), model_ref)
@@ -2167,7 +2201,44 @@ def _verify_lmstudio_after_install(
             err_console.print(
                 "[yellow]Runtime verification skipped; the model was not loaded.[/yellow]"
             )
-            return None, True
+            return None, True, False
+        if enforce_memory_guard:
+            size_bytes = entry.get("size_bytes")
+            if (
+                isinstance(size_bytes, bool)
+                or not isinstance(size_bytes, (int, float))
+                or size_bytes <= 0
+            ):
+                try:
+                    size_bytes = _managed_model_path(filename).stat().st_size
+                except (ModelResolutionError, OSError):
+                    size_bytes = None
+            if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+                err_console.print(
+                    "[red]Memory Guard could not determine the model size; "
+                    "the LM Studio load was blocked.[/red]"
+                )
+                _record_install_compatibility(
+                    filename,
+                    "lmstudio",
+                    status="failed",
+                    runtime_version=health.version,
+                    failure_reason="memory_guard_blocked",
+                )
+                return "failed", False, True
+            guard_allowed, _guard_runtime, _preloaded = _guard_lmstudio_load(
+                model_ref.key,
+                float(size_bytes) / (1024**3) * 1.2,
+            )
+            if not guard_allowed:
+                _record_install_compatibility(
+                    filename,
+                    "lmstudio",
+                    status="failed",
+                    runtime_version=health.version,
+                    failure_reason="memory_guard_blocked",
+                )
+                return "failed", False, True
 
     console.print(f"Verifying {filename} with lmstudio...")
     result = verify_and_record(filename, adapter, model_ref)
@@ -2182,7 +2253,7 @@ def _verify_lmstudio_after_install(
             f"{_COMPATIBILITY_FAILURE_MESSAGES.get(reason, reason)}. "
             "The downloaded model was kept.[/yellow]"
         )
-    return result.status, False
+    return result.status, False, False
 
 
 def _install_impl(
@@ -2367,12 +2438,16 @@ def _install_impl(
     )
     compatibility_status = None
     runtime_load_declined = False
+    lmstudio_guard_blocked = False
     if selected_runtime == "lmstudio":
         entry = registry.load_registry().get(filename, {})
-        compatibility_status, runtime_load_declined = _verify_lmstudio_after_install(
-            filename,
-            entry,
-            allow_load=runtime_load_consent,
+        compatibility_status, runtime_load_declined, lmstudio_guard_blocked = (
+            _verify_lmstudio_after_install(
+                filename,
+                entry,
+                allow_load=runtime_load_consent,
+                enforce_memory_guard=enforce_memory_guard,
+            )
         )
 
     tokens_per_sec = None
@@ -2384,7 +2459,7 @@ def _install_impl(
     model_metadata = None
     engine_version = None
     runtime_options = None
-    guard_failure_reason = None
+    guard_failure_reason = "memory_guard_blocked" if lmstudio_guard_blocked else None
     eval_error: quality_mod.QualityEvaluationError | None = None
     run_ollama_benchmark = linked["ollama"] and selected_runtime != "lmstudio"
     ollama_was_preloaded = False
@@ -2603,7 +2678,7 @@ def _install_impl(
             )
 
         if tokens_per_sec:
-            console.print(f"[cyan]{tokens_per_sec:.1f} tok/s[/cyan]")
+            console.print(f"[blue]{tokens_per_sec:.1f} tok/s[/blue]")
             _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec)
 
             want_upload = not no_upload and (
@@ -2674,8 +2749,19 @@ def _report_lmstudio_load_verification(outcome: InstallOutcome) -> None:
     `omm benchmark` does for Ollama. Only a confirmed failure is reported;
     "couldn't check" (lms missing, server unreachable, timeout) stays
     silent, matching the existing Ollama compat-check convention of never
-    surfacing an inconclusive result as a warning."""
+    surfacing an inconclusive result as a warning.
+
+    This is the older `lms`-CLI-based probe. When `_verify_lmstudio_after_install`
+    already ran the newer HTTP-adapter probe in this same install
+    (`outcome.compatibility_engine == "lmstudio"`), that probe already loaded
+    and released the model - running this one too would load/unload it a
+    second time for no extra signal, so it's skipped. This older probe still
+    has unique value when LM Studio was linked but never selected for
+    adapter-based verification (e.g. another runtime was verified instead, or
+    `--no-verify-runtime` was used)."""
     if not outcome.linked.get("lmstudio"):
+        return
+    if outcome.compatibility_engine == "lmstudio":
         return
     result = linker.verify_lmstudio_load(MODELS_DIR / outcome.filename, outcome.repo_id)
     if result is False:
@@ -2786,7 +2872,7 @@ def install(
     for spec in linker.ENGINES:
         if spec.key != "ollama" and outcome.linked.get(spec.key):
             console.print(f"  {spec.label}: visible in your local models list")
-    console.print(f"  Uninstall with: [cyan]omm uninstall {outcome.filename}[/cyan]")
+    console.print(f"  Uninstall with: [blue]omm uninstall {outcome.filename}[/blue]")
     _report_lmstudio_load_verification(outcome)
 
 
@@ -3068,7 +3154,7 @@ def verify(
                 err_console.print("[yellow]Verification cancelled; nothing was loaded.[/yellow]")
                 raise typer.Exit(0)
 
-    if health.reachable and selected_engine == "ollama" and (visible is None or not visible.loaded):
+    if health.reachable and (visible is None or not visible.loaded):
         size_bytes = entry.get("size_bytes")
         if (
             isinstance(size_bytes, bool)
@@ -3080,12 +3166,14 @@ def verify(
             except (ModelResolutionError, OSError):
                 size_bytes = None
         if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+            label = "Ollama" if selected_engine == "ollama" else "LM Studio"
             err_console.print(
-                "[red]Memory Guard could not determine the model size; "
-                "the Ollama load was blocked.[/red]"
+                f"[red]Memory Guard could not determine the model size; "
+                f"the {label} load was blocked.[/red]"
             )
             raise typer.Exit(1)
-        guard_allowed, _runtime, _preloaded = _guard_ollama_load(
+        guard_allowed, _runtime, _preloaded = _guard_engine_load(
+            selected_engine,
             model_ref.key,
             float(size_bytes) / (1024**3) * 1.2,
         )
@@ -3149,7 +3237,7 @@ def info(
         return
 
     table = Table(title=filename, show_header=False)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value")
     repo_label = entry.get("repo_id") or "(direct URL install)"
     provider = entry.get("provider")
@@ -3394,7 +3482,7 @@ def list_models(
 
     table = Table(title="omm models")
     table.add_column("#", justify="right")
-    table.add_column("Filename", style="cyan")
+    table.add_column("Filename", style="blue")
     table.add_column("Size", justify="right")
     table.add_column("Links")
 
@@ -3437,7 +3525,7 @@ def configure_telemetry(
     if changes:
         current = config_mod.update_config(**changes)
     table = Table(title="Telemetry destination", show_header=False)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value")
     table.add_row("Backend", str(current.get("telemetry_backend") or "local"))
     table.add_row("Endpoint", str(current.get("telemetry_endpoint") or "not configured"))
@@ -3470,7 +3558,7 @@ def configure_upload(
     if changes:
         current = config_mod.update_config(**changes)
     table = Table(title="Benchmark upload policy", show_header=False)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value")
     policy = current.get("telemetry_send_policy", "ask")
     table.add_row("Uploads", {"always": "always", "never": "never", "ask": "ask (default)"}[policy])
@@ -3553,7 +3641,7 @@ def configure_version(
     channel = current.get("update_channel") or "stable"
     commit = _installed_commit()
     table = Table(title="Update channel", show_header=False)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value")
     table.add_row("Channel", f"{channel} ({_channel_branch(channel)})")
     table.add_row("Commit", commit[:7] if commit else "unknown")
@@ -3664,7 +3752,7 @@ def catalog_status() -> None:
         except catalog.CatalogVerificationError:
             fingerprint = "invalid"
     table = Table(title="Recommendation catalog", show_header=False)
-    table.add_column("Field", style="cyan")
+    table.add_column("Field", style="blue")
     table.add_column("Value")
     table.add_row("Signed manifest", str(current.get("catalog_manifest_url") or "not configured"))
     table.add_row("Trusted key", fingerprint)
@@ -3794,12 +3882,21 @@ def search(
         help="Only show results from this source: curated (omm's built-in/cached "
         "catalog, not a real host), huggingface, or modelscope.",
     ),
+    skip_ms: bool = typer.Option(
+        False,
+        "--skip-ms",
+        help="Don't query ModelScope. Its results need one extra network "
+        "request per candidate repo, which can noticeably slow down search.",
+    ),
 ) -> None:
     """Search curated models, cached candidates, and HuggingFace by name."""
     if provider is not None and provider not in ("curated", "huggingface", "modelscope"):
         err_console.print(
             f"[red]--provider must be one of: curated, huggingface, modelscope (got '{provider}').[/red]"
         )
+        raise typer.Exit(2)
+    if skip_ms and provider == "modelscope":
+        err_console.print("[red]--skip-ms conflicts with --provider modelscope.[/red]")
         raise typer.Exit(2)
     json_output = _global_opts().json
     config = load_config()
@@ -3818,7 +3915,7 @@ def search(
     ]
     ms_matches = [
         c
-        for c in search_mod.search_modelscope(query)
+        for c in (search_mod.search_modelscope(query) if not skip_ms else [])
         if c.get("repo_id") not in local_repo_ids
     ]
 
@@ -3887,7 +3984,7 @@ def search(
                 )
             else:
                 if not header_printed:
-                    console.print(f"[bold cyan]==> {family}[/bold cyan]")
+                    console.print(f"[bold blue]==> {family}[/bold blue]")
                     header_printed = True
                 if fits_hardware:
                     console.print(f"  [{len(refs)}] {ref}  [dim]{desc}[/dim]")
@@ -4232,7 +4329,7 @@ def benchmark_cmd(
         try:
             with Progress(
                 SpinnerColumn(),
-                TextColumn("[cyan]{task.description}[/cyan]"),
+                TextColumn("[blue]{task.description}[/blue]"),
                 TimeElapsedColumn(),
                 console=console,
                 disable=_global_opts().quiet,
@@ -4273,7 +4370,7 @@ def benchmark_cmd(
 
         if successes:
             table = Table(title="Localfit reproducible quality evidence")
-            table.add_column("Model", style="cyan")
+            table.add_column("Model", style="blue")
             table.add_column("Parameters")
             table.add_column("Quantization")
             table.add_column("Quality", justify="right")
@@ -4936,7 +5033,7 @@ def _run_contribution_loop(
         display_name = candidate.get("name", candidate["filename"])
         ref_str = contribute_mod.ref(candidate)
         if not opts.quiet:
-            console.print(f"[cyan]Trying {display_name}...[/cyan]")
+            console.print(f"[blue]Trying {display_name}...[/blue]")
 
         try:
             provider = validate_provider(candidate.get("provider") or "huggingface")
@@ -5160,23 +5257,21 @@ def contribute() -> None:
             raise typer.Exit(0)
         config_mod.update_config(contribute_always_ack=True)
 
-    err_console.print(
-        "[yellow]This will repeatedly download, benchmark, and delete GGUF models "
-        "until you press Esc. It uses real bandwidth, disk space, and compute, "
-        "runs unattended (no per-model confirmation), and uploads every benchmark "
-        f"result to the server per your current upload policy ({policy}).[/yellow]"
-    )
-    err_console.print(
-        "[yellow]Before every download, omm reserves space for both the central GGUF and "
-        "a worst-case full Ollama copy plus safety headroom. A candidate that cannot fit "
-        "is never downloaded. Each model benchmark also has a 10-minute absolute cutoff "
-        "with a status line every 30 seconds.[/yellow]"
-    )
+    err_console.print("[yellow]omm contribute - before you start:[/yellow]")
+    for line in [
+        "Downloads, benchmarks, and deletes GGUF models repeatedly until you press Esc",
+        "Uses real bandwidth, disk space, and compute; runs unattended (no per-model confirmation)",
+        f"Uploads every benchmark result per your current upload policy ({policy})",
+        "Reserves space per candidate (central GGUF + worst-case Ollama copy + headroom); "
+        "skips anything that won't fit",
+        "Each benchmark has a 10-minute cutoff, with a status line every 30s",
+    ]:
+        err_console.print(f"  [yellow]- {line}[/yellow]")
     if platform.system() == "Windows":
         err_console.print(
-            "[yellow]Windows real-time antivirus scanning can delay first model loads. "
-            "omm uses repeated samples and reports their median; do not disable Defender, "
-            "but avoid other heavy disk activity if you want comparable results.[/yellow]"
+            "  [yellow]- Windows: antivirus scanning may delay first model loads - don't "
+            "disable Defender, but avoid other heavy disk activity for comparable "
+            "results[/yellow]"
         )
     if not yes and not _ask_confirm("Start contributing compute now?"):
         if started_daemon is not None:

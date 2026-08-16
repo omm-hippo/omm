@@ -429,6 +429,35 @@ def test_search_modelscope_skips_single_failing_repo_and_keeps_others(monkeypatc
     assert "Qwen/Qwen2.5-0.5B-Instruct-GGUF" in repo_ids
 
 
+def test_search_modelscope_fans_out_per_repo_fetches_and_preserves_order(monkeypatch):
+    # Regression: per-repo file-listing calls used to run one at a time,
+    # so `omm search` paid N sequential network round trips. They're now
+    # fanned out over a thread pool - this pins down that (a) every repo
+    # still gets fetched and (b) results come back in the same order as
+    # the input list, not completion order.
+    models = [
+        {"id": f"org/model-{i}-GGUF", "downloads": i, "tags": ["library:gguf"]}
+        for i in range(6)
+    ]
+    payload = {"success": True, "data": {"models": models}}
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(payload))
+
+    import time
+
+    def _fake_fetch_repo_files(repo_id, **kwargs):
+        # Deliberately finish in reverse order so a naive "as_completed"
+        # implementation would scramble the output.
+        index = int(repo_id.split("-")[1])
+        time.sleep((5 - index) * 0.01)
+        return [f"model-{index}-Q4_K_M.gguf"], None
+
+    monkeypatch.setattr(search_mod.modelscope, "fetch_repo_files", _fake_fetch_repo_files)
+
+    results = search_mod.search_modelscope("model")
+
+    assert [c["repo_id"] for c in results] == [m["id"] for m in models]
+
+
 def test_search_huggingface_results_are_tagged_huggingface(monkeypatch):
     payload = [
         {
