@@ -564,8 +564,10 @@ def test_link_ollama_falls_back_to_native_create_when_show_rejects_manifest(
     source.write_bytes(b"weights")
     models_dir = tmp_path / "ollama"
     create_calls = []
+    subprocess_options = []
 
     def run_ollama(cmd, **kwargs):
+        subprocess_options.append(kwargs)
         if cmd[1:] == ["--version"]:
             return _FakeResult(stdout="ollama version is 9.9.9")
         if cmd[1] == "show":
@@ -594,6 +596,9 @@ def test_link_ollama_falls_back_to_native_create_when_show_rejects_manifest(
 
     assert result is True
     assert len(create_calls) == 1
+    assert subprocess_options
+    assert all(options["encoding"] == "utf-8" for options in subprocess_options)
+    assert all(options["errors"] == "replace" for options in subprocess_options)
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     assert json.loads(manifest_path.read_text())["layers"][0]["digest"] == "sha256:native"
     # The rejected hand-written model/config blobs were removed before the
