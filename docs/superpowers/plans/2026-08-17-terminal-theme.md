@@ -375,18 +375,18 @@ def _root(
 
 - [ ] **Step 5: Fix the bare-Console test fixtures**
 
-In `tests/test_cli_global_flags.py`, wherever `cli.console`/`cli.err_console` are monkeypatched with a bare `Console(...)` (around line 40-42), give them a theme so any `[error]`/`[accent]`/etc. markup those tests exercise doesn't raise `MissingStyle`:
+In `tests/test_cli_global_flags.py`, wherever `cli.console`/`cli.err_console` are monkeypatched with a bare `Console(...)` (around line 40-42, inside `test_no_color_flag_disables_ansi_codes`), give them a theme so any `[error]`/`[accent]`/etc. markup those tests exercise doesn't raise `MissingStyle`. Use the **`light`** preset specifically, not `dark`: that test asserts the literal ANSI code `\x1b[34m` (blue) for the "Field" column, which after Task 4's rename resolves through the `accent` role - `light`'s accent is blue (`\x1b[34m`, matching the existing assertion unchanged), while `dark`'s accent is `bright_cyan` (a different code), which would make this pre-existing assertion fail for a reason that has nothing to do with what the test is actually checking.
 
 ```python
 from omm import theme as theme_mod
 ...
     monkeypatch.setattr(
         cli, "console",
-        Console(force_terminal=True, highlight=False, theme=theme_mod.build_rich_theme("dark")),
+        Console(force_terminal=True, highlight=False, theme=theme_mod.build_rich_theme("light")),
     )
     monkeypatch.setattr(
         cli, "err_console",
-        Console(stderr=True, force_terminal=True, highlight=False, theme=theme_mod.build_rich_theme("dark")),
+        Console(stderr=True, force_terminal=True, highlight=False, theme=theme_mod.build_rich_theme("light")),
     )
 ```
 
