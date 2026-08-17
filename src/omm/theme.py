@@ -2,16 +2,27 @@
 fixed presets so the same markup (`[error]`, `[accent]`, ...) renders
 correctly regardless of the user's terminal background.
 
-`light` reproduces the exact colors this codebase used before theming
-existed (tuned against one developer's own light-beige terminal); only
-`accent` changes for `dark`, since plain terminal blue is classically
-low-contrast on a black background. `no-color` does its work through the
+`light` and `dark` differ in every role that actually depends on
+background brightness to stay legible - `accent` (plain blue is a
+near-illegible navy on black), `warning` (plain yellow all but
+disappears on white), and `value` (literal white text is invisible on a
+light background) - not just `accent`. `error`/`success` keep the same
+red/green in both, since ANSI red and green already read fine against
+either extreme. `high-contrast` keeps `error`/`warning`/`success` as
+inverse-video blocks (a fixed fg/bg pair is guaranteed to contrast with
+itself regardless of the terminal's own colors) but deliberately does
+*not* force a foreground color for `accent`/`muted`/`value`: forcing a
+color there would just relocate the same background-dependent
+legibility problem this preset exists to solve, so they lean on
+bold/underline/dim instead and inherit whatever fg the terminal already
+pairs readably with its own bg. `no-color` does its work through the
 `Console.no_color` flag the `--no-color` CLI option already sets, which
-strips color SGR codes at render time; it still registers `light`'s
-styles so the role *names* resolve. Registering nothing (as an earlier
-version did) crashes every `style="accent"` call site with
-`rich.errors.MissingStyle` - markup tags tolerate an unknown style name,
-`style=` kwargs do not - so every `Table` in the CLI would traceback."""
+strips color SGR codes (but not bold/dim/underline) at render time; it
+still registers `light`'s styles so the role *names* resolve.
+Registering nothing (as an earlier version did) crashes every
+`style="accent"` call site with `rich.errors.MissingStyle` - markup tags
+tolerate an unknown style name, `style=` kwargs do not - so every
+`Table` in the CLI would traceback."""
 
 from __future__ import annotations
 
@@ -27,19 +38,24 @@ THEME_NAMES = ("light", "dark", "high-contrast", "no-color")
 _BASE_STYLES: dict[str, dict[str, Style]] = {
     "light": {
         "error": Style(color="red", bold=True),
-        "warning": Style(color="yellow"),
+        # Plain "yellow" is legible on a dark terminal but all but
+        # disappears on a light/white one; this darker gold keeps the
+        # same "warning" hue readable on a light background.
+        "warning": Style(color="dark_goldenrod"),
         "success": Style(color="green", bold=True),
         "accent": Style(color="blue", bold=True),
         "muted": Style(dim=True),
-        "value": Style(color="white"),
+        # No forced color: a light-background terminal's own default
+        # foreground is already dark and readable, and hardcoding
+        # "white" here (as the pre-theming code did) is invisible on it.
+        "value": Style(),
     },
     "dark": {
         "error": Style(color="red", bold=True),
         "warning": Style(color="yellow"),
         "success": Style(color="green", bold=True),
         # Plain terminal blue reads as a near-illegible navy on a black
-        # background (the classic Ubuntu-bash directory-color problem);
-        # every other role carries over unchanged from `light`.
+        # background (the classic Ubuntu-bash directory-color problem).
         "accent": Style(color="bright_cyan", bold=True),
         "muted": Style(dim=True),
         "value": Style(color="white"),
@@ -48,9 +64,14 @@ _BASE_STYLES: dict[str, dict[str, Style]] = {
         "error": Style(color="white", bgcolor="red", bold=True),
         "warning": Style(color="black", bgcolor="yellow", bold=True),
         "success": Style(color="black", bgcolor="green", bold=True),
-        "accent": Style(color="cyan", bold=True),
-        "muted": Style(color="white"),
-        "value": Style(color="white", bold=True),
+        # No forced foreground here (unlike the alert roles above): a
+        # fixed color only reads well against one kind of background,
+        # which is exactly the problem this preset exists to avoid.
+        # bold+underline stays visible against the terminal's own
+        # (already-readable) default foreground/background pairing.
+        "accent": Style(bold=True, underline=True),
+        "muted": Style(dim=True),
+        "value": Style(bold=True),
     },
 }
 
