@@ -9,7 +9,7 @@ def test_bare_omm_prints_version_only():
     result = runner.invoke(cli.app, [])
 
     assert result.exit_code == 0, result.stdout
-    assert result.stdout.strip().startswith("omm ")
+    assert result.stdout.strip().startswith("Ω omm ")
     assert "Commands" not in result.stdout
 
 

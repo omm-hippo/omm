@@ -43,12 +43,14 @@ class RuntimeAdapterError(RuntimeError):
         message: str,
         *,
         transport_kind: str | None = None,
+        gpu_crash: bool = False,
     ) -> None:
         if reason not in FAILURE_REASONS:
             reason = "unknown"
         super().__init__(message)
         self.reason: FailureReason = reason
         self.transport_kind = transport_kind
+        self.gpu_crash = gpu_crash
 
 
 @dataclass(frozen=True)
@@ -234,6 +236,25 @@ class LoopbackJsonClient:
             return "load_failed"
         return default
 
+    @staticmethod
+    def _is_gpu_driver_crash(message: str) -> bool:
+        """True when the GPU backend itself faulted (stale/mismatched CUDA
+        or ROCm driver), as opposed to a model simply lacking a capability.
+
+        This is distinct from the "unsupported_runtime" failure_reason
+        bucket - that enum is telemetry-facing and stays put; this flag is
+        local-only and tells the caller "a CPU-only retry has a real chance
+        of succeeding", which a generic unsupported_runtime does not (e.g.
+        a 400 for a `think` field the model doesn't support isn't a GPU
+        crash and retrying on CPU wouldn't help)."""
+        return any(marker in message for marker in (
+            "cuda error",
+            "the provided ptx was compiled",
+            "unsupported toolchain",
+            "hip error",
+            "rocblas error",
+        ))
+
     def request(
         self,
         method: str,
@@ -291,7 +312,9 @@ class LoopbackJsonClient:
                 if response.status_code in {401, 403}
                 else f"the local runtime returned HTTP {response.status_code}"
             )
-            raise RuntimeAdapterError(reason, safe_message)
+            raise RuntimeAdapterError(
+                reason, safe_message, gpu_crash=self._is_gpu_driver_crash(message)
+            )
         try:
             data = response.json()
         except ValueError as error:

@@ -274,18 +274,31 @@ def _owned_manifest(path: Path, expected_source: Path | None = None) -> bool:
     record = _load_link_ownership().get(_link_key(path))
     if not record or record.get("kind") != "manifest" or not path.exists() or path.is_symlink():
         return False
-    if expected_source is not None and record.get("source") != _link_key(expected_source):
+    # A manifest written by _fallback_to_native_create has source=None -
+    # `ollama create` remaps the model layer to its own content digest, so
+    # there is no gguf path to record. That manifest is still omm's own
+    # (the model_name-derived path already disambiguates which model it
+    # belongs to), so only reject a source mismatch when the record
+    # actually names a different source.
+    record_source = record.get("source")
+    if expected_source is not None and record_source is not None and record_source != _link_key(expected_source):
         return False
     try:
         stat = path.stat()
+    except OSError:
+        return False
+    if record.get("device") != stat.st_dev or record.get("inode") != stat.st_ino:
+        return False
+    # Records written before content_sha256 tracking was added (pre-2026-07-31)
+    # have no such key at all - fall back to the device/inode check alone
+    # rather than treating an absent key as a guaranteed mismatch.
+    if "content_sha256" not in record:
+        return True
+    try:
         content_sha256 = sha256_file(path)
     except OSError:
         return False
-    return (
-        record.get("device") == stat.st_dev
-        and record.get("inode") == stat.st_ino
-        and record.get("content_sha256") == content_sha256
-    )
+    return record.get("content_sha256") == content_sha256
 
 
 def unlink_owned_link(path: Path, expected_source: Path | None = None) -> bool:

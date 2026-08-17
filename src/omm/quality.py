@@ -128,11 +128,22 @@ class QualityEvaluationError(RuntimeError):
     that must never be sent to Firebase.
     """
 
-    def __init__(self, message: str, *, failure_reason: str = FAILURE_REASON_UNKNOWN) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_reason: str = FAILURE_REASON_UNKNOWN,
+        gpu_crash: bool = False,
+    ) -> None:
         super().__init__(message)
         if failure_reason not in FAILURE_REASONS:
             failure_reason = FAILURE_REASON_UNKNOWN
         self.failure_reason = failure_reason
+        # Local-only signal (never uploaded): the GPU backend itself
+        # faulted on a stale/mismatched driver, so a same-candidate
+        # CPU-only retry has a real chance of succeeding. See
+        # RuntimeAdapterError._is_gpu_driver_crash for what sets this.
+        self.gpu_crash = gpu_crash
 
 
 class QualityEvaluationCancelled(RuntimeError):
@@ -312,6 +323,7 @@ def _request_json(
         raise QualityEvaluationError(
             f"Ollama {path} request failed",
             failure_reason=failure_reason,
+            gpu_crash=error.gpu_crash,
         ) from error
 
 
@@ -814,7 +826,7 @@ def _evaluate_model_worker(
         )
         send_conn.send(("ok", result))
     except QualityEvaluationError as error:
-        send_conn.send(("quality_error", str(error), error.failure_reason))
+        send_conn.send(("quality_error", str(error), error.failure_reason, error.gpu_crash))
     except BaseException as error:
         send_conn.send(("unexpected_error", type(error).__name__))
     finally:
@@ -882,7 +894,10 @@ def evaluate_model_isolated(
                 if kind == "ok":
                     return message[1]
                 if kind == "quality_error":
-                    raise QualityEvaluationError(message[1], failure_reason=message[2])
+                    gpu_crash = message[3] if len(message) > 3 else False
+                    raise QualityEvaluationError(
+                        message[1], failure_reason=message[2], gpu_crash=gpu_crash
+                    )
                 raise QualityEvaluationError(
                     f"Isolated benchmark worker failed with {message[1]}",
                     failure_reason=FAILURE_REASON_UNKNOWN,
