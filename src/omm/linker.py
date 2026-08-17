@@ -274,7 +274,14 @@ def _owned_manifest(path: Path, expected_source: Path | None = None) -> bool:
     record = _load_link_ownership().get(_link_key(path))
     if not record or record.get("kind") != "manifest" or not path.exists() or path.is_symlink():
         return False
-    if expected_source is not None and record.get("source") != _link_key(expected_source):
+    # A manifest written by _fallback_to_native_create has source=None -
+    # `ollama create` remaps the model layer to its own content digest, so
+    # there is no gguf path to record. That manifest is still omm's own
+    # (the model_name-derived path already disambiguates which model it
+    # belongs to), so only reject a source mismatch when the record
+    # actually names a different source.
+    record_source = record.get("source")
+    if expected_source is not None and record_source is not None and record_source != _link_key(expected_source):
         return False
     try:
         stat = path.stat()

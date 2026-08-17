@@ -508,6 +508,45 @@ def test_successful_native_ollama_blob_is_reclaimed_on_unlink(
     assert not manifest.exists()
 
 
+def test_link_ollama_reclaims_manifest_left_by_native_fallback(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A manifest written by _fallback_to_native_create is recorded with
+    source=None (ollama create remaps the model layer to its own digest, so
+    there is no gguf path to store). If Ollama later becomes compatible
+    with omm's hand-rolled manifest again, link_ollama's normal path must
+    still recognize that manifest as its own and overwrite it - not treat
+    the missing source as proof of an unowned file forever."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+
+    def run_ollama(cmd, **kwargs):
+        manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(
+            '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.ollama.image.model",'
+            '"digest":"sha256:native"}]}'
+        )
+        return _FakeResult(returncode=0)
+
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/ollama")
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
+    )
+    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+    linker._fallback_to_native_create(source, "model", models_dir)
+
+    # Now Ollama is compatible again, so a later install takes the normal
+    # hand-rolled path and must be allowed to replace its own manifest.
+    linker.link_ollama(source, "model", models_dir=models_dir)
+
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    written = json.loads(manifest_path.read_text())
+    assert written["layers"][0]["digest"] == f"sha256:{linker.sha256_file(source)}"
+
+
 def test_link_ollama_skips_show_call_when_version_already_cached_compatible(
     isolated_omm_home, tmp_path, monkeypatch
 ):
