@@ -392,7 +392,7 @@ def _root(
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
         _maybe_run_onboarding()
-        console.print(f"omm {_version_line(_installed_commit())}")
+        console.print(f"Ω omm {_version_line(_installed_commit())}")
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
     _maybe_auto_import(ctx)
@@ -991,7 +991,7 @@ def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> No
             continue
         bytes_saved += result.bytes_saved
         if not opts.quiet:
-            console.print(f"  [green]Imported {result.filename}[/green]")
+            console.print(f"  [green]Ω Imported {result.filename}[/green]")
 
     final_count = len(registry.load_registry())
     console.print(
@@ -1276,7 +1276,7 @@ def update() -> None:
         raise typer.Exit(1)
 
     after = _version_line(_installed_commit())
-    console.print(f"[bold green]✓ Updated: {before} -> {after}[/bold green]")
+    console.print(f"[bold green]Ω Updated: {before} -> {after}[/bold green]")
     _refresh_data()
 
 
@@ -2866,7 +2866,7 @@ def install(
         err_console.print(f"[red]{error}[/red]")
         raise typer.Exit(1) from error
 
-    console.print(f"[green]Installed {outcome.filename}[/green]")
+    console.print(f"[green]Ω Installed {outcome.filename}[/green]")
     if outcome.linked.get("ollama"):
         console.print(f"  Ollama: [green]ollama run {outcome.ollama_tag}[/green]")
     for spec in linker.ENGINES:
@@ -5311,7 +5311,7 @@ def _print_contribution_summary(
     console.print("=" * 70)
     if stats.exhausted and total_candidates is not None and covered_candidates is not None:
         console.print(
-            "[bold green]Thank you for contributing![/bold green] Every model "
+            "[bold green]Ω Thank you for contributing![/bold green] Every model "
             "currently published for this hardware has now been benchmarked or "
             f"evaluated ({covered_candidates}/{total_candidates} candidates covered"
             + (
