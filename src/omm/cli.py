@@ -3699,6 +3699,33 @@ def configure_version(
     console.print(table)
 
 
+@setting_app.command(name="theme")
+@global_flags
+def configure_theme(
+    set_name: str = typer.Option(
+        None,
+        "--set",
+        help="One of: " + ", ".join(theme_mod.THEME_NAMES),
+    ),
+) -> None:
+    """Show or change the color theme applied to omm's output."""
+    current = load_config()
+    if set_name is not None:
+        if set_name not in theme_mod.THEME_NAMES:
+            err_console.print(
+                f"[error]--set must be one of: {', '.join(theme_mod.THEME_NAMES)}.[/error]"
+            )
+            raise typer.Exit(1)
+        current = config_mod.update_config(theme=set_name)
+        theme_mod.apply_theme_to_console(console, set_name)
+        theme_mod.apply_theme_to_console(err_console, set_name)
+    table = Table(title="Color theme", show_header=False)
+    table.add_column("Field", style="accent")
+    table.add_column("Value")
+    table.add_row("Theme", str(current.get("theme", "dark")))
+    console.print(table)
+
+
 @setting_app.command(name="calibrate")
 @global_flags
 def calibrate(
@@ -3848,6 +3875,9 @@ def setting_menu(ctx: typer.Context) -> None:
                     ),
                     questionary.Choice(f"Upload (current: {upload_policy})", value="upload"),
                     questionary.Choice(f"Version channel (current: {update_channel})", value="version"),
+                    questionary.Choice(
+                        f"Theme (current: {current.get('theme', 'dark')})", value="theme"
+                    ),
                     questionary.Choice("Calibrate", value="calibrate"),
                     questionary.Choice(
                         f"Catalog trust (current: {catalog_manifest})", value="catalog-trust"
@@ -3896,6 +3926,15 @@ def setting_menu(ctx: typer.Context) -> None:
             )
             if action is not None and action != "back":
                 configure_version(stable=(action == "stable"), beta=(action == "beta"))
+        elif choice == "theme":
+            action = _ask_select(
+                questionary.select(
+                    f"Theme (current: {current.get('theme', 'dark')}):",
+                    choices=[*theme_mod.THEME_NAMES, "← Back"],
+                )
+            )
+            if action is not None and action != "← Back":
+                configure_theme(set_name=action)
         elif choice == "calibrate":
             model_name = questionary.text(
                 "Model to calibrate (blank for smallest installed):"

@@ -288,3 +288,30 @@ def test_setting_catalog_status_accepts_quiet_flag_before_subcommand(isolated_om
     result = runner.invoke(cli.app, ["--quiet", "setting", "catalog-status"])
 
     assert result.exit_code == 0, result.stdout
+
+
+def test_setting_theme_set_saves_and_shows_table(isolated_omm_home):
+    result = runner.invoke(cli.app, ["setting", "theme", "--set", "high-contrast"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "high-contrast" in result.stdout
+    assert config.load_config()["theme"] == "high-contrast"
+
+
+def test_setting_theme_rejects_unknown_name(isolated_omm_home):
+    result = runner.invoke(cli.app, ["setting", "theme", "--set", "purple"])
+
+    assert result.exit_code == 1
+    # err_console output lands on result.stderr, not result.stdout - see
+    # tests/test_cli_help_version.py's "No such command" test for the
+    # same CliRunner convention in this suite.
+    assert "light, dark, high-contrast, no-color" in result.stderr
+
+
+def test_setting_theme_bare_shows_current_value(isolated_omm_home):
+    config.update_config(theme="dark")
+
+    result = runner.invoke(cli.app, ["setting", "theme"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "dark" in result.stdout
