@@ -52,6 +52,7 @@ from omm import (
     search as search_mod,
     session_cache,
     telemetry,
+    theme as theme_mod,
     trust,
     tuning,
     version_check,
@@ -386,6 +387,8 @@ def _root(
     opts.yes = opts.yes or yes_flag
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
+    theme_mod.apply_theme_to_console(console, load_config().get("theme", "dark"))
+    theme_mod.apply_theme_to_console(err_console, load_config().get("theme", "dark"))
     if opts.no_color:
         console.no_color = True
         err_console.no_color = True

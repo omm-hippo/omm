@@ -2,6 +2,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from omm import cli
+from omm import theme as theme_mod
 
 runner = CliRunner()
 
@@ -37,9 +38,13 @@ def test_no_color_flag_disables_ansi_codes(isolated_omm_home, monkeypatch):
     # title and header row) legitimately survive --no-color, so this
     # checks for the "Field" column's blue color code (\x1b[34m)
     # specifically rather than for "\x1b[" being absent entirely.
-    monkeypatch.setattr(cli, "console", Console(force_terminal=True, highlight=False))
     monkeypatch.setattr(
-        cli, "err_console", Console(stderr=True, force_terminal=True, highlight=False)
+        cli, "console",
+        Console(force_terminal=True, highlight=False, theme=theme_mod.build_rich_theme("light")),
+    )
+    monkeypatch.setattr(
+        cli, "err_console",
+        Console(stderr=True, force_terminal=True, highlight=False, theme=theme_mod.build_rich_theme("light")),
     )
 
     with_color = runner.invoke(cli.app, ["scan"])
@@ -83,3 +88,14 @@ def test_yes_on_supported_command_does_not_warn(isolated_omm_home, monkeypatch):
     result = runner.invoke(cli.app, ["install", "no-such-model", "--yes"])
 
     assert "has no effect" not in result.stderr
+
+
+def test_root_callback_applies_saved_theme_to_console(isolated_omm_home):
+    from omm import config
+
+    config.update_config(theme="high-contrast")
+
+    result = runner.invoke(cli.app, ["setting", "version"])
+
+    assert result.exit_code == 0, result.stdout
+    assert cli.console.no_color is False
