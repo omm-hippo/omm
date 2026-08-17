@@ -4,11 +4,14 @@ import pytest
 import typer
 from rich.console import Console
 
-from omm import linker, onboarding
+from omm import linker, onboarding, theme as theme_mod
 
 
 def _console(width=100):
-    return Console(file=io.StringIO(), width=width, force_terminal=True)
+    return Console(
+        file=io.StringIO(), width=width, force_terminal=True,
+        theme=theme_mod.build_rich_theme("dark"),
+    )
 
 
 def test_print_banner_shows_ascii_art_when_wide_enough():

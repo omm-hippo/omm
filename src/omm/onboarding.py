@@ -39,10 +39,10 @@ _ASCII_ART_WIDTH = max(len(line) for line in _ASCII_ART.splitlines())
 
 def print_banner(console: Console) -> None:
     if console.size.width >= _ASCII_ART_WIDTH:
-        console.print(f"[bold blue]{_ASCII_ART}[/bold blue]")
+        console.print(f"[accent]{_ASCII_ART}[/accent]")
     else:
-        console.print("[bold blue]omm[/bold blue] - local LLM package manager")
-    console.print("[dim]Let's get you set up.[/dim]\n")
+        console.print("[accent]omm[/accent] - local LLM package manager")
+    console.print("[muted]Let's get you set up.[/muted]\n")
 
 
 def print_hardware_summary(console: Console) -> None:
@@ -50,8 +50,8 @@ def print_hardware_summary(console: Console) -> None:
     budget = calculate_memory_budget(info)
 
     table = Table(title="Your machine", box=None)
-    table.add_column("Field", style="blue")
-    table.add_column("Value", style="white")
+    table.add_column("Field", style="accent")
+    table.add_column("Value", style="value")
     table.add_row("OS", f"{info.os_name} {info.os_version}")
     table.add_row("CPU", info.cpu)
     table.add_row("RAM (total)", f"{info.ram_total_gb:.1f} GB")
@@ -152,13 +152,13 @@ def run_engine_checklist(console: Console) -> list[str] | None:
 
     choices = _engine_choices()
     if all(installed for _, _, installed in choices):
-        console.print("[dim]All known local AI runners are already installed.[/dim]\n")
+        console.print("[muted]All known local AI runners are already installed.[/muted]\n")
         return []
 
     if not _stdin_is_tty():
         console.print(
-            "[red]Engine selection requires an interactive terminal. "
-            "Re-run `omm setup` from a real terminal.[/red]"
+            "[error]Engine selection requires an interactive terminal. "
+            "Re-run `omm setup` from a real terminal.[/error]"
         )
         raise typer.Exit(1)
 
@@ -192,7 +192,7 @@ def _install_selected_engines(console: Console, selected: list[str]) -> None:
         spec = specs_by_key[key]
         if not linker.has_automated_installer(key):
             console.print(
-                f"[yellow]{spec.label} isn't auto-installable yet.[/yellow] "
+                f"[warning]{spec.label} isn't auto-installable yet.[/warning] "
                 f"See {COMPATIBLE_PROGRAMS_URL}"
             )
             continue
@@ -200,10 +200,10 @@ def _install_selected_engines(console: Console, selected: list[str]) -> None:
         result = linker.install_engine(
             key,
             on_output=lambda line: console.print(
-                line, style="dim", markup=False, highlight=False
+                line, style="muted", markup=False, highlight=False
             ),
         )
-        style = "green" if result.status == "installed" else "red"
+        style = "success" if result.status == "installed" else "error"
         console.print(result.message, style=style, markup=False, highlight=False)
 
 
@@ -219,6 +219,6 @@ def run_wizard(console: Console) -> None:
     if selected:
         _install_selected_engines(console, selected)
     console.print(
-        "\n[bold green]Setup complete.[/bold green] "
+        "\n[success]Setup complete.[/success] "
         "Run `omm setting` any time to change telemetry, upload, or update-channel settings.\n"
     )
