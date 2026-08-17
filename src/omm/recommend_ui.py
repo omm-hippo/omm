@@ -16,10 +16,10 @@ from rich.text import Text
 from omm import predictor
 from omm.hardware import HardwareInfo, calculate_memory_budget
 
-ACCENT = "blue"
-SUCCESS = "green"
-WARNING = "yellow"
-MUTED = "#808080"
+ACCENT = "accent"
+SUCCESS = "success"
+WARNING = "warning"
+MUTED = "muted"
 COLORS_ENABLED = "NO_COLOR" not in os.environ
 
 # The arrow-navigable choice list (picker chrome below, plus each row's
@@ -178,7 +178,7 @@ def build_rows(
 def _hardware_value(label: str, value: str) -> Text:
     text = Text()
     text.append(f"{label}  ", style=MUTED)
-    text.append(value, style="bold white")
+    text.append(value, style="bold value")
     return text
 
 
@@ -304,7 +304,7 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
     console.print(
         Panel(
             Group(
-                Text(row.description, style="white"),
+                Text(row.description, style="value"),
                 Text(""),
                 status,
                 Text(""),
@@ -320,5 +320,5 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
         )
     )
     console.print(
-        "[dim]Predicted speed is an estimate; actual performance can vary by runtime settings.[/dim]"
+        "[muted]Predicted speed is an estimate; actual performance can vary by runtime settings.[/muted]"
     )
