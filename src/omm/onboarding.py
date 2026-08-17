@@ -165,21 +165,7 @@ def run_theme_step(console: Console) -> str:
         theme.apply_theme_to_console(console, recommended)
         return recommended
 
-    import questionary
-
-    for name in theme.THEME_NAMES:
-        label = f"{name} (recommended)" if name == recommended else name
-        console.print(f"\n[bold]{label}[/bold]")
-        theme.print_theme_preview(console, name)
-
-    question = _add_escape_to_cancel(
-        questionary.select(
-            "Pick a color theme for omm's output:",
-            choices=list(theme.THEME_NAMES),
-            default=recommended,
-        )
-    )
-    chosen = question.ask() or recommended
+    chosen = theme.run_picker(recommended, current_label="recommended") or recommended
     config_mod.update_config(theme=chosen)
     theme.apply_theme_to_console(console, chosen)
     return chosen

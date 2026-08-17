@@ -255,17 +255,9 @@ def test_run_theme_step_skips_prompt_and_keeps_guess_when_not_a_tty(monkeypatch,
 
 
 def test_run_theme_step_saves_the_users_pick(monkeypatch, isolated_omm_home):
-    import questionary
-
     monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(onboarding, "_add_escape_to_cancel", lambda q: q)
     monkeypatch.setattr(onboarding.theme, "detect_recommended", lambda: "dark")
-
-    class _FakeQuestion:
-        def ask(self):
-            return "high-contrast"
-
-    monkeypatch.setattr(questionary, "select", lambda *a, **k: _FakeQuestion())
+    monkeypatch.setattr(onboarding.theme, "run_picker", lambda *a, **k: "high-contrast")
     console = _console()
 
     result = onboarding.run_theme_step(console)
@@ -276,17 +268,9 @@ def test_run_theme_step_saves_the_users_pick(monkeypatch, isolated_omm_home):
 
 
 def test_run_theme_step_falls_back_to_recommendation_on_cancel(monkeypatch, isolated_omm_home):
-    import questionary
-
     monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(onboarding, "_add_escape_to_cancel", lambda q: q)
     monkeypatch.setattr(onboarding.theme, "detect_recommended", lambda: "light")
-
-    class _FakeQuestion:
-        def ask(self):
-            return None
-
-    monkeypatch.setattr(questionary, "select", lambda *a, **k: _FakeQuestion())
+    monkeypatch.setattr(onboarding.theme, "run_picker", lambda *a, **k: None)
     console = _console()
 
     result = onboarding.run_theme_step(console)

@@ -3709,38 +3709,16 @@ def configure_version(
 
 
 def _pick_theme_interactively(current_name: str, allow_back: bool = False) -> str | None:
-    """Show every preset rendered in its own real styles, then ask. Returns
-    the pick, or None if cancelled (Escape/Ctrl+C) or "← Back".
+    """Live arrow-key picker with a real-color preview that redraws as the
+    highlight moves - see `theme.run_picker`. Returns the pick, or None if
+    cancelled (Escape/Ctrl+C) or "← Back".
 
     This is the only way an existing install ever sees the previews:
     anyone who upgraded into this feature already has
     `onboarding_completed = True`, so the setup wizard's picker never runs
-    for them. Deliberately a near-copy of `onboarding.run_theme_step`'s
-    ~10-line picker rather than shared code - onboarding.py can't import
-    cli.py (circular, see its module docstring), and the two differ in
-    their default/label (recommended-for-this-terminal vs currently-saved)
-    and in cli.py's `_ask_select` TTY guard."""
-    import questionary
-
-    for name in theme_mod.THEME_NAMES:
-        label = f"{name} (current)" if name == current_name else name
-        console.print(f"\n[bold]{label}[/bold]")
-        theme_mod.print_theme_preview(console, name)
-    console.print()
-
-    choices: list = list(theme_mod.THEME_NAMES)
-    if allow_back:
-        choices = [questionary.Choice(name, value=name) for name in theme_mod.THEME_NAMES]
-        choices.append(questionary.Choice("← Back", value=None))
-    return _ask_select(
-        questionary.select(
-            "Pick a color theme for omm's output:",
-            choices=choices,
-            # questionary rejects a default that isn't among the choices,
-            # which a hand-edited config.json can produce.
-            default=current_name if current_name in theme_mod.THEME_NAMES else None,
-        )
-    )
+    for them."""
+    _require_tty("This selection")
+    return theme_mod.run_picker(current_name, current_label="current", allow_back=allow_back)
 
 
 @setting_app.command(name="theme")

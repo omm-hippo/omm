@@ -111,7 +111,9 @@ def apply_theme_to_console(console: Console, name: str) -> None:
 def print_theme_preview(console: Console, name: str) -> None:
     """One line per role, rendered in `name`'s actual styles, sharing
     `console`'s width/file/terminal-ness so the preview shows real color
-    on the user's real screen."""
+    on the user's real screen. Used by the non-interactive path only -
+    the interactive picker uses `render_preview_ansi` so it can redraw
+    a single live block instead of listing every preset up front."""
     preview = Console(
         file=console.file,
         width=console.size.width,
@@ -125,4 +127,107 @@ def print_theme_preview(console: Console, name: str) -> None:
     )
     preview.print(f"[bold]{name}[/bold]")
     for role in ROLES:
-        preview.print(f"  [{role}]{role}[/{role}]  sample text")
+        preview.print(f"  [{role}]{role}[/{role}]")
+
+
+def render_preview_ansi(name: str, *, width: int = 40) -> str:
+    """Same one-line-per-role preview as `print_theme_preview`, but
+    returned as a raw ANSI-escaped string instead of being printed. Feed
+    it to `prompt_toolkit.formatted_text.ANSI()` to embed it in the live
+    picker's preview pane, which needs to redraw with a different
+    preset's *real* colors every time the highlight moves rather than
+    approximating them with prompt_toolkit's own style system."""
+    from io import StringIO
+
+    buf = StringIO()
+    live = Console(
+        file=buf,
+        force_terminal=True,
+        no_color=(name == "no-color"),
+        theme=build_rich_theme(name),
+        highlight=False,
+        width=width,
+    )
+    for role in ROLES:
+        live.print(f"[{role}]{role}[/{role}]")
+    return buf.getvalue()
+
+
+def _build_picker_key_bindings(state: dict, options: list[str]):
+    """Up/Down move the highlight (wrapping), Enter confirms whatever is
+    currently highlighted, Escape/Ctrl+C cancel. Split out from
+    `run_picker` so tests can drive handlers directly with a fake event
+    instead of running a real terminal app - mirrors
+    `cli._build_single_key_bindings`."""
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+
+    bindings = KeyBindings()
+
+    @bindings.add("up")
+    @bindings.add("k")
+    def _up(event) -> None:
+        state["index"] = (state["index"] - 1) % len(options)
+
+    @bindings.add("down")
+    @bindings.add("j")
+    def _down(event) -> None:
+        state["index"] = (state["index"] + 1) % len(options)
+
+    @bindings.add("enter")
+    def _enter(event) -> None:
+        event.app.exit(result=options[state["index"]])
+
+    @bindings.add(Keys.Escape, eager=True)
+    @bindings.add(Keys.ControlC, eager=True)
+    def _cancel(event) -> None:
+        event.app.exit(result=None)
+
+    return bindings
+
+
+def run_picker(current: str, *, current_label: str = "current", allow_back: bool = False) -> str | None:
+    """Live picker: an arrow-key list of presets with a preview pane
+    above it that redraws in the highlighted preset's real colors on
+    every move, so you see the effect of a choice before committing to
+    it instead of scrolling through every preset's block up front.
+    Returns the picked name, or `None` on cancel (Escape/Ctrl+C) or
+    "← Back"."""
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.formatted_text import ANSI
+    from prompt_toolkit.layout import HSplit, Layout, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    back = "← Back"
+    options = list(THEME_NAMES) + ([back] if allow_back else [])
+    state = {"index": options.index(current) if current in options else 0}
+
+    def _preview_fragments():
+        name = options[state["index"]]
+        if name not in THEME_NAMES:
+            return ANSI("")
+        return ANSI(render_preview_ansi(name))
+
+    def _list_fragments():
+        fragments = []
+        for i, name in enumerate(options):
+            marker = "❯ " if i == state["index"] else "  "
+            suffix = f" ({current_label})" if name == current and name in THEME_NAMES else ""
+            style = "reverse" if i == state["index"] else ""
+            fragments.append((style, f"{marker}{name}{suffix}\n"))
+        return fragments
+
+    bindings = _build_picker_key_bindings(state, options)
+    root = HSplit(
+        [
+            Window(FormattedTextControl(_preview_fragments), dont_extend_height=True, always_hide_cursor=True),
+            Window(height=1, char=" "),
+            Window(
+                FormattedTextControl("Pick a color theme for omm's output:\n"),
+                dont_extend_height=True,
+            ),
+            Window(FormattedTextControl(_list_fragments), dont_extend_height=True, always_hide_cursor=True),
+        ]
+    )
+    application = Application(layout=Layout(root), key_bindings=bindings, full_screen=False)
+    return application.run()

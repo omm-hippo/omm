@@ -1,4 +1,5 @@
 import io
+from unittest.mock import MagicMock
 
 import pytest
 from rich.console import Console
@@ -119,3 +120,84 @@ def test_print_theme_preview_renders_all_roles_without_raising():
     output = console.file.getvalue()
     for role in theme.ROLES:
         assert role in output
+
+
+def test_print_theme_preview_drops_the_sample_text_wording():
+    console = Console(file=io.StringIO(), force_terminal=True)
+    theme.print_theme_preview(console, "dark")
+    assert "sample text" not in console.file.getvalue()
+
+
+@pytest.mark.parametrize("name", theme.THEME_NAMES)
+def test_render_preview_ansi_contains_every_role_with_no_filler_wording(name):
+    output = theme.render_preview_ansi(name)
+    for role in theme.ROLES:
+        assert role in output
+    assert "sample text" not in output
+
+
+def test_render_preview_ansi_carries_real_ansi_color_codes():
+    """Not an approximation via prompt_toolkit's own style system - the
+    live picker embeds this via `ANSI()`, so it must actually contain
+    the theme's real SGR codes."""
+    output = theme.render_preview_ansi("dark")
+    assert "\x1b[" in output
+
+
+class _FakeApp:
+    def __init__(self):
+        self.exit = MagicMock()
+
+
+class _FakeEvent:
+    def __init__(self):
+        self.app = _FakeApp()
+
+
+def _handler_for(bindings, key):
+    matches = [b for b in bindings.bindings if b.keys == (key,)]
+    return matches[-1].handler
+
+
+def test_picker_bindings_up_and_down_move_and_wrap():
+    from prompt_toolkit.keys import Keys
+
+    options = list(theme.THEME_NAMES)
+    state = {"index": 0}
+    bindings = theme._build_picker_key_bindings(state, options)
+
+    _handler_for(bindings, Keys.Up)(_FakeEvent())
+    assert state["index"] == len(options) - 1  # wraps to the last option
+
+    state["index"] = 0
+    _handler_for(bindings, Keys.Down)(_FakeEvent())
+    assert state["index"] == 1
+
+
+def test_picker_bindings_enter_confirms_the_highlighted_option():
+    from prompt_toolkit.keys import Keys
+
+    options = list(theme.THEME_NAMES)
+    state = {"index": 2}
+    bindings = theme._build_picker_key_bindings(state, options)
+
+    event = _FakeEvent()
+    _handler_for(bindings, Keys.ControlM)(event)
+
+    event.app.exit.assert_called_once_with(result=options[2])
+
+
+def test_picker_bindings_escape_and_ctrl_c_cancel():
+    from prompt_toolkit.keys import Keys
+
+    options = list(theme.THEME_NAMES)
+    state = {"index": 1}
+    bindings = theme._build_picker_key_bindings(state, options)
+
+    event = _FakeEvent()
+    _handler_for(bindings, Keys.Escape)(event)
+    event.app.exit.assert_called_once_with(result=None)
+
+    event = _FakeEvent()
+    _handler_for(bindings, Keys.ControlC)(event)
+    event.app.exit.assert_called_once_with(result=None)

@@ -119,17 +119,12 @@ def test_no_color_survives_a_theme_change_in_the_same_invocation(isolated_omm_ho
 def test_no_color_survives_the_wizards_theme_step(isolated_omm_home, monkeypatch):
     """Same shape as above for `omm --no-color setup`: the wizard's theme
     step applies the pick to the console mid-run."""
-    import questionary
-
     from omm import onboarding
 
     console = Console(force_terminal=True, highlight=False)
     console.no_color = True
     monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(onboarding, "_add_escape_to_cancel", lambda q: q)
-    monkeypatch.setattr(
-        questionary, "select", lambda *a, **k: type("Q", (), {"ask": lambda self: "dark"})()
-    )
+    monkeypatch.setattr(onboarding.theme, "run_picker", lambda *a, **k: "dark")
 
     onboarding.run_theme_step(console)
 
