@@ -5,9 +5,13 @@ correctly regardless of the user's terminal background.
 `light` reproduces the exact colors this codebase used before theming
 existed (tuned against one developer's own light-beige terminal); only
 `accent` changes for `dark`, since plain terminal blue is classically
-low-contrast on a black background. `no-color` is not a `Theme` at all
-- it reuses the `Console.no_color` flag the `--no-color` CLI option
-already sets."""
+low-contrast on a black background. `no-color` does its work through the
+`Console.no_color` flag the `--no-color` CLI option already sets, which
+strips color SGR codes at render time; it still registers `light`'s
+styles so the role *names* resolve. Registering nothing (as an earlier
+version did) crashes every `style="accent"` call site with
+`rich.errors.MissingStyle` - markup tags tolerate an unknown style name,
+`style=` kwargs do not - so every `Table` in the CLI would traceback."""
 
 from __future__ import annotations
 
@@ -50,13 +54,22 @@ _BASE_STYLES: dict[str, dict[str, Style]] = {
     },
 }
 
+# `no-color` needs real Style objects registered under the role names even
+# though none of their colors will survive `Console.no_color` - see the
+# module docstring. `light`'s definitions are as good as any for that.
+_BASE_STYLES["no-color"] = _BASE_STYLES["light"]
 
-def build_rich_theme(name: str) -> Theme | None:
-    """`None` for "no-color" (and any unrecognized name) - the caller is
-    expected to set `console.no_color = True` instead in that case."""
+_FALLBACK_THEME_NAME = "light"
+
+
+def build_rich_theme(name: str) -> Theme:
+    """Always returns a usable `Theme`. An unrecognized name (a
+    hand-edited or newer-than-this-build config.json) degrades to
+    `light` rather than leaving the console themeless, which would make
+    every `style="<role>"` call site raise `MissingStyle`."""
     base = _BASE_STYLES.get(name)
     if base is None:
-        return None
+        base = _BASE_STYLES[_FALLBACK_THEME_NAME]
     styles: dict[str, Style] = {}
     for role, style in base.items():
         styles[role] = style
@@ -84,10 +97,15 @@ def detect_recommended() -> str:
 
 
 def apply_theme_to_console(console: Console, name: str) -> None:
-    console.no_color = name == "no-color"
-    rich_theme = build_rich_theme(name)
-    if rich_theme is not None:
-        console.push_theme(rich_theme)
+    """Only ever turns `no_color` *on*, never back off: `--no-color` is a
+    per-invocation override that must outlive any later theme application
+    in the same process (`omm --no-color setting theme --set dark`,
+    `omm --no-color setup`). Switching to a colored preset when colour is
+    already suppressed still registers that preset's styles, so the
+    choice takes effect the next time omm runs without the flag."""
+    if name == "no-color":
+        console.no_color = True
+    console.push_theme(build_rich_theme(name))
 
 
 def print_theme_preview(console: Console, name: str) -> None:
@@ -98,7 +116,10 @@ def print_theme_preview(console: Console, name: str) -> None:
         file=console.file,
         width=console.size.width,
         force_terminal=console.is_terminal,
-        no_color=(name == "no-color"),
+        # Inherit an already-suppressed `no_color` (e.g. `omm --no-color
+        # setting theme`) so the preview doesn't print color the rest of
+        # the invocation is deliberately withholding.
+        no_color=(console.no_color or name == "no-color"),
         theme=build_rich_theme(name),
         highlight=False,
     )

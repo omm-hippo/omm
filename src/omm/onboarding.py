@@ -40,10 +40,18 @@ _ASCII_ART_WIDTH = max(len(line) for line in _ASCII_ART.splitlines())
 
 
 def print_banner(console: Console) -> None:
+    # Deliberately hardcoded, NOT a theme role: this prints before the
+    # wizard's theme step, so routing it through a role would render it in
+    # whatever theme happens to be left in config.json from a previous
+    # install - the exact situation the design spec's "Non-goals" section
+    # ("Re-theming the ASCII banner ... Left as-is") rules out. The
+    # hardcoded-color regression guard in
+    # tests/test_theme_no_hardcoded_colors.py exempts these two lines by
+    # exact text; changing them means updating that allowlist on purpose.
     if console.size.width >= _ASCII_ART_WIDTH:
-        console.print(f"[accent]{_ASCII_ART}[/accent]")
+        console.print(f"[bold blue]{_ASCII_ART}[/bold blue]")
     else:
-        console.print("[accent]omm[/accent] - local LLM package manager")
+        console.print("[bold blue]omm[/bold blue] - local LLM package manager")
     console.print("[muted]Let's get you set up.[/muted]\n")
 
 

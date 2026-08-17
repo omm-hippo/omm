@@ -10,7 +10,7 @@ def test_theme_names_are_the_four_fixed_presets():
     assert theme.THEME_NAMES == ("light", "dark", "high-contrast", "no-color")
 
 
-@pytest.mark.parametrize("name", ["light", "dark", "high-contrast"])
+@pytest.mark.parametrize("name", theme.THEME_NAMES)
 def test_build_rich_theme_defines_every_role_and_its_bold_variant(name):
     rich_theme = theme.build_rich_theme(name)
     for role in theme.ROLES:
@@ -19,8 +19,20 @@ def test_build_rich_theme_defines_every_role_and_its_bold_variant(name):
         assert rich_theme.styles[f"bold {role}"].bold is True
 
 
-def test_build_rich_theme_returns_none_for_no_color():
-    assert theme.build_rich_theme("no-color") is None
+def test_build_rich_theme_registers_real_styles_for_no_color():
+    """`no-color` strips color via `Console.no_color`, not by leaving the
+    roles unregistered - an unregistered role name makes every
+    `style="accent"` call site raise `MissingStyle`."""
+    styles = theme.build_rich_theme("no-color").styles
+    assert styles["accent"] == theme.build_rich_theme("light").styles["accent"]
+
+
+def test_build_rich_theme_falls_back_to_a_known_preset_for_unknown_names():
+    unknown = theme.build_rich_theme("purple").styles
+    light = theme.build_rich_theme("light").styles
+    assert {role: unknown[role] for role in theme.ROLES} == {
+        role: light[role] for role in theme.ROLES
+    }
 
 
 def test_light_preset_matches_todays_hardcoded_colors():
@@ -80,6 +92,24 @@ def test_apply_theme_to_console_pushes_theme_for_named_preset():
     assert console.no_color is False
     console.print("[accent]hello[/accent]")
     assert "hello" in console.file.getvalue()
+
+
+def test_apply_theme_to_console_never_re_enables_color():
+    """`--no-color` is applied once per invocation; a theme applied
+    afterwards (`omm --no-color setting theme --set dark`) must not undo
+    it. See apply_theme_to_console's docstring."""
+    console = Console(file=io.StringIO())
+    console.no_color = True
+
+    theme.apply_theme_to_console(console, "dark")
+
+    assert console.no_color is True
+
+
+def test_apply_theme_to_console_leaves_no_color_off_when_it_was_off():
+    console = Console(file=io.StringIO())
+    theme.apply_theme_to_console(console, "high-contrast")
+    assert console.no_color is False
 
 
 def test_print_theme_preview_renders_all_roles_without_raising():

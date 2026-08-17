@@ -35,6 +35,25 @@ def test_print_banner_falls_back_to_plain_text_when_narrow():
     assert "█" not in output  # U+2588 FULL BLOCK, only in the big art
 
 
+@pytest.mark.parametrize("width", [100, 20])
+def test_print_banner_keeps_its_fixed_color_regardless_of_saved_theme(width):
+    """Design-spec non-goal: the banner prints *before* the wizard's theme
+    step, so it must stay hardcoded bold blue rather than render in
+    whatever theme a previous install happens to have left in config.json.
+    high-contrast is the telling case - its `accent` is cyan, so a
+    role-routed banner would show up here as \\x1b[1;36m."""
+    console = Console(
+        file=io.StringIO(), width=width, force_terminal=True,
+        theme=theme_mod.build_rich_theme("high-contrast"),
+    )
+
+    onboarding.print_banner(console)
+
+    output = console.file.getvalue()
+    assert "\x1b[1;34m" in output, "banner is not bold blue"
+    assert "\x1b[1;36m" not in output, "banner followed the console's accent role"
+
+
 def test_print_hardware_summary_shows_os_and_ram(monkeypatch):
     from omm.hardware import HardwareInfo
 

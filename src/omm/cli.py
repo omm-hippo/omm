@@ -3699,6 +3699,41 @@ def configure_version(
     console.print(table)
 
 
+def _pick_theme_interactively(current_name: str, allow_back: bool = False) -> str | None:
+    """Show every preset rendered in its own real styles, then ask. Returns
+    the pick, or None if cancelled (Escape/Ctrl+C) or "← Back".
+
+    This is the only way an existing install ever sees the previews:
+    anyone who upgraded into this feature already has
+    `onboarding_completed = True`, so the setup wizard's picker never runs
+    for them. Deliberately a near-copy of `onboarding.run_theme_step`'s
+    ~10-line picker rather than shared code - onboarding.py can't import
+    cli.py (circular, see its module docstring), and the two differ in
+    their default/label (recommended-for-this-terminal vs currently-saved)
+    and in cli.py's `_ask_select` TTY guard."""
+    import questionary
+
+    for name in theme_mod.THEME_NAMES:
+        label = f"{name} (current)" if name == current_name else name
+        console.print(f"\n[bold]{label}[/bold]")
+        theme_mod.print_theme_preview(console, name)
+    console.print()
+
+    choices: list = list(theme_mod.THEME_NAMES)
+    if allow_back:
+        choices = [questionary.Choice(name, value=name) for name in theme_mod.THEME_NAMES]
+        choices.append(questionary.Choice("← Back", value=None))
+    return _ask_select(
+        questionary.select(
+            "Pick a color theme for omm's output:",
+            choices=choices,
+            # questionary rejects a default that isn't among the choices,
+            # which a hand-edited config.json can produce.
+            default=current_name if current_name in theme_mod.THEME_NAMES else None,
+        )
+    )
+
+
 @setting_app.command(name="theme")
 @global_flags
 def configure_theme(
@@ -3710,6 +3745,11 @@ def configure_theme(
 ) -> None:
     """Show or change the color theme applied to omm's output."""
     current = load_config()
+    if set_name is None and _stdin_is_tty():
+        # Bare interactive invocation: same preview-and-pick UX as the
+        # setup wizard. Without a TTY (scripts, pipes) fall through to the
+        # read-only table instead of hanging on a prompt.
+        set_name = _pick_theme_interactively(str(current.get("theme", "dark")))
     if set_name is not None:
         if set_name not in theme_mod.THEME_NAMES:
             err_console.print(
@@ -3927,13 +3967,12 @@ def setting_menu(ctx: typer.Context) -> None:
             if action is not None and action != "back":
                 configure_version(stable=(action == "stable"), beta=(action == "beta"))
         elif choice == "theme":
-            action = _ask_select(
-                questionary.select(
-                    f"Theme (current: {current.get('theme', 'dark')}):",
-                    choices=[*theme_mod.THEME_NAMES, "← Back"],
-                )
+            # Previews, not a bare list of names - picking a color scheme
+            # sight-unseen is exactly what this feature exists to avoid.
+            action = _pick_theme_interactively(
+                str(current.get("theme", "dark")), allow_back=True
             )
-            if action is not None and action != "← Back":
+            if action is not None:
                 configure_theme(set_name=action)
         elif choice == "calibrate":
             model_name = questionary.text(
