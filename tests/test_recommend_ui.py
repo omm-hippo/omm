@@ -4,7 +4,7 @@ from io import StringIO
 
 from rich.console import Console
 
-from omm import recommend_ui
+from omm import recommend_ui, theme as theme_mod
 from omm.hardware import HardwareInfo
 
 
@@ -60,6 +60,7 @@ def test_recommend_screen_renders_hardware_table_and_selected_detail():
         width=120,
         color_system=None,
         force_terminal=False,
+        theme=theme_mod.build_rich_theme("dark"),
     )
 
     recommend_ui.print_screen(console, _hardware(), 1)
@@ -87,3 +88,24 @@ def test_narrow_choice_hides_memory_column_without_losing_status():
     assert "BEST FIT" in title
     assert "~32 tok/s" in title
     assert "MEMORY" not in header
+
+
+def test_hardware_panel_uses_theme_roles_not_literal_colors():
+    candidate = {
+        "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        "repo_id": "bartowski/Llama-3.2-1B-Instruct-GGUF",
+        "description": "Curated default",
+    }
+    [row] = recommend_ui.build_rows([(candidate, 33.0)], ["hf:bartowski/model"])
+    output = StringIO()
+    console = Console(
+        file=output, width=120, force_terminal=True,
+        theme=theme_mod.build_rich_theme("dark"),
+    )
+
+    recommend_ui.print_screen(console, _hardware(), 1)
+    recommend_ui.print_detail(console, _hardware(), row)
+
+    # Passing at all (no MissingStyle) proves the panel now resolves
+    # through the console's theme instead of a hardcoded literal color.
+    assert "This PC" in output.getvalue()

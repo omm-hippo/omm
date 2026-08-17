@@ -34,6 +34,31 @@ def _no_real_engine_writes(tmp_path, monkeypatch):
     linker.find_textgenwebui_root.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_console_theme_state():
+    """`cli.console`/`cli.err_console` are process-wide singletons, and
+    `theme.apply_theme_to_console` pushes onto their rich theme stacks with
+    no matching pop - so without this, any CliRunner-based test leaks its
+    theme into every test that runs after it. That masked a real crash:
+    a test setting `theme="no-color"` passed only because an earlier test's
+    pushed theme was still on the stack underneath, so the themeless
+    `no-color` codepath was never actually exercised. Also snapshots
+    `no_color`, which `--no-color` flips on the same singletons.
+
+    Reaches into `_theme_stack._entries` because rich exposes no way to
+    read the current stack depth (only `push_theme`/`pop_theme`), and a
+    test that popped below its starting depth couldn't be restored by
+    counting pops alone."""
+    consoles = (cli.console, cli.err_console)
+    saved = [(c, c._theme_stack._entries[:], c.no_color) for c in consoles]
+    yield
+    for console, entries, no_color in saved:
+        stack = console._theme_stack
+        stack._entries[:] = entries
+        stack.get = stack._entries[-1].get
+        console.no_color = no_color
+
+
 @pytest.fixture
 def isolated_omm_home(tmp_path, monkeypatch):
     """Redirect all of omm's ~/.omm paths into a throwaway tmp_path so

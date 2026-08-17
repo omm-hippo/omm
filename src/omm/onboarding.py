@@ -20,7 +20,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from omm import config as config_mod
 from omm import linker
+from omm import theme
 from omm.hardware import calculate_memory_budget, scan_hardware
 
 COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"
@@ -38,11 +40,19 @@ _ASCII_ART_WIDTH = max(len(line) for line in _ASCII_ART.splitlines())
 
 
 def print_banner(console: Console) -> None:
+    # Deliberately hardcoded, NOT a theme role: this prints before the
+    # wizard's theme step, so routing it through a role would render it in
+    # whatever theme happens to be left in config.json from a previous
+    # install - the exact situation the design spec's "Non-goals" section
+    # ("Re-theming the ASCII banner ... Left as-is") rules out. The
+    # hardcoded-color regression guard in
+    # tests/test_theme_no_hardcoded_colors.py exempts these two lines by
+    # exact text; changing them means updating that allowlist on purpose.
     if console.size.width >= _ASCII_ART_WIDTH:
         console.print(f"[bold blue]{_ASCII_ART}[/bold blue]")
     else:
         console.print("[bold blue]omm[/bold blue] - local LLM package manager")
-    console.print("[dim]Let's get you set up.[/dim]\n")
+    console.print("[muted]Let's get you set up.[/muted]\n")
 
 
 def print_hardware_summary(console: Console) -> None:
@@ -50,8 +60,8 @@ def print_hardware_summary(console: Console) -> None:
     budget = calculate_memory_budget(info)
 
     table = Table(title="Your machine", box=None)
-    table.add_column("Field", style="blue")
-    table.add_column("Value", style="white")
+    table.add_column("Field", style="accent")
+    table.add_column("Value", style="value")
     table.add_row("OS", f"{info.os_name} {info.os_version}")
     table.add_row("CPU", info.cpu)
     table.add_row("RAM (total)", f"{info.ram_total_gb:.1f} GB")
@@ -142,6 +152,39 @@ def _add_escape_to_cancel(question: questionary.Question) -> questionary.Questio
     return question
 
 
+def run_theme_step(console: Console) -> str:
+    """Returns the theme name in effect after this step - either the
+    user's explicit pick, or the detected guess if stdin isn't a TTY or
+    the prompt was cancelled. Unlike `run_engine_checklist`, a cancel
+    here is not treated as aborting the whole wizard - nothing
+    destructive has happened yet, so falling back to the guess is safe."""
+    recommended = theme.detect_recommended()
+
+    if not _stdin_is_tty():
+        config_mod.update_config(theme=recommended)
+        theme.apply_theme_to_console(console, recommended)
+        return recommended
+
+    import questionary
+
+    for name in theme.THEME_NAMES:
+        label = f"{name} (recommended)" if name == recommended else name
+        console.print(f"\n[bold]{label}[/bold]")
+        theme.print_theme_preview(console, name)
+
+    question = _add_escape_to_cancel(
+        questionary.select(
+            "Pick a color theme for omm's output:",
+            choices=list(theme.THEME_NAMES),
+            default=recommended,
+        )
+    )
+    chosen = question.ask() or recommended
+    config_mod.update_config(theme=chosen)
+    theme.apply_theme_to_console(console, chosen)
+    return chosen
+
+
 def run_engine_checklist(console: Console) -> list[str] | None:
     """Returns the selected engine keys, `[]` if the user confirmed zero
     engines, or `None` if the user aborted (Ctrl+C/Escape) - callers must
@@ -152,13 +195,13 @@ def run_engine_checklist(console: Console) -> list[str] | None:
 
     choices = _engine_choices()
     if all(installed for _, _, installed in choices):
-        console.print("[dim]All known local AI runners are already installed.[/dim]\n")
+        console.print("[muted]All known local AI runners are already installed.[/muted]\n")
         return []
 
     if not _stdin_is_tty():
         console.print(
-            "[red]Engine selection requires an interactive terminal. "
-            "Re-run `omm setup` from a real terminal.[/red]"
+            "[error]Engine selection requires an interactive terminal. "
+            "Re-run `omm setup` from a real terminal.[/error]"
         )
         raise typer.Exit(1)
 
@@ -192,7 +235,7 @@ def _install_selected_engines(console: Console, selected: list[str]) -> None:
         spec = specs_by_key[key]
         if not linker.has_automated_installer(key):
             console.print(
-                f"[yellow]{spec.label} isn't auto-installable yet.[/yellow] "
+                f"[warning]{spec.label} isn't auto-installable yet.[/warning] "
                 f"See {COMPATIBLE_PROGRAMS_URL}"
             )
             continue
@@ -200,15 +243,16 @@ def _install_selected_engines(console: Console, selected: list[str]) -> None:
         result = linker.install_engine(
             key,
             on_output=lambda line: console.print(
-                line, style="dim", markup=False, highlight=False
+                line, style="muted", markup=False, highlight=False
             ),
         )
-        style = "green" if result.status == "installed" else "red"
+        style = "success" if result.status == "installed" else "error"
         console.print(result.message, style=style, markup=False, highlight=False)
 
 
 def run_wizard(console: Console) -> None:
     print_banner(console)
+    run_theme_step(console)
     print_hardware_summary(console)
     selected = run_engine_checklist(console)
     if selected is None:
@@ -219,6 +263,6 @@ def run_wizard(console: Console) -> None:
     if selected:
         _install_selected_engines(console, selected)
     console.print(
-        "\n[bold green]Setup complete.[/bold green] "
+        "\n[success]Setup complete.[/success] "
         "Run `omm setting` any time to change telemetry, upload, or update-channel settings.\n"
     )

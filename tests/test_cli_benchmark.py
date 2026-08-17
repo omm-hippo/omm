@@ -334,6 +334,12 @@ def test_benchmark_reports_missing_ollama_as_missing(isolated_omm_home, monkeypa
 
 
 def test_benchmark_declines_starting_daemon_when_prompted(isolated_omm_home, monkeypatch):
+    # An existing install, not a fresh one: _root's onboarding gate now
+    # covers every subcommand, and on a truly fresh isolated_omm_home the
+    # monkeypatched _stdin_is_tty below would also let the real setup
+    # wizard fire here first, crashing in its own (unmocked) engine
+    # checklist before this test's own scenario ever runs.
+    config.update_config(onboarding_completed=True)
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
     monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama.exe"))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
@@ -460,6 +466,11 @@ def test_benchmark_does_not_ask_to_upload_when_declined_for_mixed_outcomes(isola
 
 
 def test_benchmark_starts_and_stops_daemon_when_confirmed(isolated_omm_home, monkeypatch):
+    # See test_benchmark_declines_starting_daemon_when_prompted above: the
+    # onboarding gate now covers every subcommand, so a truly fresh config
+    # plus the monkeypatched _stdin_is_tty below would let the real setup
+    # wizard fire before this test's own scenario runs.
+    config.update_config(onboarding_completed=True)
     reachable = {"value": False}
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: reachable["value"])
     monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama.exe"))

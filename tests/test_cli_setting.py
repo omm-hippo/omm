@@ -288,3 +288,144 @@ def test_setting_catalog_status_accepts_quiet_flag_before_subcommand(isolated_om
     result = runner.invoke(cli.app, ["--quiet", "setting", "catalog-status"])
 
     assert result.exit_code == 0, result.stdout
+
+
+def test_setting_theme_set_saves_and_shows_table(isolated_omm_home):
+    result = runner.invoke(cli.app, ["setting", "theme", "--set", "high-contrast"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "high-contrast" in result.stdout
+    assert config.load_config()["theme"] == "high-contrast"
+
+
+def test_setting_theme_rejects_unknown_name(isolated_omm_home):
+    result = runner.invoke(cli.app, ["setting", "theme", "--set", "purple"])
+
+    assert result.exit_code == 1
+    # err_console output lands on result.stderr, not result.stdout - see
+    # tests/test_cli_help_version.py's "No such command" test for the
+    # same CliRunner convention in this suite.
+    assert "light, dark, high-contrast, no-color" in result.stderr
+
+
+def test_setting_theme_bare_shows_current_value(isolated_omm_home):
+    config.update_config(theme="dark")
+
+    result = runner.invoke(cli.app, ["setting", "theme"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "dark" in result.stdout
+
+
+def test_setting_theme_bare_with_tty_previews_and_saves_the_pick(
+    isolated_omm_home, monkeypatch
+):
+    # Anyone who upgraded into this feature already has
+    # onboarding_completed=True and so never sees the wizard's picker -
+    # this is their only route to the previews.
+    config.update_config(theme="dark")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: "high-contrast")
+
+    result = runner.invoke(cli.app, ["setting", "theme"])
+
+    assert result.exit_code == 0, result.stdout
+    for name in cli.theme_mod.THEME_NAMES:
+        assert name in result.stdout, f"{name} preview missing"
+    for role in cli.theme_mod.ROLES:
+        assert role in result.stdout, f"{role} sample line missing"
+    assert config.load_config()["theme"] == "high-contrast"
+
+
+def test_setting_theme_bare_with_tty_keeps_current_value_on_cancel(
+    isolated_omm_home, monkeypatch
+):
+    config.update_config(theme="dark")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: None)
+
+    result = runner.invoke(cli.app, ["setting", "theme"])
+
+    assert result.exit_code == 0, result.stdout
+    assert config.load_config()["theme"] == "dark"
+
+
+def test_setting_theme_bare_without_tty_shows_table_without_prompting(
+    isolated_omm_home, monkeypatch
+):
+    config.update_config(theme="dark")
+
+    def _must_not_prompt(*args, **kwargs):
+        raise AssertionError("bare `omm setting theme` must not prompt without a TTY")
+
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    monkeypatch.setattr(cli, "_pick_theme_interactively", _must_not_prompt)
+    monkeypatch.setattr(questionary, "select", _must_not_prompt)
+
+    result = runner.invoke(cli.app, ["setting", "theme"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Color theme" in result.stdout
+    assert "dark" in result.stdout
+
+
+def test_setting_theme_with_set_flag_skips_the_picker(isolated_omm_home, monkeypatch):
+    # An existing install, not a genuinely fresh one: _root's onboarding
+    # gate now covers every subcommand (not just the bare `omm`
+    # invocation), and a truly fresh isolated_omm_home would otherwise
+    # make the monkeypatched _stdin_is_tty below also let the real setup
+    # wizard fire here - which then crashes in its own engine-checklist
+    # step, since that step checks onboarding.py's own (unmocked) stdin
+    # state, not this one.
+    config.update_config(onboarding_completed=True)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+
+    def _must_not_prompt(*args, **kwargs):
+        raise AssertionError("--set must not open the picker")
+
+    monkeypatch.setattr(cli, "_pick_theme_interactively", _must_not_prompt)
+
+    result = runner.invoke(cli.app, ["setting", "theme", "--set", "light"])
+
+    assert result.exit_code == 0, result.stdout
+    assert config.load_config()["theme"] == "light"
+
+
+def test_setting_bare_menu_theme_submenu_previews_and_saves(isolated_omm_home, monkeypatch):
+    answers = iter(["theme", "light", None])
+    captured_choices: list = []
+
+    def fake_select(message, choices=None, **kwargs):
+        captured_choices.append(choices)
+        return None
+
+    monkeypatch.setattr(questionary, "select", fake_select)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    theme_labels = [choice.title for choice in captured_choices[1]]
+    assert theme_labels[:-1] == list(cli.theme_mod.THEME_NAMES)
+    assert theme_labels[-1] == "← Back"
+    # The menu must show the same previews as the standalone command,
+    # not a bare list of names.
+    for role in cli.theme_mod.ROLES:
+        assert role in result.stdout, f"{role} sample line missing"
+    assert config.load_config()["theme"] == "light"
+
+
+def test_setting_bare_menu_theme_submenu_back_changes_nothing(isolated_omm_home, monkeypatch):
+    config.update_config(theme="dark")
+    answers = iter(["theme", None, None])
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    assert config.load_config()["theme"] == "dark"
