@@ -372,6 +372,14 @@ def test_setting_theme_bare_without_tty_shows_table_without_prompting(
 
 
 def test_setting_theme_with_set_flag_skips_the_picker(isolated_omm_home, monkeypatch):
+    # An existing install, not a genuinely fresh one: _root's onboarding
+    # gate now covers every subcommand (not just the bare `omm`
+    # invocation), and a truly fresh isolated_omm_home would otherwise
+    # make the monkeypatched _stdin_is_tty below also let the real setup
+    # wizard fire here - which then crashes in its own engine-checklist
+    # step, since that step checks onboarding.py's own (unmocked) stdin
+    # state, not this one.
+    config.update_config(onboarding_completed=True)
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
 
     def _must_not_prompt(*args, **kwargs):

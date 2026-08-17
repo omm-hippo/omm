@@ -86,6 +86,12 @@ def test_requires_ollama_daemon(isolated_omm_home, monkeypatch):
 
 
 def test_declines_starting_ollama_daemon_when_prompted(isolated_omm_home, monkeypatch):
+    # An existing install, not a fresh one: _root's onboarding gate now
+    # covers every subcommand, and on a truly fresh isolated_omm_home the
+    # monkeypatched _stdin_is_tty below would also let the real setup
+    # wizard fire here first, crashing in its own (unmocked) engine
+    # checklist before this test's own scenario ever runs.
+    config.update_config(onboarding_completed=True)
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
     monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama.exe"))
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
