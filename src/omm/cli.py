@@ -5272,10 +5272,10 @@ def _run_contribution_loop(
         ):
             stats.skipped_low_memory += 1
             err_console.print(
-                f"[yellow]Skipping {candidate['filename']} before download: needs "
+                f"[warning]Skipping {candidate['filename']} before download: needs "
                 f"about {memory_plan.required_gb:.1f} GiB but only "
                 f"{memory_plan.available_gb:.1f} GiB is safely available in live "
-                "memory.[/yellow]"
+                "memory.[/warning]"
             )
             # Live memory may change between sessions, but retrying this same
             # candidate in the current unattended run would only spin.  A new
