@@ -62,6 +62,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "contribute_always_ack": False,
     "update_channel": "stable",
     "onboarding_completed": True,
+    "theme": "dark",
     "memory_guard_policy": "ask",
     "memory_guard_poll_seconds": 1.0,
     "memory_guard_low_memory_seconds": 3.0,

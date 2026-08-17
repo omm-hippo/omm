@@ -32,3 +32,7 @@ def test_marking_onboarding_complete_persists(isolated_omm_home):
     config.update_config(onboarding_completed=True)
 
     assert config.load_config()["onboarding_completed"] is True
+
+
+def test_default_config_includes_dark_theme_fallback():
+    assert config.DEFAULT_CONFIG["theme"] == "dark"
