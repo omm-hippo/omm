@@ -391,10 +391,11 @@ def _root(
         err_console.no_color = True
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
-        _maybe_run_onboarding()
+        _maybe_run_onboarding(ctx)
         console.print(f"Ω omm {_version_line(_installed_commit())}")
         console.print(f"[dim]{_telemetry_destination_line()}[/dim]")
         raise typer.Exit(0)
+    _maybe_run_onboarding(ctx)
     _maybe_auto_import(ctx)
     # A setting command may revoke consent or change the destination, so do
     # not send queued telemetry before the requested mutation takes effect.
@@ -885,10 +886,18 @@ def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch:
         err_console.print("[yellow]Update available! Run: [bold]omm update[/bold][/yellow]")
 
 
-def _maybe_run_onboarding() -> None:
+_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "help", "update", "_bg-version-check"}
+
+
+def _maybe_run_onboarding(ctx: typer.Context) -> None:
     """Runs the first-time setup wizard exactly once, only for a genuinely
     fresh install (see config.load_config()'s migration handling) and only
-    when there's a real terminal to drive questionary's checklist."""
+    when there's a real terminal to drive questionary's checklist. Gates
+    every subcommand, not just the bare `omm` invocation, so a first-time
+    user running e.g. `omm contribute` directly still gets the wizard
+    before their command executes."""
+    if ctx.invoked_subcommand in _SKIP_ONBOARDING_SUBCOMMANDS:
+        return
     if load_config().get("onboarding_completed", True):
         return
     if not _stdin_is_tty():
@@ -3834,6 +3843,7 @@ def setting_menu(ctx: typer.Context) -> None:
         upload_policy = current.get("telemetry_send_policy", "ask")
         catalog_manifest = current.get("catalog_manifest_url") or "not configured"
         update_channel = current.get("update_channel") or "stable"
+        memory_guard_policy = current.get("memory_guard_policy", "ask")
 
         choice = _ask_select(
             questionary.select(
@@ -3850,6 +3860,9 @@ def setting_menu(ctx: typer.Context) -> None:
                         f"Catalog trust (current: {catalog_manifest})", value="catalog-trust"
                     ),
                     questionary.Choice("Catalog rollback", value="catalog-rollback"),
+                    questionary.Choice(
+                        f"Memory guard (current: {memory_guard_policy})", value="memory-guard"
+                    ),
                     questionary.Choice("← Back", value="back"),
                 ],
             )
@@ -3906,6 +3919,20 @@ def setting_menu(ctx: typer.Context) -> None:
         elif choice == "catalog-rollback":
             if _ask_confirm("Roll back the recommendation catalog?"):
                 catalog_rollback()
+        elif choice == "memory-guard":
+            action = _ask_select(
+                questionary.select(
+                    f"Memory guard policy (current: {memory_guard_policy}):",
+                    choices=[
+                        questionary.Choice("Ask before releasing OMM-owned memory", value="ask"),
+                        questionary.Choice("Block instead of asking", value="block"),
+                        questionary.Choice("Observe only (never block)", value="observe"),
+                        questionary.Choice("← Back", value="back"),
+                    ],
+                )
+            )
+            if action is not None and action != "back":
+                configure_memory_guard(policy=action, poll_seconds=None, low_memory_seconds=None)
 
         if not _ask_confirm("Change another setting?", default=True):
             return
