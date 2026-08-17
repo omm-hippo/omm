@@ -97,7 +97,7 @@ def _scan_ollama_format(engine: str, models_dir: Path) -> list[ExternalGguf]:
             continue
         try:
             manifest = json.loads(manifest_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             continue
         rel = manifest_path.relative_to(manifests_root)
         tag = f"{rel.parent.name}:{rel.name}"
