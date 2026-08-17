@@ -2272,6 +2272,7 @@ def _install_impl(
     runtime_load_consent: bool | None = None,
     preferred_runtime: str | None = None,
     enforce_memory_guard: bool = False,
+    gpu_state: dict | None = None,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -2529,6 +2530,13 @@ def _install_impl(
                 model_metadata = None
             runtime_profile = tuning.recommend_runtime_settings(runtime_hw, runtime_candidate)
             runtime_options = runtime_profile.ollama_options
+            if gpu_state is not None and gpu_state.get("force_cpu"):
+                # A previous candidate this session already crashed the GPU
+                # backend on this hardware (see the gpu_crash retry below) -
+                # skip straight to CPU instead of re-triggering the same
+                # crash on every remaining candidate.
+                runtime_options = dict(runtime_options)
+                runtime_options["num_gpu"] = 0
             if enforce_memory_guard:
                 required_gb = runtime_profile.required_memory_gb or (
                     dest.stat().st_size / (1024**3) * 1.2
@@ -2570,38 +2578,78 @@ def _install_impl(
                 pressure_watcher.__enter__()
             if use_quality_eval:
                 try:
-                    def _evaluate_with_runtime():
+                    gpu_crash_retries_left = 1
+                    while True:
+                        def _evaluate_with_runtime():
+                            try:
+                                return quality_mod.evaluate_model(
+                                    ollama_tag, quality_pack, speed_runs=3, runtime_options=runtime_options
+                                )
+                            except TypeError:  # compatibility with older integrations
+                                return quality_mod.evaluate_model(ollama_tag, quality_pack, speed_runs=3)
+
                         try:
-                            return quality_mod.evaluate_model(
-                                ollama_tag, quality_pack, speed_runs=3, runtime_options=runtime_options
-                            )
-                        except TypeError:  # compatibility with older integrations
-                            return quality_mod.evaluate_model(ollama_tag, quality_pack, speed_runs=3)
+                            if (
+                                stop_event is not None
+                                and quality_mod.evaluate_model is quality_mod._DEFAULT_EVALUATE_MODEL
+                            ):
+                                def report_progress(elapsed: float, deadline: float) -> None:
+                                    if opts.quiet:
+                                        return
+                                    console.print(
+                                        f"[dim]Still benchmarking {filename}: {int(elapsed)}s elapsed "
+                                        f"(automatic cutoff at {int(deadline)}s).[/dim]"
+                                    )
 
-                    if (
-                        stop_event is not None
-                        and quality_mod.evaluate_model is quality_mod._DEFAULT_EVALUATE_MODEL
-                    ):
-                        def report_progress(elapsed: float, deadline: float) -> None:
-                            if opts.quiet:
-                                return
-                            console.print(
-                                f"[dim]Still benchmarking {filename}: {int(elapsed)}s elapsed "
-                                f"(automatic cutoff at {int(deadline)}s).[/dim]"
-                            )
-
-                        result = quality_mod.evaluate_model_isolated(
-                            ollama_tag,
-                            quality_pack,
-                            speed_runs=3,
-                            runtime_options=runtime_options,
-                            model_metadata=model_metadata,
-                            timeout_seconds=_CONTRIBUTE_EVALUATION_DEADLINE_SECONDS,
-                            stop_check=stop_event.is_set,
-                            progress_callback=report_progress,
-                        )
-                    else:
-                        result = _run_interruptible(_evaluate_with_runtime, stop_event)
+                                result = quality_mod.evaluate_model_isolated(
+                                    ollama_tag,
+                                    quality_pack,
+                                    speed_runs=3,
+                                    runtime_options=runtime_options,
+                                    model_metadata=model_metadata,
+                                    timeout_seconds=_CONTRIBUTE_EVALUATION_DEADLINE_SECONDS,
+                                    stop_check=stop_event.is_set,
+                                    progress_callback=report_progress,
+                                )
+                            else:
+                                result = _run_interruptible(_evaluate_with_runtime, stop_event)
+                            break
+                        except quality_mod.QualityEvaluationError as error:
+                            # A crashed GPU backend (stale/mismatched CUDA or
+                            # ROCm driver) is not a per-model incompatibility -
+                            # a CPU-only retry of this same candidate has a
+                            # real chance of succeeding. A plain
+                            # unsupported_runtime (e.g. a model capability
+                            # Ollama rejects) does not set gpu_crash and falls
+                            # through to the normal failure path below.
+                            if (
+                                error.gpu_crash
+                                and runtime_options.get("num_gpu") != 0
+                                and gpu_crash_retries_left > 0
+                            ):
+                                gpu_crash_retries_left -= 1
+                                if not ollama_was_preloaded:
+                                    quality_mod.ensure_model_unloaded(ollama_tag)
+                                runtime_options = dict(runtime_options)
+                                runtime_options["num_gpu"] = 0
+                                already_warned = bool(gpu_state and gpu_state.get("force_cpu"))
+                                if gpu_state is not None:
+                                    gpu_state["force_cpu"] = True
+                                err_console.print(
+                                    f"[yellow]{filename} crashed the GPU backend - retrying on "
+                                    "CPU only.[/yellow]"
+                                )
+                                if not already_warned:
+                                    err_console.print(
+                                        "[yellow]This usually means the GPU driver is too old "
+                                        "for this build of Ollama (a CUDA/ROCm 'unsupported "
+                                        "toolchain' error). Update your GPU driver to the latest "
+                                        "version to restore GPU acceleration; the rest of this "
+                                        "session will keep running on CPU only in the "
+                                        "meantime.[/yellow]"
+                                    )
+                                continue
+                            raise
                 except _Interrupted as e:
                     raise ContributionStopped(filename) from e
                 except quality_mod.QualityEvaluationCancelled as e:
@@ -5082,6 +5130,7 @@ def _run_contribution_loop(
     stats = _ContributionStats(benchmarked=[])
     consecutive_daemon_failures = 0
     benchmark_failure_counts: dict[str, int] = {}
+    gpu_state: dict = {"force_cpu": False}
     while not stop_event.is_set():
         if not benchmark.ollama_daemon_reachable():
             err_console.print(
@@ -5154,6 +5203,7 @@ def _run_contribution_loop(
                 quality_pack=quality_pack,
                 link_only_ollama=True,
                 enforce_memory_guard=True,
+                gpu_state=gpu_state,
             )
         except ContributionStopped as e:
             _cleanup_incomplete_install(e.filename)
@@ -5197,6 +5247,7 @@ def _run_contribution_loop(
                         quality_pack=quality_pack,
                         link_only_ollama=True,
                         enforce_memory_guard=True,
+                        gpu_state=gpu_state,
                     )
                 except ContributionStopped as e:
                     _cleanup_incomplete_install(e.filename)

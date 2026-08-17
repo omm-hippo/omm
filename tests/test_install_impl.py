@@ -1005,6 +1005,105 @@ def test_use_quality_eval_reports_median_speed_and_quality_summary(isolated_omm_
     assert event["quality_total"] == 8
 
 
+def _partial_offload_profile():
+    return cli.tuning.RuntimeProfile(
+        context_length=4096,
+        gpu_offload_percent=50,
+        cpu_threads=4,
+        num_batch=512,
+        profile_name="test",
+        model_size_gb=1.0,
+        required_memory_gb=1.5,
+        available_memory_gb=4.0,
+        headroom_gb=1.0,
+        quant_bits=4.0,
+    )
+
+
+def test_use_quality_eval_gpu_crash_retries_same_candidate_on_cpu(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, stop_check=None, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli.tuning, "recommend_runtime_settings", lambda hw, candidate: _partial_offload_profile())
+    fake_result = {
+        "quality": {"correct": 6, "total": 8, "accuracy": 0.75},
+        "speed": {
+            "median_tokens_per_sec": 3.2,
+            "samples_tokens_per_sec": [3.0, 3.2, 3.4],
+            "runs": 3,
+        },
+    }
+    calls = []
+
+    def fake_evaluate(tag, pack, speed_runs=3, runtime_options=None):
+        calls.append(dict(runtime_options or {}))
+        if len(calls) == 1:
+            raise cli.quality_mod.QualityEvaluationError(
+                "Ollama /api/generate request failed",
+                failure_reason="unsupported_runtime",
+                gpu_crash=True,
+            )
+        return fake_result
+
+    monkeypatch.setattr(cli.quality_mod, "evaluate_model", fake_evaluate)
+    monkeypatch.setattr(cli.quality_mod, "ensure_model_unloaded", lambda tag: True)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+
+    gpu_state = {"force_cpu": False}
+    outcome = cli._install_impl(
+        _resolved(),
+        auto_upload=True,
+        use_quality_eval=True,
+        quality_pack={"pack_id": "pack-1", "pack_version": "1.1.0", "items": []},
+        stop_event=threading.Event(),
+        gpu_state=gpu_state,
+    )
+
+    assert len(calls) == 2
+    assert calls[0].get("num_gpu") != 0
+    assert calls[1]["num_gpu"] == 0
+    assert outcome.tokens_per_sec == 3.2
+    assert gpu_state["force_cpu"] is True
+
+
+def test_gpu_state_force_cpu_skips_straight_to_cpu_for_next_candidate(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, stop_check=None, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli.tuning, "recommend_runtime_settings", lambda hw, candidate: _partial_offload_profile())
+    fake_result = {
+        "quality": {"correct": 6, "total": 8, "accuracy": 0.75},
+        "speed": {
+            "median_tokens_per_sec": 2.1,
+            "samples_tokens_per_sec": [2.0, 2.1, 2.2],
+            "runs": 3,
+        },
+    }
+    calls = []
+
+    def fake_evaluate(tag, pack, speed_runs=3, runtime_options=None):
+        calls.append(dict(runtime_options or {}))
+        return fake_result
+
+    monkeypatch.setattr(cli.quality_mod, "evaluate_model", fake_evaluate)
+    monkeypatch.setattr(cli.quality_mod, "ensure_model_unloaded", lambda tag: True)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+
+    gpu_state = {"force_cpu": True}
+    outcome = cli._install_impl(
+        _resolved(),
+        auto_upload=True,
+        use_quality_eval=True,
+        quality_pack={"pack_id": "pack-1", "pack_version": "1.1.0", "items": []},
+        stop_event=threading.Event(),
+        gpu_state=gpu_state,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["num_gpu"] == 0
+    assert outcome.tokens_per_sec == 2.1
+
+
 def test_use_quality_eval_failure_reports_no_result(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "download_file", lambda url, dest, stop_check=None, **_kw: dest.write_bytes(b"x"))

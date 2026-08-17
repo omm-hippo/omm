@@ -13,6 +13,7 @@ from omm.engines import (
     RuntimeAdapterError,
     RuntimeModelRef,
 )
+from omm.engines.base import LoopbackJsonClient
 from omm.engines.lmstudio import LMStudioAdapter
 from omm.engines.ollama import OllamaAdapter
 
@@ -364,3 +365,28 @@ def test_uncertain_failed_load_reports_cleanup_failure(
         adapter.load(reference, LoadOptions())
 
     assert error.value.reason == "unload_failed"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "llama-server process has terminated: exit status 0xc0000409: "
+        "the system detected an overrun of a stack-based buffer: CUDA error: "
+        "the provided PTX was compiled with an unsupported toolchain.",
+        "ROCBLAS error: hip error: invalid device function",
+    ],
+)
+def test_classifies_gpu_driver_crash(message):
+    assert LoopbackJsonClient._is_gpu_driver_crash(message.casefold()) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "model does not support thinking",
+        "requires more system memory than is available",
+        "model not found, try pulling it first",
+    ],
+)
+def test_does_not_classify_ordinary_failures_as_gpu_driver_crash(message):
+    assert LoopbackJsonClient._is_gpu_driver_crash(message.casefold()) is False
