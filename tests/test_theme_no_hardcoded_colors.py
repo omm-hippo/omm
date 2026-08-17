@@ -36,7 +36,7 @@ def test_no_literal_color_markup_or_style_kwargs():
     offenders = []
     for relpath in _TARGET_FILES:
         exempt = _EXEMPT_LINES.get(relpath, ())
-        text = (repo_root / relpath).read_text()
+        text = (repo_root / relpath).read_text(encoding="utf-8")
         for lineno, line in enumerate(text.splitlines(), start=1):
             if line.strip() in exempt:
                 continue
@@ -51,6 +51,9 @@ def test_exempt_banner_lines_are_still_present_verbatim():
     (or reworded) without anyone revisiting the non-goal it encodes."""
     repo_root = Path(__file__).resolve().parent.parent
     for relpath, exempt in _EXEMPT_LINES.items():
-        lines = {line.strip() for line in (repo_root / relpath).read_text().splitlines()}
+        lines = {
+            line.strip()
+            for line in (repo_root / relpath).read_text(encoding="utf-8").splitlines()
+        }
         for entry in exempt:
             assert entry in lines, f"{relpath} no longer contains exempt line: {entry}"
