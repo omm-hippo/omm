@@ -5265,6 +5265,24 @@ def _run_contribution_loop(
             queue.mark_seen(ref_str)
             continue
 
+        memory_plan = _contribute_candidate_memory_plan(candidate)
+        if (
+            memory_plan is not None
+            and memory_plan.decision is memory_guard_mod.GuardDecision.BLOCK
+        ):
+            stats.skipped_low_memory += 1
+            err_console.print(
+                f"[yellow]Skipping {candidate['filename']} before download: needs "
+                f"about {memory_plan.required_gb:.1f} GiB but only "
+                f"{memory_plan.available_gb:.1f} GiB is safely available in live "
+                "memory.[/yellow]"
+            )
+            # Live memory may change between sessions, but retrying this same
+            # candidate in the current unattended run would only spin.  A new
+            # `omm contribute` invocation rebuilds the queue and checks again.
+            queue.mark_seen(ref_str)
+            continue
+
         try:
             provider = validate_provider(candidate.get("provider") or "huggingface")
             repo_id = validate_repo_id(candidate["repo_id"])
