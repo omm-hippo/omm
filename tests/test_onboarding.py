@@ -199,6 +199,7 @@ def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
 
 def test_run_wizard_completes_with_no_engines_selected(monkeypatch):
     console = _console()
+    monkeypatch.setattr(onboarding, "run_theme_step", lambda c: "dark")
     monkeypatch.setattr(onboarding, "print_hardware_summary", lambda c: None)
     monkeypatch.setattr(onboarding, "run_engine_checklist", lambda c: [])
 
@@ -212,6 +213,7 @@ def test_run_wizard_aborts_when_engine_checklist_is_cancelled(monkeypatch):
     `None`, not `[]` - `run_wizard` must not print "Setup complete" or let
     the caller mark onboarding_completed=True on cancel."""
     console = _console()
+    monkeypatch.setattr(onboarding, "run_theme_step", lambda c: "dark")
     monkeypatch.setattr(onboarding, "print_hardware_summary", lambda c: None)
     monkeypatch.setattr(onboarding, "run_engine_checklist", lambda c: None)
 
@@ -219,6 +221,70 @@ def test_run_wizard_aborts_when_engine_checklist_is_cancelled(monkeypatch):
         onboarding.run_wizard(console)
 
     assert "Setup complete" not in console.file.getvalue()
+
+
+def test_run_theme_step_skips_prompt_and_keeps_guess_when_not_a_tty(monkeypatch, isolated_omm_home):
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: False)
+    monkeypatch.setattr(onboarding.theme, "detect_recommended", lambda: "dark")
+    console = _console()
+
+    result = onboarding.run_theme_step(console)
+
+    assert result == "dark"
+    from omm import config
+    assert config.load_config()["theme"] == "dark"
+
+
+def test_run_theme_step_saves_the_users_pick(monkeypatch, isolated_omm_home):
+    import questionary
+
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(onboarding, "_add_escape_to_cancel", lambda q: q)
+    monkeypatch.setattr(onboarding.theme, "detect_recommended", lambda: "dark")
+
+    class _FakeQuestion:
+        def ask(self):
+            return "high-contrast"
+
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: _FakeQuestion())
+    console = _console()
+
+    result = onboarding.run_theme_step(console)
+
+    assert result == "high-contrast"
+    from omm import config
+    assert config.load_config()["theme"] == "high-contrast"
+
+
+def test_run_theme_step_falls_back_to_recommendation_on_cancel(monkeypatch, isolated_omm_home):
+    import questionary
+
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(onboarding, "_add_escape_to_cancel", lambda q: q)
+    monkeypatch.setattr(onboarding.theme, "detect_recommended", lambda: "light")
+
+    class _FakeQuestion:
+        def ask(self):
+            return None
+
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: _FakeQuestion())
+    console = _console()
+
+    result = onboarding.run_theme_step(console)
+
+    assert result == "light"
+
+
+def test_run_wizard_runs_theme_step_before_hardware_summary(monkeypatch):
+    order = []
+    monkeypatch.setattr(onboarding, "run_theme_step", lambda c: order.append("theme") or "dark")
+    monkeypatch.setattr(onboarding, "print_hardware_summary", lambda c: order.append("hardware"))
+    monkeypatch.setattr(onboarding, "run_engine_checklist", lambda c: order.append("engines") or [])
+    console = _console()
+
+    onboarding.run_wizard(console)
+
+    assert order == ["theme", "hardware", "engines"]
 
 
 def test_run_engine_checklist_requires_tty(monkeypatch):
