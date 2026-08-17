@@ -421,6 +421,35 @@ class _FakeResult:
         self.stderr = stderr
 
 
+def test_owned_manifest_trusts_legacy_record_without_content_sha256(
+    isolated_omm_home, tmp_path
+):
+    """Ownership records written before content_sha256 tracking was added
+    (2026-07-31) have no such key. _owned_manifest must not treat a missing
+    key as a guaranteed content mismatch - that would make every manifest
+    linked before that date permanently unowned."""
+    manifest_path = tmp_path / "latest"
+    manifest_path.write_text('{"schemaVersion": 2}')
+    stat = manifest_path.stat()
+    linker._update_link_ownership(
+        manifest_path,
+        {"kind": "manifest", "source": None, "device": stat.st_dev, "inode": stat.st_ino},
+    )
+
+    assert linker._owned_manifest(manifest_path) is True
+
+
+def test_owned_manifest_rejects_content_changed_since_recorded(
+    isolated_omm_home, tmp_path
+):
+    manifest_path = tmp_path / "latest"
+    manifest_path.write_text('{"schemaVersion": 2}')
+    linker._record_ownership(manifest_path, None, "manifest")
+    manifest_path.write_text('{"schemaVersion": 2, "tampered": true}')
+
+    assert linker._owned_manifest(manifest_path) is False
+
+
 def test_native_ollama_import_refuses_to_start_without_model_plus_reserve(
     isolated_omm_home, tmp_path, monkeypatch
 ):

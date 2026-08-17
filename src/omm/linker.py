@@ -285,14 +285,20 @@ def _owned_manifest(path: Path, expected_source: Path | None = None) -> bool:
         return False
     try:
         stat = path.stat()
+    except OSError:
+        return False
+    if record.get("device") != stat.st_dev or record.get("inode") != stat.st_ino:
+        return False
+    # Records written before content_sha256 tracking was added (pre-2026-07-31)
+    # have no such key at all - fall back to the device/inode check alone
+    # rather than treating an absent key as a guaranteed mismatch.
+    if "content_sha256" not in record:
+        return True
+    try:
         content_sha256 = sha256_file(path)
     except OSError:
         return False
-    return (
-        record.get("device") == stat.st_dev
-        and record.get("inode") == stat.st_ino
-        and record.get("content_sha256") == content_sha256
-    )
+    return record.get("content_sha256") == content_sha256
 
 
 def unlink_owned_link(path: Path, expected_source: Path | None = None) -> bool:
