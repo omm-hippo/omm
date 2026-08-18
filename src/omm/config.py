@@ -34,6 +34,13 @@ CATALOG_HISTORY_DIR = OMM_HOME / "catalog-history"
 LEGACY_FIREBASE_ENDPOINT = (
     "https://localfit-8ab57-default-rtdb.firebaseio.com/telemetry.json"
 )
+# Public client identifier for the `localfit-8ab57` Firebase project - not a
+# secret. Firebase Web API keys are safe to ship in client code (they only
+# identify the project to Google's Identity Toolkit; actual access is
+# governed by the RTDB security rules, not this key). Used solely to sign in
+# anonymously so telemetry writes carry `auth != null`, as the RTDB rules
+# require - see omm.firebase_auth.
+FIREBASE_WEB_API_KEY = "AIzaSyBlnr7Qhu4H4z93X1jUpJDyuNz4D5tyca4"
 # model_url has gone through two GitHub org renames (minigu5/Localfit ->
 # minigu5/Omm -> omm-hippo/omm). It's never user-settable, so any config
 # still holding one of the earlier defaults is stale, not a deliberate

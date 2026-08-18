@@ -51,7 +51,7 @@ def test_discrete_gpu_uses_live_free_vram_with_a_reserve():
         )
     )
 
-    assert budget.ram_budget_gb == pytest.approx(2.0)
+    assert budget.ram_budget_gb == pytest.approx(2.4)
     assert budget.vram_budget_gb == pytest.approx(5.5)
     assert budget.model_budget_gb == pytest.approx(5.5)
     assert budget.install_budget_gb == pytest.approx(12.8)

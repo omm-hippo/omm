@@ -823,3 +823,213 @@ def test_verify_lmstudio_load_false_propagates_and_still_unloads(tmp_path, monke
     monkeypatch.setattr(linker, "_lms_unload", lambda *a, **k: unloaded.__setitem__("called", True))
     assert linker.verify_lmstudio_load(tmp_path / "model.gguf", None) is False
     assert unloaded["called"] is True
+
+
+# --- Public LM Studio daemon-lifecycle API --------------------------------
+
+
+def test_lmstudio_daemon_reachable_true_when_running(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: {"running": True, "port": 1234})
+    assert linker.lmstudio_daemon_reachable() is True
+
+
+def test_lmstudio_daemon_reachable_false_when_not_running(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: {"running": False, "port": 1234})
+    assert linker.lmstudio_daemon_reachable() is False
+
+
+def test_lmstudio_daemon_reachable_false_when_status_unavailable(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: None)
+    assert linker.lmstudio_daemon_reachable() is False
+
+
+def test_lmstudio_daemon_reachable_false_when_lms_missing(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: None)
+    assert linker.lmstudio_daemon_reachable() is False
+
+
+def test_lmstudio_server_port_returns_port_when_running(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: {"running": True, "port": 5678})
+    assert linker.lmstudio_server_port() == 5678
+
+
+def test_lmstudio_server_port_none_when_not_running(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: {"running": False, "port": 1234})
+    assert linker.lmstudio_server_port() is None
+
+
+def test_lmstudio_server_port_none_when_status_unavailable(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: None)
+    assert linker.lmstudio_server_port() is None
+
+
+def test_lmstudio_server_port_none_when_lms_missing(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: None)
+    assert linker.lmstudio_server_port() is None
+
+
+def test_start_lmstudio_daemon_returns_true_when_successful(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_start_lmstudio_server", lambda lms_path, timeout=30.0: True)
+    assert linker.start_lmstudio_daemon() is True
+
+
+def test_start_lmstudio_daemon_returns_false_when_fails(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_start_lmstudio_server", lambda lms_path, timeout=30.0: False)
+    assert linker.start_lmstudio_daemon() is False
+
+
+def test_start_lmstudio_daemon_returns_false_when_lms_missing(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: None)
+    assert linker.start_lmstudio_daemon() is False
+
+
+def test_start_lmstudio_daemon_passes_timeout(monkeypatch):
+    calls = {"timeout_received": None}
+    def fake_start(lms_path, timeout=30.0):
+        calls["timeout_received"] = timeout
+        return True
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_start_lmstudio_server", fake_start)
+    linker.start_lmstudio_daemon(timeout=60.0)
+    assert calls["timeout_received"] == 60.0
+
+
+def test_stop_lmstudio_daemon_calls_helper_when_lms_present(monkeypatch):
+    stopped = {"called": False}
+    def fake_stop(lms_path):
+        stopped["called"] = True
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_stop_lmstudio_server", fake_stop)
+    linker.stop_lmstudio_daemon()
+    assert stopped["called"] is True
+
+
+def test_stop_lmstudio_daemon_no_op_when_lms_missing(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: None)
+    linker.stop_lmstudio_daemon()  # must not raise
+
+
+def test_resolve_lmstudio_model_returns_dict_with_metadata(monkeypatch):
+    models_data = [
+        {
+            "type": "llm",
+            "modelKey": "tinyllama-1.1b-chat-v1.0",
+            "path": "local/tinyllama-q4/tinyllama-q4.gguf",
+            "architecture": "llama",
+            "quantization": {"name": "Q4_K_M", "bits": 4},
+            "paramsString": "1.1B",
+            "maxContextLength": 2048,
+            "trainedForToolUse": True,
+        }
+    ]
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda lms_path, pub, repo, filename: "tinyllama-1.1b-chat-v1.0")
+    monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: models_data)
+    result = linker.resolve_lmstudio_model("local/tinyllama-q4", "tinyllama-q4.gguf")
+    assert result == {
+        "model_key": "tinyllama-1.1b-chat-v1.0",
+        "architecture": "llama",
+        "quantization_name": "Q4_K_M",
+        "quantization_bits": 4,
+        "params_string": "1.1B",
+        "max_context_length": 2048,
+        "trained_for_tool_use": True,
+    }
+
+
+def test_resolve_lmstudio_model_filters_embedding_models(monkeypatch):
+    models_data = [
+        {
+            "type": "embedding",
+            "modelKey": "nomic-embed-text-v1.5",
+            "path": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.gguf",
+        },
+        {
+            "type": "llm",
+            "modelKey": "tinyllama-1.1b-chat-v1.0",
+            "path": "local/tinyllama-q4/tinyllama-q4.gguf",
+            "architecture": "llama",
+            "quantization": {"name": "Q4_K_M", "bits": 4},
+        },
+    ]
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda lms_path, pub, repo, filename: None)  # No match for embedding path
+    monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: models_data)
+    # Try to resolve the embedding model - should return None (no path match)
+    result = linker.resolve_lmstudio_model("nomic-ai/nomic-embed-text-v1.5-GGUF", "nomic-embed-text-v1.5.gguf")
+    assert result is None
+
+
+def test_resolve_lmstudio_model_none_when_path_not_found(monkeypatch):
+    models_data = [
+        {
+            "type": "llm",
+            "modelKey": "other-model",
+            "path": "local/other/other.gguf",
+        }
+    ]
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda lms_path, pub, repo, filename: None)  # No match
+    monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: models_data)
+    result = linker.resolve_lmstudio_model("local/repo", "file.gguf")
+    assert result is None
+
+
+def test_resolve_lmstudio_model_none_when_list_unavailable(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: None)
+    result = linker.resolve_lmstudio_model("local/repo", "file.gguf")
+    assert result is None
+
+
+def test_resolve_lmstudio_model_none_when_lms_missing(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: None)
+    result = linker.resolve_lmstudio_model("local/repo", "file.gguf")
+    assert result is None
+
+
+def test_resolve_lmstudio_model_handles_missing_optional_fields(monkeypatch):
+    models_data = [
+        {
+            "type": "llm",
+            "modelKey": "tinyllama-1.1b-chat-v1.0",
+            "path": "local/tinyllama-q4/tinyllama-q4.gguf",
+            # No architecture, quantization, etc.
+        }
+    ]
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda lms_path, pub, repo, filename: "tinyllama-1.1b-chat-v1.0")
+    monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: models_data)
+    result = linker.resolve_lmstudio_model("local/tinyllama-q4", "tinyllama-q4.gguf")
+    assert result == {
+        "model_key": "tinyllama-1.1b-chat-v1.0",
+        "architecture": None,
+        "quantization_name": None,
+        "quantization_bits": None,
+        "params_string": None,
+        "max_context_length": None,
+        "trained_for_tool_use": False,
+    }
+
+
+def test_unload_lmstudio_model_returns_true_when_successful(monkeypatch):
+    stopped = {"called": False}
+    def fake_unload(lms_path, model_key):
+        stopped["called"] = True
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lms_unload", fake_unload)
+    assert linker.unload_lmstudio_model("test-model") is True
+    assert stopped["called"] is True
+
+
+def test_unload_lmstudio_model_returns_false_when_lms_missing(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: None)
+    assert linker.unload_lmstudio_model("test-model") is False

@@ -239,6 +239,40 @@ def test_adopt_group_merges_duplicate_across_engines_and_reports_saved_bytes(iso
     assert entry["linked"] == _all_linked(lmstudio=True, ollama=True)
 
 
+def test_adopt_group_links_into_other_installed_engines_beyond_discovery_location(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A model found only in LM Studio's directory should still get linked
+    into every other currently-installed engine (here, Ollama), matching
+    `omm install`'s behavior - not just left at its discovery location."""
+    payload = b"lmstudio-only gguf bytes"
+    lmstudio_dir = tmp_path / "lmstudio"
+    lmstudio_dir.mkdir()
+    lmstudio_path = lmstudio_dir / "model.gguf"
+    lmstudio_path.write_bytes(payload)
+
+    group = scan_import.ModelGroup(
+        sha256="feedface",
+        locations=[scan_import.ExternalGguf("lmstudio", "model.gguf", lmstudio_path, len(payload), "feedface")],
+    )
+
+    monkeypatch.setattr(linker, "is_engine_installed", lambda key: key in ("ollama", "lmstudio"))
+    linked_calls = []
+
+    def fake_link_engine(key, dest, *, repo_id, ollama_tag, force=False):
+        linked_calls.append(key)
+        return None
+
+    monkeypatch.setattr(linker, "link_engine", fake_link_engine)
+
+    result = scan_import.adopt_group(group)
+
+    assert linked_calls == ["ollama"]  # lmstudio already linked via its discovery location
+    entry = registry.load_registry()["model.gguf"]
+    assert entry["linked"] == _all_linked(lmstudio=True, ollama=True)
+    assert result.link_warnings == []
+
+
 def test_adopt_group_reuses_existing_hub_copy_for_same_hash(isolated_omm_home, tmp_path):
     payload = b"already installed via omm"
     hub_file = scan_import.MODELS_DIR / "existing.gguf"

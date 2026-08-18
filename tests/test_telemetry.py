@@ -2,7 +2,7 @@ import json
 
 import requests
 
-from omm import config, telemetry
+from omm import config, firebase_auth, telemetry
 
 
 class _FakeResp:
@@ -287,6 +287,67 @@ def test_flush_pending_never_sends_after_user_opts_out(isolated_omm_home, monkey
     assert telemetry.flush_pending() == 0
     assert calls == []
     assert json.loads(pending_path.read_text()) == [{"model": "private"}]
+
+
+def test_post_event_fetches_auth_token_for_firebase_endpoint(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {
+            "telemetry_send_policy": "always",
+            "telemetry_endpoint": "https://x-default-rtdb.firebaseio.com/telemetry.json",
+        },
+    )
+    monkeypatch.setattr(firebase_auth, "get_id_token", lambda: "fake-id-token")
+    calls = []
+    monkeypatch.setattr(
+        requests, "post", lambda *a, **k: calls.append((a, k)) or _FakeResp(200)
+    )
+
+    result = telemetry.send_event({"x": 1})
+
+    assert result is True
+    assert len(calls) == 1
+    assert calls[0][1]["params"] == {"auth": "fake-id-token"}
+
+
+def test_post_event_skips_send_when_firebase_auth_token_unavailable(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {
+            "telemetry_send_policy": "always",
+            "telemetry_endpoint": "https://x-default-rtdb.firebaseio.com/telemetry.json",
+        },
+    )
+    monkeypatch.setattr(firebase_auth, "get_id_token", lambda: None)
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append((a, k)))
+
+    result = telemetry.send_event({"x": 1})
+
+    assert result is False
+    assert calls == []
+    log_lines = (isolated_omm_home / "telemetry.log").read_text().splitlines()
+    assert json.loads(log_lines[0])["outcome"] == "send_failed_no_auth_token"
+
+
+def test_post_event_skips_auth_for_non_firebase_endpoint(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {"telemetry_send_policy": "always", "telemetry_endpoint": "https://example.com"},
+    )
+
+    def fail_if_called():
+        raise AssertionError("should not fetch a firebase auth token for a non-firebase endpoint")
+
+    monkeypatch.setattr(firebase_auth, "get_id_token", lambda: fail_if_called())
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200))
+
+    assert telemetry.send_event({"x": 1}) is True
 
 
 def test_pending_queue_is_bounded(isolated_omm_home):
