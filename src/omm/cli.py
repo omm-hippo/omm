@@ -147,6 +147,13 @@ class GlobalOptions:
     quiet: bool = False
     no_color: bool = False
     pending_telemetry_notice: int = 0
+    # True once a command body has actually started running. Click's eager
+    # `--help` option prints and exits from the *sub*command's context,
+    # which is created only after the root callback has run - so at close
+    # time this flag is the one available signal that the user got real
+    # command output rather than a help page. See
+    # _update_notice_is_wanted.
+    command_body_ran: bool = False
 
 
 # Commands whose output --json actually restructures. Every other command
@@ -255,9 +262,24 @@ def global_flags(func):
                 "event(s) from a previous session.[/muted]"
             )
         opts.pending_telemetry_notice = 0
+        opts.command_body_ran = True
         return func(*args, **kwargs)
 
     wrapper.__signature__ = original_sig.replace(parameters=new_params)
+    return wrapper
+
+
+def marks_command_body_ran(func):
+    """Records that a command body started, for commands that can't take
+    `global_flags` (`verify` declares its own `--yes`, which would clash
+    with the one that decorator adds). `global_flags` sets the same flag
+    for every command it wraps."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        _global_opts().command_body_ran = True
+        return func(*args, **kwargs)
+
     return wrapper
 
 
@@ -418,6 +440,10 @@ def _root(
         err_console.no_color = True
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
+        # Bare `omm` prints a real (if short) result, so it counts as a
+        # command body for the update notice - no subcommand will run to
+        # set the flag itself.
+        opts.command_body_ran = True
         _maybe_run_onboarding(ctx)
         console.print(f"Ω omm {_version_line(_installed_commit())}")
         console.print(f"[muted]{_telemetry_destination_line()}[/muted]")
@@ -910,6 +936,25 @@ def _bg_version_check_cmd() -> None:
     version_check.cached_remote_head(_remote_head_commit, _channel_branch())
 
 
+def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
+    """Whether the deferred update notice should still print by the time the
+    command has finished.
+
+    Silent under `--quiet`: this notice is exactly the "background
+    status/hint line" that flag documents suppressing, and it is unrelated
+    to whatever the user actually ran. Silent when no command body ran,
+    which is how `omm <command> --help` gets here - Click's eager help
+    option prints and exits from the subcommand's context, well after the
+    root callback registered the close callback, so the notice used to land
+    appended below help text the user was still reading.
+
+    Both flags are read at close time rather than captured when the notice
+    was registered, because both are set after that point: the body flag by
+    the command itself, and `quiet` by global_flags() when `--quiet` came
+    after the subcommand name."""
+    return opts.command_body_ran and not opts.quiet
+
+
 def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch: str = "main") -> None:
     """The cached remote head can be up to _TTL_SECONDS stale, so a mismatch
     against it is only a hint, not proof. Before alarming the user, re-check
@@ -954,7 +999,13 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
     fresh, latest = version_check.cached_remote_head_if_fresh(branch)
     if fresh:
         if latest and latest != installed:
-            ctx.call_on_close(lambda: _confirm_and_print_update_notice(latest, installed, branch))
+            opts = ctx.ensure_object(GlobalOptions)
+
+            def print_notice_unless_suppressed() -> None:
+                if _update_notice_is_wanted(opts):
+                    _confirm_and_print_update_notice(latest, installed, branch)
+
+            ctx.call_on_close(print_notice_unless_suppressed)
         return
     if version_check.should_start_check(branch):
         version_check.mark_checking(branch)
@@ -3569,6 +3620,7 @@ _COMPATIBILITY_FAILURE_MESSAGES = {
 
 
 @app.command()
+@marks_command_body_ran
 def verify(
     model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
     engine: str = typer.Option(
