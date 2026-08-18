@@ -151,3 +151,68 @@ def test_benchmark_event_rejects_inconsistent_v9_metadata(changes, message):
 
     with pytest.raises(ValueError, match=message):
         BenchmarkEvent(**payload)
+
+
+def _lmstudio_v8_success(**changes):
+    fields = {
+        "ram_gb": 15.5,
+        "unified_memory": False,
+        "model_installed": "qwen2.5-0.5b-instruct",
+        "engine": "lmstudio",
+        "benchmark_version": 8,
+        "recorded_at": "2026-08-18T00:00:00+00:00",
+        "outcome": "success",
+        "tokens_per_sec": 103.2,
+        "sample_count": 3,
+        "tokens_per_sec_min": 100.0,
+        "tokens_per_sec_max": 106.0,
+        "parameter_count_b": 0.5,
+        "active_parameter_count_b": 0.5,
+        "quant_bits": 4.0,
+        "engine_version": "0.4.21",
+        "client_version": "0.2.95",
+        "cpu_arch": "AMD64",
+        "cpu_physical_cores": 16,
+        "cpu_logical_cores": 22,
+        "cpu_score": 0.0,
+        "cpu_tier": 3.0,
+    }
+    fields.update(changes)
+    return BenchmarkEvent(**fields)
+
+
+def test_benchmark_event_accepts_an_lmstudio_v8_row_without_runtime_metadata():
+    event = _lmstudio_v8_success()
+
+    assert event.engine == "lmstudio"
+    assert event.runtime_profile is None
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("runtime_profile", "explicit_ollama_options"),
+        ("context_length", 4096),
+        ("gpu_offload_percent", 100),
+        ("cpu_threads", 8),
+        ("num_batch", 512),
+    ],
+)
+def test_benchmark_event_rejects_fabricated_lmstudio_runtime_metadata(field, value):
+    with pytest.raises(ValueError, match="must not include runtime metadata"):
+        _lmstudio_v8_success(**{field: value})
+
+
+def test_benchmark_event_still_requires_runtime_metadata_for_ollama_v8():
+    with pytest.raises(ValueError, match="requires runtime metadata"):
+        _lmstudio_v8_success(engine="ollama")
+
+
+def test_benchmark_event_rejects_an_lmstudio_row_claiming_the_v9_profile():
+    with pytest.raises(ValueError, match="require the ollama engine"):
+        _lmstudio_v8_success(benchmark_version=9)
+
+
+def test_benchmark_event_still_requires_an_engine_version_from_lmstudio():
+    with pytest.raises(ValueError, match="requires model metadata"):
+        _lmstudio_v8_success(engine_version=None)

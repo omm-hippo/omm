@@ -5418,13 +5418,26 @@ def _report_telemetry(
         quant_bits = candidate_quant_bits(candidate)
     digest = _normalize_model_digest(model_digest or metadata.get("digest"))
     safe_filename = _safe_model_filename(model_filename or filename)
-    complete_runtime = _complete_runtime(runtime)
+    # LM Studio has no /api/ps equivalent and ignores the Ollama runtime
+    # options omm computes, so omm can neither set nor observe the runtime
+    # shape (runtime_profile, context_length, gpu_offload_percent,
+    # cpu_threads, num_batch) of an LM Studio generation. Requiring that
+    # block for every engine silently collapsed every LM Studio benchmark
+    # to the v4 shape, throwing away the parameter/quant/CPU/engine-version
+    # fields LM Studio *can* report honestly. v8 therefore carries LM Studio
+    # rows with no runtime block at all rather than fabricated numbers, and
+    # the Rules require those five keys to be absent when engine is
+    # "lmstudio" so an unknown runtime can never be mistaken for a measured
+    # one.
+    runtime_is_observable = engine != "lmstudio"
+    complete_runtime = _complete_runtime(runtime) if runtime_is_observable else None
     complete_cpu = _complete_cpu_metadata(info)
     complete_gpu = _complete_gpu_metadata(info)
     client_version = _client_version()
     if (
         parameter_count is not None and active_parameter_count is not None and quant_bits is not None
-        and complete_runtime is not None and complete_cpu is not None
+        and (complete_runtime is not None or not runtime_is_observable)
+        and complete_cpu is not None
         and isinstance(engine_version, str) and engine_version
         and client_version is not None and sample_count >= 3
     ):
@@ -5442,7 +5455,7 @@ def _report_telemetry(
             client_version=client_version,
             benchmark_version=8,
             outcome="success",
-            **complete_runtime,
+            **(complete_runtime or {}),
             **complete_cpu,
         )
         if complete_gpu:
@@ -5451,7 +5464,18 @@ def _report_telemetry(
             event["model_filename"] = safe_filename
         if digest is not None:
             event["model_digest"] = digest
-        if memory_measurement is not None and memory_estimate is not None:
+        # v9 is not "v8 plus memory data" - it is the contribute-v1
+        # measurement profile, which asserts the run happened at exactly
+        # context_length 1024 / num_batch 128 and that the memory estimate
+        # was computed for that same configuration. omm applies that profile
+        # through Ollama's options; LM Studio ignores them and reports
+        # nothing back, so an LM Studio row could only claim conformance it
+        # never had. Keep v9 Ollama-only and let LM Studio land at v8.
+        if (
+            memory_measurement is not None
+            and memory_estimate is not None
+            and runtime_is_observable
+        ):
             before = memory_measurement.get("ram_available_before_gb")
             minimum = memory_measurement.get("ram_available_min_gb")
             after = memory_measurement.get("ram_available_after_gb")
