@@ -104,16 +104,28 @@ def _append_pending(event: dict[str, Any]) -> None:
 
 def _post_event(event: dict[str, Any]) -> bool:
     """Actually attempt the HTTP POST and log the outcome. Returns True on
-    a 2xx response, False otherwise (network error, bad status, or no
-    endpoint configured)."""
+    a 2xx response, False otherwise (network error, bad status, no endpoint
+    configured, or - for the hosted Firebase collector, whose RTDB rules
+    require `auth != null` - no anonymous auth token available)."""
     import requests
 
     endpoint = load_config().get("telemetry_endpoint")
     if not isinstance(endpoint, str) or not secure_endpoint(endpoint):
         log_attempt("skipped_no_endpoint")
         return False
+
+    params = {}
+    if "firebaseio.com" in endpoint:
+        from omm import firebase_auth
+
+        id_token = firebase_auth.get_id_token()
+        if id_token is None:
+            log_attempt("send_failed_no_auth_token")
+            return False
+        params["auth"] = id_token
+
     try:
-        resp = requests.post(endpoint, json=event, timeout=5)
+        resp = requests.post(endpoint, params=params, json=event, timeout=5)
     except requests.RequestException as e:
         log_attempt("send_failed_network", str(e))
         return False
