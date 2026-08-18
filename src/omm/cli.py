@@ -24,6 +24,7 @@ import click
 import typer
 from prompt_toolkit.keys import Keys
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import (
     BarColumn,
     Progress,
@@ -2174,6 +2175,7 @@ def _guard_contribution_load(
         num_batch=runtime_profile.num_batch,
         gpu_offload_percent=actual_offload,
         metadata=metadata,
+        mmap_weights=contribute_memory.weights_mmap_expected(runtime_hw),
     ) or prior_estimate
 
     for resident in residents:
@@ -4765,6 +4767,20 @@ def benchmark_cmd(
             benchmark.stop_ollama_daemon(started_daemon)
 
 
+def _telemetry_send_failure_text() -> str:
+    status = telemetry.last_send_status()
+    if status is None:
+        return "unknown send failure"
+    if status.status_code is not None:
+        detail = f": {escape(status.detail)}" if status.detail else ""
+        return f"server rejected the event (HTTP {status.status_code}{detail})"
+    if status.outcome == "send_failed_network":
+        return "network request failed"
+    if status.outcome == "skipped_no_endpoint":
+        return "no valid telemetry endpoint is configured"
+    return status.outcome.replace("_", " ")
+
+
 def _report_telemetry(
     filename: str,
     repo_id: str | None,
@@ -4965,14 +4981,23 @@ def _report_telemetry(
                         memory_estimate.required_vram_gb, 3
                     ),
                 )
+    telemetry.reset_send_status()
     sent = telemetry.send_event(event, force=True)
     if not sent:
+        reason = _telemetry_send_failure_text()
         if load_config().get("telemetry_send_policy") == "always":
-            console.print("[muted]Telemetry not sent (queued for a later retry).[/muted]")
-        else:
             console.print(
-                "[muted]Telemetry not sent (this one-time upload was not queued).[/muted]"
+                f"[muted]Telemetry not sent: {reason}; queued for a later retry.[/muted]"
             )
+        else:
+            diagnostic = telemetry.last_failed_path()
+            detail = (
+                f"A diagnostic copy was saved locally to {diagnostic} and will not be "
+                "retried without consent."
+                if diagnostic.exists()
+                else "This one-time upload was not queued."
+            )
+            console.print(f"[muted]Telemetry not sent: {reason}. {detail}[/muted]")
     return sent
 
 
@@ -5090,14 +5115,24 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
             event.update({key: attempted_runtime[key] for key in fields})
             event["runtime_profile"] = "explicit_ollama_options"
 
+    telemetry.reset_send_status()
     sent = telemetry.send_event(event, force=True)
     if not sent:
+        failure = _telemetry_send_failure_text()
         if load_config().get("telemetry_send_policy") == "always":
-            console.print(f"[muted]Telemetry not sent for {tag} (queued for a later retry).[/muted]")
-        else:
             console.print(
-                f"[muted]Telemetry not sent for {tag} "
-                "(this one-time upload was not queued).[/muted]"
+                f"[muted]Telemetry not sent for {tag}: {failure}; queued for a later retry.[/muted]"
+            )
+        else:
+            diagnostic = telemetry.last_failed_path()
+            detail = (
+                f"A diagnostic copy was saved locally to {diagnostic} and will not be "
+                "retried without consent."
+                if diagnostic.exists()
+                else "This one-time upload was not queued."
+            )
+            console.print(
+                f"[muted]Telemetry not sent for {tag}: {failure}. {detail}[/muted]"
             )
     return sent
 
@@ -5313,6 +5348,7 @@ def _contribute_candidate_memory_plan(
         num_batch=profile.num_batch,
         gpu_offload_percent=profile.gpu_offload_percent,
         metadata=metadata,
+        mmap_weights=contribute_memory.weights_mmap_expected(current_hw),
     )
     if estimate is None:
         return None
@@ -5602,8 +5638,8 @@ def _run_contribution_loop(
         if memory_plan is not None and not opts.quiet:
             console.print(
                 "[muted]Memory preflight before download: "
-                f"committed buffers {memory_plan.estimate.committed_ram_gb:.2f} GiB; "
-                f"memory-mapped weights {memory_plan.estimate.mapped_weights_ram_gb:.2f} GiB; "
+                f"committed RAM {memory_plan.estimate.committed_ram_gb:.2f} GiB; "
+                f"mmap-backed weights {memory_plan.estimate.mapped_weights_ram_gb:.2f} GiB; "
                 f"median available {memory_plan.sample.median_gb:.2f} GiB; "
                 f"emergency reserve {memory_plan.sample.reserve_gb:.2f} GiB; "
                 f"estimate source {memory_plan.estimate.source}.[/muted]"
@@ -5618,7 +5654,7 @@ def _run_contribution_loop(
             if item.attempts == 1:
                 stats.deferred_low_memory += 1
             reason = (
-                "runtime buffers exceed physical capacity"
+                "required committed RAM exceeds physical capacity"
                 if memory_plan.decision
                 is contribute_memory.ContributionMemoryDecision.BLOCK
                 else "runtime buffer memory is temporarily unavailable"
@@ -5954,7 +5990,7 @@ def contribute() -> None:
             "(no per-model confirmation)",
             f"Uploads every benchmark result per your current upload policy ({policy})",
             "Uses a fixed 1024-token context and 128-token batch for comparable results",
-            "Gates committed runtime buffers before download; monitors paging and "
+            "Gates committed runtime memory before download; monitors paging and "
             "measurement stability while running",
             "Defers transient memory shortages up to three times instead of losing "
             "the candidate",

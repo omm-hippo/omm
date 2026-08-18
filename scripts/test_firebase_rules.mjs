@@ -634,6 +634,17 @@ const v9Success = {
 const v9SuccessCreated = await request("telemetry", "POST", v9Success);
 assert.equal(v9SuccessCreated.ok, true, `valid v9 success event was rejected (${v9SuccessCreated.status})`);
 
+const v9SuccessWithNullGpuFields = await request("telemetry", "POST", {
+  ...v9Success,
+  vram_gb: null,
+  gpu_tflops: null,
+});
+assert.equal(
+  v9SuccessWithNullGpuFields.ok,
+  true,
+  "v9 rejected optional GPU fields represented as JSON null",
+);
+
 const v9Pressured = await request("telemetry", "POST", {
   ...v9Success,
   measurement_quality: "pressured",
