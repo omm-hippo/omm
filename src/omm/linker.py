@@ -147,6 +147,17 @@ def _link_key(path: Path) -> str:
     return str(path.expanduser().absolute())
 
 
+def _engine_path_lock(path: Path) -> Path:
+    """Lock proxy for a path inside an engine-owned directory (e.g. Ollama's
+    blobs/manifests dirs). `locked()` places a `.lock` sibling right next to
+    the path it protects, which is fine inside omm's own OMM_HOME but would
+    otherwise litter a third-party engine's directory with a stray `.lock`
+    file forever - so lock a same-named proxy under OMM_HOME/locks instead.
+    Pass the return value straight to `locked()`, which appends `.lock`."""
+    digest = hashlib.sha256(_link_key(path).encode()).hexdigest()
+    return config.OMM_HOME / "locks" / digest
+
+
 def _load_link_ownership() -> dict[str, dict[str, object]]:
     if not LINK_OWNERSHIP_PATH.exists():
         return {}
@@ -959,22 +970,27 @@ def link_ollama(
 
         model_blob = blobs_dir / f"sha256-{model_sha256}"
         # A matching content-addressed blob may be owned by Ollama or another
-        # manifest. It is already usable; never replace it.
-        if model_blob.exists():
-            try:
-                blob_matches = model_blob.samefile(gguf_path) or (
-                    sha256_file(model_blob) == model_sha256
-                )
-            except OSError:
-                blob_matches = False
-            if not blob_matches:
-                raise LinkError(
-                    f"Existing Ollama model blob does not match its digest: {model_blob}."
-                )
-        elif model_blob.is_symlink():
-            raise LinkError(f"Refusing broken Ollama model blob symlink: {model_blob}.")
-        else:
-            link_file(gguf_path, model_blob, on_copy=on_copy)
+        # manifest. It is already usable; never replace it. Locked so two
+        # omm processes linking the same model concurrently serialize on
+        # the check-then-create instead of both reaching the `else` branch
+        # and racing `link_file`'s own exists check, which used to surface
+        # as a raw FileExistsError from the loser's symlink_to call.
+        with locked(_engine_path_lock(model_blob)):
+            if model_blob.exists():
+                try:
+                    blob_matches = model_blob.samefile(gguf_path) or (
+                        sha256_file(model_blob) == model_sha256
+                    )
+                except OSError:
+                    blob_matches = False
+                if not blob_matches:
+                    raise LinkError(
+                        f"Existing Ollama model blob does not match its digest: {model_blob}."
+                    )
+            elif model_blob.is_symlink():
+                raise LinkError(f"Refusing broken Ollama model blob symlink: {model_blob}.")
+            else:
+                link_file(gguf_path, model_blob, on_copy=on_copy)
 
         # Mirrors the config produced by `ollama create` for a bare GGUF (no
         # Modelfile TEMPLATE override): a single model layer, config mediaType
@@ -1041,17 +1057,37 @@ def link_ollama(
             raise LinkError("Refusing Ollama manifest path outside the models directory.")
         manifest_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = manifest_dir / "latest"
-        if manifest_path.exists() or manifest_path.is_symlink():
-            if not _owned_manifest(manifest_path, expected_source=gguf_path):
-                raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
-            manifest_path.unlink()
-            _update_link_ownership(manifest_path, None)
-        manifest_path.write_text(json.dumps(manifest, indent=2))
-        try:
-            _record_ownership(manifest_path, gguf_path, "manifest")
-        except OSError:
-            manifest_path.unlink(missing_ok=True)
-            raise
+        manifest_json = json.dumps(manifest, indent=2)
+        # Locked + read-back verified: two omm processes linking the same
+        # model_name concurrently used to be able to interleave unlocked
+        # writes and tear the manifest, which `ollama show` would then
+        # reject and misattribute to a genuine version incompatibility,
+        # permanently poisoning `_manifest_format_known_good` for a
+        # transient race rather than a real format drift.
+        with locked(_engine_path_lock(manifest_path)):
+            if manifest_path.exists() or manifest_path.is_symlink():
+                if not _owned_manifest(manifest_path, expected_source=gguf_path):
+                    raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
+                manifest_path.unlink()
+                _update_link_ownership(manifest_path, None)
+            atomic_write_text(manifest_path, manifest_json)
+            try:
+                written_back = json.loads(manifest_path.read_text())
+            except (OSError, ValueError) as e:
+                manifest_path.unlink(missing_ok=True)
+                raise LinkError(
+                    f"Ollama manifest for {model_name} did not read back intact after write: {e}."
+                ) from e
+            if written_back != manifest:
+                manifest_path.unlink(missing_ok=True)
+                raise LinkError(
+                    f"Ollama manifest for {model_name} was corrupted during write (concurrent writer?)."
+                )
+            try:
+                _record_ownership(manifest_path, gguf_path, "manifest")
+            except OSError:
+                manifest_path.unlink(missing_ok=True)
+                raise
     except OSError as e:
         raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
 
@@ -1107,10 +1143,11 @@ def _manifest_format_known_good(ollama_version: str) -> bool | None:
 
 
 def _record_manifest_format_result(ollama_version: str, compatible: bool) -> None:
+    path = _ollama_manifest_compat_cache_path()
+    content = json.dumps({"ollama_version": ollama_version, "compatible": compatible})
     try:
-        path = _ollama_manifest_compat_cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"ollama_version": ollama_version, "compatible": compatible}))
+        with locked(path):
+            atomic_write_text(path, content)
     except OSError:
         pass
 

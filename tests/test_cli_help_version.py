@@ -66,6 +66,35 @@ def test_help_all_is_a_compact_listing_not_a_full_flag_dump():
     assert len(result.stdout.splitlines()) < 100
 
 
+def test_help_all_hints_at_flags_option():
+    result = runner.invoke(cli.app, ["help", "--all"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "--flags" in result.stdout
+
+
+def test_help_all_flags_expands_each_command_option_list():
+    result = runner.invoke(cli.app, ["help", "--all", "--flags"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "--skip-unfit" in result.stdout
+    assert "omm search" in result.stdout
+    assert "omm setting theme" in result.stdout
+    # The default-mode hint about --flags itself should not repeat once shown.
+    assert "Add `--flags`" not in result.stdout
+
+
+def test_help_all_flags_omits_bare_positional_arguments():
+    # search/verify take a positional model/query argument; typer's own
+    # get_help_record() would otherwise surface it with no useful help text.
+    result = runner.invoke(cli.app, ["help", "--all", "--flags"])
+
+    assert result.exit_code == 0, result.stdout
+    lines = [line.strip() for line in result.stdout.splitlines()]
+    assert "query" not in lines
+    assert "model_name" not in lines
+
+
 def test_help_all_excludes_hidden_commands():
     result = runner.invoke(cli.app, ["help", "--all"])
 

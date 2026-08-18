@@ -6,7 +6,6 @@ import os
 import re
 from dataclasses import dataclass
 
-from questionary import Style
 from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -31,20 +30,28 @@ _ROW_METRIC = "#60a5fa"
 _ROW_SIZE = "#f472b6"
 _ROW_MUTED = "#6b7280"
 
-SELECT_STYLE = (
-    Style(
-        [
-            ("qmark", "fg:#22d3ee bold"),
-            ("question", "fg:#22d3ee bold"),
-            ("pointer", "fg:#22d3ee bold"),
-            ("highlighted", "fg:#ffffff bg:#164e63 bold"),
-            ("selected", f"fg:{_ROW_SUCCESS}"),
-            ("instruction", f"fg:{_ROW_MUTED}"),
-        ]
-    )
-    if COLORS_ENABLED
-    else Style([])
-)
+def __getattr__(name: str):
+    # SELECT_STYLE built lazily so `import omm.recommend_ui` doesn't drag in
+    # questionary (and its prompt_toolkit chain) for callers that never
+    # touch the interactive recommend picker.
+    if name == "SELECT_STYLE":
+        from questionary import Style
+
+        return (
+            Style(
+                [
+                    ("qmark", "fg:#22d3ee bold"),
+                    ("question", "fg:#22d3ee bold"),
+                    ("pointer", "fg:#22d3ee bold"),
+                    ("highlighted", "fg:#ffffff bg:#164e63 bold"),
+                    ("selected", f"fg:{_ROW_SUCCESS}"),
+                    ("instruction", f"fg:{_ROW_MUTED}"),
+                ]
+            )
+            if COLORS_ENABLED
+            else Style([])
+        )
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _SPECIAL_VARIANT_WORDS = (
     "abliterated",
