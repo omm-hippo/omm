@@ -22,7 +22,6 @@ from typing import Annotated
 
 import click
 import typer
-from prompt_toolkit.keys import Keys
 from rich.console import Console
 from rich.markup import escape
 from rich.progress import (
@@ -1338,6 +1337,7 @@ def update() -> None:
 def _add_escape_to_cancel(question: questionary.Question) -> questionary.Question:
     """questionary only aborts on Ctrl+C/Ctrl+Q by default; make Escape do
     the same so `.ask()` returns None instead of requiring Ctrl+C."""
+    from prompt_toolkit.keys import Keys
 
     def _abort(event) -> None:
         event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
@@ -1401,6 +1401,7 @@ def _build_single_key_bindings(
     merged into the Question by the time we get it back, so extra bindings
     can't be bolted on afterwards."""
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
 
     by_key: dict[str, tuple[str, object]] = {}
     for key, label, value in choices:
@@ -5895,6 +5896,7 @@ class _EscListener:
     def _run_posix(self) -> None:
         try:
             from prompt_toolkit.input import create_input
+            from prompt_toolkit.keys import Keys
 
             inp = create_input()
             with inp.raw_mode():
