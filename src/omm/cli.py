@@ -487,12 +487,37 @@ def _add_command_row(grid: Table, name: str, cmd_obj: click.Command) -> None:
     grid.add_row(f"  omm {name}", cmd_obj.get_short_help_str(limit=1000))
 
 
-def _print_full_command_reference(root_ctx: click.Context) -> None:
+def _print_command_flags(root_ctx: click.Context, name: str, cmd_obj: click.Command) -> None:
+    """Indented flag block for one command, used by `help --all --flags`.
+    Built from each param's own `get_help_record` (name + help only)
+    rather than `get_help()`, which would repeat the Usage/description
+    lines already shown by the summary grid above."""
+    sub_ctx = cmd_obj.make_context(name, [], parent=root_ctx, resilient_parsing=True)
+    # Typer's vendored click fork gives positional Arguments a
+    # get_help_record() too (vanilla click.Argument returns None) - filter
+    # those out by dash-prefix so this block only lists actual flags.
+    records = [
+        record
+        for p in cmd_obj.params
+        if (record := p.get_help_record(sub_ctx)) is not None and record[0].startswith("-")
+    ]
+    if not records:
+        return
+    console.print(f"  [bold]omm {name}[/bold]")
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(no_wrap=True)
+    grid.add_column()
+    for opts, help_text in records:
+        grid.add_row(f"    {opts}", help_text)
+    console.print(grid)
+
+
+def _print_full_command_reference(root_ctx: click.Context, show_flags: bool = False) -> None:
     """Homebrew/git-`-a`-style listing: every non-hidden command plus its
-    one-line summary, grouped like the curated root help - not each
-    command's full flag reference, which is what `omm <command> --help`
-    is for. A prior version dumped every command's complete --help text
-    here (~400 lines); this mirrors how git/docker/gh expand `-a` instead."""
+    one-line summary, grouped like the curated root help. `show_flags`
+    (the `--flags` option) additionally expands each command's option
+    list beneath its row - `omm <command> --help` still exists for a
+    single command's full formatted help text."""
     commands = root_ctx.command.commands
     grouped_names = {name for _, names in _HELP_ALL_GROUPS for name in names}
     name_width = len("  omm ") + max(
@@ -508,6 +533,9 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
         for name in visible:
             _add_command_row(grid, name, commands[name])
         console.print(grid)
+        if show_flags:
+            for name in visible:
+                _print_command_flags(root_ctx, name, commands[name])
         console.print()
 
     setting_cmd = commands.get("setting")
@@ -528,6 +556,9 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
             for name in sub_names:
                 _add_command_row(grid, f"setting {name}", setting_cmd.commands[name])
             console.print(grid)
+            if show_flags:
+                for name in sub_names:
+                    _print_command_flags(root_ctx, f"setting {name}", setting_cmd.commands[name])
             console.print()
 
     # Safety net: any top-level command not yet slotted into a group above
@@ -541,9 +572,14 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
         for name in leftover:
             _add_command_row(grid, name, commands[name])
         console.print(grid)
+        if show_flags:
+            for name in leftover:
+                _print_command_flags(root_ctx, name, commands[name])
         console.print()
 
     console.print("[muted]Run `omm COMMAND --help` for a command's full option list.[/muted]")
+    if not show_flags:
+        console.print("[muted]Add `--flags` to show every command's options inline.[/muted]")
     console.print("[muted]Exit codes: 0 success, 1 failure, 2 usage error (bad flag/argument).[/muted]")
 
 
@@ -553,12 +589,15 @@ def help_cmd(
     ctx: typer.Context,
     command: str = typer.Argument(None, help="Show help for a specific subcommand."),
     all: bool = typer.Option(False, "--all", help="List every command, not just the common ones."),
+    flags: bool = typer.Option(
+        False, "--flags", help="With --all, also show each command's full option list."
+    ),
 ) -> None:
     """Show help, same as --help."""
     root_ctx = ctx.find_root()
     if command is None:
         if all:
-            _print_full_command_reference(root_ctx)
+            _print_full_command_reference(root_ctx, show_flags=flags)
             raise typer.Exit(0)
         console.print(root_ctx.get_help())
         raise typer.Exit(0)
