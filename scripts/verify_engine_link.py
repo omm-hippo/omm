@@ -258,11 +258,29 @@ def main() -> None:
         ollama_tag = "omm-ci-test"
 
         try:
-            warning = linker.link_engine(
-                args.engine, gguf_path, repo_id="omm-ci/test-model", ollama_tag=ollama_tag, force=True
-            )
+            if args.engine == "ollama":
+                # link_engine() always runs with verify_compat=True for
+                # real Ollama, which - if this Ollama version rejects
+                # omm's hand-rolled manifest - falls back to native
+                # `ollama create`. That path runs llama-quantize's real
+                # model validation, which our placeholder GGUF (a header
+                # and one KV pair, no tensor data at all) can never pass;
+                # a real run of this workflow hit exactly that (Ollama's
+                # acceptance of the hand-rolled format isn't guaranteed
+                # stable across its own releases). That compat/fallback
+                # machinery is what issue #91 already covers - what #94
+                # actually asks is "does omm's linked file get
+                # recognized," so this calls link_ollama() directly with
+                # verify_compat=False rather than trying to also make a
+                # placeholder file survive llama-quantize.
+                linker.link_ollama(gguf_path, ollama_tag, force=True, verify_compat=False)
+                warning = None
+            else:
+                warning = linker.link_engine(
+                    args.engine, gguf_path, repo_id="omm-ci/test-model", ollama_tag=ollama_tag, force=True
+                )
         except linker.LinkError as e:
-            _fail(f"link_engine({args.engine!r}) raised: {e}")
+            _fail(f"linking {args.engine!r} raised: {e}")
         if warning:
             print(f"warning during link: {warning}")
 
