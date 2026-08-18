@@ -213,6 +213,8 @@ INTENTIONALLY_EXCLUDED_REASONS = frozenset({
     "model_unfit_excluded_from_regression",
     "performance_unfit_excluded_from_regression",
     "transient_error_excluded",
+    "pressured_measurement_excluded",
+    "unstable_measurement_excluded",
 })
 
 
@@ -240,16 +242,16 @@ def _extract_features_and_reason(
     if engine not in ("ollama", "llama.cpp", "lmstudio"):
         return None, None, "unsupported_engine"
     benchmark_version = row.get("benchmark_version")
-    if benchmark_version not in (None, 1, 2, 3, 4, 5, 6, 7, 8):
+    if benchmark_version not in (None, 1, 2, 3, 4, 5, 6, 7, 8, 9):
         return None, None, "unsupported_schema"
 
     tokens_per_sec = _bounded_number(row.get("tokens_per_sec"), 0.0, 10_000.0)
     ram_gb = _bounded_number(row.get("ram_gb"), 1.0, 1024.0)
     vram_gb = _bounded_number(row.get("vram_gb"), 0.0, 512.0)
     gpu_tflops = _bounded_number(row.get("gpu_tflops"), 0.0, 1000.0)
-    # "direct" = the explicit-metadata schema (v6, v7, and v8), as opposed
+    # "direct" = the explicit-metadata schema (v6+), as opposed
     # to the legacy name-parsing fallback used by v1-v5.
-    is_direct = benchmark_version in (6, 7, 8)
+    is_direct = benchmark_version in (6, 7, 8, 9)
     if is_direct:
         required_runtime = (
             "runtime_profile", "context_length", "gpu_offload_percent", "cpu_threads", "num_batch",
@@ -271,7 +273,7 @@ def _extract_features_and_reason(
         return None, None, "invalid_measurement"
     if None in (context_length, gpu_offload_percent, cpu_threads, num_batch):
         return None, None, "invalid_runtime"
-    if require_speed and benchmark_version in (4, 5, 6, 7, 8):
+    if require_speed and benchmark_version in (4, 5, 6, 7, 8, 9):
         if is_direct and any(
             row.get(field) is None
             for field in ("sample_count", "tokens_per_sec_min", "tokens_per_sec_max")
@@ -294,6 +296,54 @@ def _extract_features_and_reason(
             or (is_direct and sample_count < 3)
         ):
             return None, None, "invalid_samples"
+
+    if benchmark_version == 9:
+        required_v9 = (
+            "measurement_profile",
+            "measurement_quality",
+            "ram_available_before_gb",
+            "ram_available_min_gb",
+            "ram_available_after_gb",
+            "memory_pressure_observed",
+            "tokens_per_sec_mad_ratio",
+            "memory_estimate_source",
+            "memory_estimate_confidence",
+            "estimated_mapped_weights_gb",
+            "estimated_committed_ram_gb",
+            "estimated_required_vram_gb",
+        )
+        if any(row.get(field) is None for field in required_v9):
+            return None, None, "missing_measurement_metadata"
+        before = _direct_bounded_number(row.get("ram_available_before_gb"), 0.0, 4096.0)
+        minimum = _direct_bounded_number(row.get("ram_available_min_gb"), 0.0, 4096.0)
+        after = _direct_bounded_number(row.get("ram_available_after_gb"), 0.0, 4096.0)
+        mad_ratio = _direct_bounded_number(row.get("tokens_per_sec_mad_ratio"), 0.0, 10.0)
+        estimates = tuple(
+            _direct_bounded_number(row.get(field), 0.0, 4096.0)
+            for field in (
+                "estimated_mapped_weights_gb",
+                "estimated_committed_ram_gb",
+                "estimated_required_vram_gb",
+            )
+        )
+        quality = row.get("measurement_quality")
+        pressure = row.get("memory_pressure_observed")
+        if (
+            row.get("measurement_profile") != "contribute-v1"
+            or context_length != 1024
+            or num_batch != 128
+            or quality not in ("clean", "pressured", "unstable")
+            or not isinstance(pressure, bool)
+            or row.get("memory_estimate_source") not in ("gguf_header", "profile_fallback")
+            or row.get("memory_estimate_confidence") not in ("low", "medium", "high")
+            or None in (before, minimum, after, mad_ratio, *estimates)
+            or minimum > min(before, after)
+            or (pressure and quality != "pressured")
+            or (not pressure and quality == "pressured")
+            or (not pressure and quality == "clean" and mad_ratio > 0.15)
+            or (not pressure and quality == "unstable" and mad_ratio <= 0.15)
+        ):
+            return None, None, "invalid_measurement_metadata"
 
     if is_direct:
         required_model_metadata = (
@@ -346,7 +396,7 @@ def _extract_features_and_reason(
         if param_count_b is None or quant_bits is None or model_size_gb is None:
             return None, None, "unparseable_model"
 
-    if benchmark_version == 8:
+    if benchmark_version in (8, 9):
         cpu_score = _direct_bounded_number(row.get("cpu_score"), 0.0, 99_999.0)
         cpu_tier = _direct_bounded_number(row.get("cpu_tier"), 0.0, 10.0)
         if cpu_score is None or cpu_tier is None:
@@ -398,7 +448,7 @@ def _real_row_to_sample(row: dict) -> tuple[tuple[list[float], float] | None, st
     performance_unfit go instead) - never coerced into a fake
     tokens_per_sec=0 regression row.
     """
-    if isinstance(row, dict) and row.get("benchmark_version") in (7, 8):
+    if isinstance(row, dict) and row.get("benchmark_version") in (7, 8, 9):
         outcome = row.get("outcome")
         if outcome not in V7_OUTCOMES:
             return None, "invalid_outcome"
@@ -408,6 +458,14 @@ def _real_row_to_sample(row: dict) -> tuple[tuple[list[float], float] | None, st
             return None, "model_unfit_excluded_from_regression"
         if outcome == "performance_unfit":
             return None, "performance_unfit_excluded_from_regression"
+        if row.get("benchmark_version") == 9:
+            quality = row.get("measurement_quality")
+            if quality == "pressured":
+                return None, "pressured_measurement_excluded"
+            if quality == "unstable":
+                return None, "unstable_measurement_excluded"
+            if quality != "clean":
+                return None, "invalid_measurement_quality"
     features, tokens_per_sec, reason = _extract_features_and_reason(row, require_speed=True)
     if features is None:
         return None, reason
@@ -434,7 +492,7 @@ def _real_row_to_fit_sample(row: dict) -> tuple[tuple[list[float], bool] | None,
     """
     if not isinstance(row, dict):
         return None, "not_an_object"
-    if row.get("benchmark_version") in (7, 8):
+    if row.get("benchmark_version") in (7, 8, 9):
         outcome = row.get("outcome")
         if outcome not in V7_OUTCOMES:
             return None, "invalid_outcome"
@@ -462,6 +520,7 @@ def real_rows_to_training_data_with_audit(
     direct_v6_groups: set[tuple[float, ...]] = set()
     direct_v7_groups: set[tuple[float, ...]] = set()
     direct_v8_groups: set[tuple[float, ...]] = set()
+    direct_v9_groups: set[tuple[float, ...]] = set()
     for row in rows:
         sample, reason = _real_row_to_sample(row)
         if sample is None:
@@ -485,6 +544,8 @@ def real_rows_to_training_data_with_audit(
             # Same bar again, via v8's cpu_score/gpu_score in place of
             # cpu_model.
             direct_v8_groups.add(group_key)
+        elif benchmark_version == 9:
+            direct_v9_groups.add(group_key)
         samples = groups.setdefault(group_key, [])
         if len(samples) < 50:
             samples.append(tokens_per_sec)
@@ -504,13 +565,16 @@ def real_rows_to_training_data_with_audit(
         "direct_v6_unique_configurations": len(direct_v6_groups),
         "direct_v7_unique_configurations": len(direct_v7_groups),
         "direct_v8_unique_configurations": len(direct_v8_groups),
-        # Union, not sum: a configuration benchmarked under v6, v7, and v8
+        "direct_v9_unique_configurations": len(direct_v9_groups),
+        # Union, not sum: a configuration benchmarked under multiple direct schemas
         # (same hardware/model/runtime feature vector, just a newer client)
         # is one real training example, not three. This is the count the
         # quality gate's min_unique_configurations threshold should compare
         # against - see validate_dataset(). The per-version counts above
         # stay purely diagnostic.
-        "direct_unique_configurations": len(direct_v6_groups | direct_v7_groups | direct_v8_groups),
+        "direct_unique_configurations": len(
+            direct_v6_groups | direct_v7_groups | direct_v8_groups | direct_v9_groups
+        ),
         "duplicates_collapsed": samples_used - len(groups),
         "rejections": dict(sorted(rejections.items())),
     }

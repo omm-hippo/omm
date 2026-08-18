@@ -24,6 +24,25 @@ class _FakeQueue:
         self.marked_seen.append(ref)
 
 
+class _DeferredFakeQueue:
+    def __init__(self, candidate):
+        self.candidate = candidate
+        self.deferred = False
+        self.marked_seen = []
+
+    def next_candidate(self, refetch=None, fetch_siblings=None):
+        return None if self.deferred else self.candidate
+
+    def defer(self, ref):
+        self.deferred = True
+
+    def release_deferred(self, ref):
+        self.deferred = False
+
+    def mark_seen(self, ref):
+        self.marked_seen.append(ref)
+
+
 def _candidate(repo_id="org/repo", filename="model.gguf", name="model", provider="huggingface"):
     return {"repo_id": repo_id, "filename": filename, "name": name, "provider": provider}
 
@@ -61,6 +80,63 @@ def test_stops_when_queue_exhausted(isolated_omm_home, monkeypatch):
     assert stats.attempted_not_uploaded == 0
 
 
+def test_safe_memory_plan_is_reported_before_install(isolated_omm_home, monkeypatch, capsys):
+    candidate = _candidate(filename="model-1B-Q4.gguf")
+    queue = _FakeQueue([candidate])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "_contribute_candidate_memory_plan",
+        lambda candidate: SimpleNamespace(
+            decision=cli.contribute_memory.ContributionMemoryDecision.SAFE,
+            estimate=SimpleNamespace(
+                committed_ram_gb=0.31,
+                mapped_weights_ram_gb=0.75,
+                source="gguf_header",
+            ),
+            sample=SimpleNamespace(median_gb=1.2, reserve_gb=0.5),
+        ),
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        assert "Memory preflight before download" in capsys.readouterr().out
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename=resolved.filename,
+            repo_id=resolved.repo_id,
+            linked={},
+            tokens_per_sec=None,
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+
+    cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+
+def test_keyboard_interrupt_uses_owned_cleanup_path(isolated_omm_home, monkeypatch):
+    candidate = _candidate(filename="interrupted.gguf")
+    queue = _FakeQueue([candidate])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", lambda candidate: None)
+    monkeypatch.setattr(
+        cli,
+        "_install_impl",
+        lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    cleaned = []
+    monkeypatch.setattr(
+        cli, "_cleanup_stopped_contribution", lambda filename: cleaned.append(filename)
+    )
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert cleaned == ["interrupted.gguf"]
+    assert stop_event.is_set()
+    assert stats.benchmarked == []
+
+
 def test_low_memory_candidate_is_skipped_before_download(isolated_omm_home, monkeypatch):
     candidate = _candidate(filename="too-large-for-live-memory.gguf")
     candidate["size_bytes"] = 1024**3
@@ -71,9 +147,15 @@ def test_low_memory_candidate_is_skipped_before_download(isolated_omm_home, monk
         cli,
         "_contribute_candidate_memory_plan",
         lambda candidate: SimpleNamespace(
-            decision=cli.memory_guard_mod.GuardDecision.BLOCK,
+            decision=cli.contribute_memory.ContributionMemoryDecision.BLOCK,
             required_gb=1.2,
             available_gb=0.0,
+            estimate=SimpleNamespace(
+                committed_ram_gb=1.2,
+                mapped_weights_ram_gb=1.0,
+                source="profile_fallback",
+            ),
+            sample=SimpleNamespace(median_gb=0.0, reserve_gb=0.5),
         ),
     )
     monkeypatch.setattr(
@@ -93,6 +175,45 @@ def test_low_memory_candidate_is_skipped_before_download(isolated_omm_home, monk
     ]
 
 
+def test_real_queue_contract_bounds_memory_deferrals(isolated_omm_home, monkeypatch):
+    candidate = _candidate(filename="temporarily-blocked.gguf") | {
+        "size_bytes": 1024**3
+    }
+    queue = _DeferredFakeQueue(candidate)
+    stop_event = threading.Event()
+    plans = []
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "_DEFERRED_MEMORY_RECHECK_SECONDS", 0.0)
+
+    def memory_plan(_candidate):
+        plans.append(1)
+        return SimpleNamespace(
+            decision=cli.contribute_memory.ContributionMemoryDecision.DEFER,
+            estimate=SimpleNamespace(
+                committed_ram_gb=0.5,
+                mapped_weights_ram_gb=1.0,
+                source="profile_fallback",
+            ),
+            sample=SimpleNamespace(median_gb=0.2, reserve_gb=0.5),
+        )
+
+    monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", memory_plan)
+    monkeypatch.setattr(
+        cli,
+        "_install_impl",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a deferred candidate must not download")
+        ),
+    )
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert len(plans) == cli._MAX_CANDIDATE_MEMORY_DEFERRALS
+    assert stats.deferred_low_memory == 1
+    assert stats.skipped_low_memory == 1
+    assert stats.exhausted is False
+
+
 def test_start_memory_preflight_aborts_when_every_pending_candidate_is_blocked(
     isolated_omm_home, monkeypatch
 ):
@@ -108,10 +229,15 @@ def test_start_memory_preflight_aborts_when_every_pending_candidate_is_blocked(
         lambda registry_data: SimpleNamespace(list_residents=lambda: ()),
     )
     monkeypatch.setattr(
+        cli.contribute_memory,
+        "sample_available_memory",
+        lambda *args, **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
         cli,
         "_contribute_candidate_memory_plan",
         lambda candidate, **kwargs: SimpleNamespace(
-            decision=cli.memory_guard_mod.GuardDecision.BLOCK,
+            decision=cli.contribute_memory.ContributionMemoryDecision.BLOCK,
             required_gb=candidate["size_bytes"] / 1024**3 * 1.2,
             available_gb=0.0,
             reserve_gb=2.0,
@@ -119,7 +245,9 @@ def test_start_memory_preflight_aborts_when_every_pending_candidate_is_blocked(
     )
 
     with pytest.raises(cli.typer.Exit) as error:
-        cli._ensure_contribute_candidate_memory(artifact, object(), set())
+        cli._ensure_contribute_candidate_memory(
+            artifact, SimpleNamespace(ram_total_gb=16.0), set()
+        )
 
     assert error.value.exit_code == 1
 
@@ -429,6 +557,45 @@ def test_daemon_dies_mid_benchmark_retries_same_candidate_once(isolated_omm_home
     assert removed == ["model.gguf"]  # only removed once, after the final outcome
 
 
+def test_daemon_retry_memory_deferral_uses_memory_bookkeeping(
+    isolated_omm_home, monkeypatch
+):
+    candidate = _candidate(filename="model.gguf")
+    queue = _FakeQueue([candidate])
+    stop_event = threading.Event()
+    _seed_registry_entry("model.gguf")
+    reachable_calls = [True, False, True]
+    monkeypatch.setattr(
+        cli.benchmark,
+        "ollama_daemon_reachable",
+        lambda: reachable_calls.pop(0),
+    )
+    monkeypatch.setattr(cli.benchmark, "start_ollama_daemon", lambda: object())
+    calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        calls.append(1)
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason=("memory_allocation_deferred" if len(calls) == 2 else None),
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    removed = []
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert len(calls) == 2
+    assert removed == ["model.gguf"]
+    assert stats.skipped_low_memory == 1
+    assert stats.attempted_not_uploaded == 0
+
+
 def test_daemon_wont_restart_after_dying_mid_benchmark_gives_up_on_candidate(
     isolated_omm_home, monkeypatch
 ):
@@ -576,15 +743,22 @@ def test_contribution_stopped_cleans_up_and_breaks(isolated_omm_home, monkeypatc
         raise cli.ContributionStopped("model.gguf")
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    cleaned = []
-    monkeypatch.setattr(cli, "_cleanup_incomplete_install", lambda fn: cleaned.append(fn))
-    removed = []
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+    events = []
+    monkeypatch.setattr(
+        cli.quality_mod,
+        "ensure_model_unloaded",
+        lambda tag: events.append(("unload", tag)) or True,
+    )
+    monkeypatch.setattr(
+        cli, "_cleanup_incomplete_install", lambda fn: events.append(("partial", fn))
+    )
+    monkeypatch.setattr(
+        cli, "_remove_one", lambda fn, entry: events.append(("remove", fn))
+    )
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
-    assert cleaned == ["model.gguf"]
-    assert removed == ["model.gguf"]
+    assert events == [("unload", "model"), ("remove", "model.gguf")]
     assert stats.benchmarked == []
 
 
@@ -656,4 +830,4 @@ def test_print_contribution_summary_includes_pre_download_memory_skip_count(caps
     cli._print_contribution_summary(stats, 12.0, None, None)
 
     captured = capsys.readouterr()
-    assert "not enough live memory): 3" in captured.out
+    assert "Still blocked after bounded memory retries: 3" in captured.out

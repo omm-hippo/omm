@@ -52,6 +52,16 @@ class MemoryBudget:
     term and shouldn't be swayed by other apps' memory use at scan time."""
 
 
+def available_ram_gb() -> float:
+    """Return current available RAM without a full CPU/GPU hardware scan.
+
+    Runtime pressure monitoring must be cheap enough to honor its polling
+    interval. On Windows, ``scan_hardware`` can take several seconds and miss
+    short but meaningful pressure events.
+    """
+    return psutil.virtual_memory().available / (1024**3)
+
+
 def calculate_memory_budget(hw: HardwareInfo) -> MemoryBudget:
     """Return a conservative model budget from current free RAM and VRAM.
 

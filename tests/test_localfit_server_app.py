@@ -1,5 +1,7 @@
 """Tests for localfit_server.app models."""
 
+import pytest
+
 from localfit_server.app import BenchmarkEvent
 
 
@@ -36,3 +38,116 @@ def test_benchmark_event_accepts_v8_chip_score_fields():
     )
     assert event.cpu_score == 7950.0
     assert event.gpu_tier == 0.0
+
+
+def test_benchmark_event_accepts_clean_v9_contribution_metadata():
+    event = BenchmarkEvent(
+        ram_gb=16,
+        unified_memory=False,
+        model_installed="small:latest",
+        engine="ollama",
+        benchmark_version=9,
+        recorded_at="2026-08-18T00:00:00+00:00",
+        outcome="success",
+        tokens_per_sec=20.0,
+        sample_count=3,
+        tokens_per_sec_min=19.0,
+        tokens_per_sec_max=21.0,
+        parameter_count_b=1.0,
+        active_parameter_count_b=1.0,
+        quant_bits=4.0,
+        engine_version="0.11.0",
+        client_version="1.2.3",
+        runtime_profile="explicit_ollama_options",
+        context_length=1024,
+        gpu_offload_percent=0,
+        cpu_threads=8,
+        num_batch=128,
+        cpu_arch="x86_64",
+        cpu_physical_cores=4,
+        cpu_logical_cores=8,
+        cpu_score=5600.0,
+        cpu_tier=3.0,
+        measurement_profile="contribute-v1",
+        measurement_quality="clean",
+        ram_available_before_gb=2.2,
+        ram_available_min_gb=2.0,
+        ram_available_after_gb=2.1,
+        memory_pressure_observed=False,
+        tokens_per_sec_mad_ratio=0.02,
+        memory_estimate_source="gguf_header",
+        memory_estimate_confidence="medium",
+        estimated_mapped_weights_gb=0.75,
+        estimated_committed_ram_gb=0.3,
+        estimated_required_vram_gb=0.0,
+    )
+
+    assert event.benchmark_version == 9
+    assert event.measurement_quality == "clean"
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"context_length": 4096}, "fixed"),
+        (
+            {
+                "measurement_quality": "pressured",
+                "memory_pressure_observed": False,
+            },
+            "observed pressure",
+        ),
+        (
+            {
+                "measurement_quality": "clean",
+                "tokens_per_sec_mad_ratio": 0.2,
+            },
+            "MAD ratio",
+        ),
+    ],
+)
+def test_benchmark_event_rejects_inconsistent_v9_metadata(changes, message):
+    payload = {
+        "ram_gb": 16,
+        "unified_memory": False,
+        "model_installed": "small:latest",
+        "engine": "ollama",
+        "benchmark_version": 9,
+        "recorded_at": "2026-08-18T00:00:00+00:00",
+        "outcome": "success",
+        "tokens_per_sec": 20.0,
+        "sample_count": 3,
+        "tokens_per_sec_min": 19.0,
+        "tokens_per_sec_max": 21.0,
+        "parameter_count_b": 1.0,
+        "active_parameter_count_b": 1.0,
+        "quant_bits": 4.0,
+        "engine_version": "0.11.0",
+        "client_version": "1.2.3",
+        "runtime_profile": "explicit_ollama_options",
+        "context_length": 1024,
+        "gpu_offload_percent": 0,
+        "cpu_threads": 8,
+        "num_batch": 128,
+        "cpu_arch": "x86_64",
+        "cpu_physical_cores": 4,
+        "cpu_logical_cores": 8,
+        "cpu_score": 5600.0,
+        "cpu_tier": 3.0,
+        "measurement_profile": "contribute-v1",
+        "measurement_quality": "clean",
+        "ram_available_before_gb": 2.2,
+        "ram_available_min_gb": 2.0,
+        "ram_available_after_gb": 2.1,
+        "memory_pressure_observed": False,
+        "tokens_per_sec_mad_ratio": 0.02,
+        "memory_estimate_source": "gguf_header",
+        "memory_estimate_confidence": "medium",
+        "estimated_mapped_weights_gb": 0.75,
+        "estimated_committed_ram_gb": 0.3,
+        "estimated_required_vram_gb": 0.0,
+    }
+    payload.update(changes)
+
+    with pytest.raises(ValueError, match=message):
+        BenchmarkEvent(**payload)
