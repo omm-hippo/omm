@@ -225,7 +225,7 @@ function Invoke-Python {
 # --- git -------------------------------------------------------------------
 
 if (-not (Test-CommandExists "git")) {
-    if (-not (Install-ViaWinget "Git.Git" "git")) {
+    if (-not (Install-ViaWinget "Git.MinGit" "git")) {
         Write-Error "git not found. Install git first (needed to fetch omm from GitHub): https://git-scm.com/downloads"
         exit 1
     }
