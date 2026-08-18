@@ -4,6 +4,23 @@ from types import SimpleNamespace
 from omm import hardware
 
 
+def test_commit_headroom_uses_commit_limit_not_physical_availability():
+    assert hardware._commit_headroom_gb(3_000_000, 5_000_000, 4096) == 7.62939453125
+    assert hardware._commit_headroom_gb(5, 4, 4096) is None
+
+
+def test_available_commit_returns_none_off_windows_without_touching_win32(monkeypatch):
+    """The Win32-only import must stay behind the platform check.
+
+    Callers treat None as "no commit signal, use the portable physical
+    fallback", so a non-Windows host has to reach that branch before any
+    ctypes.wintypes work happens.
+    """
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
+
+    assert hardware.available_commit_gb() is None
+
+
 def test_linux_scan_uses_cpu_model_and_core_counts_not_architecture(monkeypatch):
     monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hardware.platform, "release", lambda: "6.8")

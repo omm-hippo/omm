@@ -73,7 +73,13 @@ from omm.downloader import (
 from omm.engines import RuntimeAdapterError, RuntimeModelRef, find_runtime_model
 from omm.engines.lmstudio import LMStudioAdapter
 from omm.engines.ollama import OllamaAdapter
-from omm.hardware import HardwareInfo, available_ram_gb, calculate_memory_budget, scan_hardware
+from omm.hardware import (
+    HardwareInfo,
+    available_commit_gb,
+    available_ram_gb,
+    calculate_memory_budget,
+    scan_hardware,
+)
 from omm.hashutil import sha256_file
 from omm.featurize import (
     candidate_active_parameter_count_billions,
@@ -2194,7 +2200,12 @@ def _guard_contribution_load(
     )
     if target_preloaded or estimate is None:
         return True, target_preloaded, estimate, sample.reserve_gb, None
-    plan = contribute_memory.plan_candidate_memory(estimate, fresh_hw, sample)
+    plan = contribute_memory.plan_candidate_memory(
+        estimate,
+        fresh_hw,
+        sample,
+        commit_available_gb=available_commit_gb(),
+    )
     if plan.decision is contribute_memory.ContributionMemoryDecision.SAFE:
         return True, False, estimate, sample.reserve_gb, None
     reason = (
@@ -5281,6 +5292,7 @@ def _contribute_candidate_memory_plan(
     hw: HardwareInfo | None = None,
     residents: tuple[memory_guard_mod.ResidentModel, ...] | None = None,
     memory_sample: contribute_memory.AvailableMemorySample | None = None,
+    commit_headroom_gb: float | None = None,
     fetch_remote_metadata: bool = True,
 ) -> contribute_memory.ContributionMemoryPlan | None:
     """Plan a contribution load before any model bytes are downloaded.
@@ -5377,6 +5389,12 @@ def _contribute_candidate_memory_plan(
         memory_sample,
         reclaimable_ram_gb=reclaimable_ram,
         reclaimable_vram_gb=reclaimable_vram,
+        commit_available_gb=(
+            available_commit_gb()
+            if commit_headroom_gb is None
+            and str(current_hw.os_name).strip().casefold() == "windows"
+            else commit_headroom_gb
+        ),
     )
 
 
@@ -5636,14 +5654,22 @@ def _run_contribution_loop(
 
         memory_plan = _contribute_candidate_memory_plan(candidate)
         if memory_plan is not None and not opts.quiet:
-            console.print(
+            memory_message = (
                 "[muted]Memory preflight before download: "
                 f"committed RAM {memory_plan.estimate.committed_ram_gb:.2f} GiB; "
+                f"runtime buffers {memory_plan.runtime_buffer_required_gb:.2f} GiB; "
                 f"mmap-backed weights {memory_plan.estimate.mapped_weights_ram_gb:.2f} GiB; "
                 f"median available {memory_plan.sample.median_gb:.2f} GiB; "
+            )
+            if memory_plan.commit_available_gb is not None:
+                memory_message += (
+                    f"commit headroom {memory_plan.commit_available_gb:.2f} GiB; "
+                )
+            memory_message += (
                 f"emergency reserve {memory_plan.sample.reserve_gb:.2f} GiB; "
                 f"estimate source {memory_plan.estimate.source}.[/muted]"
             )
+            console.print(memory_message)
         if (
             memory_plan is not None
             and memory_plan.decision
@@ -5662,6 +5688,7 @@ def _run_contribution_loop(
             err_console.print(
                 f"[warning]Deferring {candidate['filename']} before download: {reason}. "
                 f"Committed RAM estimate {memory_plan.estimate.committed_ram_gb:.1f} GiB, "
+                f"runtime buffers {memory_plan.runtime_buffer_required_gb:.1f} GiB, "
                 f"mapped weights {memory_plan.estimate.mapped_weights_ram_gb:.1f} GiB, "
                 f"median available {memory_plan.sample.median_gb:.1f} GiB.[/warning]"
             )

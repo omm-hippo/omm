@@ -177,10 +177,52 @@ def test_windows_non_mmap_small_model_still_passes_with_observed_2_72gb_availabl
         reserve_gb=0.5,
     )
 
-    plan = contribute_memory.plan_candidate_memory(estimate, hardware, sample)
+    plan = contribute_memory.plan_candidate_memory(
+        estimate, hardware, sample, commit_available_gb=8.0
+    )
 
     assert plan.decision is contribute_memory.ContributionMemoryDecision.SAFE
     assert estimate.committed_ram_gb == pytest.approx(1.0625)
+
+
+def test_windows_uses_commit_headroom_but_physical_gate_only_covers_runtime_buffers():
+    hardware = _hardware(ram_available_gb=1.14)
+    estimate = contribute_memory.estimate_candidate_memory(
+        {"size_bytes": int(0.75 * 1024**3)},
+        hardware,
+        context_length=1024,
+        num_batch=128,
+        gpu_offload_percent=0,
+        metadata=_llama_metadata(),
+        mmap_weights=False,
+    )
+    sample = contribute_memory.AvailableMemorySample((1.1, 1.14, 1.18), 1.14, 1.1, 1.18, 0.5)
+
+    plan = contribute_memory.plan_candidate_memory(
+        estimate, hardware, sample, commit_available_gb=7.0
+    )
+
+    assert estimate.committed_ram_gb > 1.0
+    assert plan.runtime_buffer_required_gb == pytest.approx(0.3125)
+    assert plan.residency_available_gb == pytest.approx(0.64)
+    assert plan.decision is contribute_memory.ContributionMemoryDecision.SAFE
+
+
+def test_windows_defers_when_commit_headroom_is_insufficient_even_if_physical_ram_is_free():
+    hardware = _hardware(ram_available_gb=8.0)
+    estimate = contribute_memory.estimate_candidate_memory(
+        {"size_bytes": int(0.75 * 1024**3)}, hardware,
+        context_length=1024, num_batch=128, gpu_offload_percent=0,
+        metadata=_llama_metadata(), mmap_weights=False,
+    )
+    sample = contribute_memory.AvailableMemorySample((8.0,), 8.0, 8.0, 8.0, 0.5)
+
+    plan = contribute_memory.plan_candidate_memory(
+        estimate, hardware, sample, commit_available_gb=1.2
+    )
+
+    assert plan.decision is contribute_memory.ContributionMemoryDecision.DEFER
+    assert "committed_ram_temporarily_unavailable" in plan.reasons
 
 
 def test_16gb_regression_small_model_passes_with_2_2gb_available():
@@ -228,7 +270,13 @@ def test_live_catalog_candidate_without_size_uses_remote_size_before_download(mo
     )
 
     plan = cli._contribute_candidate_memory_plan(
-        candidate, hw=_hardware(ram_available_gb=1.2), memory_sample=sample
+        candidate,
+        hw=_hardware(ram_available_gb=1.2),
+        memory_sample=sample,
+        # Pinned: the Windows planner otherwise reads this machine's live
+        # commit headroom, which would make the decision assertion below
+        # depend on whatever else the developer has open.
+        commit_headroom_gb=0.8,
     )
 
     assert plan is not None
