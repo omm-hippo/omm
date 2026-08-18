@@ -214,6 +214,7 @@ def test_runtime_watcher_calls_only_the_supplied_owned_operation_cancellation():
         watcher._thread.join(timeout=1)
 
     assert cancelled == ["current"]
+    assert watcher.pressure_observed is True
     assert watcher.pressure_triggered is True
     assert watcher.cancelled is True
 
@@ -234,7 +235,34 @@ def test_runtime_watcher_reports_failed_owned_operation_cancellation():
         watcher._thread.join(timeout=1)
 
     assert watcher.pressure_triggered is True
+    assert watcher.pressure_observed is True
     assert watcher.cancelled is False
+
+
+def test_runtime_watcher_records_endpoints_minimum_and_transient_pressure():
+    values = [2.0, 1.0, 2.0]
+
+    def sample():
+        return values.pop(0) if values else 2.0
+
+    monitor = guard.SustainedPressureMonitor(
+        1.5, required_consecutive_samples=3, low_memory_seconds=10
+    )
+    with guard.RuntimePressureWatcher(
+        monitor,
+        sample_available_gb=sample,
+        operation_owned_by_omm=True,
+        cancel_owned_operation=lambda: True,
+        poll_seconds=0.1,
+        max_samples=2,
+    ) as watcher:
+        watcher._thread.join(timeout=1)
+
+    assert watcher.first_available_gb == 2.0
+    assert watcher.minimum_available_gb == 1.0
+    assert watcher.last_available_gb == 2.0
+    assert watcher.pressure_observed is True
+    assert watcher.pressure_triggered is False
 
 
 def test_runtime_watcher_bounds_a_stuck_cancellation_callback():

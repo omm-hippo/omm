@@ -205,6 +205,53 @@ def _v8_row(speed: float, **overrides) -> dict:
     return _row(speed, **defaults)
 
 
+def _v9_row(speed: float, **overrides) -> dict:
+    defaults = dict(
+        benchmark_version=9,
+        context_length=1024,
+        num_batch=128,
+        measurement_profile="contribute-v1",
+        measurement_quality="clean",
+        ram_available_before_gb=2.2,
+        ram_available_min_gb=2.0,
+        ram_available_after_gb=2.1,
+        memory_pressure_observed=False,
+        tokens_per_sec_mad_ratio=0.02,
+        memory_estimate_source="gguf_header",
+        memory_estimate_confidence="medium",
+        estimated_mapped_weights_gb=4.0,
+        estimated_committed_ram_gb=0.3,
+        estimated_required_vram_gb=4.2,
+    )
+    defaults.update(overrides)
+    return _v8_row(speed, **defaults)
+
+
+def test_v9_clean_measurement_trains_but_pressured_and_unstable_do_not():
+    rows = [
+        _v9_row(20),
+        _v9_row(
+            19,
+            measurement_quality="pressured",
+            memory_pressure_observed=True,
+        ),
+        _v9_row(
+            18,
+            measurement_quality="unstable",
+            tokens_per_sec_mad_ratio=0.2,
+        ),
+    ]
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert y == [20]
+    assert audit["direct_v9_unique_configurations"] == 1
+    assert audit["rejections"] == {
+        "pressured_measurement_excluded": 1,
+        "unstable_measurement_excluded": 1,
+    }
+
+
 def test_v8_uses_direct_cpu_and_gpu_score_without_a_raw_name():
     X, y = train_model.real_rows_to_training_data([_v8_row(20)])
 
@@ -329,6 +376,7 @@ def test_training_audit_explains_rejections_and_duplicate_collapse():
         "direct_v6_unique_configurations": 1,
         "direct_v7_unique_configurations": 0,
         "direct_v8_unique_configurations": 0,
+        "direct_v9_unique_configurations": 0,
         "direct_unique_configurations": 1,
         "duplicates_collapsed": 1,
         "rejections": {

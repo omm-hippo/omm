@@ -183,6 +183,7 @@ def test_memory_guard_blocks_lmstudio_load_verification(isolated_omm_home, monke
     `test_memory_guard_block_prevents_ollama_benchmark` for the Ollama path."""
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "_ensure_install_disk_capacity", lambda *args, **kwargs: None)
     _stub_common(monkeypatch, ollama=False, lmstudio=True)
     monkeypatch.setattr(
         cli.linker, "link_engine", lambda key, dest, *, repo_id, ollama_tag: None
@@ -214,6 +215,7 @@ def test_lmstudio_load_verification_proceeds_when_guard_allows(isolated_omm_home
     the adapter-based probe still runs normally."""
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    monkeypatch.setattr(cli, "_ensure_install_disk_capacity", lambda *args, **kwargs: None)
     _stub_common(monkeypatch, ollama=False, lmstudio=True)
     monkeypatch.setattr(
         cli.linker, "link_engine", lambda key, dest, *, repo_id, ollama_tag: None

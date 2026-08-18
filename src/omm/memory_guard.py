@@ -531,23 +531,54 @@ class RuntimePressureWatcher:
         if not 0.1 <= self.cancel_wait_seconds <= 120:
             raise ValueError("cancel_wait_seconds must be between 0.1 and 120")
         self.pressure_triggered = False
+        self.pressure_observed = False
         self.cancelled = False
         self.cancellation_timed_out = False
+        self.samples_gb: list[float] = []
+        self._samples_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def __enter__(self) -> "RuntimePressureWatcher":
+        self.sample_now()
         self._thread = threading.Thread(target=self._run, name="omm-memory-guard", daemon=True)
         self._thread.start()
         return self
+
+    def sample_now(self) -> float | None:
+        try:
+            available = float(self.sample_available_gb())
+            if not math.isfinite(available) or available < 0:
+                return None
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return None
+        with self._samples_lock:
+            self.samples_gb.append(available)
+        if available < self.monitor.threshold_gb:
+            self.pressure_observed = True
+        return available
+
+    @property
+    def first_available_gb(self) -> float | None:
+        with self._samples_lock:
+            return self.samples_gb[0] if self.samples_gb else None
+
+    @property
+    def minimum_available_gb(self) -> float | None:
+        with self._samples_lock:
+            return min(self.samples_gb) if self.samples_gb else None
+
+    @property
+    def last_available_gb(self) -> float | None:
+        with self._samples_lock:
+            return self.samples_gb[-1] if self.samples_gb else None
 
     def _run(self) -> None:
         for _ in range(self.max_samples):
             if self._stop.is_set():
                 return
-            try:
-                available = self.sample_available_gb()
-            except (OSError, RuntimeError, ValueError):
+            available = self.sample_now()
+            if available is None:
                 return
             if self._stop.is_set():
                 return
@@ -572,3 +603,4 @@ class RuntimePressureWatcher:
             if self._thread.is_alive():
                 self.cancellation_timed_out = True
                 self.cancelled = False
+        self.sample_now()

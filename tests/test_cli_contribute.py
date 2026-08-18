@@ -1,10 +1,27 @@
 import requests
+import pytest
 from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from omm import cli, config
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_contribute_disk_preflight(request, monkeypatch):
+    """Command tests must not depend on free space on the developer's C:.
+
+    The two disk-specific tests below keep the real preflight function and
+    inject exact disk usage. Every other test exercises a later preflight or
+    command behavior independently.
+    """
+    disk_tests = {
+        "test_contribute_refuses_to_start_when_model_volume_has_less_than_ten_gib",
+        "test_contribute_yes_flag_before_subcommand_skips_low_disk_prompt",
+    }
+    if request.node.name not in disk_tests:
+        monkeypatch.setattr(cli, "_ensure_contribute_start_space", lambda: None)
 
 
 class _FakeListener:
@@ -61,6 +78,25 @@ def test_contribute_yes_flag_before_subcommand_skips_low_disk_prompt(
     assert "will not start with low disk space" in result.stderr
 
 
+def test_contribute_never_runs_unrelated_auto_import(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "_run_import_flow",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("contribute must not auto-import existing models")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_ensure_contribute_start_space",
+        lambda: (_ for _ in ()).throw(cli.typer.Exit(1)),
+    )
+
+    result = runner.invoke(cli.app, ["contribute", "--yes"])
+
+    assert result.exit_code == 1
+
+
 def test_engine_preflight_happens_before_expensive_work_consent(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no consent prompt"))
@@ -72,6 +108,48 @@ def test_engine_preflight_happens_before_expensive_work_consent(isolated_omm_hom
 
     assert result.exit_code == 1, result.stdout
     assert "not installed" in result.stderr
+
+
+def test_memory_preflight_happens_before_expensive_work_consent(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli,
+        "_ask_confirm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("no expensive-work consent prompt")
+        ),
+    )
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: ({"pack_id": "test"}, False))
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda *args, **kwargs: (
+            {
+                "trees": [{}],
+                "candidates": [
+                    {"repo_id": "org/repo", "filename": "model.gguf", "size_bytes": 1}
+                ],
+            },
+            False,
+        ),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda *args: [])
+    monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
+    preflight_calls = []
+
+    def fail_preflight(*args):
+        preflight_calls.append(1)
+        raise cli.typer.Exit(1)
+
+    monkeypatch.setattr(cli, "_ensure_contribute_candidate_memory", fail_preflight)
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 1
+    assert preflight_calls == [1]
 
 
 def test_requires_ollama_daemon(isolated_omm_home, monkeypatch):

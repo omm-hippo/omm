@@ -10,6 +10,7 @@ import math
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -39,6 +40,7 @@ from omm import (
     calibration,
     catalog,
     config as config_mod,
+    contribute_memory,
     contribute_state,
     linker,
     memory_guard as memory_guard_mod,
@@ -70,7 +72,7 @@ from omm.downloader import (
 from omm.engines import RuntimeAdapterError, RuntimeModelRef, find_runtime_model
 from omm.engines.lmstudio import LMStudioAdapter
 from omm.engines.ollama import OllamaAdapter
-from omm.hardware import HardwareInfo, calculate_memory_budget, scan_hardware
+from omm.hardware import HardwareInfo, available_ram_gb, calculate_memory_budget, scan_hardware
 from omm.hashutil import sha256_file
 from omm.featurize import (
     candidate_active_parameter_count_billions,
@@ -95,6 +97,7 @@ from omm.hub import (
     rank_quant_variants,
     remote_file_size,
     remote_file_sha256,
+    remote_gguf_metadata,
     resolve_model,
     validate_model_filename,
     validate_provider,
@@ -925,7 +928,13 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
             pass
 
 
-_SKIP_AUTO_IMPORT_SUBCOMMANDS = {"update", "help", "import", "_bg-version-check"}
+_SKIP_AUTO_IMPORT_SUBCOMMANDS = {
+    "update",
+    "help",
+    "import",
+    "contribute",
+    "_bg-version-check",
+}
 
 
 def _maybe_auto_import(ctx: typer.Context) -> None:
@@ -2110,6 +2119,90 @@ def _guard_ollama_load(
     )
 
 
+def _guard_contribution_load(
+    tag: str,
+    dest: Path,
+    runtime_hw: HardwareInfo,
+    runtime_profile: tuning.RuntimeProfile,
+    runtime_options: dict,
+    prior_estimate: contribute_memory.ContributionMemoryEstimate | None,
+) -> tuple[
+    bool,
+    bool,
+    contribute_memory.ContributionMemoryEstimate | None,
+    float,
+    str | None,
+]:
+    """Revalidate a contribution load using the downloaded GGUF header.
+
+    Only other OMM-owned residents are released. A user-preloaded target is
+    never double-counted or unloaded.
+    """
+    from omm.gguf import read_gguf_metadata
+
+    runtime = memory_guard_mod.OllamaManagedRuntime(registry.load_registry())
+    residents = runtime.list_residents()
+    target_preloaded = any(
+        memory_guard_mod._same_ollama_id(resident.model_id, tag)
+        for resident in residents
+    )
+    metadata: dict[str, object] = {}
+    try:
+        metadata.update(read_gguf_metadata(dest, {"general.architecture"}))
+        architecture = metadata.get("general.architecture")
+        if isinstance(architecture, str) and architecture:
+            metadata.update(
+                read_gguf_metadata(
+                    dest,
+                    contribute_memory.metadata_keys_for_architecture(architecture),
+                )
+            )
+    except (OSError, ValueError, KeyError, struct.error):
+        metadata = {}
+    if runtime_options.get("num_gpu") != 0:
+        resolved_options, actual_offload = tuning.contribute_ollama_options(
+            runtime_profile, metadata
+        )
+        runtime_options.clear()
+        runtime_options.update(resolved_options)
+    else:
+        actual_offload = 0
+    estimate = contribute_memory.estimate_candidate_memory(
+        {"size_bytes": dest.stat().st_size},
+        runtime_hw,
+        context_length=runtime_profile.context_length,
+        num_batch=runtime_profile.num_batch,
+        gpu_offload_percent=actual_offload,
+        metadata=metadata,
+    ) or prior_estimate
+
+    for resident in residents:
+        if (
+            resident.owned_by_omm
+            and not memory_guard_mod._same_ollama_id(resident.model_id, tag)
+        ):
+            runtime.unload(resident)
+
+    fresh_hw = scan_hardware()
+    sample = contribute_memory.sample_available_memory(
+        available_ram_gb,
+        total_ram_gb=fresh_hw.ram_total_gb,
+        sample_count=3,
+        interval_seconds=0.1,
+    )
+    if target_preloaded or estimate is None:
+        return True, target_preloaded, estimate, sample.reserve_gb, None
+    plan = contribute_memory.plan_candidate_memory(estimate, fresh_hw, sample)
+    if plan.decision is contribute_memory.ContributionMemoryDecision.SAFE:
+        return True, False, estimate, sample.reserve_gb, None
+    reason = (
+        "memory_allocation_blocked"
+        if plan.decision is contribute_memory.ContributionMemoryDecision.BLOCK
+        else "memory_allocation_deferred"
+    )
+    return False, False, estimate, sample.reserve_gb, reason
+
+
 def _guard_lmstudio_load(
     model_key: str, required_gb: float
 ) -> tuple[bool, memory_guard_mod.LMStudioManagedRuntime, bool]:
@@ -2276,6 +2369,8 @@ def _install_impl(
     preferred_runtime: str | None = None,
     enforce_memory_guard: bool = False,
     gpu_state: dict | None = None,
+    contribute_mode: bool = False,
+    contribution_memory_estimate: contribute_memory.ContributionMemoryEstimate | None = None,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -2458,11 +2553,13 @@ def _install_impl(
     telemetry_sent = False
     sample_count = 1
     speed_min = speed_max = None
+    speed_samples = None
     quality_summary = None
     runtime = None
     model_metadata = None
     engine_version = None
     runtime_options = None
+    memory_measurement = None
     guard_failure_reason = "memory_guard_blocked" if lmstudio_guard_blocked else None
     eval_error: quality_mod.QualityEvaluationError | None = None
     run_ollama_benchmark = linked["ollama"] and selected_runtime != "lmstudio"
@@ -2531,7 +2628,11 @@ def _install_impl(
                 runtime_candidate.update(model_metadata)
             except quality_mod.QualityEvaluationError:
                 model_metadata = None
-            runtime_profile = tuning.recommend_runtime_settings(runtime_hw, runtime_candidate)
+            runtime_profile = (
+                tuning.recommend_contribute_settings(runtime_hw, runtime_candidate)
+                if contribute_mode
+                else tuning.recommend_runtime_settings(runtime_hw, runtime_candidate)
+            )
             runtime_options = runtime_profile.ollama_options
             if gpu_state is not None and gpu_state.get("force_cpu"):
                 # A previous candidate this session already crashed the GPU
@@ -2541,15 +2642,35 @@ def _install_impl(
                 runtime_options = dict(runtime_options)
                 runtime_options["num_gpu"] = 0
             if enforce_memory_guard:
-                required_gb = runtime_profile.required_memory_gb or (
-                    dest.stat().st_size / (1024**3) * 1.2
-                )
-                guard_allowed, _guard_runtime, target_was_preloaded = _guard_ollama_load(
-                    ollama_tag, required_gb
-                )
+                if contribute_mode:
+                    (
+                        guard_allowed,
+                        target_was_preloaded,
+                        contribution_memory_estimate,
+                        pressure_threshold_gb,
+                        contribution_guard_reason,
+                    ) = _guard_contribution_load(
+                        ollama_tag,
+                        dest,
+                        runtime_hw,
+                        runtime_profile,
+                        runtime_options,
+                        contribution_memory_estimate,
+                    )
+                else:
+                    required_gb = runtime_profile.required_memory_gb or (
+                        dest.stat().st_size / (1024**3) * 1.2
+                    )
+                    guard_allowed, _guard_runtime, target_was_preloaded = _guard_ollama_load(
+                        ollama_tag, required_gb
+                    )
+                    pressure_threshold_gb = calculate_memory_budget(
+                        scan_hardware()
+                    ).ram_safety_reserve_gb
+                    contribution_guard_reason = None
                 ollama_was_preloaded = ollama_was_preloaded or target_was_preloaded
                 if not guard_allowed:
-                    guard_failure_reason = "memory_guard_blocked"
+                    guard_failure_reason = contribution_guard_reason or "memory_guard_blocked"
                     return InstallOutcome(
                         filename,
                         repo_id,
@@ -2565,15 +2686,14 @@ def _install_impl(
                         runtime_load_declined=runtime_load_declined,
                     )
                 guard_config = load_config()
-                live_budget = calculate_memory_budget(scan_hardware())
                 pressure_watcher = memory_guard_mod.RuntimePressureWatcher(
                     memory_guard_mod.SustainedPressureMonitor(
-                        live_budget.ram_safety_reserve_gb,
+                        pressure_threshold_gb,
                         low_memory_seconds=float(
                             guard_config.get("memory_guard_low_memory_seconds", 3.0)
                         ),
                     ),
-                    sample_available_gb=lambda: scan_hardware().ram_available_gb,
+                    sample_available_gb=available_ram_gb,
                     operation_owned_by_omm=not target_was_preloaded,
                     cancel_owned_operation=lambda: quality_mod.unload_model(ollama_tag),
                     poll_seconds=float(guard_config.get("memory_guard_poll_seconds", 1.0)),
@@ -2635,6 +2755,35 @@ def _install_impl(
                                     quality_mod.ensure_model_unloaded(ollama_tag)
                                 runtime_options = dict(runtime_options)
                                 runtime_options["num_gpu"] = 0
+                                if contribute_mode and enforce_memory_guard:
+                                    (
+                                        cpu_guard_allowed,
+                                        cpu_target_preloaded,
+                                        contribution_memory_estimate,
+                                        cpu_pressure_threshold_gb,
+                                        cpu_guard_reason,
+                                    ) = _guard_contribution_load(
+                                        ollama_tag,
+                                        dest,
+                                        runtime_hw,
+                                        runtime_profile,
+                                        runtime_options,
+                                        contribution_memory_estimate,
+                                    )
+                                    ollama_was_preloaded = (
+                                        ollama_was_preloaded or cpu_target_preloaded
+                                    )
+                                    if pressure_watcher is not None:
+                                        pressure_watcher.monitor.threshold_gb = (
+                                            cpu_pressure_threshold_gb
+                                        )
+                                    if not cpu_guard_allowed:
+                                        guard_failure_reason = (
+                                            cpu_guard_reason
+                                            or "memory_allocation_blocked"
+                                        )
+                                        result = None
+                                        break
                                 already_warned = bool(gpu_state and gpu_state.get("force_cpu"))
                                 if gpu_state is not None:
                                     gpu_state["force_cpu"] = True
@@ -2670,6 +2819,7 @@ def _install_impl(
                 if result is not None:
                     tokens_per_sec = result["speed"]["median_tokens_per_sec"]
                     samples = result["speed"]["samples_tokens_per_sec"]
+                    speed_samples = samples
                     sample_count = result["speed"]["runs"]
                     speed_min, speed_max = min(samples), max(samples)
                     quality_summary = {
@@ -2728,9 +2878,29 @@ def _install_impl(
                 )
             )
 
+        if pressure_watcher is not None:
+            memory_measurement = {
+                "ram_available_before_gb": pressure_watcher.first_available_gb,
+                "ram_available_min_gb": pressure_watcher.minimum_available_gb,
+                "ram_available_after_gb": pressure_watcher.last_available_gb,
+                "memory_pressure_observed": pressure_watcher.pressure_observed,
+            }
+
         if tokens_per_sec:
             console.print(f"[accent]{tokens_per_sec:.1f} tok/s[/accent]")
-            _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec)
+            stable_for_calibration = not contribute_mode or (
+                memory_measurement is not None
+                and memory_measurement.get("memory_pressure_observed") is False
+                and speed_samples is not None
+                and contribute_memory.speed_mad_ratio(speed_samples) <= 0.15
+            )
+            if stable_for_calibration:
+                _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec)
+            else:
+                console.print(
+                    "[muted]Local calibration not updated because this measurement "
+                    "was pressured or unstable.[/muted]"
+                )
 
             want_upload = not no_upload and (
                 auto_upload or _resolve_upload_decision(
@@ -2752,6 +2922,9 @@ def _install_impl(
                     model_filename=filename,
                     model_digest=sha256,
                     provider=resolved.provider,
+                    speed_samples=speed_samples,
+                    memory_measurement=memory_measurement,
+                    memory_estimate=contribution_memory_estimate,
                 )
             else:
                 telemetry.log_attempt("declined_by_user", filename)
@@ -4609,6 +4782,9 @@ def _report_telemetry(
     model_digest: str | None = None,
     provider: str | None = None,
     failure_reason: str | None = None,
+    speed_samples: list[float] | tuple[float, ...] | None = None,
+    memory_measurement: dict | None = None,
+    memory_estimate: contribute_memory.ContributionMemoryEstimate | None = None,
 ) -> bool:
     if tokens_per_sec is None:
         # Not a real "it doesn't run" signal, so skip rather than polluting
@@ -4744,6 +4920,51 @@ def _report_telemetry(
             event["model_filename"] = safe_filename
         if digest is not None:
             event["model_digest"] = digest
+        if memory_measurement is not None and memory_estimate is not None:
+            before = memory_measurement.get("ram_available_before_gb")
+            minimum = memory_measurement.get("ram_available_min_gb")
+            after = memory_measurement.get("ram_available_after_gb")
+            pressure = memory_measurement.get("memory_pressure_observed")
+            memory_values = (before, minimum, after)
+            if (
+                all(
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                    and 0 <= value <= 1024
+                    for value in memory_values
+                )
+                and isinstance(pressure, bool)
+                and speed_samples is not None
+                and len(speed_samples) >= 3
+            ):
+                mad_ratio = contribute_memory.speed_mad_ratio(speed_samples)
+                measurement_quality = (
+                    "pressured"
+                    if pressure
+                    else "unstable" if mad_ratio > 0.15 else "clean"
+                )
+                event.update(
+                    benchmark_version=9,
+                    measurement_profile="contribute-v1",
+                    measurement_quality=measurement_quality,
+                    ram_available_before_gb=round(float(before), 3),
+                    ram_available_min_gb=round(float(minimum), 3),
+                    ram_available_after_gb=round(float(after), 3),
+                    memory_pressure_observed=pressure,
+                    tokens_per_sec_mad_ratio=round(mad_ratio, 6),
+                    memory_estimate_source=memory_estimate.source,
+                    memory_estimate_confidence=memory_estimate.confidence,
+                    estimated_mapped_weights_gb=round(
+                        memory_estimate.mapped_weights_ram_gb, 3
+                    ),
+                    estimated_committed_ram_gb=round(
+                        memory_estimate.committed_ram_gb, 3
+                    ),
+                    estimated_required_vram_gb=round(
+                        memory_estimate.required_vram_gb, 3
+                    ),
+                )
     sent = telemetry.send_event(event, force=True)
     if not sent:
         if load_config().get("telemetry_send_policy") == "always":
@@ -4979,6 +5200,7 @@ class _ContributionStats:
     skipped_unfit: int = 0
     skipped_low_disk: int = 0
     skipped_low_memory: int = 0
+    deferred_low_memory: int = 0
     attempted_not_uploaded: int = 0
     daemon_restarts: int = 0
     given_up_on: int = 0
@@ -4994,7 +5216,28 @@ _DAEMON_RESTART_BACKOFF_SECONDS = 5.0
 # daemon can't survive, a reproducible timeout, etc.) would otherwise
 # consume the entire unattended run without ever producing an upload.
 _MAX_CANDIDATE_BENCHMARK_FAILURES = 2
+_MAX_CANDIDATE_MEMORY_DEFERRALS = 3
+_DEFERRED_MEMORY_RECHECK_SECONDS = 30.0
 _MIN_CONTRIBUTE_START_FREE_BYTES = 10 * 1024**3
+
+
+@dataclass
+class _DeferredContribution:
+    candidate: dict
+    attempts: int = 0
+
+
+def _cleanup_stopped_contribution(filename: str) -> None:
+    """Unload first, then unlink/delete; required for Windows file handles."""
+    reg = registry.load_registry()
+    found_name, entry = _lookup_entry(filename, reg)
+    if entry:
+        ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+        if benchmark.ollama_daemon_reachable():
+            quality_mod.ensure_model_unloaded(ollama_tag)
+        _remove_one(found_name, entry)
+    else:
+        _cleanup_incomplete_install(filename)
 
 
 def _contribute_candidate_memory_plan(
@@ -5002,7 +5245,9 @@ def _contribute_candidate_memory_plan(
     *,
     hw: HardwareInfo | None = None,
     residents: tuple[memory_guard_mod.ResidentModel, ...] | None = None,
-) -> memory_guard_mod.MemoryGuardPlan | None:
+    memory_sample: contribute_memory.AvailableMemorySample | None = None,
+    fetch_remote_metadata: bool = True,
+) -> contribute_memory.ContributionMemoryPlan | None:
     """Plan a contribution load before any model bytes are downloaded.
 
     Published candidates normally carry ``size_bytes``; the tuning helper
@@ -5010,19 +5255,92 @@ def _contribute_candidate_memory_plan(
     name.  Unknown-size candidates keep the old runtime guard as a fallback
     rather than being rejected on an estimate OMM cannot make.
     """
-    model_size_gb = tuning.candidate_model_size_gb(candidate)
-    if model_size_gb is None:
-        return None
-    required_gb = model_size_gb * tuning.MEMORY_OVERHEAD
     current_hw = hw if hw is not None else scan_hardware()
+    sized_candidate = dict(candidate)
+    size_bytes = sized_candidate.get("size_bytes")
+    if isinstance(size_bytes, bool) or not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+        size_bytes = None
+
+    provider = candidate.get("provider") or "huggingface"
+    repo_id = candidate.get("repo_id")
+    filename = candidate.get("filename")
+    if (
+        size_bytes is None
+        and fetch_remote_metadata
+        and isinstance(repo_id, str)
+        and isinstance(filename, str)
+    ):
+        size_bytes = remote_file_size(provider, repo_id, filename)
+    if size_bytes is None:
+        estimated_size_gb = tuning.candidate_model_size_gb(candidate)
+        if estimated_size_gb is not None:
+            size_bytes = round(estimated_size_gb * 1024**3)
+    if size_bytes is not None:
+        sized_candidate["size_bytes"] = size_bytes
+
+    # Resolve placement after adding the exact remote size (when available),
+    # so offload planning and the memory estimate describe the same model.
+    profile = tuning.recommend_contribute_settings(current_hw, sized_candidate)
+
+    metadata = candidate.get("gguf_metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    else:
+        metadata = dict(metadata)
+    architecture = metadata.get("general.architecture")
+    if fetch_remote_metadata and not isinstance(architecture, str):
+        if isinstance(repo_id, str) and isinstance(filename, str):
+            remote_base = remote_gguf_metadata(
+                provider, repo_id, filename, {"general.architecture"}
+            )
+            if remote_base:
+                metadata.update(remote_base)
+                architecture = metadata.get("general.architecture")
+            if isinstance(architecture, str) and architecture:
+                remote_dimensions = remote_gguf_metadata(
+                    provider,
+                    repo_id,
+                    filename,
+                    contribute_memory.metadata_keys_for_architecture(architecture),
+                )
+                if remote_dimensions:
+                    metadata.update(remote_dimensions)
+
+    estimate = contribute_memory.estimate_candidate_memory(
+        sized_candidate,
+        current_hw,
+        context_length=profile.context_length,
+        num_batch=profile.num_batch,
+        gpu_offload_percent=profile.gpu_offload_percent,
+        metadata=metadata,
+    )
+    if estimate is None:
+        return None
+    if memory_sample is None:
+        memory_sample = contribute_memory.sample_available_memory(
+            available_ram_gb,
+            total_ram_gb=current_hw.ram_total_gb,
+        )
     if residents is None:
         residents = memory_guard_mod.OllamaManagedRuntime(
             registry.load_registry()
         ).list_residents()
-    return memory_guard_mod.plan_memory_guard(
-        required_gb,
+    managed = tuple(resident for resident in residents if resident.owned_by_omm)
+    if current_hw.unified_memory:
+        reclaimable_ram = sum(resident.size_gb for resident in managed)
+        reclaimable_vram = 0.0
+    else:
+        reclaimable_ram = sum(
+            resident.ram_gb if resident.ram_gb is not None else resident.size_gb
+            for resident in managed
+        )
+        reclaimable_vram = sum(resident.vram_gb or 0.0 for resident in managed)
+    return contribute_memory.plan_candidate_memory(
+        estimate,
         current_hw,
-        residents,
+        memory_sample,
+        reclaimable_ram_gb=reclaimable_ram,
+        reclaimable_vram_gb=reclaimable_vram,
     )
 
 
@@ -5050,17 +5368,26 @@ def _ensure_contribute_candidate_memory(
     residents = memory_guard_mod.OllamaManagedRuntime(
         registry.load_registry()
     ).list_residents()
+    memory_sample = contribute_memory.sample_available_memory(
+        available_ram_gb,
+        total_ram_gb=hw.ram_total_gb,
+    )
     blocked_plans = []
     for candidate in pending:
         plan = _contribute_candidate_memory_plan(
             candidate,
             hw=hw,
             residents=residents,
+            memory_sample=memory_sample,
+            fetch_remote_metadata=False,
         )
         # An unknown estimate must fall through to the existing post-link
         # guard.  SAFE and WARN can proceed; WARN may release an OMM-owned
         # resident under the configured guard policy.
-        if plan is None or plan.decision is not memory_guard_mod.GuardDecision.BLOCK:
+        if (
+            plan is None
+            or plan.decision is not contribute_memory.ContributionMemoryDecision.BLOCK
+        ):
             return
         blocked_plans.append(plan)
 
@@ -5069,10 +5396,10 @@ def _ensure_contribute_candidate_memory(
     smallest = min(blocked_plans, key=lambda plan: plan.required_gb)
     err_console.print(
         "[error]omm contribute will not start because no unbenchmarked candidate "
-        "can be loaded with current live memory. "
-        f"The smallest candidate needs about {smallest.required_gb:.1f} GiB, "
-        f"but only {smallest.available_gb:.1f} GiB is safely available after "
-        f"the {smallest.reserve_gb:.1f} GiB safety reserve. Close memory-heavy "
+        "has enough allocatable runtime memory. "
+        f"The smallest committed-buffer estimate is {smallest.required_gb:.1f} GiB, "
+        f"but only {smallest.available_gb:.1f} GiB remains after the "
+        f"{smallest.reserve_gb:.1f} GiB emergency reserve. Close memory-heavy "
         "apps or reboot, then try again. No model was downloaded.[/error]"
     )
     raise typer.Exit(1)
@@ -5211,6 +5538,7 @@ def _run_contribution_loop(
     stats = _ContributionStats(benchmarked=[])
     consecutive_daemon_failures = 0
     benchmark_failure_counts: dict[str, int] = {}
+    deferred: dict[str, _DeferredContribution] = {}
     gpu_state: dict = {"force_cpu": False}
     while not stop_event.is_set():
         if not benchmark.ollama_daemon_reachable():
@@ -5237,9 +5565,32 @@ def _run_contribution_loop(
 
         candidate = queue.next_candidate(refetch=refetch, fetch_siblings=fetch_siblings)
         if candidate is None:
+            retryable = [
+                (candidate_ref, item)
+                for candidate_ref, item in deferred.items()
+                if item.attempts < _MAX_CANDIDATE_MEMORY_DEFERRALS
+            ]
+            if retryable and hasattr(queue, "release_deferred"):
+                if not opts.quiet:
+                    console.print(
+                        f"[muted]Waiting {int(_DEFERRED_MEMORY_RECHECK_SECONDS)}s for "
+                        f"memory before reconsidering {len(retryable)} deferred "
+                        "candidate(s)...[/muted]"
+                    )
+                if stop_event.wait(_DEFERRED_MEMORY_RECHECK_SECONDS):
+                    break
+                for candidate_ref, _item in retryable:
+                    queue.release_deferred(candidate_ref)
+                continue
             if not opts.quiet:
-                console.print("[muted]No more candidates available for this hardware.[/muted]")
-            stats.exhausted = True
+                if deferred:
+                    console.print(
+                        "[muted]No deferred candidate became memory-safe during this "
+                        "session.[/muted]"
+                    )
+                else:
+                    console.print("[muted]No more candidates available for this hardware.[/muted]")
+            stats.exhausted = not deferred
             break
 
         display_name = candidate.get("name", candidate["filename"])
@@ -5248,40 +5599,48 @@ def _run_contribution_loop(
             console.print(f"[accent]Trying {display_name}...[/accent]")
 
         memory_plan = _contribute_candidate_memory_plan(candidate)
+        if memory_plan is not None and not opts.quiet:
+            console.print(
+                "[muted]Memory preflight before download: "
+                f"committed buffers {memory_plan.estimate.committed_ram_gb:.2f} GiB; "
+                f"memory-mapped weights {memory_plan.estimate.mapped_weights_ram_gb:.2f} GiB; "
+                f"median available {memory_plan.sample.median_gb:.2f} GiB; "
+                f"emergency reserve {memory_plan.sample.reserve_gb:.2f} GiB; "
+                f"estimate source {memory_plan.estimate.source}.[/muted]"
+            )
         if (
             memory_plan is not None
-            and memory_plan.decision is memory_guard_mod.GuardDecision.BLOCK
+            and memory_plan.decision
+            is not contribute_memory.ContributionMemoryDecision.SAFE
         ):
-            stats.skipped_low_memory += 1
-            err_console.print(
-                f"[warning]Skipping {candidate['filename']} before download: needs "
-                f"about {memory_plan.required_gb:.1f} GiB but only "
-                f"{memory_plan.available_gb:.1f} GiB is safely available in live "
-                "memory.[/warning]"
+            item = deferred.setdefault(ref_str, _DeferredContribution(candidate))
+            item.attempts += 1
+            if item.attempts == 1:
+                stats.deferred_low_memory += 1
+            reason = (
+                "runtime buffers exceed physical capacity"
+                if memory_plan.decision
+                is contribute_memory.ContributionMemoryDecision.BLOCK
+                else "runtime buffer memory is temporarily unavailable"
             )
-            # Live memory may change between sessions, but retrying this same
-            # candidate in the current unattended run would only spin.  A new
-            # `omm contribute` invocation rebuilds the queue and checks again.
-            queue.mark_seen(ref_str)
+            err_console.print(
+                f"[warning]Deferring {candidate['filename']} before download: {reason}. "
+                f"Committed RAM estimate {memory_plan.estimate.committed_ram_gb:.1f} GiB, "
+                f"mapped weights {memory_plan.estimate.mapped_weights_ram_gb:.1f} GiB, "
+                f"median available {memory_plan.sample.median_gb:.1f} GiB.[/warning]"
+            )
+            if hasattr(queue, "defer"):
+                queue.defer(ref_str)
+                if item.attempts >= _MAX_CANDIDATE_MEMORY_DEFERRALS:
+                    stats.skipped_low_memory += 1
+            else:
+                # Compatibility for third-party/fake queues implementing the
+                # older protocol. The real queue always supports deferral.
+                queue.mark_seen(ref_str)
+                stats.skipped_low_memory += 1
             continue
 
-        memory_plan = _contribute_candidate_memory_plan(candidate)
-        if (
-            memory_plan is not None
-            and memory_plan.decision is memory_guard_mod.GuardDecision.BLOCK
-        ):
-            stats.skipped_low_memory += 1
-            err_console.print(
-                f"[warning]Skipping {candidate['filename']} before download: needs "
-                f"about {memory_plan.required_gb:.1f} GiB but only "
-                f"{memory_plan.available_gb:.1f} GiB is safely available in live "
-                "memory.[/warning]"
-            )
-            # Live memory may change between sessions, but retrying this same
-            # candidate in the current unattended run would only spin.  A new
-            # `omm contribute` invocation rebuilds the queue and checks again.
-            queue.mark_seen(ref_str)
-            continue
+        deferred.pop(ref_str, None)
 
         try:
             provider = validate_provider(candidate.get("provider") or "huggingface")
@@ -5303,13 +5662,22 @@ def _run_contribution_loop(
                 link_only_ollama=True,
                 enforce_memory_guard=True,
                 gpu_state=gpu_state,
+                contribute_mode=True,
+                contribution_memory_estimate=(
+                    memory_plan.estimate if memory_plan is not None else None
+                ),
             )
         except ContributionStopped as e:
-            _cleanup_incomplete_install(e.filename)
-            reg = registry.load_registry()
-            fn, entry = _lookup_entry(e.filename, reg)
-            if entry:
-                _remove_one(fn, entry)
+            _cleanup_stopped_contribution(e.filename)
+            break
+        except KeyboardInterrupt:
+            # On Windows Ctrl+C is a console control event, not the Esc
+            # listener's stop_event. It can interrupt download, checksum,
+            # linking, or the isolated evaluator directly. Convert it to the
+            # same unload-before-delete cleanup path while the active filename
+            # is still known instead of letting it escape and strand a GGUF.
+            stop_event.set()
+            _cleanup_stopped_contribution(filename)
             break
         except (DownloadError, ModelResolutionError, linker.LinkError) as e:
             err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
@@ -5347,17 +5715,46 @@ def _run_contribution_loop(
                         link_only_ollama=True,
                         enforce_memory_guard=True,
                         gpu_state=gpu_state,
+                        contribute_mode=True,
+                        contribution_memory_estimate=(
+                            memory_plan.estimate if memory_plan is not None else None
+                        ),
                     )
                 except ContributionStopped as e:
-                    _cleanup_incomplete_install(e.filename)
-                    reg = registry.load_registry()
-                    fn, entry = _lookup_entry(e.filename, reg)
-                    if entry:
-                        _remove_one(fn, entry)
+                    _cleanup_stopped_contribution(e.filename)
+                    break
+                except KeyboardInterrupt:
+                    stop_event.set()
+                    _cleanup_stopped_contribution(filename)
                     break
                 except (DownloadError, linker.LinkError) as e:
                     err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
                     continue
+
+        if outcome.failure_reason in {
+            "memory_allocation_blocked",
+            "memory_allocation_deferred",
+        }:
+            reg = registry.load_registry()
+            found_name, entry = _lookup_entry(outcome.filename, reg)
+            if entry:
+                _remove_one(found_name, entry)
+            item = deferred.setdefault(ref_str, _DeferredContribution(candidate))
+            item.attempts += 1
+            if item.attempts == 1:
+                stats.deferred_low_memory += 1
+            if hasattr(queue, "defer"):
+                queue.defer(ref_str)
+                if item.attempts >= _MAX_CANDIDATE_MEMORY_DEFERRALS:
+                    stats.skipped_low_memory += 1
+            else:
+                queue.mark_seen(ref_str)
+                stats.skipped_low_memory += 1
+            err_console.print(
+                f"[warning]Memory changed before {candidate['filename']} could load; "
+                "cleaned it up and deferred a bounded retry.[/warning]"
+            )
+            continue
 
         if outcome.skipped_unfit:
             stats.skipped_unfit += 1
@@ -5384,6 +5781,14 @@ def _run_contribution_loop(
         fn, entry = _lookup_entry(outcome.filename, reg)
         if entry:
             _remove_one(fn, entry)
+
+        # A completed attempt has just unloaded and deleted its model. Memory
+        # conditions may therefore have improved; let bounded deferred items
+        # re-enter ranking instead of waiting for a new contribute session.
+        if hasattr(queue, "release_deferred"):
+            for deferred_ref, deferred_item in deferred.items():
+                if deferred_item.attempts < _MAX_CANDIDATE_MEMORY_DEFERRALS:
+                    queue.release_deferred(deferred_ref)
 
         if outcome.tokens_per_sec is not None and outcome.telemetry_sent:
             benchmark_history.record_benchmarked(
@@ -5438,7 +5843,8 @@ def _print_contribution_summary(
         console.print(f"  - {name:<40} {tokens_per_sec:.1f} tok/s")
     console.print(f"Skipped (predicted not to fit this hardware): {stats.skipped_unfit}")
     console.print(f"Skipped (not enough disk space): {stats.skipped_low_disk}")
-    console.print(f"Skipped before download (not enough live memory): {stats.skipped_low_memory}")
+    console.print(f"Deferred before download (live memory pressure): {stats.deferred_low_memory}")
+    console.print(f"Still blocked after bounded memory retries: {stats.skipped_low_memory}")
     console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
     if stats.given_up_on:
         console.print(
@@ -5495,43 +5901,10 @@ def contribute() -> None:
     # consent. Do it first so users are never asked to approve bandwidth,
     # disk, and compute for a run this machine cannot start.
     started_daemon = _ensure_ollama_running("contribute", assume_yes=yes)
-    if policy == "always" and not load_config().get("contribute_always_ack"):
-        err_console.print(
-            "[warning]Upload policy is 'always' - every benchmark result from this "
-            "and future omm contribute runs will be sent to the server without "
-            "asking each time.[/warning]"
-        )
-        if not yes and not _ask_confirm("Continue?"):
-            if started_daemon is not None:
-                benchmark.stop_ollama_daemon(started_daemon)
-            err_console.print("[warning]Cancelled.[/warning]")
-            raise typer.Exit(0)
-        config_mod.update_config(contribute_always_ack=True)
-
-    err_console.print("[warning]omm contribute - before you start:[/warning]")
-    for line in [
-        "Downloads, benchmarks, and deletes GGUF models repeatedly until you press Esc",
-        "Uses real bandwidth, disk space, and compute; runs unattended (no per-model confirmation)",
-        f"Uploads every benchmark result per your current upload policy ({policy})",
-        "Reserves space per candidate (central GGUF + worst-case Ollama copy + headroom); "
-        "skips anything that won't fit",
-        "Each benchmark has a 10-minute cutoff, with a status line every 30s",
-    ]:
-        err_console.print(f"  [warning]- {line}[/warning]")
-    if platform.system() == "Windows":
-        err_console.print(
-            "  [warning]- Windows: antivirus scanning may delay first model loads - don't "
-            "disable Defender, but avoid other heavy disk activity for comparable "
-            "results[/warning]"
-        )
-    if not yes and not _ask_confirm("Start contributing compute now?"):
-        if started_daemon is not None:
-            benchmark.stop_ollama_daemon(started_daemon)
-        err_console.print("[warning]Cancelled.[/warning]")
-        raise typer.Exit(0)
-
     daemon_ref = {"proc": started_daemon}
     try:
+        # Everything that can prove the session impossible belongs before the
+        # expensive-work consent. These checks do not download model tensors.
         try:
             quality_pack, _ = quality_mod.load_pack()
         except quality_mod.QualityEvaluationError as error:
@@ -5558,13 +5931,48 @@ def contribute() -> None:
                 "this run will confirm that quickly rather than find anything new.[/warning]"
             )
 
-        endpoint = config.get("telemetry_endpoint")
-        before_count = _telemetry_row_count(endpoint) if endpoint else None
-
         hw = scan_hardware()
         history_refs = benchmark_history.loaded_refs()
         queue = contribute_mod.ContributionQueue(artifact, hw, history_refs)
         _ensure_contribute_candidate_memory(artifact, hw, history_refs)
+
+        if policy == "always" and not config.get("contribute_always_ack"):
+            err_console.print(
+                "[warning]Upload policy is 'always' - every benchmark result from this "
+                "and future omm contribute runs will be sent to the server without "
+                "asking each time.[/warning]"
+            )
+            if not yes and not _ask_confirm("Continue?"):
+                err_console.print("[warning]Cancelled.[/warning]")
+                raise typer.Exit(0)
+            config_mod.update_config(contribute_always_ack=True)
+
+        err_console.print("[warning]omm contribute - before you start:[/warning]")
+        for line in [
+            "Downloads, benchmarks, and deletes GGUF models repeatedly until you press Esc",
+            "Uses real bandwidth, disk space, and compute; runs unattended "
+            "(no per-model confirmation)",
+            f"Uploads every benchmark result per your current upload policy ({policy})",
+            "Uses a fixed 1024-token context and 128-token batch for comparable results",
+            "Gates committed runtime buffers before download; monitors paging and "
+            "measurement stability while running",
+            "Defers transient memory shortages up to three times instead of losing "
+            "the candidate",
+            "Each benchmark has a 10-minute cutoff, with a status line every 30s",
+        ]:
+            err_console.print(f"  [warning]- {line}[/warning]")
+        if platform.system() == "Windows":
+            err_console.print(
+                "  [warning]- Windows: antivirus scanning may delay first model loads - "
+                "don't disable Defender, but avoid other heavy disk activity for "
+                "comparable results[/warning]"
+            )
+        if not yes and not _ask_confirm("Start contributing compute now?"):
+            err_console.print("[warning]Cancelled.[/warning]")
+            raise typer.Exit(0)
+
+        endpoint = config.get("telemetry_endpoint")
+        before_count = _telemetry_row_count(endpoint) if endpoint else None
 
         def refetch():
             return _load_recommendation_with_change_note(config)

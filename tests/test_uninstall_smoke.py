@@ -40,6 +40,8 @@ def test_powershell_purge_preserves_unknown_files_and_refuses_cwd(tmp_path):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert result.returncode == 0, result.stderr or result.stdout
 
@@ -59,6 +61,8 @@ def test_powershell_purge_preserves_unknown_files_and_refuses_cwd(tmp_path):
         env=unsafe_env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert refused.returncode != 0
 

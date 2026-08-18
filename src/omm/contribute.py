@@ -69,7 +69,10 @@ def _prefer_huggingface(pool: list[tuple[dict, float]]) -> list[tuple[dict, floa
 
 
 def _next_unseen(
-    pool: list[tuple[dict, float]], history_refs: set[str], cursor: int
+    pool: list[tuple[dict, float]],
+    history_refs: set[str],
+    cursor: int,
+    deferred_refs: set[str] | None = None,
 ) -> tuple[dict | None, int]:
     """Scan `pool` starting at `cursor`, wrapping at most once, for a
     candidate not in `history_refs`."""
@@ -79,7 +82,7 @@ def _next_unseen(
     for step in range(n):
         idx = (cursor + step) % n
         candidate, _ = pool[idx]
-        if not matches_history(candidate, history_refs):
+        if not matches_history(candidate, history_refs) and ref(candidate) not in (deferred_refs or ()):
             return candidate, idx + 1
     return None, cursor
 
@@ -89,6 +92,7 @@ class ContributionQueue:
         self.artifact = artifact
         self.hw = hw
         self.history_refs = set(history_refs)
+        self._deferred_refs: set[str] = set()
         self._boundary_below: dict | None = None
         self._boundary_above: dict | None = None
         self._phase_c_below_queue: list[dict] = []
@@ -102,7 +106,9 @@ class ContributionQueue:
         viable = [(c, s) for c, s in ranked if s > 0]
         unviable = [(c, s) for c, s in ranked if s <= 0]
         self._phase_a_queue = [
-            c for c, s in _prefer_huggingface(viable) if not matches_history(c, self.history_refs)
+            c
+            for c, s in _prefer_huggingface(viable)
+            if not matches_history(c, self.history_refs) and ref(c) not in self._deferred_refs
         ]
         self._below_pool = _prefer_huggingface(list(reversed(viable)))
         self._above_pool = _prefer_huggingface(unviable)
@@ -111,8 +117,24 @@ class ContributionQueue:
         self._next_side_is_below = True
 
     def mark_seen(self, seen_ref: str) -> None:
+        self._deferred_refs.discard(seen_ref)
         self.history_refs.add(seen_ref)
         self._rebuild()
+
+    @property
+    def deferred_refs(self) -> frozenset[str]:
+        return frozenset(self._deferred_refs)
+
+    def defer(self, deferred_ref: str) -> None:
+        """Temporarily remove a memory-constrained candidate from selection."""
+        if deferred_ref not in self.history_refs:
+            self._deferred_refs.add(deferred_ref)
+            self._rebuild()
+
+    def release_deferred(self, deferred_ref: str) -> None:
+        if deferred_ref in self._deferred_refs:
+            self._deferred_refs.remove(deferred_ref)
+            self._rebuild()
 
     def next_candidate(
         self,
@@ -121,20 +143,29 @@ class ContributionQueue:
     ) -> dict | None:
         while self._phase_a_queue:
             candidate = self._phase_a_queue.pop(0)
-            if not matches_history(candidate, self.history_refs):
+            if (
+                not matches_history(candidate, self.history_refs)
+                and ref(candidate) not in self._deferred_refs
+            ):
                 self._boundary_below = candidate
                 return candidate
 
         for _ in range(2):  # try both sides at most once before giving up
             if self._next_side_is_below:
                 candidate, self._below_cursor = _next_unseen(
-                    self._below_pool, self.history_refs, self._below_cursor
+                    self._below_pool,
+                    self.history_refs,
+                    self._below_cursor,
+                    self._deferred_refs,
                 )
                 if candidate is not None:
                     self._boundary_below = candidate
             else:
                 candidate, self._above_cursor = _next_unseen(
-                    self._above_pool, self.history_refs, self._above_cursor
+                    self._above_pool,
+                    self.history_refs,
+                    self._above_cursor,
+                    self._deferred_refs,
                 )
                 if candidate is not None and self._boundary_above is None:
                     self._boundary_above = candidate
@@ -168,11 +199,19 @@ class ContributionQueue:
                     setattr(
                         self,
                         queue_attr,
-                        [c for c in siblings if not matches_history(c, self.history_refs)],
+                        [
+                            c
+                            for c in siblings
+                            if not matches_history(c, self.history_refs)
+                            and ref(c) not in self._deferred_refs
+                        ],
                     )
             queue = getattr(self, queue_attr)
             while queue:
                 candidate = queue.pop(0)
-                if not matches_history(candidate, self.history_refs):
+                if (
+                    not matches_history(candidate, self.history_refs)
+                    and ref(candidate) not in self._deferred_refs
+                ):
                     return candidate
         return None

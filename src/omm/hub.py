@@ -15,12 +15,15 @@ Accepts these forms for `omm install <model_name>`:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import PurePosixPath
 import re
+import struct
 import unicodedata
 from urllib.parse import parse_qs, urlparse
 
 from omm.featurize import is_mmproj_filename, parse_param_count_billions, parse_quant_bits
+from omm.gguf import read_gguf_metadata_bytes
 from omm.providers.base import AmbiguousModelError, AmbiguousProviderError, ModelResolutionError
 
 # Small curated index of popular GGUF models. Not exhaustive - `omm search`
@@ -180,6 +183,72 @@ def remote_file_size(provider: str, repo_id: str, filename: str) -> int | None:
 
 def remote_file_sha256(provider: str, repo_id: str, filename: str) -> str | None:
     return _PROVIDER_MODULES[validate_provider(provider)].remote_file_sha256(repo_id, filename)
+
+
+@lru_cache(maxsize=128)
+def _remote_gguf_prefix_cached(
+    provider: str,
+    repo_id: str,
+    filename: str,
+    max_prefix_bytes: int,
+) -> bytes | None:
+    """Read a bounded GGUF header prefix without downloading tensor data.
+
+    Providers are permitted to ignore Range.  ``stream=True`` plus the
+    explicit byte limit makes that case safe: the response is closed as soon
+    as the bounded prefix has been read rather than buffering the whole model.
+    """
+    import requests
+
+    url = download_url(provider, repo_id, filename)
+    try:
+        with requests.get(
+            url,
+            headers={"Range": f"bytes=0-{max_prefix_bytes - 1}"},
+            stream=True,
+            timeout=(10, 30),
+        ) as response:
+            response.raise_for_status()
+            data = bytearray()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                remaining = max_prefix_bytes - len(data)
+                data.extend(chunk[:remaining])
+                if len(data) >= max_prefix_bytes:
+                    break
+    except requests.RequestException:
+        return None
+
+    return bytes(data) or None
+
+
+def remote_gguf_metadata(
+    provider: str,
+    repo_id: str,
+    filename: str,
+    wanted_keys: set[str],
+    *,
+    max_prefix_bytes: int = 16 * 1024**2,
+) -> dict[str, object] | None:
+    """Best-effort typed metadata from a remote GGUF's bounded header.
+
+    The result is cached for the process lifetime because contribute may
+    defer and reconsider the same candidate several times.
+    """
+    provider = validate_provider(provider)
+    repo_id = validate_repo_id(repo_id)
+    filename = validate_model_filename(filename)
+    if not wanted_keys or max_prefix_bytes < 24 or max_prefix_bytes > 64 * 1024**2:
+        return None
+    prefix = _remote_gguf_prefix_cached(provider, repo_id, filename, max_prefix_bytes)
+    if prefix is None:
+        return None
+    try:
+        metadata = read_gguf_metadata_bytes(prefix, wanted_keys)
+    except (struct.error, KeyError, TypeError, ValueError):
+        return None
+    return metadata or None
 
 
 def fetch_repo_param_count_b(provider: str, repo_id: str) -> float | None:

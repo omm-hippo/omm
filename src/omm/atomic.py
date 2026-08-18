@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import hashlib
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -35,7 +36,18 @@ def atomic_write_text(path: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        # Windows antivirus/indexing can hold the destination for a very
+        # short interval. A single PermissionError used to make config writes
+        # fail and benchmark-history writes silently lose an entry. Keep the
+        # replacement atomic, but retry only this transient sharing failure.
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(min(0.025 * (2**attempt), 0.5))
     finally:
         temporary.unlink(missing_ok=True)
 
