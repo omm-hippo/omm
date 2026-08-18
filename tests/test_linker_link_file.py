@@ -1,4 +1,5 @@
 import json
+import platform
 import struct
 from pathlib import Path
 from types import SimpleNamespace
@@ -160,8 +161,13 @@ def test_link_file_skips_delete_recreate_when_already_linked(isolated_omm_home, 
 
     result = linker.link_file(src, dst)
 
-    assert result == "symlink"
-    assert dst.lstat().st_ino == original_ino  # same symlink, never torn down
+    # link_file tries a hard link first on Windows (no Developer Mode
+    # needed) and only falls back to a symlink elsewhere - see its
+    # docstring. The "already linked" identity being preserved is the
+    # actual thing under test, not which kind was created.
+    expected_kind = "hardlink" if platform.system() == "Windows" else "symlink"
+    assert result == expected_kind
+    assert dst.lstat().st_ino == original_ino  # same link, never torn down
     assert update_calls == []  # ownership registry never rewritten
 
 
