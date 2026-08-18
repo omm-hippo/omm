@@ -122,3 +122,36 @@ def test_help_accepts_global_flags_after_the_subcommand_name():
     for flag in ("--quiet", "-q", "--json", "--yes", "-y", "--no-color"):
         result = runner.invoke(cli.app, ["help", flag])
         assert result.exit_code == 0, (flag, result.stdout, result.stderr)
+
+
+def test_help_all_summarises_a_command_in_one_sentence():
+    """`help --all` prints each command's first docstring paragraph, so a
+    docstring written as one unbroken paragraph dumped its whole
+    implementation note into what should be a one-line summary."""
+    result = runner.invoke(cli.app, ["help", "--all"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Reinstall omm from the latest source" in result.stdout
+    assert "SRC_DIR" not in result.stdout
+
+
+def test_command_help_still_carries_the_full_description():
+    """Shortening the summary must not lose the detail - it moves into the
+    body, which `omm update --help` still shows."""
+    result = runner.invoke(cli.app, ["update", "--help"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "SRC_DIR" in result.stdout
+
+
+def test_help_all_indents_a_wrapped_summary_under_the_summary_column():
+    """A summary too long for the terminal used to wrap back to column 0,
+    where the continuation read as if it belonged to no command."""
+    result = runner.invoke(cli.app, ["help", "--all"])
+    lines = result.stdout.splitlines()
+
+    row = next(i for i, line in enumerate(lines) if line.strip().startswith("omm upgrade"))
+    summary_column = lines[row].index("Refresh an installed model")
+
+    assert lines[row + 1].strip(), "expected this summary to wrap at 80 columns"
+    assert lines[row + 1].startswith(" " * summary_column)

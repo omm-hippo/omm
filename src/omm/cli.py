@@ -25,6 +25,7 @@ import typer
 from prompt_toolkit.keys import Keys
 from rich.console import Console
 from rich.markup import escape
+from rich.padding import Padding
 from rich.progress import (
     BarColumn,
     Progress,
@@ -468,8 +469,23 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
 ]
 
 
-def _print_command_line(name: str, cmd_obj: click.Command, width: int) -> None:
-    console.print(f"  omm {name:<{width}}  {cmd_obj.get_short_help_str(limit=1000)}")
+def _command_reference_grid(name_width: int) -> Table:
+    """Two-column layout for one `omm help --all` section. A summary too
+    long for the terminal wraps under the summary column; the padded
+    f-string this replaces let it restart at column 0, where the
+    continuation read as if it belonged to no command at all.
+
+    `name_width` is fixed by the caller rather than left to the grid so
+    that every top-level section shares one summary column, the way the
+    single global width used to line them all up."""
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(no_wrap=True, width=name_width)
+    grid.add_column()
+    return grid
+
+
+def _add_command_row(grid: Table, name: str, cmd_obj: click.Command) -> None:
+    grid.add_row(f"  omm {name}", cmd_obj.get_short_help_str(limit=1000))
 
 
 def _print_full_command_reference(root_ctx: click.Context) -> None:
@@ -479,16 +495,20 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
     is for. A prior version dumped every command's complete --help text
     here (~400 lines); this mirrors how git/docker/gh expand `-a` instead."""
     commands = root_ctx.command.commands
-    width = max((len(n) for n in commands if not commands[n].hidden), default=0)
     grouped_names = {name for _, names in _HELP_ALL_GROUPS for name in names}
+    name_width = len("  omm ") + max(
+        (len(n) for n in commands if not commands[n].hidden), default=0
+    )
 
     for title, names in _HELP_ALL_GROUPS:
         visible = [n for n in names if n in commands and not commands[n].hidden]
         if not visible:
             continue
         console.print(f"[bold]{title}:[/bold]")
+        grid = _command_reference_grid(name_width)
         for name in visible:
-            _print_command_line(name, commands[name], width)
+            _add_command_row(grid, name, commands[name])
+        console.print(grid)
         console.print()
 
     setting_cmd = commands.get("setting")
@@ -502,11 +522,13 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
         sub_names = [n for n in sorted(setting_cmd.commands) if not setting_cmd.commands[n].hidden]
         if sub_names:
             console.print("[bold]Settings (omm setting SUBCOMMAND):[/bold]")
-            console.print(f"  {setting_cmd.help}")
-            sub_width = max(len(n) for n in sub_names)
+            console.print(Padding(setting_cmd.help, (0, 0, 0, 2)))
+            grid = _command_reference_grid(
+                len("  omm setting ") + max(len(n) for n in sub_names)
+            )
             for name in sub_names:
-                sub_obj = setting_cmd.commands[name]
-                _print_command_line(f"setting {name}", sub_obj, len("setting ") + sub_width)
+                _add_command_row(grid, f"setting {name}", setting_cmd.commands[name])
+            console.print(grid)
             console.print()
 
     # Safety net: any top-level command not yet slotted into a group above
@@ -516,8 +538,10 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
     )
     if leftover:
         console.print("[bold]Other:[/bold]")
+        grid = _command_reference_grid(name_width)
         for name in leftover:
-            _print_command_line(name, commands[name], width)
+            _add_command_row(grid, name, commands[name])
+        console.print(grid)
         console.print()
 
     console.print("[muted]Run `omm COMMAND --help` for a command's full option list.[/muted]")
@@ -1113,8 +1137,10 @@ def import_cmd(
         None, help="Optional extra directory to also scan for stray .gguf files."
     ),
 ) -> None:
-    """Scan every supported local AI app (and optionally PATH) for .gguf
-    files not yet managed by omm, and offer to adopt them into the hub."""
+    """Adopt .gguf files from other local AI apps into the omm hub.
+
+    Scans every supported local AI app (and optionally PATH) for files not
+    yet managed by omm, then offers to adopt each one it finds."""
     extra_path = None
     if path:
         extra_path = Path(path).expanduser()
@@ -1359,7 +1385,8 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
 @app.command()
 @global_flags
 def update() -> None:
-    """Reinstall omm from the latest source, then refresh rules/model data.
+    """Reinstall omm from the latest source and refresh its data.
+
     Uses a persistent editable clone (SRC_DIR) for a git-pull-speed update
     once migrated; a one-time pipx --editable install otherwise. Pulls
     from whichever branch `omm setting version` has selected (stable/main
@@ -1631,9 +1658,10 @@ def _select_recommended_model(
 @app.command()
 @global_flags
 def recommend() -> None:
-    """Scan hardware and suggest a model to install, ranked by a model
-    trained on real install telemetry (falls back to static rules if the
-    trained model can't be fetched)."""
+    """Suggest a model to install for this hardware.
+
+    Ranked by a model trained on real install telemetry, falling back to
+    the static rules when that trained model can't be fetched."""
     import requests
 
     info = scan_hardware()
@@ -2412,8 +2440,8 @@ def _print_engine_selection_notice(engine: str) -> None:
     if engine != "lmstudio" or _global_opts().quiet:
         return
     console.print(
-        f"[muted]Ollama isn't installed or running - using "
-        f"{_engine_label(engine)} instead.[/muted]"
+        f"[muted]Ollama isn't installed or running - using {_engine_label(engine)} "
+        "instead.[/muted]"
     )
 
 
@@ -4872,8 +4900,10 @@ def _autoremove_incomplete_installs() -> int:
 @app.command()
 @global_flags
 def autoremove() -> None:
-    """Remove broken symlinks left behind when a model's source .gguf was
-    deleted without going through `omm uninstall`, plus any orphaned partial or
+    """Clean up broken links and leftover partial downloads.
+
+    Removes symlinks left behind when a model's source .gguf was deleted
+    without going through `omm uninstall`, plus any orphaned partial or
     unregistered downloads in the models directory."""
     removed_by_engine: dict[str, int] = {}
     for spec in linker.ENGINES:
@@ -6501,9 +6531,11 @@ def _print_contribution_summary(
 @app.command()
 @global_flags
 def contribute() -> None:
-    """Repeatedly install, benchmark, and upload telemetry for hardware-fit
-    models until Esc is pressed, to help grow the training dataset behind
-    `omm recommend`. Deletes each model after benchmarking it (even
+    """Benchmark models in a loop to improve `omm recommend`.
+
+    Repeatedly installs, benchmarks, and uploads telemetry for
+    hardware-fit models until Esc is pressed, growing the training dataset
+    behind `omm recommend`. Deletes each model after benchmarking it (even
     successful ones) to keep disk usage bounded."""
     yes = _global_opts().yes
     policy = load_config().get("telemetry_send_policy", "ask")
