@@ -1822,20 +1822,21 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
 
 
 def _link_model(
-    dest, repo_id: str | None, ollama_tag: str, *, only_ollama: bool = False
+    dest, repo_id: str | None, ollama_tag: str, *, only_engine: str | None = None
 ) -> dict[str, bool]:
     """Link a downloaded .gguf into every installed engine, printing a
     warning only when an installed engine fails to link (uninstalled
     engines are skipped silently). Shared by `install` and `update` since
     both need the exact same behavior after a fresh (or refreshed) download.
 
-    `only_ollama` restricts linking to Ollama alone - `omm contribute` only
-    needs Ollama to benchmark, so linking into LM Studio/Jan/etc. for every
+    `only_engine` restricts linking to a single engine key - `omm
+    contribute` only needs the one engine it's benchmarking against this
+    session, so linking into every other installed engine for every
     downloaded candidate is unnecessary churn."""
     linked = {spec.key: False for spec in linker.ENGINES}
 
     for spec in linker.ENGINES:
-        if only_ollama and spec.key != "ollama":
+        if only_engine is not None and spec.key != only_engine:
             continue
         if not linker.is_engine_installed(spec.key):
             continue
@@ -1879,6 +1880,7 @@ class InstallOutcome:
     compatibility_engine: str | None = None
     compatibility_status: str | None = None
     runtime_load_declined: bool = False
+    benchmark_engine: str | None = None
 
 
 class ContributionStopped(Exception):
@@ -2014,7 +2016,7 @@ def _ensure_install_disk_capacity(
     size_bytes: int,
     *,
     include_download: bool,
-    only_ollama: bool,
+    only_engine: str | None,
 ) -> None:
     """Preflight the peak bytes omm may add on every affected volume."""
     if size_bytes <= 0:
@@ -2031,7 +2033,7 @@ def _ensure_install_disk_capacity(
 
     if include_download:
         add(dest.parent, "central model download")
-    for risk in linker.disk_copy_risks(dest, only_ollama=only_ollama):
+    for risk in linker.disk_copy_risks(dest, only_engine=only_engine):
         add(risk.path, risk.reason)
 
     failures = []
@@ -2183,6 +2185,88 @@ def _post_install_runtime(linked: dict[str, bool], preferred: str | None) -> str
     return available[0] if available else None
 
 
+def _engine_daemon_reachable(engine: str) -> bool:
+    """Dispatch to the engine-specific "is the daemon already up" check."""
+    if engine == "lmstudio":
+        return linker.lmstudio_daemon_reachable()
+    return benchmark.ollama_daemon_reachable()
+
+
+def _start_engine_daemon(engine: str):
+    """Best-effort daemon start. Returns an opaque handle for
+    `_stop_engine_daemon` - an Ollama Popen for "ollama", or a bool
+    sentinel for "lmstudio" (LM Studio's lifecycle is a named background
+    service with no process handle to hand back, per
+    linker.start_lmstudio_daemon's contract). None means the daemon could
+    not be confirmed running, matching benchmark.start_ollama_daemon's
+    existing "None means failed" contract."""
+    if engine == "lmstudio":
+        return True if linker.start_lmstudio_daemon() else None
+    return benchmark.start_ollama_daemon()
+
+
+def _stop_engine_daemon(engine: str, handle) -> None:
+    """Counterpart to `_start_engine_daemon`; only ever called with a
+    non-None handle, mirroring the existing single-engine call sites."""
+    if engine == "lmstudio":
+        linker.stop_lmstudio_daemon()
+    else:
+        benchmark.stop_ollama_daemon(handle)
+
+
+def _engine_version(engine: str) -> str | None:
+    """Live daemon version string for telemetry's `engine_version` field.
+    Mirrors quality.collect_evidence's inline LM Studio version lookup
+    (Task 2) - no shared helper exists in quality.py for this, so the same
+    small pattern is intentionally repeated here rather than adding one
+    there."""
+    if engine == "lmstudio":
+        port = linker.lmstudio_server_port()
+        if port is None:
+            return None
+        return LMStudioAdapter(base_url=f"http://127.0.0.1:{port}").health().version
+    return quality_mod.ollama_version()
+
+
+def _select_benchmark_engine() -> str | None:
+    """"ollama" if Ollama's daemon can be reached or started, else
+    "lmstudio" if LM Studio's can, else None (caller must error out with an
+    actionable message - neither engine is usable).
+
+    Only checks availability/reachability; never starts a daemon itself -
+    the caller starts (and later stops) whichever engine wins, at the same
+    points the existing single-engine flow already did."""
+    if benchmark.find_ollama_executable() is not None or benchmark.ollama_daemon_reachable():
+        return "ollama"
+    if linker._lms_cli_path() is not None or linker.lmstudio_daemon_reachable():
+        return "lmstudio"
+    return None
+
+
+def _ensure_engine_running(engine: str, action: str, *, assume_yes: bool = False):
+    """Preflight the selected engine's daemon, prompting to start it if
+    installed-but-stopped. `engine` should already come from
+    `_select_benchmark_engine()`, so "is this engine usable at all" is not
+    re-checked here - only "is it already running, and if not, do we have
+    permission to start it." Returns an opaque handle for
+    `_stop_engine_daemon`, or None if nothing needed starting."""
+    if engine == "ollama":
+        return _ensure_ollama_running(action, assume_yes=assume_yes)
+    if linker.lmstudio_daemon_reachable():
+        return None
+    prompt = f"LM Studio is installed but its server isn't running. Start it now for `omm {action}`?"
+    if not assume_yes and (not _stdin_is_tty() or not _ask_confirm(prompt)):
+        err_console.print(
+            f"[error]omm {action} requires LM Studio's local server to be running.[/error]"
+        )
+        raise typer.Exit(1)
+    started = linker.start_lmstudio_daemon()
+    if not started:
+        err_console.print("[error]Could not start LM Studio's local server.[/error]")
+        raise typer.Exit(1)
+    return True
+
+
 def _record_install_compatibility(
     filename: str,
     engine: str,
@@ -2302,7 +2386,7 @@ def _install_impl(
     stop_event: threading.Event | None = None,
     use_quality_eval: bool = False,
     quality_pack: dict | None = None,
-    link_only_ollama: bool = False,
+    link_only_engine: str | None = None,
     assume_yes: bool = False,
     force: bool = False,
     verify_runtime_after_install: bool = False,
@@ -2310,11 +2394,19 @@ def _install_impl(
     preferred_runtime: str | None = None,
     enforce_memory_guard: bool = False,
     gpu_state: dict | None = None,
+    benchmark_engine: str = "ollama",
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
     `install` command and `omm contribute`'s unattended loop via the
-    kwargs above."""
+    kwargs above.
+
+    `benchmark_engine` only matters when `use_quality_eval=True` (the only
+    caller that sets it to anything but the default is `omm contribute`'s
+    unattended loop) - it selects which engine's daemon/eval/telemetry path
+    runs. Plain `omm install` never passes it, so it always stays "ollama"
+    there and every code path below behaves exactly as before this engine
+    parameter existed."""
     opts = _global_opts()
     url, filename, repo_id = resolved.url, resolved.filename, resolved.repo_id
     try:
@@ -2391,7 +2483,7 @@ def _install_impl(
                     dest,
                     size_bytes,
                     include_download=True,
-                    only_ollama=link_only_ollama,
+                    only_engine=link_only_engine,
                 )
             except InsufficientDiskSpaceError as error:
                 if skip_unfit:
@@ -2424,7 +2516,7 @@ def _install_impl(
             dest,
             dest.stat().st_size,
             include_download=False,
-            only_ollama=link_only_ollama,
+            only_engine=link_only_engine,
         )
     except InsufficientDiskSpaceError as error:
         if downloaded_now:
@@ -2446,7 +2538,7 @@ def _install_impl(
 
     ollama_tag = linker.sanitize_ollama_tag(filename)
     try:
-        linked = _link_model(dest, repo_id, ollama_tag, only_ollama=link_only_ollama)
+        linked = _link_model(dest, repo_id, ollama_tag, only_engine=link_only_engine)
     except linker.InsufficientLinkSpaceError as error:
         if downloaded_now:
             _cleanup_incomplete_install(filename)
@@ -2499,8 +2591,19 @@ def _install_impl(
     runtime_options = None
     guard_failure_reason = "memory_guard_blocked" if lmstudio_guard_blocked else None
     eval_error: quality_mod.QualityEvaluationError | None = None
-    run_ollama_benchmark = linked["ollama"] and selected_runtime != "lmstudio"
-    ollama_was_preloaded = False
+    run_ollama_benchmark = (
+        linked["ollama"] and selected_runtime != "lmstudio" and benchmark_engine == "ollama"
+    )
+    # verify_runtime_after_install (plain `omm install`'s compat check) never
+    # combines with benchmark_engine != "ollama" - only `omm contribute`
+    # passes a non-default benchmark_engine, and it never sets
+    # verify_runtime_after_install. selected_runtime stays None there, so
+    # this condition reduces to "the contribute loop picked LM Studio and
+    # linked it."
+    run_lmstudio_benchmark = (
+        linked["lmstudio"] and selected_runtime != "ollama" and benchmark_engine == "lmstudio"
+    )
+    model_was_preloaded = False
     ollama_runtime_version = None
     if run_ollama_benchmark and verify_runtime_after_install:
         adapter = _compatibility_adapter("ollama")
@@ -2530,8 +2633,8 @@ def _install_impl(
                 visible = find_runtime_model(adapter.list_models(), model_ref)
             except RuntimeAdapterError:
                 visible = None
-            ollama_was_preloaded = bool(visible and visible.loaded)
-            if not ollama_was_preloaded:
+            model_was_preloaded = bool(visible and visible.loaded)
+            if not model_was_preloaded:
                 consent = runtime_load_consent
                 if consent is None:
                     consent = _ask_confirm(
@@ -2545,23 +2648,51 @@ def _install_impl(
                     runtime_load_declined = True
                     run_ollama_benchmark = False
 
-    if run_ollama_benchmark:
+    if run_ollama_benchmark or run_lmstudio_benchmark:
+        if run_lmstudio_benchmark and not use_quality_eval:
+            # No current caller combines benchmark_engine="lmstudio" with
+            # use_quality_eval=False - only `omm contribute`'s loop ever
+            # sets a non-default benchmark_engine, and it always sets
+            # use_quality_eval=True too. Fail loudly instead of silently
+            # falling into the Ollama-only sample path below against the
+            # wrong engine if that invariant is ever violated.
+            raise NotImplementedError(
+                "LM Studio benchmarking via _install_impl requires use_quality_eval=True"
+            )
         if not opts.quiet:
             console.print("Benchmarking...")
         started_daemon = None
         pressure_watcher = None
         if (
             not verify_runtime_after_install
-            and not benchmark.ollama_daemon_reachable()
+            and not _engine_daemon_reachable(benchmark_engine)
         ):
-            started_daemon = benchmark.start_ollama_daemon()
+            started_daemon = _start_engine_daemon(benchmark_engine)
         try:
             runtime_hw = scan_hardware()
             runtime_candidate = {
                 "filename": filename, "repo_id": repo_id, "size_bytes": dest.stat().st_size,
             }
+            lmstudio_model = None
+            lmstudio_port = None
+            if benchmark_engine == "lmstudio":
+                lmstudio_port = linker.lmstudio_server_port()
+                lmstudio_model = linker.resolve_lmstudio_model(repo_id, filename)
+                # None here means the just-linked model couldn't be
+                # resolved back to an LM Studio modelKey - metadata lookup
+                # and the eval call below both fail soft on this via
+                # QualityEvaluationError(FAILURE_REASON_MODEL_LOAD_FAILED),
+                # same shape as Ollama's own "not installed" case.
+                benchmark_tag = lmstudio_model.get("model_key") if lmstudio_model else None
+            else:
+                benchmark_tag = ollama_tag
             try:
-                model_metadata = quality_mod._model_metadata(ollama_tag)
+                if benchmark_engine == "lmstudio":
+                    model_metadata = quality_mod._model_metadata(
+                        benchmark_tag or filename, engine="lmstudio", lmstudio_model=lmstudio_model
+                    )
+                else:
+                    model_metadata = quality_mod._model_metadata(ollama_tag)
                 runtime_candidate.update(model_metadata)
             except quality_mod.QualityEvaluationError:
                 model_metadata = None
@@ -2571,17 +2702,19 @@ def _install_impl(
                 # A previous candidate this session already crashed the GPU
                 # backend on this hardware (see the gpu_crash retry below) -
                 # skip straight to CPU instead of re-triggering the same
-                # crash on every remaining candidate.
+                # crash on every remaining candidate. (LM Studio ignores
+                # this option entirely - see quality._evaluate_tag_once's
+                # docstring - so setting it is harmless there too.)
                 runtime_options = dict(runtime_options)
                 runtime_options["num_gpu"] = 0
-            if enforce_memory_guard:
+            if enforce_memory_guard and not (benchmark_engine == "lmstudio" and benchmark_tag is None):
                 required_gb = runtime_profile.required_memory_gb or (
                     dest.stat().st_size / (1024**3) * 1.2
                 )
-                guard_allowed, _guard_runtime, target_was_preloaded = _guard_ollama_load(
-                    ollama_tag, required_gb
+                guard_allowed, _guard_runtime, target_was_preloaded = _guard_engine_load(
+                    benchmark_engine, benchmark_tag, required_gb
                 )
-                ollama_was_preloaded = ollama_was_preloaded or target_was_preloaded
+                model_was_preloaded = model_was_preloaded or target_was_preloaded
                 if not guard_allowed:
                     guard_failure_reason = "memory_guard_blocked"
                     return InstallOutcome(
@@ -2597,6 +2730,7 @@ def _install_impl(
                         compatibility_engine=selected_runtime,
                         compatibility_status=compatibility_status,
                         runtime_load_declined=runtime_load_declined,
+                        benchmark_engine=benchmark_engine,
                     )
                 guard_config = load_config()
                 live_budget = calculate_memory_budget(scan_hardware())
@@ -2609,21 +2743,45 @@ def _install_impl(
                     ),
                     sample_available_gb=lambda: scan_hardware().ram_available_gb,
                     operation_owned_by_omm=not target_was_preloaded,
-                    cancel_owned_operation=lambda: quality_mod.unload_model(ollama_tag),
+                    cancel_owned_operation=lambda: quality_mod.unload_model(
+                        benchmark_tag, engine=benchmark_engine
+                    ),
                     poll_seconds=float(guard_config.get("memory_guard_poll_seconds", 1.0)),
                 )
                 pressure_watcher.__enter__()
             if use_quality_eval:
                 try:
+                    if benchmark_engine == "lmstudio" and benchmark_tag is None:
+                        raise quality_mod.QualityEvaluationError(
+                            f"LM Studio model for '{filename}' could not be resolved to "
+                            "an installed model",
+                            failure_reason=quality_mod.FAILURE_REASON_MODEL_LOAD_FAILED,
+                        )
                     gpu_crash_retries_left = 1
                     while True:
                         def _evaluate_with_runtime():
                             try:
+                                # Ollama keeps the exact call shape it always
+                                # had (no engine kwargs) so any pre-existing
+                                # monkeypatch of evaluate_model that accepts
+                                # runtime_options but not the newer engine
+                                # kwargs still matches on the first try,
+                                # instead of falling through to the
+                                # compatibility branch below and silently
+                                # losing runtime_options.
+                                if benchmark_engine == "ollama":
+                                    return quality_mod.evaluate_model(
+                                        benchmark_tag, quality_pack, speed_runs=3,
+                                        runtime_options=runtime_options,
+                                    )
                                 return quality_mod.evaluate_model(
-                                    ollama_tag, quality_pack, speed_runs=3, runtime_options=runtime_options
+                                    benchmark_tag, quality_pack, speed_runs=3,
+                                    runtime_options=runtime_options,
+                                    engine=benchmark_engine, lmstudio_port=lmstudio_port,
+                                    lmstudio_model=lmstudio_model,
                                 )
                             except TypeError:  # compatibility with older integrations
-                                return quality_mod.evaluate_model(ollama_tag, quality_pack, speed_runs=3)
+                                return quality_mod.evaluate_model(benchmark_tag, quality_pack, speed_runs=3)
 
                         try:
                             if (
@@ -2639,7 +2797,7 @@ def _install_impl(
                                     )
 
                                 result = quality_mod.evaluate_model_isolated(
-                                    ollama_tag,
+                                    benchmark_tag,
                                     quality_pack,
                                     speed_runs=3,
                                     runtime_options=runtime_options,
@@ -2647,6 +2805,9 @@ def _install_impl(
                                     timeout_seconds=_CONTRIBUTE_EVALUATION_DEADLINE_SECONDS,
                                     stop_check=stop_event.is_set,
                                     progress_callback=report_progress,
+                                    engine=benchmark_engine,
+                                    lmstudio_port=lmstudio_port,
+                                    lmstudio_model=lmstudio_model,
                                 )
                             else:
                                 result = _run_interruptible(_evaluate_with_runtime, stop_event)
@@ -2659,13 +2820,21 @@ def _install_impl(
                             # unsupported_runtime (e.g. a model capability
                             # Ollama rejects) does not set gpu_crash and falls
                             # through to the normal failure path below.
+                            # Ollama-only: LM Studio ignores num_gpu entirely
+                            # (see quality._evaluate_tag_once's docstring), so
+                            # a "retry on CPU only" here would rerun with
+                            # identical behavior and just waste the one
+                            # retry - a LM Studio gpu_crash falls straight
+                            # through to the normal failure path below
+                            # instead.
                             if (
-                                error.gpu_crash
+                                benchmark_engine == "ollama"
+                                and error.gpu_crash
                                 and runtime_options.get("num_gpu") != 0
                                 and gpu_crash_retries_left > 0
                             ):
                                 gpu_crash_retries_left -= 1
-                                if not ollama_was_preloaded:
+                                if not model_was_preloaded:
                                     quality_mod.ensure_model_unloaded(ollama_tag)
                                 runtime_options = dict(runtime_options)
                                 runtime_options["num_gpu"] = 0
@@ -2699,8 +2868,17 @@ def _install_impl(
                         "Cleaning up and moving on.[/warning]"
                     )
                 finally:
-                    if not ollama_was_preloaded:
-                        quality_mod.ensure_model_unloaded(ollama_tag)
+                    if not model_was_preloaded:
+                        if benchmark_engine == "lmstudio":
+                            # No LM Studio equivalent of ensure_model_unloaded's
+                            # /api/ps-confirmed unload exists yet (Ollama-only
+                            # by design, see quality.py) - best-effort unload,
+                            # same as quality._evaluate_tag_once already does
+                            # for both engines.
+                            if benchmark_tag is not None:
+                                quality_mod.unload_model(benchmark_tag, engine="lmstudio")
+                        else:
+                            quality_mod.ensure_model_unloaded(ollama_tag)
                 if result is not None:
                     tokens_per_sec = result["speed"]["median_tokens_per_sec"]
                     samples = result["speed"]["samples_tokens_per_sec"]
@@ -2715,7 +2893,7 @@ def _install_impl(
                     }
                     runtime = result.get("runtime")
                     model_metadata = result
-                    engine_version = quality_mod.ollama_version()
+                    engine_version = _engine_version(benchmark_engine)
             else:
                 try:
                     sampled = _run_interruptible(
@@ -2734,19 +2912,23 @@ def _install_impl(
                 except _Interrupted as e:
                     raise ContributionStopped(filename) from e
                 finally:
-                    if not ollama_was_preloaded:
+                    if not model_was_preloaded:
                         quality_mod.unload_model(ollama_tag)
         finally:
             if pressure_watcher is not None:
                 pressure_watcher.__exit__(None, None, None)
             if started_daemon is not None:
-                benchmark.stop_ollama_daemon(started_daemon)
+                _stop_engine_daemon(benchmark_engine, started_daemon)
 
         if pressure_watcher is not None and pressure_watcher.pressure_triggered:
-            pressure_watcher.cancelled = bool(
-                pressure_watcher.cancelled
-                and quality_mod._model_is_loaded(ollama_tag) is False
-            )
+            if benchmark_engine == "ollama":
+                pressure_watcher.cancelled = bool(
+                    pressure_watcher.cancelled
+                    and quality_mod._model_is_loaded(benchmark_tag) is False
+                )
+            # LM Studio has no /api/ps-equivalent unload-confirmation probe
+            # yet (Ollama-only by design, see quality.py) - trust the
+            # watcher's own verdict rather than silently downgrading it.
             tokens_per_sec = None
             guard_failure_reason = (
                 "memory_pressure_cancelled"
@@ -2786,6 +2968,7 @@ def _install_impl(
                     model_filename=filename,
                     model_digest=sha256,
                     provider=resolved.provider,
+                    engine=benchmark_engine,
                 )
             else:
                 telemetry.log_attempt("declined_by_user", filename)
@@ -2799,12 +2982,13 @@ def _install_impl(
                     guard_failure_reason
                     or (eval_error.failure_reason if eval_error is not None else None)
                 ),
+                engine=benchmark_engine,
             )
         if verify_runtime_after_install:
             compatibility_status = "passed" if tokens_per_sec else "failed"
             _record_install_compatibility(
                 filename,
-                "ollama",
+                benchmark_engine,
                 status=compatibility_status,
                 runtime_version=ollama_runtime_version or engine_version,
                 failure_reason=None if tokens_per_sec else (
@@ -2825,6 +3009,7 @@ def _install_impl(
         compatibility_engine=selected_runtime,
         compatibility_status=compatibility_status,
         runtime_load_declined=runtime_load_declined,
+        benchmark_engine=benchmark_engine if (run_ollama_benchmark or run_lmstudio_benchmark) else None,
     )
 
 
@@ -4415,6 +4600,11 @@ def autoremove() -> None:
 
 
 def _guard_benchmark_models(models: list[str]) -> None:
+    # Ollama-only: matches registry entries by their Ollama tag, so LM
+    # Studio modelKeys (never stored as `ollama_name`) simply find no entry
+    # and are skipped below - `omm benchmark` against LM Studio has no
+    # memory-guard pre-check yet (tracked as a known gap, see Task 3's
+    # report; `omm contribute` does have one via `_guard_engine_load`).
     entries = registry.load_registry()
     for tag in models:
         entry = next(
@@ -4436,12 +4626,49 @@ def _guard_benchmark_models(models: list[str]) -> None:
             raise typer.Exit(1)
 
 
+def _lmstudio_installed_models() -> dict[str, dict]:
+    """All installed LM Studio LLM models, keyed by modelKey, in the same
+    reduced shape `linker.resolve_lmstudio_model()` returns - `omm
+    benchmark`'s "all" expansion and free-form tag lookup for the LM
+    Studio engine. Reuses linker's private LM Studio listing helper
+    (`_lms_*` reuse is sanctioned by the plan's global constraints) rather
+    than adding new subprocess/API logic; the field mapping below
+    necessarily mirrors resolve_lmstudio_model's own (a known, pre-existing
+    duplication in that function - see Task 1's review notes - not
+    introduced by this change)."""
+    lms_path = linker._lms_cli_path()
+    if lms_path is None:
+        return {}
+    entries = linker._lmstudio_list_models(lms_path) or []
+    models: dict[str, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("type") != "llm":
+            continue
+        model_key = entry.get("modelKey")
+        if not isinstance(model_key, str) or not model_key:
+            continue
+        quant = entry.get("quantization")
+        if not isinstance(quant, dict):
+            quant = {}
+        models[model_key] = {
+            "model_key": model_key,
+            "architecture": entry.get("architecture"),
+            "quantization_name": quant.get("name"),
+            "quantization_bits": quant.get("bits"),
+            "params_string": entry.get("paramsString"),
+            "max_context_length": entry.get("maxContextLength"),
+            "trained_for_tool_use": entry.get("trainedForToolUse", False),
+        }
+    return models
+
+
 @app.command(name="benchmark")
 @global_flags
 def benchmark_cmd(
     models: list[str] = typer.Argument(
         ...,
-        help="One or more already-installed Ollama tags.",
+        help="One or more already-installed model identifiers for the active "
+        "engine (Ollama tags, or LM Studio modelKeys when Ollama isn't available).",
     ),
     pack: Path | None = typer.Option(
         None,
@@ -4469,18 +4696,50 @@ def benchmark_cmd(
 ) -> None:
     """Measure a small reproducible quality pack and decode speed."""
     json_output = _global_opts().json
+    # Numeric-ref resolution runs first, exactly as it always has - it only
+    # ever transforms digit-only args (a numbered ref from the last
+    # `omm search`/`omm list`) into an Ollama tag, and passes every other
+    # arg through unchanged, so it's a safe no-op for LM Studio modelKeys
+    # (never pure digits) and must not be deferred behind engine selection:
+    # a bad numeric ref should fail immediately with its own clear error,
+    # not after a daemon probe/prompt the argument was never going to need.
     models = [_resolve_benchmark_tag(m) for m in models]
     if "all" in models and models != ["all"]:
         err_console.print("[error]`all` must be the only argument.[/error]")
         raise typer.Exit(1)
-    started_daemon = _ensure_ollama_running("benchmark")
-    if models == ["all"]:
-        models = quality_mod.list_benchmarkable_tags()
-        if not models:
-            err_console.print("[error]No models are installed in Ollama to benchmark.[/error]")
+    engine = _select_benchmark_engine()
+    if engine is None:
+        err_console.print(
+            "[error]Neither Ollama nor LM Studio is installed or available. Install "
+            "one of them, start it once, then retry `omm benchmark`.[/error]"
+        )
+        raise typer.Exit(1)
+    started_daemon = _ensure_engine_running(engine, "benchmark")
+    lmstudio_models: dict[str, dict] | None = None
+    if engine == "lmstudio":
+        installed = _lmstudio_installed_models()
+        if models == ["all"]:
+            models = sorted(installed)
+            if not models:
+                err_console.print("[error]No models are installed in LM Studio to benchmark.[/error]")
+                raise typer.Exit(1)
+            console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
+        unknown = [m for m in models if m not in installed]
+        if unknown:
+            err_console.print(
+                "[error]Not installed in LM Studio: " + ", ".join(unknown)
+                + ". Use the modelKey shown by `lms ls`.[/error]"
+            )
             raise typer.Exit(1)
-        console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
-    _guard_benchmark_models(models)
+        lmstudio_models = installed
+    else:
+        if models == ["all"]:
+            models = quality_mod.list_benchmarkable_tags()
+            if not models:
+                err_console.print("[error]No models are installed in Ollama to benchmark.[/error]")
+                raise typer.Exit(1)
+            console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
+        _guard_benchmark_models(models)
     if output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output = config_mod.EVALUATIONS_DIR / f"quality-{stamp}.json"
@@ -4512,6 +4771,8 @@ def benchmark_cmd(
                     scan_hardware(),
                     pack_path=pack,
                     speed_runs=speed_runs,
+                    engine=engine,
+                    lmstudio_models=lmstudio_models,
                     confirm_performance_timeout=confirm_performance_timeout,
                     on_model_start=_on_model_start,
                     on_daemon_event=_on_daemon_event,
@@ -4603,6 +4864,7 @@ def benchmark_cmd(
                     model_filename=(entry or {}).get("filename") or model["tag"],
                     model_digest=model.get("digest"),
                     provider=entry.get("provider") if entry else None,
+                    engine=engine,
                 )
             for entry in model_unfit + performance_unfit + transient:
                 _report_failure_telemetry(entry, report.get("environment", {}))
@@ -4619,7 +4881,7 @@ def benchmark_cmd(
             raise typer.Exit(1)
     finally:
         if started_daemon is not None:
-            benchmark.stop_ollama_daemon(started_daemon)
+            _stop_engine_daemon(engine, started_daemon)
 
 
 def _report_telemetry(
@@ -4639,6 +4901,7 @@ def _report_telemetry(
     model_digest: str | None = None,
     provider: str | None = None,
     failure_reason: str | None = None,
+    engine: str = "ollama",
 ) -> bool:
     if tokens_per_sec is None:
         # Not a real "it doesn't run" signal, so skip rather than polluting
@@ -4649,8 +4912,10 @@ def _report_telemetry(
         # re-fixed without ever being the real cause.
         if failure_reason is None:
             telemetry.log_attempt("skipped_daemon_unreachable", filename)
+            engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
             console.print(
-                "[muted]Telemetry not sent - Ollama daemon wasn't reachable during benchmark.[/muted]"
+                f"[muted]Telemetry not sent - {engine_label} daemon wasn't reachable during "
+                "benchmark.[/muted]"
             )
         else:
             telemetry.log_attempt(f"skipped_{failure_reason}", filename)
@@ -4678,7 +4943,7 @@ def _report_telemetry(
         "model_repo_id": repo_id,
         "model_provider": provider or "huggingface",
         "model_size_bytes": size_bytes,
-        "engine": "ollama",
+        "engine": engine,
         "benchmark_version": 4,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "tokens_per_sec": round(tokens_per_sec, 2),
@@ -4818,7 +5083,7 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
         "vram_gb": round(info.vram_total_gb, 1) if info.vram_total_gb is not None else None,
         "unified_memory": info.unified_memory,
         "model_installed": _safe_model_filename(tag) or str(tag)[:512],
-        "engine": "ollama",
+        "engine": environment.get("engine") or "ollama",
         "benchmark_version": 8,
         "outcome": outcome,
         "failure_reason": reason,
@@ -4927,7 +5192,7 @@ def _report_contribute_failure_telemetry(outcome: "InstallOutcome") -> None:
         "failure_reason": outcome.failure_reason,
         "model_metadata": outcome.model_metadata,
     }
-    _report_failure_telemetry(model, environment={})
+    _report_failure_telemetry(model, environment={"engine": outcome.benchmark_engine or "ollama"})
 
 
 def _normalize_model_digest(value: object) -> str | None:
@@ -5027,11 +5292,23 @@ _MAX_CANDIDATE_BENCHMARK_FAILURES = 2
 _MIN_CONTRIBUTE_START_FREE_BYTES = 10 * 1024**3
 
 
+def _residents_for_engine(engine: str) -> tuple[memory_guard_mod.ResidentModel, ...]:
+    """Live resident-model list for whichever engine a contribute session
+    picked. Must match the engine actually being benchmarked - querying
+    Ollama's residents while running against LM Studio (or vice versa)
+    would silently see an empty/wrong list and mis-plan the memory guard."""
+    reg = registry.load_registry()
+    if engine == "lmstudio":
+        return memory_guard_mod.LMStudioManagedRuntime(reg).list_residents()
+    return memory_guard_mod.OllamaManagedRuntime(reg).list_residents()
+
+
 def _contribute_candidate_memory_plan(
     candidate: dict,
     *,
     hw: HardwareInfo | None = None,
     residents: tuple[memory_guard_mod.ResidentModel, ...] | None = None,
+    engine: str = "ollama",
 ) -> memory_guard_mod.MemoryGuardPlan | None:
     """Plan a contribution load before any model bytes are downloaded.
 
@@ -5046,9 +5323,7 @@ def _contribute_candidate_memory_plan(
     required_gb = model_size_gb * tuning.MEMORY_OVERHEAD
     current_hw = hw if hw is not None else scan_hardware()
     if residents is None:
-        residents = memory_guard_mod.OllamaManagedRuntime(
-            registry.load_registry()
-        ).list_residents()
+        residents = _residents_for_engine(engine)
     return memory_guard_mod.plan_memory_guard(
         required_gb,
         current_hw,
@@ -5060,6 +5335,7 @@ def _ensure_contribute_candidate_memory(
     artifact: dict,
     hw: HardwareInfo,
     history_refs: set[str],
+    engine: str = "ollama",
 ) -> None:
     """Abort before the loop when every pending candidate is blocked now."""
     pending = [
@@ -5077,15 +5353,14 @@ def _ensure_contribute_candidate_memory(
     if any(tuning.candidate_model_size_gb(candidate) is None for candidate in pending):
         return
 
-    residents = memory_guard_mod.OllamaManagedRuntime(
-        registry.load_registry()
-    ).list_residents()
+    residents = _residents_for_engine(engine)
     blocked_plans = []
     for candidate in pending:
         plan = _contribute_candidate_memory_plan(
             candidate,
             hw=hw,
             residents=residents,
+            engine=engine,
         )
         # An unknown estimate must fall through to the existing post-link
         # guard.  SAFE and WARN can proceed; WARN may release an OMM-owned
@@ -5236,24 +5511,26 @@ def _run_contribution_loop(
     quality_pack: dict | None = None,
     daemon_ref: dict | None = None,
     fetch_siblings=None,
+    engine: str = "ollama",
 ) -> _ContributionStats:
     opts = _global_opts()
     stats = _ContributionStats(benchmarked=[])
     consecutive_daemon_failures = 0
     benchmark_failure_counts: dict[str, int] = {}
     gpu_state: dict = {"force_cpu": False}
+    engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
     while not stop_event.is_set():
-        if not benchmark.ollama_daemon_reachable():
+        if not _engine_daemon_reachable(engine):
             err_console.print(
-                "[warning]Ollama daemon isn't reachable - it likely crashed mid-session. "
+                f"[warning]{engine_label} daemon isn't reachable - it likely crashed mid-session. "
                 "Attempting to restart it...[/warning]"
             )
-            restarted = benchmark.start_ollama_daemon()
+            restarted = _start_engine_daemon(engine)
             if restarted is None:
                 consecutive_daemon_failures += 1
                 if consecutive_daemon_failures >= _MAX_CONSECUTIVE_DAEMON_FAILURES:
                     err_console.print(
-                        "[error]Ollama daemon won't come back after "
+                        f"[error]{engine_label} daemon won't come back after "
                         f"{consecutive_daemon_failures} attempts - stopping "
                         "omm contribute instead of looping unattended.[/error]"
                     )
@@ -5277,7 +5554,7 @@ def _run_contribution_loop(
         if not opts.quiet:
             console.print(f"[accent]Trying {display_name}...[/accent]")
 
-        memory_plan = _contribute_candidate_memory_plan(candidate)
+        memory_plan = _contribute_candidate_memory_plan(candidate, engine=engine)
         if (
             memory_plan is not None
             and memory_plan.decision is memory_guard_mod.GuardDecision.BLOCK
@@ -5295,7 +5572,7 @@ def _run_contribution_loop(
             queue.mark_seen(ref_str)
             continue
 
-        memory_plan = _contribute_candidate_memory_plan(candidate)
+        memory_plan = _contribute_candidate_memory_plan(candidate, engine=engine)
         if (
             memory_plan is not None
             and memory_plan.decision is memory_guard_mod.GuardDecision.BLOCK
@@ -5330,9 +5607,10 @@ def _run_contribution_loop(
                 stop_event=stop_event,
                 use_quality_eval=True,
                 quality_pack=quality_pack,
-                link_only_ollama=True,
+                link_only_engine=engine,
                 enforce_memory_guard=True,
                 gpu_state=gpu_state,
+                benchmark_engine=engine,
             )
         except ContributionStopped as e:
             _cleanup_incomplete_install(e.filename)
@@ -5345,7 +5623,7 @@ def _run_contribution_loop(
             err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
             continue
 
-        if outcome.tokens_per_sec is None and not benchmark.ollama_daemon_reachable():
+        if outcome.tokens_per_sec is None and not _engine_daemon_reachable(engine):
             # Daemon died *during* this candidate's own download/benchmark
             # (as opposed to between candidates, which the check at the top
             # of the loop already catches). The model is already downloaded
@@ -5353,13 +5631,13 @@ def _run_contribution_loop(
             # instead of throwing away the download and re-fetching it as a
             # "new" candidate on the next iteration.
             err_console.print(
-                f"[warning]Ollama daemon crashed while benchmarking {display_name} - "
+                f"[warning]{engine_label} daemon crashed while benchmarking {display_name} - "
                 "restarting it and retrying this model once...[/warning]"
             )
-            restarted = benchmark.start_ollama_daemon()
+            restarted = _start_engine_daemon(engine)
             if restarted is None:
                 err_console.print(
-                    f"[error]Couldn't restart the Ollama daemon - giving up on "
+                    f"[error]Couldn't restart the {engine_label} daemon - giving up on "
                     f"{display_name} for now.[/error]"
                 )
             else:
@@ -5374,9 +5652,10 @@ def _run_contribution_loop(
                         stop_event=stop_event,
                         use_quality_eval=True,
                         quality_pack=quality_pack,
-                        link_only_ollama=True,
+                        link_only_engine=engine,
                         enforce_memory_guard=True,
                         gpu_state=gpu_state,
+                        benchmark_engine=engine,
                     )
                 except ContributionStopped as e:
                     _cleanup_incomplete_install(e.filename)
@@ -5524,7 +5803,14 @@ def contribute() -> None:
     # Engine availability is a preflight, not part of the expensive-work
     # consent. Do it first so users are never asked to approve bandwidth,
     # disk, and compute for a run this machine cannot start.
-    started_daemon = _ensure_ollama_running("contribute", assume_yes=yes)
+    engine = _select_benchmark_engine()
+    if engine is None:
+        err_console.print(
+            "[error]Neither Ollama nor LM Studio is installed or available. Install "
+            "one of them, start it once, then retry `omm contribute`.[/error]"
+        )
+        raise typer.Exit(1)
+    started_daemon = _ensure_engine_running(engine, "contribute", assume_yes=yes)
     if policy == "always" and not load_config().get("contribute_always_ack"):
         err_console.print(
             "[warning]Upload policy is 'always' - every benchmark result from this "
@@ -5533,7 +5819,7 @@ def contribute() -> None:
         )
         if not yes and not _ask_confirm("Continue?"):
             if started_daemon is not None:
-                benchmark.stop_ollama_daemon(started_daemon)
+                _stop_engine_daemon(engine, started_daemon)
             err_console.print("[warning]Cancelled.[/warning]")
             raise typer.Exit(0)
         config_mod.update_config(contribute_always_ack=True)
@@ -5543,7 +5829,7 @@ def contribute() -> None:
         "Downloads, benchmarks, and deletes GGUF models repeatedly until you press Esc",
         "Uses real bandwidth, disk space, and compute; runs unattended (no per-model confirmation)",
         f"Uploads every benchmark result per your current upload policy ({policy})",
-        "Reserves space per candidate (central GGUF + worst-case Ollama copy + headroom); "
+        "Reserves space per candidate (central GGUF + worst-case engine copy + headroom); "
         "skips anything that won't fit",
         "Each benchmark has a 10-minute cutoff, with a status line every 30s",
     ]:
@@ -5556,7 +5842,7 @@ def contribute() -> None:
         )
     if not yes and not _ask_confirm("Start contributing compute now?"):
         if started_daemon is not None:
-            benchmark.stop_ollama_daemon(started_daemon)
+            _stop_engine_daemon(engine, started_daemon)
         err_console.print("[warning]Cancelled.[/warning]")
         raise typer.Exit(0)
 
@@ -5594,7 +5880,7 @@ def contribute() -> None:
         hw = scan_hardware()
         history_refs = benchmark_history.loaded_refs()
         queue = contribute_mod.ContributionQueue(artifact, hw, history_refs)
-        _ensure_contribute_candidate_memory(artifact, hw, history_refs)
+        _ensure_contribute_candidate_memory(artifact, hw, history_refs, engine=engine)
 
         def refetch():
             return _load_recommendation_with_change_note(config)
@@ -5610,6 +5896,7 @@ def contribute() -> None:
                 quality_pack=quality_pack,
                 daemon_ref=daemon_ref,
                 fetch_siblings=_fetch_sibling_candidates,
+                engine=engine,
             )
         finally:
             listener.stop_event.set()
@@ -5632,7 +5919,7 @@ def contribute() -> None:
             contribute_state.record_exhausted(total_candidates, covered_candidates)
     finally:
         if daemon_ref["proc"] is not None:
-            benchmark.stop_ollama_daemon(daemon_ref["proc"])
+            _stop_engine_daemon(engine, daemon_ref["proc"])
 
 
 def main() -> None:

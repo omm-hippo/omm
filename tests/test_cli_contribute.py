@@ -67,22 +67,30 @@ def test_engine_preflight_happens_before_expensive_work_consent(isolated_omm_hom
     )
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
     monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
+    # omm contribute now falls back to LM Studio before giving up entirely
+    # (_select_benchmark_engine), so its absence needs to be explicit here
+    # too or this test would depend on whether LM Studio happens to be
+    # installed on the machine running the test suite.
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: None)
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: False)
 
     result = runner.invoke(cli.app, ["contribute"])
 
     assert result.exit_code == 1, result.stdout
-    assert "not installed" in result.stderr
+    assert "Neither Ollama nor LM Studio" in result.stderr
 
 
 def test_requires_ollama_daemon(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
     monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: None)
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: False)
 
     result = runner.invoke(cli.app, ["contribute"])
 
     assert result.exit_code == 1
-    assert "not installed" in result.stderr
+    assert "Neither Ollama nor LM Studio" in result.stderr
 
 
 def test_declines_starting_ollama_daemon_when_prompted(isolated_omm_home, monkeypatch):
@@ -213,7 +221,7 @@ def test_happy_path_runs_loop_cleans_up_and_prints_summary(isolated_omm_home, mo
 
     loop_calls = []
 
-    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None):
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None, engine="ollama"):
         loop_calls.append(1)
         return cli._ContributionStats(benchmarked=[("m", 12.5)], skipped_unfit=1, attempted_not_uploaded=0)
 
@@ -262,7 +270,7 @@ def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_ho
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
     monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
 
-    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None):
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None, engine="ollama"):
         return cli._ContributionStats(benchmarked=[], skipped_unfit=1, exhausted=True)
 
     monkeypatch.setattr(cli, "_run_contribution_loop", fake_loop)
@@ -442,7 +450,7 @@ def test_contribute_loads_quality_pack_and_passes_it_to_loop(isolated_omm_home, 
 
     captured = {}
 
-    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None):
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None, engine="ollama"):
         captured["quality_pack"] = quality_pack
         return cli._ContributionStats(benchmarked=[])
 
@@ -474,7 +482,7 @@ def test_contribute_passes_fetch_sibling_candidates_to_loop(isolated_omm_home, m
 
     captured = {}
 
-    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None):
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None, engine="ollama"):
         captured["fetch_siblings"] = fetch_siblings
         return cli._ContributionStats(benchmarked=[])
 

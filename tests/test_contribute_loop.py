@@ -70,7 +70,7 @@ def test_low_memory_candidate_is_skipped_before_download(isolated_omm_home, monk
     monkeypatch.setattr(
         cli,
         "_contribute_candidate_memory_plan",
-        lambda candidate: SimpleNamespace(
+        lambda candidate, **kwargs: SimpleNamespace(
             decision=cli.memory_guard_mod.GuardDecision.BLOCK,
             required_gb=1.2,
             available_gb=0.0,
@@ -122,6 +122,62 @@ def test_start_memory_preflight_aborts_when_every_pending_candidate_is_blocked(
         cli._ensure_contribute_candidate_memory(artifact, object(), set())
 
     assert error.value.exit_code == 1
+
+
+def test_low_memory_candidate_check_queries_lmstudio_residents_for_lmstudio_engine(
+    isolated_omm_home, monkeypatch
+):
+    """The pre-download memory check must ask the engine actually being
+    benchmarked what's resident, not always Ollama - a contribute session
+    running against LM Studio would otherwise plan against an empty (or
+    just wrong) resident list."""
+    candidate = _candidate(filename="too-large-for-live-memory.gguf")
+    candidate["size_bytes"] = 1024**3
+    queue = _FakeQueue([candidate])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "scan_hardware",
+        lambda: cli.HardwareInfo(
+            os_name="Linux", os_version="", cpu="CPU",
+            ram_total_gb=16, ram_available_gb=0.05,
+            unified_memory=False, gpu_name=None,
+            vram_total_gb=None, vram_free_gb=None,
+        ),
+    )
+
+    monkeypatch.setattr(
+        cli.memory_guard_mod,
+        "OllamaManagedRuntime",
+        lambda registry_data: (_ for _ in ()).throw(
+            AssertionError("must not query Ollama residents for engine=lmstudio")
+        ),
+    )
+    seen = {}
+
+    class _FakeLMStudioRuntime:
+        def __init__(self, registry_data):
+            seen["queried"] = True
+
+        def list_residents(self):
+            return ()
+
+    monkeypatch.setattr(cli.memory_guard_mod, "LMStudioManagedRuntime", _FakeLMStudioRuntime)
+
+    monkeypatch.setattr(
+        cli,
+        "_install_impl",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("download/install must not start")
+        ),
+    )
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None, engine="lmstudio")
+
+    assert seen.get("queried") is True
+    assert stats.skipped_low_memory == 1
+    assert stats.benchmarked == []
 
 
 def test_successful_benchmark_records_history_and_deletes_model(isolated_omm_home, monkeypatch):
@@ -508,6 +564,57 @@ def test_dead_daemon_is_restarted_before_next_candidate(isolated_omm_home, monke
 
     assert restarted == [1]
     assert daemon_ref["proc"] is fake_proc
+    assert stats.daemon_restarts == 1
+    assert stats.benchmarked == [("model", 42.0)]
+
+
+def test_dead_lmstudio_daemon_is_restarted_before_next_candidate(isolated_omm_home, monkeypatch):
+    """Mirrors test_dead_daemon_is_restarted_before_next_candidate for the
+    LM Studio engine: the loop's daemon-health check must dispatch to
+    linker.lmstudio_daemon_reachable/start_lmstudio_daemon, not the Ollama
+    functions, when engine="lmstudio"."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    _seed_registry_entry("model.gguf")
+
+    reachable_calls = [False, True]
+    monkeypatch.setattr(
+        cli.linker, "lmstudio_daemon_reachable", lambda: reachable_calls.pop(0)
+    )
+    monkeypatch.setattr(
+        cli.benchmark,
+        "ollama_daemon_reachable",
+        lambda: (_ for _ in ()).throw(AssertionError("must not check Ollama for engine=lmstudio")),
+    )
+    restarted = []
+    monkeypatch.setattr(
+        cli.linker, "start_lmstudio_daemon", lambda: (restarted.append(1), True)[1]
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        assert kwargs.get("benchmark_engine") == "lmstudio"
+        assert kwargs.get("link_only_engine") == "lmstudio"
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": True, "ollama": False},
+            tokens_per_sec=42.0,
+            telemetry_sent=True,
+            sha256="deadbeef",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    daemon_ref = {"proc": None}
+    stats = cli._run_contribution_loop(
+        queue, stop_event, refetch=None, daemon_ref=daemon_ref, engine="lmstudio"
+    )
+
+    assert restarted == [1]
+    assert daemon_ref["proc"] is True
     assert stats.daemon_restarts == 1
     assert stats.benchmarked == [("model", 42.0)]
 

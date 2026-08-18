@@ -25,8 +25,9 @@ from pathlib import Path
 from typing import Callable
 
 from omm.hardware import HardwareInfo
-from omm import benchmark, tuning
+from omm import benchmark, linker, tuning
 from omm.engines.base import LoopbackJsonClient, RuntimeAdapterError
+from omm.engines.lmstudio import LMStudioAdapter
 
 OLLAMA_HOST = "http://localhost:11434"
 MAX_PACK_BYTES = 1_000_000
@@ -458,7 +459,45 @@ def list_benchmarkable_tags() -> list[str]:
     return sorted(names)
 
 
-def _model_metadata(tag: str) -> dict:
+def _lmstudio_model_metadata(tag: str, lmstudio_model: dict | None) -> dict:
+    """Map a `linker.resolve_lmstudio_model()` result onto the same
+    metadata dict shape `_model_metadata` returns for Ollama (see the
+    design's field-mapping table): family<-architecture,
+    quantization_level<-quantization_name, parameter_size<-params_string,
+    capabilities<-["tools"] iff trained_for_tool_use, is_moe is always
+    False (LM Studio has no equivalent of Ollama's verbose tensor
+    inventory), and digest/size_bytes/format/license/license_link are
+    always None (LM Studio models have no equivalent concepts).
+
+    mmproj/embedding models are never seen here: resolve_lmstudio_model
+    already filters to type == "llm" before returning a match.
+    """
+    if lmstudio_model is None:
+        # Could mean "never downloaded/linked" as easily as "doesn't fit
+        # this hardware" - same ambiguity Ollama's own not-installed case
+        # has, so this stays in the transient lane, never model_unfit.
+        raise QualityEvaluationError(
+            f"LM Studio model '{tag}' is not installed or could not be resolved",
+            failure_reason=FAILURE_REASON_MODEL_LOAD_FAILED,
+        )
+    return {
+        "tag": tag,
+        "digest": None,
+        "size_bytes": None,
+        "format": None,
+        "family": lmstudio_model.get("architecture"),
+        "parameter_size": lmstudio_model.get("params_string"),
+        "quantization_level": lmstudio_model.get("quantization_name"),
+        "license": None,
+        "license_link": None,
+        "capabilities": ["tools"] if lmstudio_model.get("trained_for_tool_use") else [],
+        "is_moe": False,
+    }
+
+
+def _model_metadata(tag: str, *, engine: str = "ollama", lmstudio_model: dict | None = None) -> dict:
+    if engine == "lmstudio":
+        return _lmstudio_model_metadata(tag, lmstudio_model)
     tags = _request_json("GET", "/api/tags", timeout=10).get("models")
     if not isinstance(tags, list):
         raise QualityEvaluationError(
@@ -604,8 +643,10 @@ def runtime_snapshot(tag: str, digest: str | None, options: dict) -> dict | None
     }
 
 
-def unload_model(tag: str) -> bool:
+def unload_model(tag: str, *, engine: str = "ollama") -> bool:
     """Best-effort isolation between models; never deletes model files."""
+    if engine == "lmstudio":
+        return linker.unload_lmstudio_model(tag)
     try:
         _request_json(
             "POST",
@@ -699,14 +740,115 @@ def _generate(tag: str, prompt: str, generation: dict, num_predict: int | None =
 def _generate_with_runtime(
     tag: str, prompt: str, generation: dict, num_predict: int | None, runtime_options: dict | None,
     supports_thinking: bool = True,
+    *, engine: str = "ollama", lmstudio_port: int | None = None,
 ) -> dict:
     """Avoid changing the call shape used by older test/integration fakes."""
+    if engine == "lmstudio":
+        return _generate_lmstudio(tag, prompt, generation, num_predict, lmstudio_port)
     kwargs = {}
     if runtime_options is not None:
         kwargs["runtime_options"] = runtime_options
     if not supports_thinking:
         kwargs["supports_thinking"] = False
     return _generate(tag, prompt, generation, num_predict=num_predict, **kwargs)
+
+
+def _lmstudio_request_json(
+    port: int, method: str, path: str, payload: dict | None = None,
+    timeout: int | float = DEFAULT_GENERATION_TIMEOUT_SECONDS,
+) -> dict:
+    """Same connection/timeout/HTTP-error failure_reason classification as
+    _request_json above, just pointed at LM Studio's loopback port instead
+    of the fixed Ollama host - intentionally duplicated rather than shared
+    so this new LM Studio transport can never change _request_json's
+    already-tested Ollama behavior."""
+    try:
+        return LoopbackJsonClient(f"http://127.0.0.1:{port}").request(
+            method,
+            path,
+            payload=payload,
+            timeout=timeout,
+            default_failure="unknown",
+            timeout_failure="generation_timeout",
+        ).data
+    except RuntimeAdapterError as error:
+        if error.transport_kind == "connection_error":
+            failure_reason = FAILURE_REASON_CONNECTION_ERROR
+        elif error.transport_kind == "connect_timeout" or error.reason == "server_unavailable":
+            failure_reason = FAILURE_REASON_OLLAMA_UNAVAILABLE
+        elif error.reason == "generation_timeout":
+            failure_reason = FAILURE_REASON_GENERATION_TIMEOUT
+        elif error.reason == "out_of_memory":
+            failure_reason = FAILURE_REASON_OUT_OF_MEMORY
+        elif error.reason in {"load_failed", "model_not_visible"}:
+            failure_reason = FAILURE_REASON_MODEL_LOAD_FAILED
+        elif error.reason == "unsupported_runtime":
+            failure_reason = FAILURE_REASON_UNSUPPORTED_RUNTIME
+        else:
+            failure_reason = FAILURE_REASON_UNKNOWN
+        raise QualityEvaluationError(
+            f"LM Studio {path} request failed",
+            failure_reason=failure_reason,
+            gpu_crash=error.gpu_crash,
+        ) from error
+
+
+def _generate_lmstudio(
+    model_key: str, prompt: str, generation: dict, num_predict: int | None, port: int | None,
+) -> dict:
+    """POST /api/v0/chat/completions and normalize the response into
+    Ollama's response shape at this transport boundary:
+    {"response": <text>, "eval_count": <completion_tokens>,
+     "eval_duration": <int(generation_time * 1e9)>}.
+
+    This is the ONLY place LM Studio's response shape is known about -
+    accuracy scoring (which reads response["response"]) and
+    _tokens_per_second (which reads eval_count/eval_duration) stay
+    completely engine-agnostic below this point.
+    """
+    if port is None:
+        # collect_evidence's own daemon-health loop is responsible for
+        # catching a dead/unreachable LM Studio server before ever calling
+        # in here; a None port getting this far means the caller (e.g. a
+        # direct evaluate_model(..., engine="lmstudio") call) never
+        # resolved one. Fail soft with the same taxonomy an unreachable
+        # daemon uses rather than raising a bare TypeError.
+        raise QualityEvaluationError(
+            "LM Studio server port is unavailable", failure_reason=FAILURE_REASON_OLLAMA_UNAVAILABLE,
+        )
+    payload = {
+        "model": model_key,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": num_predict or generation["num_predict"],
+        "temperature": generation["temperature"],
+        "stream": False,
+    }
+    data = _lmstudio_request_json(port, "POST", "/api/v0/chat/completions", payload)
+    choices = data.get("choices")
+    message = (
+        choices[0].get("message")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict)
+        else None
+    )
+    text = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(text, str):
+        raise QualityEvaluationError(
+            f"LM Studio returned no text response for '{model_key}'", failure_reason=FAILURE_REASON_UNKNOWN,
+        )
+    result: dict = {"response": text}
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    stats = data.get("stats") if isinstance(data.get("stats"), dict) else {}
+    completion_tokens = usage.get("completion_tokens")
+    if isinstance(completion_tokens, int) and not isinstance(completion_tokens, bool) and completion_tokens > 0:
+        result["eval_count"] = completion_tokens
+    generation_time = stats.get("generation_time")
+    if (
+        isinstance(generation_time, (int, float))
+        and not isinstance(generation_time, bool)
+        and generation_time > 0
+    ):
+        result["eval_duration"] = int(generation_time * 1_000_000_000)
+    return result
 
 
 def _tokens_per_second(response: dict) -> float | None:
@@ -725,28 +867,46 @@ def _tokens_per_second(response: dict) -> float | None:
 
 
 def _speed_probe(
-    tag: str, generation: dict, runs: int, runtime_options: dict | None = None, supports_thinking: bool = True
+    tag: str, generation: dict, runs: int, runtime_options: dict | None = None, supports_thinking: bool = True,
+    *, engine: str = "ollama", lmstudio_port: int | None = None,
 ) -> SpeedSummary:
     _bounded_int(runs, 1, 10, "speed runs")
     prompt = "Explain what an operating system is in a concise paragraph."
-    _generate_with_runtime(tag, prompt, generation, 8, runtime_options, supports_thinking)
+    _generate_with_runtime(
+        tag, prompt, generation, 8, runtime_options, supports_thinking, engine=engine, lmstudio_port=lmstudio_port
+    )
     samples = []
     for _ in range(runs):
         speed = _tokens_per_second(
-            _generate_with_runtime(tag, prompt, generation, 64, runtime_options, supports_thinking)
+            _generate_with_runtime(
+                tag, prompt, generation, 64, runtime_options, supports_thinking,
+                engine=engine, lmstudio_port=lmstudio_port,
+            )
         )
         if speed is None:
+            engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
             raise QualityEvaluationError(
-                f"Ollama returned no timing metrics for '{tag}'",
+                f"{engine_label} returned no timing metrics for '{tag}'",
                 failure_reason=FAILURE_REASON_NO_TIMING_METRICS,
             )
         samples.append(speed)
     return SpeedSummary(statistics.median(samples), tuple(samples))
 
 
-def evaluate_model(tag: str, pack: dict, speed_runs: int = 3, runtime_options: dict | None = None,
-                   model_metadata: dict | None = None) -> dict:
-    metadata = model_metadata or _model_metadata(tag)
+def evaluate_model(
+    tag: str, pack: dict, speed_runs: int = 3, runtime_options: dict | None = None,
+    model_metadata: dict | None = None,
+    *,
+    engine: str = "ollama",
+    lmstudio_port: int | None = None,
+    lmstudio_model: dict | None = None,
+) -> dict:
+    if model_metadata is not None:
+        metadata = model_metadata
+    elif engine == "lmstudio":
+        metadata = _model_metadata(tag, engine="lmstudio", lmstudio_model=lmstudio_model)
+    else:
+        metadata = _model_metadata(tag)
     supports_thinking = "thinking" in (metadata.get("capabilities") or [])
     template = pack["prompt_template"]
     generation = pack["generation"]
@@ -754,7 +914,8 @@ def evaluate_model(tag: str, pack: dict, speed_runs: int = 3, runtime_options: d
     quality_speeds = []
     for item in pack["items"]:
         response = _generate_with_runtime(
-            tag, template.format(question=item["question"]), generation, None, runtime_options, supports_thinking
+            tag, template.format(question=item["question"]), generation, None, runtime_options, supports_thinking,
+            engine=engine, lmstudio_port=lmstudio_port,
         )
         predicted = parse_numeric_answer(response["response"])
         expected = _normalize_number(item["expected"])
@@ -776,9 +937,13 @@ def evaluate_model(tag: str, pack: dict, speed_runs: int = 3, runtime_options: d
     correct_count = sum(1 for item in item_results if item["correct"])
     category_total = Counter(item["category"] for item in item_results)
     category_correct = Counter(item["category"] for item in item_results if item["correct"])
-    speed = _speed_probe(tag, generation, speed_runs, runtime_options=runtime_options, supports_thinking=supports_thinking)
+    speed = _speed_probe(
+        tag, generation, speed_runs, runtime_options=runtime_options, supports_thinking=supports_thinking,
+        engine=engine, lmstudio_port=lmstudio_port,
+    )
     return {
         **metadata,
+        "engine": engine,
         "quality": {
             "correct": correct_count,
             "total": len(item_results),
@@ -803,7 +968,15 @@ def evaluate_model(tag: str, pack: dict, speed_runs: int = 3, runtime_options: d
                 round(statistics.median(quality_speeds), 2) if quality_speeds else None
             ),
         },
-        "runtime": runtime_snapshot(tag, metadata.get("digest"), runtime_options or {}),
+        # LM Studio's GPU-offload/residency measurement isn't ported (see
+        # design doc non-goals) - runtime_snapshot is Ollama's /api/ps only,
+        # so the LM Studio path always reports this as None rather than
+        # querying the wrong daemon.
+        "runtime": (
+            runtime_snapshot(tag, metadata.get("digest"), runtime_options or {})
+            if engine != "lmstudio"
+            else None
+        ),
     }
 
 
@@ -814,8 +987,11 @@ def _evaluate_model_worker(
     speed_runs: int,
     runtime_options: dict | None,
     model_metadata: dict | None,
+    engine: str = "ollama",
+    lmstudio_port: int | None = None,
+    lmstudio_model: dict | None = None,
 ) -> None:
-    """Spawn-safe worker for one killable Ollama evaluation."""
+    """Spawn-safe worker for one killable Ollama or LM Studio evaluation."""
     try:
         result = evaluate_model(
             tag,
@@ -823,6 +999,9 @@ def _evaluate_model_worker(
             speed_runs=speed_runs,
             runtime_options=runtime_options,
             model_metadata=model_metadata,
+            engine=engine,
+            lmstudio_port=lmstudio_port,
+            lmstudio_model=lmstudio_model,
         )
         send_conn.send(("ok", result))
     except QualityEvaluationError as error:
@@ -846,13 +1025,17 @@ def evaluate_model_isolated(
     timeout_seconds: float = 600,
     stop_check: Callable[[], bool] | None = None,
     progress_callback: Callable[[float, float], None] | None = None,
+    engine: str = "ollama",
+    lmstudio_port: int | None = None,
+    lmstudio_model: dict | None = None,
 ) -> dict:
     """Evaluate in a child process with an absolute wall-clock deadline.
 
     Requests' read timeout is not a total operation deadline, and a wedged
-    native Ollama call must not hold an unattended contribution session for
-    hours. A separate process lets the parent terminate the entire evaluator
-    deterministically on Esc, Ctrl+C teardown, or deadline expiry.
+    native Ollama (or LM Studio) call must not hold an unattended
+    contribution session for hours. A separate process lets the parent
+    terminate the entire evaluator deterministically on Esc, Ctrl+C
+    teardown, or deadline expiry.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -860,7 +1043,10 @@ def evaluate_model_isolated(
     receive_conn, send_conn = context.Pipe(duplex=False)
     process = context.Process(
         target=_evaluate_model_worker,
-        args=(send_conn, tag, pack, speed_runs, runtime_options, model_metadata),
+        args=(
+            send_conn, tag, pack, speed_runs, runtime_options, model_metadata,
+            engine, lmstudio_port, lmstudio_model,
+        ),
         daemon=True,
     )
     started = time.monotonic()
@@ -974,6 +1160,10 @@ def _evaluate_tag_once(
     hardware: HardwareInfo,
     pack: dict,
     speed_runs: int,
+    *,
+    engine: str = "ollama",
+    lmstudio_port: int | None = None,
+    lmstudio_model: dict | None = None,
 ) -> dict:
     """One full attempt for one tag: evaluate, then always unload.
 
@@ -983,13 +1173,22 @@ def _evaluate_tag_once(
     look like" - both the normal collect_evidence loop and the confirmation
     flow below call it, so a confirmation attempt is guaranteed to use the
     exact same model/runtime-selection logic as the first attempt.
+
+    For engine="lmstudio", `tag` is a modelKey (see collect_evidence) and
+    `profile.ollama_options` below is still computed (tuning.
+    recommend_runtime_settings is engine-agnostic) but goes unused by the
+    LM Studio transport, which ignores runtime_options entirely - it exists
+    purely to keep this function's shape identical between engines.
     """
     metadata = None
     profile = None
     failure: QualityEvaluationError | None = None
     result: dict | None = None
     try:
-        metadata = _model_metadata(tag)
+        if engine == "lmstudio":
+            metadata = _model_metadata(tag, engine="lmstudio", lmstudio_model=lmstudio_model)
+        else:
+            metadata = _model_metadata(tag)
         profile = tuning.recommend_runtime_settings(hardware, metadata)
         options = profile.ollama_options
         try:
@@ -1005,6 +1204,11 @@ def _evaluate_tag_once(
             kwargs["runtime_options"] = options
         if accepts_kwargs or "model_metadata" in parameters:
             kwargs["model_metadata"] = metadata
+        if engine != "ollama":
+            if accepts_kwargs or "engine" in parameters:
+                kwargs["engine"] = engine
+            if accepts_kwargs or "lmstudio_port" in parameters:
+                kwargs["lmstudio_port"] = lmstudio_port
         result = evaluate_model(tag, pack, **kwargs)
     except QualityEvaluationError as error:
         # A real evaluator failure is one attempt and one outcome. Retrying
@@ -1012,7 +1216,7 @@ def _evaluate_tag_once(
         # exceed the documented two-attempt confirmation ceiling.
         failure = error
     finally:
-        unloaded = unload_model(tag)
+        unloaded = unload_model(tag) if engine == "ollama" else unload_model(tag, engine=engine)
     if failure is not None or result is None:
         return _build_failure_entry(tag, failure, metadata, profile, unloaded)
     result["outcome"] = "success"
@@ -1120,40 +1324,67 @@ def collect_evidence(
     pack_path: Path | None = None,
     speed_runs: int = 3,
     *,
+    engine: str = "ollama",
+    lmstudio_models: dict[str, dict] | None = None,
     confirm_performance_timeout: bool = False,
     on_model_start: Callable[[str, int, int], None] | None = None,
     on_daemon_event: Callable[[str], None] | None = None,
 ) -> dict:
+    """Evaluate `tags` against `engine`.
+
+    For engine="ollama" (default), `tags` are Ollama tags exactly as
+    before. For engine="lmstudio", `tags` are LM Studio modelKey strings
+    (the caller resolves each via linker.resolve_lmstudio_model() ahead of
+    time and passes the results in `lmstudio_models`, keyed by that same
+    modelKey) - this keeps the `tags: list[str]` shape itself unchanged so
+    callers matching results back via model["tag"] need no changes.
+
+    confirm_performance_timeout's second-attempt confirmation flow
+    (_confirm_generation_timeout) stays Ollama-only: it relies on
+    ensure_model_unloaded's /api/ps-based "proven gone" polling, which has
+    no LM Studio equivalent yet. A generation_timeout on the LM Studio path
+    is reported as a plain transient_error, same as confirm mode disabled.
+    """
     if not tags:
-        raise QualityEvaluationError("at least one Ollama model tag is required")
+        raise QualityEvaluationError("at least one model tag is required")
     if len(tags) > 20:
-        raise QualityEvaluationError("at most 20 Ollama models may be evaluated at once")
+        raise QualityEvaluationError("at most 20 models may be evaluated at once")
     if len(set(tags)) != len(tags) or any(not tag or len(tag) > 256 for tag in tags):
         raise QualityEvaluationError("model tags must be unique non-empty strings")
+    if engine == "lmstudio" and not lmstudio_models:
+        raise QualityEvaluationError("lmstudio_models is required when engine='lmstudio'")
     pack, pack_sha256 = load_pack(pack_path)
     models = []
     total = len(tags)
     consecutive_daemon_failures = 0
+    lmstudio_port = linker.lmstudio_server_port() if engine == "lmstudio" else None
+    engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
     cursor = 0
     while cursor < total:
         tag = tags[cursor]
-        if ollama_version() is None:
+        daemon_reachable = (
+            linker.lmstudio_daemon_reachable() if engine == "lmstudio" else ollama_version() is not None
+        )
+        if not daemon_reachable:
             # Daemon died partway through the batch (e.g. crashed while
             # benchmarking a previous tag). Try to bring it back instead of
             # letting every remaining tag burn a full
             # DEFAULT_GENERATION_TIMEOUT_SECONDS per request before failing.
             if on_daemon_event is not None:
                 on_daemon_event(
-                    "Ollama daemon isn't reachable - it likely crashed mid-run. "
+                    f"{engine_label} daemon isn't reachable - it likely crashed mid-run. "
                     "Attempting to restart it..."
                 )
-            restarted = benchmark.start_ollama_daemon()
-            if restarted is None:
+            if engine == "lmstudio":
+                restart_failed = not linker.start_lmstudio_daemon()
+            else:
+                restart_failed = benchmark.start_ollama_daemon() is None
+            if restart_failed:
                 consecutive_daemon_failures += 1
                 if consecutive_daemon_failures >= _MAX_CONSECUTIVE_DAEMON_FAILURES:
                     if on_daemon_event is not None:
                         on_daemon_event(
-                            "Ollama daemon won't come back after "
+                            f"{engine_label} daemon won't come back after "
                             f"{consecutive_daemon_failures} attempts - stopping the "
                             f"remaining benchmark run ({total - cursor} tag(s) not attempted)."
                         )
@@ -1161,12 +1392,23 @@ def collect_evidence(
                 time.sleep(_DAEMON_RESTART_BACKOFF_SECONDS)
                 continue
             consecutive_daemon_failures = 0
+            if engine == "lmstudio":
+                lmstudio_port = linker.lmstudio_server_port()
         cursor += 1
         if on_model_start is not None:
             on_model_start(tag, cursor, total)
-        entry = _evaluate_tag_once(tag, hardware, pack, speed_runs)
+        if engine == "lmstudio":
+            entry = _evaluate_tag_once(
+                tag, hardware, pack, speed_runs,
+                engine="lmstudio",
+                lmstudio_port=lmstudio_port,
+                lmstudio_model=(lmstudio_models or {}).get(tag),
+            )
+        else:
+            entry = _evaluate_tag_once(tag, hardware, pack, speed_runs)
         if (
             confirm_performance_timeout
+            and engine == "ollama"
             and entry.get("outcome") == "transient_error"
             and entry.get("failure_reason") == FAILURE_REASON_GENERATION_TIMEOUT
         ):
@@ -1175,6 +1417,14 @@ def collect_evidence(
             # exactly one event ever reaches the caller for this tag.
             entry = _confirm_generation_timeout(tag, hardware, pack, speed_runs)
         models.append(entry)
+    if engine == "lmstudio":
+        engine_version = (
+            LMStudioAdapter(base_url=f"http://127.0.0.1:{lmstudio_port}").health().version
+            if lmstudio_port is not None
+            else None
+        )
+    else:
+        engine_version = ollama_version()
     return {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1187,8 +1437,8 @@ def collect_evidence(
             "sources": pack.get("sources", []),
         },
         "environment": {
-            "engine": "ollama",
-            "engine_version": ollama_version(),
+            "engine": engine,
+            "engine_version": engine_version,
             "os": hardware.os_name,
             "architecture": platform.machine(),
             "ram_gb": round(hardware.ram_total_gb, 1),

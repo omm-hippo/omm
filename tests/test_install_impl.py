@@ -1169,7 +1169,7 @@ def test_install_impl_budgets_download_and_ollama_native_copy_together(
     monkeypatch.setattr(
         cli.linker,
         "disk_copy_risks",
-        lambda dest, only_ollama=False: [
+        lambda dest, only_engine=None: [
             cli.linker.DiskCopyRisk(dest.parent, "Ollama", "native full-model import")
         ],
     )
@@ -1197,7 +1197,7 @@ def test_install_impl_removes_new_download_when_post_download_copy_budget_fails(
     monkeypatch.setattr(
         cli.linker,
         "disk_copy_risks",
-        lambda dest, only_ollama=False: [
+        lambda dest, only_engine=None: [
             cli.linker.DiskCopyRisk(dest.parent, "Ollama", "native full-model import")
         ],
     )

@@ -1,6 +1,7 @@
-"""Real generation-speed benchmark, used to build telemetry for the
-recommendation model. Only benchmarks via Ollama (has a simple REST API
-with built-in per-token timing) - LM Studio benchmarking can be added later.
+"""Ollama daemon-lifecycle helpers (start/stop/status check) and basic
+speed-benchmark functions for omm install's one-off model compat check.
+For LM Studio speed/quality measurement in omm benchmark/contribute, see
+quality.py's _generate_with_runtime when engine="lmstudio" is selected.
 """
 
 from __future__ import annotations

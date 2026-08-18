@@ -2304,7 +2304,7 @@ def ollama_native_copy_may_be_required() -> bool:
     return True
 
 
-def disk_copy_risks(source_path: Path, *, only_ollama: bool = False) -> list[DiskCopyRisk]:
+def disk_copy_risks(source_path: Path, *, only_engine: str | None = None) -> list[DiskCopyRisk]:
     """Return full-model copies that must be included in install preflight.
 
     POSIX engines use symlinks. Windows destinations on another volume may
@@ -2312,11 +2312,15 @@ def disk_copy_risks(source_path: Path, *, only_ollama: bool = False) -> list[Dis
     special case on every OS because its native compatibility fallback
     imports a second full blob even when source and model store share a
     volume.
+
+    `only_engine` restricts the check to a single engine key (e.g.
+    `omm contribute` only needs whichever engine it is benchmarking against
+    this session); `None` checks every installed engine, as before.
     """
     risks: list[DiskCopyRisk] = []
     source_volume = storage_volume_key(source_path)
     for spec in ENGINES:
-        if only_ollama and spec.key != "ollama":
+        if only_engine is not None and spec.key != only_engine:
             continue
         if not is_engine_installed(spec.key):
             continue
@@ -2443,3 +2447,113 @@ def autoremove_engine(key: str) -> int:
         models_dir = koboldcpp_models_dir()
         return autoremove_custom_directory(models_dir) if models_dir is not None else 0
     return 0
+
+
+# --- LM Studio daemon-lifecycle public API --------------------------------
+
+
+def lmstudio_daemon_reachable() -> bool:
+    """True iff `lms server status` reports running. Mirrors
+    benchmark.ollama_daemon_reachable()'s role for the LM Studio path."""
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return False
+    status = _lmstudio_server_status(lms_path)
+    return status is not None and status.get("running") is True
+
+
+def lmstudio_server_port() -> int | None:
+    """Live port from `lms server status --json`, or None if not running.
+    Never assume the default 1234 - the port is user-configurable."""
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return None
+    status = _lmstudio_server_status(lms_path)
+    if status is None or not status.get("running"):
+        return None
+    return status.get("port")
+
+
+def start_lmstudio_daemon(timeout: float = 30.0) -> bool:
+    """Best-effort `lms server start`; True iff running after the call
+    (whether it was already running or freshly started)."""
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return False
+    return _start_lmstudio_server(lms_path, timeout=timeout)
+
+
+def stop_lmstudio_daemon() -> None:
+    """Best-effort `lms server stop`. Caller's responsibility to only call
+    this when omm itself started the daemon (mirrors
+    benchmark.stop_ollama_daemon's contract, but LM Studio's lifecycle is a
+    named background service, not a Popen omm owns directly - no handle to
+    pass back)."""
+    lms_path = _lms_cli_path()
+    if lms_path is not None:
+        _stop_lmstudio_server(lms_path)
+
+
+def resolve_lmstudio_model(repo_id: str | None, filename: str) -> dict | None:
+    """Resolve a linked model to its LM Studio ls entry (modelKey +
+    metadata), by the same path-matching _lmstudio_model_key already uses.
+    Returns None if `lms` is missing, the server is down, or no match is
+    found. Return shape:
+      {"model_key": str, "architecture": str | None,
+       "quantization_name": str | None, "quantization_bits": int | None,
+       "params_string": str | None, "max_context_length": int | None,
+       "trained_for_tool_use": bool}
+    """
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return None
+
+    publisher, repo = _lmstudio_publisher_repo(repo_id, filename)
+    # Use existing path-matching logic to get the model key
+    model_key = _lmstudio_model_key(lms_path, publisher, repo, filename)
+    if model_key is None:
+        return None
+
+    models = _lmstudio_list_models(lms_path)
+    if models is None:
+        return None
+
+    # Second pass: find the entry by modelKey and extract metadata
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+
+        # Skip non-llm types (e.g., embedding models like mmproj)
+        if entry.get("type") != "llm":
+            continue
+
+        # Match by modelKey (which we already know is correct via path-matching)
+        if entry.get("modelKey") == model_key:
+            # Extract quantization metadata from nested object
+            quant = entry.get("quantization")
+            if not isinstance(quant, dict):
+                quant = {}
+
+            # Extract metadata from the raw entry
+            return {
+                "model_key": model_key,
+                "architecture": entry.get("architecture"),
+                "quantization_name": quant.get("name"),
+                "quantization_bits": quant.get("bits"),
+                "params_string": entry.get("paramsString"),
+                "max_context_length": entry.get("maxContextLength"),
+                "trained_for_tool_use": entry.get("trainedForToolUse", False),
+            }
+
+    return None
+
+
+def unload_lmstudio_model(model_key: str) -> bool:
+    """Best-effort `lms unload`. Wraps _lms_unload, returns whether the
+    subprocess ran without raising (matches _lms_unload's soft-fail
+    contract - always True unless the CLI itself is missing)."""
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return False
+    _lms_unload(lms_path, model_key)
+    return True
