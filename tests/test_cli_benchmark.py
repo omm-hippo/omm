@@ -4,7 +4,7 @@ import json
 
 from typer.testing import CliRunner
 
-from omm import cli, config, registry
+from omm import cli, config, contribute_memory, registry
 from omm.hardware import HardwareInfo
 
 runner = CliRunner()
@@ -756,6 +756,64 @@ def test_report_telemetry_v8_success_sends_chip_scores_not_raw_names(isolated_om
     assert event["gpu_tier"] == 0.0
     assert "cpu_model" not in event
     assert "gpu_name" not in event
+
+
+def test_report_telemetry_v9_labels_clean_contribution(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry,
+        "send_event",
+        lambda event, force=False: sent.append(event) or True,
+    )
+    estimate = contribute_memory.ContributionMemoryEstimate(
+        mapped_weights_ram_gb=0.75,
+        committed_ram_gb=0.3,
+        required_vram_gb=0.0,
+        kv_cache_gb=0.1,
+        compute_buffer_gb=0.1,
+        runtime_overhead_gb=0.1,
+        source="gguf_header",
+        confidence="medium",
+        context_length=1024,
+        num_batch=128,
+        gpu_offload_percent=0,
+        runtime_buffer_ram_gb=0.3,
+    )
+
+    cli._report_telemetry(
+        "model-1B-Q4.gguf",
+        "org/model",
+        42.5,
+        size_bytes=int(0.75 * 1024**3),
+        sample_count=3,
+        speed_min=41.0,
+        speed_max=44.0,
+        speed_samples=[41.0, 42.5, 44.0],
+        model_metadata={"parameter_size": "1B", "quantization_level": "Q4_K_M"},
+        runtime={
+            "runtime_profile": "explicit_ollama_options",
+            "context_length": 1024,
+            "gpu_offload_percent": 0,
+            "cpu_threads": 8,
+            "num_batch": 128,
+        },
+        engine_version="0.32.1",
+        memory_measurement={
+            "ram_available_before_gb": 2.2,
+            "ram_available_min_gb": 2.0,
+            "ram_available_after_gb": 2.1,
+            "memory_pressure_observed": False,
+        },
+        memory_estimate=estimate,
+    )
+
+    event = sent[0]
+    assert event["benchmark_version"] == 9
+    assert event["measurement_profile"] == "contribute-v1"
+    assert event["measurement_quality"] == "clean"
+    assert event["context_length"] == 1024
+    assert event["num_batch"] == 128
 
 
 def test_report_failure_telemetry_v8_sends_chip_scores_not_raw_names(isolated_omm_home, monkeypatch):

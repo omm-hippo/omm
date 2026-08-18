@@ -54,6 +54,7 @@ def _stub_successful_install(monkeypatch, ollama_installed=True):
 
     monkeypatch.setattr(cli, "download_file", fake_download)
     monkeypatch.setattr(cli, "sha256_file", lambda dest: "deadbeef")
+    monkeypatch.setattr(cli, "available_ram_gb", lambda: 12.0)
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: ollama_installed)
     monkeypatch.setattr(linker, "is_jan_installed", lambda: False)
@@ -136,6 +137,22 @@ def test_one_shot_upload_failure_is_not_described_as_queued(isolated_omm_home, m
     assert result.exit_code == 0, result.stdout
     assert "not queued" in result.stdout.lower()
     assert "retry" not in result.stdout.lower()
+
+
+def test_telemetry_failure_text_includes_http_status_and_response(monkeypatch):
+    monkeypatch.setattr(
+        cli.telemetry,
+        "last_send_status",
+        lambda: cli.telemetry.SendStatus(
+            "send_failed_http_401",
+            status_code=401,
+            detail="Permission denied",
+        ),
+    )
+
+    assert cli._telemetry_send_failure_text() == (
+        "server rejected the event (HTTP 401: Permission denied)"
+    )
 
 
 def test_report_telemetry_silent_on_success(isolated_omm_home, monkeypatch):

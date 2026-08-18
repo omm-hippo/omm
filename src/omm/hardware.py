@@ -52,6 +52,106 @@ class MemoryBudget:
     term and shouldn't be swayed by other apps' memory use at scan time."""
 
 
+def available_ram_gb() -> float:
+    """Return current available RAM without a full CPU/GPU hardware scan.
+
+    Runtime pressure monitoring must be cheap enough to honor its polling
+    interval. On Windows, ``scan_hardware`` can take several seconds and miss
+    short but meaningful pressure events.
+    """
+    return psutil.virtual_memory().available / (1024**3)
+
+
+@dataclass(frozen=True)
+class WindowsCommitInfo:
+    """System-wide Windows commit counters, in GiB.
+
+    ``available_gb`` is headroom a new allocation can take right now.
+    ``limit_gb`` is the whole configured budget - RAM plus the current
+    pagefile - and therefore what a candidate can never exceed.
+    """
+
+    available_gb: float
+    limit_gb: float
+
+
+def _windows_commit_info(
+    commit_total_pages: int, commit_limit_pages: int, page_size_bytes: int
+) -> WindowsCommitInfo | None:
+    """Convert Windows system commit counters to GiB.
+
+    This must remain separate from ``psutil.virtual_memory().available``:
+    physical pages available for reuse and pagefile-backed commit capacity are
+    different budgets on Windows.
+    """
+    if (
+        isinstance(commit_total_pages, bool)
+        or isinstance(commit_limit_pages, bool)
+        or isinstance(page_size_bytes, bool)
+        or not all(
+            isinstance(value, int)
+            for value in (commit_total_pages, commit_limit_pages, page_size_bytes)
+        )
+        or commit_total_pages < 0
+        or commit_limit_pages < commit_total_pages
+        or page_size_bytes <= 0
+    ):
+        return None
+    return WindowsCommitInfo(
+        available_gb=(commit_limit_pages - commit_total_pages) * page_size_bytes / (1024**3),
+        limit_gb=commit_limit_pages * page_size_bytes / (1024**3),
+    )
+
+
+def windows_commit_info() -> WindowsCommitInfo | None:
+    """Return the current system-wide Windows commit counters.
+
+    ``CommitLimit - CommitTotal`` is capacity newly committed pages may use.
+    Return ``None`` when Windows cannot provide the counters, so callers retain
+    their portable physical-memory fallback instead of assuming capacity.
+    """
+    if platform.system() != "Windows":
+        return None
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except (ImportError, ValueError):
+        # ``ctypes.wintypes`` defines Windows-only simple types and raises on
+        # other platforms, so it must never be imported at module scope.
+        return None
+
+    class PERFORMANCE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("CommitTotal", ctypes.c_size_t),
+            ("CommitLimit", ctypes.c_size_t),
+            ("CommitPeak", ctypes.c_size_t),
+            ("PhysicalTotal", ctypes.c_size_t),
+            ("PhysicalAvailable", ctypes.c_size_t),
+            ("SystemCache", ctypes.c_size_t),
+            ("KernelTotal", ctypes.c_size_t),
+            ("KernelPaged", ctypes.c_size_t),
+            ("KernelNonpaged", ctypes.c_size_t),
+            ("PageSize", ctypes.c_size_t),
+            ("HandleCount", wintypes.DWORD),
+            ("ProcessCount", wintypes.DWORD),
+            ("ThreadCount", wintypes.DWORD),
+        ]
+
+    try:
+        info = PERFORMANCE_INFORMATION()
+        info.cb = ctypes.sizeof(info)
+        get_performance_info = ctypes.WinDLL("psapi", use_last_error=True).GetPerformanceInfo
+        get_performance_info.argtypes = [ctypes.POINTER(PERFORMANCE_INFORMATION), wintypes.DWORD]
+        get_performance_info.restype = wintypes.BOOL
+        if not get_performance_info(ctypes.byref(info), info.cb):
+            return None
+        return _windows_commit_info(info.CommitTotal, info.CommitLimit, info.PageSize)
+    except (AttributeError, OSError):
+        return None
+
+
 def calculate_memory_budget(hw: HardwareInfo) -> MemoryBudget:
     """Return a conservative model budget from current free RAM and VRAM.
 

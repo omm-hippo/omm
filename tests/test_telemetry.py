@@ -6,8 +6,9 @@ from omm import config, firebase_auth, telemetry
 
 
 class _FakeResp:
-    def __init__(self, status_code):
+    def __init__(self, status_code, text=""):
         self.status_code = status_code
+        self.text = text
 
 
 def test_send_event_skips_when_not_opted_in_and_not_forced(isolated_omm_home, monkeypatch):
@@ -71,6 +72,90 @@ def test_one_shot_forced_failure_is_not_queued_for_unattended_retry(
 
     assert telemetry.send_event({"x": 1}, force=True) is False
     assert not (isolated_omm_home / "telemetry_pending.json").exists()
+    diagnostic = json.loads((isolated_omm_home / "telemetry_last_failed.json").read_text())
+    assert diagnostic["event"] == {"x": 1}
+    assert diagnostic["failure"]["outcome"] == "send_failed_network"
+
+
+def test_contribute_retries_only_transient_failures_within_current_consent(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {"telemetry_send_policy": "ask", "telemetry_endpoint": "https://example.com"},
+    )
+    responses = iter([_FakeResp(500), _FakeResp(429), _FakeResp(200)])
+    calls = []
+    sleeps = []
+    monkeypatch.setattr(
+        requests, "post", lambda *a, **k: calls.append((a, k)) or next(responses)
+    )
+    monkeypatch.setattr(telemetry.time, "sleep", sleeps.append)
+    event = {"benchmark_version": 9, "measurement_profile": "contribute-v1"}
+
+    assert telemetry.send_event(event, force=True) is True
+    assert len(calls) == 3
+    assert sleeps == [0.5, 1.0]
+    status = telemetry.last_send_status()
+    assert status is not None
+    assert status.outcome == "sent_ok"
+    assert status.attempts == 3
+    assert not (isolated_omm_home / "telemetry_last_failed.json").exists()
+
+
+def test_contribute_does_not_retry_permanent_401_and_saves_exact_payload(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {"telemetry_send_policy": "ask", "telemetry_endpoint": "https://example.com"},
+    )
+    calls = []
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *a, **k: calls.append((a, k)) or _FakeResp(401, "Permission denied"),
+    )
+    event = {
+        "benchmark_version": 9,
+        "measurement_profile": "contribute-v1",
+        "model_installed": "model.gguf",
+    }
+
+    assert telemetry.send_event(event, force=True) is False
+    assert len(calls) == 1
+    status = telemetry.last_send_status()
+    assert status is not None
+    assert status.status_code == 401
+    assert status.detail == "Permission denied"
+    assert status.retryable is False
+    diagnostic = json.loads((isolated_omm_home / "telemetry_last_failed.json").read_text())
+    assert diagnostic["event"] == event
+    assert diagnostic["failure"]["status_code"] == 401
+
+
+def test_post_omits_optional_none_values_from_wire_payload(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {"telemetry_endpoint": "https://example.com"},
+    )
+    calls = []
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or _FakeResp(200),
+    )
+
+    assert telemetry._post_event(
+        {"benchmark_version": 9, "vram_gb": None, "gpu_tflops": None}
+    )
+
+    assert calls[0][1]["json"] == {"benchmark_version": 9}
 
 
 def test_send_event_sends_when_opted_in_without_force(isolated_omm_home, monkeypatch):

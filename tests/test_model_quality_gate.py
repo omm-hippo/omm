@@ -154,6 +154,22 @@ def test_validate_dataset_accepts_v8_only_corpus():
     validate_dataset(audit, min_unique_configurations=5)  # must not raise
 
 
+def test_intentional_v9_quality_exclusions_do_not_inflate_rejection_rate():
+    audit = {
+        "raw_rows": 10,
+        "rejected_rows": 9,
+        "unique_configurations": 1,
+        "direct_v6_unique_configurations": 0,
+        "direct_v7_unique_configurations": 0,
+        "direct_v8_unique_configurations": 0,
+        "direct_v9_unique_configurations": 1,
+        "direct_unique_configurations": 1,
+        "rejections": {"pressured_measurement_excluded": 5, "unstable_measurement_excluded": 4},
+    }
+
+    validate_dataset(audit, min_unique_configurations=1, max_rejection_rate=0.25)
+
+
 def test_dataset_rejection_rate_must_be_a_fraction():
     with pytest.raises(ValueError, match="at most 1"):
         validate_dataset(

@@ -34,7 +34,7 @@ class BenchmarkEvent(BaseModel):
     engine_version: str | None = Field(default=None, min_length=1, max_length=100)
     client_version: str | None = Field(default=None, min_length=1, max_length=100)
     engine: Literal["llama.cpp", "lmstudio", "ollama", "jan", "gpt4all"]
-    benchmark_version: int = Field(ge=1, le=8)
+    benchmark_version: int = Field(ge=1, le=9)
     recorded_at: datetime
     tokens_per_sec: float | None = Field(default=None, gt=0, le=10_000)
     sample_count: int | None = Field(default=None, ge=1, le=10)
@@ -74,6 +74,18 @@ class BenchmarkEvent(BaseModel):
     ] | None = None
     confirmation_attempts: int | None = Field(default=None, ge=1, le=2)
     timeout_seconds: float | None = Field(default=None, gt=0, le=3600)
+    measurement_profile: str | None = Field(default=None, min_length=1, max_length=32)
+    measurement_quality: Literal["clean", "pressured", "unstable"] | None = None
+    ram_available_before_gb: float | None = Field(default=None, ge=0, le=1024)
+    ram_available_min_gb: float | None = Field(default=None, ge=0, le=1024)
+    ram_available_after_gb: float | None = Field(default=None, ge=0, le=1024)
+    memory_pressure_observed: bool | None = None
+    tokens_per_sec_mad_ratio: float | None = Field(default=None, ge=0, le=10)
+    memory_estimate_source: Literal["gguf_header", "profile_fallback"] | None = None
+    memory_estimate_confidence: Literal["low", "medium", "high"] | None = None
+    estimated_mapped_weights_gb: float | None = Field(default=None, ge=0, le=1024)
+    estimated_committed_ram_gb: float | None = Field(default=None, ge=0, le=1024)
+    estimated_required_vram_gb: float | None = Field(default=None, ge=0, le=1024)
 
     @field_validator("model_installed", "model_repo_id", "model_filename")
     @classmethod
@@ -147,10 +159,10 @@ class BenchmarkEvent(BaseModel):
                     self.timeout_seconds,
                 )
             ):
-                raise ValueError("outcome fields require benchmark_version 7 or 8")
-        if self.benchmark_version not in (5, 6, 7, 8):
+                raise ValueError("outcome fields require benchmark_version 7, 8, or 9")
+        if self.benchmark_version not in (5, 6, 7, 8, 9):
             return self
-        if self.benchmark_version in (7, 8):
+        if self.benchmark_version in (7, 8, 9):
             return self._validate_outcome_contract()
         required_model_metadata = (
             self.parameter_count_b,
@@ -208,8 +220,8 @@ class BenchmarkEvent(BaseModel):
             raise ValueError(f"{version} events require the ollama engine")
         if self.outcome is None:
             raise ValueError(f"{version} events require an explicit outcome")
-        if self.benchmark_version == 8 and self.cpu_model is not None:
-            raise ValueError("v8 events must not include a raw CPU model name")
+        if self.benchmark_version >= 8 and self.cpu_model is not None:
+            raise ValueError("v8+ events must not include a raw CPU model name")
         speed_fields = (
             self.tokens_per_sec,
             self.sample_count,
@@ -287,6 +299,50 @@ class BenchmarkEvent(BaseModel):
                 raise ValueError(
                     f"{version} success requires sample minimum and maximum"
                 )
+            if self.benchmark_version == 9:
+                required_measurement = (
+                    self.measurement_profile,
+                    self.measurement_quality,
+                    self.ram_available_before_gb,
+                    self.ram_available_min_gb,
+                    self.ram_available_after_gb,
+                    self.memory_pressure_observed,
+                    self.tokens_per_sec_mad_ratio,
+                    self.memory_estimate_source,
+                    self.memory_estimate_confidence,
+                    self.estimated_mapped_weights_gb,
+                    self.estimated_committed_ram_gb,
+                    self.estimated_required_vram_gb,
+                )
+                if any(value is None for value in required_measurement):
+                    raise ValueError("v9 success requires memory and stability metadata")
+                if self.measurement_profile != "contribute-v1":
+                    raise ValueError("v9 measurement_profile must be contribute-v1")
+                if self.context_length != 1024 or self.num_batch != 128:
+                    raise ValueError("v9 requires the fixed 1024-context/128-batch profile")
+                if self.ram_available_min_gb > min(
+                    self.ram_available_before_gb, self.ram_available_after_gb
+                ):
+                    raise ValueError("v9 minimum available RAM must not exceed endpoints")
+                if self.memory_pressure_observed and self.measurement_quality != "pressured":
+                    raise ValueError("v9 observed pressure must be labelled pressured")
+                if (
+                    not self.memory_pressure_observed
+                    and self.measurement_quality == "pressured"
+                ):
+                    raise ValueError("v9 pressured measurements require observed pressure")
+                if (
+                    not self.memory_pressure_observed
+                    and self.measurement_quality == "clean"
+                    and self.tokens_per_sec_mad_ratio > 0.15
+                ):
+                    raise ValueError("v9 clean measurements must have MAD ratio <= 0.15")
+                if (
+                    not self.memory_pressure_observed
+                    and self.measurement_quality == "unstable"
+                    and self.tokens_per_sec_mad_ratio <= 0.15
+                ):
+                    raise ValueError("v9 unstable measurements must have MAD ratio > 0.15")
             return self
 
         if any(value is not None for value in speed_fields):
@@ -361,7 +417,7 @@ def health() -> dict[str, str]:
 
 @app.post("/v1/benchmarks", status_code=status.HTTP_201_CREATED)
 def create_benchmark(event: BenchmarkEvent) -> dict[str, int | str]:
-    # Preserve the wire contract: absent optional v7/v8 failure fields stay
+    # Preserve the wire contract: absent optional v7+ failure fields stay
     # absent in event_json rather than becoming explicit nulls.
     result = get_store().insert(event.model_dump(mode="json", exclude_none=True))
     return {"id": result.id, "status": "stored" if result.created else "duplicate"}

@@ -395,6 +395,8 @@ _INTENTIONALLY_EXCLUDED_REASONS = frozenset({
     "performance_unfit_excluded_from_regression",
     "transient_error_excluded",
     "no_hardware_identity_pre_v6_schema",
+    "pressured_measurement_excluded",
+    "unstable_measurement_excluded",
 })
 
 
@@ -404,7 +406,7 @@ def validate_dataset(
     min_unique_configurations: int = 20,
     max_rejection_rate: float = 0.25,
 ) -> None:
-    """Require enough direct-v6/v7 telemetry configurations with bounded rejection."""
+    """Require enough direct-v6+ telemetry configurations with bounded rejection."""
     if not isinstance(audit, dict):
         raise ValueError("audit must be an object")
     if isinstance(min_unique_configurations, bool) or not isinstance(min_unique_configurations, int):
@@ -420,6 +422,7 @@ def validate_dataset(
     direct_v6_unique = audit.get("direct_v6_unique_configurations")
     direct_v7_unique = audit.get("direct_v7_unique_configurations", 0)
     direct_v8_unique = audit.get("direct_v8_unique_configurations", 0)
+    direct_v9_unique = audit.get("direct_v9_unique_configurations", 0)
     direct_unique = audit.get("direct_unique_configurations")
     checks = [
         ("raw_rows", raw_rows),
@@ -428,6 +431,7 @@ def validate_dataset(
         ("direct_v6_unique_configurations", direct_v6_unique),
         ("direct_v7_unique_configurations", direct_v7_unique),
         ("direct_v8_unique_configurations", direct_v8_unique),
+        ("direct_v9_unique_configurations", direct_v9_unique),
     ]
     if direct_unique is not None:
         checks.append(("direct_unique_configurations", direct_unique))
@@ -440,19 +444,24 @@ def validate_dataset(
         # Backward-compatible fallback for audits built before this field
         # existed (e.g. hand-constructed pre-fix test fixtures): reproduces
         # the old sum-based count. This is only exact when a configuration
-        # cannot appear in more than one of the v6/v7/v8 sets - true for any
+        # cannot appear in more than one of the v6+ sets - true for any
         # caller that never mixed schema versions. Real audits from
         # real_rows_to_training_data_with_audit always provide the field
         # directly, computed as a proper union: a configuration measured
         # under more than one schema version is one training example, not
         # several.
-        direct_unique = direct_v6_unique + direct_v7_unique + direct_v8_unique
-    if direct_unique > direct_v6_unique + direct_v7_unique + direct_v8_unique:
+        direct_unique = (
+            direct_v6_unique + direct_v7_unique + direct_v8_unique + direct_v9_unique
+        )
+    if direct_unique > (
+        direct_v6_unique + direct_v7_unique + direct_v8_unique + direct_v9_unique
+    ):
         raise ValueError(
             "audit.direct_unique_configurations cannot exceed the sum of "
             "audit.direct_v6_unique_configurations, "
             "audit.direct_v7_unique_configurations, and "
-            "audit.direct_v8_unique_configurations"
+            "audit.direct_v8_unique_configurations, and "
+            "audit.direct_v9_unique_configurations"
         )
     if direct_unique > unique:
         raise ValueError(

@@ -11,6 +11,8 @@ converted into an unattended future send.
 from __future__ import annotations
 
 import json
+import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -24,6 +26,22 @@ from omm.config import load_config
 _MAX_LOG_LINES = 500
 _MAX_PENDING_EVENTS = 1000
 _DEFAULT_MAX_RETRIES_PER_FLUSH = 3
+_CONTRIBUTE_SEND_ATTEMPTS = 3
+_MAX_FAILURE_DETAIL_LENGTH = 300
+
+
+@dataclass(frozen=True)
+class SendStatus:
+    """Machine-readable outcome for the most recent HTTP send attempt."""
+
+    outcome: str
+    status_code: int | None = None
+    detail: str = ""
+    retryable: bool = False
+    attempts: int = 1
+
+
+_last_send_status: SendStatus | None = None
 
 
 def secure_endpoint(endpoint: str) -> bool:
@@ -43,6 +61,48 @@ def _log_path():
 
 def _pending_path():
     return config.OMM_HOME / "telemetry_pending.json"
+
+
+def last_failed_path():
+    return config.OMM_HOME / "telemetry_last_failed.json"
+
+
+def last_send_status() -> SendStatus | None:
+    return _last_send_status
+
+
+def _set_send_status(status: SendStatus | None) -> None:
+    global _last_send_status
+    _last_send_status = status
+
+
+def reset_send_status() -> None:
+    _set_send_status(None)
+
+
+def _save_last_failed(event: dict[str, Any], status: SendStatus) -> None:
+    """Keep one local diagnostic copy without authorizing a future send.
+
+    The event contains only the telemetry payload the user just consented to
+    send, never generated model text. It is overwritten on the next failure
+    and is deliberately separate from the unattended retry queue.
+    """
+    try:
+        path = last_failed_path()
+        payload = {
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "failure": {
+                "outcome": status.outcome,
+                "status_code": status.status_code,
+                "detail": status.detail,
+                "attempts": status.attempts,
+            },
+            "event": event,
+        }
+        with locked(path, timeout=30):
+            atomic_write_text(path, json.dumps(payload, sort_keys=True))
+    except (OSError, FileLockTimeout, TypeError, ValueError):
+        pass
 
 
 def log_attempt(outcome: str, detail: str = "") -> None:
@@ -112,6 +172,7 @@ def _post_event(event: dict[str, Any]) -> bool:
     endpoint = load_config().get("telemetry_endpoint")
     if not isinstance(endpoint, str) or not secure_endpoint(endpoint):
         log_attempt("skipped_no_endpoint")
+        _set_send_status(SendStatus("skipped_no_endpoint"))
         return False
 
     params = {}
@@ -121,18 +182,38 @@ def _post_event(event: dict[str, Any]) -> bool:
         id_token = firebase_auth.get_id_token()
         if id_token is None:
             log_attempt("send_failed_no_auth_token")
+            _set_send_status(SendStatus("send_failed_no_auth_token", retryable=True))
             return False
         params["auth"] = id_token
 
+    # Firebase treats JSON null as deletion semantics, while other collectors
+    # may validate it as a present value. Optional telemetry fields therefore
+    # use one portable representation: omit keys whose value is None.
+    wire_event = {key: value for key, value in event.items() if value is not None}
     try:
-        resp = requests.post(endpoint, params=params, json=event, timeout=5)
+        resp = requests.post(endpoint, params=params, json=wire_event, timeout=5)
     except requests.RequestException as e:
-        log_attempt("send_failed_network", str(e))
+        detail = str(e)[:_MAX_FAILURE_DETAIL_LENGTH]
+        log_attempt("send_failed_network", detail)
+        _set_send_status(SendStatus("send_failed_network", detail=detail, retryable=True))
         return False
     if not (200 <= resp.status_code < 300):
-        log_attempt(f"send_failed_http_{resp.status_code}")
+        outcome = f"send_failed_http_{resp.status_code}"
+        response_detail = str(getattr(resp, "text", "") or "")
+        detail = " ".join(response_detail.split())[:_MAX_FAILURE_DETAIL_LENGTH]
+        retryable = resp.status_code in {408, 425, 429} or resp.status_code >= 500
+        log_attempt(outcome, detail)
+        _set_send_status(
+            SendStatus(
+                outcome,
+                status_code=resp.status_code,
+                detail=detail,
+                retryable=retryable,
+            )
+        )
         return False
     log_attempt("sent_ok")
+    _set_send_status(SendStatus("sent_ok", status_code=resp.status_code))
     return True
 
 
@@ -140,13 +221,43 @@ def send_event(event: dict[str, Any], force: bool = False) -> bool:
     config_data = load_config()
     if not force and config_data.get("telemetry_send_policy") != "always":
         log_attempt("skipped_opt_out")
+        _set_send_status(SendStatus("skipped_opt_out"))
         return False
-    ok = _post_event(event)
+    max_attempts = (
+        _CONTRIBUTE_SEND_ATTEMPTS
+        if event.get("benchmark_version") == 9
+        and event.get("measurement_profile") == "contribute-v1"
+        else 1
+    )
+    ok = False
+    attempts = 0
+    for attempt in range(1, max_attempts + 1):
+        attempts = attempt
+        ok = _post_event(event)
+        status = last_send_status()
+        if ok or status is None or not status.retryable:
+            break
+        if attempt < max_attempts:
+            time.sleep(0.5 * (2 ** (attempt - 1)))
+    status = last_send_status()
+    if status is not None and status.attempts != attempts:
+        _set_send_status(
+            SendStatus(
+                status.outcome,
+                status_code=status.status_code,
+                detail=status.detail,
+                retryable=status.retryable,
+                attempts=attempts,
+            )
+        )
     # Only persistent opt-in authorizes an unattended retry in a later
     # process. A one-shot --upload/confirmation authorizes this attempt, not
     # an indefinite background queue after the user may have opted out.
     if not ok and config_data.get("telemetry_send_policy") == "always":
         _append_pending(event)
+    elif not ok and force:
+        status = last_send_status() or SendStatus("send_failed_unknown", attempts=attempts)
+        _save_last_failed(event, status)
     return ok
 
 
