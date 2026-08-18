@@ -407,6 +407,17 @@ def link_file(
     except OSError as e:
         raise LinkError(f"Could not create directory {dst.parent}: {e}") from e
     if dst.exists() or dst.is_symlink():
+        # Already exactly this link (same recorded source, same untouched
+        # symlink/hardlink identity) - skip the delete+recreate and its
+        # ownership-registry rewrite. Cheap ownership-record checks only;
+        # no full-file read. Otherwise every unchanged model got its
+        # link torn down and rebuilt on every repeat `omm link`/`install`.
+        record = _load_link_ownership().get(_link_key(dst))
+        if record and record.get("source") == _link_key(src):
+            if record.get("kind") == "symlink" and _owned_symlink(dst):
+                return "symlink"
+            if record.get("kind") == "hardlink" and _owned_hardlink(dst):
+                return "hardlink"
         if not unlink_owned_link(dst, expected_source=src):
             record = _load_link_ownership().get(_link_key(dst))
             if record and record.get("kind") in {"symlink", "hardlink"}:
@@ -842,6 +853,36 @@ def _guess_quant(filename: str) -> str:
     return m.group(1).upper() if m else "unknown"
 
 
+def _ollama_link_already_current(manifest_path: Path, gguf_path: Path, blobs_dir: Path) -> bool:
+    """True if `manifest_path` is an omm-owned manifest for exactly this
+    gguf_path whose model-layer blob is still the very same file - proven
+    by inode identity (`samefile`), not a content hash. Re-linking would
+    rewrite byte-identical output in this case, so callers can skip
+    re-hashing a potentially multi-GB model on every repeat `omm link`
+    when nothing has actually changed."""
+    if not _owned_manifest(manifest_path, expected_source=gguf_path):
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    digest = next(
+        (
+            layer.get("digest", "")
+            for layer in manifest.get("layers", [])
+            if layer.get("mediaType") == "application/vnd.ollama.image.model"
+        ),
+        "",
+    )
+    if not digest.startswith("sha256:"):
+        return False
+    model_blob = blobs_dir / f"sha256-{digest.removeprefix('sha256:')}"
+    try:
+        return model_blob.samefile(gguf_path)
+    except OSError:
+        return False
+
+
 def link_ollama(
     gguf_path: Path,
     model_name: str,
@@ -903,6 +944,11 @@ def link_ollama(
         # a manifest that's just going to be thrown away.
         _fallback_to_native_create(gguf_path, model_name, models_dir)
         return True
+
+    if ollama_version is None or _manifest_format_known_good(ollama_version) is True:
+        manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name / "latest"
+        if _ollama_link_already_current(manifest_path, gguf_path, models_dir / "blobs"):
+            return has_chat_template
 
     model_sha256 = sha256_file(gguf_path)
     model_digest = f"sha256:{model_sha256}"

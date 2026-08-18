@@ -68,6 +68,7 @@ class ModelGroup:
 class AdoptResult:
     filename: str
     bytes_saved: int
+    link_warnings: list[str]
 
 
 def _is_safe_registry_filename(filename: object, resolver) -> bool:
@@ -297,6 +298,29 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
 
     filename = hub_path.name
     if existing_filename:
+        ollama_tag = reg[existing_filename].get("ollama_name") or linker.sanitize_ollama_tag(existing_filename)
+        repo_id = reg[existing_filename].get("repo_id")
+    else:
+        ollama_tag = linker.sanitize_ollama_tag(filename)
+        repo_id = None
+
+    # The locations found by the scan only cover the engine(s) the file
+    # already sat in - mirror `install`'s behavior of also linking into
+    # every other currently-installed engine, so an imported model doesn't
+    # end up under-linked compared to one added via `omm install`.
+    link_warnings: list[str] = []
+    for spec in linker.ENGINES:
+        if linked.get(spec.key) or not linker.is_engine_installed(spec.key):
+            continue
+        try:
+            warning = linker.link_engine(spec.key, hub_path, repo_id=repo_id, ollama_tag=ollama_tag)
+            linked[spec.key] = True
+            if warning:
+                link_warnings.append(warning)
+        except linker.LinkError as e:
+            link_warnings.append(f"{spec.label} link skipped: {e}")
+
+    if existing_filename:
         registry.upsert_entry(existing_filename, linked=linked)
     else:
         registry.upsert_entry(
@@ -306,9 +330,9 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             source="imported",
             size_bytes=hub_path.stat().st_size,
             installed_at=datetime.now(timezone.utc).isoformat(),
-            ollama_name=linker.sanitize_ollama_tag(filename),
+            ollama_name=ollama_tag,
             repo_id=None,
             linked=linked,
         )
 
-    return AdoptResult(filename=filename, bytes_saved=bytes_saved)
+    return AdoptResult(filename=filename, bytes_saved=bytes_saved, link_warnings=link_warnings)

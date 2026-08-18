@@ -191,7 +191,7 @@ def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
         lambda key, on_output=None: linker.EngineInstallResult(key, "installed", "ok"),
     )
 
-    onboarding._install_selected_engines(console, ["ollama"])
+    onboarding.install_selected_engines(console, ["ollama"])
 
     output = console.file.getvalue()
     assert "Installing Ollama" in output
@@ -199,7 +199,7 @@ def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
 
 
 def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
-    """This exercises a defensive branch in _install_selected_engines that
+    """This exercises a defensive branch in install_selected_engines that
     stays in the code for any future engine that ships without automation
     - every currently-registered linker.ENGINES key has automation now, so
     force the branch via has_automated_installer rather than relying on a
@@ -209,7 +209,7 @@ def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
     console = _console()
     monkeypatch.setattr(linker, "has_automated_installer", lambda key: False)
 
-    onboarding._install_selected_engines(console, ["koboldcpp"])
+    onboarding.install_selected_engines(console, ["koboldcpp"])
 
     output = console.file.getvalue()
     assert "isn't auto-installable yet" in output
@@ -317,7 +317,7 @@ def test_install_selected_engines_prints_raw_installer_output_without_markup_err
 
     monkeypatch.setattr(linker, "install_engine", fake_install_engine)
 
-    onboarding._install_selected_engines(console, ["ollama"])
+    onboarding.install_selected_engines(console, ["ollama"])
 
     on_output = captured["on_output"]
     on_output("[sudo] password:")
@@ -344,7 +344,7 @@ def test_install_selected_engines_prints_result_message_without_markup_errors(mo
         ),
     )
 
-    onboarding._install_selected_engines(console, ["ollama"])
+    onboarding.install_selected_engines(console, ["ollama"])
 
     output = console.file.getvalue()
     assert "weird [/red] text with [brackets]" in output
