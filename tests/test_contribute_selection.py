@@ -81,6 +81,26 @@ def test_mark_seen_excludes_candidate_from_future_picks(monkeypatch):
     assert queue.next_candidate() is None
 
 
+def test_deferred_candidate_is_not_history_and_can_be_released(monkeypatch):
+    a, b = _candidate("o", "a.gguf"), _candidate("o", "b.gguf")
+    monkeypatch.setattr(
+        contribute.predictor,
+        "rank_candidates",
+        lambda artifact, hw: [(a, 40.0), (b, 20.0)],
+    )
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+
+    assert queue.next_candidate() is a
+    a_ref = contribute.ref(a)
+    queue.defer(a_ref)
+    assert a_ref in queue.deferred_refs
+    assert a_ref not in queue.history_refs
+    assert queue.next_candidate() is b
+
+    queue.release_deferred(a_ref)
+    assert queue.next_candidate() is a
+
+
 def test_returns_none_when_pools_exhausted_and_no_refetch_given(monkeypatch):
     monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: [])
 

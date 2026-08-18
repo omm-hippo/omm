@@ -1,3 +1,4 @@
+import pathlib
 import json
 
 import requests
@@ -54,6 +55,7 @@ def _stub_successful_install(monkeypatch, ollama_installed=True):
 
     monkeypatch.setattr(cli, "download_file", fake_download)
     monkeypatch.setattr(cli, "sha256_file", lambda dest: "deadbeef")
+    monkeypatch.setattr(cli, "available_ram_gb", lambda: 12.0)
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: ollama_installed)
     monkeypatch.setattr(linker, "is_jan_installed", lambda: False)
@@ -138,7 +140,29 @@ def test_one_shot_upload_failure_is_not_described_as_queued(isolated_omm_home, m
     assert "retry" not in result.stdout.lower()
 
 
-def test_report_telemetry_silent_on_success(isolated_omm_home, monkeypatch):
+def test_telemetry_failure_text_includes_http_status_and_response(monkeypatch):
+    monkeypatch.setattr(
+        cli.telemetry,
+        "last_send_status",
+        lambda: cli.telemetry.SendStatus(
+            "send_failed_http_401",
+            status_code=401,
+            detail="Permission denied",
+        ),
+    )
+
+    assert cli._telemetry_send_failure_text() == (
+        "server rejected the event (HTTP 401: Permission denied)"
+    )
+
+
+def test_report_telemetry_confirms_a_successful_upload(isolated_omm_home, monkeypatch):
+    """A successful upload has to say so.
+
+    It used to print nothing, directly under a calibration line ending in
+    "(not uploaded)" - which read as the upload result and made a working
+    upload look like a failed one.
+    """
     _stub_successful_install(monkeypatch)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
@@ -150,7 +174,36 @@ def test_report_telemetry_silent_on_success(isolated_omm_home, monkeypatch):
     )
 
     assert result.exit_code == 0, result.stdout
+    assert "benchmark result uploaded" in result.stdout.lower()
+    assert "not sent" not in result.stdout.lower()
     assert "queued" not in result.stdout.lower()
+
+
+def test_successful_upload_confirmation_is_suppressed_by_quiet(
+    isolated_omm_home, monkeypatch
+):
+    _stub_successful_install(monkeypatch)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
+
+    result = runner.invoke(
+        cli.app, ["install", "tinyllama-1.1b-q4", "--verify-runtime", "--quiet"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "benchmark result uploaded" not in result.stdout.lower()
+
+
+def test_calibration_notice_says_what_stayed_local(isolated_omm_home, monkeypatch):
+    """The calibration line must not read as the telemetry upload result."""
+    source = (
+        pathlib.Path(__file__).resolve().parent.parent / "src" / "omm" / "cli.py"
+    ).read_text(encoding="utf-8")
+
+    assert "Local calibration updated" in source
+    assert '"(not uploaded).[/muted]"' not in source
 
 
 def test_root_prints_notice_when_pending_telemetry_flushed(isolated_omm_home, monkeypatch):

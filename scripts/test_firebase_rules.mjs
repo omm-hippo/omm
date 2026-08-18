@@ -608,4 +608,100 @@ const v8Transient = {
 const v8TransientCreated = await request("telemetry", "POST", v8Transient);
 assert.equal(v8TransientCreated.ok, true, `valid v8 transient_error event was rejected (${v8TransientCreated.status})`);
 
+// --- v9: fixed contribution profile and measurement quality ---------------
+
+const v9Success = {
+  ...v8Success,
+  benchmark_version: 9,
+  recorded_at: "2026-08-18T00:00:00+00:00",
+  client_version: "0.2.78",
+  context_length: 1024,
+  gpu_offload_percent: 0,
+  num_batch: 128,
+  measurement_profile: "contribute-v1",
+  measurement_quality: "clean",
+  ram_available_before_gb: 2.2,
+  ram_available_min_gb: 2.0,
+  ram_available_after_gb: 2.1,
+  memory_pressure_observed: false,
+  tokens_per_sec_mad_ratio: 0.02,
+  memory_estimate_source: "gguf_header",
+  memory_estimate_confidence: "medium",
+  estimated_mapped_weights_gb: 0.75,
+  estimated_committed_ram_gb: 0.3,
+  estimated_required_vram_gb: 0,
+};
+const v9SuccessCreated = await request("telemetry", "POST", v9Success);
+assert.equal(v9SuccessCreated.ok, true, `valid v9 success event was rejected (${v9SuccessCreated.status})`);
+
+const v9SuccessWithNullGpuFields = await request("telemetry", "POST", {
+  ...v9Success,
+  vram_gb: null,
+  gpu_tflops: null,
+});
+assert.equal(
+  v9SuccessWithNullGpuFields.ok,
+  true,
+  "v9 rejected optional GPU fields represented as JSON null",
+);
+
+// A model file named "-1B-" parses to 1.0 while its GGUF tensor count measured
+// 0.99989. Emitting the rounded name-derived value put active above total and
+// the server rejected the whole benchmark, so pin that the server does reject
+// it - the client must reconcile the two counts before sending.
+const v9ActiveAboveTotal = await request("telemetry", "POST", {
+  ...v9Success,
+  parameter_count_b: 0.99989,
+  active_parameter_count_b: 1.0,
+});
+assert.equal(
+  v9ActiveAboveTotal.ok,
+  false,
+  "v9 accepted an active parameter count above the total parameter count",
+);
+
+const v9ActiveEqualToTotal = await request("telemetry", "POST", {
+  ...v9Success,
+  parameter_count_b: 0.99989,
+  active_parameter_count_b: 0.99989,
+});
+assert.equal(
+  v9ActiveEqualToTotal.ok,
+  true,
+  "v9 rejected a dense model whose active count equals its total",
+);
+
+const v9Pressured = await request("telemetry", "POST", {
+  ...v9Success,
+  measurement_quality: "pressured",
+  memory_pressure_observed: true,
+});
+assert.equal(v9Pressured.ok, true, "v9 rejected a consistently labelled pressured measurement");
+
+const v9Unstable = await request("telemetry", "POST", {
+  ...v9Success,
+  measurement_quality: "unstable",
+  tokens_per_sec_mad_ratio: 0.2,
+});
+assert.equal(v9Unstable.ok, true, "v9 rejected a consistently labelled unstable measurement");
+
+for (const [name, changes] of [
+  ["missing memory field", { ram_available_min_gb: undefined }],
+  ["wrong context", { context_length: 4096 }],
+  ["wrong batch", { num_batch: 512 }],
+  ["clean high-MAD result", { tokens_per_sec_mad_ratio: 0.2 }],
+  ["pressure without label", { memory_pressure_observed: true }],
+  ["pressure label without pressure", { measurement_quality: "pressured" }],
+  ["unknown estimate source", { memory_estimate_source: "guess" }],
+]) {
+  const rejected = await request("telemetry", "POST", { ...v9Success, ...changes });
+  assert.equal(rejected.ok, false, `v9 accepted ${name}`);
+}
+
+const v9FailureRejected = await request("telemetry", "POST", {
+  ...v8Transient,
+  benchmark_version: 9,
+});
+assert.equal(v9FailureRejected.ok, false, "v9 accepted a failure event without measurement metadata");
+
 console.log("Firebase rules scenarios passed.");

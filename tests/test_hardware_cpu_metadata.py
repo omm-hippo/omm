@@ -4,6 +4,26 @@ from types import SimpleNamespace
 from omm import hardware
 
 
+def test_commit_counters_report_both_headroom_and_the_whole_limit():
+    info = hardware._windows_commit_info(3_000_000, 5_000_000, 4096)
+    assert info.available_gb == 7.62939453125
+    assert info.limit_gb == 19.073486328125
+    # CommitTotal above CommitLimit is incoherent; refuse to guess.
+    assert hardware._windows_commit_info(5, 4, 4096) is None
+
+
+def test_available_commit_returns_none_off_windows_without_touching_win32(monkeypatch):
+    """The Win32-only import must stay behind the platform check.
+
+    Callers treat None as "no commit signal, use the portable physical
+    fallback", so a non-Windows host has to reach that branch before any
+    ctypes.wintypes work happens.
+    """
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
+
+    assert hardware.windows_commit_info() is None
+
+
 def test_linux_scan_uses_cpu_model_and_core_counts_not_architecture(monkeypatch):
     monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hardware.platform, "release", lambda: "6.8")

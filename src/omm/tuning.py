@@ -8,7 +8,15 @@ Localfit can verify: model size, usable RAM/VRAM, unified memory, and CPU count.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Mapping
+
+from omm.contribute_memory import (
+    CONTRIBUTE_CONTEXT_LENGTH,
+    CONTRIBUTE_NUM_BATCH,
+    VRAM_RESERVE_MIN_GB,
+    VRAM_RESERVE_RATIO,
+)
 
 from omm.featurize import parse_param_count_billions, parse_quant_bits
 from omm.hardware import HardwareInfo, calculate_memory_budget
@@ -140,6 +148,76 @@ def recommend_runtime_settings(
         headroom_gb=headroom,
         quant_bits=candidate_quant_bits(candidate),
     )
+
+
+def recommend_contribute_settings(
+    hw: HardwareInfo,
+    candidate: dict,
+    logical_cpu_count: int | None = None,
+) -> RuntimeProfile:
+    """Return the versioned, hardware-independent benchmark shape.
+
+    Offload and thread placement may still follow the machine, but context and
+    batch are fixed so two contributions for the same model do not silently
+    benchmark different memory/throughput workloads merely because one scan
+    happened while a browser tab was busy.
+    """
+    base = recommend_runtime_settings(hw, candidate, logical_cpu_count)
+    model_size = base.model_size_gb
+    if hw.unified_memory:
+        gpu_offload_percent = 100
+    elif hw.vram_total_gb is None or model_size is None:
+        gpu_offload_percent = 0
+    else:
+        # Benchmark placement must not change because another application
+        # happened to use VRAM during this scan. The live gate handles that.
+        reserve = max(VRAM_RESERVE_MIN_GB, hw.vram_total_gb * VRAM_RESERVE_RATIO)
+        capacity = max(0.0, hw.vram_total_gb - reserve)
+        if model_size <= capacity * 0.85:
+            gpu_offload_percent = 100
+        elif capacity <= 0:
+            gpu_offload_percent = 0
+        else:
+            gpu_offload_percent = max(
+                10, min(90, round((capacity * 0.8 / model_size) * 100))
+            )
+    return replace(
+        base,
+        context_length=CONTRIBUTE_CONTEXT_LENGTH,
+        num_batch=CONTRIBUTE_NUM_BATCH,
+        gpu_offload_percent=gpu_offload_percent,
+        profile_name="contribute-v1",
+    )
+
+
+def contribute_ollama_options(
+    profile: RuntimeProfile, metadata: Mapping[str, object]
+) -> tuple[dict[str, int], int]:
+    """Resolve a contribution offload percentage to Ollama layer count.
+
+    Ollama's ``num_gpu`` is a layer count, not a percentage. Leaving it out
+    for a partial profile silently asks Ollama to choose its own placement,
+    making the memory estimate differ from the actual benchmark. If the GGUF
+    layer count is unavailable, CPU-only is the only exact safe fallback.
+    """
+    options = profile.ollama_options
+    percent = profile.gpu_offload_percent
+    if percent <= 0:
+        return options, 0
+    if percent >= 100:
+        return options, 100
+    architecture = metadata.get("general.architecture")
+    layers = (
+        metadata.get(f"{architecture}.block_count")
+        if isinstance(architecture, str) and architecture
+        else None
+    )
+    if isinstance(layers, bool) or not isinstance(layers, (int, float)) or layers <= 0:
+        options["num_gpu"] = 0
+        return options, 0
+    layer_count = max(1, min(int(layers), round(float(layers) * percent / 100)))
+    options["num_gpu"] = layer_count
+    return options, max(0, min(100, round(100 * layer_count / float(layers))))
 
 
 def confidence_label(real_row_count: int) -> str:
