@@ -138,6 +138,33 @@ def test_link_engine_surfaces_windows_copy_warning(isolated_omm_home, tmp_path, 
     assert (models_dir / src.name).read_bytes() == b"weights"
 
 
+def test_link_file_skips_delete_recreate_when_already_linked(isolated_omm_home, tmp_path, monkeypatch):
+    """A repeat `omm link`/`install` for an unchanged model shouldn't tear
+    down and rebuild an already-correct symlink, or rewrite the ownership
+    registry, for every engine on every run."""
+    src = tmp_path / "model.gguf"
+    src.write_bytes(b"weights")
+    dst = tmp_path / "dst" / "model.gguf"
+
+    linker.link_file(src, dst)
+    original_ino = dst.lstat().st_ino
+
+    update_calls = []
+    real_update = linker._update_link_ownership
+
+    def counting_update(path, ownership):
+        update_calls.append(path)
+        return real_update(path, ownership)
+
+    monkeypatch.setattr(linker, "_update_link_ownership", counting_update)
+
+    result = linker.link_file(src, dst)
+
+    assert result == "symlink"
+    assert dst.lstat().st_ino == original_ino  # same symlink, never torn down
+    assert update_calls == []  # ownership registry never rewritten
+
+
 def test_link_file_replaces_existing_destination(isolated_omm_home, tmp_path):
     src = tmp_path / "model.gguf"
     src.write_bytes(b"weights")

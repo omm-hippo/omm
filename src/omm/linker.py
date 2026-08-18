@@ -407,6 +407,17 @@ def link_file(
     except OSError as e:
         raise LinkError(f"Could not create directory {dst.parent}: {e}") from e
     if dst.exists() or dst.is_symlink():
+        # Already exactly this link (same recorded source, same untouched
+        # symlink/hardlink identity) - skip the delete+recreate and its
+        # ownership-registry rewrite. Cheap ownership-record checks only;
+        # no full-file read. Otherwise every unchanged model got its
+        # link torn down and rebuilt on every repeat `omm link`/`install`.
+        record = _load_link_ownership().get(_link_key(dst))
+        if record and record.get("source") == _link_key(src):
+            if record.get("kind") == "symlink" and _owned_symlink(dst):
+                return "symlink"
+            if record.get("kind") == "hardlink" and _owned_hardlink(dst):
+                return "hardlink"
         if not unlink_owned_link(dst, expected_source=src):
             record = _load_link_ownership().get(_link_key(dst))
             if record and record.get("kind") in {"symlink", "hardlink"}:
