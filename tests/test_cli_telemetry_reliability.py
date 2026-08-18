@@ -312,3 +312,48 @@ def test_setting_clear_endpoint_does_not_flush_to_old_destination(
     assert result.exit_code == 0, result.stdout
     assert post_calls == []
     assert config.load_config()["telemetry_endpoint"] is None
+
+
+def test_telemetry_rejection_hint_explains_a_permission_denied_rejection(monkeypatch):
+    """`server rejected the event (HTTP 401: Permission denied)` is a dead
+    end on its own - it reads like a credentials problem the user should go
+    fix, when it is the collector's own validation rules refusing the
+    event's shape."""
+    monkeypatch.setattr(
+        cli.telemetry,
+        "last_send_status",
+        lambda: cli.telemetry.SendStatus(
+            "send_failed_http_401", status_code=401, detail="Permission denied"
+        ),
+    )
+
+    hint = cli._telemetry_rejection_hint_text()
+
+    assert hint is not None
+    assert "nothing to fix on this machine" in hint
+    assert "may be behind this omm version" in hint
+
+
+def test_telemetry_rejection_hint_stays_out_of_a_token_problem(monkeypatch):
+    """A missing or expired auth token also answers 401, but reports the
+    token problem in the same field - and that one really is fixable
+    locally, so the rules-rejection hint would send the user the wrong way."""
+    monkeypatch.setattr(
+        cli.telemetry,
+        "last_send_status",
+        lambda: cli.telemetry.SendStatus(
+            "send_failed_http_401", status_code=401, detail="Auth token is expired"
+        ),
+    )
+
+    assert cli._telemetry_rejection_hint_text() is None
+
+
+def test_telemetry_rejection_hint_stays_out_of_other_failures(monkeypatch):
+    monkeypatch.setattr(
+        cli.telemetry,
+        "last_send_status",
+        lambda: cli.telemetry.SendStatus("send_failed_network", detail="timed out"),
+    )
+
+    assert cli._telemetry_rejection_hint_text() is None

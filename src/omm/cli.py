@@ -25,6 +25,7 @@ import typer
 from prompt_toolkit.keys import Keys
 from rich.console import Console
 from rich.markup import escape
+from rich.padding import Padding
 from rich.progress import (
     BarColumn,
     Progress,
@@ -147,6 +148,13 @@ class GlobalOptions:
     quiet: bool = False
     no_color: bool = False
     pending_telemetry_notice: int = 0
+    # True once a command body has actually started running. Click's eager
+    # `--help` option prints and exits from the *sub*command's context,
+    # which is created only after the root callback has run - so at close
+    # time this flag is the one available signal that the user got real
+    # command output rather than a help page. See
+    # _update_notice_is_wanted.
+    command_body_ran: bool = False
 
 
 # Commands whose output --json actually restructures. Every other command
@@ -255,9 +263,24 @@ def global_flags(func):
                 "event(s) from a previous session.[/muted]"
             )
         opts.pending_telemetry_notice = 0
+        opts.command_body_ran = True
         return func(*args, **kwargs)
 
     wrapper.__signature__ = original_sig.replace(parameters=new_params)
+    return wrapper
+
+
+def marks_command_body_ran(func):
+    """Records that a command body started, for commands that can't take
+    `global_flags` (`verify` declares its own `--yes`, which would clash
+    with the one that decorator adds). `global_flags` sets the same flag
+    for every command it wraps."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        _global_opts().command_body_ran = True
+        return func(*args, **kwargs)
+
     return wrapper
 
 
@@ -418,6 +441,10 @@ def _root(
         err_console.no_color = True
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
+        # Bare `omm` prints a real (if short) result, so it counts as a
+        # command body for the update notice - no subcommand will run to
+        # set the flag itself.
+        opts.command_body_ran = True
         _maybe_run_onboarding(ctx)
         console.print(f"Ω omm {_version_line(_installed_commit())}")
         console.print(f"[muted]{_telemetry_destination_line()}[/muted]")
@@ -442,8 +469,23 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
 ]
 
 
-def _print_command_line(name: str, cmd_obj: click.Command, width: int) -> None:
-    console.print(f"  omm {name:<{width}}  {cmd_obj.get_short_help_str(limit=1000)}")
+def _command_reference_grid(name_width: int) -> Table:
+    """Two-column layout for one `omm help --all` section. A summary too
+    long for the terminal wraps under the summary column; the padded
+    f-string this replaces let it restart at column 0, where the
+    continuation read as if it belonged to no command at all.
+
+    `name_width` is fixed by the caller rather than left to the grid so
+    that every top-level section shares one summary column, the way the
+    single global width used to line them all up."""
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(no_wrap=True, width=name_width)
+    grid.add_column()
+    return grid
+
+
+def _add_command_row(grid: Table, name: str, cmd_obj: click.Command) -> None:
+    grid.add_row(f"  omm {name}", cmd_obj.get_short_help_str(limit=1000))
 
 
 def _print_full_command_reference(root_ctx: click.Context) -> None:
@@ -453,16 +495,20 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
     is for. A prior version dumped every command's complete --help text
     here (~400 lines); this mirrors how git/docker/gh expand `-a` instead."""
     commands = root_ctx.command.commands
-    width = max((len(n) for n in commands if not commands[n].hidden), default=0)
     grouped_names = {name for _, names in _HELP_ALL_GROUPS for name in names}
+    name_width = len("  omm ") + max(
+        (len(n) for n in commands if not commands[n].hidden), default=0
+    )
 
     for title, names in _HELP_ALL_GROUPS:
         visible = [n for n in names if n in commands and not commands[n].hidden]
         if not visible:
             continue
         console.print(f"[bold]{title}:[/bold]")
+        grid = _command_reference_grid(name_width)
         for name in visible:
-            _print_command_line(name, commands[name], width)
+            _add_command_row(grid, name, commands[name])
+        console.print(grid)
         console.print()
 
     setting_cmd = commands.get("setting")
@@ -476,11 +522,13 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
         sub_names = [n for n in sorted(setting_cmd.commands) if not setting_cmd.commands[n].hidden]
         if sub_names:
             console.print("[bold]Settings (omm setting SUBCOMMAND):[/bold]")
-            console.print(f"  {setting_cmd.help}")
-            sub_width = max(len(n) for n in sub_names)
+            console.print(Padding(setting_cmd.help, (0, 0, 0, 2)))
+            grid = _command_reference_grid(
+                len("  omm setting ") + max(len(n) for n in sub_names)
+            )
             for name in sub_names:
-                sub_obj = setting_cmd.commands[name]
-                _print_command_line(f"setting {name}", sub_obj, len("setting ") + sub_width)
+                _add_command_row(grid, f"setting {name}", setting_cmd.commands[name])
+            console.print(grid)
             console.print()
 
     # Safety net: any top-level command not yet slotted into a group above
@@ -490,8 +538,10 @@ def _print_full_command_reference(root_ctx: click.Context) -> None:
     )
     if leftover:
         console.print("[bold]Other:[/bold]")
+        grid = _command_reference_grid(name_width)
         for name in leftover:
-            _print_command_line(name, commands[name], width)
+            _add_command_row(grid, name, commands[name])
+        console.print(grid)
         console.print()
 
     console.print("[muted]Run `omm COMMAND --help` for a command's full option list.[/muted]")
@@ -910,6 +960,25 @@ def _bg_version_check_cmd() -> None:
     version_check.cached_remote_head(_remote_head_commit, _channel_branch())
 
 
+def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
+    """Whether the deferred update notice should still print by the time the
+    command has finished.
+
+    Silent under `--quiet`: this notice is exactly the "background
+    status/hint line" that flag documents suppressing, and it is unrelated
+    to whatever the user actually ran. Silent when no command body ran,
+    which is how `omm <command> --help` gets here - Click's eager help
+    option prints and exits from the subcommand's context, well after the
+    root callback registered the close callback, so the notice used to land
+    appended below help text the user was still reading.
+
+    Both flags are read at close time rather than captured when the notice
+    was registered, because both are set after that point: the body flag by
+    the command itself, and `quiet` by global_flags() when `--quiet` came
+    after the subcommand name."""
+    return opts.command_body_ran and not opts.quiet
+
+
 def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch: str = "main") -> None:
     """The cached remote head can be up to _TTL_SECONDS stale, so a mismatch
     against it is only a hint, not proof. Before alarming the user, re-check
@@ -954,7 +1023,13 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
     fresh, latest = version_check.cached_remote_head_if_fresh(branch)
     if fresh:
         if latest and latest != installed:
-            ctx.call_on_close(lambda: _confirm_and_print_update_notice(latest, installed, branch))
+            opts = ctx.ensure_object(GlobalOptions)
+
+            def print_notice_unless_suppressed() -> None:
+                if _update_notice_is_wanted(opts):
+                    _confirm_and_print_update_notice(latest, installed, branch)
+
+            ctx.call_on_close(print_notice_unless_suppressed)
         return
     if version_check.should_start_check(branch):
         version_check.mark_checking(branch)
@@ -1062,8 +1137,10 @@ def import_cmd(
         None, help="Optional extra directory to also scan for stray .gguf files."
     ),
 ) -> None:
-    """Scan every supported local AI app (and optionally PATH) for .gguf
-    files not yet managed by omm, and offer to adopt them into the hub."""
+    """Adopt .gguf files from other local AI apps into the omm hub.
+
+    Scans every supported local AI app (and optionally PATH) for files not
+    yet managed by omm, then offers to adopt each one it finds."""
     extra_path = None
     if path:
         extra_path = Path(path).expanduser()
@@ -1308,7 +1385,8 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
 @app.command()
 @global_flags
 def update() -> None:
-    """Reinstall omm from the latest source, then refresh rules/model data.
+    """Reinstall omm from the latest source and refresh its data.
+
     Uses a persistent editable clone (SRC_DIR) for a git-pull-speed update
     once migrated; a one-time pipx --editable install otherwise. Pulls
     from whichever branch `omm setting version` has selected (stable/main
@@ -1580,9 +1658,10 @@ def _select_recommended_model(
 @app.command()
 @global_flags
 def recommend() -> None:
-    """Scan hardware and suggest a model to install, ranked by a model
-    trained on real install telemetry (falls back to static rules if the
-    trained model can't be fetched)."""
+    """Suggest a model to install for this hardware.
+
+    Ranked by a model trained on real install telemetry, falling back to
+    the static rules when that trained model can't be fetched."""
     import requests
 
     info = scan_hardware()
@@ -2336,6 +2415,59 @@ def _engine_version(engine: str) -> str | None:
     return quality_mod.ollama_version()
 
 
+def _engine_label(engine: str) -> str:
+    """Product name for an engine key, for use in messages the user reads:
+    "lmstudio" is a registry key, "LM Studio" is what the program is called.
+
+    Reads linker.ENGINES on every call rather than caching a dict at import
+    time, so a test monkeypatching the engine list still takes effect (same
+    reason linker.is_engine_installed avoids a module-level lookup table).
+    Unknown keys fall back to Ollama, matching the engine keys' own default
+    across the CLI."""
+    for spec in linker.ENGINES:
+        if spec.key == engine:
+            return spec.label
+    return "Ollama"
+
+
+def _print_engine_selection_notice(engine: str) -> None:
+    """`_select_benchmark_engine` picks LM Studio when Ollama is unavailable,
+    and nothing downstream ever says so - prompts, progress, and results read
+    identically either way, so a user with both engines installed cannot tell
+    which one produced their numbers. Announces the fallback only: Ollama is
+    the documented default, so naming it on every run would be noise rather
+    than information."""
+    if engine != "lmstudio" or _global_opts().quiet:
+        return
+    console.print(
+        f"[muted]Ollama isn't installed or running - using {_engine_label(engine)} "
+        "instead.[/muted]"
+    )
+
+
+def _memory_pressure_report_lines(engine: str, cancelled: bool) -> tuple[str, str]:
+    """Verdict plus follow-up for a run Memory Guard stopped under sustained
+    low memory. The verdict on its own leaves the user with nothing to do
+    about it, and the two branches need different advice: a confirmed
+    cancellation means the weights were released and only the machine's
+    other memory pressure is left to fix, while an unconfirmed one means the
+    engine may still be holding them - which no amount of closing other apps
+    will release."""
+    label = _engine_label(engine)
+    if cancelled:
+        return (
+            "[error]Memory Guard detected sustained low memory and cancelled "
+            "OMM's model operation.[/error]",
+            "[muted]Close memory-heavy apps to free RAM, then try again.[/muted]",
+        )
+    return (
+        "[error]Memory Guard detected sustained low memory and could not confirm "
+        "cancellation of OMM's model operation.[/error]",
+        f"[muted]{label} may still be holding the model in memory. Restart "
+        f"{label}, close memory-heavy apps, then try again.[/muted]",
+    )
+
+
 def _select_benchmark_engine() -> str | None:
     """"ollama" if Ollama's daemon can be reached or started, else
     "lmstudio" if LM Studio's can, else None (caller must error out with an
@@ -2469,7 +2601,7 @@ def _verify_lmstudio_after_install(
                 )
                 return "failed", False, True
 
-    console.print(f"Verifying {filename} with lmstudio...")
+    console.print(f"Verifying {filename} with {_engine_label('lmstudio')}...")
     result = verify_and_record(filename, adapter, model_ref)
     if result.status == "passed":
         console.print(
@@ -3105,14 +3237,10 @@ def _install_impl(
                 if pressure_watcher.cancelled
                 else "memory_pressure_unload_failed"
             )
-            err_console.print(
-                "[error]Memory Guard detected sustained low memory and "
-                + (
-                    "cancelled OMM's model operation.[/error]"
-                    if pressure_watcher.cancelled
-                    else "could not confirm cancellation of OMM's model operation.[/error]"
-                )
-            )
+            for line in _memory_pressure_report_lines(
+                benchmark_engine, pressure_watcher.cancelled
+            ):
+                err_console.print(line)
 
         if pressure_watcher is not None:
             memory_measurement = {
@@ -3569,6 +3697,7 @@ _COMPATIBILITY_FAILURE_MESSAGES = {
 
 
 @app.command()
+@marks_command_body_ran
 def verify(
     model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
     engine: str = typer.Option(
@@ -3610,7 +3739,7 @@ def verify(
         except RuntimeAdapterError:
             visible = None
         if (visible is None or not visible.loaded) and not yes:
-            label = "Ollama" if selected_engine == "ollama" else "LM Studio"
+            label = _engine_label(selected_engine)
             if not _ask_confirm(
                 f"Load {filename} into {label} memory for a short local test?"
             ):
@@ -3629,7 +3758,7 @@ def verify(
             except (ModelResolutionError, OSError):
                 size_bytes = None
         if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
-            label = "Ollama" if selected_engine == "ollama" else "LM Studio"
+            label = _engine_label(selected_engine)
             err_console.print(
                 f"[error]Memory Guard could not determine the model size; "
                 f"the {label} load was blocked.[/error]"
@@ -3643,7 +3772,7 @@ def verify(
         if not guard_allowed:
             raise typer.Exit(1)
 
-    console.print(f"Verifying {filename} with {selected_engine}...")
+    console.print(f"Verifying {filename} with {_engine_label(selected_engine)}...")
     result = verify_and_record(
         filename,
         adapter,
@@ -3924,7 +4053,10 @@ def list_models(
         if json_output:
             console.print_json(data=[])
         elif engine is not None and had_any_models:
-            console.print(f"No models linked into {engine} yet. Try `omm link --engine {engine}`.")
+            console.print(
+                f"No models linked into {_engine_label(engine)} yet. "
+                f"Try `omm link --engine {engine}`."
+            )
         else:
             console.print("No models installed via omm yet. Try `omm recommend` or `omm install`.")
         raise typer.Exit(0)
@@ -4604,7 +4736,10 @@ def link_models(
         console.print("No models installed via omm yet.")
         raise typer.Exit(0)
     if engine is not None and not linker.is_engine_installed(engine):
-        console.print(f"{engine} isn't installed on this machine, so there's nothing to link into it.")
+        console.print(
+            f"{_engine_label(engine)} isn't installed on this machine, "
+            "so there's nothing to link into it."
+        )
         raise typer.Exit(0)
 
     if directory is not None:
@@ -4765,8 +4900,10 @@ def _autoremove_incomplete_installs() -> int:
 @app.command()
 @global_flags
 def autoremove() -> None:
-    """Remove broken symlinks left behind when a model's source .gguf was
-    deleted without going through `omm uninstall`, plus any orphaned partial or
+    """Clean up broken links and leftover partial downloads.
+
+    Removes symlinks left behind when a model's source .gguf was deleted
+    without going through `omm uninstall`, plus any orphaned partial or
     unregistered downloads in the models directory."""
     removed_by_engine: dict[str, int] = {}
     for spec in linker.ENGINES:
@@ -4907,6 +5044,7 @@ def benchmark_cmd(
             "one of them, start it once, then retry `omm benchmark`.[/error]"
         )
         raise typer.Exit(1)
+    _print_engine_selection_notice(engine)
     started_daemon = _ensure_engine_running(engine, "benchmark")
     lmstudio_models: dict[str, dict] | None = None
     if engine == "lmstudio":
@@ -5091,6 +5229,29 @@ def _telemetry_send_failure_text() -> str:
     return status.outcome.replace("_", " ")
 
 
+def _telemetry_rejection_hint_text() -> str | None:
+    """One muted follow-up for the send failure whose raw text is otherwise
+    a dead end: `server rejected the event (HTTP 401: Permission denied)`.
+
+    The hosted Firebase collector answers a *rules* rejection with 401 and
+    that exact detail, while a missing or expired auth token reports the
+    token problem in the same field - so the detail text, not the status
+    code alone, is what identifies this case. Nothing about it is fixable
+    locally, and the likeliest cause is deployed rules validating an older
+    event shape than this omm version sends. Phrased as a possibility, not
+    a diagnosis: the client is never told which rule fired."""
+    status = telemetry.last_send_status()
+    if status is None or status.status_code != 401:
+        return None
+    if "permission denied" not in status.detail.casefold():
+        return None
+    return (
+        "[muted]Rules rejection, not a credential problem - nothing to fix on "
+        "this machine. The collector's validation rules may be behind this omm "
+        "version; worth reporting if it keeps happening.[/muted]"
+    )
+
+
 def _report_telemetry(
     filename: str,
     repo_id: str | None,
@@ -5122,10 +5283,9 @@ def _report_telemetry(
         # re-fixed without ever being the real cause.
         if failure_reason is None:
             telemetry.log_attempt("skipped_daemon_unreachable", filename)
-            engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
             console.print(
-                f"[muted]Telemetry not sent - {engine_label} daemon wasn't reachable during "
-                "benchmark.[/muted]"
+                f"[muted]Telemetry not sent - {_engine_label(engine)} daemon wasn't reachable "
+                "during benchmark.[/muted]"
             )
         else:
             telemetry.log_attempt(f"skipped_{failure_reason}", filename)
@@ -5313,6 +5473,9 @@ def _report_telemetry(
                 else "This one-time upload was not queued."
             )
             console.print(f"[muted]Telemetry not sent: {reason}. {detail}[/muted]")
+        hint = _telemetry_rejection_hint_text()
+        if hint is not None:
+            console.print(hint)
     elif not _global_opts().quiet:
         console.print("[muted]Benchmark result uploaded.[/muted]")
     return sent
@@ -5451,6 +5614,9 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
             console.print(
                 f"[muted]Telemetry not sent for {tag}: {failure}. {detail}[/muted]"
             )
+        hint = _telemetry_rejection_hint_text()
+        if hint is not None:
+            console.print(hint)
     elif not _global_opts().quiet:
         console.print(f"[muted]Reported {tag} as {outcome}.[/muted]")
     return sent
@@ -6365,9 +6531,11 @@ def _print_contribution_summary(
 @app.command()
 @global_flags
 def contribute() -> None:
-    """Repeatedly install, benchmark, and upload telemetry for hardware-fit
-    models until Esc is pressed, to help grow the training dataset behind
-    `omm recommend`. Deletes each model after benchmarking it (even
+    """Benchmark models in a loop to improve `omm recommend`.
+
+    Repeatedly installs, benchmarks, and uploads telemetry for
+    hardware-fit models until Esc is pressed, growing the training dataset
+    behind `omm recommend`. Deletes each model after benchmarking it (even
     successful ones) to keep disk usage bounded."""
     yes = _global_opts().yes
     policy = load_config().get("telemetry_send_policy", "ask")
@@ -6388,6 +6556,7 @@ def contribute() -> None:
             "one of them, start it once, then retry `omm contribute`.[/error]"
         )
         raise typer.Exit(1)
+    _print_engine_selection_notice(engine)
     # The consent/warning banner below (inside the try block) is deferred
     # until after the checks that can prove the session impossible - no
     # point asking for approval on a run that can't start anyway. The

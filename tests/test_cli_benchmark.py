@@ -831,3 +831,31 @@ def test_report_failure_telemetry_v8_sends_chip_scores_not_raw_names(isolated_om
     assert event["cpu_score"] == 5600.0
     assert event["gpu_score"] == 4090.0
     assert "cpu_model" not in event
+
+
+def test_benchmark_says_when_it_falls_back_to_lmstudio(isolated_omm_home, monkeypatch):
+    """Ollama and LM Studio produce numbers that read identically, so a run
+    that silently switched engines left the user unable to tell which one
+    measured their model."""
+    config.update_config(onboarding_completed=True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: "/some/lms")
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+
+    result = runner.invoke(cli.app, ["benchmark", "some-model-key"])
+
+    assert "using LM Studio instead" in result.stdout
+
+
+def test_engine_selection_notice_stays_silent_for_ollama(monkeypatch):
+    """Ollama is the documented default, so naming it on every run would be
+    noise rather than information."""
+    printed = []
+    monkeypatch.setattr(cli.console, "print", lambda *a, **k: printed.append(a))
+
+    cli._print_engine_selection_notice("ollama")
+
+    assert printed == []

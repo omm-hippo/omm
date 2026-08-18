@@ -228,5 +228,6 @@ def test_link_engine_not_installed_prints_filter_aware_message(isolated_omm_home
     result = runner.invoke(cli.app, ["link", "--engine", "ollama"])
 
     assert result.exit_code == 0, result.stdout
-    assert "ollama isn't installed" in result.stdout
+    # Prose names the program, not the `--engine` key that selects it.
+    assert "Ollama isn't installed" in result.stdout
     assert "0 model(s) relinked" not in result.stdout
