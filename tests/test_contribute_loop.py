@@ -70,7 +70,7 @@ def test_low_memory_candidate_is_skipped_before_download(isolated_omm_home, monk
     monkeypatch.setattr(
         cli,
         "_contribute_candidate_memory_plan",
-        lambda candidate: SimpleNamespace(
+        lambda candidate, **kwargs: SimpleNamespace(
             decision=cli.memory_guard_mod.GuardDecision.BLOCK,
             required_gb=1.2,
             available_gb=0.0,
@@ -122,6 +122,62 @@ def test_start_memory_preflight_aborts_when_every_pending_candidate_is_blocked(
         cli._ensure_contribute_candidate_memory(artifact, object(), set())
 
     assert error.value.exit_code == 1
+
+
+def test_low_memory_candidate_check_queries_lmstudio_residents_for_lmstudio_engine(
+    isolated_omm_home, monkeypatch
+):
+    """The pre-download memory check must ask the engine actually being
+    benchmarked what's resident, not always Ollama - a contribute session
+    running against LM Studio would otherwise plan against an empty (or
+    just wrong) resident list."""
+    candidate = _candidate(filename="too-large-for-live-memory.gguf")
+    candidate["size_bytes"] = 1024**3
+    queue = _FakeQueue([candidate])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "scan_hardware",
+        lambda: cli.HardwareInfo(
+            os_name="Linux", os_version="", cpu="CPU",
+            ram_total_gb=16, ram_available_gb=0.05,
+            unified_memory=False, gpu_name=None,
+            vram_total_gb=None, vram_free_gb=None,
+        ),
+    )
+
+    monkeypatch.setattr(
+        cli.memory_guard_mod,
+        "OllamaManagedRuntime",
+        lambda registry_data: (_ for _ in ()).throw(
+            AssertionError("must not query Ollama residents for engine=lmstudio")
+        ),
+    )
+    seen = {}
+
+    class _FakeLMStudioRuntime:
+        def __init__(self, registry_data):
+            seen["queried"] = True
+
+        def list_residents(self):
+            return ()
+
+    monkeypatch.setattr(cli.memory_guard_mod, "LMStudioManagedRuntime", _FakeLMStudioRuntime)
+
+    monkeypatch.setattr(
+        cli,
+        "_install_impl",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("download/install must not start")
+        ),
+    )
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None, engine="lmstudio")
+
+    assert seen.get("queried") is True
+    assert stats.skipped_low_memory == 1
+    assert stats.benchmarked == []
 
 
 def test_successful_benchmark_records_history_and_deletes_model(isolated_omm_home, monkeypatch):

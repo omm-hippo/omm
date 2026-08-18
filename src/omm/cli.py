@@ -5267,11 +5267,23 @@ _MAX_CANDIDATE_BENCHMARK_FAILURES = 2
 _MIN_CONTRIBUTE_START_FREE_BYTES = 10 * 1024**3
 
 
+def _residents_for_engine(engine: str) -> tuple[memory_guard_mod.ResidentModel, ...]:
+    """Live resident-model list for whichever engine a contribute session
+    picked. Must match the engine actually being benchmarked - querying
+    Ollama's residents while running against LM Studio (or vice versa)
+    would silently see an empty/wrong list and mis-plan the memory guard."""
+    reg = registry.load_registry()
+    if engine == "lmstudio":
+        return memory_guard_mod.LMStudioManagedRuntime(reg).list_residents()
+    return memory_guard_mod.OllamaManagedRuntime(reg).list_residents()
+
+
 def _contribute_candidate_memory_plan(
     candidate: dict,
     *,
     hw: HardwareInfo | None = None,
     residents: tuple[memory_guard_mod.ResidentModel, ...] | None = None,
+    engine: str = "ollama",
 ) -> memory_guard_mod.MemoryGuardPlan | None:
     """Plan a contribution load before any model bytes are downloaded.
 
@@ -5286,9 +5298,7 @@ def _contribute_candidate_memory_plan(
     required_gb = model_size_gb * tuning.MEMORY_OVERHEAD
     current_hw = hw if hw is not None else scan_hardware()
     if residents is None:
-        residents = memory_guard_mod.OllamaManagedRuntime(
-            registry.load_registry()
-        ).list_residents()
+        residents = _residents_for_engine(engine)
     return memory_guard_mod.plan_memory_guard(
         required_gb,
         current_hw,
@@ -5300,6 +5310,7 @@ def _ensure_contribute_candidate_memory(
     artifact: dict,
     hw: HardwareInfo,
     history_refs: set[str],
+    engine: str = "ollama",
 ) -> None:
     """Abort before the loop when every pending candidate is blocked now."""
     pending = [
@@ -5317,15 +5328,14 @@ def _ensure_contribute_candidate_memory(
     if any(tuning.candidate_model_size_gb(candidate) is None for candidate in pending):
         return
 
-    residents = memory_guard_mod.OllamaManagedRuntime(
-        registry.load_registry()
-    ).list_residents()
+    residents = _residents_for_engine(engine)
     blocked_plans = []
     for candidate in pending:
         plan = _contribute_candidate_memory_plan(
             candidate,
             hw=hw,
             residents=residents,
+            engine=engine,
         )
         # An unknown estimate must fall through to the existing post-link
         # guard.  SAFE and WARN can proceed; WARN may release an OMM-owned
@@ -5519,7 +5529,7 @@ def _run_contribution_loop(
         if not opts.quiet:
             console.print(f"[accent]Trying {display_name}...[/accent]")
 
-        memory_plan = _contribute_candidate_memory_plan(candidate)
+        memory_plan = _contribute_candidate_memory_plan(candidate, engine=engine)
         if (
             memory_plan is not None
             and memory_plan.decision is memory_guard_mod.GuardDecision.BLOCK
@@ -5537,7 +5547,7 @@ def _run_contribution_loop(
             queue.mark_seen(ref_str)
             continue
 
-        memory_plan = _contribute_candidate_memory_plan(candidate)
+        memory_plan = _contribute_candidate_memory_plan(candidate, engine=engine)
         if (
             memory_plan is not None
             and memory_plan.decision is memory_guard_mod.GuardDecision.BLOCK
@@ -5845,7 +5855,7 @@ def contribute() -> None:
         hw = scan_hardware()
         history_refs = benchmark_history.loaded_refs()
         queue = contribute_mod.ContributionQueue(artifact, hw, history_refs)
-        _ensure_contribute_candidate_memory(artifact, hw, history_refs)
+        _ensure_contribute_candidate_memory(artifact, hw, history_refs, engine=engine)
 
         def refetch():
             return _load_recommendation_with_change_note(config)
