@@ -115,5 +115,8 @@ def test_list_engine_with_no_matches_prints_filter_aware_message(isolated_omm_ho
     result = runner.invoke(cli.app, ["list", "--engine", "ollama"])
 
     assert result.exit_code == 0, result.stdout
-    assert "No models linked into ollama" in result.stdout
+    # The prose names the program; the `--engine` value stays the key the
+    # user has to type.
+    assert "No models linked into Ollama yet" in result.stdout
+    assert "`omm link --engine ollama`" in result.stdout
     assert "No models installed via omm yet" not in result.stdout

@@ -8,12 +8,18 @@ runner = CliRunner()
 
 
 class _FakeCtx:
-    def __init__(self, invoked_subcommand):
+    def __init__(self, invoked_subcommand, opts=None):
         self.invoked_subcommand = invoked_subcommand
         self.close_callbacks = []
+        # Default to the ordinary case - the named subcommand runs its body.
+        # Tests for the help-page and --quiet suppressions pass their own.
+        self.obj = opts if opts is not None else cli.GlobalOptions(command_body_ran=True)
 
     def call_on_close(self, fn):
         self.close_callbacks.append(fn)
+
+    def ensure_object(self, _cls):
+        return self.obj
 
 
 def test_bg_version_check_cmd_delegates_to_cached_remote_head(monkeypatch):
@@ -232,3 +238,100 @@ def test_end_to_end_update_subcommand_does_not_trigger_background_check(isolated
     result = runner.invoke(cli.app, ["update"])
 
     assert result.exit_code == 1, result.stdout
+
+
+
+def test_update_notice_is_suppressed_by_quiet(monkeypatch):
+    """`--quiet` documents itself as suppressing "background status/hint
+    lines", and this notice is exactly that - it is unrelated to whatever
+    the user actually ran."""
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old_sha")
+    monkeypatch.setattr(
+        cli.version_check, "cached_remote_head_if_fresh", lambda *a, **k: (True, "new_sha")
+    )
+    monkeypatch.setattr(
+        cli,
+        "_remote_head_commit",
+        lambda ref="main": (_ for _ in ()).throw(AssertionError("no live check")),
+    )
+    printed = []
+    monkeypatch.setattr(cli.err_console, "print", lambda *a, **k: printed.append(a))
+    opts = cli.GlobalOptions()
+    ctx = _FakeCtx("list", opts)
+
+    cli._maybe_start_update_check(ctx)
+    # Both flags land after the notice was registered: the body flag when
+    # the command starts, `quiet` when it was given after `list`.
+    opts.command_body_ran = True
+    opts.quiet = True
+    ctx.close_callbacks[0]()
+
+    assert printed == []
+
+
+def test_update_notice_is_suppressed_when_no_command_body_ran(monkeypatch):
+    """A `--help` page leaves the flag unset, and the notice must not be
+    appended below help text the user is still reading."""
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old_sha")
+    monkeypatch.setattr(
+        cli.version_check, "cached_remote_head_if_fresh", lambda *a, **k: (True, "new_sha")
+    )
+    monkeypatch.setattr(
+        cli,
+        "_remote_head_commit",
+        lambda ref="main": (_ for _ in ()).throw(AssertionError("no live check")),
+    )
+    printed = []
+    monkeypatch.setattr(cli.err_console, "print", lambda *a, **k: printed.append(a))
+    ctx = _FakeCtx("install", cli.GlobalOptions())
+
+    cli._maybe_start_update_check(ctx)
+    ctx.close_callbacks[0]()
+
+    assert printed == []
+
+
+def _prime_update_cache(monkeypatch):
+    """Puts a fresh "an update exists" verdict in the shared cache, the way
+    a real background check would, so the next invocation reaches the
+    notice."""
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old_sha")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "new_sha")
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *a, **k: cli._bg_version_check_cmd())
+    runner.invoke(cli.app, ["list"])
+
+
+def test_end_to_end_subcommand_help_page_ends_at_the_help_text(isolated_omm_home, monkeypatch):
+    """`omm install --help` used to print the update notice below the help
+    text, because Click's eager help option exits long after the root
+    callback registered the deferred notice."""
+    _prime_update_cache(monkeypatch)
+
+    result = runner.invoke(cli.app, ["install", "--help"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "omm update" not in result.stderr
+
+
+def test_end_to_end_bare_omm_still_shows_the_update_notice(isolated_omm_home, monkeypatch):
+    """Bare `omm` prints a real result and runs no subcommand, so it has to
+    mark itself as a command body or it would lose the notice."""
+    _prime_update_cache(monkeypatch)
+
+    result = runner.invoke(cli.app, [])
+
+    assert "omm update" in result.stderr
+
+
+def test_end_to_end_command_without_global_flags_still_shows_the_update_notice(
+    isolated_omm_home, monkeypatch
+):
+    """`verify` declares its own `--yes` and so cannot wear `global_flags`;
+    it marks the command body separately, and must not silently lose the
+    notice because of that."""
+    _prime_update_cache(monkeypatch)
+
+    result = runner.invoke(cli.app, ["verify", "not-installed.gguf"])
+
+    assert result.exit_code == 1, result.stdout
+    assert "omm update" in result.stderr

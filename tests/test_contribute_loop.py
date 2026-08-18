@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from omm import benchmark_history, cli, registry
+from omm import benchmark_history, cli, contribute_memory, registry
 
 
 class _FakeQueue:
@@ -47,6 +47,57 @@ def _candidate(repo_id="org/repo", filename="model.gguf", name="model", provider
     return {"repo_id": repo_id, "filename": filename, "name": name, "provider": provider}
 
 
+# Memory plans handed to the loop are built from the *real* frozen
+# dataclasses, never from stand-ins. Hand-rolled look-alikes silently miss
+# every field added to contribute_memory later, and the miss only surfaces
+# as an AttributeError deep inside cli.py while a test runs. Constructing
+# the real dataclass by keyword instead fails right here, with a TypeError
+# naming the field nobody updated.
+def _memory_sample(**overrides):
+    fields = {
+        "samples_gb": (1.2,),
+        "median_gb": 1.2,
+        "minimum_gb": 1.2,
+        "maximum_gb": 1.2,
+        "reserve_gb": 0.5,
+    }
+    return contribute_memory.AvailableMemorySample(**(fields | overrides))
+
+
+def _memory_estimate(**overrides):
+    fields = {
+        "mapped_weights_ram_gb": 0.75,
+        "committed_ram_gb": 0.31,
+        "required_vram_gb": 0.0,
+        "kv_cache_gb": 0.06,
+        "compute_buffer_gb": 0.19,
+        "runtime_overhead_gb": 0.06,
+        "source": "gguf_header",
+        "confidence": "medium",
+        "context_length": contribute_memory.CONTRIBUTE_CONTEXT_LENGTH,
+        "num_batch": contribute_memory.CONTRIBUTE_NUM_BATCH,
+        "gpu_offload_percent": 0,
+        "runtime_buffer_ram_gb": 0.31,
+    }
+    return contribute_memory.ContributionMemoryEstimate(**(fields | overrides))
+
+
+def _memory_plan(**overrides):
+    fields = {
+        "decision": contribute_memory.ContributionMemoryDecision.SAFE,
+        "estimate": _memory_estimate(),
+        "sample": _memory_sample(),
+        "allocation_available_gb": 8.0,
+        "residency_available_gb": 8.0,
+        "commit_available_gb": 8.0,
+        "commit_limit_gb": 24.0,
+        "runtime_buffer_required_gb": 0.31,
+        "vram_available_gb": None,
+        "reasons": (),
+    }
+    return contribute_memory.ContributionMemoryPlan(**(fields | overrides))
+
+
 def _seed_registry_entry(filename, sha256="deadbeef"):
     registry.upsert_entry(
         filename,
@@ -88,17 +139,8 @@ def test_safe_memory_plan_is_reported_before_install(isolated_omm_home, monkeypa
     monkeypatch.setattr(
         cli,
         "_contribute_candidate_memory_plan",
-        lambda candidate, **kwargs: SimpleNamespace(
-            decision=cli.contribute_memory.ContributionMemoryDecision.SAFE,
-            estimate=SimpleNamespace(
-                committed_ram_gb=0.31,
-                mapped_weights_ram_gb=0.75,
-                source="gguf_header",
-            ),
-            runtime_buffer_required_gb=0.31,
-            commit_available_gb=8.0,
-            reasons=(),
-            sample=SimpleNamespace(median_gb=1.2, reserve_gb=0.5),
+        lambda candidate, **kwargs: _memory_plan(
+            decision=contribute_memory.ContributionMemoryDecision.SAFE,
         ),
     )
 
@@ -149,19 +191,24 @@ def test_low_memory_candidate_is_skipped_before_download(isolated_omm_home, monk
     monkeypatch.setattr(
         cli,
         "_contribute_candidate_memory_plan",
-        lambda candidate, **kwargs: SimpleNamespace(
-            decision=cli.contribute_memory.ContributionMemoryDecision.BLOCK,
-            required_gb=1.2,
-            available_gb=0.0,
-            estimate=SimpleNamespace(
+        lambda candidate, **kwargs: _memory_plan(
+            decision=contribute_memory.ContributionMemoryDecision.BLOCK,
+            estimate=_memory_estimate(
                 committed_ram_gb=1.2,
                 mapped_weights_ram_gb=1.0,
                 source="profile_fallback",
+                confidence="low",
+                runtime_buffer_ram_gb=1.2,
             ),
-            runtime_buffer_required_gb=1.2,
+            sample=_memory_sample(
+                samples_gb=(0.0,), median_gb=0.0, minimum_gb=0.0, maximum_gb=0.0
+            ),
+            allocation_available_gb=0.0,
+            residency_available_gb=0.0,
             commit_available_gb=None,
+            commit_limit_gb=None,
+            runtime_buffer_required_gb=1.2,
             reasons=("committed_ram_exceeds_physical_capacity",),
-            sample=SimpleNamespace(median_gb=0.0, reserve_gb=0.5),
         ),
     )
     monkeypatch.setattr(
@@ -193,17 +240,24 @@ def test_real_queue_contract_bounds_memory_deferrals(isolated_omm_home, monkeypa
 
     def memory_plan(_candidate, **_kwargs):
         plans.append(1)
-        return SimpleNamespace(
-            decision=cli.contribute_memory.ContributionMemoryDecision.DEFER,
-            estimate=SimpleNamespace(
+        return _memory_plan(
+            decision=contribute_memory.ContributionMemoryDecision.DEFER,
+            estimate=_memory_estimate(
                 committed_ram_gb=0.5,
                 mapped_weights_ram_gb=1.0,
                 source="profile_fallback",
+                confidence="low",
+                runtime_buffer_ram_gb=0.5,
             ),
-            runtime_buffer_required_gb=0.5,
+            sample=_memory_sample(
+                samples_gb=(0.2,), median_gb=0.2, minimum_gb=0.2, maximum_gb=0.2
+            ),
+            allocation_available_gb=0.0,
+            residency_available_gb=0.0,
             commit_available_gb=None,
+            commit_limit_gb=None,
+            runtime_buffer_required_gb=0.5,
             reasons=("committed_ram_temporarily_unavailable",),
-            sample=SimpleNamespace(median_gb=0.2, reserve_gb=0.5),
         )
 
     monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", memory_plan)
@@ -245,11 +299,16 @@ def test_start_memory_preflight_aborts_when_every_pending_candidate_is_blocked(
     monkeypatch.setattr(
         cli,
         "_contribute_candidate_memory_plan",
-        lambda candidate, **kwargs: SimpleNamespace(
-            decision=cli.contribute_memory.ContributionMemoryDecision.BLOCK,
-            required_gb=candidate["size_bytes"] / 1024**3 * 1.2,
-            available_gb=0.0,
-            reserve_gb=2.0,
+        lambda candidate, **kwargs: _memory_plan(
+            decision=contribute_memory.ContributionMemoryDecision.BLOCK,
+            # required_gb/available_gb/reserve_gb are read-only aliases on the
+            # real plan, so drive them through the fields they derive from.
+            estimate=_memory_estimate(
+                committed_ram_gb=candidate["size_bytes"] / 1024**3 * 1.2
+            ),
+            sample=_memory_sample(reserve_gb=2.0),
+            allocation_available_gb=0.0,
+            residency_available_gb=0.0,
         ),
     )
 
@@ -951,3 +1010,173 @@ def test_print_contribution_summary_includes_pre_download_memory_skip_count(caps
 
     captured = capsys.readouterr()
     assert "Still blocked after bounded memory retries: 3" in captured.out
+
+
+def test_memory_cancelled_candidate_is_not_downloaded_again_in_the_same_run(
+    isolated_omm_home, monkeypatch
+):
+    """A benchmark the memory guard cancels happens *after* the download,
+    and the model is deleted on the way out. Re-offering the same candidate
+    later in the run re-downloads every byte of it just to meet the same
+    machine condition, so the loop must be done with it immediately."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c, c, c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+
+    calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        calls.append(resolved.filename)
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="memory_pressure_cancelled",
+            benchmark_engine="ollama",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert calls == ["model.gguf"]
+    assert stats.machine_failures == 1
+    assert stats.given_up_on == 0
+    assert queue.marked_seen == ["huggingface:org/repo:model.gguf"]
+
+
+def test_memory_cancelled_candidate_is_recorded_for_the_next_run(
+    isolated_omm_home, monkeypatch
+):
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli, "_engine_daemon_reachable", lambda engine: True)
+    _seed_registry_entry("model.gguf")
+    monkeypatch.setattr(
+        cli,
+        "_install_impl",
+        lambda resolved, **kwargs: cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="memory_pressure_cancelled",
+            benchmark_engine="lmstudio",
+        ),
+    )
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
+
+    cli._run_contribution_loop(queue, stop_event, refetch=None, engine="lmstudio")
+
+    ref = "huggingface:org/repo:model.gguf"
+    record = benchmark_history.failure_record(ref)
+    assert record["reason"] == "memory_pressure_cancelled"
+    assert record["engine"] == "lmstudio"
+    assert record["consecutive_machine_failures"] == 1
+    # One cancelled run is not yet a pattern; the cooldown needs a second.
+    assert benchmark_history.failure_cooldowns() == {}
+    assert not benchmark_history.has_been_benchmarked(ref)
+
+
+def test_second_run_cooldown_follows_two_cancelled_downloads(isolated_omm_home, monkeypatch):
+    """Two separate sessions cancelled by memory are the pattern the
+    cross-run cooldown exists for - one loop pass per session, exactly as
+    the within-run rule enforces."""
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+    monkeypatch.setattr(
+        cli,
+        "_install_impl",
+        lambda resolved, **kwargs: cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="memory_pressure_cancelled",
+        ),
+    )
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
+
+    for _ in range(2):
+        cli._run_contribution_loop(
+            _FakeQueue([_candidate(filename="model.gguf")]), threading.Event(), refetch=None
+        )
+
+    assert set(benchmark_history.failure_cooldowns()) == {"huggingface:org/repo:model.gguf"}
+
+
+def test_transient_benchmark_failure_still_gets_its_second_chance(isolated_omm_home, monkeypatch):
+    """Only failures caused by this machine's own memory end a candidate's
+    run early. A timeout says nothing about memory, so the existing
+    fail-twice-then-give-up budget must still apply to it unchanged."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c, c, c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+
+    calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        calls.append(resolved.filename)
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="generation_timeout",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert calls == ["model.gguf", "model.gguf"]
+    assert stats.given_up_on == 1
+    assert stats.machine_failures == 0
+    assert benchmark_history.failure_cooldowns() == {}
+
+
+def test_successful_benchmark_clears_an_earlier_cancelled_attempt(isolated_omm_home, monkeypatch):
+    benchmark_history.record_benchmark_failure(
+        "huggingface:org/repo:model.gguf",
+        repo_id="org/repo",
+        filename="model.gguf",
+        reason="memory_pressure_cancelled",
+    )
+    queue = _FakeQueue([_candidate(filename="model.gguf")])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+
+    def fake_install_impl(resolved, **kwargs):
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=42.0,
+            telemetry_sent=True,
+            sha256="deadbeef",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert benchmark_history.failure_record("huggingface:org/repo:model.gguf") is None

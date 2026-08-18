@@ -131,3 +131,22 @@ def test_cli_guard_preserves_preloaded_target_across_ollama_aliases(
     assert allowed is True
     assert preloaded is True
     assert runtime.unloaded == []
+
+
+def test_memory_pressure_report_tells_the_user_what_to_do():
+    """"Memory Guard detected sustained low memory and cancelled OMM's
+    model operation." is a verdict with no next step attached."""
+    verdict, hint = cli._memory_pressure_report_lines("ollama", cancelled=True)
+
+    assert "cancelled OMM's model operation" in verdict
+    assert "Close memory-heavy apps" in hint
+
+
+def test_memory_pressure_report_names_the_engine_when_the_unload_was_not_confirmed():
+    """An unconfirmed cancellation means the engine may still hold the
+    weights, which closing other apps cannot release - so this branch has to
+    point at the engine that was actually in use."""
+    verdict, hint = cli._memory_pressure_report_lines("lmstudio", cancelled=False)
+
+    assert "could not confirm cancellation" in verdict
+    assert "Restart LM Studio" in hint
