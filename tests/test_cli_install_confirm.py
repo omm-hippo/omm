@@ -56,6 +56,7 @@ def _stub_successful_install(monkeypatch, isolated_omm_home):
 
     monkeypatch.setattr(cli, "download_file", fake_download)
     monkeypatch.setattr(cli, "sha256_file", lambda dest: "deadbeef")
+    monkeypatch.setattr(cli, "available_ram_gb", lambda: 12.0)
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
     monkeypatch.setattr(linker, "is_jan_installed", lambda: False)

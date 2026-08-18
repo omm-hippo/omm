@@ -1,6 +1,6 @@
 """Profile-aware memory planning for ``omm contribute``.
 
-Model weights, committed runtime buffers, and dedicated VRAM are deliberately
+Model weights, committed runtime memory, and dedicated VRAM are deliberately
 kept separate.  A memory-mapped weight file is a working-set requirement, not
 the same thing as anonymous committed RAM; collapsing both into ``size * 1.2``
 made small models impossible to benchmark on otherwise usable 16 GiB PCs.
@@ -99,6 +99,16 @@ class ContributionMemoryPlan:
         return self.sample.reserve_gb
 
 
+def weights_mmap_expected(hardware: HardwareInfo) -> bool:
+    """Whether Ollama normally file-maps CPU-resident model weights.
+
+    Current Windows Ollama explicitly disables mmap for CPU runner loads.
+    Treat those weights as committed RAM. Other platforms keep the existing
+    mmap assumption until their runtime reports otherwise.
+    """
+    return str(getattr(hardware, "os_name", "")).strip().casefold() != "windows"
+
+
 def sample_available_memory(
     sample_available_gb: Callable[[], float],
     *,
@@ -192,6 +202,7 @@ def estimate_candidate_memory(
     num_batch: int,
     gpu_offload_percent: int,
     metadata: Mapping[str, object] | None = None,
+    mmap_weights: bool = True,
 ) -> ContributionMemoryEstimate | None:
     size_bytes = candidate.get("size_bytes")
     if isinstance(size_bytes, bool) or not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
@@ -220,18 +231,23 @@ def estimate_candidate_memory(
     runtime_gb = runtime_bytes / GIB
 
     if hardware.unified_memory or hardware.vram_total_gb is None:
-        mapped_ram = weights_gb
-        committed_ram = buffer_gb + runtime_gb
+        mapped_ram = weights_gb if mmap_weights else 0.0
+        committed_ram = buffer_gb + runtime_gb + (0.0 if mmap_weights else weights_gb)
         required_vram = 0.0
     else:
         gpu_fraction = gpu_offload_percent / 100.0
-        mapped_ram = weights_gb * (1.0 - gpu_fraction)
+        cpu_weights = weights_gb * (1.0 - gpu_fraction)
+        mapped_ram = cpu_weights if mmap_weights else 0.0
         gpu_weights = weights_gb * gpu_fraction
         # Ollama normally places KQV/compute on the accelerator when layers
         # are offloaded. Count the full buffers in VRAM for allocation safety;
         # retain the runtime base on RAM for host orchestration/staging.
         required_vram = gpu_weights + (buffer_gb if gpu_fraction > 0 else 0.0)
-        committed_ram = runtime_gb + (buffer_gb if gpu_fraction < 1 else 0.0)
+        committed_ram = (
+            runtime_gb
+            + (buffer_gb if gpu_fraction < 1 else 0.0)
+            + (0.0 if mmap_weights else cpu_weights)
+        )
 
     return ContributionMemoryEstimate(
         mapped_weights_ram_gb=mapped_ram,
@@ -292,9 +308,9 @@ def plan_candidate_memory(
     elif not ram_allocation_fits_now or not vram_fits_now:
         decision = ContributionMemoryDecision.DEFER
     else:
-        # GGUF weights are memory mapped. They affect paging and benchmark
-        # quality, but are not anonymous committed memory and therefore are
-        # not an OOM gate. Runtime samples and speed dispersion classify it.
+        # Only estimate.mapped_weights_ram_gb is excluded from the allocation
+        # gate. Non-mmap CPU weights are already part of committed_ram_gb.
+        # Runtime samples and speed dispersion still classify paging noise.
         decision = ContributionMemoryDecision.SAFE
 
     return ContributionMemoryPlan(

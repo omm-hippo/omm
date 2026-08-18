@@ -138,6 +138,51 @@ def test_header_estimate_separates_mapped_weights_from_committed_buffers():
     assert estimate.committed_ram_gb == pytest.approx(0.3125)
 
 
+def test_windows_cpu_ollama_counts_non_mmap_weights_as_committed_ram():
+    hardware = _hardware()
+
+    estimate = contribute_memory.estimate_candidate_memory(
+        {"size_bytes": int(0.75 * 1024**3)},
+        hardware,
+        context_length=1024,
+        num_batch=128,
+        gpu_offload_percent=0,
+        metadata=_llama_metadata(),
+        mmap_weights=contribute_memory.weights_mmap_expected(hardware),
+    )
+
+    assert estimate is not None
+    assert contribute_memory.weights_mmap_expected(hardware) is False
+    assert estimate.mapped_weights_ram_gb == 0
+    assert estimate.committed_ram_gb == pytest.approx(1.0625)
+    assert contribute_memory.weights_mmap_expected(_hardware(os_name="Linux")) is True
+
+
+def test_windows_non_mmap_small_model_still_passes_with_observed_2_72gb_available():
+    hardware = _hardware(ram_available_gb=2.72)
+    estimate = contribute_memory.estimate_candidate_memory(
+        {"size_bytes": int(0.75 * 1024**3)},
+        hardware,
+        context_length=1024,
+        num_batch=128,
+        gpu_offload_percent=0,
+        metadata=_llama_metadata(),
+        mmap_weights=False,
+    )
+    sample = contribute_memory.AvailableMemorySample(
+        samples_gb=(2.7, 2.72, 2.74),
+        median_gb=2.72,
+        minimum_gb=2.7,
+        maximum_gb=2.74,
+        reserve_gb=0.5,
+    )
+
+    plan = contribute_memory.plan_candidate_memory(estimate, hardware, sample)
+
+    assert plan.decision is contribute_memory.ContributionMemoryDecision.SAFE
+    assert estimate.committed_ram_gb == pytest.approx(1.0625)
+
+
 def test_16gb_regression_small_model_passes_with_2_2gb_available():
     estimate = contribute_memory.estimate_candidate_memory(
         {"size_bytes": int(0.75 * 1024**3)},
@@ -188,9 +233,9 @@ def test_live_catalog_candidate_without_size_uses_remote_size_before_download(mo
 
     assert plan is not None
     assert size_calls == [("huggingface", "org/repo", "model-1B-Q4.gguf")]
-    assert plan.estimate.mapped_weights_ram_gb == pytest.approx(0.75)
-    assert plan.estimate.committed_ram_gb == pytest.approx(0.3125)
-    assert plan.decision is contribute_memory.ContributionMemoryDecision.SAFE
+    assert plan.estimate.mapped_weights_ram_gb == 0
+    assert plan.estimate.committed_ram_gb == pytest.approx(1.0625)
+    assert plan.decision is contribute_memory.ContributionMemoryDecision.DEFER
 
 
 def test_catalog_preflight_without_network_uses_name_size_estimate(monkeypatch):
@@ -214,7 +259,8 @@ def test_catalog_preflight_without_network_uses_name_size_estimate(monkeypatch):
     )
 
     assert plan is not None
-    assert plan.estimate.mapped_weights_ram_gb == pytest.approx(0.55)
+    assert plan.estimate.mapped_weights_ram_gb == 0
+    assert plan.estimate.committed_ram_gb > 0.55
     assert plan.estimate.source == "profile_fallback"
 
 
