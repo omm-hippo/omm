@@ -88,7 +88,7 @@ def test_safe_memory_plan_is_reported_before_install(isolated_omm_home, monkeypa
     monkeypatch.setattr(
         cli,
         "_contribute_candidate_memory_plan",
-        lambda candidate: SimpleNamespace(
+        lambda candidate, **kwargs: SimpleNamespace(
             decision=cli.contribute_memory.ContributionMemoryDecision.SAFE,
             estimate=SimpleNamespace(
                 committed_ram_gb=0.31,
@@ -122,7 +122,7 @@ def test_keyboard_interrupt_uses_owned_cleanup_path(isolated_omm_home, monkeypat
     queue = _FakeQueue([candidate])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", lambda candidate: None)
+    monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", lambda candidate, **kwargs: None)
     monkeypatch.setattr(
         cli,
         "_install_impl",
@@ -191,7 +191,7 @@ def test_real_queue_contract_bounds_memory_deferrals(isolated_omm_home, monkeypa
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "_DEFERRED_MEMORY_RECHECK_SECONDS", 0.0)
 
-    def memory_plan(_candidate):
+    def memory_plan(_candidate, **_kwargs):
         plans.append(1)
         return SimpleNamespace(
             decision=cli.contribute_memory.ContributionMemoryDecision.DEFER,
@@ -283,6 +283,10 @@ def test_low_memory_candidate_check_queries_lmstudio_residents_for_lmstudio_engi
             vram_total_gb=None, vram_free_gb=None,
         ),
     )
+    # The precise estimator samples live available RAM directly rather than
+    # trusting scan_hardware()'s snapshot - mock it too so the low-memory
+    # scenario above is actually what gets measured.
+    monkeypatch.setattr(cli, "available_ram_gb", lambda: 0.05)
 
     monkeypatch.setattr(
         cli.memory_guard_mod,

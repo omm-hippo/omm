@@ -146,7 +146,7 @@ def test_memory_preflight_happens_before_expensive_work_consent(
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     preflight_calls = []
 
-    def fail_preflight(*args):
+    def fail_preflight(*args, **kwargs):
         preflight_calls.append(1)
         raise cli.typer.Exit(1)
 
