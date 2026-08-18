@@ -338,3 +338,46 @@ def test_phase_b_above_pool_tries_huggingface_before_modelscope(monkeypatch):
     queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
 
     assert queue.next_candidate() is hf_unviable  # above, cursor 0
+
+
+def test_excluded_refs_are_never_offered_by_phase_a_or_phase_b(monkeypatch):
+    a, b, c = _candidate("o", "a.gguf"), _candidate("o", "b.gguf"), _candidate("o", "c.gguf")
+    ranked = [(a, 50.0), (b, 30.0), (c, -5.0)]
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: ranked)
+
+    queue = contribute.ContributionQueue(
+        {}, _hw(), history_refs=set(), excluded_refs={contribute.ref(a), contribute.ref(c)}
+    )
+
+    # Phase A hands out b, then phase B keeps re-offering the one candidate
+    # that is neither excluded nor viable-and-unseen. a and c never appear.
+    offered = [queue.next_candidate() for _ in range(6)]
+    assert offered == [b] * 6
+
+
+def test_excluded_ref_is_not_counted_as_a_covered_candidate(monkeypatch):
+    """`history_refs` is what the session reports as candidates it covered.
+    A candidate held back by a cooldown was never tried, so it must not
+    inflate that count."""
+    a = _candidate("o", "a.gguf")
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: [(a, 50.0)])
+
+    queue = contribute.ContributionQueue(
+        {}, _hw(), history_refs=set(), excluded_refs={contribute.ref(a)}
+    )
+
+    assert queue.history_refs == set()
+
+
+def test_releasing_deferrals_does_not_release_an_excluded_ref(monkeypatch):
+    """The loop releases every bounded deferral after each completed
+    attempt. An excluded ref is not a deferral and must survive that."""
+    a = _candidate("o", "a.gguf")
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: [(a, 50.0)])
+    queue = contribute.ContributionQueue(
+        {}, _hw(), history_refs=set(), excluded_refs={contribute.ref(a)}
+    )
+
+    queue.release_deferred(contribute.ref(a))
+
+    assert queue.next_candidate() is None

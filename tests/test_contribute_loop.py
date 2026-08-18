@@ -1010,3 +1010,173 @@ def test_print_contribution_summary_includes_pre_download_memory_skip_count(caps
 
     captured = capsys.readouterr()
     assert "Still blocked after bounded memory retries: 3" in captured.out
+
+
+def test_memory_cancelled_candidate_is_not_downloaded_again_in_the_same_run(
+    isolated_omm_home, monkeypatch
+):
+    """A benchmark the memory guard cancels happens *after* the download,
+    and the model is deleted on the way out. Re-offering the same candidate
+    later in the run re-downloads every byte of it just to meet the same
+    machine condition, so the loop must be done with it immediately."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c, c, c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+
+    calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        calls.append(resolved.filename)
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="memory_pressure_cancelled",
+            benchmark_engine="ollama",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert calls == ["model.gguf"]
+    assert stats.machine_failures == 1
+    assert stats.given_up_on == 0
+    assert queue.marked_seen == ["huggingface:org/repo:model.gguf"]
+
+
+def test_memory_cancelled_candidate_is_recorded_for_the_next_run(
+    isolated_omm_home, monkeypatch
+):
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli, "_engine_daemon_reachable", lambda engine: True)
+    _seed_registry_entry("model.gguf")
+    monkeypatch.setattr(
+        cli,
+        "_install_impl",
+        lambda resolved, **kwargs: cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="memory_pressure_cancelled",
+            benchmark_engine="lmstudio",
+        ),
+    )
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
+
+    cli._run_contribution_loop(queue, stop_event, refetch=None, engine="lmstudio")
+
+    ref = "huggingface:org/repo:model.gguf"
+    record = benchmark_history.failure_record(ref)
+    assert record["reason"] == "memory_pressure_cancelled"
+    assert record["engine"] == "lmstudio"
+    assert record["consecutive_machine_failures"] == 1
+    # One cancelled run is not yet a pattern; the cooldown needs a second.
+    assert benchmark_history.failure_cooldowns() == {}
+    assert not benchmark_history.has_been_benchmarked(ref)
+
+
+def test_second_run_cooldown_follows_two_cancelled_downloads(isolated_omm_home, monkeypatch):
+    """Two separate sessions cancelled by memory are the pattern the
+    cross-run cooldown exists for - one loop pass per session, exactly as
+    the within-run rule enforces."""
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+    monkeypatch.setattr(
+        cli,
+        "_install_impl",
+        lambda resolved, **kwargs: cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="memory_pressure_cancelled",
+        ),
+    )
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
+
+    for _ in range(2):
+        cli._run_contribution_loop(
+            _FakeQueue([_candidate(filename="model.gguf")]), threading.Event(), refetch=None
+        )
+
+    assert set(benchmark_history.failure_cooldowns()) == {"huggingface:org/repo:model.gguf"}
+
+
+def test_transient_benchmark_failure_still_gets_its_second_chance(isolated_omm_home, monkeypatch):
+    """Only failures caused by this machine's own memory end a candidate's
+    run early. A timeout says nothing about memory, so the existing
+    fail-twice-then-give-up budget must still apply to it unchanged."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c, c, c])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+
+    calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        calls.append(resolved.filename)
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="generation_timeout",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert calls == ["model.gguf", "model.gguf"]
+    assert stats.given_up_on == 1
+    assert stats.machine_failures == 0
+    assert benchmark_history.failure_cooldowns() == {}
+
+
+def test_successful_benchmark_clears_an_earlier_cancelled_attempt(isolated_omm_home, monkeypatch):
+    benchmark_history.record_benchmark_failure(
+        "huggingface:org/repo:model.gguf",
+        repo_id="org/repo",
+        filename="model.gguf",
+        reason="memory_pressure_cancelled",
+    )
+    queue = _FakeQueue([_candidate(filename="model.gguf")])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    _seed_registry_entry("model.gguf")
+
+    def fake_install_impl(resolved, **kwargs):
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=42.0,
+            telemetry_sent=True,
+            sha256="deadbeef",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert benchmark_history.failure_record("huggingface:org/repo:model.gguf") is None

@@ -19,6 +19,12 @@ Selection order:
   narrowing in on this machine's actual fit/unfit ceiling instead of
   stopping cold at the fixed candidate pool's edge.
 
+Three separate sets keep a candidate out of selection: `history_refs`
+(done with, permanently or for this session), `excluded_refs` (held back by
+a condition that lapses on its own, e.g. benchmark_history's post-download
+failure cooldown), and the internal deferred set (`defer` /
+`release_deferred`, for live memory pressure within a session).
+
 `mark_seen` re-ranks the remaining pools immediately (via `_rebuild`), so
 a local calibration update from the benchmark that was just marked seen
 takes effect on the very next `next_candidate()` call rather than only on
@@ -88,10 +94,24 @@ def _next_unseen(
 
 
 class ContributionQueue:
-    def __init__(self, artifact: dict, hw: HardwareInfo, history_refs: set[str]) -> None:
+    def __init__(
+        self,
+        artifact: dict,
+        hw: HardwareInfo,
+        history_refs: set[str],
+        excluded_refs: set[str] | None = None,
+    ) -> None:
+        """`history_refs` are candidates this machine is done with (already
+        benchmarked, or covered by this session); `excluded_refs` are ones
+        held back for a reason that will lapse on its own - today, the
+        post-download failure cooldown in benchmark_history. Keeping them
+        apart matters: `history_refs` is what the caller reports as
+        "candidates covered", and a candidate nobody tried this run has not
+        been covered by it."""
         self.artifact = artifact
         self.hw = hw
         self.history_refs = set(history_refs)
+        self.excluded_refs = set(excluded_refs or ())
         self._deferred_refs: set[str] = set()
         self._boundary_below: dict | None = None
         self._boundary_above: dict | None = None
@@ -108,7 +128,7 @@ class ContributionQueue:
         self._phase_a_queue = [
             c
             for c, s in _prefer_huggingface(viable)
-            if not matches_history(c, self.history_refs) and ref(c) not in self._deferred_refs
+            if not matches_history(c, self.history_refs) and ref(c) not in self._blocked_refs
         ]
         self._below_pool = _prefer_huggingface(list(reversed(viable)))
         self._above_pool = _prefer_huggingface(unviable)
@@ -118,8 +138,17 @@ class ContributionQueue:
 
     def mark_seen(self, seen_ref: str) -> None:
         self._deferred_refs.discard(seen_ref)
+        self.excluded_refs.discard(seen_ref)
         self.history_refs.add(seen_ref)
         self._rebuild()
+
+    @property
+    def _blocked_refs(self) -> set[str]:
+        """Every ref selection must currently step over, whatever the
+        reason. `defer`/`release_deferred` only ever move refs in and out of
+        `_deferred_refs`, so an excluded ref cannot be released by the
+        loop's deferred-retry bookkeeping."""
+        return self._deferred_refs | self.excluded_refs
 
     @property
     def deferred_refs(self) -> frozenset[str]:
@@ -145,7 +174,7 @@ class ContributionQueue:
             candidate = self._phase_a_queue.pop(0)
             if (
                 not matches_history(candidate, self.history_refs)
-                and ref(candidate) not in self._deferred_refs
+                and ref(candidate) not in self._blocked_refs
             ):
                 self._boundary_below = candidate
                 return candidate
@@ -156,7 +185,7 @@ class ContributionQueue:
                     self._below_pool,
                     self.history_refs,
                     self._below_cursor,
-                    self._deferred_refs,
+                    self._blocked_refs,
                 )
                 if candidate is not None:
                     self._boundary_below = candidate
@@ -165,7 +194,7 @@ class ContributionQueue:
                     self._above_pool,
                     self.history_refs,
                     self._above_cursor,
-                    self._deferred_refs,
+                    self._blocked_refs,
                 )
                 if candidate is not None and self._boundary_above is None:
                     self._boundary_above = candidate
@@ -203,7 +232,7 @@ class ContributionQueue:
                             c
                             for c in siblings
                             if not matches_history(c, self.history_refs)
-                            and ref(c) not in self._deferred_refs
+                            and ref(c) not in self._blocked_refs
                         ],
                     )
             queue = getattr(self, queue_attr)
@@ -211,7 +240,7 @@ class ContributionQueue:
                 candidate = queue.pop(0)
                 if (
                     not matches_history(candidate, self.history_refs)
-                    and ref(candidate) not in self._deferred_refs
+                    and ref(candidate) not in self._blocked_refs
                 ):
                     return candidate
         return None
