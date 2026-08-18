@@ -223,7 +223,12 @@ def global_flags(func):
         if opts.no_color:
             console.no_color = True
             err_console.no_color = True
-        command_name = ctx.command.name
+        # Full path minus the root program name, not ctx.command.name alone:
+        # a nested command can share its bare name with an unrelated
+        # top-level one (e.g. "omm engine install" vs "omm install") - the
+        # bare name would false-match _JSON_CAPABLE/_YES_CAPABLE and swallow
+        # a warning the nested command actually needs.
+        command_name = ctx.command_path.removeprefix("omm ")
         if opts.json and command_name not in _JSON_CAPABLE:
             err_console.print(
                 f"[warning]--json has no effect on `omm {command_name}` - ignoring it.[/warning]"
@@ -259,6 +264,7 @@ Tuning & quality:
 Maintenance:
   omm scan
   omm setup
+  omm engine install
   omm upgrade [MODEL]
   omm setting
 
@@ -300,6 +306,12 @@ setting_app = typer.Typer(
     rich_markup_mode=None,
 )
 app.add_typer(setting_app)
+engine_app = typer.Typer(
+    name="engine",
+    help="Install local AI runner programs (Ollama, LM Studio, etc.).",
+    rich_markup_mode=None,
+)
+app.add_typer(engine_app)
 if platform.system() == "Windows":
     # Legacy cp949/cp1252 consoles cannot encode every model name or symbol.
     # Preserve their configured encoding but replace unsupported glyphs rather
@@ -414,7 +426,7 @@ def _root(
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
     ("Core", ["search", "install", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
-    ("Maintenance", ["scan", "setup", "import", "autoremove", "link", "update", "help"]),
+    ("Maintenance", ["scan", "setup", "engine", "import", "autoremove", "link", "update", "help"]),
 ]
 
 
@@ -750,6 +762,17 @@ def setup_cmd() -> None:
     """Re-run the first-time setup wizard (hardware scan + engine checklist)."""
     onboarding.run_wizard(console)
     config_mod.update_config(onboarding_completed=True)
+
+
+@engine_app.command(name="install")
+@global_flags
+def engine_install_cmd() -> None:
+    """Interactively pick local AI runner programs (Ollama, LM Studio, etc.) to install."""
+    selected = onboarding.run_engine_checklist(console)
+    if selected is None:
+        raise typer.Abort()
+    if selected:
+        onboarding.install_selected_engines(console, selected)
 
 
 def _refresh_data() -> None:
