@@ -2417,6 +2417,29 @@ def _print_engine_selection_notice(engine: str) -> None:
     )
 
 
+def _memory_pressure_report_lines(engine: str, cancelled: bool) -> tuple[str, str]:
+    """Verdict plus follow-up for a run Memory Guard stopped under sustained
+    low memory. The verdict on its own leaves the user with nothing to do
+    about it, and the two branches need different advice: a confirmed
+    cancellation means the weights were released and only the machine's
+    other memory pressure is left to fix, while an unconfirmed one means the
+    engine may still be holding them - which no amount of closing other apps
+    will release."""
+    label = _engine_label(engine)
+    if cancelled:
+        return (
+            "[error]Memory Guard detected sustained low memory and cancelled "
+            "OMM's model operation.[/error]",
+            "[muted]Close memory-heavy apps to free RAM, then try again.[/muted]",
+        )
+    return (
+        "[error]Memory Guard detected sustained low memory and could not confirm "
+        "cancellation of OMM's model operation.[/error]",
+        f"[muted]{label} may still be holding the model in memory. Restart "
+        f"{label}, close memory-heavy apps, then try again.[/muted]",
+    )
+
+
 def _select_benchmark_engine() -> str | None:
     """"ollama" if Ollama's daemon can be reached or started, else
     "lmstudio" if LM Studio's can, else None (caller must error out with an
@@ -3186,14 +3209,10 @@ def _install_impl(
                 if pressure_watcher.cancelled
                 else "memory_pressure_unload_failed"
             )
-            err_console.print(
-                "[error]Memory Guard detected sustained low memory and "
-                + (
-                    "cancelled OMM's model operation.[/error]"
-                    if pressure_watcher.cancelled
-                    else "could not confirm cancellation of OMM's model operation.[/error]"
-                )
-            )
+            for line in _memory_pressure_report_lines(
+                benchmark_engine, pressure_watcher.cancelled
+            ):
+                err_console.print(line)
 
         if pressure_watcher is not None:
             memory_measurement = {
