@@ -1944,7 +1944,7 @@ def _maybe_auto_calibrate(
         return
     console.print(
         f"[muted]Local calibration updated: correction ×{factor:.2f} "
-        "(not uploaded).[/muted]"
+        "(the calibration stays in ~/.omm and is never uploaded).[/muted]"
     )
 
 
@@ -5013,6 +5013,8 @@ def _report_telemetry(
                 else "This one-time upload was not queued."
             )
             console.print(f"[muted]Telemetry not sent: {reason}. {detail}[/muted]")
+    elif not _global_opts().quiet:
+        console.print("[muted]Benchmark result uploaded.[/muted]")
     return sent
 
 
@@ -5149,6 +5151,8 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
             console.print(
                 f"[muted]Telemetry not sent for {tag}: {failure}. {detail}[/muted]"
             )
+    elif not _global_opts().quiet:
+        console.print(f"[muted]Reported {tag} as {outcome}.[/muted]")
     return sent
 
 
