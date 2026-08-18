@@ -89,17 +89,29 @@ def _lms_path() -> str:
 
 
 def verify_lmstudio(gguf_path: Path, ollama_tag: str) -> None:
-    result = _run([_lms_path(), "ls", "--json"])
-    if result.returncode != 0:
-        _fail(f"`lms ls --json` failed: {result.stderr}")
-    try:
-        models = json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        _fail(f"`lms ls --json` did not return JSON: {e}\n{result.stdout}")
-    paths = [m.get("path") or m.get("modelKey") or "" for m in models]
-    if not any(gguf_path.name in p or str(gguf_path) in p for p in paths):
-        _fail(f"`lms ls` does not list {gguf_path.name!r} among: {paths}")
-    print(f"OK: lms recognizes {gguf_path.name!r}")
+    """`lms ls` re-scans LM Studio's models dir, but a real run of this
+    workflow showed it can take a few seconds to pick up a file that just
+    landed - the first call right after linking only showed llmster's own
+    bundled default model, not ours. Retries instead of trusting a single
+    call."""
+    import time
+
+    lms_path = _lms_path()
+    paths: list[str] = []
+    for attempt in range(10):
+        result = _run([lms_path, "ls", "--json"])
+        if result.returncode != 0:
+            _fail(f"`lms ls --json` failed: {result.stderr}")
+        try:
+            models = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            _fail(f"`lms ls --json` did not return JSON: {e}\n{result.stdout}")
+        paths = [m.get("path") or m.get("modelKey") or "" for m in models]
+        if any(gguf_path.name in p or str(gguf_path) in p for p in paths):
+            print(f"OK: lms recognizes {gguf_path.name!r} (after {attempt + 1} `lms ls` call(s))")
+            return
+        time.sleep(2)
+    _fail(f"`lms ls` never listed {gguf_path.name!r} after 10 tries. Last seen: {paths}")
 
 
 def _verify_via_path(dest: Path, gguf_path: Path, engine_label: str) -> None:
