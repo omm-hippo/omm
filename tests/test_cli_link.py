@@ -80,3 +80,28 @@ def test_link_reports_clean_error_when_directory_cannot_be_created(isolated_omm_
 
     assert result.exit_code == 1
     assert "Could not create" in result.stderr
+
+
+def test_link_names_the_program_not_the_engine_key(isolated_omm_home, monkeypatch):
+    """"lmstudio" is a registry key; "LM Studio" is what the program is
+    called, and prose the user reads should say the latter."""
+    registry.save_registry({"model.gguf": {"linked": {}}})
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: False)
+
+    result = runner.invoke(cli.app, ["link", "--engine", "lmstudio"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "LM Studio isn't installed on this machine" in result.stdout
+
+
+def test_engine_label_covers_every_known_engine():
+    """`_engine_label` backs messages for all seven linkable engines, not
+    just the two the benchmark path can select, so a wrong fallback here
+    would rename e.g. Jan to "Ollama" in `omm list` and `omm link`."""
+    assert [cli._engine_label(spec.key) for spec in cli.linker.ENGINES] == [
+        spec.label for spec in cli.linker.ENGINES
+    ]
+
+
+def test_engine_label_falls_back_to_ollama_for_an_unknown_key():
+    assert cli._engine_label("not-an-engine") == "Ollama"

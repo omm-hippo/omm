@@ -2387,6 +2387,36 @@ def _engine_version(engine: str) -> str | None:
     return quality_mod.ollama_version()
 
 
+def _engine_label(engine: str) -> str:
+    """Product name for an engine key, for use in messages the user reads:
+    "lmstudio" is a registry key, "LM Studio" is what the program is called.
+
+    Reads linker.ENGINES on every call rather than caching a dict at import
+    time, so a test monkeypatching the engine list still takes effect (same
+    reason linker.is_engine_installed avoids a module-level lookup table).
+    Unknown keys fall back to Ollama, matching the engine keys' own default
+    across the CLI."""
+    for spec in linker.ENGINES:
+        if spec.key == engine:
+            return spec.label
+    return "Ollama"
+
+
+def _print_engine_selection_notice(engine: str) -> None:
+    """`_select_benchmark_engine` picks LM Studio when Ollama is unavailable,
+    and nothing downstream ever says so - prompts, progress, and results read
+    identically either way, so a user with both engines installed cannot tell
+    which one produced their numbers. Announces the fallback only: Ollama is
+    the documented default, so naming it on every run would be noise rather
+    than information."""
+    if engine != "lmstudio" or _global_opts().quiet:
+        return
+    console.print(
+        f"[muted]Ollama isn't installed or running - using "
+        f"{_engine_label(engine)} instead.[/muted]"
+    )
+
+
 def _select_benchmark_engine() -> str | None:
     """"ollama" if Ollama's daemon can be reached or started, else
     "lmstudio" if LM Studio's can, else None (caller must error out with an
@@ -2520,7 +2550,7 @@ def _verify_lmstudio_after_install(
                 )
                 return "failed", False, True
 
-    console.print(f"Verifying {filename} with lmstudio...")
+    console.print(f"Verifying {filename} with {_engine_label('lmstudio')}...")
     result = verify_and_record(filename, adapter, model_ref)
     if result.status == "passed":
         console.print(
@@ -3662,7 +3692,7 @@ def verify(
         except RuntimeAdapterError:
             visible = None
         if (visible is None or not visible.loaded) and not yes:
-            label = "Ollama" if selected_engine == "ollama" else "LM Studio"
+            label = _engine_label(selected_engine)
             if not _ask_confirm(
                 f"Load {filename} into {label} memory for a short local test?"
             ):
@@ -3681,7 +3711,7 @@ def verify(
             except (ModelResolutionError, OSError):
                 size_bytes = None
         if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
-            label = "Ollama" if selected_engine == "ollama" else "LM Studio"
+            label = _engine_label(selected_engine)
             err_console.print(
                 f"[error]Memory Guard could not determine the model size; "
                 f"the {label} load was blocked.[/error]"
@@ -3695,7 +3725,7 @@ def verify(
         if not guard_allowed:
             raise typer.Exit(1)
 
-    console.print(f"Verifying {filename} with {selected_engine}...")
+    console.print(f"Verifying {filename} with {_engine_label(selected_engine)}...")
     result = verify_and_record(
         filename,
         adapter,
@@ -3976,7 +4006,10 @@ def list_models(
         if json_output:
             console.print_json(data=[])
         elif engine is not None and had_any_models:
-            console.print(f"No models linked into {engine} yet. Try `omm link --engine {engine}`.")
+            console.print(
+                f"No models linked into {_engine_label(engine)} yet. "
+                f"Try `omm link --engine {engine}`."
+            )
         else:
             console.print("No models installed via omm yet. Try `omm recommend` or `omm install`.")
         raise typer.Exit(0)
@@ -4656,7 +4689,10 @@ def link_models(
         console.print("No models installed via omm yet.")
         raise typer.Exit(0)
     if engine is not None and not linker.is_engine_installed(engine):
-        console.print(f"{engine} isn't installed on this machine, so there's nothing to link into it.")
+        console.print(
+            f"{_engine_label(engine)} isn't installed on this machine, "
+            "so there's nothing to link into it."
+        )
         raise typer.Exit(0)
 
     if directory is not None:
@@ -4959,6 +4995,7 @@ def benchmark_cmd(
             "one of them, start it once, then retry `omm benchmark`.[/error]"
         )
         raise typer.Exit(1)
+    _print_engine_selection_notice(engine)
     started_daemon = _ensure_engine_running(engine, "benchmark")
     lmstudio_models: dict[str, dict] | None = None
     if engine == "lmstudio":
@@ -5174,10 +5211,9 @@ def _report_telemetry(
         # re-fixed without ever being the real cause.
         if failure_reason is None:
             telemetry.log_attempt("skipped_daemon_unreachable", filename)
-            engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
             console.print(
-                f"[muted]Telemetry not sent - {engine_label} daemon wasn't reachable during "
-                "benchmark.[/muted]"
+                f"[muted]Telemetry not sent - {_engine_label(engine)} daemon wasn't reachable "
+                "during benchmark.[/muted]"
             )
         else:
             telemetry.log_attempt(f"skipped_{failure_reason}", filename)
@@ -6440,6 +6476,7 @@ def contribute() -> None:
             "one of them, start it once, then retry `omm contribute`.[/error]"
         )
         raise typer.Exit(1)
+    _print_engine_selection_notice(engine)
     # The consent/warning banner below (inside the try block) is deferred
     # until after the checks that can prove the session impossible - no
     # point asking for approval on a run that can't start anyway. The
