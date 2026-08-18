@@ -446,7 +446,7 @@ def _handle_emergency_signal(artifact: dict | None) -> None:
         return
 
     _emergency_signals_shown.add(signal_id)
-    err_console.print(f"[error]⚠ EMERGENCY: {signal['message']}[/error]")
+    err_console.print(f"[error]⚠ EMERGENCY: {escape(signal['message'])}[/error]")
 
     if not _stdin_is_tty():
         err_console.print(
