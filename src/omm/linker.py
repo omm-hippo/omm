@@ -2258,7 +2258,7 @@ def ollama_native_copy_may_be_required() -> bool:
     return True
 
 
-def disk_copy_risks(source_path: Path, *, only_ollama: bool = False) -> list[DiskCopyRisk]:
+def disk_copy_risks(source_path: Path, *, only_engine: str | None = None) -> list[DiskCopyRisk]:
     """Return full-model copies that must be included in install preflight.
 
     POSIX engines use symlinks. Windows destinations on another volume may
@@ -2266,11 +2266,15 @@ def disk_copy_risks(source_path: Path, *, only_ollama: bool = False) -> list[Dis
     special case on every OS because its native compatibility fallback
     imports a second full blob even when source and model store share a
     volume.
+
+    `only_engine` restricts the check to a single engine key (e.g.
+    `omm contribute` only needs whichever engine it is benchmarking against
+    this session); `None` checks every installed engine, as before.
     """
     risks: list[DiskCopyRisk] = []
     source_volume = storage_volume_key(source_path)
     for spec in ENGINES:
-        if only_ollama and spec.key != "ollama":
+        if only_engine is not None and spec.key != only_engine:
             continue
         if not is_engine_installed(spec.key):
             continue

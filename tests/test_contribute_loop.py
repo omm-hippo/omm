@@ -512,6 +512,57 @@ def test_dead_daemon_is_restarted_before_next_candidate(isolated_omm_home, monke
     assert stats.benchmarked == [("model", 42.0)]
 
 
+def test_dead_lmstudio_daemon_is_restarted_before_next_candidate(isolated_omm_home, monkeypatch):
+    """Mirrors test_dead_daemon_is_restarted_before_next_candidate for the
+    LM Studio engine: the loop's daemon-health check must dispatch to
+    linker.lmstudio_daemon_reachable/start_lmstudio_daemon, not the Ollama
+    functions, when engine="lmstudio"."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    _seed_registry_entry("model.gguf")
+
+    reachable_calls = [False, True]
+    monkeypatch.setattr(
+        cli.linker, "lmstudio_daemon_reachable", lambda: reachable_calls.pop(0)
+    )
+    monkeypatch.setattr(
+        cli.benchmark,
+        "ollama_daemon_reachable",
+        lambda: (_ for _ in ()).throw(AssertionError("must not check Ollama for engine=lmstudio")),
+    )
+    restarted = []
+    monkeypatch.setattr(
+        cli.linker, "start_lmstudio_daemon", lambda: (restarted.append(1), True)[1]
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        assert kwargs.get("benchmark_engine") == "lmstudio"
+        assert kwargs.get("link_only_engine") == "lmstudio"
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": True, "ollama": False},
+            tokens_per_sec=42.0,
+            telemetry_sent=True,
+            sha256="deadbeef",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    daemon_ref = {"proc": None}
+    stats = cli._run_contribution_loop(
+        queue, stop_event, refetch=None, daemon_ref=daemon_ref, engine="lmstudio"
+    )
+
+    assert restarted == [1]
+    assert daemon_ref["proc"] is True
+    assert stats.daemon_restarts == 1
+    assert stats.benchmarked == [("model", 42.0)]
+
+
 def test_daemon_that_wont_come_back_aborts_loop_instead_of_spinning(isolated_omm_home, monkeypatch):
     """If the daemon can't be restarted at all, the loop must give up after
     a few tries rather than looping unattended for hours re-downloading

@@ -987,8 +987,11 @@ def _evaluate_model_worker(
     speed_runs: int,
     runtime_options: dict | None,
     model_metadata: dict | None,
+    engine: str = "ollama",
+    lmstudio_port: int | None = None,
+    lmstudio_model: dict | None = None,
 ) -> None:
-    """Spawn-safe worker for one killable Ollama evaluation."""
+    """Spawn-safe worker for one killable Ollama or LM Studio evaluation."""
     try:
         result = evaluate_model(
             tag,
@@ -996,6 +999,9 @@ def _evaluate_model_worker(
             speed_runs=speed_runs,
             runtime_options=runtime_options,
             model_metadata=model_metadata,
+            engine=engine,
+            lmstudio_port=lmstudio_port,
+            lmstudio_model=lmstudio_model,
         )
         send_conn.send(("ok", result))
     except QualityEvaluationError as error:
@@ -1019,13 +1025,17 @@ def evaluate_model_isolated(
     timeout_seconds: float = 600,
     stop_check: Callable[[], bool] | None = None,
     progress_callback: Callable[[float, float], None] | None = None,
+    engine: str = "ollama",
+    lmstudio_port: int | None = None,
+    lmstudio_model: dict | None = None,
 ) -> dict:
     """Evaluate in a child process with an absolute wall-clock deadline.
 
     Requests' read timeout is not a total operation deadline, and a wedged
-    native Ollama call must not hold an unattended contribution session for
-    hours. A separate process lets the parent terminate the entire evaluator
-    deterministically on Esc, Ctrl+C teardown, or deadline expiry.
+    native Ollama (or LM Studio) call must not hold an unattended
+    contribution session for hours. A separate process lets the parent
+    terminate the entire evaluator deterministically on Esc, Ctrl+C
+    teardown, or deadline expiry.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -1033,7 +1043,10 @@ def evaluate_model_isolated(
     receive_conn, send_conn = context.Pipe(duplex=False)
     process = context.Process(
         target=_evaluate_model_worker,
-        args=(send_conn, tag, pack, speed_runs, runtime_options, model_metadata),
+        args=(
+            send_conn, tag, pack, speed_runs, runtime_options, model_metadata,
+            engine, lmstudio_port, lmstudio_model,
+        ),
         daemon=True,
     )
     started = time.monotonic()
