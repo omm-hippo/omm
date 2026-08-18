@@ -1027,6 +1027,8 @@ def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> No
         bytes_saved += result.bytes_saved
         if not opts.quiet:
             console.print(f"  [success]Ω Imported {result.filename}[/success]")
+        for warning in result.link_warnings:
+            err_console.print(f"[warning]{warning}[/warning]")
 
     final_count = len(registry.load_registry())
     console.print(

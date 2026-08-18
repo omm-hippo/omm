@@ -340,6 +340,39 @@ def test_ollama_preserves_unowned_manifest_and_existing_blob(isolated_omm_home, 
     assert manifest.read_text() == "user manifest"
 
 
+def test_link_ollama_skips_rehash_when_already_correctly_linked(isolated_omm_home, tmp_path, monkeypatch):
+    """A repeat `omm link` shouldn't re-hash a multi-GB model that's
+    already correctly linked and unchanged - only the first call should
+    pay for `sha256_file`."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+
+    hash_calls = []
+    real_sha256_file = linker.sha256_file
+
+    def counting_sha256_file(path):
+        hash_calls.append(path)
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(linker, "sha256_file", counting_sha256_file)
+
+    linker.link_ollama(source, "model", models_dir=models_dir)
+    assert len(hash_calls) >= 1
+
+    hash_calls.clear()
+    result = linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert result is False  # no tokenizer.chat_template in the stubbed metadata
+    # `_owned_manifest`'s own small-file ownership check may still hash the
+    # tiny manifest JSON - what matters is the (potentially multi-GB)
+    # source model itself is never rehashed on the unchanged re-link.
+    assert source not in hash_calls
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    assert manifest.exists()
+
+
 def test_ollama_force_preserves_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
     """Force never turns an unproven manifest into an OMM-owned file."""
     source = tmp_path / "source.gguf"
