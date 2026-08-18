@@ -8,8 +8,18 @@ const base = "http://127.0.0.1:9000";
 // meaningless.
 const namespace = "demo-localfit-default-rtdb";
 
-async function request(path, method, body) {
-  const response = await fetch(`${base}/${path}.json?ns=${namespace}`, {
+// The RTDB emulator (unlike production) accepts arbitrary auth claims via
+// this query param with no real token/signature - it's how a script with
+// no real Firebase Auth account can still simulate `auth != null` and test
+// what the rules actually gate on. Every scenario below defaults to
+// authenticated, matching a real omm client after the anonymous-auth fix;
+// pass `auth: false` to specifically exercise the unauthenticated-write
+// rejection the fix introduced.
+const authOverride = `auth_variable_override=${encodeURIComponent(JSON.stringify({ uid: "test-uid" }))}`;
+
+async function request(path, method, body, { auth = true } = {}) {
+  const query = auth ? `ns=${namespace}&${authOverride}` : `ns=${namespace}`;
+  const response = await fetch(`${base}/${path}.json?${query}`, {
     method,
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -43,6 +53,13 @@ const valid = {
   cpu_threads: 8,
   num_batch: 512,
 };
+
+const unauthenticated = await request("telemetry", "POST", valid, { auth: false });
+assert.equal(
+  unauthenticated.ok,
+  false,
+  "telemetry unexpectedly accepted a write with no auth (auth != null must be required)",
+);
 
 const created = await request("telemetry", "POST", valid);
 assert.equal(created.ok, true, `valid schema 4 event was rejected (${created.status})`);
