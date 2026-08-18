@@ -2397,3 +2397,109 @@ def autoremove_engine(key: str) -> int:
         models_dir = koboldcpp_models_dir()
         return autoremove_custom_directory(models_dir) if models_dir is not None else 0
     return 0
+
+
+# --- LM Studio daemon-lifecycle public API --------------------------------
+
+
+def lmstudio_daemon_reachable() -> bool:
+    """True iff `lms server status` reports running. Mirrors
+    benchmark.ollama_daemon_reachable()'s role for the LM Studio path."""
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return False
+    status = _lmstudio_server_status(lms_path)
+    return status is not None and status.get("running") is True
+
+
+def lmstudio_server_port() -> int | None:
+    """Live port from `lms server status --json`, or None if not running.
+    Never assume the default 1234 - the port is user-configurable."""
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return None
+    status = _lmstudio_server_status(lms_path)
+    if status is None or not status.get("running"):
+        return None
+    return status.get("port")
+
+
+def start_lmstudio_daemon(timeout: float = 30.0) -> bool:
+    """Best-effort `lms server start`; True iff running after the call
+    (whether it was already running or freshly started)."""
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return False
+    return _start_lmstudio_server(lms_path, timeout=timeout)
+
+
+def stop_lmstudio_daemon() -> None:
+    """Best-effort `lms server stop`. Caller's responsibility to only call
+    this when omm itself started the daemon (mirrors
+    benchmark.stop_ollama_daemon's contract, but LM Studio's lifecycle is a
+    named background service, not a Popen omm owns directly - no handle to
+    pass back)."""
+    lms_path = _lms_cli_path()
+    if lms_path is not None:
+        _stop_lmstudio_server(lms_path)
+
+
+def resolve_lmstudio_model(repo_id: str | None, filename: str) -> dict | None:
+    """Resolve a linked model to its LM Studio ls entry (modelKey +
+    metadata), by the same path-matching _lmstudio_model_key already uses.
+    Returns None if `lms` is missing, the server is down, or no match is
+    found. Return shape:
+      {"model_key": str, "architecture": str | None,
+       "quantization_name": str | None, "quantization_bits": int | None,
+       "params_string": str | None, "max_context_length": int | None,
+       "trained_for_tool_use": bool}
+    """
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return None
+
+    models = _lmstudio_list_models(lms_path)
+    if models is None:
+        return None
+
+    publisher, repo = _lmstudio_publisher_repo(repo_id, filename)
+    expected_path = f"{publisher}/{repo}/{filename}"
+
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+
+        # Skip non-llm types (e.g., embedding models like mmproj)
+        if entry.get("type") != "llm":
+            continue
+
+        # Match by path
+        path = entry.get("path")
+        if isinstance(path, str) and path.replace("\\", "/") == expected_path:
+            model_key = entry.get("modelKey")
+            if not isinstance(model_key, str):
+                continue
+
+            # Extract metadata from the raw entry
+            return {
+                "model_key": model_key,
+                "architecture": entry.get("architecture"),
+                "quantization_name": entry.get("quantization"),
+                "quantization_bits": entry.get("quantizationBits"),
+                "params_string": entry.get("paramsString"),
+                "max_context_length": entry.get("maxContextLength"),
+                "trained_for_tool_use": entry.get("trainedForToolUse", False),
+            }
+
+    return None
+
+
+def unload_lmstudio_model(model_key: str) -> bool:
+    """Best-effort `lms unload`. Wraps _lms_unload, returns whether the
+    subprocess ran without raising (matches _lms_unload's soft-fail
+    contract - always True unless the CLI itself is missing)."""
+    lms_path = _lms_cli_path()
+    if lms_path is None:
+        return False
+    _lms_unload(lms_path, model_key)
+    return True
