@@ -73,7 +73,14 @@ from omm.downloader import (
 from omm.engines import RuntimeAdapterError, RuntimeModelRef, find_runtime_model
 from omm.engines.lmstudio import LMStudioAdapter
 from omm.engines.ollama import OllamaAdapter
-from omm.hardware import HardwareInfo, available_ram_gb, calculate_memory_budget, scan_hardware
+from omm.hardware import (
+    HardwareInfo,
+    WindowsCommitInfo,
+    available_ram_gb,
+    calculate_memory_budget,
+    scan_hardware,
+    windows_commit_info,
+)
 from omm.hashutil import sha256_file
 from omm.featurize import (
     candidate_active_parameter_count_billions,
@@ -2194,7 +2201,12 @@ def _guard_contribution_load(
     )
     if target_preloaded or estimate is None:
         return True, target_preloaded, estimate, sample.reserve_gb, None
-    plan = contribute_memory.plan_candidate_memory(estimate, fresh_hw, sample)
+    plan = contribute_memory.plan_candidate_memory(
+        estimate,
+        fresh_hw,
+        sample,
+        commit=windows_commit_info(),
+    )
     if plan.decision is contribute_memory.ContributionMemoryDecision.SAFE:
         return True, False, estimate, sample.reserve_gb, None
     reason = (
@@ -5275,12 +5287,38 @@ def _cleanup_stopped_contribution(filename: str) -> None:
         _cleanup_incomplete_install(filename)
 
 
+_BLOCK_REASON_TEXT = {
+    "committed_ram_exceeds_commit_limit": (
+        "required committed RAM exceeds the Windows commit limit"
+    ),
+    "committed_ram_exceeds_physical_capacity": (
+        "required committed RAM exceeds physical capacity"
+    ),
+    "runtime_buffers_exceed_physical_capacity": (
+        "required runtime buffers exceed physical capacity"
+    ),
+    "vram_exceeds_physical_capacity": "required VRAM exceeds this GPU",
+}
+
+
+def _memory_plan_reason_text(plan: contribute_memory.ContributionMemoryPlan) -> str:
+    """Phrase a non-SAFE plan in terms of the budget that actually ran out."""
+    if plan.decision is not contribute_memory.ContributionMemoryDecision.BLOCK:
+        return "runtime buffer memory is temporarily unavailable"
+    for reason in plan.reasons:
+        text = _BLOCK_REASON_TEXT.get(reason)
+        if text is not None:
+            return text
+    return "required memory exceeds this machine's capacity"
+
+
 def _contribute_candidate_memory_plan(
     candidate: dict,
     *,
     hw: HardwareInfo | None = None,
     residents: tuple[memory_guard_mod.ResidentModel, ...] | None = None,
     memory_sample: contribute_memory.AvailableMemorySample | None = None,
+    commit: WindowsCommitInfo | None = None,
     fetch_remote_metadata: bool = True,
 ) -> contribute_memory.ContributionMemoryPlan | None:
     """Plan a contribution load before any model bytes are downloaded.
@@ -5377,6 +5415,11 @@ def _contribute_candidate_memory_plan(
         memory_sample,
         reclaimable_ram_gb=reclaimable_ram,
         reclaimable_vram_gb=reclaimable_vram,
+        commit=(
+            windows_commit_info()
+            if commit is None and str(current_hw.os_name).strip().casefold() == "windows"
+            else commit
+        ),
     )
 
 
@@ -5636,14 +5679,22 @@ def _run_contribution_loop(
 
         memory_plan = _contribute_candidate_memory_plan(candidate)
         if memory_plan is not None and not opts.quiet:
-            console.print(
+            memory_message = (
                 "[muted]Memory preflight before download: "
                 f"committed RAM {memory_plan.estimate.committed_ram_gb:.2f} GiB; "
+                f"runtime buffers {memory_plan.runtime_buffer_required_gb:.2f} GiB; "
                 f"mmap-backed weights {memory_plan.estimate.mapped_weights_ram_gb:.2f} GiB; "
                 f"median available {memory_plan.sample.median_gb:.2f} GiB; "
+            )
+            if memory_plan.commit_available_gb is not None:
+                memory_message += (
+                    f"commit headroom {memory_plan.commit_available_gb:.2f} GiB; "
+                )
+            memory_message += (
                 f"emergency reserve {memory_plan.sample.reserve_gb:.2f} GiB; "
                 f"estimate source {memory_plan.estimate.source}.[/muted]"
             )
+            console.print(memory_message)
         if (
             memory_plan is not None
             and memory_plan.decision
@@ -5653,15 +5704,11 @@ def _run_contribution_loop(
             item.attempts += 1
             if item.attempts == 1:
                 stats.deferred_low_memory += 1
-            reason = (
-                "required committed RAM exceeds physical capacity"
-                if memory_plan.decision
-                is contribute_memory.ContributionMemoryDecision.BLOCK
-                else "runtime buffer memory is temporarily unavailable"
-            )
+            reason = _memory_plan_reason_text(memory_plan)
             err_console.print(
                 f"[warning]Deferring {candidate['filename']} before download: {reason}. "
                 f"Committed RAM estimate {memory_plan.estimate.committed_ram_gb:.1f} GiB, "
+                f"runtime buffers {memory_plan.runtime_buffer_required_gb:.1f} GiB, "
                 f"mapped weights {memory_plan.estimate.mapped_weights_ram_gb:.1f} GiB, "
                 f"median available {memory_plan.sample.median_gb:.1f} GiB.[/warning]"
             )

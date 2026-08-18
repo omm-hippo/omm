@@ -663,6 +663,7 @@ def test_report_telemetry_v9_labels_clean_contribution(isolated_omm_home, monkey
         context_length=1024,
         num_batch=128,
         gpu_offload_percent=0,
+        runtime_buffer_ram_gb=0.3,
     )
 
     cli._report_telemetry(
