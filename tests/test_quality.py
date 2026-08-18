@@ -1311,3 +1311,395 @@ def test_write_evidence_raises_quality_evaluation_error_on_write_failure(tmp_pat
         assert False, "expected QualityEvaluationError"
     except quality.QualityEvaluationError:
         pass
+
+
+# --- LM Studio engine parametrization ---------------------------------------
+#
+# Mirrors the Ollama test structure above. Every fake that stands in for
+# evaluate_model/unload_model here accepts **kwargs so the engine="ollama"
+# default-path tests above stay exercising the exact old call shape while
+# these exercise the new engine="lmstudio" branch.
+
+
+def test_generate_lmstudio_normalizes_response_to_ollama_shape(monkeypatch):
+    """The real /api/v0/chat/completions shape (verified live against LM
+    Studio 0.4.21) must normalize into exactly Ollama's
+    {"response", "eval_count", "eval_duration"} shape - the one place LM
+    Studio's own response format is allowed to matter."""
+    captured = {}
+
+    def fake_request(port, method, path, payload=None, timeout=quality.DEFAULT_GENERATION_TIMEOUT_SECONDS):
+        captured["port"] = port
+        captured["method"] = method
+        captured["path"] = path
+        captured["payload"] = payload
+        return {
+            "choices": [{"message": {"content": "FINAL: 42"}, "finish_reason": "stop"}],
+            "usage": {"completion_tokens": 54, "prompt_tokens": 40, "total_tokens": 94},
+            "stats": {
+                "tokens_per_second": 111.03,
+                "time_to_first_token": 0.083,
+                "generation_time": 0.5695,
+                "stop_reason": "eosFound",
+            },
+            "model_info": {"arch": "qwen2", "quant": "Q8_0"},
+        }
+
+    monkeypatch.setattr(quality, "_lmstudio_request_json", fake_request)
+    pack, _digest = quality.load_pack()
+
+    result = quality._generate_lmstudio("qwen2.5-0.5b-instruct", "hi", pack["generation"], 64, 1234)
+
+    assert result == {"response": "FINAL: 42", "eval_count": 54, "eval_duration": 569_500_000}
+    assert captured["port"] == 1234
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v0/chat/completions"
+    assert captured["payload"]["model"] == "qwen2.5-0.5b-instruct"
+    assert captured["payload"]["messages"] == [{"role": "user", "content": "hi"}]
+    assert captured["payload"]["max_tokens"] == 64
+    assert captured["payload"]["stream"] is False
+
+
+def test_generate_lmstudio_speed_feeds_tokens_per_second_unmodified(monkeypatch):
+    """_tokens_per_second (shared with the Ollama path) must derive the same
+    tokens/sec from the normalized fields without any lmstudio-specific
+    branch existing there."""
+    monkeypatch.setattr(
+        quality, "_lmstudio_request_json",
+        lambda *a, **k: {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 100},
+            "stats": {"generation_time": 2.0},
+        },
+    )
+    pack, _digest = quality.load_pack()
+
+    response = quality._generate_lmstudio("m", "hi", pack["generation"], 64, 1234)
+
+    assert quality._tokens_per_second(response) == 50.0
+
+
+def test_generate_lmstudio_num_predict_falls_back_to_pack_default(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        quality, "_lmstudio_request_json",
+        lambda port, method, path, payload=None, timeout=None: captured.update(payload)
+        or {"choices": [{"message": {"content": "ok"}}]},
+    )
+    pack, _digest = quality.load_pack()
+
+    quality._generate_lmstudio("m", "hi", pack["generation"], None, 1234)
+
+    assert captured["max_tokens"] == pack["generation"]["num_predict"]
+
+
+def test_generate_lmstudio_missing_port_is_ollama_unavailable():
+    pack, _digest = quality.load_pack()
+
+    with pytest.raises(quality.QualityEvaluationError) as excinfo:
+        quality._generate_lmstudio("m", "hi", pack["generation"], 64, None)
+
+    assert excinfo.value.failure_reason == quality.FAILURE_REASON_OLLAMA_UNAVAILABLE
+
+
+def test_generate_lmstudio_no_text_response_is_unknown(monkeypatch):
+    monkeypatch.setattr(quality, "_lmstudio_request_json", lambda *a, **k: {"choices": []})
+    pack, _digest = quality.load_pack()
+
+    with pytest.raises(quality.QualityEvaluationError) as excinfo:
+        quality._generate_lmstudio("m", "hi", pack["generation"], 64, 1234)
+
+    assert excinfo.value.failure_reason == quality.FAILURE_REASON_UNKNOWN
+
+
+def test_generate_lmstudio_omits_timing_fields_when_stats_missing(monkeypatch):
+    monkeypatch.setattr(
+        quality, "_lmstudio_request_json",
+        lambda *a, **k: {"choices": [{"message": {"content": "ok"}}]},
+    )
+    pack, _digest = quality.load_pack()
+
+    response = quality._generate_lmstudio("m", "hi", pack["generation"], 64, 1234)
+
+    assert response == {"response": "ok"}
+    assert quality._tokens_per_second(response) is None
+
+
+def test_lmstudio_request_json_classifies_connect_timeout_as_ollama_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        requests.Session, "request",
+        lambda *a, **k: (_ for _ in ()).throw(requests.exceptions.ConnectTimeout("no route")),
+    )
+    with pytest.raises(quality.QualityEvaluationError) as excinfo:
+        quality._lmstudio_request_json(1234, "POST", "/api/v0/chat/completions", {})
+    assert excinfo.value.failure_reason == quality.FAILURE_REASON_OLLAMA_UNAVAILABLE
+
+
+def test_lmstudio_request_json_classifies_read_timeout_as_generation_timeout(monkeypatch):
+    monkeypatch.setattr(
+        requests.Session, "request",
+        lambda *a, **k: (_ for _ in ()).throw(requests.exceptions.ReadTimeout("slow")),
+    )
+    with pytest.raises(quality.QualityEvaluationError) as excinfo:
+        quality._lmstudio_request_json(1234, "POST", "/api/v0/chat/completions", {})
+    assert excinfo.value.failure_reason == quality.FAILURE_REASON_GENERATION_TIMEOUT
+
+
+def test_model_metadata_lmstudio_maps_resolve_result_field_by_field():
+    lmstudio_model = {
+        "model_key": "qwen2.5-0.5b-instruct",
+        "architecture": "qwen2",
+        "quantization_name": "Q8_0",
+        "quantization_bits": 8,
+        "params_string": "0.5B",
+        "max_context_length": 32768,
+        "trained_for_tool_use": True,
+    }
+
+    metadata = quality._model_metadata(
+        "qwen2.5-0.5b-instruct", engine="lmstudio", lmstudio_model=lmstudio_model
+    )
+
+    assert metadata == {
+        "tag": "qwen2.5-0.5b-instruct",
+        "digest": None,
+        "size_bytes": None,
+        "format": None,
+        "family": "qwen2",
+        "parameter_size": "0.5B",
+        "quantization_level": "Q8_0",
+        "license": None,
+        "license_link": None,
+        "capabilities": ["tools"],
+        "is_moe": False,
+    }
+
+
+def test_model_metadata_lmstudio_without_tool_use_has_empty_capabilities():
+    metadata = quality._model_metadata(
+        "m", engine="lmstudio",
+        lmstudio_model={
+            "architecture": "qwen2", "quantization_name": None, "params_string": None,
+            "trained_for_tool_use": False,
+        },
+    )
+    assert metadata["capabilities"] == []
+
+
+def test_model_metadata_lmstudio_unresolved_is_transient_not_unfit():
+    with pytest.raises(quality.QualityEvaluationError) as excinfo:
+        quality._model_metadata("missing", engine="lmstudio", lmstudio_model=None)
+    assert excinfo.value.failure_reason == quality.FAILURE_REASON_MODEL_LOAD_FAILED
+    assert quality.outcome_for_failure_reason(excinfo.value.failure_reason) == "transient_error"
+
+
+def test_unload_model_lmstudio_delegates_to_linker(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        quality.linker, "unload_lmstudio_model", lambda model_key: calls.append(model_key) or True
+    )
+
+    assert quality.unload_model("qwen2.5-0.5b-instruct", engine="lmstudio") is True
+    assert calls == ["qwen2.5-0.5b-instruct"]
+
+
+def test_evaluate_model_lmstudio_without_resolved_model_is_transient():
+    pack, _digest = quality.load_pack()
+
+    with pytest.raises(quality.QualityEvaluationError) as excinfo:
+        quality.evaluate_model("missing-model", pack, engine="lmstudio", lmstudio_port=1234)
+
+    assert excinfo.value.failure_reason == quality.FAILURE_REASON_MODEL_LOAD_FAILED
+
+
+def test_evaluate_model_lmstudio_end_to_end_with_mocked_transport(monkeypatch):
+    """Full evaluate_model() run against a mocked LM Studio transport: real
+    accuracy scoring, real speed derivation, engine field set, and no
+    Ollama-only runtime_snapshot call (GPU-offload porting is out of
+    scope - see design non-goals)."""
+    pack, _digest = quality.load_pack()
+    template = pack["prompt_template"]
+    expected_by_prompt = {
+        template.format(question=item["question"]): item["expected"] for item in pack["items"]
+    }
+
+    def fake_request(port, method, path, payload=None, timeout=None):
+        assert port == 4321
+        assert path == "/api/v0/chat/completions"
+        prompt = payload["messages"][0]["content"]
+        answer = expected_by_prompt.get(prompt, "1")
+        return {
+            "choices": [{"message": {"content": f"FINAL: {answer}"}}],
+            "usage": {"completion_tokens": 10},
+            "stats": {"generation_time": 0.1},
+        }
+
+    monkeypatch.setattr(quality, "_lmstudio_request_json", fake_request)
+
+    result = quality.evaluate_model(
+        "qwen2.5-0.5b-instruct", pack, speed_runs=2,
+        engine="lmstudio", lmstudio_port=4321,
+        lmstudio_model={
+            "architecture": "qwen2", "quantization_name": "Q8_0", "params_string": "0.5B",
+            "trained_for_tool_use": False,
+        },
+    )
+
+    assert result["engine"] == "lmstudio"
+    assert result["family"] == "qwen2"
+    assert result["quantization_level"] == "Q8_0"
+    assert result["quality"]["accuracy"] == 1.0
+    assert result["speed"]["median_tokens_per_sec"] == 100.0
+    assert result["runtime"] is None
+
+
+def test_evaluate_tag_once_lmstudio_passes_engine_and_port_through(monkeypatch):
+    calls = []
+
+    def evaluator(
+        tag, pack, speed_runs=3, runtime_options=None, model_metadata=None,
+        *, engine="ollama", lmstudio_port=None, lmstudio_model=None,
+    ):
+        calls.append((tag, engine, lmstudio_port))
+        return {"tag": tag, "speed": {"median_tokens_per_sec": 10.0}, "quality": None, "runtime": None}
+
+    monkeypatch.setattr(quality, "evaluate_model", evaluator)
+    monkeypatch.setattr(
+        quality.tuning, "recommend_runtime_settings",
+        lambda hardware, metadata: type("Profile", (), {"ollama_options": {}})(),
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag, **kwargs: True)
+
+    result = quality._evaluate_tag_once(
+        "model-key", _hardware(), {"items": []}, speed_runs=3,
+        engine="lmstudio", lmstudio_port=4321,
+        lmstudio_model={
+            "architecture": "qwen2", "quantization_name": "Q8_0", "params_string": "0.5B",
+            "trained_for_tool_use": False,
+        },
+    )
+
+    assert result["outcome"] == "success"
+    assert calls == [("model-key", "lmstudio", 4321)]
+
+
+def test_collect_evidence_lmstudio_requires_lmstudio_models():
+    with pytest.raises(quality.QualityEvaluationError, match="lmstudio_models"):
+        quality.collect_evidence(["a"], _hardware(), engine="lmstudio")
+
+
+def test_collect_evidence_lmstudio_sets_engine_and_redacts_hardware_names(monkeypatch):
+    monkeypatch.setattr(quality.linker, "lmstudio_daemon_reachable", lambda: True)
+    monkeypatch.setattr(quality.linker, "lmstudio_server_port", lambda: 1234)
+    monkeypatch.setattr(
+        quality, "LMStudioAdapter",
+        lambda base_url: type(
+            "FakeAdapter", (), {"health": lambda self: type("H", (), {"version": "0.4.21"})()}
+        )(),
+    )
+    monkeypatch.setattr(
+        quality, "evaluate_model",
+        lambda tag, pack, speed_runs=3, **kwargs: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    unloaded = []
+    monkeypatch.setattr(
+        quality, "unload_model",
+        lambda tag, **kwargs: unloaded.append((tag, kwargs.get("engine"))) or True,
+    )
+
+    report = quality.collect_evidence(
+        ["qwen2.5-0.5b-instruct"], _hardware(), engine="lmstudio",
+        lmstudio_models={"qwen2.5-0.5b-instruct": {"architecture": "qwen2"}},
+    )
+
+    assert report["environment"]["engine"] == "lmstudio"
+    assert report["environment"]["engine_version"] == "0.4.21"
+    assert report["environment"]["ram_gb"] == 24
+    assert "private CPU name" not in json.dumps(report)
+    assert "private GPU name" not in json.dumps(report)
+    assert unloaded == [("qwen2.5-0.5b-instruct", "lmstudio")]
+
+
+def test_collect_evidence_lmstudio_recovers_from_daemon_crash_mid_batch(monkeypatch):
+    """LM Studio equivalent of test_collect_evidence_recovers_from_daemon_crash_mid_batch:
+    daemon found dead before the first tag, restart succeeds immediately -
+    the batch proceeds and both tags still get benchmarked."""
+    reachable_calls = {"count": 0}
+
+    def fake_reachable():
+        reachable_calls["count"] += 1
+        return reachable_calls["count"] != 1
+
+    monkeypatch.setattr(quality.linker, "lmstudio_daemon_reachable", fake_reachable)
+    monkeypatch.setattr(quality.linker, "start_lmstudio_daemon", lambda: True)
+    monkeypatch.setattr(quality.linker, "lmstudio_server_port", lambda: 1234)
+    monkeypatch.setattr(
+        quality, "evaluate_model",
+        lambda tag, pack, speed_runs=3, **kwargs: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag, **kwargs: True)
+    events = []
+
+    report = quality.collect_evidence(
+        ["model:one", "model:two"], _hardware(), engine="lmstudio",
+        lmstudio_models={"model:one": {}, "model:two": {}},
+        on_daemon_event=events.append,
+    )
+
+    assert [m["tag"] for m in report["models"]] == ["model:one", "model:two"]
+    assert any("restart" in event.lower() for event in events)
+    assert any("LM Studio" in event for event in events)
+
+
+def test_collect_evidence_lmstudio_gives_up_after_max_daemon_restart_failures(monkeypatch):
+    monkeypatch.setattr(quality.linker, "lmstudio_daemon_reachable", lambda: False)
+    monkeypatch.setattr(quality.linker, "start_lmstudio_daemon", lambda: False)
+    monkeypatch.setattr(quality.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        quality, "evaluate_model",
+        lambda tag, pack, speed_runs=3, **kwargs: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag, **kwargs: True)
+    events = []
+
+    report = quality.collect_evidence(
+        ["model:one", "model:two"], _hardware(), engine="lmstudio",
+        lmstudio_models={"model:one": {}, "model:two": {}},
+        on_daemon_event=events.append,
+    )
+
+    assert report["models"] == []
+    assert any("won't come back" in event for event in events)
+
+
+def test_collect_evidence_lmstudio_confirm_performance_timeout_is_a_noop(monkeypatch):
+    """confirm_performance_timeout's second-attempt confirmation flow is
+    Ollama-only (it depends on ensure_model_unloaded's /api/ps polling,
+    which has no LM Studio equivalent) - a generation_timeout on the LM
+    Studio path must stay a single unconfirmed transient_error rather than
+    invoking that Ollama-only machinery."""
+    monkeypatch.setattr(quality.linker, "lmstudio_daemon_reachable", lambda: True)
+    monkeypatch.setattr(quality.linker, "lmstudio_server_port", lambda: 1234)
+
+    def timing_out(tag, pack, speed_runs=3, **kwargs):
+        raise quality.QualityEvaluationError(
+            "timed out", failure_reason=quality.FAILURE_REASON_GENERATION_TIMEOUT
+        )
+
+    monkeypatch.setattr(quality, "evaluate_model", timing_out)
+    monkeypatch.setattr(quality, "unload_model", lambda tag, **kwargs: True)
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("_confirm_generation_timeout must not run for engine='lmstudio'")
+
+    monkeypatch.setattr(quality, "_confirm_generation_timeout", must_not_run)
+
+    report = quality.collect_evidence(
+        ["a"], _hardware(), engine="lmstudio",
+        lmstudio_models={"a": {}}, confirm_performance_timeout=True,
+    )
+
+    entry = report["models"][0]
+    assert entry["outcome"] == "transient_error"
+    assert entry["failure_reason"] == "generation_timeout"
+    assert "confirmation_attempts" not in entry

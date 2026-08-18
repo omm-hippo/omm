@@ -24,7 +24,7 @@ def test_import_yes_flag_skips_prompts_without_a_tty(isolated_omm_home, monkeypa
     monkeypatch.setattr(
         cli.scan_import,
         "adopt_group",
-        lambda g: adopted.append(g.sha256) or SimpleNamespace(filename="model.gguf", bytes_saved=0),
+        lambda g: adopted.append(g.sha256) or SimpleNamespace(filename="model.gguf", bytes_saved=0, link_warnings=[]),
     )
     monkeypatch.setattr(cli.registry, "load_registry", lambda: {"model.gguf": {}})
 
@@ -42,7 +42,7 @@ def test_import_yes_flag_before_subcommand_skips_prompts(isolated_omm_home, monk
     monkeypatch.setattr(
         cli.scan_import,
         "adopt_group",
-        lambda g: adopted.append(g.sha256) or SimpleNamespace(filename="model.gguf", bytes_saved=0),
+        lambda g: adopted.append(g.sha256) or SimpleNamespace(filename="model.gguf", bytes_saved=0, link_warnings=[]),
     )
     monkeypatch.setattr(cli.registry, "load_registry", lambda: {"model.gguf": {}})
 
@@ -74,7 +74,7 @@ def test_import_quiet_suppresses_status_lines_but_keeps_the_summary(isolated_omm
     monkeypatch.setattr(
         cli.scan_import,
         "adopt_group",
-        lambda g: SimpleNamespace(filename="model.gguf", bytes_saved=0),
+        lambda g: SimpleNamespace(filename="model.gguf", bytes_saved=0, link_warnings=[]),
     )
     monkeypatch.setattr(cli.registry, "load_registry", lambda: {"model.gguf": {}})
 
@@ -100,7 +100,7 @@ def test_import_continues_after_one_group_fails(isolated_omm_home, monkeypatch):
         if g.sha256 == "baadf00d":
             raise OSError("disk full")
         adopted.append(g.sha256)
-        return SimpleNamespace(filename="model.gguf", bytes_saved=0)
+        return SimpleNamespace(filename="model.gguf", bytes_saved=0, link_warnings=[])
 
     monkeypatch.setattr(cli.scan_import, "adopt_group", fake_adopt)
     monkeypatch.setattr(cli.registry, "load_registry", lambda: {"model.gguf": {}})

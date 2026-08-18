@@ -326,11 +326,115 @@ def test_benchmark_numeric_arg_without_ollama_tag(isolated_omm_home, monkeypatch
 def test_benchmark_reports_missing_ollama_as_missing(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
     monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
+    # omm benchmark now falls back to LM Studio before giving up entirely
+    # (_select_benchmark_engine), so its absence needs to be explicit here
+    # too or this test would depend on whether LM Studio happens to be
+    # installed on the machine running the test suite.
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: None)
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: False)
 
     result = runner.invoke(cli.app, ["benchmark", "small:latest"])
 
     assert result.exit_code == 1
-    assert "not installed" in result.stderr
+    assert "Neither Ollama nor LM Studio" in result.stderr
+
+
+def test_select_benchmark_engine_prefers_ollama_when_available(monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama"))
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: "/some/lms")
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: True)
+
+    assert cli._select_benchmark_engine() == "ollama"
+
+
+def test_select_benchmark_engine_falls_back_to_lmstudio(monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: "/some/lms")
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: False)
+
+    assert cli._select_benchmark_engine() == "lmstudio"
+
+
+def test_select_benchmark_engine_none_when_neither_available(monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: None)
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: False)
+
+    assert cli._select_benchmark_engine() is None
+
+
+def test_benchmark_declines_starting_lmstudio_when_prompted(isolated_omm_home, monkeypatch):
+    """Mirrors test_benchmark_declines_starting_daemon_when_prompted for the
+    LM Studio fallback path: Ollama entirely absent, LM Studio installed but
+    its server isn't running, user declines the start prompt."""
+    config.update_config(onboarding_completed=True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: "/some/lms")
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(
+        cli.linker,
+        "start_lmstudio_daemon",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not start")),
+    )
+
+    result = runner.invoke(cli.app, ["benchmark", "some-model-key"])
+
+    assert result.exit_code == 1
+    assert "requires LM Studio's local server" in result.stderr
+
+
+def test_benchmark_lmstudio_expands_all_and_rejects_unknown_model(isolated_omm_home, monkeypatch):
+    """LM Studio's 'all' expansion and free-form tag validation go through
+    _lmstudio_installed_models instead of quality_mod.list_benchmarkable_tags
+    - exercise both the expansion and the unknown-model rejection path."""
+    config.update_config(onboarding_completed=True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: None)
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: "/some/lms")
+    monkeypatch.setattr(
+        cli.linker,
+        "_lmstudio_list_models",
+        lambda lms_path: [
+            {
+                "type": "llm",
+                "modelKey": "qwen2.5-0.5b-instruct",
+                "architecture": "qwen2",
+                "quantization": {"name": "Q8_0", "bits": 8},
+                "paramsString": "630M",
+                "maxContextLength": 32768,
+                "trainedForToolUse": True,
+            },
+            {"type": "embedding", "modelKey": "nomic-embed-text"},
+        ],
+    )
+
+    result = runner.invoke(cli.app, ["benchmark", "does-not-exist"])
+    assert result.exit_code == 1
+    assert "Not installed in LM Studio" in result.stderr
+
+    seen = {}
+
+    def fake_collect_evidence(models, *a, engine=None, lmstudio_models=None, **k):
+        seen["models"] = models
+        seen["engine"] = engine
+        seen["lmstudio_models"] = lmstudio_models
+        raise cli.quality_mod.QualityEvaluationError("stop here, we only care about the args")
+
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
+
+    runner.invoke(cli.app, ["benchmark", "all"])
+
+    assert seen["models"] == ["qwen2.5-0.5b-instruct"]
+    assert seen["engine"] == "lmstudio"
+    assert "qwen2.5-0.5b-instruct" in seen["lmstudio_models"]
+    assert "nomic-embed-text" not in seen["lmstudio_models"]
 
 
 def test_benchmark_declines_starting_daemon_when_prompted(isolated_omm_home, monkeypatch):
@@ -528,7 +632,7 @@ def test_confirm_performance_timeout_flag_is_forwarded_to_collect_evidence(isola
 
     def fake_collect_evidence(
         models, hw, pack_path=None, speed_runs=3, confirm_performance_timeout=False,
-        on_model_start=None, on_daemon_event=None,
+        on_model_start=None, on_daemon_event=None, engine="ollama", lmstudio_models=None,
     ):
         seen["confirm_performance_timeout"] = confirm_performance_timeout
         return _full_report()
@@ -549,7 +653,7 @@ def test_confirm_performance_timeout_flag_defaults_to_false(isolated_omm_home, m
 
     def fake_collect_evidence(
         models, hw, pack_path=None, speed_runs=3, confirm_performance_timeout=False,
-        on_model_start=None, on_daemon_event=None,
+        on_model_start=None, on_daemon_event=None, engine="ollama", lmstudio_models=None,
     ):
         seen["confirm_performance_timeout"] = confirm_performance_timeout
         return _full_report()
