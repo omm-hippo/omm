@@ -816,6 +816,142 @@ def test_report_telemetry_v9_labels_clean_contribution(isolated_omm_home, monkey
     assert event["num_batch"] == 128
 
 
+_LMSTUDIO_RUNTIME_KEYS = (
+    "runtime_profile",
+    "context_length",
+    "gpu_offload_percent",
+    "cpu_threads",
+    "num_batch",
+)
+
+
+def _lmstudio_report(monkeypatch, sent, **overrides):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
+    monkeypatch.setattr(
+        cli.telemetry,
+        "send_event",
+        lambda event, force=False: sent.append(event) or True,
+    )
+    kwargs = {
+        "size_bytes": 4 * 1024**3,
+        "sample_count": 3,
+        "speed_min": 100.0,
+        "speed_max": 106.0,
+        "model_metadata": {"parameter_size": "0.5B", "quantization_level": "Q4_K_M"},
+        "runtime": None,
+        "engine_version": "0.4.21",
+        "engine": "lmstudio",
+    }
+    kwargs.update(overrides)
+    cli._report_telemetry("qwen2.5-0.5b-instruct", None, 103.2, **kwargs)
+
+
+def test_lmstudio_benchmark_reports_the_full_v8_metadata_it_can_observe(
+    isolated_omm_home, monkeypatch
+):
+    sent = []
+    _lmstudio_report(monkeypatch, sent)
+
+    event = sent[0]
+    assert event["benchmark_version"] == 8
+    assert event["engine"] == "lmstudio"
+    assert event["outcome"] == "success"
+    assert event["engine_version"] == "0.4.21"
+    assert event["parameter_count_b"] == 0.5
+    assert event["quant_bits"] == 4.0
+    assert event["cpu_score"] == 5600.0
+    assert event["cpu_arch"]
+
+
+def test_lmstudio_benchmark_omits_the_runtime_block_it_cannot_measure(
+    isolated_omm_home, monkeypatch
+):
+    sent = []
+    _lmstudio_report(monkeypatch, sent)
+
+    assert [key for key in _LMSTUDIO_RUNTIME_KEYS if key in sent[0]] == []
+
+
+def test_lmstudio_benchmark_ignores_an_ollama_shaped_runtime_snapshot(
+    isolated_omm_home, monkeypatch
+):
+    """A caller handing LM Studio an Ollama runtime dict must not turn
+    those numbers into a claim about how LM Studio actually ran."""
+    sent = []
+    _lmstudio_report(
+        monkeypatch,
+        sent,
+        runtime={
+            "runtime_profile": "explicit_ollama_options",
+            "context_length": 4096,
+            "gpu_offload_percent": 100,
+            "cpu_threads": 8,
+            "num_batch": 512,
+        },
+    )
+
+    assert [key for key in _LMSTUDIO_RUNTIME_KEYS if key in sent[0]] == []
+
+
+def test_lmstudio_benchmark_stays_on_the_v4_shape_without_an_engine_version(
+    isolated_omm_home, monkeypatch
+):
+    sent = []
+    _lmstudio_report(monkeypatch, sent, engine_version=None)
+
+    assert sent[0]["benchmark_version"] == 4
+
+
+def test_lmstudio_benchmark_never_claims_the_contribute_v1_profile(
+    isolated_omm_home, monkeypatch
+):
+    """contribute-v1 asserts a fixed context/batch configuration LM Studio
+    never applies, so a memory-measured LM Studio run stops at v8."""
+    estimate = contribute_memory.ContributionMemoryEstimate(
+        mapped_weights_ram_gb=0.75,
+        committed_ram_gb=0.3,
+        required_vram_gb=0.0,
+        kv_cache_gb=0.1,
+        compute_buffer_gb=0.1,
+        runtime_overhead_gb=0.1,
+        source="gguf_header",
+        confidence="medium",
+        context_length=1024,
+        num_batch=128,
+        gpu_offload_percent=0,
+        runtime_buffer_ram_gb=0.3,
+    )
+    sent = []
+    _lmstudio_report(
+        monkeypatch,
+        sent,
+        speed_samples=[100.0, 103.2, 106.0],
+        memory_measurement={
+            "ram_available_before_gb": 2.2,
+            "ram_available_min_gb": 2.0,
+            "ram_available_after_gb": 2.1,
+            "memory_pressure_observed": False,
+        },
+        memory_estimate=estimate,
+    )
+
+    event = sent[0]
+    assert event["benchmark_version"] == 8
+    assert "measurement_profile" not in event
+    assert "memory_estimate_source" not in event
+
+
+def test_ollama_benchmark_still_falls_back_when_the_runtime_is_unmeasured(
+    isolated_omm_home, monkeypatch
+):
+    """The LM Studio relaxation must not loosen Ollama: without a
+    /api/ps-confirmed runtime snapshot, Ollama still drops to v4."""
+    sent = []
+    _lmstudio_report(monkeypatch, sent, engine="ollama", engine_version="0.32.1")
+
+    assert sent[0]["benchmark_version"] == 4
+
+
 def test_report_failure_telemetry_v8_sends_chip_scores_not_raw_names(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
     sent = []
