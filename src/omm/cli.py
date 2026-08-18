@@ -75,10 +75,11 @@ from omm.engines.lmstudio import LMStudioAdapter
 from omm.engines.ollama import OllamaAdapter
 from omm.hardware import (
     HardwareInfo,
-    available_commit_gb,
+    WindowsCommitInfo,
     available_ram_gb,
     calculate_memory_budget,
     scan_hardware,
+    windows_commit_info,
 )
 from omm.hashutil import sha256_file
 from omm.featurize import (
@@ -2204,7 +2205,7 @@ def _guard_contribution_load(
         estimate,
         fresh_hw,
         sample,
-        commit_available_gb=available_commit_gb(),
+        commit=windows_commit_info(),
     )
     if plan.decision is contribute_memory.ContributionMemoryDecision.SAFE:
         return True, False, estimate, sample.reserve_gb, None
@@ -5286,13 +5287,38 @@ def _cleanup_stopped_contribution(filename: str) -> None:
         _cleanup_incomplete_install(filename)
 
 
+_BLOCK_REASON_TEXT = {
+    "committed_ram_exceeds_commit_limit": (
+        "required committed RAM exceeds the Windows commit limit"
+    ),
+    "committed_ram_exceeds_physical_capacity": (
+        "required committed RAM exceeds physical capacity"
+    ),
+    "runtime_buffers_exceed_physical_capacity": (
+        "required runtime buffers exceed physical capacity"
+    ),
+    "vram_exceeds_physical_capacity": "required VRAM exceeds this GPU",
+}
+
+
+def _memory_plan_reason_text(plan: contribute_memory.ContributionMemoryPlan) -> str:
+    """Phrase a non-SAFE plan in terms of the budget that actually ran out."""
+    if plan.decision is not contribute_memory.ContributionMemoryDecision.BLOCK:
+        return "runtime buffer memory is temporarily unavailable"
+    for reason in plan.reasons:
+        text = _BLOCK_REASON_TEXT.get(reason)
+        if text is not None:
+            return text
+    return "required memory exceeds this machine's capacity"
+
+
 def _contribute_candidate_memory_plan(
     candidate: dict,
     *,
     hw: HardwareInfo | None = None,
     residents: tuple[memory_guard_mod.ResidentModel, ...] | None = None,
     memory_sample: contribute_memory.AvailableMemorySample | None = None,
-    commit_headroom_gb: float | None = None,
+    commit: WindowsCommitInfo | None = None,
     fetch_remote_metadata: bool = True,
 ) -> contribute_memory.ContributionMemoryPlan | None:
     """Plan a contribution load before any model bytes are downloaded.
@@ -5389,11 +5415,10 @@ def _contribute_candidate_memory_plan(
         memory_sample,
         reclaimable_ram_gb=reclaimable_ram,
         reclaimable_vram_gb=reclaimable_vram,
-        commit_available_gb=(
-            available_commit_gb()
-            if commit_headroom_gb is None
-            and str(current_hw.os_name).strip().casefold() == "windows"
-            else commit_headroom_gb
+        commit=(
+            windows_commit_info()
+            if commit is None and str(current_hw.os_name).strip().casefold() == "windows"
+            else commit
         ),
     )
 
@@ -5679,12 +5704,7 @@ def _run_contribution_loop(
             item.attempts += 1
             if item.attempts == 1:
                 stats.deferred_low_memory += 1
-            reason = (
-                "required committed RAM exceeds physical capacity"
-                if memory_plan.decision
-                is contribute_memory.ContributionMemoryDecision.BLOCK
-                else "runtime buffer memory is temporarily unavailable"
-            )
+            reason = _memory_plan_reason_text(memory_plan)
             err_console.print(
                 f"[warning]Deferring {candidate['filename']} before download: {reason}. "
                 f"Committed RAM estimate {memory_plan.estimate.committed_ram_gb:.1f} GiB, "

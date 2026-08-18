@@ -62,10 +62,23 @@ def available_ram_gb() -> float:
     return psutil.virtual_memory().available / (1024**3)
 
 
-def _commit_headroom_gb(
+@dataclass(frozen=True)
+class WindowsCommitInfo:
+    """System-wide Windows commit counters, in GiB.
+
+    ``available_gb`` is headroom a new allocation can take right now.
+    ``limit_gb`` is the whole configured budget - RAM plus the current
+    pagefile - and therefore what a candidate can never exceed.
+    """
+
+    available_gb: float
+    limit_gb: float
+
+
+def _windows_commit_info(
     commit_total_pages: int, commit_limit_pages: int, page_size_bytes: int
-) -> float | None:
-    """Convert Windows system commit counters to immediately usable commit.
+) -> WindowsCommitInfo | None:
+    """Convert Windows system commit counters to GiB.
 
     This must remain separate from ``psutil.virtual_memory().available``:
     physical pages available for reuse and pagefile-backed commit capacity are
@@ -84,14 +97,17 @@ def _commit_headroom_gb(
         or page_size_bytes <= 0
     ):
         return None
-    return (commit_limit_pages - commit_total_pages) * page_size_bytes / (1024**3)
+    return WindowsCommitInfo(
+        available_gb=(commit_limit_pages - commit_total_pages) * page_size_bytes / (1024**3),
+        limit_gb=commit_limit_pages * page_size_bytes / (1024**3),
+    )
 
 
-def available_commit_gb() -> float | None:
-    """Return current system-wide Windows commit headroom in GiB.
+def windows_commit_info() -> WindowsCommitInfo | None:
+    """Return the current system-wide Windows commit counters.
 
     ``CommitLimit - CommitTotal`` is capacity newly committed pages may use.
-    Return ``None`` when Windows cannot provide the counter, so callers retain
+    Return ``None`` when Windows cannot provide the counters, so callers retain
     their portable physical-memory fallback instead of assuming capacity.
     """
     if platform.system() != "Windows":
@@ -131,7 +147,7 @@ def available_commit_gb() -> float | None:
         get_performance_info.restype = wintypes.BOOL
         if not get_performance_info(ctypes.byref(info), info.cb):
             return None
-        return _commit_headroom_gb(info.CommitTotal, info.CommitLimit, info.PageSize)
+        return _windows_commit_info(info.CommitTotal, info.CommitLimit, info.PageSize)
     except (AttributeError, OSError):
         return None
 

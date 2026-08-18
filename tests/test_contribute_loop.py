@@ -97,6 +97,7 @@ def test_safe_memory_plan_is_reported_before_install(isolated_omm_home, monkeypa
             ),
             runtime_buffer_required_gb=0.31,
             commit_available_gb=8.0,
+            reasons=(),
             sample=SimpleNamespace(median_gb=1.2, reserve_gb=0.5),
         ),
     )
@@ -159,6 +160,7 @@ def test_low_memory_candidate_is_skipped_before_download(isolated_omm_home, monk
             ),
             runtime_buffer_required_gb=1.2,
             commit_available_gb=None,
+            reasons=("committed_ram_exceeds_physical_capacity",),
             sample=SimpleNamespace(median_gb=0.0, reserve_gb=0.5),
         ),
     )
@@ -200,6 +202,7 @@ def test_real_queue_contract_bounds_memory_deferrals(isolated_omm_home, monkeypa
             ),
             runtime_buffer_required_gb=0.5,
             commit_available_gb=None,
+            reasons=("committed_ram_temporarily_unavailable",),
             sample=SimpleNamespace(median_gb=0.2, reserve_gb=0.5),
         )
 

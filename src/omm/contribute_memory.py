@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Mapping, Sequence
 
-from omm.hardware import HardwareInfo
+from omm.hardware import HardwareInfo, WindowsCommitInfo
 
 GIB = 1024**3
 MIB = 1024**2
@@ -69,19 +69,14 @@ class ContributionMemoryEstimate:
     context_length: int
     num_batch: int
     gpu_offload_percent: int
-
-    @property
-    def runtime_buffer_ram_gb(self) -> float:
-        """Host RAM that must be resident for fixed-profile inference.
-
-        Model weights are deliberately excluded. On Windows Ollama accounts
-        them as committed memory but can page them; physical availability must
-        protect the runtime buffers, while commit capacity protects allocation.
-        """
-        return min(
-            self.committed_ram_gb,
-            self.kv_cache_gb + self.compute_buffer_gb + self.runtime_overhead_gb,
-        )
+    # Host RAM that must stay resident for fixed-profile inference: KV cache,
+    # compute buffers and runtime base, minus whatever the accelerator holds.
+    # Model weights are deliberately excluded. Windows Ollama accounts them as
+    # committed memory but can page them, so physical availability protects the
+    # buffers while commit capacity protects the allocation. This is recorded at
+    # estimate time rather than derived from committed_ram_gb, whose composition
+    # varies with mmap and GPU offload.
+    runtime_buffer_ram_gb: float
 
     @property
     def resident_ram_gb(self) -> float:
@@ -96,6 +91,7 @@ class ContributionMemoryPlan:
     allocation_available_gb: float
     residency_available_gb: float
     commit_available_gb: float | None
+    commit_limit_gb: float | None
     runtime_buffer_required_gb: float
     vram_available_gb: float | None
     reasons: tuple[str, ...]
@@ -248,6 +244,7 @@ def estimate_candidate_memory(
     if hardware.unified_memory or hardware.vram_total_gb is None:
         mapped_ram = weights_gb if mmap_weights else 0.0
         committed_ram = buffer_gb + runtime_gb + (0.0 if mmap_weights else weights_gb)
+        runtime_buffer_ram = buffer_gb + runtime_gb
         required_vram = 0.0
     else:
         gpu_fraction = gpu_offload_percent / 100.0
@@ -258,11 +255,11 @@ def estimate_candidate_memory(
         # are offloaded. Count the full buffers in VRAM for allocation safety;
         # retain the runtime base on RAM for host orchestration/staging.
         required_vram = gpu_weights + (buffer_gb if gpu_fraction > 0 else 0.0)
+        host_buffer_gb = buffer_gb if gpu_fraction < 1 else 0.0
         committed_ram = (
-            runtime_gb
-            + (buffer_gb if gpu_fraction < 1 else 0.0)
-            + (0.0 if mmap_weights else cpu_weights)
+            runtime_gb + host_buffer_gb + (0.0 if mmap_weights else cpu_weights)
         )
+        runtime_buffer_ram = runtime_gb + host_buffer_gb
 
     return ContributionMemoryEstimate(
         mapped_weights_ram_gb=mapped_ram,
@@ -276,6 +273,7 @@ def estimate_candidate_memory(
         context_length=context_length,
         num_batch=num_batch,
         gpu_offload_percent=gpu_offload_percent,
+        runtime_buffer_ram_gb=runtime_buffer_ram,
     )
 
 
@@ -286,17 +284,21 @@ def plan_candidate_memory(
     *,
     reclaimable_ram_gb: float = 0.0,
     reclaimable_vram_gb: float = 0.0,
-    commit_available_gb: float | None = None,
+    commit: WindowsCommitInfo | None = None,
 ) -> ContributionMemoryPlan:
+    if commit is not None:
+        values = (commit.available_gb, commit.limit_gb)
+        if not all(math.isfinite(value) and value >= 0 for value in values):
+            raise ValueError("commit counters must be finite and non-negative")
+        if commit.available_gb > commit.limit_gb:
+            raise ValueError("commit headroom cannot exceed the commit limit")
     physical_available = max(0.0, sample.median_gb - sample.reserve_gb) + max(
         0.0, reclaimable_ram_gb
     )
     is_windows = str(getattr(hardware, "os_name", "")).strip().casefold() == "windows"
-    use_commit_headroom = is_windows and commit_available_gb is not None
-    if commit_available_gb is not None and (not math.isfinite(commit_available_gb) or commit_available_gb < 0):
-        raise ValueError("commit_available_gb must be finite and non-negative")
+    use_commit_headroom = is_windows and commit is not None
     allocation_available = (
-        max(0.0, commit_available_gb - sample.reserve_gb) + max(0.0, reclaimable_ram_gb)
+        max(0.0, commit.available_gb - sample.reserve_gb) + max(0.0, reclaimable_ram_gb)
         if use_commit_headroom
         else physical_available
     )
@@ -306,12 +308,24 @@ def plan_candidate_memory(
 
     total_ram_available = max(0.0, hardware.ram_total_gb - sample.reserve_gb)
     ram_allocation_fits_now = estimate.committed_ram_gb <= allocation_available
-    # When Windows reports commit headroom, it is the authoritative allocation
-    # budget. Its total limit can grow with managed pagefiles, so lack of
-    # current headroom is deferred rather than declared physically impossible.
-    ram_allocation_possible = True if use_commit_headroom else estimate.committed_ram_gb <= total_ram_available
+    # When Windows reports commit counters they are the authoritative allocation
+    # budget, so the physical-capacity test would be the wrong denominator. Busy
+    # headroom only defers; exceeding the whole commit limit blocks. A
+    # system-managed pagefile can raise that limit later, but a candidate that
+    # needs more than RAM plus the entire current pagefile would thrash long
+    # before it produced a usable measurement.
+    if use_commit_headroom:
+        ram_allocation_possible = estimate.committed_ram_gb <= max(
+            0.0, commit.limit_gb - sample.reserve_gb
+        )
+    else:
+        ram_allocation_possible = estimate.committed_ram_gb <= total_ram_available
     if not ram_allocation_possible:
-        reasons.append("committed_ram_exceeds_physical_capacity")
+        reasons.append(
+            "committed_ram_exceeds_commit_limit"
+            if use_commit_headroom
+            else "committed_ram_exceeds_physical_capacity"
+        )
     elif not ram_allocation_fits_now:
         reasons.append("committed_ram_temporarily_unavailable")
 
@@ -355,7 +369,8 @@ def plan_candidate_memory(
         sample=sample,
         allocation_available_gb=allocation_available,
         residency_available_gb=residency_available,
-        commit_available_gb=commit_available_gb if use_commit_headroom else None,
+        commit_available_gb=commit.available_gb if use_commit_headroom else None,
+        commit_limit_gb=commit.limit_gb if use_commit_headroom else None,
         runtime_buffer_required_gb=runtime_buffer_required,
         vram_available_gb=vram_available,
         reasons=tuple(reasons),

@@ -4,9 +4,12 @@ from types import SimpleNamespace
 from omm import hardware
 
 
-def test_commit_headroom_uses_commit_limit_not_physical_availability():
-    assert hardware._commit_headroom_gb(3_000_000, 5_000_000, 4096) == 7.62939453125
-    assert hardware._commit_headroom_gb(5, 4, 4096) is None
+def test_commit_counters_report_both_headroom_and_the_whole_limit():
+    info = hardware._windows_commit_info(3_000_000, 5_000_000, 4096)
+    assert info.available_gb == 7.62939453125
+    assert info.limit_gb == 19.073486328125
+    # CommitTotal above CommitLimit is incoherent; refuse to guess.
+    assert hardware._windows_commit_info(5, 4, 4096) is None
 
 
 def test_available_commit_returns_none_off_windows_without_touching_win32(monkeypatch):
@@ -18,7 +21,7 @@ def test_available_commit_returns_none_off_windows_without_touching_win32(monkey
     """
     monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
 
-    assert hardware.available_commit_gb() is None
+    assert hardware.windows_commit_info() is None
 
 
 def test_linux_scan_uses_cpu_model_and_core_counts_not_architecture(monkeypatch):
