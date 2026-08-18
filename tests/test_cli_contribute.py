@@ -1,3 +1,6 @@
+import json
+from datetime import datetime, timedelta, timezone
+
 import requests
 import pytest
 from types import SimpleNamespace
@@ -639,3 +642,94 @@ def test_contribute_skips_always_warning_once_acknowledged(isolated_omm_home, mo
     assert result.exit_code == 0, result.stdout
     assert "without asking each time" not in result.stdout
     assert confirms == ["Start contributing compute now?"]
+
+
+def _seed_cooled_down_candidate(ref, filename, reason="memory_pressure_cancelled"):
+    for _ in range(cli.benchmark_history.MACHINE_FAILURE_COOLDOWN_STREAK):
+        cli.benchmark_history.record_benchmark_failure(
+            ref, repo_id="o", filename=filename, reason=reason, engine="ollama"
+        )
+
+
+def test_candidate_in_failure_cooldown_is_announced_and_held_out_of_the_queue(
+    isolated_omm_home, monkeypatch
+):
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    _seed_cooled_down_candidate("huggingface:o:a.gguf", "a.gguf")
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url, *a, **k: (
+            {
+                "trees": [{}],
+                "candidates": [
+                    {"repo_id": "o", "filename": "a.gguf"},
+                    {"repo_id": "o", "filename": "b.gguf"},
+                ],
+            },
+            False,
+        ),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
+    queues = []
+
+    def fake_loop(queue, *a, **k):
+        queues.append(queue)
+        return cli._ContributionStats(benchmarked=[])
+
+    monkeypatch.setattr(cli, "_run_contribution_loop", fake_loop)
+    monkeypatch.setattr(cli, "autoremove", lambda: None)
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Skipping a.gguf" in result.stdout
+    assert "memory_pressure_cancelled" in result.stdout
+    assert queues[0].excluded_refs == {"huggingface:o:a.gguf"}
+    # Never tried this session, so never counted as covered by it.
+    assert queues[0].history_refs == set()
+
+
+def test_candidate_whose_cooldown_has_lapsed_is_offered_again(isolated_omm_home, monkeypatch):
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    _seed_cooled_down_candidate("huggingface:o:a.gguf", "a.gguf")
+    history = isolated_omm_home / "benchmark_history.json"
+    data = json.loads(history.read_text())
+    stale = datetime.now(timezone.utc) - timedelta(
+        hours=cli.benchmark_history.MACHINE_FAILURE_COOLDOWN_HOURS + 1
+    )
+    data["failures"]["huggingface:o:a.gguf"]["last_machine_failure_at"] = stale.isoformat()
+    history.write_text(json.dumps(data))
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url, *a, **k: (
+            {"trees": [{}], "candidates": [{"repo_id": "o", "filename": "a.gguf"}]},
+            False,
+        ),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
+    queues = []
+
+    def fake_loop(queue, *a, **k):
+        queues.append(queue)
+        return cli._ContributionStats(benchmarked=[])
+
+    monkeypatch.setattr(cli, "_run_contribution_loop", fake_loop)
+    monkeypatch.setattr(cli, "autoremove", lambda: None)
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Skipping a.gguf" not in result.stdout
+    assert queues[0].excluded_refs == set()

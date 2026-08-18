@@ -5558,6 +5558,7 @@ class _ContributionStats:
     attempted_not_uploaded: int = 0
     daemon_restarts: int = 0
     given_up_on: int = 0
+    machine_failures: int = 0
     exhausted: bool = False
 
 
@@ -5738,6 +5739,33 @@ def _contribute_candidate_memory_plan(
             else commit
         ),
     )
+
+
+def _report_contribute_failure_cooldowns(history_refs: set[str]) -> set[str]:
+    """Refs held back this session because their last attempts died on this
+    machine's own memory rather than on anything about the model, printing
+    one line each so the run never silently drops a candidate.
+
+    A ref that has since produced a real benchmark is not held back - the
+    success cleared its streak - so `history_refs` wins outright."""
+    cooldowns = benchmark_history.failure_cooldowns()
+    cooldown_refs = set(cooldowns) - set(history_refs)
+    if not cooldown_refs or _global_opts().quiet:
+        return cooldown_refs
+    for cooldown_ref in sorted(cooldown_refs):
+        record = cooldowns[cooldown_ref]
+        expires = benchmark_history.cooldown_expires_at(record)
+        until = (
+            f"retrying after {expires.strftime('%Y-%m-%d %H:%M')} UTC"
+            if expires is not None
+            else "retrying once the cooldown lapses"
+        )
+        console.print(
+            f"[muted]Skipping {record.get('filename') or cooldown_ref}: "
+            f"{record.get('consecutive_machine_failures')} downloads in a row ended in "
+            f"{record.get('reason')} on this machine - {until}.[/muted]"
+        )
+    return cooldown_refs
 
 
 def _ensure_contribute_candidate_memory(
@@ -6150,13 +6178,27 @@ def _run_contribution_loop(
             item.attempts += 1
             if item.attempts == 1:
                 stats.deferred_low_memory += 1
+            out_of_retries = item.attempts >= _MAX_CANDIDATE_MEMORY_DEFERRALS
             if hasattr(queue, "defer"):
                 queue.defer(ref_str)
-                if item.attempts >= _MAX_CANDIDATE_MEMORY_DEFERRALS:
+                if out_of_retries:
                     stats.skipped_low_memory += 1
             else:
                 queue.mark_seen(ref_str)
                 stats.skipped_low_memory += 1
+                out_of_retries = True
+            if out_of_retries:
+                # This candidate has now burned its whole in-run retry budget
+                # (and one download per attempt) against live memory. Record
+                # it exactly once per session, so the streak that drives the
+                # cross-run cooldown counts sessions rather than retries.
+                benchmark_history.record_benchmark_failure(
+                    ref_str,
+                    repo_id=outcome.repo_id,
+                    filename=outcome.filename,
+                    reason=outcome.failure_reason,
+                    engine=outcome.benchmark_engine or engine,
+                )
             err_console.print(
                 f"[warning]Memory changed before {candidate['filename']} could load; "
                 "cleaned it up and deferred a bounded retry.[/warning]"
@@ -6210,6 +6252,33 @@ def _run_contribution_loop(
         else:
             stats.attempted_not_uploaded += 1
             if outcome.tokens_per_sec is None:
+                # Leave a trace on disk. record_benchmarked() is success-only
+                # by design, so without this a failed attempt is invisible to
+                # the next session, which re-selects the same candidate and
+                # re-downloads every byte of it.
+                benchmark_history.record_benchmark_failure(
+                    ref_str,
+                    repo_id=outcome.repo_id,
+                    filename=outcome.filename,
+                    reason=outcome.failure_reason,
+                    engine=outcome.benchmark_engine or engine,
+                )
+                if benchmark_history.is_machine_related_failure(outcome.failure_reason):
+                    # The model is downloaded, benchmarked-and-cancelled, and
+                    # already deleted again. Retrying it inside this same run
+                    # means re-downloading it in full to meet the same
+                    # machine condition that just cancelled it - free memory
+                    # does not recover on the timescale of one loop
+                    # iteration. Hand the run to the other candidates.
+                    err_console.print(
+                        f"[warning]{display_name} failed after downloading "
+                        f"({outcome.failure_reason}) - not retrying it this session, to "
+                        "avoid downloading it again for the same result.[/warning]"
+                    )
+                    queue.mark_seen(ref_str)
+                    stats.machine_failures += 1
+                    _report_contribute_failure_telemetry(outcome)
+                    continue
                 # No real benchmark result came back at all (as opposed to a
                 # real result whose upload just failed/was declined - that
                 # case is worth retrying, this one keeps producing nothing).
@@ -6253,6 +6322,11 @@ def _print_contribution_summary(
     console.print(f"Deferred before download (live memory pressure): {stats.deferred_low_memory}")
     console.print(f"Still blocked after bounded memory retries: {stats.skipped_low_memory}")
     console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
+    if stats.machine_failures:
+        console.print(
+            f"[warning]Failed after downloading on live machine conditions: "
+            f"{stats.machine_failures} candidate(s), not retried this session.[/warning]"
+        )
     if stats.given_up_on:
         console.print(
             f"[warning]Gave up on {stats.given_up_on} candidate(s) after repeated "
@@ -6352,8 +6426,13 @@ def contribute() -> None:
 
         hw = scan_hardware()
         history_refs = benchmark_history.loaded_refs()
-        queue = contribute_mod.ContributionQueue(artifact, hw, history_refs)
-        _ensure_contribute_candidate_memory(artifact, hw, history_refs, engine=engine)
+        cooldown_refs = _report_contribute_failure_cooldowns(history_refs)
+        queue = contribute_mod.ContributionQueue(
+            artifact, hw, history_refs, excluded_refs=cooldown_refs
+        )
+        _ensure_contribute_candidate_memory(
+            artifact, hw, history_refs | cooldown_refs, engine=engine
+        )
 
         if policy == "always" and not config.get("contribute_always_ack"):
             err_console.print(
