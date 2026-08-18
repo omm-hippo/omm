@@ -1,6 +1,7 @@
-"""Daemon-lifecycle helpers (start/stop/status) for Ollama only. Actual
-generation-speed measurement via LM Studio is handled by quality.py's
-_generate_with_runtime when engine="lmstudio" is selected.
+"""Ollama daemon-lifecycle helpers (start/stop/status check) and basic
+speed-benchmark functions for omm install's one-off model compat check.
+For LM Studio speed/quality measurement in omm benchmark/contribute, see
+quality.py's _generate_with_runtime when engine="lmstudio" is selected.
 """
 
 from __future__ import annotations

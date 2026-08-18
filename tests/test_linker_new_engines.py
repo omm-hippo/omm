@@ -924,14 +924,14 @@ def test_resolve_lmstudio_model_returns_dict_with_metadata(monkeypatch):
             "modelKey": "tinyllama-1.1b-chat-v1.0",
             "path": "local/tinyllama-q4/tinyllama-q4.gguf",
             "architecture": "llama",
-            "quantization": "Q4_K_M",
-            "quantizationBits": 4,
+            "quantization": {"name": "Q4_K_M", "bits": 4},
             "paramsString": "1.1B",
             "maxContextLength": 2048,
             "trainedForToolUse": True,
         }
     ]
     monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda lms_path, pub, repo, filename: "tinyllama-1.1b-chat-v1.0")
     monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: models_data)
     result = linker.resolve_lmstudio_model("local/tinyllama-q4", "tinyllama-q4.gguf")
     assert result == {
@@ -957,12 +957,13 @@ def test_resolve_lmstudio_model_filters_embedding_models(monkeypatch):
             "modelKey": "tinyllama-1.1b-chat-v1.0",
             "path": "local/tinyllama-q4/tinyllama-q4.gguf",
             "architecture": "llama",
-            "quantization": "Q4_K_M",
+            "quantization": {"name": "Q4_K_M", "bits": 4},
         },
     ]
     monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda lms_path, pub, repo, filename: None)  # No match for embedding path
     monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: models_data)
-    # Try to resolve the embedding model - should return None
+    # Try to resolve the embedding model - should return None (no path match)
     result = linker.resolve_lmstudio_model("nomic-ai/nomic-embed-text-v1.5-GGUF", "nomic-embed-text-v1.5.gguf")
     assert result is None
 
@@ -976,6 +977,7 @@ def test_resolve_lmstudio_model_none_when_path_not_found(monkeypatch):
         }
     ]
     monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda lms_path, pub, repo, filename: None)  # No match
     monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: models_data)
     result = linker.resolve_lmstudio_model("local/repo", "file.gguf")
     assert result is None
@@ -1004,6 +1006,7 @@ def test_resolve_lmstudio_model_handles_missing_optional_fields(monkeypatch):
         }
     ]
     monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lmstudio_model_key", lambda lms_path, pub, repo, filename: "tinyllama-1.1b-chat-v1.0")
     monkeypatch.setattr(linker, "_lmstudio_list_models", lambda lms_path: models_data)
     result = linker.resolve_lmstudio_model("local/tinyllama-q4", "tinyllama-q4.gguf")
     assert result == {

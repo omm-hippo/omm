@@ -2458,13 +2458,17 @@ def resolve_lmstudio_model(repo_id: str | None, filename: str) -> dict | None:
     if lms_path is None:
         return None
 
+    publisher, repo = _lmstudio_publisher_repo(repo_id, filename)
+    # Use existing path-matching logic to get the model key
+    model_key = _lmstudio_model_key(lms_path, publisher, repo, filename)
+    if model_key is None:
+        return None
+
     models = _lmstudio_list_models(lms_path)
     if models is None:
         return None
 
-    publisher, repo = _lmstudio_publisher_repo(repo_id, filename)
-    expected_path = f"{publisher}/{repo}/{filename}"
-
+    # Second pass: find the entry by modelKey and extract metadata
     for entry in models:
         if not isinstance(entry, dict):
             continue
@@ -2473,19 +2477,19 @@ def resolve_lmstudio_model(repo_id: str | None, filename: str) -> dict | None:
         if entry.get("type") != "llm":
             continue
 
-        # Match by path
-        path = entry.get("path")
-        if isinstance(path, str) and path.replace("\\", "/") == expected_path:
-            model_key = entry.get("modelKey")
-            if not isinstance(model_key, str):
-                continue
+        # Match by modelKey (which we already know is correct via path-matching)
+        if entry.get("modelKey") == model_key:
+            # Extract quantization metadata from nested object
+            quant = entry.get("quantization")
+            if not isinstance(quant, dict):
+                quant = {}
 
             # Extract metadata from the raw entry
             return {
                 "model_key": model_key,
                 "architecture": entry.get("architecture"),
-                "quantization_name": entry.get("quantization"),
-                "quantization_bits": entry.get("quantizationBits"),
+                "quantization_name": quant.get("name"),
+                "quantization_bits": quant.get("bits"),
                 "params_string": entry.get("paramsString"),
                 "max_context_length": entry.get("maxContextLength"),
                 "trained_for_tool_use": entry.get("trainedForToolUse", False),
