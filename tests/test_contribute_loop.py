@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from omm import benchmark_history, cli, registry
+from omm import benchmark_history, cli, contribute_memory, registry
 
 
 class _FakeQueue:
@@ -47,6 +47,57 @@ def _candidate(repo_id="org/repo", filename="model.gguf", name="model", provider
     return {"repo_id": repo_id, "filename": filename, "name": name, "provider": provider}
 
 
+# Memory plans handed to the loop are built from the *real* frozen
+# dataclasses, never from stand-ins. Hand-rolled look-alikes silently miss
+# every field added to contribute_memory later, and the miss only surfaces
+# as an AttributeError deep inside cli.py while a test runs. Constructing
+# the real dataclass by keyword instead fails right here, with a TypeError
+# naming the field nobody updated.
+def _memory_sample(**overrides):
+    fields = {
+        "samples_gb": (1.2,),
+        "median_gb": 1.2,
+        "minimum_gb": 1.2,
+        "maximum_gb": 1.2,
+        "reserve_gb": 0.5,
+    }
+    return contribute_memory.AvailableMemorySample(**(fields | overrides))
+
+
+def _memory_estimate(**overrides):
+    fields = {
+        "mapped_weights_ram_gb": 0.75,
+        "committed_ram_gb": 0.31,
+        "required_vram_gb": 0.0,
+        "kv_cache_gb": 0.06,
+        "compute_buffer_gb": 0.19,
+        "runtime_overhead_gb": 0.06,
+        "source": "gguf_header",
+        "confidence": "medium",
+        "context_length": contribute_memory.CONTRIBUTE_CONTEXT_LENGTH,
+        "num_batch": contribute_memory.CONTRIBUTE_NUM_BATCH,
+        "gpu_offload_percent": 0,
+        "runtime_buffer_ram_gb": 0.31,
+    }
+    return contribute_memory.ContributionMemoryEstimate(**(fields | overrides))
+
+
+def _memory_plan(**overrides):
+    fields = {
+        "decision": contribute_memory.ContributionMemoryDecision.SAFE,
+        "estimate": _memory_estimate(),
+        "sample": _memory_sample(),
+        "allocation_available_gb": 8.0,
+        "residency_available_gb": 8.0,
+        "commit_available_gb": 8.0,
+        "commit_limit_gb": 24.0,
+        "runtime_buffer_required_gb": 0.31,
+        "vram_available_gb": None,
+        "reasons": (),
+    }
+    return contribute_memory.ContributionMemoryPlan(**(fields | overrides))
+
+
 def _seed_registry_entry(filename, sha256="deadbeef"):
     registry.upsert_entry(
         filename,
@@ -88,17 +139,8 @@ def test_safe_memory_plan_is_reported_before_install(isolated_omm_home, monkeypa
     monkeypatch.setattr(
         cli,
         "_contribute_candidate_memory_plan",
-        lambda candidate, **kwargs: SimpleNamespace(
-            decision=cli.contribute_memory.ContributionMemoryDecision.SAFE,
-            estimate=SimpleNamespace(
-                committed_ram_gb=0.31,
-                mapped_weights_ram_gb=0.75,
-                source="gguf_header",
-            ),
-            runtime_buffer_required_gb=0.31,
-            commit_available_gb=8.0,
-            reasons=(),
-            sample=SimpleNamespace(median_gb=1.2, reserve_gb=0.5),
+        lambda candidate, **kwargs: _memory_plan(
+            decision=contribute_memory.ContributionMemoryDecision.SAFE,
         ),
     )
 
@@ -149,19 +191,24 @@ def test_low_memory_candidate_is_skipped_before_download(isolated_omm_home, monk
     monkeypatch.setattr(
         cli,
         "_contribute_candidate_memory_plan",
-        lambda candidate, **kwargs: SimpleNamespace(
-            decision=cli.contribute_memory.ContributionMemoryDecision.BLOCK,
-            required_gb=1.2,
-            available_gb=0.0,
-            estimate=SimpleNamespace(
+        lambda candidate, **kwargs: _memory_plan(
+            decision=contribute_memory.ContributionMemoryDecision.BLOCK,
+            estimate=_memory_estimate(
                 committed_ram_gb=1.2,
                 mapped_weights_ram_gb=1.0,
                 source="profile_fallback",
+                confidence="low",
+                runtime_buffer_ram_gb=1.2,
             ),
-            runtime_buffer_required_gb=1.2,
+            sample=_memory_sample(
+                samples_gb=(0.0,), median_gb=0.0, minimum_gb=0.0, maximum_gb=0.0
+            ),
+            allocation_available_gb=0.0,
+            residency_available_gb=0.0,
             commit_available_gb=None,
+            commit_limit_gb=None,
+            runtime_buffer_required_gb=1.2,
             reasons=("committed_ram_exceeds_physical_capacity",),
-            sample=SimpleNamespace(median_gb=0.0, reserve_gb=0.5),
         ),
     )
     monkeypatch.setattr(
@@ -193,17 +240,24 @@ def test_real_queue_contract_bounds_memory_deferrals(isolated_omm_home, monkeypa
 
     def memory_plan(_candidate, **_kwargs):
         plans.append(1)
-        return SimpleNamespace(
-            decision=cli.contribute_memory.ContributionMemoryDecision.DEFER,
-            estimate=SimpleNamespace(
+        return _memory_plan(
+            decision=contribute_memory.ContributionMemoryDecision.DEFER,
+            estimate=_memory_estimate(
                 committed_ram_gb=0.5,
                 mapped_weights_ram_gb=1.0,
                 source="profile_fallback",
+                confidence="low",
+                runtime_buffer_ram_gb=0.5,
             ),
-            runtime_buffer_required_gb=0.5,
+            sample=_memory_sample(
+                samples_gb=(0.2,), median_gb=0.2, minimum_gb=0.2, maximum_gb=0.2
+            ),
+            allocation_available_gb=0.0,
+            residency_available_gb=0.0,
             commit_available_gb=None,
+            commit_limit_gb=None,
+            runtime_buffer_required_gb=0.5,
             reasons=("committed_ram_temporarily_unavailable",),
-            sample=SimpleNamespace(median_gb=0.2, reserve_gb=0.5),
         )
 
     monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", memory_plan)
@@ -245,11 +299,16 @@ def test_start_memory_preflight_aborts_when_every_pending_candidate_is_blocked(
     monkeypatch.setattr(
         cli,
         "_contribute_candidate_memory_plan",
-        lambda candidate, **kwargs: SimpleNamespace(
-            decision=cli.contribute_memory.ContributionMemoryDecision.BLOCK,
-            required_gb=candidate["size_bytes"] / 1024**3 * 1.2,
-            available_gb=0.0,
-            reserve_gb=2.0,
+        lambda candidate, **kwargs: _memory_plan(
+            decision=contribute_memory.ContributionMemoryDecision.BLOCK,
+            # required_gb/available_gb/reserve_gb are read-only aliases on the
+            # real plan, so drive them through the fields they derive from.
+            estimate=_memory_estimate(
+                committed_ram_gb=candidate["size_bytes"] / 1024**3 * 1.2
+            ),
+            sample=_memory_sample(reserve_gb=2.0),
+            allocation_available_gb=0.0,
+            residency_available_gb=0.0,
         ),
     )
 
