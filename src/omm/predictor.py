@@ -76,6 +76,35 @@ def validate_model_artifact(artifact: object) -> dict:
     return artifact
 
 
+def extract_emergency_signal(artifact: dict | None) -> dict | None:
+    """Pull a well-formed `emergency` signal out of a model artifact, if any.
+
+    The artifact's `trees`/`candidates`/`feature_order`/`model_version` shape
+    is enforced by validate_model_artifact(), but `emergency` is an optional
+    extra key that rides along on the same Ed25519-signed file (see
+    catalog.verify_signed_artifact - it signs the whole raw response body,
+    so this field is covered too) without changing that contract. Malformed
+    shapes are treated as "no signal" rather than raised, since a broken
+    emergency field should never block the model this artifact actually
+    exists to deliver.
+    """
+    if not isinstance(artifact, dict):
+        return None
+    signal = artifact.get("emergency")
+    if not isinstance(signal, dict):
+        return None
+    message = signal.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return None
+    fixed_in_version = signal.get("fixed_in_version")
+    if fixed_in_version is not None and not isinstance(fixed_in_version, str):
+        return None
+    signal_id = signal.get("id")
+    if signal_id is not None and not isinstance(signal_id, str):
+        return None
+    return signal
+
+
 def available_model_memory_gb(hw: HardwareInfo) -> float:
     """Total-RAM-based install budget, unaffected by current free memory."""
     return calculate_memory_budget(hw).install_budget_gb
