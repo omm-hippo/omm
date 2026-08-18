@@ -77,8 +77,19 @@ def verify_ollama(gguf_path: Path, ollama_tag: str) -> None:
     print(f"OK: ollama recognizes {ollama_tag!r} ({result.stdout.splitlines()[0]!r})")
 
 
+def _lms_path() -> str:
+    """`lms` right after a fresh headless install is often not on PATH in
+    this same non-interactive process yet (the installer only wires up
+    interactive shell rc files) - reuse omm's own resolver, which already
+    knows to fall back to the well-known bootstrap location."""
+    path = linker._lms_cli_path()
+    if path is None:
+        _fail("lms CLI not found (neither on PATH nor at <lmstudio_home>/bin/lms) after install")
+    return path
+
+
 def verify_lmstudio(gguf_path: Path, ollama_tag: str) -> None:
-    result = _run(["lms", "ls", "--json"])
+    result = _run([_lms_path(), "ls", "--json"])
     if result.returncode != 0:
         _fail(f"`lms ls --json` failed: {result.stderr}")
     try:
@@ -197,13 +208,14 @@ def _ensure_lmstudio_ready() -> None:
     """Same idea as `_ensure_ollama_ready` for llmster/`lms`."""
     import time
 
+    lms_path = _lms_path()
     for _ in range(3):
-        if _run(["lms", "ls", "--json"]).returncode == 0:
+        if _run([lms_path, "ls", "--json"]).returncode == 0:
             return
         time.sleep(1)
-    subprocess.Popen(["lms", "server", "start", "--no-gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen([lms_path, "server", "start", "--no-gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(20):
-        if _run(["lms", "ls", "--json"]).returncode == 0:
+        if _run([lms_path, "ls", "--json"]).returncode == 0:
             return
         time.sleep(1)
     _fail("lms CLI never became ready")
