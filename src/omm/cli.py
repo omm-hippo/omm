@@ -5199,6 +5199,29 @@ def _telemetry_send_failure_text() -> str:
     return status.outcome.replace("_", " ")
 
 
+def _telemetry_rejection_hint_text() -> str | None:
+    """One muted follow-up for the send failure whose raw text is otherwise
+    a dead end: `server rejected the event (HTTP 401: Permission denied)`.
+
+    The hosted Firebase collector answers a *rules* rejection with 401 and
+    that exact detail, while a missing or expired auth token reports the
+    token problem in the same field - so the detail text, not the status
+    code alone, is what identifies this case. Nothing about it is fixable
+    locally, and the likeliest cause is deployed rules validating an older
+    event shape than this omm version sends. Phrased as a possibility, not
+    a diagnosis: the client is never told which rule fired."""
+    status = telemetry.last_send_status()
+    if status is None or status.status_code != 401:
+        return None
+    if "permission denied" not in status.detail.casefold():
+        return None
+    return (
+        "[muted]Rules rejection, not a credential problem - nothing to fix on "
+        "this machine. The collector's validation rules may be behind this omm "
+        "version; worth reporting if it keeps happening.[/muted]"
+    )
+
+
 def _report_telemetry(
     filename: str,
     repo_id: str | None,
@@ -5420,6 +5443,9 @@ def _report_telemetry(
                 else "This one-time upload was not queued."
             )
             console.print(f"[muted]Telemetry not sent: {reason}. {detail}[/muted]")
+        hint = _telemetry_rejection_hint_text()
+        if hint is not None:
+            console.print(hint)
     elif not _global_opts().quiet:
         console.print("[muted]Benchmark result uploaded.[/muted]")
     return sent
@@ -5558,6 +5584,9 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
             console.print(
                 f"[muted]Telemetry not sent for {tag}: {failure}. {detail}[/muted]"
             )
+        hint = _telemetry_rejection_hint_text()
+        if hint is not None:
+            console.print(hint)
     elif not _global_opts().quiet:
         console.print(f"[muted]Reported {tag} as {outcome}.[/muted]")
     return sent
