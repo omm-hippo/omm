@@ -84,6 +84,7 @@ from omm.hardware import (
 from omm.hashutil import sha256_file
 from omm.featurize import (
     candidate_active_parameter_count_billions,
+    resolve_active_parameter_count_billions,
     candidate_parameter_count_billions,
     candidate_quant_bits,
     is_mmproj_filename,
@@ -4897,9 +4898,11 @@ def _report_telemetry(
         parameter_count = candidate_parameter_count_billions(candidate)
     active_parameter_count = _number("active_parameter_count_b", "active_parameter_count_billions")
     if active_parameter_count is None:
-        active_parameter_count = candidate_active_parameter_count_billions(candidate)
-    if active_parameter_count is None and not candidate["is_moe"]:
-        active_parameter_count = parameter_count
+        active_parameter_count = resolve_active_parameter_count_billions(
+            candidate, parameter_count
+        )
+    elif parameter_count is not None:
+        active_parameter_count = min(active_parameter_count, parameter_count)
     if candidate["is_moe"] and active_parameter_count is None:
         telemetry.log_attempt("skipped_moe_active_parameters_unknown", filename)
         console.print(
@@ -5102,9 +5105,9 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
         quant_bits = parse_quant_bits(value) if isinstance(value, str) else None
     if quant_bits is None:
         quant_bits = candidate_quant_bits(candidate)
-    active_parameter_count = candidate_active_parameter_count_billions(candidate)
-    if active_parameter_count is None and not candidate["is_moe"]:
-        active_parameter_count = parameter_count
+    active_parameter_count = resolve_active_parameter_count_billions(
+        candidate, parameter_count
+    )
     if parameter_count is not None:
         event["parameter_count_b"] = parameter_count
     if active_parameter_count is not None:

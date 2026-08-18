@@ -645,6 +645,32 @@ assert.equal(
   "v9 rejected optional GPU fields represented as JSON null",
 );
 
+// A model file named "-1B-" parses to 1.0 while its GGUF tensor count measured
+// 0.99989. Emitting the rounded name-derived value put active above total and
+// the server rejected the whole benchmark, so pin that the server does reject
+// it - the client must reconcile the two counts before sending.
+const v9ActiveAboveTotal = await request("telemetry", "POST", {
+  ...v9Success,
+  parameter_count_b: 0.99989,
+  active_parameter_count_b: 1.0,
+});
+assert.equal(
+  v9ActiveAboveTotal.ok,
+  false,
+  "v9 accepted an active parameter count above the total parameter count",
+);
+
+const v9ActiveEqualToTotal = await request("telemetry", "POST", {
+  ...v9Success,
+  parameter_count_b: 0.99989,
+  active_parameter_count_b: 0.99989,
+});
+assert.equal(
+  v9ActiveEqualToTotal.ok,
+  true,
+  "v9 rejected a dense model whose active count equals its total",
+);
+
 const v9Pressured = await request("telemetry", "POST", {
   ...v9Success,
   measurement_quality: "pressured",

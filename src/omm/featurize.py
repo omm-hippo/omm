@@ -180,6 +180,29 @@ def candidate_active_parameter_count_billions(candidate: dict) -> float | None:
     return candidate_parameter_count_billions(candidate)
 
 
+def resolve_active_parameter_count_billions(
+    candidate: dict, total_parameter_count_b: float | None
+) -> float | None:
+    """Return active parameters that cannot exceed the resolved total.
+
+    ``candidate_active_parameter_count_billions`` falls back to parsing the
+    model name, and names round: a file named ``Gemma-3-1B-it`` yields 1.0 even
+    when the GGUF tensor count measured 0.99989. Telemetry validation requires
+    ``active <= total``, so a name-derived guess must never outrank a measured
+    total - the server rejects the whole event when it does.
+    """
+    if total_parameter_count_b is not None:
+        candidate = {**candidate, "parameter_count_b": total_parameter_count_b}
+    active = candidate_active_parameter_count_billions(candidate)
+    if active is None:
+        # A dense model's active count is its total; an MoE's is unknowable
+        # from the name alone and stays None for the caller to reject.
+        return None if candidate.get("is_moe") is True else total_parameter_count_b
+    if total_parameter_count_b is None:
+        return active
+    return min(active, total_parameter_count_b)
+
+
 def parse_quant_bits(text: str) -> float | None:
     # Prefer an explicit GGUF Q/IQ token over source or auxiliary precision.
     # This handles both ``BF16.Q4_K_M`` and ``Q4_K_M-fp16``. Requiring a
