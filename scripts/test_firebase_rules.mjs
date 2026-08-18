@@ -8,8 +8,22 @@ const base = "http://127.0.0.1:9000";
 // meaningless.
 const namespace = "demo-localfit-default-rtdb";
 
-async function request(path, method, body) {
-  const response = await fetch(`${base}/${path}.json?ns=${namespace}`, {
+// The RTDB emulator only consults `auth_variable_override` once it has
+// already found *some* token via `access_token` (or an Authorization
+// header) - `owner` is the emulator's well-known admin-bypass literal, not
+// a real credential, and is only meaningful alongside the override below,
+// which is what actually becomes the rules' `auth` variable. Without the
+// `access_token`, findAuthToken() short-circuits to `auth == null` and the
+// override is never even inspected. Every scenario below defaults to
+// authenticated, matching a real omm client after the anonymous-auth fix;
+// pass `auth: false` to specifically exercise the unauthenticated-write
+// rejection the fix introduced.
+const authOverride =
+  `access_token=owner&auth_variable_override=${encodeURIComponent(JSON.stringify({ uid: "test-uid" }))}`;
+
+async function request(path, method, body, { auth = true } = {}) {
+  const query = auth ? `ns=${namespace}&${authOverride}` : `ns=${namespace}`;
+  const response = await fetch(`${base}/${path}.json?${query}`, {
     method,
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -43,6 +57,13 @@ const valid = {
   cpu_threads: 8,
   num_batch: 512,
 };
+
+const unauthenticated = await request("telemetry", "POST", valid, { auth: false });
+assert.equal(
+  unauthenticated.ok,
+  false,
+  "telemetry unexpectedly accepted a write with no auth (auth != null must be required)",
+);
 
 const created = await request("telemetry", "POST", valid);
 assert.equal(created.ok, true, `valid schema 4 event was rejected (${created.status})`);

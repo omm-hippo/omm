@@ -105,6 +105,28 @@ def test_yes_on_supported_command_does_not_warn(isolated_omm_home, monkeypatch):
     assert "has no effect" not in result.stderr
 
 
+def test_yes_capability_is_judged_independently_for_same_named_nested_command(
+    isolated_omm_home, monkeypatch
+):
+    """`omm engine install` and top-level `omm install` share the bare
+    Click command name "install". The capability check used to key off
+    that bare name (ctx.command.name), so the two would have shared one
+    _YES_CAPABLE verdict instead of being judged independently by full
+    command path. `install` has a confirmation prompt to skip (warning
+    should stay silent); `engine install` does not (warning should fire)."""
+    from omm import onboarding
+
+    monkeypatch.setattr(cli, "resolve_model", lambda name: (_ for _ in ()).throw(
+        cli.ModelResolutionError("nope")
+    ))
+    top_level = runner.invoke(cli.app, ["install", "no-such-model", "--yes"])
+    assert "has no effect" not in top_level.stderr
+
+    monkeypatch.setattr(onboarding, "run_engine_checklist", lambda console: [])
+    nested = runner.invoke(cli.app, ["engine", "install", "--yes"])
+    assert "--yes has no effect on `omm engine install`" in nested.stderr
+
+
 def test_no_color_survives_a_theme_change_in_the_same_invocation(isolated_omm_home):
     """`--no-color` is applied by the root callback; `setting theme --set`
     then applies a preset to the same module-level console afterwards. It
@@ -119,17 +141,12 @@ def test_no_color_survives_a_theme_change_in_the_same_invocation(isolated_omm_ho
 def test_no_color_survives_the_wizards_theme_step(isolated_omm_home, monkeypatch):
     """Same shape as above for `omm --no-color setup`: the wizard's theme
     step applies the pick to the console mid-run."""
-    import questionary
-
     from omm import onboarding
 
     console = Console(force_terminal=True, highlight=False)
     console.no_color = True
     monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(onboarding, "_add_escape_to_cancel", lambda q: q)
-    monkeypatch.setattr(
-        questionary, "select", lambda *a, **k: type("Q", (), {"ask": lambda self: "dark"})()
-    )
+    monkeypatch.setattr(onboarding.theme, "run_picker", lambda *a, **k: "dark")
 
     onboarding.run_theme_step(console)
 

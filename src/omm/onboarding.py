@@ -165,21 +165,7 @@ def run_theme_step(console: Console) -> str:
         theme.apply_theme_to_console(console, recommended)
         return recommended
 
-    import questionary
-
-    for name in theme.THEME_NAMES:
-        label = f"{name} (recommended)" if name == recommended else name
-        console.print(f"\n[bold]{label}[/bold]")
-        theme.print_theme_preview(console, name)
-
-    question = _add_escape_to_cancel(
-        questionary.select(
-            "Pick a color theme for omm's output:",
-            choices=list(theme.THEME_NAMES),
-            default=recommended,
-        )
-    )
-    chosen = question.ask() or recommended
+    chosen = theme.run_picker(recommended, current_label="recommended") or recommended
     config_mod.update_config(theme=chosen)
     theme.apply_theme_to_console(console, chosen)
     return chosen
@@ -201,7 +187,7 @@ def run_engine_checklist(console: Console) -> list[str] | None:
     if not _stdin_is_tty():
         console.print(
             "[error]Engine selection requires an interactive terminal. "
-            "Re-run `omm setup` from a real terminal.[/error]"
+            "Re-run this command from a real terminal.[/error]"
         )
         raise typer.Exit(1)
 
@@ -229,7 +215,7 @@ def run_engine_checklist(console: Console) -> list[str] | None:
         return question.ask()
 
 
-def _install_selected_engines(console: Console, selected: list[str]) -> None:
+def install_selected_engines(console: Console, selected: list[str]) -> None:
     specs_by_key = {spec.key: spec for spec in linker.ENGINES}
     for key in selected:
         spec = specs_by_key[key]
@@ -261,7 +247,7 @@ def run_wizard(console: Console) -> None:
         # should retry next time instead of being marked done.
         raise typer.Abort()
     if selected:
-        _install_selected_engines(console, selected)
+        install_selected_engines(console, selected)
     console.print(
         "\n[success]Setup complete.[/success] "
         "Run `omm setting` any time to change telemetry, upload, or update-channel settings.\n"

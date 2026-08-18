@@ -322,19 +322,17 @@ def test_setting_theme_bare_with_tty_previews_and_saves_the_pick(
 ):
     # Anyone who upgraded into this feature already has
     # onboarding_completed=True and so never sees the wizard's picker -
-    # this is their only route to the previews.
+    # this is their only route to the previews. The live picker itself
+    # (theme.run_picker) is a real prompt_toolkit Application and is
+    # covered separately in test_theme.py; here we only need to confirm
+    # configure_theme wires its result through to config.
     config.update_config(theme="dark")
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_ask_select", lambda question: "high-contrast")
+    monkeypatch.setattr(cli, "_pick_theme_interactively", lambda *a, **k: "high-contrast")
 
     result = runner.invoke(cli.app, ["setting", "theme"])
 
     assert result.exit_code == 0, result.stdout
-    for name in cli.theme_mod.THEME_NAMES:
-        assert name in result.stdout, f"{name} preview missing"
-    for role in cli.theme_mod.ROLES:
-        assert role in result.stdout, f"{role} sample line missing"
     assert config.load_config()["theme"] == "high-contrast"
 
 
@@ -343,8 +341,7 @@ def test_setting_theme_bare_with_tty_keeps_current_value_on_cancel(
 ):
     config.update_config(theme="dark")
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_ask_select", lambda question: None)
+    monkeypatch.setattr(cli, "_pick_theme_interactively", lambda *a, **k: None)
 
     result = runner.invoke(cli.app, ["setting", "theme"])
 
@@ -372,6 +369,14 @@ def test_setting_theme_bare_without_tty_shows_table_without_prompting(
 
 
 def test_setting_theme_with_set_flag_skips_the_picker(isolated_omm_home, monkeypatch):
+    # An existing install, not a genuinely fresh one: _root's onboarding
+    # gate now covers every subcommand (not just the bare `omm`
+    # invocation), and a truly fresh isolated_omm_home would otherwise
+    # make the monkeypatched _stdin_is_tty below also let the real setup
+    # wizard fire here - which then crashes in its own engine-checklist
+    # step, since that step checks onboarding.py's own (unmocked) stdin
+    # state, not this one.
+    config.update_config(onboarding_completed=True)
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
 
     def _must_not_prompt(*args, **kwargs):
@@ -386,36 +391,34 @@ def test_setting_theme_with_set_flag_skips_the_picker(isolated_omm_home, monkeyp
 
 
 def test_setting_bare_menu_theme_submenu_previews_and_saves(isolated_omm_home, monkeypatch):
-    answers = iter(["theme", "light", None])
-    captured_choices: list = []
+    answers = iter(["theme", None])
+    captured_picker_args: list = []
 
-    def fake_select(message, choices=None, **kwargs):
-        captured_choices.append(choices)
-        return None
+    def fake_pick(current_name, allow_back=False):
+        captured_picker_args.append((current_name, allow_back))
+        return "light"
 
-    monkeypatch.setattr(questionary, "select", fake_select)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_pick_theme_interactively", fake_pick)
 
     result = runner.invoke(cli.app, ["setting"])
 
     assert result.exit_code == 0, result.stdout
-    theme_labels = [choice.title for choice in captured_choices[1]]
-    assert theme_labels[:-1] == list(cli.theme_mod.THEME_NAMES)
-    assert theme_labels[-1] == "← Back"
-    # The menu must show the same previews as the standalone command,
-    # not a bare list of names.
-    for role in cli.theme_mod.ROLES:
-        assert role in result.stdout, f"{role} sample line missing"
+    # The menu offers the same "← Back" escape hatch as onboarding, not
+    # a plain non-cancellable pick.
+    assert captured_picker_args == [("dark", True)]
     assert config.load_config()["theme"] == "light"
 
 
 def test_setting_bare_menu_theme_submenu_back_changes_nothing(isolated_omm_home, monkeypatch):
     config.update_config(theme="dark")
-    answers = iter(["theme", None, None])
+    answers = iter(["theme", None])
     monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_pick_theme_interactively", lambda *a, **k: None)
 
     result = runner.invoke(cli.app, ["setting"])
 

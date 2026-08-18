@@ -1,4 +1,5 @@
 import io
+from unittest.mock import MagicMock
 
 import pytest
 from rich.console import Console
@@ -35,29 +36,61 @@ def test_build_rich_theme_falls_back_to_a_known_preset_for_unknown_names():
     }
 
 
-def test_light_preset_matches_todays_hardcoded_colors():
+def test_light_preset_is_legible_on_a_light_background():
+    """`warning`/`value` used to hardcode "yellow"/"white" from the
+    pre-theming code, which are both near-invisible on an actual light
+    terminal background - see the module docstring."""
     styles = theme.build_rich_theme("light").styles
     assert styles["error"].color.name == "red"
     assert styles["error"].bold is True
-    assert styles["warning"].color.name == "yellow"
+    assert styles["warning"].color is not None
+    assert styles["warning"].color.name not in ("yellow", "white")
     assert styles["warning"].bold is not True
     assert styles["success"].color.name == "green"
     assert styles["success"].bold is True
     assert styles["accent"].color.name == "blue"
     assert styles["accent"].bold is True
     assert styles["muted"].dim is True
+    assert styles["value"].color is None
+
+
+def test_dark_preset_differs_from_light_in_accent_warning_and_value():
+    """error/success use plain red/green in both, since those already
+    read fine on either background; accent/warning/value are the roles
+    that actually depend on which background they're read against."""
+    light = theme.build_rich_theme("light").styles
+    dark = theme.build_rich_theme("dark").styles
+    for role in ("accent", "warning", "value"):
+        assert dark[role] != light[role], f"{role} should differ between light and dark"
+    for role in ("error", "success", "muted"):
+        assert dark[role].color == light[role].color
+        assert dark[role].bold == light[role].bold
+
+
+def test_dark_preset_keeps_yellow_and_white_which_read_fine_on_black():
+    styles = theme.build_rich_theme("dark").styles
+    assert styles["warning"].color.name == "yellow"
     assert styles["value"].color.name == "white"
 
 
-def test_dark_preset_only_differs_from_light_in_accent():
-    light = theme.build_rich_theme("light").styles
-    dark = theme.build_rich_theme("dark").styles
-    for role in theme.ROLES:
-        if role == "accent":
-            assert dark[role].color.name != light[role].color.name
-        else:
-            assert dark[role].color == light[role].color
-            assert dark[role].bold == light[role].bold
+def test_high_contrast_alert_roles_use_inverse_video_blocks():
+    styles = theme.build_rich_theme("high-contrast").styles
+    for role in ("error", "warning", "success"):
+        assert styles[role].bgcolor is not None, f"{role} should keep its background block"
+
+
+def test_high_contrast_non_alert_roles_do_not_force_a_foreground_color():
+    """accent/muted/value must not hardcode a color: a fixed foreground
+    only reads well against one kind of background, which defeats the
+    point of a preset meant to be legible on any terminal."""
+    styles = theme.build_rich_theme("high-contrast").styles
+    for role in ("accent", "muted", "value"):
+        assert styles[role].color is None, f"{role} should not force a foreground color"
+        assert styles[role].bgcolor is None, f"{role} should not force a background color"
+    assert styles["accent"].bold is True
+    assert styles["accent"].underline is True
+    assert styles["muted"].dim is True
+    assert styles["value"].bold is True
 
 
 def test_detect_recommended_reads_colorfgbg_light_background(monkeypatch):
@@ -119,3 +152,84 @@ def test_print_theme_preview_renders_all_roles_without_raising():
     output = console.file.getvalue()
     for role in theme.ROLES:
         assert role in output
+
+
+def test_print_theme_preview_drops_the_sample_text_wording():
+    console = Console(file=io.StringIO(), force_terminal=True)
+    theme.print_theme_preview(console, "dark")
+    assert "sample text" not in console.file.getvalue()
+
+
+@pytest.mark.parametrize("name", theme.THEME_NAMES)
+def test_render_preview_ansi_contains_every_role_with_no_filler_wording(name):
+    output = theme.render_preview_ansi(name)
+    for role in theme.ROLES:
+        assert role in output
+    assert "sample text" not in output
+
+
+def test_render_preview_ansi_carries_real_ansi_color_codes():
+    """Not an approximation via prompt_toolkit's own style system - the
+    live picker embeds this via `ANSI()`, so it must actually contain
+    the theme's real SGR codes."""
+    output = theme.render_preview_ansi("dark")
+    assert "\x1b[" in output
+
+
+class _FakeApp:
+    def __init__(self):
+        self.exit = MagicMock()
+
+
+class _FakeEvent:
+    def __init__(self):
+        self.app = _FakeApp()
+
+
+def _handler_for(bindings, key):
+    matches = [b for b in bindings.bindings if b.keys == (key,)]
+    return matches[-1].handler
+
+
+def test_picker_bindings_up_and_down_move_and_wrap():
+    from prompt_toolkit.keys import Keys
+
+    options = list(theme.THEME_NAMES)
+    state = {"index": 0}
+    bindings = theme._build_picker_key_bindings(state, options)
+
+    _handler_for(bindings, Keys.Up)(_FakeEvent())
+    assert state["index"] == len(options) - 1  # wraps to the last option
+
+    state["index"] = 0
+    _handler_for(bindings, Keys.Down)(_FakeEvent())
+    assert state["index"] == 1
+
+
+def test_picker_bindings_enter_confirms_the_highlighted_option():
+    from prompt_toolkit.keys import Keys
+
+    options = list(theme.THEME_NAMES)
+    state = {"index": 2}
+    bindings = theme._build_picker_key_bindings(state, options)
+
+    event = _FakeEvent()
+    _handler_for(bindings, Keys.ControlM)(event)
+
+    event.app.exit.assert_called_once_with(result=options[2])
+
+
+def test_picker_bindings_escape_and_ctrl_c_cancel():
+    from prompt_toolkit.keys import Keys
+
+    options = list(theme.THEME_NAMES)
+    state = {"index": 1}
+    bindings = theme._build_picker_key_bindings(state, options)
+
+    event = _FakeEvent()
+    _handler_for(bindings, Keys.Escape)(event)
+    event.app.exit.assert_called_once_with(result=None)
+
+    event = _FakeEvent()
+    _handler_for(bindings, Keys.ControlC)(event)
+    event.app.exit.assert_called_once_with(result=None)

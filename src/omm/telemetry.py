@@ -164,8 +164,9 @@ def _append_pending(event: dict[str, Any]) -> None:
 
 def _post_event(event: dict[str, Any]) -> bool:
     """Actually attempt the HTTP POST and log the outcome. Returns True on
-    a 2xx response, False otherwise (network error, bad status, or no
-    endpoint configured)."""
+    a 2xx response, False otherwise (network error, bad status, no endpoint
+    configured, or - for the hosted Firebase collector, whose RTDB rules
+    require `auth != null` - no anonymous auth token available)."""
     import requests
 
     endpoint = load_config().get("telemetry_endpoint")
@@ -173,12 +174,24 @@ def _post_event(event: dict[str, Any]) -> bool:
         log_attempt("skipped_no_endpoint")
         _set_send_status(SendStatus("skipped_no_endpoint"))
         return False
+
+    params = {}
+    if "firebaseio.com" in endpoint:
+        from omm import firebase_auth
+
+        id_token = firebase_auth.get_id_token()
+        if id_token is None:
+            log_attempt("send_failed_no_auth_token")
+            _set_send_status(SendStatus("send_failed_no_auth_token", retryable=True))
+            return False
+        params["auth"] = id_token
+
     # Firebase treats JSON null as deletion semantics, while other collectors
     # may validate it as a present value. Optional telemetry fields therefore
     # use one portable representation: omit keys whose value is None.
     wire_event = {key: value for key, value in event.items() if value is not None}
     try:
-        resp = requests.post(endpoint, json=wire_event, timeout=5)
+        resp = requests.post(endpoint, params=params, json=wire_event, timeout=5)
     except requests.RequestException as e:
         detail = str(e)[:_MAX_FAILURE_DETAIL_LENGTH]
         log_attempt("send_failed_network", detail)
