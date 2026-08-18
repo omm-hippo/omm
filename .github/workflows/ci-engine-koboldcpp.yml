@@ -1,0 +1,41 @@
+name: "Engine link check: KoboldCpp"
+
+"on":
+  push:
+    paths:
+      - "src/omm/linker.py"
+      - "src/omm/scan_import.py"
+      - "src/omm/hashutil.py"
+      - "scripts/verify_engine_link.py"
+      - ".github/workflows/ci-engine-koboldcpp.yml"
+  pull_request:
+    paths:
+      - "src/omm/linker.py"
+      - "src/omm/scan_import.py"
+      - "src/omm/hashutil.py"
+      - "scripts/verify_engine_link.py"
+      - ".github/workflows/ci-engine-koboldcpp.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Real KoboldCpp binary + omm link + filesystem recognition (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install omm
+        run: python -m pip install -e .
+      - name: Install, link, and verify KoboldCpp's models dir sees the linked model
+        # KoboldCpp never auto-scans its models dir (it has to be launched
+        # with --admindir pointed at it) - so recognition here means the
+        # file lands exactly where a real launch would expect it, not a
+        # live daemon call. See verify_engine_link.py's _verify_via_path.
+        run: python scripts/verify_engine_link.py koboldcpp
