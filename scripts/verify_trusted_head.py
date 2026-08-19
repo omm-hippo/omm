@@ -20,7 +20,16 @@ MIN_GIT_VERSION = (2, 34)
 
 def _run(args: list[str], *, timeout: int = 15) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        # git writes UTF-8 on every platform; see the note in src/omm/trust
+        # for why errors="replace" cannot weaken a verification decision.
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
     except (OSError, subprocess.TimeoutExpired) as error:
         return subprocess.CompletedProcess(args, 1, stdout="", stderr=str(error))
 

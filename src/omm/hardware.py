@@ -256,6 +256,8 @@ def _mac_cpu_brand() -> str:
             ["sysctl", "-n", "machdep.cpu.brand_string"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         return out.stdout.strip()
@@ -269,6 +271,8 @@ def _mac_chip_name() -> str:
             ["sysctl", "-n", "machdep.cpu.brand_string"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         return out.stdout.strip()
@@ -290,8 +294,33 @@ def _linux_cpu_model() -> str | None:
     return None
 
 
-def _windows_cim(class_name: str, properties: list[str]) -> list[dict]:
-    """Read a small CIM projection without depending on pywin32/wmi."""
+# Windows PowerShell 5.1 encodes redirected stdout with `[Console]::OutputEncoding`,
+# which defaults to the *console* output code page it inherited - 949 in a Korean
+# console, 437 in a US OEM one, 65001 only if something ran `chcp 65001` first. So
+# the bytes on the pipe are not UTF-8 by default and are not even stable across
+# machines. Worse, at a code page that cannot represent the text (437 and a Korean
+# device name) PowerShell substitutes "?" *before* writing, destroying the value
+# where no decoding choice on our side could recover it.
+#
+# Pinning `[Console]::OutputEncoding` inside the child, before it emits anything,
+# makes the pipe genuinely UTF-8 in every one of those cases, which is what the
+# `encoding="utf-8"` below then decodes correctly.
+_PS_FORCE_UTF8 = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+
+# ...but that assignment is not process-local: .NET implements it with
+# SetConsoleOutputCP, which mutates the console the child *shares with us*.
+# Measured on this repo's Korean Windows box: console code page 949 before the
+# call, 65001 after, i.e. the user's terminal is left switched for every command
+# they run once omm exits. CREATE_NO_WINDOW gives the child its own (hidden)
+# console instead, so the pin applies to that one and the caller's is untouched
+# - verified to stay at 949/437/65001 across the same matrix. It also stops a
+# console window flashing up when omm is launched from a GUI shell.
+# See tests/test_windows_cim_encoding.py for the live checks.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _powershell_json(command: str, *, timeout: float = 5):
+    """Run a PowerShell snippet that prints JSON and parse it, or return None."""
     powershell = os.path.join(
         os.environ.get("SystemRoot", r"C:\Windows"),
         "System32",
@@ -299,23 +328,33 @@ def _windows_cim(class_name: str, properties: list[str]) -> list[dict]:
         "v1.0",
         "powershell.exe",
     )
-    projection = ",".join(properties)
-    command = (
-        f"Get-CimInstance {class_name} | Select-Object {projection} | "
-        "ConvertTo-Json -Compress"
-    )
     try:
         result = subprocess.run(
-            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+            [
+                powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
+                "-Command", _PS_FORCE_UTF8 + command,
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=5,
+            timeout=timeout,
             check=True,
+            creationflags=_NO_WINDOW,
         )
-        data = json.loads(result.stdout.lstrip("\ufeff"))
+        return json.loads(result.stdout.lstrip("\ufeff"))
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None
+
+
+def _windows_cim(class_name: str, properties: list[str]) -> list[dict]:
+    """Read a small CIM projection without depending on pywin32/wmi."""
+    projection = ",".join(properties)
+    data = _powershell_json(
+        f"Get-CimInstance {class_name} | Select-Object {projection} | "
+        "ConvertTo-Json -Compress"
+    )
+    if data is None:
         return []
     if isinstance(data, dict):
         return [data]

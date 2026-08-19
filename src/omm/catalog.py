@@ -96,7 +96,7 @@ def rollback(
     )
     if selected is None:
         raise FileNotFoundError("no previous catalog snapshot is available")
-    payload = json.loads(selected.read_text())
+    payload = json.loads(selected.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise CatalogVerificationError("catalog snapshot is not a JSON object")
     archive_current_artifact(destination, history_dir)

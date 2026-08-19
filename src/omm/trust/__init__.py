@@ -37,6 +37,26 @@ from tempfile import TemporaryDirectory
 MIN_GIT_VERSION = (2, 34)  # first release with SSH commit-signature support
 TRUST_ANCHOR_REPO_PATH = "src/omm/trust/allowed_signers"
 
+# Every `subprocess.run` in this module decodes with these. git writes its
+# porcelain output and its i18n messages as UTF-8 on every platform, so this
+# is the *correct* decoding rather than a guess - unlike the interpreter's
+# locale default, which is cp949 on a Korean Windows box and raised
+# UnicodeDecodeError mid-`omm update` (the bug PR #127 fixed in linker.py).
+#
+# `errors="replace"` cannot weaken verification here, and that is deliberate:
+# no trust decision in this module is made from decoded text. The pass/fail
+# verdict is always `returncode` (git verify-commit, merge-base
+# --is-ancestor), and the only text ever compared or fed back into git is
+# `%H`/`rev-list` output - 40-character hex, pure ASCII, which round-trips
+# byte-identically under any ASCII-compatible codec and so can never acquire
+# a U+FFFD. Decoded text reaches nothing but the human-readable `detail`
+# string in a failure message. Raising instead of replacing would only turn a
+# cosmetically odd byte in a git error message into a crash, which is exactly
+# the failure mode being removed.
+#
+# The kwargs are spelled out at every call rather than shared through a dict
+# so that tests/test_subprocess_encoding_guard.py can see them in the AST.
+
 
 def current_trust_anchor() -> Path | None:
     """Path to the `allowed_signers` file baked into the *currently
@@ -50,7 +70,12 @@ def current_trust_anchor() -> Path | None:
 def _git_version_ok() -> bool:
     try:
         result = subprocess.run(
-            ["git", "--version"], capture_output=True, text=True, timeout=5
+            ["git", "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
@@ -80,6 +105,8 @@ def _signing_commit(repo_dir: Path, commit: str) -> str:
         ["git", "-C", str(repo_dir), "rev-list", "--parents", "-n", "1", commit],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=10,
     )
     if result.returncode != 0:
@@ -104,6 +131,8 @@ def _verify_signature(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
     except subprocess.TimeoutExpired:
@@ -180,6 +209,8 @@ def verify_update(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except subprocess.TimeoutExpired:
@@ -197,6 +228,8 @@ def verify_update(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
     except subprocess.TimeoutExpired:

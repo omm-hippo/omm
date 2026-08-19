@@ -39,7 +39,7 @@ def _load_cache() -> dict[str, Any]:
         return {}
     try:
         with locked(path, timeout=10):
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, FileLockTimeout):
         return {}
 
