@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 import requests
 from pathlib import Path
@@ -848,3 +850,31 @@ def test_install_textgenwebui_truncated_download_is_cleaned_up_and_reported_fail
     assert result.status == "failed"
     assert not extract_called
     assert not archive_path.exists()
+
+
+def test_stream_subprocess_decodes_utf8_regardless_of_locale(tmp_path):
+    """Package managers emit UTF-8 when piped; the interpreter's locale must
+    not decide how their output is decoded.
+
+    On Korean Windows the locale default is cp949, and winget's first
+    UTF-8-encoded Korean line ("찾음 Jan ...") starts with a byte cp949
+    cannot decode - `omm setup` died mid-install with UnicodeDecodeError.
+    On cp1252 CI runners the same bytes decode silently into mojibake
+    instead, which is why this asserts the Korean text round-trips, not
+    merely that no exception is raised. The child source goes through a
+    file, not argv: non-ASCII argv is itself encoding-hazardous on Windows.
+    """
+    child = tmp_path / "emit_utf8.py"
+    child.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write('\ucc3e\uc74c Jan \ubc84\uc804 0.8.4\\n'.encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+
+    lines = []
+    returncode = linker._stream_subprocess(
+        [sys.executable, str(child)], lines.append
+    )
+
+    assert returncode == 0
+    assert lines == ["찾음 Jan 버전 0.8.4"]
