@@ -258,7 +258,7 @@ collector:
 python scripts/train_model.py --offline \
   --telemetry-file benchmarks.jsonl \
   --quality-gate --minimum-real-configurations 100 \
-  --baseline published/recommend-model.json \
+  --baseline published/localfit-recommend-model.json \
   --output candidate.json --quality-report quality-report.json
 ```
 

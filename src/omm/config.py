@@ -42,13 +42,22 @@ LEGACY_FIREBASE_ENDPOINT = (
 # require - see omm.firebase_auth.
 FIREBASE_WEB_API_KEY = "AIzaSyBlnr7Qhu4H4z93X1jUpJDyuNz4D5tyca4"
 # model_url has gone through two GitHub org renames (minigu5/Localfit ->
-# minigu5/Omm -> omm-hippo/omm). It's never user-settable, so any config
+# minigu5/Omm -> omm-hippo/omm) plus one artifact rename (recommend-model.json
+# -> localfit-recommend-model.json). It's never user-settable, so any config
 # still holding one of the earlier defaults is stale, not a deliberate
 # override, and should be migrated forward.
 LEGACY_MODEL_URLS = frozenset(
     {
         "https://raw.githubusercontent.com/minigu5/Localfit/main/published/recommend-model.json",
         "https://raw.githubusercontent.com/minigu5/Omm/main/published/recommend-model.json",
+        "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.json",
+    }
+)
+# Same idea as LEGACY_MODEL_URLS, for the signed manifest URL after the
+# recommend-model.json -> localfit-recommend-model.json artifact rename.
+LEGACY_MANIFEST_URLS = frozenset(
+    {
+        "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.manifest.json",
     }
 )
 
@@ -69,10 +78,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # runtime flag.
     "error_report_send_policy": None,
     "rules_url": None,
-    "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.json",
+    "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.json",
     "default_engine": None,
     "external_scan_done": False,
-    "catalog_manifest_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.manifest.json",
+    "catalog_manifest_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.manifest.json",
     "catalog_public_key": "p8uo6GFXDcg8Rp7/t8GGl5hwPsXhObY5vI1sll5KpaI=",
     "contribute_always_ack": False,
     "update_channel": "stable",
@@ -81,6 +90,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "memory_guard_policy": "ask",
     "memory_guard_poll_seconds": 1.0,
     "memory_guard_low_memory_seconds": 3.0,
+    # Cumulative bytes reclaimed by `omm import`'s dedup step (a real
+    # duplicate .gguf replaced with a symlink into the hub). `omm link`
+    # never duplicates a file in the first place, so it has nothing to add
+    # here - see scan_import.adopt_group's bytes_saved.
+    "storage_saved_bytes": 0,
 }
 
 
@@ -109,6 +123,8 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
         merged["catalog_public_key"] = DEFAULT_CONFIG["catalog_public_key"]
     if data.get("model_url") in LEGACY_MODEL_URLS:
         merged["model_url"] = DEFAULT_CONFIG["model_url"]
+    if data.get("catalog_manifest_url") in LEGACY_MANIFEST_URLS:
+        merged["catalog_manifest_url"] = DEFAULT_CONFIG["catalog_manifest_url"]
     if "telemetry_backend" not in data:
         endpoint = data.get("telemetry_endpoint")
         if endpoint == LEGACY_FIREBASE_ENDPOINT and merged.get("telemetry_send_policy") != "always":
@@ -134,6 +150,9 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
         or not 0 <= low_seconds <= 300
     ):
         merged["memory_guard_low_memory_seconds"] = 3.0
+    saved_bytes = merged.get("storage_saved_bytes")
+    if isinstance(saved_bytes, bool) or not isinstance(saved_bytes, (int, float)) or saved_bytes < 0:
+        merged["storage_saved_bytes"] = 0
     return merged
 
 
@@ -178,3 +197,29 @@ def update_config(**changes: Any) -> dict[str, Any]:
         current.update(changes)
         atomic_write_text(CONFIG_PATH, json.dumps(current, indent=2) + "\n")
     return current
+
+
+def add_storage_saved_bytes(delta: int) -> int:
+    """Atomically add to the cumulative `storage_saved_bytes` counter and
+    return the new total. Read-modify-write happens under the same lock as
+    `update_config`, so two `omm import` runs racing each other (e.g. one
+    started by `_maybe_auto_import` from a concurrent session) can't clobber
+    each other's contribution the way a plain `update_config(storage_saved_bytes=...)`
+    computed from a value read outside the lock could."""
+    ensure_omm_home()
+    with locked(CONFIG_PATH):
+        data: dict[str, Any] = {}
+        if CONFIG_PATH.exists():
+            try:
+                loaded = json.loads(CONFIG_PATH.read_text())
+                if isinstance(loaded, dict):
+                    data = loaded
+                else:
+                    backup_corrupt_file(CONFIG_PATH)
+            except (OSError, json.JSONDecodeError):
+                backup_corrupt_file(CONFIG_PATH)
+        current = _merge_config(data)
+        total = int(current["storage_saved_bytes"]) + delta
+        current["storage_saved_bytes"] = total
+        atomic_write_text(CONFIG_PATH, json.dumps(current, indent=2) + "\n")
+    return total

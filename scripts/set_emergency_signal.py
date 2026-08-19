@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add, replace, or clear the `emergency` field on published/recommend-model.json.
+"""Add, replace, or clear the `emergency` field on published/localfit-recommend-model.json.
 
 This is the human-triggered "break glass" half of the emergency-update
 signal (see src/omm/predictor.py's extract_emergency_signal and
@@ -41,7 +41,7 @@ def clear_signal(artifact_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("artifact", type=Path, help="Path to recommend-model.json")
+    parser.add_argument("artifact", type=Path, help="Path to localfit-recommend-model.json")
     parser.add_argument("--clear", action="store_true", help="Remove the emergency field instead of setting one")
     parser.add_argument("--id", dest="id_", help="Stable identifier for this signal")
     parser.add_argument("--message", help="User-facing message shown by omm")

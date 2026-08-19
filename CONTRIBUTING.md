@@ -53,7 +53,7 @@ omm --help
    it creates a nested merge and invalidates the signed tip. Rebase first, or
    have a maintainer add a new allowed-signer SSH-signed non-merge tip
    afterward.
-3. **Don't touch `published/recommend-model.json` by hand.** That artifact is
+3. **Don't touch `published/localfit-recommend-model.json` by hand.** That artifact is
    produced by the training pipeline (`scripts/train_model.py`) and gated by
    the quality checks described in the README; hand edits will be
    overwritten or rejected.

@@ -9,7 +9,7 @@ runner = CliRunner()
 
 def test_catalog_signing_is_on_by_default():
     assert config.DEFAULT_CONFIG["catalog_manifest_url"] == (
-        "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.manifest.json"
+        "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.manifest.json"
     )
     public_key = config.DEFAULT_CONFIG["catalog_public_key"]
     assert public_key is not None
