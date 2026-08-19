@@ -34,6 +34,22 @@ CATALOG_HISTORY_DIR = OMM_HOME / "catalog-history"
 LEGACY_FIREBASE_ENDPOINT = (
     "https://localfit-8ab57-default-rtdb.firebaseio.com/telemetry.json"
 )
+# The RTDB `telemetry/$event` node now denies direct client writes (see
+# omm-hippo/omm#133): the Cloudflare Worker gateway is the only writer,
+# gated by proof-of-work instead of by an unlimited-mintable anonymous auth
+# token. `_post_event` detects this URL and POSTs {event_json, timestamp,
+# nonce} to it instead of writing to Firebase directly - see omm.telemetry.
+TELEMETRY_GATEWAY_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/telemetry"
+# error_report.endpoint() normally derives the error-report URL from
+# telemetry_endpoint by rewriting its last path segment - but that trick
+# assumes both channels live on the same host, which stopped being true the
+# moment telemetry_endpoint started pointing at the gateway instead of
+# Firebase directly (omm-hippo/omm#133 is telemetry-only; error_reports
+# still writes straight to Firebase with a client auth token, unaffected).
+# error_report.endpoint() special-cases TELEMETRY_GATEWAY_ENDPOINT to this
+# constant instead of rewriting it, so the default error-report destination
+# is unchanged from before the migration.
+ERROR_REPORTS_ENDPOINT = "https://localfit-8ab57-default-rtdb.firebaseio.com/error_reports.json"
 # Public client identifier for the `localfit-8ab57` Firebase project - not a
 # secret. Firebase Web API keys are safe to ship in client code (they only
 # identify the project to Google's Identity Toolkit; actual access is
@@ -63,12 +79,14 @@ LEGACY_MANIFEST_URLS = frozenset(
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "telemetry_send_policy": "ask",
-    # New installs point at our hosted Firebase collector by default. Existing
-    # configs that were already migrated to local-only (see _merge_config)
-    # are left untouched - this only affects users with no config.json yet.
-    # Teams may still point telemetry_endpoint at the bundled FastAPI server.
-    "telemetry_endpoint": LEGACY_FIREBASE_ENDPOINT,
-    "telemetry_backend": "firebase_legacy",
+    # New installs point at the PoW-gated Cloudflare Worker gateway by
+    # default (see TELEMETRY_GATEWAY_ENDPOINT). Existing configs already
+    # migrated to local-only or the legacy direct-Firebase endpoint are
+    # handled in _merge_config - this only affects users with no
+    # config.json yet. Teams may still point telemetry_endpoint at the
+    # bundled FastAPI server.
+    "telemetry_endpoint": TELEMETRY_GATEWAY_ENDPOINT,
+    "telemetry_backend": "gateway",
     # Error auto-reporting is strictly opt-in, so the effective default is
     # "never" (see omm.error_report.send_policy). It is stored as None
     # rather than the literal "never" so that "the user has never chosen"
@@ -134,6 +152,13 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
             merged["telemetry_backend"] = "firebase_legacy"
         elif endpoint:
             merged["telemetry_backend"] = "self_hosted"
+    # The direct-Firebase endpoint now rejects every write (omm-hippo/omm#133
+    # closed telemetry/$event to anything but the Cloudflare gateway) - any
+    # config still pointed at it, from any era, must move forward or its
+    # telemetry silently stops landing anywhere.
+    if merged.get("telemetry_backend") == "firebase_legacy" and merged.get("telemetry_endpoint") == LEGACY_FIREBASE_ENDPOINT:
+        merged["telemetry_endpoint"] = TELEMETRY_GATEWAY_ENDPOINT
+        merged["telemetry_backend"] = "gateway"
     if merged.get("memory_guard_policy") not in {"ask", "block", "observe"}:
         merged["memory_guard_policy"] = "ask"
     poll_seconds = merged.get("memory_guard_poll_seconds")

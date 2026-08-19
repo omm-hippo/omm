@@ -21,7 +21,10 @@ def test_unaccepted_legacy_firebase_default_migrates_to_local(isolated_omm_home)
     assert loaded["telemetry_backend"] == "local"
 
 
-def test_explicit_legacy_firebase_opt_in_is_preserved(isolated_omm_home):
+def test_explicit_legacy_firebase_opt_in_migrates_to_gateway(isolated_omm_home):
+    """omm-hippo/omm#133 closed the direct RTDB path - a config still
+    pointed at it, even one with a real opt-in, must move to the PoW-gated
+    gateway or its telemetry silently stops landing anywhere."""
     config.CONFIG_PATH.write_text(
         json.dumps(
             {
@@ -33,8 +36,63 @@ def test_explicit_legacy_firebase_opt_in_is_preserved(isolated_omm_home):
 
     loaded = config.load_config()
 
-    assert loaded["telemetry_endpoint"] == config.LEGACY_FIREBASE_ENDPOINT
-    assert loaded["telemetry_backend"] == "firebase_legacy"
+    assert loaded["telemetry_endpoint"] == config.TELEMETRY_GATEWAY_ENDPOINT
+    assert loaded["telemetry_backend"] == "gateway"
+
+
+def test_already_migrated_firebase_legacy_config_moves_to_gateway(isolated_omm_home):
+    """The common case: a config saved by an older omm version already has
+    telemetry_backend == 'firebase_legacy' from a previous load, so the
+    original-schema migration branch above never fires for it - this one
+    must catch it independently."""
+    config.CONFIG_PATH.write_text(
+        json.dumps(
+            {
+                "telemetry_send_policy": "always",
+                "telemetry_endpoint": config.LEGACY_FIREBASE_ENDPOINT,
+                "telemetry_backend": "firebase_legacy",
+            }
+        )
+    )
+
+    loaded = config.load_config()
+
+    assert loaded["telemetry_endpoint"] == config.TELEMETRY_GATEWAY_ENDPOINT
+    assert loaded["telemetry_backend"] == "gateway"
+
+
+def test_self_hosted_endpoint_is_left_alone(isolated_omm_home):
+    config.CONFIG_PATH.write_text(
+        json.dumps(
+            {
+                "telemetry_send_policy": "always",
+                "telemetry_endpoint": "https://telemetry.example.internal/v1/benchmarks",
+                "telemetry_backend": "self_hosted",
+            }
+        )
+    )
+
+    loaded = config.load_config()
+
+    assert loaded["telemetry_endpoint"] == "https://telemetry.example.internal/v1/benchmarks"
+    assert loaded["telemetry_backend"] == "self_hosted"
+
+
+def test_already_gateway_config_is_idempotent(isolated_omm_home):
+    config.CONFIG_PATH.write_text(
+        json.dumps(
+            {
+                "telemetry_send_policy": "always",
+                "telemetry_endpoint": config.TELEMETRY_GATEWAY_ENDPOINT,
+                "telemetry_backend": "gateway",
+            }
+        )
+    )
+
+    loaded = config.load_config()
+
+    assert loaded["telemetry_endpoint"] == config.TELEMETRY_GATEWAY_ENDPOINT
+    assert loaded["telemetry_backend"] == "gateway"
 
 
 def test_telemetry_opt_in_true_migrates_to_always_policy(isolated_omm_home):

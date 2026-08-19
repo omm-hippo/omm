@@ -80,3 +80,14 @@ def test_firebase_rules_bound_the_shape_and_size_of_an_error_report():
 
 def test_firebase_rules_leave_the_public_telemetry_node_alone():
     assert _rules()["telemetry"][".read"] is True
+
+
+def test_firebase_rules_deny_direct_telemetry_writes():
+    """omm-hippo/omm#133: anonymous auth tokens are free to mint, so
+    `auth != null` alone can't stop flooding. The Cloudflare Worker gateway
+    (proof-of-work gated) is the only writer now, using an Admin OAuth token
+    that bypasses these rules entirely - so `.validate` below is no longer
+    enforced by Firebase for that path. It stays in the file as the
+    documented source of truth cf-worker/src/validate.ts is ported from."""
+    event = _rules()["telemetry"]["$event"]
+    assert event[".write"] is False

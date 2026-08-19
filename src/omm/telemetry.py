@@ -10,6 +10,7 @@ converted into an unattended future send.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass
@@ -28,6 +29,11 @@ _MAX_PENDING_EVENTS = 1000
 _DEFAULT_MAX_RETRIES_PER_FLUSH = 3
 _CONTRIBUTE_SEND_ATTEMPTS = 3
 _MAX_FAILURE_DETAIL_LENGTH = 300
+# Must match the Cloudflare Worker's POW_DIFFICULTY_PREFIX_LENGTH
+# (cf-worker/wrangler.toml) - a mismatch makes every submission fail, since
+# the server only accepts nonces meeting *its* target. See omm-hippo/omm#133.
+_POW_DIFFICULTY_PREFIX_LENGTH = 5
+_POW_DIFFICULTY_PREFIX = "0" * _POW_DIFFICULTY_PREFIX_LENGTH
 
 
 @dataclass(frozen=True)
@@ -162,11 +168,26 @@ def _append_pending(event: dict[str, Any]) -> None:
         pass
 
 
+def _solve_proof_of_work(event_json: str) -> tuple[int, int]:
+    """Find (timestamp_ms, nonce) such that
+    SHA256(f"{event_json}:{timestamp_ms}:{nonce}") starts with
+    _POW_DIFFICULTY_PREFIX. Binding the puzzle to the exact payload string
+    and a fresh timestamp is what the gateway checks - see cf-worker/src/pow.ts
+    and omm-hippo/omm#133."""
+    timestamp_ms = int(time.time() * 1000)
+    nonce = 0
+    prefix = f"{event_json}:{timestamp_ms}:"
+    while True:
+        digest = hashlib.sha256(f"{prefix}{nonce}".encode()).hexdigest()
+        if digest.startswith(_POW_DIFFICULTY_PREFIX):
+            return timestamp_ms, nonce
+        nonce += 1
+
+
 def _post_event(event: dict[str, Any]) -> bool:
     """Actually attempt the HTTP POST and log the outcome. Returns True on
-    a 2xx response, False otherwise (network error, bad status, no endpoint
-    configured, or - for the hosted Firebase collector, whose RTDB rules
-    require `auth != null` - no anonymous auth token available)."""
+    a 2xx response, False otherwise (network error, bad status, or no
+    endpoint configured)."""
     import requests
 
     endpoint = load_config().get("telemetry_endpoint")
@@ -175,23 +196,49 @@ def _post_event(event: dict[str, Any]) -> bool:
         _set_send_status(SendStatus("skipped_no_endpoint"))
         return False
 
-    params = {}
-    if "firebaseio.com" in endpoint:
-        from omm import firebase_auth
-
-        id_token = firebase_auth.get_id_token()
-        if id_token is None:
-            log_attempt("send_failed_no_auth_token")
-            _set_send_status(SendStatus("send_failed_no_auth_token", retryable=True))
-            return False
-        params["auth"] = id_token
-
     # Firebase treats JSON null as deletion semantics, while other collectors
     # may validate it as a present value. Optional telemetry fields therefore
     # use one portable representation: omit keys whose value is None.
     wire_event = {key: value for key, value in event.items() if value is not None}
+
+    if "firebaseio.com" in endpoint:
+        # The direct RTDB path is closed (auth != null alone can't stop
+        # flooding - anonymous UIDs are free to mint). Any config still
+        # pointed here is stale; config._merge_config migrates it forward on
+        # the next load, but a send attempted before that happens must fail
+        # cleanly rather than silently write nothing.
+        log_attempt("skipped_legacy_endpoint")
+        _set_send_status(SendStatus("skipped_legacy_endpoint"))
+        return False
+
+    if endpoint == config.TELEMETRY_GATEWAY_ENDPOINT:
+        event_json = json.dumps(wire_event, sort_keys=True, separators=(",", ":"))
+        timestamp_ms, nonce = _solve_proof_of_work(event_json)
+        try:
+            resp = requests.post(
+                endpoint,
+                json={"event_json": event_json, "timestamp": timestamp_ms, "nonce": nonce},
+                timeout=10,
+            )
+        except requests.RequestException as e:
+            detail = str(e)[:_MAX_FAILURE_DETAIL_LENGTH]
+            log_attempt("send_failed_network", detail)
+            _set_send_status(SendStatus("send_failed_network", detail=detail, retryable=True))
+            return False
+        if not (200 <= resp.status_code < 300):
+            outcome = f"send_failed_http_{resp.status_code}"
+            response_detail = str(getattr(resp, "text", "") or "")
+            detail = " ".join(response_detail.split())[:_MAX_FAILURE_DETAIL_LENGTH]
+            retryable = resp.status_code in {408, 425, 429} or resp.status_code >= 500
+            log_attempt(outcome, detail)
+            _set_send_status(SendStatus(outcome, status_code=resp.status_code, detail=detail, retryable=retryable))
+            return False
+        log_attempt("sent_ok")
+        _set_send_status(SendStatus("sent_ok", status_code=resp.status_code))
+        return True
+
     try:
-        resp = requests.post(endpoint, params=params, json=wire_event, timeout=5)
+        resp = requests.post(endpoint, json=wire_event, timeout=5)
     except requests.RequestException as e:
         detail = str(e)[:_MAX_FAILURE_DETAIL_LENGTH]
         log_attempt("send_failed_network", detail)

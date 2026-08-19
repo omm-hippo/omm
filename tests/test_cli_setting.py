@@ -41,14 +41,16 @@ def test_setting_catalog_trust_saves_verified_public_key(isolated_omm_home, monk
     assert saved["catalog_public_key"] == "key"
 
 
-def test_setting_upload_enable_uses_default_firebase_endpoint(isolated_omm_home):
+def test_setting_upload_enable_migrates_legacy_endpoint_to_gateway(isolated_omm_home):
+    """omm-hippo/omm#133 closed the direct RTDB path - a config still
+    pointed at it must move to the gateway rather than send doomed writes."""
     config.update_config(telemetry_endpoint=config.LEGACY_FIREBASE_ENDPOINT, telemetry_backend="firebase_legacy")
 
     result = runner.invoke(cli.app, ["setting", "upload", "--enable"])
 
     assert result.exit_code == 0, result.stdout
     saved = config.load_config()
-    assert saved["telemetry_endpoint"] == config.LEGACY_FIREBASE_ENDPOINT
+    assert saved["telemetry_endpoint"] == config.TELEMETRY_GATEWAY_ENDPOINT
     assert saved["telemetry_send_policy"] == "always"
 
 

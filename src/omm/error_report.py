@@ -125,11 +125,17 @@ def endpoint(config_data: dict[str, Any] | None = None) -> str | None:
     host and no second URL can drift out of sync. A telemetry endpoint
     that does not end in that segment yields `None` rather than a guessed
     path - posting error data to an address nobody configured is worse
-    than not reporting at all.
+    than not reporting at all. `TELEMETRY_GATEWAY_ENDPOINT` is a special
+    case, not a segment rewrite - see the constant's docstring.
     """
     value = (read_config() if config_data is None else config_data).get("telemetry_endpoint")
     if not isinstance(value, str) or not secure_endpoint(value):
         return None
+    if value == config.TELEMETRY_GATEWAY_ENDPOINT:
+        # The gateway only speaks the PoW-wrapped telemetry protocol, not
+        # raw Firebase writes - error_reports must keep going straight to
+        # Firebase, so it can't be derived by rewriting this URL's path.
+        return config.ERROR_REPORTS_ENDPOINT
     try:
         parsed = urlparse(value)
     except ValueError:

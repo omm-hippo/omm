@@ -289,7 +289,10 @@ def test_flush_pending_never_sends_after_user_opts_out(isolated_omm_home, monkey
     assert json.loads(pending_path.read_text()) == [{"model": "private"}]
 
 
-def test_post_event_fetches_auth_token_for_firebase_endpoint(isolated_omm_home, monkeypatch):
+def test_post_event_skips_the_closed_direct_firebase_endpoint(isolated_omm_home, monkeypatch):
+    """omm-hippo/omm#133: telemetry/$event denies every direct write now, so
+    a config still pointed at raw Firebase (stale, or migrated away from
+    mid-flight) must fail cleanly rather than send a doomed request."""
     monkeypatch.setattr(
         telemetry,
         "load_config",
@@ -298,7 +301,26 @@ def test_post_event_fetches_auth_token_for_firebase_endpoint(isolated_omm_home, 
             "telemetry_endpoint": "https://x-default-rtdb.firebaseio.com/telemetry.json",
         },
     )
-    monkeypatch.setattr(firebase_auth, "get_id_token", lambda: "fake-id-token")
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append((a, k)))
+
+    result = telemetry.send_event({"x": 1})
+
+    assert result is False
+    assert calls == []
+    log_lines = (isolated_omm_home / "telemetry.log").read_text().splitlines()
+    assert json.loads(log_lines[0])["outcome"] == "skipped_legacy_endpoint"
+
+
+def test_post_event_solves_proof_of_work_for_the_gateway_endpoint(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {
+            "telemetry_send_policy": "always",
+            "telemetry_endpoint": config.TELEMETRY_GATEWAY_ENDPOINT,
+        },
+    )
     calls = []
     monkeypatch.setattr(
         requests, "post", lambda *a, **k: calls.append((a, k)) or _FakeResp(200)
@@ -308,30 +330,37 @@ def test_post_event_fetches_auth_token_for_firebase_endpoint(isolated_omm_home, 
 
     assert result is True
     assert len(calls) == 1
-    assert calls[0][1]["params"] == {"auth": "fake-id-token"}
+    args, kwargs = calls[0]
+    assert args[0] == config.TELEMETRY_GATEWAY_ENDPOINT
+    body = kwargs["json"]
+    assert set(body) == {"event_json", "timestamp", "nonce"}
+    assert body["event_json"] == '{"x":1}'
+    import hashlib
+
+    digest = hashlib.sha256(
+        f"{body['event_json']}:{body['timestamp']}:{body['nonce']}".encode()
+    ).hexdigest()
+    assert digest.startswith("0" * telemetry._POW_DIFFICULTY_PREFIX_LENGTH)
 
 
-def test_post_event_skips_send_when_firebase_auth_token_unavailable(
-    isolated_omm_home, monkeypatch
-):
+def test_post_event_reports_gateway_rejection(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(
         telemetry,
         "load_config",
         lambda: {
             "telemetry_send_policy": "always",
-            "telemetry_endpoint": "https://x-default-rtdb.firebaseio.com/telemetry.json",
+            "telemetry_endpoint": config.TELEMETRY_GATEWAY_ENDPOINT,
         },
     )
-    monkeypatch.setattr(firebase_auth, "get_id_token", lambda: None)
-    calls = []
-    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(
+        requests, "post", lambda *a, **k: _FakeResp(400, text='{"error":"invalid event"}')
+    )
 
     result = telemetry.send_event({"x": 1})
 
     assert result is False
-    assert calls == []
     log_lines = (isolated_omm_home / "telemetry.log").read_text().splitlines()
-    assert json.loads(log_lines[0])["outcome"] == "send_failed_no_auth_token"
+    assert json.loads(log_lines[0])["outcome"] == "send_failed_http_400"
 
 
 def test_post_event_skips_auth_for_non_firebase_endpoint(isolated_omm_home, monkeypatch):
