@@ -4,7 +4,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -110,3 +112,37 @@ def test_windows_executable_paths_are_explicit():
         root / "Scripts" / "python.exe"
     )
     assert pypi_release._bin_executable(root, "omm", "nt") == root / "omm.exe"
+
+
+def test_pipx_smoke_rejects_a_dangling_launcher(tmp_path, monkeypatch):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "omm-model"\nversion = "1.2.3"\n',
+        encoding="utf-8",
+    )
+    launcher = tmp_path / "omm"
+
+    monkeypatch.setattr(
+        pypi_release.tempfile,
+        "TemporaryDirectory",
+        lambda **_kwargs: nullcontext(str(tmp_path)),
+    )
+    monkeypatch.setattr(pypi_release, "_bin_executable", lambda *_args: launcher)
+    monkeypatch.setattr(
+        pypi_release.os.path,
+        "lexists",
+        lambda path: Path(path) == launcher,
+    )
+
+    def fake_run(command, **_kwargs):
+        if command == [str(launcher), "--version"]:
+            return subprocess.CompletedProcess(command, 0, stdout="omm 1.2.3\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(pypi_release.subprocess, "run", fake_run)
+
+    with pytest.raises(
+        pypi_release.ReleaseValidationError,
+        match="pipx uninstall left .*omm behind",
+    ):
+        pypi_release.pipx_smoke("https://pypi.example/simple/", pyproject)

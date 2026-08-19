@@ -285,7 +285,10 @@ def pipx_smoke(index_url: str, pyproject: Path = PYPROJECT) -> None:
             env=environment,
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
-        if command.exists():
+        # Path.exists() follows symlinks and therefore returns False for a
+        # broken launcher left behind after uninstall.  lexists() verifies
+        # that no directory entry remains, including a dangling symlink.
+        if os.path.lexists(command):
             raise ReleaseValidationError(f"pipx uninstall left {command} behind")
 
 
