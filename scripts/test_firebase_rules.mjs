@@ -874,4 +874,75 @@ assert.equal(
   "v9 Ollama success accepted a missing engine_version",
 );
 
+// --- /error_reports: a write-only channel -----------------------------------
+// Error reports can contain far more sensitive text than a benchmark row, so
+// unlike /telemetry this node must never be readable. Writes stay open (the
+// client has no account and reports are useful from any machine), but each
+// one must be a new child in the documented shape.
+
+const validReport = {
+  schema_version: 1,
+  error_type: "QualityEvaluationError",
+  error_message: "Ollama /api/generate request failed",
+  trigger: "install_quality_eval",
+  recorded_at: "2026-08-19T00:00:00+00:00",
+  client_version: "0.1.0",
+  os_name: "Windows",
+  os_version: "11",
+  cpu_arch: "x86_64",
+  cpu_score: 5600,
+  cpu_tier: 0,
+  gpu_score: 4090,
+  gpu_tier: 0,
+  catalog_ref: "unsloth/Qwen3-4B-GGUF:Qwen3-4B-Q4_K_M.gguf",
+  engine: "ollama",
+};
+
+const reportCreated = await request("error_reports", "POST", validReport);
+assert.equal(reportCreated.ok, true, `valid error report was rejected (${reportCreated.status})`);
+
+// omm attaches an anonymous Firebase token when it has one, but a report is
+// worth collecting even when anonymous sign-in failed - which is itself a
+// plausible thing to be reporting about.
+const reportUnauthenticated = await request("error_reports", "POST", validReport, { auth: false });
+assert.equal(
+  reportUnauthenticated.ok,
+  true,
+  `error report without auth was rejected (${reportUnauthenticated.status})`,
+);
+
+// The whole point of the separate node: nobody may read it back.
+for (const auth of [true, false]) {
+  const read = await request("error_reports", "GET", undefined, { auth });
+  assert.equal(read.ok, false, `error_reports was readable (auth: ${auth})`);
+  const readChild = await request("error_reports/some-report-id", "GET", undefined, { auth });
+  assert.equal(readChild.ok, false, `an error report child was readable (auth: ${auth})`);
+}
+
+// Reports are append-only: a fixed key can be created once and never
+// overwritten, so no writer can rewrite or blank out someone else's report.
+const fixedKey = `error_reports/fixed-${Date.now()}`;
+const firstWrite = await request(fixedKey, "PUT", validReport);
+assert.equal(firstWrite.ok, true, `creating a report at a known key was rejected (${firstWrite.status})`);
+const reportOverwrite = await request(fixedKey, "PUT", { ...validReport, error_message: "changed" });
+assert.equal(reportOverwrite.ok, false, "an existing error report could be overwritten");
+
+for (const [name, body] of [
+  ["a non-object payload", "just a string"],
+  ["a report with no error_type", { ...validReport, error_type: undefined }],
+  ["a report with no trigger", { ...validReport, trigger: undefined }],
+  ["a report with no timestamp", { ...validReport, recorded_at: undefined }],
+  ["an unknown trigger", { ...validReport, trigger: "something_else" }],
+  ["an unknown field", { ...validReport, traceback: "File \"/home/user/x.py\", line 1" }],
+  ["a future schema version", { ...validReport, schema_version: 2 }],
+  ["an oversized message", { ...validReport, error_message: "x".repeat(2001) }],
+  ["an oversized error type", { ...validReport, error_type: "E".repeat(201) }],
+  ["a windows-path catalog ref", { ...validReport, catalog_ref: "C:\\models\\model.gguf" }],
+  ["an implausible cpu score", { ...validReport, cpu_score: 100000 }],
+  ["a numeric error message", { ...validReport, error_message: 42 }],
+]) {
+  const rejected = await request("error_reports", "POST", body);
+  assert.equal(rejected.ok, false, `error_reports accepted ${name}`);
+}
+
 console.log("Firebase rules scenarios passed.");

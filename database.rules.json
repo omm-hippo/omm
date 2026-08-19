@@ -190,6 +190,64 @@
         }
       }
     },
+    "error_reports": {
+      ".read": false,
+      "$report": {
+        ".write": "!data.exists()",
+        ".validate": "newData.hasChildren(['schema_version', 'error_type', 'error_message', 'trigger', 'recorded_at', 'os_name'])",
+        "schema_version": {
+          ".validate": "newData.isNumber() && newData.val() == 1"
+        },
+        "error_type": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 200"
+        },
+        "error_message": {
+          ".validate": "newData.isString() && newData.val().length <= 2000"
+        },
+        "trigger": {
+          ".validate": "newData.isString() && (newData.val() == 'install_quality_eval' || newData.val() == 'daemon_restart_giveup' || newData.val() == 'crash')"
+        },
+        "subcommand": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 64)"
+        },
+        "client_version": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 100)"
+        },
+        "os_name": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 128"
+        },
+        "os_version": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 128)"
+        },
+        "cpu_arch": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 64)"
+        },
+        "cpu_score": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 99999)"
+        },
+        "cpu_tier": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 10)"
+        },
+        "gpu_score": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 99999)"
+        },
+        "gpu_tier": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 10)"
+        },
+        "catalog_ref": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 620 && !newData.val().contains('\\\\'))"
+        },
+        "engine": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 32)"
+        },
+        "recorded_at": {
+          ".validate": "newData.isString() && newData.val().length >= 20 && newData.val().length <= 50"
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
+    },
     "$other": {
       ".read": false,
       ".write": false

@@ -467,7 +467,7 @@ def _scan_nvidia_vram() -> tuple[str | None, float | None, float | None]:
         return None, None, None
 
 
-def scan_hardware() -> HardwareInfo:
+def _scan_hardware() -> HardwareInfo:
     vm = psutil.virtual_memory()
     ram_total_gb = vm.total / (1024**3)
     ram_available_gb = vm.available / (1024**3)
@@ -524,3 +524,22 @@ def scan_hardware() -> HardwareInfo:
         cpu_physical_cores=cpu_physical_cores,
         cpu_logical_cores=cpu_logical_cores,
     )
+
+
+# Snapshot of the most recent scan in this process. A full scan shells out to
+# platform tools and is far too slow to run "just in case", so best-effort
+# consumers that would merely like hardware context (see omm.error_report)
+# reuse whatever the command already scanned instead of forcing one.
+_last_scan: HardwareInfo | None = None
+
+
+def scan_hardware() -> HardwareInfo:
+    global _last_scan
+    _last_scan = _scan_hardware()
+    return _last_scan
+
+
+def last_scan() -> HardwareInfo | None:
+    """The most recent `scan_hardware()` result in this process, or None
+    when this command never needed one."""
+    return _last_scan
