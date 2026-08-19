@@ -43,6 +43,7 @@ from omm import (
     config as config_mod,
     contribute_memory,
     contribute_state,
+    error_report,
     linker,
     memory_guard as memory_guard_mod,
     onboarding,
@@ -459,6 +460,15 @@ def _root(
         if resent:
             err_console.print(
                 f"[muted]Sent {resent} queued telemetry event(s) "
+                "from a previous session.[/muted]"
+            )
+        # Only an `always` policy flushes unattended here; under `ask` the
+        # queue deliberately waits for the next `omm contribute`, which is
+        # the one place the user is asked about error reports.
+        reported = error_report.flush_pending()
+        if reported:
+            err_console.print(
+                f"[muted]Sent {reported} queued error report(s) "
                 "from a previous session.[/muted]"
             )
 
@@ -1661,6 +1671,71 @@ def _resolve_upload_decision(prompt: str) -> bool:
                 "[muted]Saved: omm will now always send benchmark results "
                 "(change with `omm setting upload`).[/muted]"
             )
+        return True
+    return answer == "yes"
+
+
+def _resolve_error_report_decision(flag: bool) -> bool:
+    """Decide once, before the unattended loop starts, whether this run may
+    collect and send error reports.
+
+    Same shape as the telemetry upload policy for the same reason: an
+    unattended `omm contribute` must never be interrupted by a question
+    mid-loop, so the single question is asked here or not at all. The
+    differences from telemetry are the opt-in default and the fact that a
+    stored `never` outranks the runtime flag.
+    """
+    config_data = load_config()
+    policy = error_report.send_policy(config_data)
+    explicitly_set = error_report.policy_is_set(config_data)
+    if not error_report.enabled(config_data):
+        if flag:
+            err_console.print(
+                "[warning]--report-errors needs a telemetry endpoint (the error-report "
+                "channel is derived from it). Set one with `omm setting telemetry "
+                "--endpoint` first.[/warning]"
+            )
+        return False
+    if policy == "always":
+        # Already opted in permanently; the flag has nothing left to add.
+        return True
+    if policy == "never":
+        if explicitly_set:
+            if flag:
+                err_console.print(
+                    "[warning]Error reports are turned off, so --report-errors is ignored. "
+                    "Run `omm setting error-reports --ask` (or --enable) first if you want "
+                    "to send them.[/warning]"
+                )
+            return False
+        if flag:
+            console.print(
+                "[muted]--report-errors: error reports from this run only will be sent. "
+                "Your saved setting is unchanged (`omm setting error-reports --enable` "
+                "makes it permanent).[/muted]"
+            )
+            return True
+        return False
+    # policy == "ask"
+    if flag:
+        return True
+    if not _stdin_is_tty() or _global_opts().yes:
+        # No usable prompt, and consent is never assumed for this feature.
+        return False
+    report, is_example = error_report.preview_report()
+    console.print(
+        "[muted]omm would send "
+        f"{'a report shaped exactly like this' if is_example else 'this report, already queued from an earlier run,'}"
+        " to the write-only error-report channel (see docs/error-reports.md):[/muted]"
+    )
+    console.print(f"[muted]{escape(error_report.preview_text(report))}[/muted]", highlight=False)
+    answer = _ask_upload_choice("Send scrubbed error reports?")
+    if answer == "always":
+        config_mod.update_config(error_report_send_policy="always")
+        console.print(
+            "[muted]Saved: omm will now always send scrubbed error reports "
+            "(change with `omm setting error-reports`).[/muted]"
+        )
         return True
     return answer == "yes"
 
@@ -3239,6 +3314,16 @@ def _install_impl(
                         f"[warning]Benchmarking {filename} stopped: {error}. "
                         "Cleaning up and moving on.[/warning]"
                     )
+                    if contribute_mode:
+                        # Queue only - an unattended loop must not block on
+                        # an HTTP round trip, and the send policy was
+                        # already resolved once at `contribute` start.
+                        error_report.queue_report(
+                            error,
+                            trigger="install_quality_eval",
+                            catalog_ref=error_report.catalog_ref(repo_id, filename),
+                            engine=benchmark_engine,
+                        )
                 finally:
                     if not model_was_preloaded:
                         if benchmark_engine == "lmstudio":
@@ -4239,6 +4324,59 @@ def configure_upload(
     table.add_column("Value")
     policy = current.get("telemetry_send_policy", "ask")
     table.add_row("Uploads", {"always": "always", "never": "never", "ask": "ask (default)"}[policy])
+    console.print(table)
+
+
+@setting_app.command(name="error-reports")
+@global_flags
+def configure_error_reports(
+    enable: bool = typer.Option(False, "--enable", help="Always send scrubbed error reports without asking."),
+    disable: bool = typer.Option(False, "--disable", help="Never send error reports (the default)."),
+    ask: bool = typer.Option(False, "--ask", help="Ask once per `omm contribute` run before sending."),
+) -> None:
+    """Configure the opt-in error-report policy; see docs/error-reports.md for what is sent.
+
+    Kept separate from `omm setting upload` on purpose: error reports go to
+    a different, write-only channel than benchmark telemetry, so the two
+    consents are managed independently.
+    """
+    chosen = [flag for flag in (enable, disable, ask) if flag]
+    if len(chosen) > 1:
+        err_console.print("[error]Choose only one of --enable, --disable, or --ask.[/error]")
+        raise typer.Exit(1)
+    current = load_config()
+    changes = {}
+    if enable:
+        if not error_report.enabled(current):
+            err_console.print(
+                "[error]Error reports are derived from the telemetry endpoint. Set one with "
+                "`omm setting telemetry --endpoint` before enabling them.[/error]"
+            )
+            raise typer.Exit(1)
+        changes["error_report_send_policy"] = "always"
+    elif disable:
+        changes["error_report_send_policy"] = "never"
+    elif ask:
+        changes["error_report_send_policy"] = "ask"
+    if changes:
+        current = config_mod.update_config(**changes)
+    if disable:
+        # Opting out also drops whatever was queued under an earlier consent
+        # - leaving it on disk waiting for a policy that will never come
+        # helps nobody.
+        discarded = error_report.discard_pending()
+        if discarded:
+            console.print(f"[muted]Discarded {discarded} queued error report(s).[/muted]")
+    table = Table(title="Error report policy", show_header=False)
+    table.add_column("Field", style="accent")
+    table.add_column("Value")
+    labels = {
+        "always": "always",
+        "never": "never (default)" if not error_report.policy_is_set(current) else "never",
+        "ask": "ask once per contribute run",
+    }
+    table.add_row("Error reports", labels[error_report.send_policy(current)])
+    table.add_row("Destination", str(error_report.endpoint(current) or "not available"))
     console.print(table)
 
 
@@ -6416,6 +6554,19 @@ def _run_contribution_loop(
                     f"[error]Couldn't restart the {engine_label} daemon - giving up on "
                     f"{display_name} for now.[/error]"
                 )
+                start_error = benchmark.last_daemon_start_error()
+                error_report.queue_report(
+                    trigger="daemon_restart_giveup",
+                    error_type="DaemonRestartFailed",
+                    message=(
+                        f"{engine_label} daemon crashed while benchmarking and could not be "
+                        f"restarted: {start_error or 'unknown startup failure'}"
+                    ),
+                    catalog_ref=error_report.catalog_ref(
+                        candidate.get("repo_id"), candidate.get("filename")
+                    ),
+                    engine=engine,
+                )
             else:
                 if daemon_ref is not None:
                     daemon_ref["proc"] = restarted
@@ -6646,7 +6797,16 @@ def _print_contribution_summary(
 
 @app.command()
 @global_flags
-def contribute() -> None:
+def contribute(
+    report_errors: bool = typer.Option(
+        False,
+        "--report-errors",
+        help=(
+            "Send scrubbed error reports from this run only (does not change the saved "
+            "policy; ignored if error reports are explicitly turned off)."
+        ),
+    ),
+) -> None:
     """Benchmark models in a loop to improve `omm recommend`.
 
     Repeatedly installs, benchmarks, and uploads telemetry for
@@ -6661,6 +6821,18 @@ def contribute() -> None:
             "Run `omm setting upload --enable` or `--ask` first.[/error]"
         )
         raise typer.Exit(1)
+    # Resolve the error-report consent here, once, for the same reason the
+    # upload policy is resolved here: the loop below runs unattended and
+    # must never stop to ask. A "no" only skips the reports - unlike the
+    # upload policy it never blocks the run, since error reports are an
+    # extra, not what `omm contribute` exists to do.
+    error_report.set_run_consent(_resolve_error_report_decision(report_errors))
+    if error_report.run_consent():
+        flushed = error_report.flush_pending(max_retries=10, force=True)
+        if flushed:
+            console.print(
+                f"[muted]Sent {flushed} error report(s) queued by an earlier run.[/muted]"
+            )
     _ensure_contribute_start_space()
     # Engine availability is a preflight, not part of the expensive-work
     # consent. Do it first so users are never asked to approve bandwidth,
@@ -6808,14 +6980,73 @@ def contribute() -> None:
     finally:
         if daemon_ref["proc"] is not None:
             _stop_engine_daemon(engine, daemon_ref["proc"])
+        # Everything this session queued goes out here, after the loop, so
+        # no benchmark ever waited on an HTTP round trip for a report.
+        if error_report.run_consent():
+            sent = error_report.flush_pending(max_retries=50, force=True)
+            if sent and not _global_opts().quiet:
+                console.print(f"[muted]Sent {sent} error report(s) from this session.[/muted]")
+        error_report.set_run_consent(None)
+
+
+def _known_command_names() -> set[str]:
+    """Every subcommand name omm registers, including command groups."""
+    names: set[str] = set()
+    for command in getattr(app, "registered_commands", []):
+        name = command.name or getattr(command.callback, "__name__", "")
+        if name:
+            names.add(name.replace("_", "-"))
+    for group in getattr(app, "registered_groups", []):
+        name = group.name or getattr(getattr(group.typer_instance, "info", None), "name", None)
+        if name:
+            names.add(name)
+    return names
+
+
+# Resolved once, at import, after every command has registered itself: this
+# must stay correct even when something has replaced the module-level `app`
+# (the crash hook's own tests do exactly that).
+_REGISTERED_COMMAND_NAMES = frozenset(_known_command_names())
+
+
+def _crash_subcommand(argv: list[str] | None = None) -> str | None:
+    """Which subcommand a crash happened under, or None when it can't be
+    told.
+
+    Deliberately matched against the registered names instead of echoing
+    the first argument back: a command line can carry search queries,
+    URLs, and local file paths, and none of that belongs in a report.
+    """
+    tokens = sys.argv[1:] if argv is None else argv
+    known = _REGISTERED_COMMAND_NAMES
+    for token in tokens:
+        if token.startswith("-"):
+            continue
+        return token if token in known else None
+    return None
+
+
+def _queue_crash_report(error: BaseException) -> None:
+    """Trigger 3: record an unhandled crash for later sending.
+
+    Queue only. Prompting for consent right after a crash would be a poor
+    trade for the user, and a synchronous upload would delay the traceback
+    they actually need, so the send happens on a later run (immediately for
+    an `always` policy, at the next `omm contribute` for `ask`).
+    """
+    try:
+        error_report.queue_report(error, trigger="crash", subcommand=_crash_subcommand())
+    except Exception:
+        pass
 
 
 def main() -> None:
     """Console-script entry point (see pyproject.toml [project.scripts]).
     Catches disk-full errors that escape every local handler - e.g. a JSON
     write during `omm autoremove` - and prints one clean line instead of
-    Typer's default traceback. Everything else propagates untouched so a
-    genuine bug still surfaces as a normal traceback and can be reported."""
+    Typer's default traceback. Everything else is queued as an opt-in error
+    report and then propagates untouched, so a genuine bug still surfaces as
+    a normal traceback and can be reported."""
     try:
         app()
     except InsufficientDiskSpaceError as e:
@@ -6828,6 +7059,13 @@ def main() -> None:
                 "Free up space and try again.[/error]"
             )
             raise SystemExit(1) from None
+        _queue_crash_report(e)
+        raise
+    except Exception as e:
+        # SystemExit and KeyboardInterrupt are BaseException, so a normal
+        # `typer.Exit` (including every `raise typer.Exit(1)` error path)
+        # and a Ctrl+C never reach here - only real crashes do.
+        _queue_crash_report(e)
         raise
 
 

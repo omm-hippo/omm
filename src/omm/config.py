@@ -60,6 +60,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Teams may still point telemetry_endpoint at the bundled FastAPI server.
     "telemetry_endpoint": LEGACY_FIREBASE_ENDPOINT,
     "telemetry_backend": "firebase_legacy",
+    # Error auto-reporting is strictly opt-in, so the effective default is
+    # "never" (see omm.error_report.send_policy). It is stored as None
+    # rather than the literal "never" so that "the user has never chosen"
+    # stays distinguishable from "the user chose never": only the latter
+    # makes `omm contribute --report-errors` a no-op with a guidance
+    # message, since an explicit opt-out must not be overridable by a
+    # runtime flag.
+    "error_report_send_policy": None,
     "rules_url": None,
     "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.json",
     "default_engine": None,
