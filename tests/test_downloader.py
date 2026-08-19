@@ -987,11 +987,14 @@ def test_download_file_parallel_path_converts_enospc_write_error_to_insufficient
             return self.file.write(data)
 
     original_open = Path.open
-    def fake_open(self, mode="r"):
-        # Intercept part_path.open to use our wrapper; let other opens pass through.
+    def fake_open(self, mode="r", *args, **kwargs):
+        # Intercept part_path.open to use our wrapper; let other opens pass
+        # through with whatever arguments they were given - the text-mode
+        # sidecar write passes encoding="utf-8", and swallowing it here would
+        # make this double silently disagree with the code under test.
         if "b" in mode and self.name.endswith(".part"):
             return _PartiallyFullDiskFile(self, mode)
-        return original_open(self, mode)
+        return original_open(self, mode, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", fake_open)
 
