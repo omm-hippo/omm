@@ -127,12 +127,11 @@ the current value in a table. Reuses `render_preview` +
 
 ### 6. Migration of ~200 existing call sites
 
-`cli.py`, `onboarding.py`, `recommend_ui.py` currently hardcode literal
-color names in rich markup (`[red]`, `[yellow]`, `[green]`, `[blue]`,
-one `[cyan]`) and in `style="..."` kwargs (`"blue"`, `"white"`,
-`"cyan"`). These already carry a consistent meaning throughout the
-codebase, so the migration is a scripted rename, not a semantic
-redesign:
+`cli.py` and `onboarding.py` currently hardcode literal color names in
+rich markup (`[red]`, `[yellow]`, `[green]`, `[blue]`, one `[cyan]`) and
+in `style="..."` kwargs (`"blue"`, `"white"`, `"cyan"`). These already
+carry a consistent meaning throughout the codebase, so the migration is
+a scripted rename, not a semantic redesign:
 
 - `[red]` / `[bold red]` → `[error]`
 - `[yellow]` → `[warning]`
@@ -147,9 +146,24 @@ literal `bold` in the markup would double up (rich allows it, but it's
 dead weight and drifts from the role definition over time).
 
 After the scripted rename, grep for any remaining literal color tokens
-in `style=` kwargs or `[...]` markup in the three files as a completion
+in `style=` kwargs or `[...]` markup in the two files as a completion
 check, and hand-fix anything the script missed or mis-mapped (e.g. a
 site using `blue` for something that isn't actually "accent").
+
+`recommend_ui.py` (the `omm recommend` picker) is explicitly **out of
+scope** beyond one narrow change: it already has its own deliberately
+separate hex-based palette for the arrow-navigable choice list
+(`_ROW_*` constants, `SELECT_STYLE`) plus a comment noting only the
+static "hardware panel" portion was ever retuned — mixing that vivid,
+self-contained design into the four shared presets risks breaking a
+palette that was already intentionally kept apart. The only change
+there: the four module-level constants `ACCENT = "blue"`, `SUCCESS =
+"green"`, `WARNING = "yellow"`, `MUTED = "#808080"` (recommend_ui.py:19-22,
+14 use sites) become `ACCENT = "accent"`, `SUCCESS = "success"`,
+`WARNING = "warning"`, `MUTED = "muted"` — they already function as
+semantic-role aliases in that file, this just points them at the real
+theme roles instead of literal colors. `_ROW_*`, `SELECT_STYLE`, and the
+module's own `COLORS_ENABLED`/`NO_COLOR` check are untouched.
 
 Console construction (`cli.py:310-311`) picks up the saved theme at
 startup:
