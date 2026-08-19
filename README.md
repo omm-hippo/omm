@@ -4,7 +4,31 @@
 
 ## Install
 
-**macOS / Linux:**
+**PyPI (macOS, Linux, and Windows):**
+
+```sh
+python -m pip install omm-model
+```
+
+For an isolated command-line installation, `pipx` is recommended:
+
+```sh
+pipx install omm-model
+```
+
+The distribution name is `omm-model`; the installed command and Python import
+remain `omm`. Upgrade and remove it with the same tool that installed it:
+
+```sh
+python -m pip install --upgrade omm-model
+python -m pip uninstall omm-model
+
+# Or, for pipx:
+pipx upgrade omm-model
+pipx uninstall omm-model
+```
+
+**Verified Git-source installer (macOS / Linux):**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
@@ -12,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
 
 This bootstraps `python3`, `git`, and `pipx` if missing (Debian/Ubuntu via `apt`, or Homebrew on macOS), then installs `omm` as an isolated CLI via `pipx`. Open a new shell afterward so your `PATH` picks up `omm`.
 
-**Windows (PowerShell):**
+**Verified Git-source installer (Windows PowerShell):**
 
 ```powershell
 # This must run before irm: script-internal TLS settings are too late for its first download.
@@ -28,6 +52,11 @@ Requirements: Python 3.10+. The optional NVIDIA detector is installed only when 
 `omm` is tested in CI on Windows, macOS, and Linux with Python 3.10+. Windows 10 22H2/11 is the supported Windows baseline because that matches Ollama's native Windows requirements. Hardware scan, install, linking, benchmark, update, and contribution flows are cross-platform; Ollama remains the only benchmark engine.
 
 Both installers clone to a versioned staging directory, verify the signed commit against a bootstrap trust anchor, and only then switch pipx to it. Do not replace this with an unverified `git clone` plus `pipx install` if commit authenticity matters.
+
+`omm update` updates only a canonical OMM Git-source installation. For a PyPI or
+pipx installation it leaves files unchanged and prints the matching package
+manager upgrade command. The Git-only beta channel is likewise unavailable to
+package-managed installations.
 
 ### Local AI runners
 
@@ -72,7 +101,12 @@ omm --install-completion powershell
 omm --install-completion bash  # or zsh/fish
 ```
 
-To remove the CLI while preserving downloaded models and settings:
+For a PyPI installation, use `python -m pip uninstall omm-model`; for pipx,
+use `pipx uninstall omm-model`. Both commands preserve downloaded models and
+settings under `OMM_HOME`.
+
+To remove a Git-source installer installation while preserving downloaded
+models and settings:
 
 ```powershell
 irm https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.ps1 | iex
@@ -106,7 +140,7 @@ omm link [--engine NAME]  # Re-verify and repair every installed model's LM Stud
 omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
 omm autoremove  # Clean up broken symlinks and orphaned partial downloads
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
-omm update  # Git-pull the latest source into ~/.omm/src, then refresh rules/model data
+omm update  # Update a canonical OMM Git-source install; package installs print their manager command
 omm setting  # Interactive menu for telemetry, upload policy, version, calibration, and catalog trust
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent

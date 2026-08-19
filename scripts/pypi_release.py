@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""Destination-side verification for OMM's TestPyPI and PyPI releases."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import venv
+from pathlib import Path
+
+from release_artifacts import (
+    PYPROJECT,
+    ReleaseValidationError,
+    distribution_archives,
+    project_identity,
+    validate_checksums,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SUBPROCESS_TIMEOUT_SECONDS = 300
+REPOSITORY_URL = "https://github.com/omm-hippo/omm"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def release_json_url(repository_url: str, name: str, version: str) -> str:
+    base = repository_url.rstrip("/")
+    return (
+        f"{base}/pypi/{urllib.parse.quote(name, safe='')}/"
+        f"{urllib.parse.quote(version, safe='')}/json"
+    )
+
+
+def fetch_release_json(
+    repository_url: str,
+    name: str,
+    version: str,
+    *,
+    attempts: int = 12,
+    delay_seconds: float = 10,
+) -> dict:
+    url = release_json_url(repository_url, name, version)
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                return json.load(response)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+            last_error = error
+            if attempt + 1 < attempts:
+                time.sleep(delay_seconds)
+    raise ReleaseValidationError(
+        f"release metadata did not become available at {url}: {last_error}"
+    )
+
+
+def verify_repository_files(
+    repository_url: str,
+    dist_dir: Path,
+    pyproject: Path = PYPROJECT,
+    *,
+    attempts: int = 12,
+    delay_seconds: float = 10,
+) -> list[str]:
+    name, version = project_identity(pyproject)
+    validate_checksums(dist_dir)
+    archives = distribution_archives(dist_dir)
+    expected = {path.name: _sha256(path) for path in archives}
+    payload = fetch_release_json(
+        repository_url,
+        name,
+        version,
+        attempts=attempts,
+        delay_seconds=delay_seconds,
+    )
+    remote = {item.get("filename"): item for item in payload.get("urls", [])}
+    if set(remote) != set(expected):
+        raise ReleaseValidationError(
+            f"repository contains {sorted(remote)}, expected exactly {sorted(expected)}"
+        )
+
+    verified_urls: list[str] = []
+    for filename, expected_hash in sorted(expected.items()):
+        item = remote[filename]
+        metadata_hash = item.get("digests", {}).get("sha256")
+        if metadata_hash != expected_hash:
+            raise ReleaseValidationError(
+                f"repository SHA-256 for {filename} is {metadata_hash}, expected {expected_hash}"
+            )
+        download_url = item.get("url")
+        if not isinstance(download_url, str) or not download_url.startswith("https://"):
+            raise ReleaseValidationError(f"repository returned an invalid URL for {filename}")
+        digest = hashlib.sha256()
+        with urllib.request.urlopen(download_url, timeout=60) as response:
+            for block in iter(lambda: response.read(1024 * 1024), b""):
+                digest.update(block)
+        if digest.hexdigest() != expected_hash:
+            raise ReleaseValidationError(f"downloaded bytes do not match {filename}")
+        verified_urls.append(download_url)
+    return verified_urls
+
+
+def _venv_executable(root: Path, name: str, platform_name: str = os.name) -> Path:
+    scripts = root / ("Scripts" if platform_name == "nt" else "bin")
+    suffix = ".exe" if platform_name == "nt" else ""
+    return scripts / f"{name}{suffix}"
+
+
+def _bin_executable(root: Path, name: str, platform_name: str = os.name) -> Path:
+    suffix = ".exe" if platform_name == "nt" else ""
+    return root / f"{name}{suffix}"
+
+
+def smoke_index_install(
+    index_url: str, dist_dir: Path, pyproject: Path = PYPROJECT
+) -> None:
+    name, version = project_identity(pyproject)
+    validate_checksums(dist_dir)
+    wheel, _ = distribution_archives(dist_dir)
+    with tempfile.TemporaryDirectory(prefix="omm-index-smoke-") as temporary:
+        root = Path(temporary)
+        environment = root / "venv"
+        venv.EnvBuilder(with_pip=True, clear=True).create(environment)
+        python = _venv_executable(environment, "python")
+        common = [
+            str(python),
+            "-m",
+            "pip",
+            "--disable-pip-version-check",
+        ]
+        subprocess.run(
+            [*common, "install", "--no-input", "--no-cache-dir", str(wheel)],
+            check=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        subprocess.run(
+            [*common, "uninstall", "--yes", name],
+            check=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        subprocess.run(
+            [
+                *common,
+                "install",
+                "--no-input",
+                "--no-cache-dir",
+                "--no-deps",
+                "--index-url",
+                index_url,
+                f"{name}=={version}",
+            ],
+            check=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        probe = (
+            "import importlib.metadata, omm, localfit_server; "
+            f"assert importlib.metadata.version({name!r}) == {version!r}"
+        )
+        subprocess.run(
+            [str(python), "-c", probe],
+            check=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        command = _venv_executable(environment, "omm")
+        command_env = os.environ.copy()
+        command_env["OMM_HOME"] = str(root / "omm-home")
+        version_result = subprocess.run(
+            [str(command), "--version"],
+            check=True,
+            env=command_env,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        expected_version = f"omm {version}"
+        if version_result.stdout.strip() != expected_version:
+            raise ReleaseValidationError(
+                "installed TestPyPI command reported "
+                f"{version_result.stdout.strip()!r}, expected {expected_version!r}"
+            )
+        subprocess.run(
+            [str(command), "help"],
+            check=True,
+            env=command_env,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+
+
+def verify_attestations(
+    repository_url: str,
+    dist_dir: Path,
+    *,
+    staging: bool,
+    source_repository: str = REPOSITORY_URL,
+) -> None:
+    executable = shutil.which("pypi-attestations")
+    if executable is None:
+        raise ReleaseValidationError("pypi-attestations is not installed")
+    urls = verify_repository_files(repository_url, dist_dir)
+    for url in urls:
+        command = [
+            executable,
+            "verify",
+            "pypi",
+            "--repository",
+            source_repository,
+        ]
+        if staging:
+            command.append("--staging")
+        command.append(url)
+        subprocess.run(command, check=True, timeout=SUBPROCESS_TIMEOUT_SECONDS)
+
+
+def pipx_smoke(index_url: str, pyproject: Path = PYPROJECT) -> None:
+    name, version = project_identity(pyproject)
+    with tempfile.TemporaryDirectory(prefix="omm-pipx-smoke-") as temporary:
+        root = Path(temporary)
+        bin_dir = root / "bin"
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PIPX_HOME": str(root / "pipx-home"),
+                "PIPX_BIN_DIR": str(bin_dir),
+                "PIPX_MAN_DIR": str(root / "man"),
+                "OMM_HOME": str(root / "omm-home"),
+            }
+        )
+        package = f"{name}=={version}"
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pipx",
+                "install",
+                "--force",
+                "--pip-args",
+                f"--no-cache-dir --index-url {index_url}",
+                package,
+            ],
+            check=True,
+            env=environment,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        command = _bin_executable(bin_dir, "omm")
+        version_result = subprocess.run(
+            [str(command), "--version"],
+            check=True,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        expected_version = f"omm {version}"
+        if version_result.stdout.strip() != expected_version:
+            raise ReleaseValidationError(
+                "installed PyPI command reported "
+                f"{version_result.stdout.strip()!r}, expected {expected_version!r}"
+            )
+        subprocess.run(
+            [str(command), "help"],
+            check=True,
+            env=environment,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        subprocess.run(
+            [sys.executable, "-m", "pipx", "uninstall", name],
+            check=True,
+            env=environment,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        if command.exists():
+            raise ReleaseValidationError(f"pipx uninstall left {command} behind")
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    for command in ("verify-index", "smoke-index-install", "verify-attestations"):
+        command_parser = subparsers.add_parser(command)
+        command_parser.add_argument("--repository-url", required=True)
+        command_parser.add_argument("--dist-dir", type=Path, default=ROOT / "dist")
+        if command == "smoke-index-install":
+            command_parser.add_argument("--index-url", required=True)
+        if command == "verify-attestations":
+            command_parser.add_argument("--staging", action="store_true")
+
+    pipx_parser = subparsers.add_parser("pipx-smoke")
+    pipx_parser.add_argument("--index-url", required=True)
+    return parser
+
+
+def main() -> int:
+    args = _parser().parse_args()
+    try:
+        if args.command == "verify-index":
+            for url in verify_repository_files(args.repository_url, args.dist_dir):
+                print(url)
+        elif args.command == "smoke-index-install":
+            smoke_index_install(args.index_url, args.dist_dir)
+        elif args.command == "verify-attestations":
+            verify_attestations(
+                args.repository_url,
+                args.dist_dir,
+                staging=args.staging,
+            )
+        elif args.command == "pipx-smoke":
+            pipx_smoke(args.index_url)
+        else:  # pragma: no cover - argparse constrains the command
+            raise AssertionError(args.command)
+    except (OSError, ReleaseValidationError, subprocess.CalledProcessError) as error:
+        print(f"PyPI release verification failed: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

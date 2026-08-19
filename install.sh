@@ -160,6 +160,170 @@ run_pipx() {
     "$PY" -m pipx "$@"
 }
 
+PIPX_ENV="omm-model"
+LEGACY_PIPX_ENV="omm"
+
+pipx_snapshot_has_environment() {
+    printf '%s' "$PIPX_SNAPSHOT" | "$PY" -c \
+        'import json, sys; raise SystemExit(0 if sys.argv[1] in json.load(sys.stdin).get("venvs", {}) else 1)' \
+        "$1"
+}
+
+pipx_snapshot_environment_is() {
+    printf '%s' "$PIPX_SNAPSHOT" | "$PY" -c '
+import json, os, sys
+from pathlib import Path
+
+name, distribution, local_venvs = sys.argv[1:]
+venv = json.load(sys.stdin).get("venvs", {}).get(name)
+if not isinstance(venv, dict):
+    raise SystemExit(1)
+metadata = venv.get("metadata", {})
+main = metadata.get("main_package", {})
+expected_dir = Path(local_venvs) / name / ("Scripts" if os.name == "nt" else "bin")
+app_paths = main.get("app_paths", [])
+omm_paths = [
+    Path(item.get("__Path__", "")) for item in app_paths
+    if isinstance(item, dict) and Path(item.get("__Path__", "")).name.lower() in {"omm", "omm.exe"}
+]
+valid = (
+    metadata.get("environment") in (None, name)
+    and main.get("package") == distribution
+    and main.get("suffix") == ""
+    and isinstance(main.get("apps"), list)
+    and "omm" in main["apps"]
+    and len(omm_paths) == 1
+    and omm_paths[0].parent.resolve() == expected_dir.resolve()
+)
+raise SystemExit(0 if valid else 1)
+' "$1" "$2" "$PIPX_LOCAL_VENVS"
+}
+
+pipx_environment_python() {
+    env_python="$PIPX_LOCAL_VENVS/$1/bin/python"
+    [ -x "$env_python" ] || return 1
+    printf '%s\n' "$env_python"
+}
+
+# The `omm` name is also used by an unrelated PyPI project. Treat that pipx
+# environment as our legacy install only when its own distribution metadata
+# exposes `omm = omm.cli:main` and its direct source is a known OMM Git repo,
+# or a verified checkout under this installer's OMM_HOME.
+verify_omm_pipx_environment() {
+    env_name="$1"
+    distribution="$2"
+    require_legacy_source="$3"
+    expected_version="${4:-}"
+    env_python=$(pipx_environment_python "$env_name") || return 1
+    "$env_python" - "$distribution" "$OMM_HOME" "$require_legacy_source" "$expected_version" <<'PY'
+import importlib.metadata
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
+
+distribution, omm_home, require_source, expected_version = sys.argv[1:]
+try:
+    dist = importlib.metadata.distribution(distribution)
+except importlib.metadata.PackageNotFoundError:
+    raise SystemExit(1)
+
+entry_points = [
+    ep for ep in dist.entry_points
+    if ep.group == "console_scripts" and ep.name == "omm"
+]
+if len(entry_points) != 1 or entry_points[0].value != "omm.cli:main":
+    raise SystemExit(1)
+if expected_version and dist.version != expected_version:
+    raise SystemExit(1)
+if require_source != "1":
+    raise SystemExit(0)
+
+raw_direct_url = dist.read_text("direct_url.json")
+if not raw_direct_url:
+    raise SystemExit(1)
+try:
+    direct_url = json.loads(raw_direct_url)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+
+def known_repo(value: str) -> bool:
+    value = value.strip()
+    if value.startswith("git@github.com:"):
+        host, path = "github.com", "/" + value.split(":", 1)[1]
+    else:
+        parsed_repo = urlparse(value)
+        host, path = (parsed_repo.hostname or "").lower(), parsed_repo.path
+    normalized_path = "/" + path.strip("/").removesuffix(".git").lower()
+    return host == "github.com" and normalized_path in {
+        "/omm-hippo/omm",
+        "/minigu5/omm",
+        "/minigu5/localfit",
+    }
+
+url = str(direct_url.get("url", ""))
+if direct_url.get("vcs_info") and known_repo(url):
+    raise SystemExit(0)
+
+parsed = urlparse(url)
+if parsed.scheme != "file":
+    raise SystemExit(1)
+source = Path(url2pathname(unquote(parsed.path))).resolve()
+home = Path(omm_home).resolve()
+legacy_source = (home / "src").resolve()
+versioned_root = (home / "sources").resolve()
+is_versioned_source = (
+    source.parent == versioned_root
+    and re.fullmatch(r"[0-9a-fA-F]{40}", source.name) is not None
+)
+if source != legacy_source and not is_versioned_source:
+    raise SystemExit(1)
+try:
+    origin = subprocess.run(
+        ["git", "-C", str(source), "remote", "get-url", "origin"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+except (OSError, subprocess.CalledProcessError):
+    raise SystemExit(1)
+raise SystemExit(0 if known_repo(origin) else 1)
+PY
+}
+
+refresh_pipx_snapshot() {
+    PIPX_SNAPSHOT=$(run_pipx list --json 2>/dev/null)
+}
+
+verify_installed_omm_model() {
+    refresh_pipx_snapshot || return 1
+    pipx_snapshot_has_environment "$PIPX_ENV" || return 1
+    pipx_snapshot_environment_is "$PIPX_ENV" "$PIPX_ENV" || return 1
+    verify_omm_pipx_environment "$PIPX_ENV" "$PIPX_ENV" 0 "$EXPECTED_VERSION" || return 1
+    [ -x "$PIPX_BIN_DIR/omm" ] || return 1
+    [ -x "$PIPX_LOCAL_VENVS/$PIPX_ENV/bin/omm" ] || return 1
+    [ "$PIPX_BIN_DIR/omm" -ef "$PIPX_LOCAL_VENVS/$PIPX_ENV/bin/omm" ] || return 1
+    version_output=$("$PIPX_BIN_DIR/omm" --version 2>/dev/null) || return 1
+    [ "$version_output" = "omm $EXPECTED_VERSION" ]
+}
+
+verify_exposed_existing_environment() {
+    env_name="$1"
+    distribution="$2"
+    require_legacy_source="$3"
+    refresh_pipx_snapshot || return 1
+    pipx_snapshot_environment_is "$env_name" "$distribution" || return 1
+    verify_omm_pipx_environment "$env_name" "$distribution" "$require_legacy_source" || return 1
+    env_python=$(pipx_environment_python "$env_name") || return 1
+    internal_app="$PIPX_LOCAL_VENVS/$env_name/bin/omm"
+    [ -x "$internal_app" ] && [ -x "$PIPX_BIN_DIR/omm" ] || return 1
+    [ "$PIPX_BIN_DIR/omm" -ef "$internal_app" ] || return 1
+    expected_version=$("$env_python" -c 'import importlib.metadata, sys; print(importlib.metadata.version(sys.argv[1]))' "$distribution" 2>/dev/null) || return 1
+    version_output=$("$PIPX_BIN_DIR/omm" --version 2>/dev/null) || return 1
+    [ "$version_output" = "omm $expected_version" ]
+}
+
 if ! "$PY" -m pipx --version >/dev/null 2>&1; then
     echo "pipx not found, installing it..."
     if "$PY" -m pip install --user --quiet pipx 2>/dev/null; then
@@ -171,6 +335,33 @@ if ! "$PY" -m pipx --version >/dev/null 2>&1; then
         "$PY" -m pip install --user --quiet --break-system-packages pipx
     fi
     run_pipx ensurepath
+fi
+
+PIPX_LOCAL_VENVS=$(run_pipx environment --value PIPX_LOCAL_VENVS)
+PIPX_BIN_DIR=$(run_pipx environment --value PIPX_BIN_DIR)
+if ! refresh_pipx_snapshot; then
+    echo "Could not inspect existing pipx environments; refusing an unsafe migration." >&2
+    exit 1
+fi
+
+LEGACY_PIPX_PRESENT=0
+if pipx_snapshot_has_environment "$LEGACY_PIPX_ENV"; then
+    if ! pipx_snapshot_environment_is "$LEGACY_PIPX_ENV" "$LEGACY_PIPX_ENV" || \
+       ! verify_omm_pipx_environment "$LEGACY_PIPX_ENV" "$LEGACY_PIPX_ENV" 1; then
+        echo "Refusing to replace unrelated pipx environment 'omm'. Remove or rename that environment manually first." >&2
+        exit 1
+    fi
+    LEGACY_PIPX_PRESENT=1
+fi
+
+NEW_PIPX_PRESENT=0
+if pipx_snapshot_has_environment "$PIPX_ENV"; then
+    if ! pipx_snapshot_environment_is "$PIPX_ENV" "$PIPX_ENV" || \
+       ! verify_omm_pipx_environment "$PIPX_ENV" "$PIPX_ENV" 0; then
+        echo "Refusing to replace an unverified $PIPX_ENV pipx environment." >&2
+        exit 1
+    fi
+    NEW_PIPX_PRESENT=1
 fi
 
 mkdir -p "$SOURCES_DIR"
@@ -211,6 +402,11 @@ if [ -d "$SRC_DIR" ]; then
 else
     mv "$STAGING_DIR" "$SRC_DIR"
 fi
+EXPECTED_VERSION=$(sed -n 's/^version = "\([^"]*\)"[[:space:]]*$/\1/p' "$SRC_DIR/pyproject.toml" | head -n 1)
+if [ -z "$EXPECTED_VERSION" ]; then
+    echo "Could not determine the project version from the verified checkout." >&2
+    exit 1
+fi
 
 # NVIDIA VRAM detection is dead weight on Mac (no NVIDIA GPUs since 2016) -
 # only pull that extra in on other platforms.
@@ -221,7 +417,79 @@ else
 fi
 
 echo "Installing omm (editable) from $SRC_DIR ..."
-run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"
+# pipx names the new environment after the distribution (`omm-model`)
+# while old Git installs used `omm`. Install and verify the new environment
+# first so an install failure leaves the working legacy CLI untouched. pipx
+# --force moves the shared `omm` app link to the new environment; current pipx
+# preserves that foreign-owned link when the legacy environment is removed.
+rollback_failed_new_install() {
+    ROLLBACK_STATE=not-needed
+    if refresh_pipx_snapshot && pipx_snapshot_has_environment "$PIPX_ENV"; then
+        if [ "$NEW_PIPX_PRESENT" = "0" ]; then
+            run_pipx uninstall "$PIPX_ENV" >/dev/null 2>&1 || true
+        else
+            run_pipx reinstall "$PIPX_ENV" >/dev/null 2>&1 || true
+        fi
+    fi
+    if [ "$LEGACY_PIPX_PRESENT" = "1" ]; then
+        if run_pipx reinstall "$LEGACY_PIPX_ENV" >/dev/null 2>&1 && \
+           verify_exposed_existing_environment "$LEGACY_PIPX_ENV" "$LEGACY_PIPX_ENV" 1; then
+            ROLLBACK_STATE=verified
+        else
+            ROLLBACK_STATE=uncertain
+        fi
+    elif [ "$NEW_PIPX_PRESENT" = "1" ]; then
+        if verify_exposed_existing_environment "$PIPX_ENV" "$PIPX_ENV" 0; then
+            ROLLBACK_STATE=verified
+        else
+            ROLLBACK_STATE=uncertain
+        fi
+    elif ! refresh_pipx_snapshot || pipx_snapshot_has_environment "$PIPX_ENV"; then
+        ROLLBACK_STATE=uncertain
+    fi
+}
+report_failed_install() {
+    reason="$1"
+    echo "$reason" >&2
+    if [ "$ROLLBACK_STATE" = "verified" ]; then
+        echo "The pre-existing omm command was restored and verified." >&2
+    elif [ "$ROLLBACK_STATE" = "uncertain" ]; then
+        echo "The previous environment was not removed, but its omm command could not be verified after rollback; run 'pipx reinstall omm' or 'pipx reinstall omm-model'." >&2
+    fi
+}
+if ! run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"; then
+    rollback_failed_new_install
+    report_failed_install "pipx install failed; the legacy environment was not removed."
+    exit 1
+fi
+if ! verify_installed_omm_model; then
+    rollback_failed_new_install
+    report_failed_install "The new $PIPX_ENV environment or its omm command failed verification; the legacy environment was not removed."
+    exit 1
+fi
+if [ "$LEGACY_PIPX_PRESENT" = "1" ]; then
+    echo "Removing verified legacy pipx environment: $LEGACY_PIPX_ENV"
+    if ! run_pipx uninstall "$LEGACY_PIPX_ENV"; then
+        echo "Could not remove the verified legacy pipx environment." >&2
+        if verify_installed_omm_model; then
+            echo "The new omm command remains installed and was verified." >&2
+        elif run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC" && \
+             verify_installed_omm_model; then
+            echo "The new omm command was repaired and verified after the pipx failure." >&2
+        else
+            echo "pipx may have removed the omm command link before failing; repair could not be verified. Run 'pipx reinstall omm-model'." >&2
+        fi
+        exit 1
+    fi
+    if ! verify_installed_omm_model; then
+        echo "Repairing the new omm command after legacy cleanup ..." >&2
+        if ! run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC" || \
+           ! verify_installed_omm_model; then
+            echo "The new omm command could not be verified after legacy cleanup." >&2
+            exit 1
+        fi
+    fi
+fi
 
 # Marks custom OMM_HOME directories as installer-managed. The uninstaller
 # requires this marker before removing anything from a non-default home.

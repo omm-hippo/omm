@@ -1,7 +1,9 @@
 import importlib.metadata
+import json
 import subprocess
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 from rich.progress import Progress
 from typer.testing import CliRunner
@@ -57,6 +59,61 @@ def test_update_migrates_when_not_yet_migrated_even_if_commit_matches(monkeypatc
     assert "updated" in result.stdout.lower()
 
 
+@pytest.mark.parametrize(
+    ("source", "command"),
+    [
+        (cli.package_metadata.InstallSource.PIPX, "pipx upgrade omm-model"),
+        (
+            cli.package_metadata.InstallSource.PYPI,
+            "python -m pip install --upgrade omm-model",
+        ),
+        (
+            cli.package_metadata.InstallSource.HOMEBREW,
+            "brew upgrade omm-hippo/omm/omm",
+        ),
+        (
+            cli.package_metadata.InstallSource.WINGET,
+            "winget upgrade --id OmmHippo.OMM -e",
+        ),
+    ],
+)
+def test_package_managed_update_refuses_git_migration_and_shows_manager_command(
+    monkeypatch, source, command
+):
+    monkeypatch.setattr(cli.package_metadata, "install_source", lambda: source)
+    monkeypatch.setattr(cli, "_installed_commit", lambda: None)
+    monkeypatch.setattr(
+        cli,
+        "_migrate_to_editable_install",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not migrate")),
+    )
+    monkeypatch.setattr(cli, "_refresh_data", lambda: None)
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert command in result.stderr
+    assert "left the installation unchanged" in result.stderr
+
+
+def test_src_head_ignores_a_stale_clone_for_a_package_managed_install(monkeypatch, tmp_path):
+    stale_src = tmp_path / "src"
+    (stale_src / ".git").mkdir(parents=True)
+    monkeypatch.setattr(cli, "SRC_DIR", stale_src)
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.PIPX,
+    )
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not inspect stale Git")),
+    )
+
+    assert cli._src_head_commit() is None
+
+
 def test_update_fast_path_skips_pipx_when_deps_unaffected(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
@@ -68,6 +125,11 @@ def test_update_fast_path_skips_pipx_when_deps_unaffected(monkeypatch):
         lambda *a, **k: git_calls.append(1) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     )
     monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "find_distribution",
+        lambda: (cli.package_metadata.DISTRIBUTION_NAME, object()),
+    )
     pipx_calls = []
     monkeypatch.setattr(cli, "_run_pipx_install_with_progress", lambda args: pipx_calls.append(args))
     refresh_calls = []
@@ -79,6 +141,516 @@ def test_update_fast_path_skips_pipx_when_deps_unaffected(monkeypatch):
     assert git_calls == [1]
     assert pipx_calls == []
     assert refresh_calls == [1]
+
+
+def test_update_reinstalls_when_editable_environment_uses_legacy_distribution_name(
+    monkeypatch
+):
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "old-commit")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old-commit")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new-commit")
+    monkeypatch.setattr(
+        cli,
+        "_git_update_src",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
+    monkeypatch.setattr(
+        cli.package_metadata, "find_distribution", lambda: ("omm", object())
+    )
+    legacy_state = object()
+    monkeypatch.setattr(cli, "_capture_legacy_pipx_state", lambda: (legacy_state, None))
+    pipx_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_pipx_install_with_progress",
+        lambda args: pipx_calls.append(args)
+        or subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+    verification = object()
+    monkeypatch.setattr(
+        cli, "_verify_pipx_installation", lambda: (verification, None)
+    )
+    cleanup_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_cleanup_legacy_pipx_environment",
+        lambda value: cleanup_calls.append(value)
+        or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_refresh_data", lambda: None)
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 0, result.stdout
+    assert pipx_calls == [
+        ["pipx", "install", "--force", "--editable", cli._install_spec()]
+    ]
+    assert cleanup_calls == [verification]
+
+
+def test_legacy_distribution_migration_failure_is_reported_and_skips_refresh(monkeypatch):
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "old-commit")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old-commit")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new-commit")
+    monkeypatch.setattr(
+        cli,
+        "_git_update_src",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
+    monkeypatch.setattr(
+        cli.package_metadata, "find_distribution", lambda: ("omm", object())
+    )
+    legacy_state = object()
+    monkeypatch.setattr(cli, "_capture_legacy_pipx_state", lambda: (legacy_state, None))
+    monkeypatch.setattr(
+        cli,
+        "_run_pipx_install_with_progress",
+        lambda args: subprocess.CompletedProcess(args, 1, stdout="", stderr="migration failed"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_rollback_legacy_pipx_migration",
+        lambda state, reason: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr=f"{reason}; legacy restored"
+        ),
+    )
+    refresh_calls = []
+    monkeypatch.setattr(cli, "_refresh_data", lambda: refresh_calls.append(1))
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "migration failed" in result.stderr
+    assert refresh_calls == []
+
+
+def test_legacy_distribution_is_not_removed_when_new_environment_verification_fails(
+    monkeypatch
+):
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "old-commit")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old-commit")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new-commit")
+    monkeypatch.setattr(
+        cli,
+        "_git_update_src",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
+    monkeypatch.setattr(cli.package_metadata, "find_distribution", lambda: ("omm", object()))
+    legacy_state = object()
+    monkeypatch.setattr(cli, "_capture_legacy_pipx_state", lambda: (legacy_state, None))
+    monkeypatch.setattr(
+        cli,
+        "_run_pipx_install_with_progress",
+        lambda args: subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        cli, "_verify_pipx_installation", lambda: (None, "wrong exposed app")
+    )
+    monkeypatch.setattr(
+        cli,
+        "_cleanup_legacy_pipx_environment",
+        lambda verification: (_ for _ in ()).throw(AssertionError("must not uninstall legacy")),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_rollback_legacy_pipx_migration",
+        lambda state, reason: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr=f"{reason} Legacy environment was not removed."
+        ),
+    )
+    monkeypatch.setattr(cli, "_refresh_data", lambda: None)
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "failed verification" in result.stderr
+    assert "legacy environment was not removed" in result.stderr.lower()
+
+
+def test_not_yet_migrated_legacy_install_uses_the_common_finalize_path(monkeypatch):
+    legacy_state = object()
+    install_result = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    finalized = subprocess.CompletedProcess([], 0, stdout="finalized", stderr="")
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
+    monkeypatch.setattr(cli.package_metadata, "find_distribution", lambda: ("omm", object()))
+    monkeypatch.setattr(cli, "_capture_legacy_pipx_state", lambda: (legacy_state, None))
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: None)
+    monkeypatch.setattr(cli, "_migrate_to_editable_install", lambda branch: install_result)
+    finalize_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_finalize_legacy_pipx_migration",
+        lambda result, state: finalize_calls.append((result, state)) or finalized,
+    )
+
+    result = cli._perform_update("main")
+
+    assert result is finalized
+    assert finalize_calls == [(install_result, legacy_state)]
+
+
+def _pipx_snapshot(venvs_root: Path, *, version="0.2.119"):
+    internal_bin = venvs_root / "omm-model" / "bin"
+    return {
+        "pipx_spec_version": "0.1",
+        "venvs": {
+            "omm-model": {
+                "environment": "omm-model",
+                "main_package": {
+                    "package": "omm-model",
+                    "package_version": version,
+                    "apps": ["omm", "localfit-server"],
+                    "app_paths": [
+                        {
+                            "__type__": "Path",
+                            "__Path__": str(internal_bin / "omm"),
+                        },
+                        {
+                            "__type__": "Path",
+                            "__Path__": str(internal_bin / "localfit-server"),
+                        },
+                    ],
+                },
+            }
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("metadata_version", "metadata_has_environment"),
+    [("0.5", False), ("0.12", True)],
+)
+def test_verify_pipx_installation_checks_paths_metadata_apps_and_exact_versions(
+    monkeypatch, tmp_path, metadata_version, metadata_has_environment
+):
+    venvs_root = tmp_path / "venvs"
+    bin_dir = tmp_path / "bin"
+    internal_bin = venvs_root / "omm-model" / "bin"
+    internal_bin.mkdir(parents=True)
+    bin_dir.mkdir()
+    internal_omm = internal_bin / "omm"
+    internal_omm.write_text("internal")
+    (internal_bin / "localfit-server").write_text("server")
+    (bin_dir / "omm").symlink_to(internal_omm)
+    (bin_dir / "localfit-server").symlink_to(internal_bin / "localfit-server")
+    snapshot = _pipx_snapshot(venvs_root)
+    metadata = snapshot["venvs"]["omm-model"]
+    metadata["pipx_metadata_version"] = metadata_version
+    if not metadata_has_environment:
+        metadata.pop("environment")
+        metadata["main_package"]["app_paths"].reverse()
+    snapshot["venvs"]["omm-model"] = {"metadata": metadata}
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args == ["pipx", "environment", "--value", "PIPX_LOCAL_VENVS"]:
+            return subprocess.CompletedProcess(args, 0, stdout=f"{venvs_root}\n", stderr="")
+        if args == ["pipx", "environment", "--value", "PIPX_BIN_DIR"]:
+            return subprocess.CompletedProcess(args, 0, stdout=f"{bin_dir}\n", stderr="")
+        if args == ["pipx", "list", "--json"]:
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(snapshot), stderr="")
+        if args in ([str(internal_omm), "--version"], [str(bin_dir / "omm"), "--version"]):
+            return subprocess.CompletedProcess(args, 0, stdout="omm 0.2.119\n", stderr="")
+        raise AssertionError(f"unexpected subprocess: {args}")
+
+    monkeypatch.setattr(cli, "_run_pipx_query", fake_run)
+    monkeypatch.setattr(cli, "_omm_version", lambda: "0.2.119")
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+
+    verification, error = cli._verify_pipx_installation()
+
+    assert error is None
+    assert verification is not None
+    assert verification.internal_omm == internal_omm
+    assert verification.exposed_omm == bin_dir / "omm"
+    assert calls[:3] == [
+        ["pipx", "environment", "--value", "PIPX_LOCAL_VENVS"],
+        ["pipx", "environment", "--value", "PIPX_BIN_DIR"],
+        ["pipx", "list", "--json"],
+    ]
+
+
+def test_verify_pipx_installation_rejects_a_missing_secondary_app_link(
+    monkeypatch, tmp_path
+):
+    venvs_root = tmp_path / "venvs"
+    bin_dir = tmp_path / "bin"
+    internal_bin = venvs_root / "omm-model" / "bin"
+    internal_bin.mkdir(parents=True)
+    bin_dir.mkdir()
+    internal_omm = internal_bin / "omm"
+    internal_omm.write_text("internal")
+    (internal_bin / "localfit-server").write_text("server")
+    (bin_dir / "omm").symlink_to(internal_omm)
+    snapshot = _pipx_snapshot(venvs_root)
+    responses = iter(
+        [
+            subprocess.CompletedProcess([], 0, stdout=f"{venvs_root}\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=f"{bin_dir}\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=json.dumps(snapshot), stderr=""),
+        ]
+    )
+    monkeypatch.setattr(cli, "_run_pipx_query", lambda args, **kwargs: next(responses))
+    monkeypatch.setattr(cli, "_omm_version", lambda: "0.2.119")
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+
+    verification, error = cli._verify_pipx_installation()
+
+    assert verification is None
+    assert "localfit-server" in error
+
+
+def test_capture_legacy_state_requires_the_running_legacy_venv(monkeypatch, tmp_path):
+    venvs_root = tmp_path / "venvs"
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setattr(
+        cli,
+        "_pipx_environment_value",
+        lambda name: ((venvs_root if name == "PIPX_LOCAL_VENVS" else bin_dir), None),
+    )
+    monkeypatch.setattr(cli.sys, "prefix", str(venvs_root / "some-other-environment"))
+    monkeypatch.setattr(
+        cli,
+        "_pipx_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("must reject before snapshot capture")),
+    )
+
+    state, error = cli._capture_legacy_pipx_state()
+
+    assert state is None
+    assert "not inside the legacy pipx omm environment" in error
+
+
+def test_verify_pipx_installation_rejects_wrong_main_package(monkeypatch, tmp_path):
+    venvs_root = tmp_path / "venvs"
+    snapshot = _pipx_snapshot(venvs_root)
+    snapshot["venvs"]["omm-model"]["main_package"]["package"] = "not-omm"
+    responses = iter(
+        [
+            subprocess.CompletedProcess([], 0, stdout=f"{venvs_root}\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=f"{tmp_path / 'bin'}\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=json.dumps(snapshot), stderr=""),
+        ]
+    )
+    monkeypatch.setattr(cli, "_run_pipx_query", lambda args, **kwargs: next(responses))
+
+    verification, error = cli._verify_pipx_installation()
+
+    assert verification is None
+    assert "wrong main package" in error
+
+
+def test_cleanup_removes_only_current_legacy_env_and_accepts_preserved_new_link(
+    monkeypatch, tmp_path
+):
+    venvs_root = tmp_path / "venvs"
+    legacy_env = venvs_root / "omm"
+    legacy_env.mkdir(parents=True)
+    snapshot = _pipx_snapshot(venvs_root)
+    snapshot["venvs"]["omm"] = {
+        "environment": "omm",
+        "main_package": {"package": "omm", "apps": ["omm"]},
+    }
+    verification = cli._PipxInstallVerification(
+        local_venvs=venvs_root,
+        bin_dir=tmp_path / "bin",
+        snapshot=snapshot,
+        internal_omm=tmp_path / "internal-omm",
+        exposed_omm=tmp_path / "omm",
+        expected_version="0.2.119",
+    )
+    monkeypatch.setattr(cli.sys, "prefix", str(legacy_env))
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_pipx_query",
+        lambda args, **kwargs: calls.append(args)
+        or subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_verify_pipx_installation", lambda: (verification, None))
+
+    result = cli._cleanup_legacy_pipx_environment(verification)
+
+    assert result.returncode == 0
+    assert calls == [["pipx", "uninstall", "omm"]]
+
+
+def test_cleanup_repairs_a_missing_link_without_requiring_pipx_expose(monkeypatch, tmp_path):
+    venvs_root = tmp_path / "venvs"
+    legacy_env = venvs_root / "omm"
+    legacy_env.mkdir(parents=True)
+    snapshot = _pipx_snapshot(venvs_root)
+    snapshot["venvs"]["omm"] = {
+        "main_package": {"package": "omm", "apps": ["omm"]},
+    }
+    verification = cli._PipxInstallVerification(
+        local_venvs=venvs_root,
+        bin_dir=tmp_path / "bin",
+        snapshot=snapshot,
+        internal_omm=tmp_path / "internal-omm",
+        exposed_omm=tmp_path / "omm",
+        expected_version="0.2.119",
+    )
+    monkeypatch.setattr(cli.sys, "prefix", str(legacy_env))
+    query_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_pipx_query",
+        lambda args, **kwargs: query_calls.append(args)
+        or subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+    verifications = iter([(None, "link missing"), (verification, None)])
+    monkeypatch.setattr(cli, "_verify_pipx_installation", lambda: next(verifications))
+    install_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_pipx_install_with_progress",
+        lambda args: install_calls.append(args)
+        or subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+
+    result = cli._cleanup_legacy_pipx_environment(verification)
+
+    assert result.returncode == 0
+    assert query_calls == [["pipx", "uninstall", "omm"]]
+    assert install_calls == [
+        ["pipx", "install", "--force", "--editable", cli._install_spec()]
+    ]
+
+
+def test_cleanup_failure_keeps_verified_new_install_and_warns(monkeypatch, tmp_path):
+    from io import StringIO
+
+    venvs_root = tmp_path / "venvs"
+    legacy_env = venvs_root / "omm"
+    legacy_env.mkdir(parents=True)
+    snapshot = _pipx_snapshot(venvs_root)
+    snapshot["venvs"]["omm"] = {
+        "environment": "omm",
+        "main_package": {"package": "omm", "apps": ["omm"]},
+    }
+    verification = cli._PipxInstallVerification(
+        local_venvs=venvs_root,
+        bin_dir=tmp_path / "bin",
+        snapshot=snapshot,
+        internal_omm=tmp_path / "internal-omm",
+        exposed_omm=tmp_path / "omm",
+        expected_version="0.2.119",
+    )
+    monkeypatch.setattr(cli.sys, "prefix", str(legacy_env))
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_pipx_query",
+        lambda args, **kwargs: calls.append(args)
+        or subprocess.CompletedProcess(args, 1, stdout="", stderr="environment is locked"),
+    )
+    monkeypatch.setattr(cli, "_verify_pipx_installation", lambda: (verification, None))
+    warning_output = StringIO()
+    monkeypatch.setattr(cli, "err_console", Console(file=warning_output, highlight=False))
+
+    result = cli._cleanup_legacy_pipx_environment(verification)
+
+    assert result.returncode == 0
+    assert calls == [["pipx", "uninstall", "omm"]]
+    assert "pipx uninstall omm" in warning_output.getvalue()
+    assert "environment is locked" in warning_output.getvalue()
+
+
+def test_cleanup_never_uninstalls_an_unrelated_legacy_named_environment(monkeypatch, tmp_path):
+    from io import StringIO
+
+    snapshot = _pipx_snapshot(tmp_path / "venvs")
+    snapshot["venvs"]["omm"] = {
+        "environment": "omm",
+        "main_package": {"package": "unrelated-omm", "apps": ["omm"]},
+    }
+    verification = cli._PipxInstallVerification(
+        local_venvs=tmp_path / "venvs",
+        bin_dir=tmp_path / "bin",
+        snapshot=snapshot,
+        internal_omm=tmp_path / "internal-omm",
+        exposed_omm=tmp_path / "omm",
+        expected_version="0.2.119",
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_pipx_query",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not uninstall")),
+    )
+    warning_output = StringIO()
+    monkeypatch.setattr(cli, "err_console", Console(file=warning_output, highlight=False))
+
+    result = cli._cleanup_legacy_pipx_environment(verification)
+
+    assert result.returncode == 0
+    assert "could not be identified safely" in warning_output.getvalue()
+
+
+def test_failed_new_install_rolls_back_all_legacy_apps_and_verifies_omm(
+    monkeypatch, tmp_path
+):
+    venvs_root = tmp_path / "venvs"
+    legacy_bin = venvs_root / "omm" / "bin"
+    exposed_bin = tmp_path / "bin"
+    legacy_bin.mkdir(parents=True)
+    exposed_bin.mkdir()
+    internal_omm = legacy_bin / "omm"
+    internal_server = legacy_bin / "localfit-server"
+    internal_omm.write_text("legacy omm")
+    internal_server.write_text("legacy server")
+    exposed_omm = exposed_bin / "omm"
+    exposed_server = exposed_bin / "localfit-server"
+    exposed_omm.write_text("unverified new omm")
+    exposed_server.write_text("unverified new server")
+    snapshot = _pipx_snapshot(venvs_root)
+    snapshot["venvs"]["omm"] = {
+        "main_package": {
+            "package": "omm",
+            "package_version": "0.2.118",
+            "apps": ["omm", "localfit-server"],
+            "app_paths": [str(internal_server), str(internal_omm)],
+        }
+    }
+    state = cli._LegacyPipxState(
+        local_venvs=venvs_root,
+        bin_dir=exposed_bin,
+        snapshot=snapshot,
+        internal_omm=internal_omm,
+        exposed_omm=exposed_omm,
+        owned_apps=((internal_omm, exposed_omm), (internal_server, exposed_server)),
+        expected_version="0.2.118",
+    )
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cli, "_omm_version", lambda: "0.2.119")
+    monkeypatch.setattr(cli, "_pipx_snapshot", lambda: (snapshot, None))
+    calls = []
+
+    def fake_query(args, **kwargs):
+        calls.append(args)
+        if args == ["pipx", "uninstall", "omm-model"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args in ([str(internal_omm), "--version"], [str(exposed_omm), "--version"]):
+            return subprocess.CompletedProcess(args, 0, stdout="omm 0.2.118\n", stderr="")
+        raise AssertionError(f"unexpected command: {args}")
+
+    monkeypatch.setattr(cli, "_run_pipx_query", fake_query)
+
+    result = cli._rollback_legacy_pipx_migration(state, "new install failed")
+
+    assert result.returncode == 1
+    assert "restored and verified" in result.stderr
+    assert calls[0] == ["pipx", "uninstall", "omm-model"]
+    assert exposed_omm.samefile(internal_omm)
+    assert exposed_server.samefile(internal_server)
 
 
 def test_update_fast_path_falls_back_to_pipx_when_deps_changed(monkeypatch):
@@ -127,6 +699,11 @@ def test_update_reports_error_when_git_update_fails(monkeypatch):
 
 
 def test_update_reports_error_when_pipx_missing(monkeypatch):
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
     monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
@@ -152,6 +729,11 @@ def test_update_reports_error_when_pipx_missing(monkeypatch):
 
 
 def test_update_reports_error_and_skips_data_refresh_on_pipx_failure(monkeypatch):
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
     monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
@@ -200,6 +782,11 @@ def test_update_reports_error_when_pipx_permission_denied(monkeypatch):
 
 
 def test_update_skips_reinstall_when_already_up_to_date(monkeypatch):
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
     same_commit = "abc1234" * 5 + "abc12345"
     monkeypatch.setattr(cli, "_src_head_commit", lambda: same_commit)
     monkeypatch.setattr(cli, "_installed_commit", lambda: same_commit)
@@ -349,6 +936,11 @@ def test_src_head_commit_returns_head_when_git_dir_present(monkeypatch, tmp_path
     src = tmp_path / "src"
     (src / ".git").mkdir(parents=True)
     monkeypatch.setattr(cli, "SRC_DIR", src)
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
     monkeypatch.setattr(
         cli.subprocess,
         "run",

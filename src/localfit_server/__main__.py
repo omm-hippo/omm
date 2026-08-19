@@ -8,7 +8,8 @@ def main() -> None:
         import uvicorn
     except ModuleNotFoundError as error:
         raise SystemExit(
-            "Install the self-hosted server dependencies with: pip install 'omm[server]'"
+            "Install the self-hosted server dependencies with: "
+            "pip install 'omm-model[server]'"
         ) from error
 
     uvicorn.run(

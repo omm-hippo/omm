@@ -5,6 +5,20 @@ from omm import cli, config
 runner = CliRunner()
 
 
+def test_dash_dash_version_prints_installed_version_and_exits_eagerly(monkeypatch):
+    monkeypatch.setattr(cli, "_omm_version", lambda: "0.2.119")
+    monkeypatch.setattr(
+        cli,
+        "_maybe_start_update_check",
+        lambda ctx: (_ for _ in ()).throw(AssertionError("version must exit eagerly")),
+    )
+
+    result = runner.invoke(cli.app, ["--version"])
+
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout == "omm 0.2.119\n"
+
+
 def test_bare_omm_prints_version_only():
     result = runner.invoke(cli.app, [])
 
