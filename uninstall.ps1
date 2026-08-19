@@ -62,7 +62,54 @@ function Stop-UninstallPreservingSources {
     exit 1
 }
 
+function Remove-OmmOwnedData {
+    # Delete only paths the application owns. A custom OMM_HOME may contain
+    # unrelated files, so never recursively delete the container itself.
+    foreach ($name in @("models", "evaluations", "catalog-history", "session")) {
+        $target = Join-Path $resolvedHome $name
+        if (Test-Path -LiteralPath $target) {
+            Remove-Item -LiteralPath $target -Recurse -Force
+        }
+    }
+    $ownedFiles = @(
+        "config.json", "models.json", "link-ownership.json", "rules.json",
+        "recommend-model.json", "calibration.json", "benchmark_history.json",
+        "contribute_state.json", "telemetry.log", "telemetry_pending.json",
+        "update_check.json", ".omm-managed"
+    )
+    foreach ($name in $ownedFiles) {
+        foreach ($candidate in @((Join-Path $resolvedHome $name), (Join-Path $resolvedHome ($name + ".lock")))) {
+            if (Test-Path -LiteralPath $candidate) {
+                Remove-Item -LiteralPath $candidate -Force
+            }
+        }
+    }
+    $ownedJson = $ownedFiles | Where-Object { $_ -like "*.json" }
+    foreach ($name in $ownedJson) {
+        Get-ChildItem -LiteralPath $resolvedHome -File -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -like ($name + ".corrupt-*") -or $_.Name -like ("." + $name + ".*.tmp")
+        } | Remove-Item -Force
+    }
+    if (Test-Path -LiteralPath $resolvedHome) {
+        $remaining = Get-ChildItem -LiteralPath $resolvedHome -Force -ErrorAction Stop | Select-Object -First 1
+        if ($null -eq $remaining) {
+            Remove-Item -LiteralPath $resolvedHome -Force
+        }
+    }
+    Write-Host "Removed omm models, settings, and cached data. Unrelated files in $resolvedHome were preserved."
+}
+
 if ($null -eq $PipxCommand) {
+    # A data-only managed home has no installer source or pipx environment to
+    # identify. In explicit purge mode, remove only allowlisted OMM data and
+    # leave every unrelated entry untouched.
+    $hasSourceCheckout = (Test-Path -LiteralPath (Join-Path $resolvedHome "src")) -or
+        (Test-Path -LiteralPath (Join-Path $resolvedHome "sources"))
+    if ($Purge -and -not $hasSourceCheckout) {
+        Remove-OmmOwnedData
+        $global:LASTEXITCODE = 0
+        return
+    }
     Stop-UninstallPreservingSources "pipx was not found; refusing to remove source checkouts."
 }
 
@@ -320,40 +367,7 @@ foreach ($name in @("src", "sources")) {
 }
 
 if ($Purge) {
-    # Remove only application-owned paths. A custom OMM_HOME may contain
-    # unrelated files, so never recursively delete the container itself.
-    foreach ($name in @("models", "evaluations", "catalog-history", "session")) {
-        $target = Join-Path $resolvedHome $name
-        if (Test-Path -LiteralPath $target) {
-            Remove-Item -LiteralPath $target -Recurse -Force
-        }
-    }
-    $ownedFiles = @(
-        "config.json", "models.json", "link-ownership.json", "rules.json",
-        "recommend-model.json", "calibration.json", "benchmark_history.json",
-        "contribute_state.json", "telemetry.log", "telemetry_pending.json",
-        "update_check.json", ".omm-managed"
-    )
-    foreach ($name in $ownedFiles) {
-        foreach ($candidate in @((Join-Path $resolvedHome $name), (Join-Path $resolvedHome ($name + ".lock")))) {
-            if (Test-Path -LiteralPath $candidate) {
-                Remove-Item -LiteralPath $candidate -Force
-            }
-        }
-    }
-    $ownedJson = $ownedFiles | Where-Object { $_ -like "*.json" }
-    foreach ($name in $ownedJson) {
-        Get-ChildItem -LiteralPath $resolvedHome -File -ErrorAction SilentlyContinue | Where-Object {
-            $_.Name -like ($name + ".corrupt-*") -or $_.Name -like ("." + $name + ".*.tmp")
-        } | Remove-Item -Force
-    }
-    if (Test-Path -LiteralPath $resolvedHome) {
-        $remaining = Get-ChildItem -LiteralPath $resolvedHome -Force -ErrorAction Stop | Select-Object -First 1
-        if ($null -eq $remaining) {
-            Remove-Item -LiteralPath $resolvedHome -Force
-        }
-    }
-    Write-Host "Removed omm models, settings, and cached data. Unrelated files in $resolvedHome were preserved."
+    Remove-OmmOwnedData
 } else {
     Write-Host "Removed omm. Models and settings remain in $resolvedHome (use -Purge to remove them)."
 }

@@ -346,6 +346,36 @@ def test_posix_purge_preserves_unknown_files_and_shell_profiles(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell smoke test")
+def test_posix_data_only_purge_succeeds_without_pipx(tmp_path):
+    managed = tmp_path / "custom-omm-home"
+    (managed / "models").mkdir(parents=True)
+    (managed / ".omm-managed").write_text("omm installer managed home v1\n")
+    (managed / "config.json").write_text("{}\n")
+    sentinel = managed / "keep-me.txt"
+    sentinel.write_text("user-owned\n")
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    for name in ("python3", "python", "pipx"):
+        executable = stub / name
+        executable.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        executable.chmod(0o755)
+
+    result = subprocess.run(
+        ["sh", str(ROOT / "uninstall.sh"), "--purge"],
+        cwd=ROOT,
+        env={**os.environ, "PATH": f"{stub}{os.pathsep}{os.environ['PATH']}", "OMM_HOME": str(managed)},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert not (managed / "models").exists()
+    assert not (managed / "config.json").exists()
+    assert not (managed / ".omm-managed").exists()
+    assert sentinel.read_text() == "user-owned\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell smoke test")
 @pytest.mark.parametrize(
     ("installed", "expected_uninstalls", "metadata_version"),
     [

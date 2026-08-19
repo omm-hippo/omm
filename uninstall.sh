@@ -69,7 +69,37 @@ uninstall_failed() {
     exit 1
 }
 
+purge_owned_data() {
+    # Delete only paths the application owns. Never recursively remove the
+    # OMM_HOME container itself: a custom home may contain unrelated files.
+    for owned_dir in models evaluations catalog-history session; do
+        rm -rf "$RESOLVED_HOME/$owned_dir"
+    done
+    for owned_file in \
+        config.json models.json link-ownership.json rules.json \
+        recommend-model.json calibration.json benchmark_history.json \
+        contribute_state.json telemetry.log telemetry_pending.json \
+        update_check.json .omm-managed; do
+        rm -f "$RESOLVED_HOME/$owned_file" "$RESOLVED_HOME/$owned_file.lock"
+    done
+    # Corrupt backups and interrupted atomic writes use these application-
+    # owned suffixes. Limit cleanup to the known JSON filenames above.
+    for owned_json in config.json models.json link-ownership.json rules.json recommend-model.json calibration.json benchmark_history.json contribute_state.json telemetry_pending.json update_check.json; do
+        rm -f "$RESOLVED_HOME/$owned_json".corrupt-* "$RESOLVED_HOME/.$owned_json".*.tmp
+    done
+    rmdir "$RESOLVED_HOME" 2>/dev/null || true
+    echo "Removed omm models, settings, and cached data. Unrelated files in $RESOLVED_HOME were preserved."
+}
+
 if [ "$PIPX_AVAILABLE" != "1" ]; then
+    # A data-only managed home has no installer source or pipx environment to
+    # identify. In the explicit purge mode, remove only the allowlisted OMM
+    # data and leave every unrelated entry untouched.
+    if [ "$PURGE" = "1" ] && \
+       [ ! -e "$RESOLVED_HOME/src" ] && [ ! -e "$RESOLVED_HOME/sources" ]; then
+        purge_owned_data
+        exit 0
+    fi
     echo "pipx was not found; refusing to remove source checkouts." >&2
     uninstall_failed
 fi
@@ -314,25 +344,7 @@ fi
 rm -rf "$RESOLVED_HOME/src" "$RESOLVED_HOME/sources"
 
 if [ "$PURGE" = "1" ]; then
-    # Delete only paths the application owns. Never recursively remove the
-    # OMM_HOME container itself: a custom home may contain unrelated files.
-    for owned_dir in models evaluations catalog-history session; do
-        rm -rf "$RESOLVED_HOME/$owned_dir"
-    done
-    for owned_file in \
-        config.json models.json link-ownership.json rules.json \
-        recommend-model.json calibration.json benchmark_history.json \
-        contribute_state.json telemetry.log telemetry_pending.json \
-        update_check.json .omm-managed; do
-        rm -f "$RESOLVED_HOME/$owned_file" "$RESOLVED_HOME/$owned_file.lock"
-    done
-    # Corrupt backups and interrupted atomic writes use these application-
-    # owned suffixes. Limit cleanup to the known JSON filenames above.
-    for owned_json in config.json models.json link-ownership.json rules.json recommend-model.json calibration.json benchmark_history.json contribute_state.json telemetry_pending.json update_check.json; do
-        rm -f "$RESOLVED_HOME/$owned_json".corrupt-* "$RESOLVED_HOME/.$owned_json".*.tmp
-    done
-    rmdir "$RESOLVED_HOME" 2>/dev/null || true
-    echo "Removed omm models, settings, and cached data. Unrelated files in $RESOLVED_HOME were preserved."
+    purge_owned_data
 else
     echo "Removed omm. Models and settings remain in $RESOLVED_HOME (use --purge to remove them)."
 fi
