@@ -25,12 +25,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check the confirmation phrase
+        env:
+          INPUT_CLEAR: ${{ inputs.clear }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+          INPUT_MESSAGE: ${{ inputs.message }}
         run: |
-          if [ "${{ inputs.clear }}" = "true" ]; then
-            [ "${{ inputs.confirm }}" = "CLEAR-EMERGENCY" ] || { echo "confirm must be exactly CLEAR-EMERGENCY to clear the signal"; exit 1; }
+          if [ "$INPUT_CLEAR" = "true" ]; then
+            [ "$INPUT_CONFIRM" = "CLEAR-EMERGENCY" ] || { echo "confirm must be exactly CLEAR-EMERGENCY to clear the signal"; exit 1; }
           else
-            [ "${{ inputs.confirm }}" = "BLOCK-ALL-USERS" ] || { echo "confirm must be exactly BLOCK-ALL-USERS to set a signal"; exit 1; }
-            [ -n "${{ inputs.message }}" ] || { echo "message is required unless clear is true"; exit 1; }
+            [ "$INPUT_CONFIRM" = "BLOCK-ALL-USERS" ] || { echo "confirm must be exactly BLOCK-ALL-USERS to set a signal"; exit 1; }
+            [ -n "$INPUT_MESSAGE" ] || { echo "message is required unless clear is true"; exit 1; }
           fi
 
       - uses: actions/checkout@v4
@@ -42,14 +46,19 @@ jobs:
           python-version: "3.11"
 
       - name: Edit published/localfit-recommend-model.json
+        env:
+          INPUT_CLEAR: ${{ inputs.clear }}
+          INPUT_MESSAGE: ${{ inputs.message }}
+          INPUT_FIXED_IN_VERSION: ${{ inputs.fixed_in_version }}
         run: |
-          if [ "${{ inputs.clear }}" = "true" ]; then
+          if [ "$INPUT_CLEAR" = "true" ]; then
             python scripts/set_emergency_signal.py published/localfit-recommend-model.json --clear
           else
-            python scripts/set_emergency_signal.py published/localfit-recommend-model.json \
-              --id "emergency-$(date -u +%Y%m%d-%H%M%S)" \
-              --message "${{ inputs.message }}" \
-              ${{ inputs.fixed_in_version != '' && format('--fixed-in-version {0}', inputs.fixed_in_version) || '' }}
+            args=(--id "emergency-$(date -u +%Y%m%d-%H%M%S)" --message "$INPUT_MESSAGE")
+            if [ -n "$INPUT_FIXED_IN_VERSION" ]; then
+              args+=(--fixed-in-version "$INPUT_FIXED_IN_VERSION")
+            fi
+            python scripts/set_emergency_signal.py published/localfit-recommend-model.json "${args[@]}"
           fi
 
       - name: Re-sign published catalog
