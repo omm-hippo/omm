@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,7 @@ class BenchmarkStore:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with self._session() as connection:
             connection.executescript(SCHEMA)
             columns = {
                 row["name"]
@@ -70,6 +71,18 @@ class BenchmarkStore:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
+
+    @contextmanager
+    def _session(self):
+        # sqlite3.Connection's own context manager only commits/rolls back;
+        # it does not close the connection. Close explicitly so this doesn't
+        # depend on refcount-triggered GC to release the file handle.
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def insert(self, event: dict[str, Any]) -> InsertResult:
         fields = [
@@ -107,7 +120,7 @@ class BenchmarkStore:
         values.append(event_hash)
         values.append(event_json)
         placeholders = ", ".join("?" for _ in values)
-        with self._connect() as connection:
+        with self._session() as connection:
             cursor = connection.execute(
                 f"INSERT OR IGNORE INTO benchmarks ({', '.join(fields)}, event_json) "
                 f"VALUES ({placeholders})",
@@ -121,19 +134,19 @@ class BenchmarkStore:
             return InsertResult(int(row["id"]), False)
 
     def count(self) -> int:
-        with self._connect() as connection:
+        with self._session() as connection:
             row = connection.execute("SELECT COUNT(*) AS count FROM benchmarks").fetchone()
         return int(row["count"])
 
     def engine_counts(self) -> dict[str, int]:
-        with self._connect() as connection:
+        with self._session() as connection:
             rows = connection.execute(
                 "SELECT engine, COUNT(*) AS count FROM benchmarks GROUP BY engine"
             ).fetchall()
         return {str(row["engine"]): int(row["count"]) for row in rows}
 
     def export(self, limit: int = 100_000) -> list[dict[str, Any]]:
-        with self._connect() as connection:
+        with self._session() as connection:
             rows = connection.execute(
                 "SELECT event_json FROM benchmarks ORDER BY id ASC LIMIT ?", (limit,)
             ).fetchall()

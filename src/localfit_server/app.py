@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 import re
 from datetime import datetime
@@ -454,7 +455,7 @@ def require_admin(authorization: str | None = Header(default=None)) -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="LOCALFIT_ADMIN_TOKEN is not configured",
         )
-    if authorization != f"Bearer {expected}":
+    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
 
 

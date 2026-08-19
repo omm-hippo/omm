@@ -34,7 +34,7 @@ jobs:
           if ! python -c 'import os; from urllib.parse import urlparse; p = urlparse(os.environ["LOCALFIT_TELEMETRY_EXPORT_URL"]); h = (p.hostname or "").lower(); raise SystemExit(not ((h.endswith(".firebaseio.com") or h.endswith(".firebasedatabase.app")) and p.path.endswith(".json")))'; then
             test -n "$LOCALFIT_ADMIN_TOKEN" || { echo "LOCALFIT_ADMIN_TOKEN is required for self-hosted telemetry"; exit 1; }
           fi
-          cp published/recommend-model.json "$RUNNER_TEMP/localfit-incumbent.json"
+          cp published/localfit-recommend-model.json "$RUNNER_TEMP/localfit-incumbent.json"
 
       - name: Fetch HuggingFace candidate pool
         run: python scripts/fetch_candidates.py
@@ -51,7 +51,7 @@ jobs:
             --baseline "$RUNNER_TEMP/localfit-incumbent.json" \
             --output "$RUNNER_TEMP/localfit-candidate.json" \
             --quality-report "$RUNNER_TEMP/localfit-quality-report.json"
-          cp "$RUNNER_TEMP/localfit-candidate.json" published/recommend-model.json
+          cp "$RUNNER_TEMP/localfit-candidate.json" published/localfit-recommend-model.json
 
       - name: Sign published catalog
         env:
@@ -60,9 +60,9 @@ jobs:
           umask 077
           key_path="$RUNNER_TEMP/omm-catalog-signing-key"
           printf '%s\n' "$LOCALFIT_CATALOG_SIGNING_KEY" > "$key_path"
-          python scripts/sign_catalog.py sign published/recommend-model.json \
+          python scripts/sign_catalog.py sign published/localfit-recommend-model.json \
             --private "$key_path" \
-            --manifest published/recommend-model.manifest.json
+            --manifest published/localfit-recommend-model.manifest.json
 
       - name: Open a PR with the retrained model and auto-merge it
         env:
@@ -71,9 +71,9 @@ jobs:
         run: |
           git config user.name "omm-retrain-bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add published/recommend-model.json published/candidates.json
+          git add published/localfit-recommend-model.json published/candidates.json
           git diff --cached --quiet && echo "No changes, skipping." && exit 0
-          git add published/recommend-model.manifest.json
+          git add published/localfit-recommend-model.manifest.json
 
           # Sign with the bot's own key (listed in src/omm/trust/allowed_signers)
           # rather than GITHUB_TOKEN, so the PR head passes the Trusted PR head
