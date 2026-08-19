@@ -330,6 +330,13 @@ def main() -> None:
         _ensure_ollama_dir_writable()
 
     with tempfile.TemporaryDirectory() as tmp:
+        if platform.system() != "Windows":
+            # tempfile.mkdtemp() defaults to mode 0700 (owner only). Ollama's
+            # blob is a symlink back to this directory, not a copy - under a
+            # systemd-managed install the daemon (its own dedicated user)
+            # needs to traverse into here to stat/read the real file, same
+            # underlying issue as the manifest permission fix above.
+            os.chmod(tmp, 0o755)
         gguf_path = Path(tmp) / "omm-ci-test-model.gguf"
         build_minimal_gguf(gguf_path)
         ollama_tag = "omm-ci-test"
