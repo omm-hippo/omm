@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import click
 import typer
@@ -845,6 +845,23 @@ def _missing_engines_note(installed: dict[str, bool]) -> str | None:
     return f"+ {missing} program(s) not installed — see the compatibility list: {COMPATIBLE_PROGRAMS_URL}"
 
 
+def _hub_storage_bytes(reg: dict[str, Any]) -> int:
+    """Total on-disk size of every omm-hub-managed model. Prefers each
+    entry's stored `size_bytes` and falls back to a live stat() when it's
+    missing/invalid (same fallback used for Memory Guard's own size check
+    above) or the file is gone (then it just contributes 0)."""
+    total = 0
+    for filename, entry in reg.items():
+        size_bytes = entry.get("size_bytes")
+        if isinstance(size_bytes, bool) or not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+            try:
+                size_bytes = _managed_model_path(filename).stat().st_size
+            except (ModelResolutionError, OSError):
+                size_bytes = 0
+        total += int(size_bytes)
+    return total
+
+
 @app.command()
 @global_flags
 def scan() -> None:
@@ -855,6 +872,8 @@ def scan() -> None:
     reg = registry.load_registry()
     cleaned = _reconcile_stale_link_records(reg, installed)
     external = scan_import.find_external_models()
+    hub_storage_gb = _hub_storage_bytes(reg) / (1024**3)
+    storage_saved_gb = load_config().get("storage_saved_bytes", 0) / (1024**3)
 
     if opts.json:
         console.print_json(
@@ -868,6 +887,8 @@ def scan() -> None:
                 "unified_memory": info.unified_memory,
                 "vram_total_gb": info.vram_total_gb,
                 "vram_free_gb": info.vram_free_gb,
+                "hub_storage_gb": hub_storage_gb,
+                "storage_saved_gb": storage_saved_gb,
                 "engines_installed": [spec.key for spec in linker.ENGINES if installed[spec.key]],
                 "stale_links": cleaned,
                 "models": [
@@ -903,6 +924,8 @@ def scan() -> None:
     budget = calculate_memory_budget(info)
     table.add_row("Safe model budget now", f"{budget.model_budget_gb:.1f} GB")
     table.add_row("Reserved for apps/OS", f"{budget.ram_safety_reserve_gb:.1f} GB+")
+    table.add_row("omm hub storage", f"{hub_storage_gb:.1f} GB")
+    table.add_row("Saved via omm import", f"{storage_saved_gb:.1f} GB")
 
     if info.unified_memory:
         table.add_row("Memory type", "Unified (Apple Silicon)")
@@ -1271,6 +1294,9 @@ def _run_import_flow(extra_path: Path | None = None, *, yes: bool = False) -> No
             console.print(f"  [success]Ω Imported {result.filename}[/success]")
         for warning in result.link_warnings:
             err_console.print(f"[warning]{warning}[/warning]")
+
+    if bytes_saved > 0:
+        config_mod.add_storage_saved_bytes(bytes_saved)
 
     final_count = len(registry.load_registry())
     console.print(
