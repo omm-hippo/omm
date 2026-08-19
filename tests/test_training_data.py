@@ -622,7 +622,9 @@ def test_quality_gate_regression_republishes_baseline_unchanged(tmp_path, monkey
     assert output.read_text() == baseline.read_text()
 
 
-def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchanged(tmp_path, monkeypatch):
+def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchanged(
+    tmp_path, monkeypatch, capsys
+):
     telemetry = tmp_path / "telemetry.json"
     telemetry.write_text(json.dumps([_v6_row(10), _v6_row(20, vram_gb=6)]))
     output = tmp_path / "model.json"
@@ -669,6 +671,11 @@ def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchang
     assert output.read_text() == baseline.read_text()
     report = json.loads(quality_report.read_text())
     assert report["skipped"] is True
+    # A real regression riding along with the data-volume skip must still
+    # reach the CI log, not just the "not enough data" line - otherwise a
+    # genuinely regressing candidate on a selection-group-starved night
+    # would read as a harmless data shortage.
+    assert "p90_absolute_percentage_error regressed" in capsys.readouterr().out
 
 
 def test_quality_gate_insufficient_data_republishes_baseline_unchanged(tmp_path, monkeypatch):

@@ -630,6 +630,45 @@ def test_successful_native_ollama_blob_is_reclaimed_on_unlink(
     assert not manifest.exists()
 
 
+def test_unlink_ollama_waits_for_concurrent_link_ollama_lock(isolated_omm_home, tmp_path, monkeypatch):
+    """A concurrent `omm install`/`omm link` writing this same manifest
+    under `_engine_path_lock` must finish (or fail) before `unlink_ollama`
+    is allowed to delete it - otherwise the writer can finish, record
+    ownership, and report success while an unlocked unlink races in and
+    removes the manifest right after, leaving the caller believing the
+    link succeeded when it's actually gone."""
+    import threading
+    import time
+
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+    linker.link_ollama(source, "model", models_dir=models_dir, verify_compat=False)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    assert manifest_path.exists()
+
+    hold_seconds = 0.3
+    acquired = threading.Event()
+
+    def hold_lock():
+        with linker.locked(linker._engine_path_lock(manifest_path)):
+            acquired.set()
+            time.sleep(hold_seconds)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    acquired.wait(timeout=5)
+
+    started = time.monotonic()
+    linker.unlink_ollama("model", models_dir=models_dir)
+    elapsed = time.monotonic() - started
+    holder.join()
+
+    assert elapsed >= hold_seconds * 0.8
+    assert not manifest_path.exists()
+
+
 def test_link_ollama_reclaims_manifest_left_by_native_fallback(
     isolated_omm_home, tmp_path, monkeypatch
 ):

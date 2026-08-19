@@ -1309,8 +1309,9 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
 
     def cleanup_transaction() -> None:
         try:
-            manifest_path.unlink(missing_ok=True)
-            _update_link_ownership(manifest_path, None)
+            with locked(_engine_path_lock(manifest_path)):
+                manifest_path.unlink(missing_ok=True)
+                _update_link_ownership(manifest_path, None)
         except OSError:
             pass
         for blob in transaction_blobs():
@@ -1417,27 +1418,35 @@ def unlink_ollama(
     )
     if not manifest_path.parent.resolve().is_relative_to(manifest_root.resolve()):
         return
-    if not manifest_path.exists():
-        return
-    if not _owned_manifest(manifest_path, expected_source=expected_source):
-        return
-    try:
-        manifest = json.loads(manifest_path.read_text())
-        model_digests = _manifest_blob_digests(manifest)
-    except (OSError, json.JSONDecodeError):
-        model_digests = set()
-    # Blobs are content-addressed and can be shared by a user manifest or
-    # another omm model. Only remove an omm-owned blob after no remaining
-    # manifest references its content digest.
-    try:
-        manifest_path.unlink()
-    except OSError:
-        return
-    _update_link_ownership(manifest_path, None)
-    try:
-        manifest_path.parent.rmdir()
-    except OSError:
-        pass
+    # Locked against link_ollama's own manifest_path lock: unlinking used to
+    # run unlocked, so a concurrent `omm install`/`omm link` for the same
+    # model_name could interleave with this delete - link_ollama's read-back
+    # write finishes, records ownership, and returns success, while this
+    # unlink (racing it unlocked) deletes that just-written manifest and
+    # clears its ownership record right after, leaving the installer
+    # believing the link succeeded when the manifest is actually gone.
+    with locked(_engine_path_lock(manifest_path)):
+        if not manifest_path.exists():
+            return
+        if not _owned_manifest(manifest_path, expected_source=expected_source):
+            return
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            model_digests = _manifest_blob_digests(manifest)
+        except (OSError, json.JSONDecodeError):
+            model_digests = set()
+        # Blobs are content-addressed and can be shared by a user manifest or
+        # another omm model. Only remove an omm-owned blob after no remaining
+        # manifest references its content digest.
+        try:
+            manifest_path.unlink()
+        except OSError:
+            return
+        _update_link_ownership(manifest_path, None)
+        try:
+            manifest_path.parent.rmdir()
+        except OSError:
+            pass
 
     # An omm-owned link/copy can be reclaimed once no remaining manifest
     # references its content digest. This matters on Windows: deleting the

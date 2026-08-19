@@ -1884,7 +1884,7 @@ def recommend() -> None:
     config = load_config()
 
     artifact, changed = _load_recommendation_with_change_note(config)
-    if changed:
+    if changed and not _global_opts().quiet:
         console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
     if artifact and artifact.get("candidates"):
         ranked = predictor.rank_candidates(artifact, info)
@@ -1902,12 +1902,13 @@ def recommend() -> None:
         install(selected)
         return
 
-    console.print("[muted]No trained model available, falling back to static rules.[/muted]")
+    if not _global_opts().quiet:
+        console.print("[muted]No trained model available, falling back to static rules.[/muted]")
     rules_url = config.get("rules_url")
     if rules_url:
         try:
             _, rules_changed = rules_mod.refresh_rules_with_change_note(rules_url)
-            if rules_changed:
+            if rules_changed and not _global_opts().quiet:
                 console.print("[muted]Fetched updated rules from GitHub.[/muted]")
         except requests.RequestException:
             pass
@@ -2725,17 +2726,36 @@ def _select_benchmark_engine() -> str | None:
     return None
 
 
-def _ensure_engine_running(engine: str, action: str, *, assume_yes: bool = False):
+def _ensure_engine_running(
+    engine: str, action: str, *, assume_yes: bool = False
+) -> tuple[str, object]:
     """Preflight the selected engine's daemon, prompting to start it if
     installed-but-stopped. `engine` should already come from
     `_select_benchmark_engine()`, so "is this engine usable at all" is not
     re-checked here - only "is it already running, and if not, do we have
-    permission to start it." Returns an opaque handle for
-    `_stop_engine_daemon`, or None if nothing needed starting."""
+    permission to start it."
+
+    Returns (actual_engine, handle): `handle` is an opaque handle for
+    `_stop_engine_daemon`, or None if nothing needed starting. `actual_engine`
+    differs from the requested `engine` only when Ollama was picked but its
+    daemon could not be started (or the user declined to start it) and LM
+    Studio is available as a fallback - `_select_benchmark_engine` only
+    checks that Ollama's executable exists or its daemon is already
+    reachable, not that a stopped daemon can actually come up, so this is the
+    first point that can discover it can't."""
     if engine == "ollama":
-        return _ensure_ollama_running(action, assume_yes=assume_yes)
+        try:
+            return "ollama", _ensure_ollama_running(action, assume_yes=assume_yes)
+        except typer.Exit:
+            if linker._lms_cli_path() is None and not linker.lmstudio_daemon_reachable():
+                raise
+            console.print(
+                f"[muted]Ollama isn't available for `omm {action}` - falling back to "
+                "LM Studio instead.[/muted]"
+            )
+            engine = "lmstudio"
     if linker.lmstudio_daemon_reachable():
-        return None
+        return "lmstudio", None
     prompt = f"LM Studio is installed but its server isn't running. Start it now for `omm {action}`?"
     if not assume_yes and (not _stdin_is_tty() or not _ask_confirm(prompt)):
         err_console.print(
@@ -2746,7 +2766,7 @@ def _ensure_engine_running(engine: str, action: str, *, assume_yes: bool = False
     if not started:
         err_console.print("[error]Could not start LM Studio's local server.[/error]")
         raise typer.Exit(1)
-    return True
+    return "lmstudio", True
 
 
 def _record_install_compatibility(
@@ -5371,7 +5391,7 @@ def benchmark_cmd(
         )
         raise typer.Exit(1)
     _print_engine_selection_notice(engine)
-    started_daemon = _ensure_engine_running(engine, "benchmark")
+    engine, started_daemon = _ensure_engine_running(engine, "benchmark")
     lmstudio_models: dict[str, dict] | None = None
     if engine == "lmstudio":
         installed = _lmstudio_installed_models()
@@ -5380,7 +5400,8 @@ def benchmark_cmd(
             if not models:
                 err_console.print("[error]No models are installed in LM Studio to benchmark.[/error]")
                 raise typer.Exit(1)
-            console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
+            if not _global_opts().quiet:
+                console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
         unknown = [m for m in models if m not in installed]
         if unknown:
             err_console.print(
@@ -5395,7 +5416,8 @@ def benchmark_cmd(
             if not models:
                 err_console.print("[error]No models are installed in Ollama to benchmark.[/error]")
                 raise typer.Exit(1)
-            console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
+            if not _global_opts().quiet:
+                console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
         _guard_benchmark_models(models)
     if output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -6951,7 +6973,7 @@ def contribute(
     # point asking for approval on a run that can't start anyway. The
     # `finally` block further down always stops whatever daemon we start
     # here, on every exit path, so no manual stop is needed on early exits.
-    started_daemon = _ensure_engine_running(engine, "contribute", assume_yes=yes)
+    engine, started_daemon = _ensure_engine_running(engine, "contribute", assume_yes=yes)
     daemon_ref = {"proc": started_daemon}
     try:
         # Everything that can prove the session impossible belongs before the
