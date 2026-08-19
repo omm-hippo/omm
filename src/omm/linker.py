@@ -95,7 +95,51 @@ def lmstudio_models_dir() -> Path:
     return lmstudio_home_dir() / "models"
 
 
+def _systemd_ollama_models_dir() -> Path | None:
+    """The official Linux installer runs `ollama serve` under systemd as a
+    dedicated `ollama` system user, whose $HOME differs from the invoking
+    CLI user's - so Path.home() below resolves to a directory the daemon
+    never reads from (issue #117). When ollama.service is actually active,
+    ask systemd for its real User= and any unit-level OLLAMA_MODELS
+    override instead of guessing; return None to fall through to today's
+    behavior everywhere else (macOS, Windows, manual `ollama serve`,
+    Docker, or the service simply not running)."""
+    if platform.system() != "Linux" or shutil.which("systemctl") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "ollama.service", "--property=ActiveState,User,Environment"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    props: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("=")
+        props[key] = value
+    if props.get("ActiveState") != "active":
+        return None
+    for env_pair in props.get("Environment", "").split():
+        key, _, value = env_pair.partition("=")
+        if key == "OLLAMA_MODELS" and value:
+            return Path(value).expanduser()
+    import pwd  # POSIX-only; safe here since we already required Linux above
+
+    try:
+        home = pwd.getpwnam(props.get("User") or "root").pw_dir
+    except KeyError:
+        return None
+    return Path(home) / ".ollama" / "models"
+
+
 def ollama_models_dir() -> Path:
+    systemd_dir = _systemd_ollama_models_dir()
+    if systemd_dir is not None:
+        return systemd_dir
     env_dir = os.environ.get("OLLAMA_MODELS")
     if env_dir:
         return Path(env_dir).expanduser()
@@ -1071,6 +1115,18 @@ def link_ollama(
                 manifest_path.unlink()
                 _update_link_ownership(manifest_path, None)
             atomic_write_text(manifest_path, manifest_json)
+            # atomic_write_text's tempfile.mkstemp() defaults to mode 0600
+            # (owner read/write only), which os.replace() carries straight
+            # through to the final path. Invisible on a single-user desktop
+            # where the writer and Ollama's daemon are the same account, but
+            # under a systemd-managed install (issue #117) the daemon runs
+            # as its own dedicated user - confirmed live in CI, it gets a
+            # flat "permission denied" opening this exact file and the
+            # model never appears in `ollama list`, no matter how long you
+            # wait. Ollama's own writes aren't secret, so match what
+            # `ollama create` itself would leave behind.
+            if platform.system() != "Windows":
+                manifest_path.chmod(0o644)
             try:
                 written_back = json.loads(manifest_path.read_text())
             except (OSError, ValueError) as e:
@@ -1088,6 +1144,16 @@ def link_ollama(
             except OSError:
                 manifest_path.unlink(missing_ok=True)
                 raise
+    except PermissionError as e:
+        # A systemd-managed Ollama's models dir can be owned by a different
+        # system user (issue #117) - the path may be correctly resolved yet
+        # still unwritable by this process. Only the real default daemon has
+        # a native-create escape hatch (see verify_compat's docstring); an
+        # explicit models_dir has nowhere else to go but a plain LinkError.
+        if not verify_compat:
+            raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
+        _fallback_to_native_create(gguf_path, model_name, models_dir)
+        return True
     except OSError as e:
         raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
 
@@ -1230,10 +1296,20 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
         unlink_ollama(model_name, models_dir=models_dir)
 
     blobs_dir = models_dir / "blobs"
-    blobs_dir.mkdir(parents=True, exist_ok=True)
-    before_blobs = {path.name for path in blobs_dir.iterdir() if path.is_file()}
+    try:
+        blobs_dir.mkdir(parents=True, exist_ok=True)
+        before_blobs = {path.name for path in blobs_dir.iterdir() if path.is_file()}
+    except OSError:
+        # A systemd-managed daemon (issue #117) may own this directory
+        # without granting this process read/list access to it - `ollama
+        # create` still works since the daemon does its own writing, we
+        # just can't tell pre-existing blobs from new ones for
+        # rollback-on-failure cleanup below.
+        before_blobs = None
 
     def transaction_blobs() -> list[Path]:
+        if before_blobs is None:
+            return []
         try:
             return [
                 path
@@ -1245,8 +1321,9 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
 
     def cleanup_transaction() -> None:
         try:
-            manifest_path.unlink(missing_ok=True)
-            _update_link_ownership(manifest_path, None)
+            with locked(_engine_path_lock(manifest_path)):
+                manifest_path.unlink(missing_ok=True)
+                _update_link_ownership(manifest_path, None)
         except OSError:
             pass
         for blob in transaction_blobs():
@@ -1353,27 +1430,35 @@ def unlink_ollama(
     )
     if not manifest_path.parent.resolve().is_relative_to(manifest_root.resolve()):
         return
-    if not manifest_path.exists():
-        return
-    if not _owned_manifest(manifest_path, expected_source=expected_source):
-        return
-    try:
-        manifest = json.loads(manifest_path.read_text())
-        model_digests = _manifest_blob_digests(manifest)
-    except (OSError, json.JSONDecodeError):
-        model_digests = set()
-    # Blobs are content-addressed and can be shared by a user manifest or
-    # another omm model. Only remove an omm-owned blob after no remaining
-    # manifest references its content digest.
-    try:
-        manifest_path.unlink()
-    except OSError:
-        return
-    _update_link_ownership(manifest_path, None)
-    try:
-        manifest_path.parent.rmdir()
-    except OSError:
-        pass
+    # Locked against link_ollama's own manifest_path lock: unlinking used to
+    # run unlocked, so a concurrent `omm install`/`omm link` for the same
+    # model_name could interleave with this delete - link_ollama's read-back
+    # write finishes, records ownership, and returns success, while this
+    # unlink (racing it unlocked) deletes that just-written manifest and
+    # clears its ownership record right after, leaving the installer
+    # believing the link succeeded when the manifest is actually gone.
+    with locked(_engine_path_lock(manifest_path)):
+        if not manifest_path.exists():
+            return
+        if not _owned_manifest(manifest_path, expected_source=expected_source):
+            return
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            model_digests = _manifest_blob_digests(manifest)
+        except (OSError, json.JSONDecodeError):
+            model_digests = set()
+        # Blobs are content-addressed and can be shared by a user manifest or
+        # another omm model. Only remove an omm-owned blob after no remaining
+        # manifest references its content digest.
+        try:
+            manifest_path.unlink()
+        except OSError:
+            return
+        _update_link_ownership(manifest_path, None)
+        try:
+            manifest_path.parent.rmdir()
+        except OSError:
+            pass
 
     # An omm-owned link/copy can be reclaimed once no remaining manifest
     # references its content digest. This matters on Windows: deleting the

@@ -4,6 +4,9 @@ name: "Engine link check: Ollama"
   push:
     paths:
       - "src/omm/linker.py"
+      - "src/omm/config.py"
+      - "src/omm/atomic.py"
+      - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
       - "src/omm/gguf.py"
       - "src/omm/hashutil.py"
@@ -12,6 +15,9 @@ name: "Engine link check: Ollama"
   pull_request:
     paths:
       - "src/omm/linker.py"
+      - "src/omm/config.py"
+      - "src/omm/atomic.py"
+      - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
       - "src/omm/gguf.py"
       - "src/omm/hashutil.py"

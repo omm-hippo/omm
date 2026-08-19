@@ -150,6 +150,23 @@ def test_benchmark_all_expands_to_every_installed_tag(isolated_omm_home, monkeyp
     assert "Expanding 'all' to 2 model(s)" in result.stdout
 
 
+def test_benchmark_all_quiet_suppresses_expansion_line(isolated_omm_home, monkeypatch):
+    """`--quiet` was wired into this command's progress spinner (issue #81)
+    but left the "Expanding 'all' to N model(s)" hint line unconditional."""
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.quality_mod, "list_benchmarkable_tags", lambda: ["a:latest", "b:latest"])
+    monkeypatch.setattr(
+        cli.quality_mod, "collect_evidence", lambda tags, *a, **k: _full_report()
+    )
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+
+    result = runner.invoke(cli.app, ["benchmark", "all", "--quiet"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Expanding 'all'" not in result.output
+
+
 def test_benchmark_all_errors_when_nothing_installed(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli.quality_mod, "list_benchmarkable_tags", lambda: [])
@@ -388,6 +405,51 @@ def test_benchmark_declines_starting_lmstudio_when_prompted(isolated_omm_home, m
 
     assert result.exit_code == 1
     assert "requires LM Studio's local server" in result.stderr
+
+
+def test_benchmark_falls_back_to_lmstudio_when_ollama_daemon_wont_start(
+    isolated_omm_home, monkeypatch
+):
+    """_select_benchmark_engine only checks that the Ollama executable
+    exists, not that its (stopped) daemon can actually come up - a
+    corrupted install or port conflict should still fall back to a
+    healthy, already-running LM Studio instead of exiting outright."""
+    config.update_config(onboarding_completed=True)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama"))
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "start_ollama_daemon", lambda *a, **k: None)
+    monkeypatch.setattr(cli.benchmark, "last_daemon_start_error", lambda: "port already in use")
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: "/some/lms")
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.linker,
+        "_lmstudio_list_models",
+        lambda lms_path: [
+            {
+                "type": "llm",
+                "modelKey": "qwen2.5-0.5b-instruct",
+                "architecture": "qwen2",
+                "quantization": {"name": "Q8_0", "bits": 8},
+                "paramsString": "630M",
+                "maxContextLength": 32768,
+                "trainedForToolUse": True,
+            },
+        ],
+    )
+    seen = {}
+
+    def fake_collect_evidence(models, *a, engine=None, **k):
+        seen["engine"] = engine
+        raise cli.quality_mod.QualityEvaluationError("stop here, we only care about the engine")
+
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
+
+    result = runner.invoke(cli.app, ["benchmark", "qwen2.5-0.5b-instruct"])
+
+    assert seen["engine"] == "lmstudio"
+    assert "falling back to LM Studio" in result.output
 
 
 def test_benchmark_lmstudio_expands_all_and_rejects_unknown_model(isolated_omm_home, monkeypatch):

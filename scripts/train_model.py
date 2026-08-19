@@ -944,9 +944,16 @@ def main() -> None:
             # baseline on ANY metric in this holdout, not just the
             # selection-ranking ones - same "come back with more telemetry"
             # treatment as the pre-training volume check above, not a bug.
+            # `evaluation["failures"]` can also hold real regression
+            # failures found in this same run (compare_artifacts appends
+            # every reason to one list, regardless of cause) - print all of
+            # them, not just the selection-group one, or a candidate that
+            # both lacks data AND genuinely regressed would log as pure
+            # "not enough data" and hide the regression from CI output.
             print(
                 f"Quality gate: only {selection_group_count} selection group(s) in the "
-                f"holdout, need {min_selection_groups}. Keeping current model unchanged."
+                f"holdout, need {min_selection_groups}. Keeping current model unchanged. "
+                "Full evaluation: " + "; ".join(evaluation["failures"])
             )
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with locked(args.output):

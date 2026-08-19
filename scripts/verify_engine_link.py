@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 import struct
 import subprocess
 import sys
@@ -30,6 +32,14 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+# Not a TTY under CI, so stdout defaults to block-buffered - every
+# on_output=print line from the installer subprocess (and this script's own
+# diagnostics) would otherwise sit in the buffer and only appear, all at
+# once and out of order relative to stderr, when the process exits. Real-time,
+# correctly ordered logs are the only way to diagnose a run that fails
+# intermittently, since a failed run can't be reproduced after the fact.
+sys.stdout.reconfigure(line_buffering=True)
 
 from omm import linker, scan_import  # noqa: E402
 
@@ -73,6 +83,15 @@ def verify_ollama(gguf_path: Path, ollama_tag: str) -> None:
     the tag yet. Retries instead of trusting a single call."""
     import time
 
+    manifest_path = (
+        linker.ollama_models_dir()
+        / "manifests" / "registry.ollama.ai" / "library" / ollama_tag / "latest"
+    )
+    print(
+        f"verify_ollama: expecting manifest at {manifest_path} "
+        f"(exists={manifest_path.exists()})"
+    )
+
     list_output = ""
     for attempt in range(10):
         result = _run(["ollama", "list"])
@@ -81,9 +100,22 @@ def verify_ollama(gguf_path: Path, ollama_tag: str) -> None:
         list_output = result.stdout
         if ollama_tag in list_output:
             break
+        # Diagnostic only: does `ollama show` (a direct per-tag lookup)
+        # see the manifest when `ollama list` (a full-store listing)
+        # doesn't? Tells us whether `list` specifically is cached/lagged
+        # or whether the daemon isn't picking up the direct write at all.
+        show_probe = _run(["ollama", "show", ollama_tag])
+        print(
+            f"attempt {attempt + 1}: not in `ollama list` yet; "
+            f"`ollama show {ollama_tag}` returncode={show_probe.returncode} "
+            f"stderr={show_probe.stderr.strip()!r}"
+        )
         time.sleep(2)
     else:
-        _fail(f"`ollama list` never showed {ollama_tag!r} after 10 tries:\n{list_output}")
+        _fail(
+            f"`ollama list` never showed {ollama_tag!r} after 10 tries "
+            f"(manifest on disk now: exists={manifest_path.exists()}):\n{list_output}"
+        )
 
     result = _run(["ollama", "show", ollama_tag])
     if result.returncode != 0:
@@ -253,6 +285,35 @@ ENSURE_READY = {
 }
 
 
+def _ensure_ollama_dir_writable() -> None:
+    """CI-only. The real Linux installer runs Ollama under systemd as a
+    dedicated `ollama` system user, whose models dir this runner account
+    can't write into (issue #117) even once linker.ollama_models_dir()
+    resolves it correctly. omm's product code copes with that by falling
+    back to native `ollama create`, but that path needs a real GGUF the
+    quantizer accepts - this check's placeholder file can never pass that,
+    so it would never actually exercise the fast hand-rolled path this
+    workflow exists to validate. Grant this runner write access instead,
+    the same way a real user would (e.g. `sudo usermod -aG ollama`, or
+    just running as ollama themselves)."""
+    if platform.system() != "Linux":
+        return
+    models_dir = linker.ollama_models_dir()
+    print(
+        f"ollama_models_dir() resolved to {models_dir} "
+        f"(exists={models_dir.exists()}, writable={os.access(models_dir, os.W_OK)})"
+    )
+    if not models_dir.exists() or os.access(models_dir, os.W_OK):
+        return
+    result = subprocess.run(
+        ["sudo", "chmod", "-R", "a+rwX", str(models_dir)], capture_output=True, text=True
+    )
+    print(
+        f"sudo chmod -R a+rwX {models_dir}: returncode={result.returncode} "
+        f"stderr={result.stderr.strip()!r}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("engine", choices=sorted(ENGINE_VERIFIERS))
@@ -265,8 +326,17 @@ def main() -> None:
             _fail(f"install_engine({args.engine!r}) did not succeed: status={result.status}, {result.message}")
 
     ENSURE_READY.get(args.engine, lambda: None)()
+    if args.engine == "ollama":
+        _ensure_ollama_dir_writable()
 
     with tempfile.TemporaryDirectory() as tmp:
+        if platform.system() != "Windows":
+            # tempfile.mkdtemp() defaults to mode 0700 (owner only). Ollama's
+            # blob is a symlink back to this directory, not a copy - under a
+            # systemd-managed install the daemon (its own dedicated user)
+            # needs to traverse into here to stat/read the real file, same
+            # underlying issue as the manifest permission fix above.
+            os.chmod(tmp, 0o755)
         gguf_path = Path(tmp) / "omm-ci-test-model.gguf"
         build_minimal_gguf(gguf_path)
         ollama_tag = "omm-ci-test"

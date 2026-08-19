@@ -468,9 +468,18 @@ def _scan_nvidia_vram() -> tuple[str | None, float | None, float | None]:
 
 
 def _scan_hardware() -> HardwareInfo:
-    vm = psutil.virtual_memory()
-    ram_total_gb = vm.total / (1024**3)
-    ram_available_gb = vm.available / (1024**3)
+    try:
+        vm = psutil.virtual_memory()
+        ram_total_gb = vm.total / (1024**3)
+        ram_available_gb = vm.available / (1024**3)
+    except OSError:
+        # A hardened sandbox/container can deny reads of the memory info
+        # psutil relies on (e.g. /proc/meminfo). Fall back to the same 0.0
+        # the memory guard already treats as "assume the worst and block"
+        # (see calculate_memory_budget) rather than letting this crash
+        # verify/install/benchmark's preflight outright.
+        ram_total_gb = 0.0
+        ram_available_gb = 0.0
 
     raw_os_name = platform.system()
     os_name = _OS_DISPLAY_NAMES.get(raw_os_name, raw_os_name)

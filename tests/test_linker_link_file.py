@@ -406,6 +406,27 @@ def test_link_ollama_skips_rehash_when_already_correctly_linked(isolated_omm_hom
     assert manifest.exists()
 
 
+@pytest.mark.skipif(platform.system() == "Windows", reason="POSIX file mode bits only")
+def test_link_ollama_manifest_is_readable_by_other_users(isolated_omm_home, tmp_path, monkeypatch):
+    """atomic_write_text's tempfile.mkstemp() defaults to mode 0600 (owner
+    only), which os.replace() carries through unchanged. Invisible on a
+    single-user desktop where the writer and Ollama's daemon are the same
+    account, but under a systemd-managed install (issue #117) the daemon
+    runs as its own dedicated user - confirmed live in CI: the daemon gets
+    a flat "permission denied" opening this exact file, and the model
+    never shows up in `ollama list` no matter how long you wait."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+
+    linker.link_ollama(source, "model", models_dir=models_dir)
+
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    mode = manifest.stat().st_mode & 0o777
+    assert mode & 0o044 == 0o044, f"manifest mode {oct(mode)} isn't group/other readable"
+
+
 def test_ollama_force_preserves_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
     """Force never turns an unproven manifest into an OMM-owned file."""
     source = tmp_path / "source.gguf"
@@ -441,6 +462,33 @@ def test_link_ollama_raises_link_error_when_blob_write_fails(tmp_path, monkeypat
     monkeypatch.setattr(
         Path, "write_bytes", lambda self, data: (_ for _ in ()).throw(OSError("disk full"))
     )
+
+    with pytest.raises(linker.LinkError):
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+
+def test_link_ollama_raises_link_error_on_permission_error_with_explicit_models_dir(
+    tmp_path, monkeypatch
+):
+    """An explicit models_dir forces verify_compat off (the `ollama` CLI
+    always talks to the real default daemon, never a custom directory), so
+    a permission error here has no native-create escape hatch to fall
+    back to - it must still surface as a plain LinkError, not attempt to
+    shell out to `ollama create` against the wrong directory."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+    monkeypatch.setattr(
+        linker.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not shell out")),
+    )
+
+    def denying_mkdir(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "mkdir", denying_mkdir)
 
     with pytest.raises(linker.LinkError):
         linker.link_ollama(source, "model", models_dir=models_dir)
@@ -601,6 +649,45 @@ def test_successful_native_ollama_blob_is_reclaimed_on_unlink(
 
     assert not blob.exists()
     assert not manifest.exists()
+
+
+def test_unlink_ollama_waits_for_concurrent_link_ollama_lock(isolated_omm_home, tmp_path, monkeypatch):
+    """A concurrent `omm install`/`omm link` writing this same manifest
+    under `_engine_path_lock` must finish (or fail) before `unlink_ollama`
+    is allowed to delete it - otherwise the writer can finish, record
+    ownership, and report success while an unlocked unlink races in and
+    removes the manifest right after, leaving the caller believing the
+    link succeeded when it's actually gone."""
+    import threading
+    import time
+
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+    linker.link_ollama(source, "model", models_dir=models_dir, verify_compat=False)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    assert manifest_path.exists()
+
+    hold_seconds = 0.3
+    acquired = threading.Event()
+
+    def hold_lock():
+        with linker.locked(linker._engine_path_lock(manifest_path)):
+            acquired.set()
+            time.sleep(hold_seconds)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    acquired.wait(timeout=5)
+
+    started = time.monotonic()
+    linker.unlink_ollama("model", models_dir=models_dir)
+    elapsed = time.monotonic() - started
+    holder.join()
+
+    assert elapsed >= hold_seconds * 0.8
+    assert not manifest_path.exists()
 
 
 def test_link_ollama_reclaims_manifest_left_by_native_fallback(
@@ -778,6 +865,59 @@ def test_link_ollama_short_circuits_straight_to_fallback_when_already_known_bad(
     assert result is True
     assert "show" not in calls  # never probes again once known bad
     assert "create" in calls
+
+
+def test_link_ollama_falls_back_to_native_create_on_permission_error(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A systemd-managed Ollama's models dir can be owned by a different
+    system user (issue #117): link_ollama may resolve the *correct* path
+    yet still lack write access to it. That must not surface as a raw
+    permission error - it should hand off to native `ollama create`, the
+    same escape hatch already used for a manifest-format mismatch, since
+    the daemon itself (not this process) then does the actual write."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    calls = []
+
+    def run_ollama(cmd, **kwargs):
+        calls.append(cmd[1] if len(cmd) > 1 else cmd[0])
+        if cmd[1:] == ["--version"]:
+            return _FakeResult(stdout="ollama version is 1.2.3")
+        if cmd[1] == "create":
+            manifest = (
+                models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+            )
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(
+                '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.ollama.image.model",'
+                '"digest":"sha256:native"}]}'
+            )
+            return _FakeResult(returncode=0)
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    models_dir = _stub_ollama_env(monkeypatch, tmp_path, run_ollama)
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
+    )
+    home = tmp_path / ".omm"
+    monkeypatch.setattr(config, "OMM_HOME", home)
+
+    real_mkdir = Path.mkdir
+
+    def denying_mkdir(self, *args, **kwargs):
+        if self == models_dir / "blobs":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", denying_mkdir)
+
+    result = linker.link_ollama(source, "model")
+
+    assert result is True
+    assert "create" in calls
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    assert manifest_path.exists()
 
 
 def test_link_ollama_treats_unreachable_daemon_as_unverified_not_incompatible(
