@@ -211,7 +211,7 @@ def add_storage_saved_bytes(delta: int) -> int:
         data: dict[str, Any] = {}
         if CONFIG_PATH.exists():
             try:
-                loaded = json.loads(CONFIG_PATH.read_text())
+                loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     data = loaded
                 else:
