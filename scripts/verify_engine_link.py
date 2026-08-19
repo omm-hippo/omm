@@ -66,11 +66,25 @@ def _run(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def verify_ollama(gguf_path: Path, ollama_tag: str) -> None:
-    result = _run(["ollama", "list"])
-    if result.returncode != 0:
-        _fail(f"`ollama list` failed: {result.stderr}")
-    if ollama_tag not in result.stdout:
-        _fail(f"`ollama list` does not show {ollama_tag!r}:\n{result.stdout}")
+    """`ollama list` re-scans its manifest store, but link_ollama() writes
+    the manifest/blob directly rather than going through `ollama create` -
+    a real run of this workflow showed the same lag `verify_lmstudio` below
+    already retries around: the first call right after linking didn't show
+    the tag yet. Retries instead of trusting a single call."""
+    import time
+
+    list_output = ""
+    for attempt in range(10):
+        result = _run(["ollama", "list"])
+        if result.returncode != 0:
+            _fail(f"`ollama list` failed: {result.stderr}")
+        list_output = result.stdout
+        if ollama_tag in list_output:
+            break
+        time.sleep(2)
+    else:
+        _fail(f"`ollama list` never showed {ollama_tag!r} after 10 tries:\n{list_output}")
+
     result = _run(["ollama", "show", ollama_tag])
     if result.returncode != 0:
         _fail(f"`ollama show {ollama_tag}` failed: {result.stderr}")
