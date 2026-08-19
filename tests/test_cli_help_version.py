@@ -1,8 +1,20 @@
+import pytest
 from typer.testing import CliRunner
 
 from omm import cli, config
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _canonical_git_install(monkeypatch):
+    """Keep Git-channel tests independent of whether .git is in the test image."""
+
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
 
 
 def test_dash_dash_version_prints_installed_version_and_exits_eagerly(monkeypatch):

@@ -13,6 +13,17 @@ from omm import cli
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _canonical_git_install(monkeypatch):
+    """Keep Git-update tests independent of whether .git is in the test image."""
+
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
+
+
 class _FakeProc:
     def __init__(self, lines, returncode=0):
         self.stdout = iter(lines)

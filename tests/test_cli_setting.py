@@ -1,11 +1,23 @@
 import subprocess
 
+import pytest
 import questionary
 from typer.testing import CliRunner
 
 from omm import catalog, cli, config
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _canonical_git_install(monkeypatch):
+    """Keep Git-channel tests independent of whether .git is in the test image."""
+
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
 
 
 def test_setting_catalog_trust_saves_verified_public_key(isolated_omm_home, monkeypatch):
