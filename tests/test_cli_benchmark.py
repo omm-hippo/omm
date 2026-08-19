@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from omm import cli, config, contribute_memory, registry
@@ -876,6 +877,152 @@ def test_report_telemetry_v9_labels_clean_contribution(isolated_omm_home, monkey
     assert event["measurement_quality"] == "clean"
     assert event["context_length"] == 1024
     assert event["num_batch"] == 128
+    assert "host_cpu_load_percent" not in event
+
+
+def _v9_report(monkeypatch, sent, **overrides):
+    """Send one v9 contribution, defaulting to the clean case above."""
+    monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
+    monkeypatch.setattr(
+        cli.telemetry,
+        "send_event",
+        lambda event, force=False: sent.append(event) or True,
+    )
+    estimate = contribute_memory.ContributionMemoryEstimate(
+        mapped_weights_ram_gb=0.75,
+        committed_ram_gb=0.3,
+        required_vram_gb=0.0,
+        kv_cache_gb=0.1,
+        compute_buffer_gb=0.1,
+        runtime_overhead_gb=0.1,
+        source="gguf_header",
+        confidence="medium",
+        context_length=1024,
+        num_batch=128,
+        gpu_offload_percent=0,
+        runtime_buffer_ram_gb=0.3,
+    )
+    kwargs = {
+        "size_bytes": int(0.75 * 1024**3),
+        "sample_count": 3,
+        "speed_min": 41.0,
+        "speed_max": 44.0,
+        "speed_samples": [41.0, 42.5, 44.0],
+        "model_metadata": {"parameter_size": "1B", "quantization_level": "Q4_K_M"},
+        "runtime": {
+            "runtime_profile": "explicit_ollama_options",
+            "context_length": 1024,
+            "gpu_offload_percent": 0,
+            "cpu_threads": 8,
+            "num_batch": 128,
+        },
+        "engine_version": "0.32.1",
+        "memory_measurement": {
+            "ram_available_before_gb": 2.2,
+            "ram_available_min_gb": 2.0,
+            "ram_available_after_gb": 2.1,
+            "memory_pressure_observed": False,
+        },
+        "memory_estimate": estimate,
+    }
+    kwargs.update(overrides)
+    cli._report_telemetry("model-1B-Q4.gguf", "org/model", 42.5, **kwargs)
+    return sent[-1]
+
+
+def test_report_telemetry_v9_labels_a_busy_host_loaded(isolated_omm_home, monkeypatch):
+    event = _v9_report(monkeypatch, [], host_cpu_load_percent=61.0)
+
+    assert event["measurement_quality"] == "loaded"
+    assert event["host_cpu_load_percent"] == 61.0
+
+
+def test_report_telemetry_v9_records_a_quiet_host_and_stays_clean(
+    isolated_omm_home, monkeypatch
+):
+    """A reading below the threshold is still worth carrying: it turns a
+    `clean` row from "nobody looked" into "the host was measured quiet"."""
+    event = _v9_report(monkeypatch, [], host_cpu_load_percent=3.24)
+
+    assert event["measurement_quality"] == "clean"
+    assert event["host_cpu_load_percent"] == 3.2
+
+
+def test_report_telemetry_v9_labels_the_rounded_host_reading_it_sends(
+    isolated_omm_home, monkeypatch
+):
+    """The label has to describe the number that leaves the machine. A
+    reading just under the threshold rounds up to it, and a row calling that
+    `clean` is one the server rejects outright."""
+    event = _v9_report(monkeypatch, [], host_cpu_load_percent=24.96)
+
+    assert event["host_cpu_load_percent"] == 25.0
+    assert event["measurement_quality"] == "loaded"
+
+
+@pytest.mark.parametrize("unreadable", [None, float("nan"), 140.0, -1.0, True])
+def test_report_telemetry_v9_omits_an_unusable_host_reading(
+    isolated_omm_home, monkeypatch, unreadable
+):
+    """An unavailable or out-of-range sample is unknown, not idle. Sending a
+    zero would claim an idle host omm never observed, and the rules reject
+    anything outside 0-100 anyway."""
+    event = _v9_report(monkeypatch, [], host_cpu_load_percent=unreadable)
+
+    assert "host_cpu_load_percent" not in event
+    assert event["measurement_quality"] == "clean"
+
+
+def test_report_telemetry_v9_keeps_dispersion_ahead_of_host_load(
+    isolated_omm_home, monkeypatch
+):
+    event = _v9_report(
+        monkeypatch,
+        [],
+        speed_samples=[10.0, 42.5, 80.0],
+        host_cpu_load_percent=61.0,
+    )
+
+    assert event["measurement_quality"] == "unstable"
+    assert event["host_cpu_load_percent"] == 61.0
+
+
+def test_report_telemetry_v9_keeps_memory_pressure_ahead_of_host_load(
+    isolated_omm_home, monkeypatch
+):
+    event = _v9_report(
+        monkeypatch,
+        [],
+        memory_measurement={
+            "ram_available_before_gb": 2.2,
+            "ram_available_min_gb": 0.2,
+            "ram_available_after_gb": 2.1,
+            "memory_pressure_observed": True,
+        },
+        host_cpu_load_percent=61.0,
+    )
+
+    assert event["measurement_quality"] == "pressured"
+
+
+def test_report_telemetry_v9_labels_the_issue_32_loaded_run(
+    isolated_omm_home, monkeypatch
+):
+    """Issue #32's own loaded run: three samples that agree with each other
+    while sitting a third below the same machine's idle result. Every signal
+    v9 had before reads healthy, so it uploaded as `clean`."""
+    samples = [3.18, 3.41, 3.56]
+    assert contribute_memory.speed_mad_ratio(samples) <= 0.15
+
+    loaded = _v9_report(
+        monkeypatch, [], speed_samples=samples, host_cpu_load_percent=58.0
+    )
+    idle = _v9_report(
+        monkeypatch, [], speed_samples=[5.08, 5.09, 5.15], host_cpu_load_percent=4.0
+    )
+
+    assert loaded["measurement_quality"] == "loaded"
+    assert idle["measurement_quality"] == "clean"
 
 
 _LMSTUDIO_RUNTIME_KEYS = (

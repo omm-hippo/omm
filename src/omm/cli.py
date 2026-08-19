@@ -2238,8 +2238,8 @@ def _run_interruptible(fn, stop_event: threading.Event | None):
         pool.shutdown(wait=False)
 
 
-def _background_cpu_load_is_high() -> bool:
-    """Warn, before a benchmark starts, if other programs are already busy.
+def _sample_background_cpu_load() -> float | None:
+    """Read, and warn about, other programs' CPU use before a benchmark starts.
 
     Sustained background load depresses every speed sample by about the same
     amount, so the run stays internally tight and the existing dispersion
@@ -2248,12 +2248,14 @@ def _background_cpu_load_is_high() -> bool:
     A reading taken here, while omm is not generating anything, is the only
     place that distinction can be drawn.
 
-    Best-effort and advisory: an unavailable reading is treated as unknown,
-    never as idle, and never blocks the benchmark.
+    Returns the percentage so a caller can record it alongside the
+    measurement, or None when it could not be read - which callers must treat
+    as unknown, never as idle. Best-effort and advisory: it never blocks the
+    benchmark.
     """
     percent = sample_cpu_utilization_percent()
     if percent is None or percent < BUSY_CPU_PERCENT:
-        return False
+        return percent
     err_console.print(
         f"[warning]Other programs are using about {percent:.0f}% of this machine's "
         "CPU. Background load lowers decode speed without widening the spread "
@@ -2261,7 +2263,22 @@ def _background_cpu_load_is_high() -> bool:
         "looking internally consistent. Close heavy programs and re-run for a "
         "number comparable to an idle machine.[/warning]"
     )
-    return True
+    return percent
+
+
+def _cpu_load_is_high(percent: float | None) -> bool:
+    """Whether a sampled reading counts as background load.
+
+    None means the reading was unavailable. That is not evidence of load, so
+    it does not suppress calibration and does not label the uploaded row -
+    it simply leaves the question unanswered.
+    """
+    return percent is not None and percent >= BUSY_CPU_PERCENT
+
+
+def _background_cpu_load_is_high() -> bool:
+    """Sample and warn, reporting only whether the host was busy."""
+    return _cpu_load_is_high(_sample_background_cpu_load())
 
 
 def _maybe_auto_calibrate(
@@ -3169,7 +3186,8 @@ def _install_impl(
             console.print("Benchmarking...")
         # Sampled here, before the daemon is started and the model is loaded,
         # so the reading describes other programs rather than omm's own work.
-        host_cpu_busy = _background_cpu_load_is_high()
+        host_cpu_load_percent = _sample_background_cpu_load()
+        host_cpu_busy = _cpu_load_is_high(host_cpu_load_percent)
         started_daemon = None
         pressure_watcher = None
         if (
@@ -3576,6 +3594,7 @@ def _install_impl(
                     speed_samples=speed_samples,
                     memory_measurement=memory_measurement,
                     memory_estimate=contribution_memory_estimate,
+                    host_cpu_load_percent=host_cpu_load_percent,
                 )
             else:
                 telemetry.log_attempt("declined_by_user", filename)
@@ -5625,6 +5644,7 @@ def _report_telemetry(
     speed_samples: list[float] | tuple[float, ...] | None = None,
     memory_measurement: dict | None = None,
     memory_estimate: contribute_memory.ContributionMemoryEstimate | None = None,
+    host_cpu_load_percent: float | None = None,
 ) -> bool:
     if tokens_per_sec is None:
         # Not a real "it doesn't run" signal, so skip rather than polluting
@@ -5806,10 +5826,36 @@ def _report_telemetry(
                 and len(speed_samples) >= 3
             ):
                 mad_ratio = contribute_memory.speed_mad_ratio(speed_samples)
+                # Only a reading that is genuinely a percentage is carried.
+                # An unavailable sample stays absent rather than being sent
+                # as a zero, which would claim an idle host omm never saw.
+                # Rounded before it is classified, never after: 24.96 sent as
+                # 25.0 would arrive labelled clean at a value the server
+                # reads as loaded, and the whole row would be rejected.
+                host_load = (
+                    round(float(host_cpu_load_percent), 1)
+                    if isinstance(host_cpu_load_percent, (int, float))
+                    and not isinstance(host_cpu_load_percent, bool)
+                    and math.isfinite(host_cpu_load_percent)
+                    and 0 <= host_cpu_load_percent <= 100
+                    else None
+                )
+                # Precedence: pressured > unstable > loaded > clean. The two
+                # older signals are direct observations of this run's own
+                # data - RAM dipped, or the samples disagreed - while host
+                # load explains a run that otherwise looks fine. Ordering
+                # them first means `loaded` refines what v9 would already
+                # have called `clean` and never masks a defect the existing
+                # signals caught. database.rules.json, localfit_server, and
+                # the training importer encode this exact order.
                 measurement_quality = (
                     "pressured"
                     if pressure
-                    else "unstable" if mad_ratio > 0.15 else "clean"
+                    else "unstable"
+                    if mad_ratio > 0.15
+                    else "loaded"
+                    if _cpu_load_is_high(host_load)
+                    else "clean"
                 )
                 event.update(
                     benchmark_version=9,
@@ -5832,6 +5878,8 @@ def _report_telemetry(
                         memory_estimate.required_vram_gb, 3
                     ),
                 )
+                if host_load is not None:
+                    event["host_cpu_load_percent"] = host_load
     telemetry.reset_send_status()
     sent = telemetry.send_event(event, force=True)
     if not sent:
