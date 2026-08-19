@@ -42,13 +42,22 @@ LEGACY_FIREBASE_ENDPOINT = (
 # require - see omm.firebase_auth.
 FIREBASE_WEB_API_KEY = "AIzaSyBlnr7Qhu4H4z93X1jUpJDyuNz4D5tyca4"
 # model_url has gone through two GitHub org renames (minigu5/Localfit ->
-# minigu5/Omm -> omm-hippo/omm). It's never user-settable, so any config
+# minigu5/Omm -> omm-hippo/omm) plus one artifact rename (recommend-model.json
+# -> localfit-recommend-model.json). It's never user-settable, so any config
 # still holding one of the earlier defaults is stale, not a deliberate
 # override, and should be migrated forward.
 LEGACY_MODEL_URLS = frozenset(
     {
         "https://raw.githubusercontent.com/minigu5/Localfit/main/published/recommend-model.json",
         "https://raw.githubusercontent.com/minigu5/Omm/main/published/recommend-model.json",
+        "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.json",
+    }
+)
+# Same idea as LEGACY_MODEL_URLS, for the signed manifest URL after the
+# recommend-model.json -> localfit-recommend-model.json artifact rename.
+LEGACY_MANIFEST_URLS = frozenset(
+    {
+        "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.manifest.json",
     }
 )
 
@@ -69,10 +78,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # runtime flag.
     "error_report_send_policy": None,
     "rules_url": None,
-    "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.json",
+    "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.json",
     "default_engine": None,
     "external_scan_done": False,
-    "catalog_manifest_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.manifest.json",
+    "catalog_manifest_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.manifest.json",
     "catalog_public_key": "p8uo6GFXDcg8Rp7/t8GGl5hwPsXhObY5vI1sll5KpaI=",
     "contribute_always_ack": False,
     "update_channel": "stable",
@@ -109,6 +118,8 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
         merged["catalog_public_key"] = DEFAULT_CONFIG["catalog_public_key"]
     if data.get("model_url") in LEGACY_MODEL_URLS:
         merged["model_url"] = DEFAULT_CONFIG["model_url"]
+    if data.get("catalog_manifest_url") in LEGACY_MANIFEST_URLS:
+        merged["catalog_manifest_url"] = DEFAULT_CONFIG["catalog_manifest_url"]
     if "telemetry_backend" not in data:
         endpoint = data.get("telemetry_endpoint")
         if endpoint == LEGACY_FIREBASE_ENDPOINT and merged.get("telemetry_send_policy") != "always":

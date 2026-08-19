@@ -71,6 +71,15 @@ def test_legacy_model_url_migrates_to_current_default(isolated_omm_home):
         assert loaded["model_url"] == config.DEFAULT_CONFIG["model_url"]
 
 
+def test_legacy_manifest_url_migrates_to_current_default(isolated_omm_home):
+    for legacy_url in config.LEGACY_MANIFEST_URLS:
+        config.CONFIG_PATH.write_text(json.dumps({"catalog_manifest_url": legacy_url}))
+
+        loaded = config.load_config()
+
+        assert loaded["catalog_manifest_url"] == config.DEFAULT_CONFIG["catalog_manifest_url"]
+
+
 def test_custom_model_url_is_preserved(isolated_omm_home):
     config.CONFIG_PATH.write_text(
         json.dumps({"model_url": "https://example.com/custom-model.json"})

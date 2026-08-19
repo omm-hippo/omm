@@ -55,7 +55,7 @@ TELEMETRY_URL = "http://127.0.0.1:8000/v1/benchmarks/export"
 MIN_REAL_ROWS = 10
 MAX_REAL_ROWS = 5000
 REAL_BOOTSTRAP_WEIGHT = 12.0
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / "published" / "recommend-model.json"
+OUTPUT_PATH = Path(__file__).resolve().parent.parent / "published" / "localfit-recommend-model.json"
 
 RAM_GRID = [4, 8, 16, 24, 32, 64, 128]
 VRAM_GRID = [0, 4, 6, 8, 12, 16, 24, 32, 48, 64]
@@ -87,7 +87,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=OUTPUT_PATH,
-        help="Artifact destination (defaults to published/recommend-model.json).",
+        help="Artifact destination (defaults to published/localfit-recommend-model.json).",
     )
     parser.add_argument("--baseline", type=Path, help="Incumbent artifact used by the quality gate.")
     parser.add_argument(

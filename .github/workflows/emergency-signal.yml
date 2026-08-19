@@ -41,12 +41,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Edit published/recommend-model.json
+      - name: Edit published/localfit-recommend-model.json
         run: |
           if [ "${{ inputs.clear }}" = "true" ]; then
-            python scripts/set_emergency_signal.py published/recommend-model.json --clear
+            python scripts/set_emergency_signal.py published/localfit-recommend-model.json --clear
           else
-            python scripts/set_emergency_signal.py published/recommend-model.json \
+            python scripts/set_emergency_signal.py published/localfit-recommend-model.json \
               --id "emergency-$(date -u +%Y%m%d-%H%M%S)" \
               --message "${{ inputs.message }}" \
               ${{ inputs.fixed_in_version != '' && format('--fixed-in-version {0}', inputs.fixed_in_version) || '' }}
@@ -59,9 +59,9 @@ jobs:
           umask 077
           key_path="$RUNNER_TEMP/omm-catalog-signing-key"
           printf '%s\n' "$LOCALFIT_CATALOG_SIGNING_KEY" > "$key_path"
-          python scripts/sign_catalog.py sign published/recommend-model.json \
+          python scripts/sign_catalog.py sign published/localfit-recommend-model.json \
             --private "$key_path" \
-            --manifest published/recommend-model.manifest.json
+            --manifest published/localfit-recommend-model.manifest.json
 
       - name: Open a PR and auto-merge it
         env:
@@ -70,7 +70,7 @@ jobs:
         run: |
           git config user.name "omm-retrain-bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add published/recommend-model.json published/recommend-model.manifest.json
+          git add published/localfit-recommend-model.json published/localfit-recommend-model.manifest.json
           git diff --cached --quiet && { echo "No change (clearing an already-clear signal?) - nothing to publish."; exit 0; }
 
           # Same SSH-signed-commit approach as train.yml, for the same reason:
