@@ -95,7 +95,51 @@ def lmstudio_models_dir() -> Path:
     return lmstudio_home_dir() / "models"
 
 
+def _systemd_ollama_models_dir() -> Path | None:
+    """The official Linux installer runs `ollama serve` under systemd as a
+    dedicated `ollama` system user, whose $HOME differs from the invoking
+    CLI user's - so Path.home() below resolves to a directory the daemon
+    never reads from (issue #117). When ollama.service is actually active,
+    ask systemd for its real User= and any unit-level OLLAMA_MODELS
+    override instead of guessing; return None to fall through to today's
+    behavior everywhere else (macOS, Windows, manual `ollama serve`,
+    Docker, or the service simply not running)."""
+    if platform.system() != "Linux" or shutil.which("systemctl") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "ollama.service", "--property=ActiveState,User,Environment"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    props: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("=")
+        props[key] = value
+    if props.get("ActiveState") != "active":
+        return None
+    for env_pair in props.get("Environment", "").split():
+        key, _, value = env_pair.partition("=")
+        if key == "OLLAMA_MODELS" and value:
+            return Path(value).expanduser()
+    import pwd  # POSIX-only; safe here since we already required Linux above
+
+    try:
+        home = pwd.getpwnam(props.get("User") or "root").pw_dir
+    except KeyError:
+        return None
+    return Path(home) / ".ollama" / "models"
+
+
 def ollama_models_dir() -> Path:
+    systemd_dir = _systemd_ollama_models_dir()
+    if systemd_dir is not None:
+        return systemd_dir
     env_dir = os.environ.get("OLLAMA_MODELS")
     if env_dir:
         return Path(env_dir).expanduser()
