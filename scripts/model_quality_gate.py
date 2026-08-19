@@ -397,6 +397,7 @@ _INTENTIONALLY_EXCLUDED_REASONS = frozenset({
     "no_hardware_identity_pre_v6_schema",
     "pressured_measurement_excluded",
     "unstable_measurement_excluded",
+    "loaded_measurement_excluded",
 })
 
 

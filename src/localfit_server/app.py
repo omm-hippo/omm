@@ -14,6 +14,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from localfit_server.db import BenchmarkStore
 
+BUSY_CPU_LOAD_PERCENT = 25.0
+"""System-wide CPU utilization at or above which a v9 row must be labelled
+``loaded``. The collector is deployable on its own and deliberately does not
+import the client package, so this restates ``omm.hardware.BUSY_CPU_PERCENT``
+and the literal in ``database.rules.json``; a test pins all three together."""
+
 
 class BenchmarkEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", str_max_length=300)
@@ -75,12 +81,16 @@ class BenchmarkEvent(BaseModel):
     confirmation_attempts: int | None = Field(default=None, ge=1, le=2)
     timeout_seconds: float | None = Field(default=None, gt=0, le=3600)
     measurement_profile: str | None = Field(default=None, min_length=1, max_length=32)
-    measurement_quality: Literal["clean", "pressured", "unstable"] | None = None
+    measurement_quality: Literal["clean", "pressured", "unstable", "loaded"] | None = None
     ram_available_before_gb: float | None = Field(default=None, ge=0, le=1024)
     ram_available_min_gb: float | None = Field(default=None, ge=0, le=1024)
     ram_available_after_gb: float | None = Field(default=None, ge=0, le=1024)
     memory_pressure_observed: bool | None = None
     tokens_per_sec_mad_ratio: float | None = Field(default=None, ge=0, le=10)
+    # Optional on purpose: clients older than the host-load change never send
+    # it, and a client whose sampler failed omits it rather than claiming an
+    # idle host. Absent means unknown, not idle.
+    host_cpu_load_percent: float | None = Field(default=None, ge=0, le=100)
     memory_estimate_source: Literal["gguf_header", "profile_fallback"] | None = None
     memory_estimate_confidence: Literal["low", "medium", "high"] | None = None
     estimated_mapped_weights_gb: float | None = Field(default=None, ge=0, le=1024)
@@ -361,6 +371,35 @@ class BenchmarkEvent(BaseModel):
                     and self.tokens_per_sec_mad_ratio <= 0.15
                 ):
                     raise ValueError("v9 unstable measurements must have MAD ratio > 0.15")
+                # `loaded` is the only label that depends on a field older
+                # clients do not send, so it is the only one that can be
+                # claimed without evidence. Reject it outright when the
+                # reading is missing.
+                if (
+                    self.measurement_quality == "loaded"
+                    and self.host_cpu_load_percent is None
+                ):
+                    raise ValueError(
+                        "v9 loaded measurements require host_cpu_load_percent"
+                    )
+                if self.host_cpu_load_percent is not None:
+                    # Precedence: pressured > unstable > loaded > clean, the
+                    # same order database.rules.json enforces. Host load only
+                    # relabels what the older signals would have called clean.
+                    expected_quality = (
+                        "pressured"
+                        if self.memory_pressure_observed
+                        else "unstable"
+                        if self.tokens_per_sec_mad_ratio > 0.15
+                        else "loaded"
+                        if self.host_cpu_load_percent >= BUSY_CPU_LOAD_PERCENT
+                        else "clean"
+                    )
+                    if self.measurement_quality != expected_quality:
+                        raise ValueError(
+                            "v9 measurement_quality must be "
+                            f"{expected_quality} for these signals"
+                        )
             return self
 
         if any(value is not None for value in speed_fields):

@@ -252,6 +252,70 @@ def test_v9_clean_measurement_trains_but_pressured_and_unstable_do_not():
     }
 
 
+def test_v9_load_depressed_measurement_is_excluded_rather_than_trained_on():
+    """Issue #32: the loaded run's samples agree with each other and RAM never
+    moves, so the two original signals both read healthy. Without the host
+    reading it would train the regressor as a slower machine."""
+    rows = [
+        _v9_row(20, host_cpu_load_percent=4.0),
+        _v9_row(6, measurement_quality="loaded", host_cpu_load_percent=58.0),
+    ]
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert y == [20]
+    assert audit["rejections"] == {"loaded_measurement_excluded": 1}
+
+
+def test_v9_rows_without_a_host_reading_are_unaffected():
+    """Clients in the wild send no such key; those rows must keep training."""
+    rows = [_v9_row(20)]
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert y == [20]
+    assert audit["rejections"] == {}
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        # A busy host that was nevertheless labelled clean - the exact row
+        # the rules now refuse to store.
+        {"host_cpu_load_percent": 61.0},
+        # `loaded` without the evidence for it. An intentional exclusion is
+        # waved past the rejection-rate gate, so it has to be earned.
+        {"measurement_quality": "loaded"},
+        {"measurement_quality": "loaded", "host_cpu_load_percent": "very"},
+        {"measurement_quality": "loaded", "host_cpu_load_percent": 140.0},
+    ],
+)
+def test_v9_rows_whose_label_contradicts_their_host_reading_are_invalid(changes):
+    _X, _y, audit = train_model.real_rows_to_training_data_with_audit(
+        [_v9_row(20, **changes)]
+    )
+
+    assert audit["rejections"] == {"invalid_measurement_metadata": 1}
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"tokens_per_sec_mad_ratio": 0.4},
+        {"memory_pressure_observed": True},
+    ],
+)
+def test_v9_loaded_rows_that_ignore_precedence_never_reach_the_regressor(changes):
+    """`loaded` sits below `unstable` and `pressured`, so such a row is
+    mislabelled and the collector rejects it. Should one predate the rules
+    change, it is still kept out of the training set."""
+    _X, y, _audit = train_model.real_rows_to_training_data_with_audit(
+        [_v9_row(20, measurement_quality="loaded", host_cpu_load_percent=61.0, **changes)]
+    )
+
+    assert y == []
+
+
 def test_v8_uses_direct_cpu_and_gpu_score_without_a_raw_name():
     X, y = train_model.real_rows_to_training_data([_v8_row(20)])
 
