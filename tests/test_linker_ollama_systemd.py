@@ -7,7 +7,6 @@ daemon never scanned, so `ollama list` never showed the linked model.
 """
 
 import platform
-import pwd
 import subprocess
 from pathlib import Path
 
@@ -24,6 +23,8 @@ def test_ollama_models_dir_uses_systemd_service_users_home(monkeypatch, tmp_path
     """When ollama.service is active under a dedicated system user, the
     daemon's models dir must be resolved from *that* user's home, not the
     invoking process's Path.home()."""
+    import pwd  # POSIX-only; module-level import broke Windows CI collection
+
     ollama_home = tmp_path / "usr-share-ollama"
     ollama_home.mkdir()
     monkeypatch.setattr(platform, "system", lambda: "Linux")
