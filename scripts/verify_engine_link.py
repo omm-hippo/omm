@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 import struct
 import subprocess
 import sys
@@ -253,6 +255,25 @@ ENSURE_READY = {
 }
 
 
+def _ensure_ollama_dir_writable() -> None:
+    """CI-only. The real Linux installer runs Ollama under systemd as a
+    dedicated `ollama` system user, whose models dir this runner account
+    can't write into (issue #117) even once linker.ollama_models_dir()
+    resolves it correctly. omm's product code copes with that by falling
+    back to native `ollama create`, but that path needs a real GGUF the
+    quantizer accepts - this check's placeholder file can never pass that,
+    so it would never actually exercise the fast hand-rolled path this
+    workflow exists to validate. Grant this runner write access instead,
+    the same way a real user would (e.g. `sudo usermod -aG ollama`, or
+    just running as ollama themselves)."""
+    if platform.system() != "Linux":
+        return
+    models_dir = linker.ollama_models_dir()
+    if not models_dir.exists() or os.access(models_dir, os.W_OK):
+        return
+    subprocess.run(["sudo", "chmod", "-R", "a+rwX", str(models_dir)], check=False)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("engine", choices=sorted(ENGINE_VERIFIERS))
@@ -265,6 +286,8 @@ def main() -> None:
             _fail(f"install_engine({args.engine!r}) did not succeed: status={result.status}, {result.message}")
 
     ENSURE_READY.get(args.engine, lambda: None)()
+    if args.engine == "ollama":
+        _ensure_ollama_dir_writable()
 
     with tempfile.TemporaryDirectory() as tmp:
         gguf_path = Path(tmp) / "omm-ci-test-model.gguf"

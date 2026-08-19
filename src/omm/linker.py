@@ -1132,6 +1132,16 @@ def link_ollama(
             except OSError:
                 manifest_path.unlink(missing_ok=True)
                 raise
+    except PermissionError as e:
+        # A systemd-managed Ollama's models dir can be owned by a different
+        # system user (issue #117) - the path may be correctly resolved yet
+        # still unwritable by this process. Only the real default daemon has
+        # a native-create escape hatch (see verify_compat's docstring); an
+        # explicit models_dir has nowhere else to go but a plain LinkError.
+        if not verify_compat:
+            raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
+        _fallback_to_native_create(gguf_path, model_name, models_dir)
+        return True
     except OSError as e:
         raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
 
@@ -1274,10 +1284,20 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
         unlink_ollama(model_name, models_dir=models_dir)
 
     blobs_dir = models_dir / "blobs"
-    blobs_dir.mkdir(parents=True, exist_ok=True)
-    before_blobs = {path.name for path in blobs_dir.iterdir() if path.is_file()}
+    try:
+        blobs_dir.mkdir(parents=True, exist_ok=True)
+        before_blobs = {path.name for path in blobs_dir.iterdir() if path.is_file()}
+    except OSError:
+        # A systemd-managed daemon (issue #117) may own this directory
+        # without granting this process read/list access to it - `ollama
+        # create` still works since the daemon does its own writing, we
+        # just can't tell pre-existing blobs from new ones for
+        # rollback-on-failure cleanup below.
+        before_blobs = None
 
     def transaction_blobs() -> list[Path]:
+        if before_blobs is None:
+            return []
         try:
             return [
                 path
