@@ -252,3 +252,7 @@ def run_wizard(console: Console) -> None:
         "\n[success]Setup complete.[/success] "
         "Run `omm setting` any time to change telemetry, upload, or update-channel settings.\n"
     )
+    console.print(
+        "[muted]Error reports are off unless you turn them on: "
+        "`omm setting error-reports --ask` (see docs/error-reports.md).[/muted]\n"
+    )

@@ -602,6 +602,114 @@ const v8CpuTierOutOfRange = await request("telemetry", "POST", {
 });
 assert.equal(v8CpuTierOutOfRange.ok, false, "v8 accepted a cpu_tier above the 10 bound");
 
+// --- v8 + LM Studio: the runtime block omm cannot observe -----------------
+
+// Byte-for-byte the payload `omm benchmark`/`omm contribute` now produces on
+// an LM Studio machine (captured from _report_telemetry with engine
+// "lmstudio"): every direct-metadata field v8 asks for, and no runtime block,
+// because LM Studio exposes no /api/ps equivalent and ignores the Ollama
+// runtime options omm computes.
+const v8LmStudioSuccess = {
+  ram_gb: 15.5,
+  unified_memory: false,
+  model_installed: "qwen2.5-0.5b-instruct",
+  model_filename: "qwen2.5-0.5b-instruct",
+  model_provider: "lmstudio",
+  model_size_bytes: 400000000,
+  engine: "lmstudio",
+  benchmark_version: 8,
+  recorded_at: "2026-08-18T13:36:44.037615+00:00",
+  outcome: "success",
+  tokens_per_sec: 103.2,
+  tokens_per_sec_min: 100.0,
+  tokens_per_sec_max: 106.0,
+  sample_count: 3,
+  parameter_count_b: 0.5,
+  active_parameter_count_b: 0.5,
+  quant_bits: 4,
+  engine_version: "0.4.21",
+  client_version: "0.2.95",
+  cpu_score: 0,
+  cpu_tier: 3,
+  cpu_arch: "AMD64",
+  cpu_physical_cores: 16,
+  cpu_logical_cores: 22,
+  gpu_score: 0,
+  gpu_tier: 0,
+  quality_pack_id: "gsm8k-lite",
+  quality_pack_version: "1",
+  quality_correct: 1,
+  quality_total: 8,
+  quality_accuracy: 0.125,
+};
+const v8LmStudioCreated = await request("telemetry", "POST", v8LmStudioSuccess);
+assert.equal(
+  v8LmStudioCreated.ok,
+  true,
+  `valid v8 LM Studio success event was rejected (${v8LmStudioCreated.status})`,
+);
+
+// Relaxing the runtime block for LM Studio must not turn into "any value is
+// fine". omm cannot measure these, so a row claiming them is fabricated -
+// absence is required, not merely tolerated.
+// Each value below is inside its own per-field validator's range, so only
+// the engine lane can be doing the rejecting.
+for (const [field, value] of [
+  ["runtime_profile", "explicit_ollama_options"],
+  ["context_length", 4096],
+  ["gpu_offload_percent", 100],
+  ["cpu_threads", 8],
+  ["num_batch", 512],
+]) {
+  const smuggled = await request("telemetry", "POST", {
+    ...v8LmStudioSuccess,
+    [field]: value,
+  });
+  assert.equal(
+    smuggled.ok,
+    false,
+    `v8 accepted a fabricated ${field} on an LM Studio row`,
+  );
+}
+
+// Everything LM Studio *can* report stays mandatory - the LM Studio lane is
+// narrower than the Ollama lane, not looser.
+for (const [name, changes] of [
+  ["missing engine_version", { engine_version: undefined }],
+  ["missing client_version", { client_version: undefined }],
+  ["missing cpu_score", { cpu_score: undefined }],
+  ["missing cpu_arch", { cpu_arch: undefined }],
+  ["missing parameter_count_b", { parameter_count_b: undefined }],
+  ["missing quant_bits", { quant_bits: undefined }],
+  ["single-sample measurement", { sample_count: 1 }],
+  ["active parameters above total", { active_parameter_count_b: 0.75 }],
+  ["speed outside its own min/max", { tokens_per_sec: 200 }],
+  ["more physical than logical cores", { cpu_physical_cores: 32 }],
+  ["a raw cpu_model", { cpu_model: "Intel Core Ultra 9 285K" }],
+  ["an unknown field", { lmstudio_note: "hello" }],
+]) {
+  const rejected = await request("telemetry", "POST", { ...v8LmStudioSuccess, ...changes });
+  assert.equal(rejected.ok, false, `v8 LM Studio lane accepted ${name}`);
+}
+
+// The Ollama lane is unchanged: the runtime block is still mandatory there,
+// and the LM Studio relaxation must never leak across engines.
+for (const field of [
+  "runtime_profile",
+  "context_length",
+  "gpu_offload_percent",
+  "cpu_threads",
+  "num_batch",
+  "engine_version",
+]) {
+  const rejected = await request("telemetry", "POST", { ...v8Success, [field]: undefined });
+  assert.equal(
+    rejected.ok,
+    false,
+    `v8 Ollama success accepted a missing ${field}`,
+  );
+}
+
 const v8ModelUnfit = {
   ram_gb: 24,
   vram_gb: 6,
@@ -724,5 +832,117 @@ const v9FailureRejected = await request("telemetry", "POST", {
   benchmark_version: 9,
 });
 assert.equal(v9FailureRejected.ok, false, "v9 accepted a failure event without measurement metadata");
+
+// v9 is the contribute-v1 measurement profile, not "v8 plus memory data": it
+// asserts the run happened at exactly context_length 1024 / num_batch 128 and
+// that the memory estimate was computed for that configuration. omm applies
+// that profile through Ollama's options; LM Studio ignores them and reports
+// nothing back, so an LM Studio v9 row could only claim a conformance it
+// never had. Keep it rejected on purpose.
+const v9LmStudioRejected = await request("telemetry", "POST", {
+  ...v9Success,
+  engine: "lmstudio",
+});
+assert.equal(
+  v9LmStudioRejected.ok,
+  false,
+  "v9 accepted an LM Studio row - contribute-v1 is an Ollama-pinned profile",
+);
+
+const v9LmStudioWithoutRuntimeRejected = await request("telemetry", "POST", {
+  ...v9Success,
+  engine: "lmstudio",
+  runtime_profile: undefined,
+  context_length: undefined,
+  gpu_offload_percent: undefined,
+  cpu_threads: undefined,
+  num_batch: undefined,
+});
+assert.equal(
+  v9LmStudioWithoutRuntimeRejected.ok,
+  false,
+  "v9 accepted an LM Studio row shaped like the relaxed v8 lane",
+);
+
+const v9MissingEngineVersion = await request("telemetry", "POST", {
+  ...v9Success,
+  engine_version: undefined,
+});
+assert.equal(
+  v9MissingEngineVersion.ok,
+  false,
+  "v9 Ollama success accepted a missing engine_version",
+);
+
+// --- /error_reports: a write-only channel -----------------------------------
+// Error reports can contain far more sensitive text than a benchmark row, so
+// unlike /telemetry this node must never be readable. Writes stay open (the
+// client has no account and reports are useful from any machine), but each
+// one must be a new child in the documented shape.
+
+const validReport = {
+  schema_version: 1,
+  error_type: "QualityEvaluationError",
+  error_message: "Ollama /api/generate request failed",
+  trigger: "install_quality_eval",
+  recorded_at: "2026-08-19T00:00:00+00:00",
+  client_version: "0.1.0",
+  os_name: "Windows",
+  os_version: "11",
+  cpu_arch: "x86_64",
+  cpu_score: 5600,
+  cpu_tier: 0,
+  gpu_score: 4090,
+  gpu_tier: 0,
+  catalog_ref: "unsloth/Qwen3-4B-GGUF:Qwen3-4B-Q4_K_M.gguf",
+  engine: "ollama",
+};
+
+const reportCreated = await request("error_reports", "POST", validReport);
+assert.equal(reportCreated.ok, true, `valid error report was rejected (${reportCreated.status})`);
+
+// omm attaches an anonymous Firebase token when it has one, but a report is
+// worth collecting even when anonymous sign-in failed - which is itself a
+// plausible thing to be reporting about.
+const reportUnauthenticated = await request("error_reports", "POST", validReport, { auth: false });
+assert.equal(
+  reportUnauthenticated.ok,
+  true,
+  `error report without auth was rejected (${reportUnauthenticated.status})`,
+);
+
+// The whole point of the separate node: nobody may read it back.
+for (const auth of [true, false]) {
+  const read = await request("error_reports", "GET", undefined, { auth });
+  assert.equal(read.ok, false, `error_reports was readable (auth: ${auth})`);
+  const readChild = await request("error_reports/some-report-id", "GET", undefined, { auth });
+  assert.equal(readChild.ok, false, `an error report child was readable (auth: ${auth})`);
+}
+
+// Reports are append-only: a fixed key can be created once and never
+// overwritten, so no writer can rewrite or blank out someone else's report.
+const fixedKey = `error_reports/fixed-${Date.now()}`;
+const firstWrite = await request(fixedKey, "PUT", validReport);
+assert.equal(firstWrite.ok, true, `creating a report at a known key was rejected (${firstWrite.status})`);
+const reportOverwrite = await request(fixedKey, "PUT", { ...validReport, error_message: "changed" });
+assert.equal(reportOverwrite.ok, false, "an existing error report could be overwritten");
+
+for (const [name, body] of [
+  ["a non-object payload", "just a string"],
+  ["a report with no error_type", { ...validReport, error_type: undefined }],
+  ["a report with no trigger", { ...validReport, trigger: undefined }],
+  ["a report with no timestamp", { ...validReport, recorded_at: undefined }],
+  ["an unknown trigger", { ...validReport, trigger: "something_else" }],
+  ["an unknown field", { ...validReport, traceback: "File \"/home/user/x.py\", line 1" }],
+  ["a future schema version", { ...validReport, schema_version: 2 }],
+  ["an oversized message", { ...validReport, error_message: "x".repeat(2001) }],
+  ["an oversized error type", { ...validReport, error_type: "E".repeat(201) }],
+  ["a windows-path catalog ref", { ...validReport, catalog_ref: "C:\\models\\model.gguf" }],
+  ["an implausible cpu score", { ...validReport, cpu_score: 100000 }],
+  ["a numeric error message", { ...validReport, error_message: 42 }],
+]) {
+  const rejected = await request("error_reports", "POST", body);
+  assert.equal(rejected.ok, false, `error_reports accepted ${name}`);
+}
 
 console.log("Firebase rules scenarios passed.");

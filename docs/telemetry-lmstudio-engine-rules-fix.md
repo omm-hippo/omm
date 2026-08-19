@@ -61,3 +61,23 @@ curl -X POST 'https://localfit-8ab57-default-rtdb.firebaseio.com/telemetry.json'
 ```
 
 Expect a `{"name": "..."}` success response, not a permission-denied error.
+
+## Follow-up (2026-08-18): the `benchmark_version: 4` fallback is closed
+
+The "known consequence" above - LM Studio success rows landing on the
+sparse v4 shape - is now fixed for the `runtime` half of the problem. v8's
+success branch validates `engine == 'ollama'` and `engine == 'lmstudio'`
+separately: the Ollama lane is unchanged, and the LM Studio lane drops the
+five runtime fields from its required set while requiring them to be
+**absent**. `cli._report_telemetry` matches, treating the runtime block as
+observable only for Ollama. See `docs/telemetry-v8.md` for the full lane
+description and for why v9 deliberately stays Ollama-only.
+
+The `LMStudioAdapter.health().version` half is unchanged: a server build
+that omits the `x-lm-studio-version` header still leaves `engine_version`
+unset and the row still falls back to v4. That is the honest outcome - omm
+does not substitute a version string it cannot verify.
+
+**This follow-up also needs the manual Firebase rules deployment described
+above.** Until `database.rules.json` is re-published to the
+`localfit-8ab57` project, LM Studio v8 rows are rejected by the live rules.

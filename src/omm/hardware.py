@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import statistics
 import subprocess
 from dataclasses import dataclass
 
@@ -17,6 +18,11 @@ RAM_SAFETY_RESERVE_MIN_GB = 1.0
 VRAM_MODEL_CAP_RATIO = 0.90
 VRAM_SAFETY_RESERVE_RATIO = 0.05
 VRAM_SAFETY_RESERVE_MIN_GB = 0.5
+BUSY_CPU_PERCENT = 25.0
+"""System-wide CPU utilization, measured while omm is idle, above which a
+benchmark taken right now is treated as contaminated by background load.
+Set well above a quiet desktop's baseline so routine idle chatter never
+suppresses calibration."""
 
 
 @dataclass
@@ -60,6 +66,40 @@ def available_ram_gb() -> float:
     short but meaningful pressure events.
     """
     return psutil.virtual_memory().available / (1024**3)
+
+
+def sample_cpu_utilization_percent(
+    samples: int = 3, interval_seconds: float = 0.2
+) -> float | None:
+    """Return median system-wide CPU utilization over a short window.
+
+    Called just before a benchmark starts, while omm itself is idle, so the
+    number describes *other* programs' load. Sustained background load
+    depresses every speed sample by roughly the same amount, which the
+    within-run MAD/median dispersion cannot see - the run looks tight and
+    reads low. This is the only signal omm has for that case.
+
+    The median of several short windows is deliberate: a single window can
+    be dominated by one momentary spike, and a spike that ends before the
+    benchmark does not bias the result the way sustained load does.
+
+    Returns None when psutil cannot report utilization, so callers treat an
+    unavailable reading as "unknown", never as "idle".
+    """
+    if isinstance(samples, bool) or not isinstance(samples, int) or not 1 <= samples <= 10:
+        raise ValueError("samples must be an integer from 1 to 10")
+    if not 0 < interval_seconds <= 5:
+        raise ValueError("interval_seconds must be greater than 0 and at most 5")
+    readings = []
+    for _ in range(samples):
+        try:
+            value = psutil.cpu_percent(interval=interval_seconds)
+        except (psutil.Error, OSError, ValueError):
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        readings.append(max(0.0, min(100.0, float(value))))
+    return statistics.median(readings)
 
 
 @dataclass(frozen=True)
@@ -427,7 +467,7 @@ def _scan_nvidia_vram() -> tuple[str | None, float | None, float | None]:
         return None, None, None
 
 
-def scan_hardware() -> HardwareInfo:
+def _scan_hardware() -> HardwareInfo:
     vm = psutil.virtual_memory()
     ram_total_gb = vm.total / (1024**3)
     ram_available_gb = vm.available / (1024**3)
@@ -484,3 +524,22 @@ def scan_hardware() -> HardwareInfo:
         cpu_physical_cores=cpu_physical_cores,
         cpu_logical_cores=cpu_logical_cores,
     )
+
+
+# Snapshot of the most recent scan in this process. A full scan shells out to
+# platform tools and is far too slow to run "just in case", so best-effort
+# consumers that would merely like hardware context (see omm.error_report)
+# reuse whatever the command already scanned instead of forcing one.
+_last_scan: HardwareInfo | None = None
+
+
+def scan_hardware() -> HardwareInfo:
+    global _last_scan
+    _last_scan = _scan_hardware()
+    return _last_scan
+
+
+def last_scan() -> HardwareInfo | None:
+    """The most recent `scan_hardware()` result in this process, or None
+    when this command never needed one."""
+    return _last_scan

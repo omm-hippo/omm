@@ -44,6 +44,7 @@ from omm import (
     config as config_mod,
     contribute_memory,
     contribute_state,
+    error_report,
     linker,
     memory_guard as memory_guard_mod,
     onboarding,
@@ -75,10 +76,12 @@ from omm.engines import RuntimeAdapterError, RuntimeModelRef, find_runtime_model
 from omm.engines.lmstudio import LMStudioAdapter
 from omm.engines.ollama import OllamaAdapter
 from omm.hardware import (
+    BUSY_CPU_PERCENT,
     HardwareInfo,
     WindowsCommitInfo,
     available_ram_gb,
     calculate_memory_budget,
+    sample_cpu_utilization_percent,
     scan_hardware,
     windows_commit_info,
 )
@@ -556,6 +559,15 @@ def _root(
         if resent:
             err_console.print(
                 f"[muted]Sent {resent} queued telemetry event(s) "
+                "from a previous session.[/muted]"
+            )
+        # Only an `always` policy flushes unattended here; under `ask` the
+        # queue deliberately waits for the next `omm contribute`, which is
+        # the one place the user is asked about error reports.
+        reported = error_report.flush_pending()
+        if reported:
+            err_console.print(
+                f"[muted]Sent {reported} queued error report(s) "
                 "from a previous session.[/muted]"
             )
 
@@ -1762,6 +1774,71 @@ def _resolve_upload_decision(prompt: str) -> bool:
     return answer == "yes"
 
 
+def _resolve_error_report_decision(flag: bool) -> bool:
+    """Decide once, before the unattended loop starts, whether this run may
+    collect and send error reports.
+
+    Same shape as the telemetry upload policy for the same reason: an
+    unattended `omm contribute` must never be interrupted by a question
+    mid-loop, so the single question is asked here or not at all. The
+    differences from telemetry are the opt-in default and the fact that a
+    stored `never` outranks the runtime flag.
+    """
+    config_data = load_config()
+    policy = error_report.send_policy(config_data)
+    explicitly_set = error_report.policy_is_set(config_data)
+    if not error_report.enabled(config_data):
+        if flag:
+            err_console.print(
+                "[warning]--report-errors needs a telemetry endpoint (the error-report "
+                "channel is derived from it). Set one with `omm setting telemetry "
+                "--endpoint` first.[/warning]"
+            )
+        return False
+    if policy == "always":
+        # Already opted in permanently; the flag has nothing left to add.
+        return True
+    if policy == "never":
+        if explicitly_set:
+            if flag:
+                err_console.print(
+                    "[warning]Error reports are turned off, so --report-errors is ignored. "
+                    "Run `omm setting error-reports --ask` (or --enable) first if you want "
+                    "to send them.[/warning]"
+                )
+            return False
+        if flag:
+            console.print(
+                "[muted]--report-errors: error reports from this run only will be sent. "
+                "Your saved setting is unchanged (`omm setting error-reports --enable` "
+                "makes it permanent).[/muted]"
+            )
+            return True
+        return False
+    # policy == "ask"
+    if flag:
+        return True
+    if not _stdin_is_tty() or _global_opts().yes:
+        # No usable prompt, and consent is never assumed for this feature.
+        return False
+    report, is_example = error_report.preview_report()
+    console.print(
+        "[muted]omm would send "
+        f"{'a report shaped exactly like this' if is_example else 'this report, already queued from an earlier run,'}"
+        " to the write-only error-report channel (see docs/error-reports.md):[/muted]"
+    )
+    console.print(f"[muted]{escape(error_report.preview_text(report))}[/muted]", highlight=False)
+    answer = _ask_upload_choice("Send scrubbed error reports?")
+    if answer == "always":
+        config_mod.update_config(error_report_send_policy="always")
+        console.print(
+            "[muted]Saved: omm will now always send scrubbed error reports "
+            "(change with `omm setting error-reports`).[/muted]"
+        )
+        return True
+    return answer == "yes"
+
+
 def _select_recommended_model(
     info: object,
     ranked: list[tuple[dict, float | None]],
@@ -2158,6 +2235,32 @@ def _run_interruptible(fn, stop_event: threading.Event | None):
                 continue
     finally:
         pool.shutdown(wait=False)
+
+
+def _background_cpu_load_is_high() -> bool:
+    """Warn, before a benchmark starts, if other programs are already busy.
+
+    Sustained background load depresses every speed sample by about the same
+    amount, so the run stays internally tight and the existing dispersion
+    signals - tokens_per_sec_min/max and the v9 MAD/median ratio - report it
+    as a clean measurement of a machine that is simply slower than it is.
+    A reading taken here, while omm is not generating anything, is the only
+    place that distinction can be drawn.
+
+    Best-effort and advisory: an unavailable reading is treated as unknown,
+    never as idle, and never blocks the benchmark.
+    """
+    percent = sample_cpu_utilization_percent()
+    if percent is None or percent < BUSY_CPU_PERCENT:
+        return False
+    err_console.print(
+        f"[warning]Other programs are using about {percent:.0f}% of this machine's "
+        "CPU. Background load lowers decode speed without widening the spread "
+        "between speed samples, so this benchmark can read low while still "
+        "looking internally consistent. Close heavy programs and re-run for a "
+        "number comparable to an idle machine.[/warning]"
+    )
+    return True
 
 
 def _maybe_auto_calibrate(
@@ -3044,6 +3147,9 @@ def _install_impl(
             )
         if not opts.quiet:
             console.print("Benchmarking...")
+        # Sampled here, before the daemon is started and the model is loaded,
+        # so the reading describes other programs rather than omm's own work.
+        host_cpu_busy = _background_cpu_load_is_high()
         started_daemon = None
         pressure_watcher = None
         if (
@@ -3307,6 +3413,16 @@ def _install_impl(
                         f"[warning]Benchmarking {filename} stopped: {error}. "
                         "Cleaning up and moving on.[/warning]"
                     )
+                    if contribute_mode:
+                        # Queue only - an unattended loop must not block on
+                        # an HTTP round trip, and the send policy was
+                        # already resolved once at `contribute` start.
+                        error_report.queue_report(
+                            error,
+                            trigger="install_quality_eval",
+                            catalog_ref=error_report.catalog_ref(repo_id, filename),
+                            engine=benchmark_engine,
+                        )
                 finally:
                     if not model_was_preloaded:
                         if benchmark_engine == "lmstudio":
@@ -3391,18 +3507,29 @@ def _install_impl(
 
         if tokens_per_sec:
             console.print(f"[accent]{tokens_per_sec:.1f} tok/s[/accent]")
+            # The dispersion and memory checks below only apply to contribute
+            # runs, which record the samples and the pressure window they need.
+            # The background-load check applies to every benchmark: a plain
+            # install would otherwise fold a load-depressed number straight
+            # into the local calibration factor, which is exactly the kind of
+            # transient error calibration is supposed to be free of.
             stable_for_calibration = not contribute_mode or (
                 memory_measurement is not None
                 and memory_measurement.get("memory_pressure_observed") is False
                 and speed_samples is not None
                 and contribute_memory.speed_mad_ratio(speed_samples) <= 0.15
             )
-            if stable_for_calibration:
+            if stable_for_calibration and not host_cpu_busy:
                 _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec)
-            else:
+            elif not stable_for_calibration:
                 console.print(
                     "[muted]Local calibration not updated because this measurement "
                     "was pressured or unstable.[/muted]"
+                )
+            else:
+                console.print(
+                    "[muted]Local calibration not updated because this measurement "
+                    "was taken while other programs were using the CPU.[/muted]"
                 )
 
             want_upload = not no_upload and (
@@ -4299,6 +4426,59 @@ def configure_upload(
     console.print(table)
 
 
+@setting_app.command(name="error-reports")
+@global_flags
+def configure_error_reports(
+    enable: bool = typer.Option(False, "--enable", help="Always send scrubbed error reports without asking."),
+    disable: bool = typer.Option(False, "--disable", help="Never send error reports (the default)."),
+    ask: bool = typer.Option(False, "--ask", help="Ask once per `omm contribute` run before sending."),
+) -> None:
+    """Configure the opt-in error-report policy; see docs/error-reports.md for what is sent.
+
+    Kept separate from `omm setting upload` on purpose: error reports go to
+    a different, write-only channel than benchmark telemetry, so the two
+    consents are managed independently.
+    """
+    chosen = [flag for flag in (enable, disable, ask) if flag]
+    if len(chosen) > 1:
+        err_console.print("[error]Choose only one of --enable, --disable, or --ask.[/error]")
+        raise typer.Exit(1)
+    current = load_config()
+    changes = {}
+    if enable:
+        if not error_report.enabled(current):
+            err_console.print(
+                "[error]Error reports are derived from the telemetry endpoint. Set one with "
+                "`omm setting telemetry --endpoint` before enabling them.[/error]"
+            )
+            raise typer.Exit(1)
+        changes["error_report_send_policy"] = "always"
+    elif disable:
+        changes["error_report_send_policy"] = "never"
+    elif ask:
+        changes["error_report_send_policy"] = "ask"
+    if changes:
+        current = config_mod.update_config(**changes)
+    if disable:
+        # Opting out also drops whatever was queued under an earlier consent
+        # - leaving it on disk waiting for a policy that will never come
+        # helps nobody.
+        discarded = error_report.discard_pending()
+        if discarded:
+            console.print(f"[muted]Discarded {discarded} queued error report(s).[/muted]")
+    table = Table(title="Error report policy", show_header=False)
+    table.add_column("Field", style="accent")
+    table.add_column("Value")
+    labels = {
+        "always": "always",
+        "never": "never (default)" if not error_report.policy_is_set(current) else "never",
+        "ask": "ask once per contribute run",
+    }
+    table.add_row("Error reports", labels[error_report.send_policy(current)])
+    table.add_row("Destination", str(error_report.endpoint(current) or "not available"))
+    console.print(table)
+
+
 @setting_app.command(name="memory-guard")
 def configure_memory_guard(
     policy: str = typer.Option(
@@ -4475,6 +4655,11 @@ def calibrate(
         err_console.print("[error]This model has no usable baseline speed prediction.[/error]")
         raise typer.Exit(1)
     tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    # Warn but do not refuse: this measurement was asked for explicitly, and
+    # the caller is the one who can decide whether to close things and retry.
+    # The automatic post-install calibration, which nobody asked for, does
+    # skip itself instead.
+    _background_cpu_load_is_high()
     measured = benchmark.benchmark_ollama(tag)
     if measured is None or measured <= 0:
         err_console.print("[error]Calibration requires a running Ollama model server.[/error]")
@@ -5215,6 +5400,10 @@ def benchmark_cmd(
     if output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output = config_mod.EVALUATIONS_DIR / f"quality-{stamp}.json"
+    # Advisory only: `omm benchmark` records evidence the caller reads and may
+    # upload, so a busy machine is worth saying out loud before the run rather
+    # than leaving it invisible in a number that looks tight.
+    _background_cpu_load_is_high()
     try:
         try:
             with Progress(
@@ -5519,13 +5708,26 @@ def _report_telemetry(
         quant_bits = candidate_quant_bits(candidate)
     digest = _normalize_model_digest(model_digest or metadata.get("digest"))
     safe_filename = _safe_model_filename(model_filename or filename)
-    complete_runtime = _complete_runtime(runtime)
+    # LM Studio has no /api/ps equivalent and ignores the Ollama runtime
+    # options omm computes, so omm can neither set nor observe the runtime
+    # shape (runtime_profile, context_length, gpu_offload_percent,
+    # cpu_threads, num_batch) of an LM Studio generation. Requiring that
+    # block for every engine silently collapsed every LM Studio benchmark
+    # to the v4 shape, throwing away the parameter/quant/CPU/engine-version
+    # fields LM Studio *can* report honestly. v8 therefore carries LM Studio
+    # rows with no runtime block at all rather than fabricated numbers, and
+    # the Rules require those five keys to be absent when engine is
+    # "lmstudio" so an unknown runtime can never be mistaken for a measured
+    # one.
+    runtime_is_observable = engine != "lmstudio"
+    complete_runtime = _complete_runtime(runtime) if runtime_is_observable else None
     complete_cpu = _complete_cpu_metadata(info)
     complete_gpu = _complete_gpu_metadata(info)
     client_version = _client_version()
     if (
         parameter_count is not None and active_parameter_count is not None and quant_bits is not None
-        and complete_runtime is not None and complete_cpu is not None
+        and (complete_runtime is not None or not runtime_is_observable)
+        and complete_cpu is not None
         and isinstance(engine_version, str) and engine_version
         and client_version is not None and sample_count >= 3
     ):
@@ -5543,7 +5745,7 @@ def _report_telemetry(
             client_version=client_version,
             benchmark_version=8,
             outcome="success",
-            **complete_runtime,
+            **(complete_runtime or {}),
             **complete_cpu,
         )
         if complete_gpu:
@@ -5552,7 +5754,18 @@ def _report_telemetry(
             event["model_filename"] = safe_filename
         if digest is not None:
             event["model_digest"] = digest
-        if memory_measurement is not None and memory_estimate is not None:
+        # v9 is not "v8 plus memory data" - it is the contribute-v1
+        # measurement profile, which asserts the run happened at exactly
+        # context_length 1024 / num_batch 128 and that the memory estimate
+        # was computed for that same configuration. omm applies that profile
+        # through Ollama's options; LM Studio ignores them and reports
+        # nothing back, so an LM Studio row could only claim conformance it
+        # never had. Keep v9 Ollama-only and let LM Studio land at v8.
+        if (
+            memory_measurement is not None
+            and memory_estimate is not None
+            and runtime_is_observable
+        ):
             before = memory_measurement.get("ram_available_before_gb")
             minimum = memory_measurement.get("ram_available_min_gb")
             after = memory_measurement.get("ram_available_after_gb")
@@ -6442,6 +6655,19 @@ def _run_contribution_loop(
                     f"[error]Couldn't restart the {engine_label} daemon - giving up on "
                     f"{display_name} for now.[/error]"
                 )
+                start_error = benchmark.last_daemon_start_error()
+                error_report.queue_report(
+                    trigger="daemon_restart_giveup",
+                    error_type="DaemonRestartFailed",
+                    message=(
+                        f"{engine_label} daemon crashed while benchmarking and could not be "
+                        f"restarted: {start_error or 'unknown startup failure'}"
+                    ),
+                    catalog_ref=error_report.catalog_ref(
+                        candidate.get("repo_id"), candidate.get("filename")
+                    ),
+                    engine=engine,
+                )
             else:
                 if daemon_ref is not None:
                     daemon_ref["proc"] = restarted
@@ -6672,7 +6898,16 @@ def _print_contribution_summary(
 
 @app.command()
 @global_flags
-def contribute() -> None:
+def contribute(
+    report_errors: bool = typer.Option(
+        False,
+        "--report-errors",
+        help=(
+            "Send scrubbed error reports from this run only (does not change the saved "
+            "policy; ignored if error reports are explicitly turned off)."
+        ),
+    ),
+) -> None:
     """Benchmark models in a loop to improve `omm recommend`.
 
     Repeatedly installs, benchmarks, and uploads telemetry for
@@ -6687,6 +6922,18 @@ def contribute() -> None:
             "Run `omm setting upload --enable` or `--ask` first.[/error]"
         )
         raise typer.Exit(1)
+    # Resolve the error-report consent here, once, for the same reason the
+    # upload policy is resolved here: the loop below runs unattended and
+    # must never stop to ask. A "no" only skips the reports - unlike the
+    # upload policy it never blocks the run, since error reports are an
+    # extra, not what `omm contribute` exists to do.
+    error_report.set_run_consent(_resolve_error_report_decision(report_errors))
+    if error_report.run_consent():
+        flushed = error_report.flush_pending(max_retries=10, force=True)
+        if flushed:
+            console.print(
+                f"[muted]Sent {flushed} error report(s) queued by an earlier run.[/muted]"
+            )
     _ensure_contribute_start_space()
     # Engine availability is a preflight, not part of the expensive-work
     # consent. Do it first so users are never asked to approve bandwidth,
@@ -6834,14 +7081,73 @@ def contribute() -> None:
     finally:
         if daemon_ref["proc"] is not None:
             _stop_engine_daemon(engine, daemon_ref["proc"])
+        # Everything this session queued goes out here, after the loop, so
+        # no benchmark ever waited on an HTTP round trip for a report.
+        if error_report.run_consent():
+            sent = error_report.flush_pending(max_retries=50, force=True)
+            if sent and not _global_opts().quiet:
+                console.print(f"[muted]Sent {sent} error report(s) from this session.[/muted]")
+        error_report.set_run_consent(None)
+
+
+def _known_command_names() -> set[str]:
+    """Every subcommand name omm registers, including command groups."""
+    names: set[str] = set()
+    for command in getattr(app, "registered_commands", []):
+        name = command.name or getattr(command.callback, "__name__", "")
+        if name:
+            names.add(name.replace("_", "-"))
+    for group in getattr(app, "registered_groups", []):
+        name = group.name or getattr(getattr(group.typer_instance, "info", None), "name", None)
+        if name:
+            names.add(name)
+    return names
+
+
+# Resolved once, at import, after every command has registered itself: this
+# must stay correct even when something has replaced the module-level `app`
+# (the crash hook's own tests do exactly that).
+_REGISTERED_COMMAND_NAMES = frozenset(_known_command_names())
+
+
+def _crash_subcommand(argv: list[str] | None = None) -> str | None:
+    """Which subcommand a crash happened under, or None when it can't be
+    told.
+
+    Deliberately matched against the registered names instead of echoing
+    the first argument back: a command line can carry search queries,
+    URLs, and local file paths, and none of that belongs in a report.
+    """
+    tokens = sys.argv[1:] if argv is None else argv
+    known = _REGISTERED_COMMAND_NAMES
+    for token in tokens:
+        if token.startswith("-"):
+            continue
+        return token if token in known else None
+    return None
+
+
+def _queue_crash_report(error: BaseException) -> None:
+    """Trigger 3: record an unhandled crash for later sending.
+
+    Queue only. Prompting for consent right after a crash would be a poor
+    trade for the user, and a synchronous upload would delay the traceback
+    they actually need, so the send happens on a later run (immediately for
+    an `always` policy, at the next `omm contribute` for `ask`).
+    """
+    try:
+        error_report.queue_report(error, trigger="crash", subcommand=_crash_subcommand())
+    except Exception:
+        pass
 
 
 def main() -> None:
     """Console-script entry point (see pyproject.toml [project.scripts]).
     Catches disk-full errors that escape every local handler - e.g. a JSON
     write during `omm autoremove` - and prints one clean line instead of
-    Typer's default traceback. Everything else propagates untouched so a
-    genuine bug still surfaces as a normal traceback and can be reported."""
+    Typer's default traceback. Everything else is queued as an opt-in error
+    report and then propagates untouched, so a genuine bug still surfaces as
+    a normal traceback and can be reported."""
     try:
         app()
     except InsufficientDiskSpaceError as e:
@@ -6854,6 +7160,13 @@ def main() -> None:
                 "Free up space and try again.[/error]"
             )
             raise SystemExit(1) from None
+        _queue_crash_report(e)
+        raise
+    except Exception as e:
+        # SystemExit and KeyboardInterrupt are BaseException, so a normal
+        # `typer.Exit` (including every `raise typer.Exit(1)` error path)
+        # and a Ctrl+C never reach here - only real crashes do.
+        _queue_crash_report(e)
         raise
 
 

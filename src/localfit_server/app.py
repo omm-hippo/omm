@@ -216,7 +216,14 @@ class BenchmarkEvent(BaseModel):
 
     def _validate_outcome_contract(self) -> "BenchmarkEvent":
         version = f"v{self.benchmark_version}"
-        if self.engine != "ollama":
+        # v8 is the only outcome schema LM Studio can satisfy honestly: it is
+        # the one that tolerates a missing runtime block (see below). v7 pins
+        # the same runtime fields, and v9 pins the contribute-v1 measurement
+        # profile - a fixed 1024-context/128-batch configuration LM Studio
+        # neither applies nor reports back.
+        if self.engine != "ollama" and not (
+            self.engine == "lmstudio" and self.benchmark_version == 8
+        ):
             raise ValueError(f"{version} events require the ollama engine")
         if self.outcome is None:
             raise ValueError(f"{version} events require an explicit outcome")
@@ -253,22 +260,33 @@ class BenchmarkEvent(BaseModel):
                 self.cpu_threads,
                 self.num_batch,
             )
-            if any(value is None for value in required_runtime):
-                raise ValueError(f"{version} success requires runtime metadata")
-            if not self.runtime_profile.strip():
-                raise ValueError(f"{version} success runtime_profile must be non-empty")
-            if not 256 <= self.context_length <= 131_072:
-                raise ValueError(
-                    f"{version} success context_length must be between 256 and 131072"
-                )
-            if not 1 <= self.cpu_threads <= 1024:
-                raise ValueError(
-                    f"{version} success cpu_threads must be between 1 and 1024"
-                )
-            if not 1 <= self.num_batch <= 65_536:
-                raise ValueError(
-                    f"{version} success num_batch must be between 1 and 65536"
-                )
+            if self.engine == "lmstudio":
+                # LM Studio exposes no /api/ps equivalent and ignores the
+                # runtime options omm computes, so omm can neither set nor
+                # observe these. Absence is required rather than tolerated:
+                # a populated runtime block on an LM Studio row could only
+                # have been fabricated.
+                if any(value is not None for value in required_runtime):
+                    raise ValueError(
+                        f"{version} lmstudio success must not include runtime metadata"
+                    )
+            else:
+                if any(value is None for value in required_runtime):
+                    raise ValueError(f"{version} success requires runtime metadata")
+                if not self.runtime_profile.strip():
+                    raise ValueError(f"{version} success runtime_profile must be non-empty")
+                if not 256 <= self.context_length <= 131_072:
+                    raise ValueError(
+                        f"{version} success context_length must be between 256 and 131072"
+                    )
+                if not 1 <= self.cpu_threads <= 1024:
+                    raise ValueError(
+                        f"{version} success cpu_threads must be between 1 and 1024"
+                    )
+                if not 1 <= self.num_batch <= 65_536:
+                    raise ValueError(
+                        f"{version} success num_batch must be between 1 and 65536"
+                    )
             cpu_fields = (
                 (
                     self.cpu_model,
