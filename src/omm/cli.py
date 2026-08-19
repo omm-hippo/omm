@@ -7,6 +7,7 @@ import functools
 import inspect
 import json
 import math
+import os
 import platform
 import re
 import shutil
@@ -368,10 +369,108 @@ def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bo
     manifest_url = config.get("catalog_manifest_url")
     public_key = config.get("catalog_public_key")
     if manifest_url and public_key:
-        return predictor.load_model_with_change_note(
+        artifact, changed = predictor.load_model_with_change_note(
             config.get("model_url"), manifest_url, public_key
         )
-    return predictor.load_model_with_change_note(config.get("model_url"))
+    else:
+        artifact, changed = predictor.load_model_with_change_note(config.get("model_url"))
+    _handle_emergency_signal(artifact)
+    return artifact, changed
+
+
+def _version_at_least(installed: str, required: str) -> bool:
+    """Loose dotted-integer compare (e.g. "0.2.98" >= "0.2.90"). Any
+    non-numeric or otherwise unparseable component makes this return False -
+    for an emergency signal, an uncertain comparison should nag rather than
+    silently stay quiet."""
+
+    def _parts(v: str) -> tuple[int, ...] | None:
+        try:
+            return tuple(int(p) for p in v.strip().split("."))
+        except ValueError:
+            return None
+
+    installed_parts, required_parts = _parts(installed), _parts(required)
+    if installed_parts is None or required_parts is None:
+        return False
+    width = max(len(installed_parts), len(required_parts))
+    installed_parts += (0,) * (width - len(installed_parts))
+    required_parts += (0,) * (width - len(required_parts))
+    return installed_parts >= required_parts
+
+
+_emergency_signals_shown: set[str] = set()
+
+
+def _restart_after_update() -> None:
+    """Re-exec the current process with the same argv so the update just
+    installed by _handle_emergency_signal takes effect immediately, picking
+    up the interrupted command right where the emergency prompt cut in."""
+    try:
+        os.execv(sys.argv[0], sys.argv)
+    except OSError as e:
+        err_console.print(
+            f"[error]Updated, but could not restart automatically ({e}). "
+            "Please re-run your last command.[/error]"
+        )
+        raise typer.Exit(1) from e
+
+
+def _handle_emergency_signal(artifact: dict | None) -> None:
+    """Every command that fetches the recommendation model (recommend,
+    search, contribute) runs this right after: if the model - already
+    Ed25519-verified in fetch_and_cache_model - carries a signed `emergency`
+    field aimed at versions older than this install, block instead of
+    quietly continuing. This is the last-resort channel for a critical
+    omm/Firebase/runner incompatibility: no separate network call, it rides
+    the model fetch that already happens routinely.
+
+    Blocking means exactly that: the only way past this function without
+    raising typer.Exit is updating (which restarts the process instead of
+    returning) or the signal not applying (absent, already fixed locally,
+    or already shown once this run). A non-interactive caller or a declined
+    prompt both still exit non-zero - continuing to run against a publisher-
+    declared-critical incompatibility silently is the one outcome this
+    feature exists to prevent.
+
+    Deliberately not wired to any publishing path yet - publishing an
+    `emergency` block still has to go through the existing CI signing step
+    (scripts/sign_catalog.py) by hand. This only teaches omm to react."""
+    signal = predictor.extract_emergency_signal(artifact)
+    if signal is None:
+        return
+
+    signal_id = signal.get("id") or signal["message"]
+    if signal_id in _emergency_signals_shown:
+        return
+
+    fixed_in_version = signal.get("fixed_in_version")
+    if fixed_in_version and _version_at_least(_omm_version(), fixed_in_version):
+        return
+
+    _emergency_signals_shown.add(signal_id)
+    err_console.print(f"[error]⚠ EMERGENCY: {escape(signal['message'])}[/error]")
+
+    if not _stdin_is_tty():
+        err_console.print(
+            "[error]Not an interactive terminal - can't ask, so refusing to continue. "
+            "Run `omm update` and try again.[/error]"
+        )
+        raise typer.Exit(1)
+    if not _ask_confirm("Update omm now to resolve this?", default=True):
+        err_console.print(
+            "[error]Not updating - refusing to continue against a declared-critical "
+            "issue. Run `omm update` when ready.[/error]"
+        )
+        raise typer.Exit(1)
+
+    branch = _channel_branch()
+    result = _perform_update(branch)
+    if result.returncode != 0:
+        err_console.print(f"[error]Emergency update failed:[/error]\n{result.stderr}")
+        raise typer.Exit(1)
+    console.print("[success]Updated. Restarting the interrupted command...[/success]")
+    _restart_after_update()
 
 
 def _omm_version() -> str:
@@ -4799,6 +4898,7 @@ def search(
         manifest_url=config.get("catalog_manifest_url"),
         public_key=config.get("catalog_public_key"),
     )
+    _handle_emergency_signal(predictor.load_cached_model())
     local_matches = search_mod.match_candidates(pool, query)
 
     local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
@@ -4901,6 +5001,7 @@ def _print_install_suggestions(query: str) -> None:
         manifest_url=config.get("catalog_manifest_url"),
         public_key=config.get("catalog_public_key"),
     )
+    _handle_emergency_signal(predictor.load_cached_model())
     suggestions = search_mod.dedupe_by_base_repo(search_mod.suggest_similar(query, pool, limit=3))
 
     existing_labels = {s.get("name") or s.get("repo_id") for s in suggestions}

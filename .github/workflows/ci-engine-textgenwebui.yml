@@ -1,0 +1,40 @@
+name: "Engine link check: text-generation-webui"
+
+"on":
+  push:
+    paths:
+      - "src/omm/linker.py"
+      - "src/omm/scan_import.py"
+      - "src/omm/hashutil.py"
+      - "scripts/verify_engine_link.py"
+      - ".github/workflows/ci-engine-textgenwebui.yml"
+  pull_request:
+    paths:
+      - "src/omm/linker.py"
+      - "src/omm/scan_import.py"
+      - "src/omm/hashutil.py"
+      - "scripts/verify_engine_link.py"
+      - ".github/workflows/ci-engine-textgenwebui.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Real portable release + omm link + filesystem recognition (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install omm
+        run: python -m pip install -e .
+      - name: Install, link, and verify text-generation-webui's models dir sees the linked model
+        # No daemon needed: recognition here means the file lands under
+        # user_data/models exactly as a real launch would find it. See
+        # verify_engine_link.py's _verify_via_path.
+        run: python scripts/verify_engine_link.py textgenwebui

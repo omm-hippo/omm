@@ -1,0 +1,101 @@
+name: Emergency update signal
+
+"on":
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type exactly "BLOCK-ALL-USERS" to set a signal, or "CLEAR-EMERGENCY" to remove one'
+        required: true
+      message:
+        description: "Shown to every affected user (ignored when clearing)"
+        required: false
+      fixed_in_version:
+        description: "Only installs older than this version are blocked (leave blank if updating won't fix it)"
+        required: false
+      clear:
+        description: "Remove the current emergency signal instead of setting one"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the confirmation phrase
+        run: |
+          if [ "${{ inputs.clear }}" = "true" ]; then
+            [ "${{ inputs.confirm }}" = "CLEAR-EMERGENCY" ] || { echo "confirm must be exactly CLEAR-EMERGENCY to clear the signal"; exit 1; }
+          else
+            [ "${{ inputs.confirm }}" = "BLOCK-ALL-USERS" ] || { echo "confirm must be exactly BLOCK-ALL-USERS to set a signal"; exit 1; }
+            [ -n "${{ inputs.message }}" ] || { echo "message is required unless clear is true"; exit 1; }
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Edit published/recommend-model.json
+        run: |
+          if [ "${{ inputs.clear }}" = "true" ]; then
+            python scripts/set_emergency_signal.py published/recommend-model.json --clear
+          else
+            python scripts/set_emergency_signal.py published/recommend-model.json \
+              --id "emergency-$(date -u +%Y%m%d-%H%M%S)" \
+              --message "${{ inputs.message }}" \
+              ${{ inputs.fixed_in_version != '' && format('--fixed-in-version {0}', inputs.fixed_in_version) || '' }}
+          fi
+
+      - name: Re-sign published catalog
+        env:
+          LOCALFIT_CATALOG_SIGNING_KEY: ${{ secrets.LOCALFIT_CATALOG_SIGNING_KEY }}
+        run: |
+          umask 077
+          key_path="$RUNNER_TEMP/omm-catalog-signing-key"
+          printf '%s\n' "$LOCALFIT_CATALOG_SIGNING_KEY" > "$key_path"
+          python scripts/sign_catalog.py sign published/recommend-model.json \
+            --private "$key_path" \
+            --manifest published/recommend-model.manifest.json
+
+      - name: Open a PR and auto-merge it
+        env:
+          GH_TOKEN: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
+          LOCALFIT_RETRAIN_SSH_KEY: ${{ secrets.LOCALFIT_RETRAIN_SSH_KEY }}
+        run: |
+          git config user.name "omm-retrain-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add published/recommend-model.json published/recommend-model.manifest.json
+          git diff --cached --quiet && { echo "No change (clearing an already-clear signal?) - nothing to publish."; exit 0; }
+
+          # Same SSH-signed-commit approach as train.yml, for the same reason:
+          # the PR head must pass the Trusted PR head check (see
+          # src/omm/trust/allowed_signers), and main has no direct-push
+          # bypass, so even an emergency goes through a PR - just an
+          # auto-merging one, not a slower human-reviewed one.
+          umask 077
+          key_path="$RUNNER_TEMP/omm-emergency-signing-key"
+          printf '%s\n' "$LOCALFIT_RETRAIN_SSH_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          git config gpg.format ssh
+          git config commit.gpgsign true
+          git config user.signingkey "$key_path"
+
+          branch="emergency-signal/$(date -u +%Y%m%d-%H%M%S)"
+          git checkout -b "$branch"
+          if [ "${{ inputs.clear }}" = "true" ]; then
+            git commit -m "chore: clear emergency update signal"
+          else
+            git commit -m "chore: set emergency update signal"
+          fi
+          git push origin "$branch"
+          pr_url=$(gh pr create \
+            --title "Emergency update signal: $([ "${{ inputs.clear }}" = "true" ] && echo clear || echo set)" \
+            --body "Triggered manually via workflow_dispatch by @${{ github.actor }}. See the workflow run for the exact message/fixed_in_version inputs." \
+            --base main --head "$branch")
+          gh pr merge "$pr_url" --auto --merge

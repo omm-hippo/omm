@@ -1,0 +1,50 @@
+name: "Engine link check: AnythingLLM"
+
+"on":
+  push:
+    paths:
+      - "src/omm/linker.py"
+      - "src/omm/scan_import.py"
+      - "src/omm/gguf.py"
+      - "src/omm/hashutil.py"
+      - "scripts/verify_engine_link.py"
+      - ".github/workflows/ci-engine-anythingllm.yml"
+  pull_request:
+    paths:
+      - "src/omm/linker.py"
+      - "src/omm/scan_import.py"
+      - "src/omm/gguf.py"
+      - "src/omm/hashutil.py"
+      - "scripts/verify_engine_link.py"
+      - ".github/workflows/ci-engine-anythingllm.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Real AnythingLLM (brew) install + omm link + manifest recognition (macos-latest)
+    # No Linux automated installer exists for AnythingLLM at all (its
+    # Linux installer.sh is interactive, sudo AppArmor prompt, no silent
+    # flag - deliberately excluded, see _install_anythingllm and issue
+    # #93). Windows (winget) is the other option; macos-latest (brew
+    # cask) was picked here to keep this and the Msty workflow on the
+    # same runner OS.
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install omm
+        run: python -m pip install -e .
+      - name: Install, link, and verify AnythingLLM's bundled-Ollama manifest sees the linked model
+        # AnythingLLM has no headless CLI (unlike Ollama/LM Studio), so
+        # this checks the manifest+blob it writes to its own bundled
+        # Ollama-format store directly rather than driving the Electron
+        # app itself - see verify_engine_link.py's
+        # _verify_ollama_format_manifest.
+        run: python scripts/verify_engine_link.py anythingllm

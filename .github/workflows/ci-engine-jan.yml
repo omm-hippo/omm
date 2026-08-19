@@ -1,0 +1,65 @@
+name: "Engine link check: Jan"
+
+"on":
+  push:
+    paths:
+      - "src/omm/linker.py"
+      - "src/omm/scan_import.py"
+      - "src/omm/hashutil.py"
+      - "scripts/verify_engine_link.py"
+      - ".github/workflows/ci-engine-jan.yml"
+  pull_request:
+    paths:
+      - "src/omm/linker.py"
+      - "src/omm/scan_import.py"
+      - "src/omm/hashutil.py"
+      - "scripts/verify_engine_link.py"
+      - ".github/workflows/ci-engine-jan.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Real Jan (flatpak) install + omm link + model.yml recognition (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install omm
+        run: python -m pip install -e .
+      - name: Set up flatpak + flathub
+        # ubuntu-latest doesn't ship flatpak by default - omm's own
+        # _install_jan() only runs `flatpak install`, it doesn't set up
+        # the flatpak plumbing itself (same as a real user's machine, it
+        # assumes flatpak is already configured).
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y flatpak
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+      - name: Allow unattended flatpak system installs
+        # A regular user's `flatpak install` needs polkit to grant the
+        # system-wide deploy step - there's no interactive session on a
+        # CI runner to grant that, so it fails with "Flatpak system
+        # operation Deploy not allowed for user" (confirmed against a
+        # real run of this workflow). This runner is single-use and
+        # disposable, so blanket-allowing flatpak actions here is fine.
+        run: |
+          sudo mkdir -p /etc/polkit-1/rules.d
+          cat <<'EOF' | sudo tee /etc/polkit-1/rules.d/49-nopasswd-flatpak.rules
+          polkit.addRule(function(action, subject) {
+              if (action.id.indexOf("org.freedesktop.Flatpak.") === 0) {
+                  return polkit.Result.YES;
+              }
+          });
+          EOF
+          sudo systemctl restart polkit
+      - name: Install, link, and verify Jan's model.yml scan sees the linked model
+        # Jan never needs to actually launch - scan_jan() just reads the
+        # model.yml manifest omm writes, so no daemon/GUI step here.
+        run: python scripts/verify_engine_link.py jan

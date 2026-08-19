@@ -1503,7 +1503,23 @@ def jan_models_dir() -> Path:
 def is_jan_installed() -> bool:
     if platform.system() == "Darwin":
         return _app_bundle_installed("Jan")
-    return jan_app_dir().exists()
+    if jan_app_dir().exists():
+        return True
+    if platform.system() == "Linux" and shutil.which("flatpak") is not None:
+        # jan_app_dir() (~/.config/Jan) is only created the first time Jan
+        # actually launches - a flatpak install that succeeded but was
+        # never run leaves nothing there yet, which used to make
+        # install_engine("jan") report "still isn't detected" right after
+        # a genuinely successful `flatpak install`. `flatpak info` checks
+        # the package itself instead, mirroring what _app_bundle_installed
+        # does for Darwin (confirmed against a real ubuntu-latest CI run).
+        try:
+            return subprocess.run(
+                ["flatpak", "info", "ai.jan.Jan"], capture_output=True, timeout=10
+            ).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    return False
 
 
 def _jan_model_yaml_path(model_id: str) -> Path:
