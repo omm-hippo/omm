@@ -4,6 +4,9 @@ name: "Engine link check: Jan"
   push:
     paths:
       - "src/omm/linker.py"
+      - "src/omm/config.py"
+      - "src/omm/atomic.py"
+      - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
@@ -11,6 +14,9 @@ name: "Engine link check: Jan"
   pull_request:
     paths:
       - "src/omm/linker.py"
+      - "src/omm/config.py"
+      - "src/omm/atomic.py"
+      - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"

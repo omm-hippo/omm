@@ -4,16 +4,20 @@ name: "Engine link check: LM Studio"
   push:
     paths:
       - "src/omm/linker.py"
+      - "src/omm/config.py"
+      - "src/omm/atomic.py"
+      - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
-      - "src/omm/gguf.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
       - ".github/workflows/ci-engine-lmstudio.yml"
   pull_request:
     paths:
       - "src/omm/linker.py"
+      - "src/omm/config.py"
+      - "src/omm/atomic.py"
+      - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
-      - "src/omm/gguf.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
       - ".github/workflows/ci-engine-lmstudio.yml"
