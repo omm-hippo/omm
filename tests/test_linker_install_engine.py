@@ -293,7 +293,7 @@ def test_install_via_package_manager_no_option_for_platform_is_unsupported(monke
 
     result = linker._install_via_package_manager(
         key="anythingllm", label="AnythingLLM", manual_url="https://docs.anythingllm.com/x",
-        is_installed=lambda: False, brew_cask="anythingllm", winget_id="MintplexLabs.AnythingLLM",
+        is_installed=lambda: False, brew_cask="anythingllm", winget_id="Example.Package",
     )
 
     assert result.status == "unsupported_platform"
@@ -314,17 +314,20 @@ def test_install_engine_jan_dispatches_to_package_manager_helper(monkeypatch):
     assert result == linker.EngineInstallResult("jan", "installed", "Jan installed successfully.")
 
 
-def test_has_automated_installer_true_for_anythingllm(monkeypatch):
+def test_has_automated_installer_true_for_anythingllm_on_mac(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     assert linker.has_automated_installer("anythingllm") is True
+
+
+def test_has_automated_installer_false_for_anythingllm_on_windows_and_linux(monkeypatch):
+    """Brew-cask only. The winget package MintplexLabs.AnythingLLM was
+    removed from the community repo in 2025 (microsoft/winget-pkgs#230632)
+    and no replacement manifest exists under any publisher id, and no
+    flatpak/Linux path was ever built (see _install_anythingllm) - the
+    onboarding checklist must not claim auto-install is available on
+    either platform."""
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
-    assert linker.has_automated_installer("anythingllm") is True
-
-
-def test_has_automated_installer_false_for_anythingllm_on_linux(monkeypatch):
-    """No flatpak/Linux path was ever built for AnythingLLM (see
-    _install_anythingllm) - the onboarding checklist must not claim
-    auto-install is available there."""
+    assert linker.has_automated_installer("anythingllm") is False
     monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
     assert linker.has_automated_installer("anythingllm") is False
 
@@ -347,22 +350,26 @@ def test_install_anythingllm_mac_uses_brew_cask(monkeypatch):
     assert calls[0] == ["brew", "install", "--cask", "anythingllm"]
 
 
-def test_install_anythingllm_windows_uses_winget(monkeypatch):
+def test_install_anythingllm_windows_is_unsupported_without_running_winget(monkeypatch):
+    """The winget package MintplexLabs.AnythingLLM was removed from the
+    community repo on 2025-02-18 (microsoft/winget-pkgs#230632, "New
+    installer URL is behind captcha") and nothing replaced it, so a winget
+    install can only ever fail with "no applications found". Windows must
+    report unsupported_platform with the manual download link instead of
+    spawning winget at all."""
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
     monkeypatch.setattr(linker.shutil, "which", lambda name: "winget.exe" if name == "winget" else None)
-    monkeypatch.setattr(linker, "is_anythingllm_installed", lambda: True)
-    calls = []
+    monkeypatch.setattr(linker, "is_anythingllm_installed", lambda: False)
 
-    def fake_popen(args, **kwargs):
-        calls.append(args)
-        return _FakeProc([])
+    def fail_popen(*args, **kwargs):
+        raise AssertionError("no subprocess may be spawned for AnythingLLM on Windows")
 
-    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(linker.subprocess, "Popen", fail_popen)
 
     result = linker.install_engine("anythingllm")
 
-    assert result.status == "installed"
-    assert calls[0] == ["winget", "install", "-e", "--id", "MintplexLabs.AnythingLLM", "--silent"]
+    assert result.status == "unsupported_platform"
+    assert "anythingllm.com" in result.message
 
 
 def test_install_anythingllm_linux_is_unsupported(monkeypatch):
