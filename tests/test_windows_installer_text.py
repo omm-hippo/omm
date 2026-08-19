@@ -236,3 +236,12 @@ def test_installers_create_custom_home_ownership_marker():
 
     assert 'Join-Path $OmmHome ".omm-managed"' in ps1
     assert '"$OMM_HOME/.omm-managed"' in sh
+
+
+def test_powershell_verifiers_use_stdin_instead_of_multiline_dash_c():
+    installer = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    uninstaller = (ROOT / "uninstall.ps1").read_text(encoding="utf-8")
+
+    for script in (installer, uninstaller):
+        assert "$OmmEnvironmentVerifier | & $environmentPython -" in script
+        assert "-c $OmmEnvironmentVerifier" not in script

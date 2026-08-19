@@ -390,7 +390,10 @@ function Test-OmmPipxEnvironment {
     try {
         $ErrorActionPreference = "Continue"
         $PSNativeCommandUseErrorActionPreference = $false
-        & $environmentPython -c $OmmEnvironmentVerifier $Distribution $OmmHome $requireSource $ExpectedVersion *> $null
+        # Windows PowerShell 5.1 can strip quotes from a multi-line native
+        # `-c` argument. Feed the verifier on stdin so its Python source is
+        # intact; only plain data values remain argv entries.
+        $OmmEnvironmentVerifier | & $environmentPython - $Distribution $OmmHome $requireSource $ExpectedVersion *> $null
         $ok = $LASTEXITCODE -eq 0
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
