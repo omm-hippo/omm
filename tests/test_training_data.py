@@ -643,6 +643,32 @@ def test_stable_holdout_split_keeps_sibling_candidates_atomic():
     assert len(holdout_X) == 2
 
 
+def test_training_data_with_synthetic_prior_weights_real_rows(monkeypatch):
+    synthetic = [[0.0] * len(train_model.FEATURE_ORDER)]
+    real = [[1.0] * len(train_model.FEATURE_ORDER), [2.0] * len(train_model.FEATURE_ORDER)]
+    monkeypatch.setattr(
+        train_model,
+        "synthetic_rows_from_rules",
+        lambda: (synthetic, [0.0]),
+    )
+
+    X, y, weights = train_model.training_data_with_synthetic_prior(
+        real,
+        [10.0, 20.0],
+        real_weight=8.0,
+    )
+
+    assert X == synthetic + real
+    assert y == [0.0, 10.0, 20.0]
+    assert weights == [1.0, 8.0, 8.0]
+
+
+@pytest.mark.parametrize("weight", [0.0, -1.0, float("inf"), float("nan")])
+def test_training_data_with_synthetic_prior_rejects_invalid_weight(weight):
+    with pytest.raises(ValueError, match="positive finite"):
+        train_model.training_data_with_synthetic_prior([], [], real_weight=weight)
+
+
 def test_quality_gate_split_rejects_too_few_selection_contexts():
     with pytest.raises(ValueError, match="at least two selection contexts"):
         train_model.stable_holdout_split([[0.0] * len(train_model.FEATURE_ORDER)], [1.0], 0.2)
@@ -672,6 +698,19 @@ def test_quality_gate_regression_republishes_baseline_unchanged(tmp_path, monkey
     )
     monkeypatch.setattr(
         train_model,
+        "synthetic_rows_from_rules",
+        lambda: ([X[0]], [0.0]),
+    )
+    train_calls = []
+    original_train_artifact = train_model.train_artifact
+
+    def tracked_train_artifact(*args, **kwargs):
+        train_calls.append((args, kwargs))
+        return original_train_artifact(*args, **kwargs)
+
+    monkeypatch.setattr(train_model, "train_artifact", tracked_train_artifact)
+    monkeypatch.setattr(
+        train_model,
         "parse_args",
         lambda: Namespace(
             telemetry_file=[telemetry], offline=True, telemetry_url="", output=output,
@@ -684,6 +723,85 @@ def test_quality_gate_regression_republishes_baseline_unchanged(tmp_path, monkey
     train_model.main()  # must not raise: gate rejection is expected, not a code bug
 
     assert output.read_text() == baseline.read_text()
+    candidate_args, candidate_kwargs = train_calls[0]
+    assert candidate_kwargs["training_mode"] == "hybrid_telemetry"
+    assert candidate_kwargs["bootstrap_method"] == train_model.BOOTSTRAP_METHOD
+    assert candidate_kwargs["sample_weight"][0] == 1.0
+    assert set(candidate_kwargs["sample_weight"][1:]) == {
+        train_model.QUALITY_GATE_REAL_WEIGHT
+    }
+
+
+def test_quality_gate_publishes_hybrid_artifact_after_pass(tmp_path, monkeypatch):
+    telemetry = tmp_path / "telemetry.json"
+    rows = [
+        _v6_row(10),
+        _v6_row(20, vram_gb=6),
+        _v6_row(30, ram_gb=32),
+        _v6_row(40, ram_gb=32, vram_gb=6),
+    ]
+    telemetry.write_text(json.dumps(rows))
+    output = tmp_path / "model.json"
+    baseline = tmp_path / "baseline.json"
+    monkeypatch.setattr(train_model, "load_candidates", lambda: [])
+    X, y = train_model.real_rows_to_training_data(rows)
+    baseline.write_text(
+        json.dumps(
+            train_model.train_artifact(
+                X,
+                y,
+                sample_weight=None,
+                training_mode="telemetry",
+                bootstrap_method=None,
+                real_rows=[],
+                telemetry_audit={"unique_configurations": len(X)},
+                input_sources=[],
+                evaluation=None,
+            )
+        )
+    )
+    monkeypatch.setattr(
+        train_model,
+        "synthetic_rows_from_rules",
+        lambda: ([X[0]], [0.0]),
+    )
+    monkeypatch.setattr(
+        train_model,
+        "compare_artifacts",
+        lambda *_args, **_kwargs: {
+            "passed": True,
+            "failures": [],
+            "candidate": {"selection_group_count": 3},
+            "baseline": {"selection_group_count": 3},
+            "thresholds": {"min_selection_groups": 3},
+        },
+    )
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[telemetry],
+            offline=True,
+            telemetry_url="",
+            output=output,
+            baseline=baseline,
+            quality_gate=True,
+            minimum_real_configurations=0,
+            maximum_rejection_rate=0.25,
+            holdout_fraction=0.2,
+            quality_report=None,
+            minimum_fit_negative_examples=5,
+        ),
+    )
+
+    train_model.main()
+
+    artifact = json.loads(output.read_text())
+    assert artifact["training_mode"] == "hybrid_telemetry"
+    assert artifact["bootstrap_method"] == train_model.BOOTSTRAP_METHOD
+    assert artifact["real_row_count"] == len(X)
+    assert artifact["training_row_count"] == len(X) + 1
+    assert artifact["evaluation"]["passed"] is True
 
 
 def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchanged(
