@@ -34,8 +34,10 @@ jobs:
     # No Linux automated installer exists for AnythingLLM at all (its
     # Linux installer.sh is interactive, sudo AppArmor prompt, no silent
     # flag - deliberately excluded, see _install_anythingllm and issue
-    # #93). Windows (winget) is the other option; macos-latest (brew
-    # cask) was picked here to keep this and the Msty workflow on the
+    # #93). Windows has no automated installer either since the winget
+    # package MintplexLabs.AnythingLLM was removed upstream (issue #129),
+    # so macos-latest (brew cask) is the only runner that can exercise a
+    # real install - which also keeps this and the Msty workflow on the
     # same runner OS.
     runs-on: macos-latest
     timeout-minutes: 15

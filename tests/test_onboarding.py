@@ -199,11 +199,10 @@ def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
 
 
 def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
-    """This exercises a defensive branch in install_selected_engines that
-    stays in the code for any future engine that ships without automation
-    - every currently-registered linker.ENGINES key has automation now, so
-    force the branch via has_automated_installer rather than relying on a
-    real key being unautomated (which would otherwise fall through to a
+    """This exercises the branch in install_selected_engines for an engine
+    with no automation on the current platform, forced via
+    has_automated_installer rather than relying on a particular key/OS
+    combination being unautomated (which would otherwise fall through to a
     real, unmocked linker.install_engine() call - including a real network
     request)."""
     console = _console()
@@ -214,6 +213,27 @@ def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
     output = console.file.getvalue()
     assert "isn't auto-installable yet" in output
     assert onboarding.COMPATIBLE_PROGRAMS_URL in output
+
+
+def test_install_selected_engines_skips_anythingllm_install_attempt_on_windows(monkeypatch):
+    """AnythingLLM's winget package is gone (see linker._install_anythingllm),
+    so on Windows the wizard must say so up front instead of running an
+    install that is known in advance to fail and only then printing a
+    manual link. Uses the real has_automated_installer - this is the
+    behaviour that regressed in issue #129."""
+    console = _console()
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+
+    def fail_install(key, on_output=None):
+        raise AssertionError("install_engine must not be called for AnythingLLM on Windows")
+
+    monkeypatch.setattr(linker, "install_engine", fail_install)
+
+    onboarding.install_selected_engines(console, ["anythingllm"])
+
+    output = console.file.getvalue()
+    assert "isn't auto-installable yet" in output
+    assert "Installing AnythingLLM" not in output
 
 
 def test_run_wizard_completes_with_no_engines_selected(monkeypatch):

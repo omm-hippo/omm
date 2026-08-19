@@ -1914,9 +1914,13 @@ def has_automated_installer(key: str) -> bool:
     if key == "jan":
         return True
     if key == "anythingllm":
-        # No flatpak/Linux path was ever built for this one (see
-        # _install_anythingllm) - only brew (Darwin) and winget (Windows).
-        return platform.system() in ("Darwin", "Windows")
+        # Brew-cask (Darwin) only. No flatpak/Linux path was ever built for
+        # this one, and the Windows winget package is gone - see
+        # _install_anythingllm for both. Windows used to be listed here,
+        # which made the wizard attempt a winget install that could not
+        # possibly succeed and then fall back to a manual URL; reporting it
+        # unsupported shows that same guidance up front instead.
+        return platform.system() == "Darwin"
     if key == "mstystudio":
         # Brew-cask only - no winget package targets the current app (see
         # _install_mstystudio) and no Linux package manager exists at all.
@@ -2149,11 +2153,27 @@ def _install_jan(*, on_output: Callable[[str], None] | None = None) -> EngineIns
 
 
 def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
-    # Linux deliberately has no flatpak_id/download path here: the only
-    # official Linux install method is an interactive installer.sh (sudo
-    # AppArmor-profile prompt, no documented silent flag) - same risk
-    # class the original design excluded text-generation-webui's git-clone
-    # path for. Falls through to unsupported_platform on Linux.
+    # Brew cask only. Both other platforms deliberately fall through to
+    # unsupported_platform:
+    #
+    # Windows - there is no winget package any more. MintplexLabs.AnythingLLM
+    # was removed from the community repo on 2025-02-18 by
+    # microsoft/winget-pkgs#230632 ("New installer URL is behind captcha"),
+    # and no manifest for this app exists under any publisher id today
+    # (re-verified against microsoft/winget-pkgs and against a real
+    # `winget search` on 2026-08-19: zero results, exit 0x8A150014). Keeping
+    # the id here only bought an attempt that always failed. A direct
+    # download of the vendor's AnythingLLMDesktop.exe was considered and
+    # rejected: it is a ~396 MB NSIS installer with no vendor-documented
+    # silent flag, and is_anythingllm_installed() on Windows keys off the
+    # Electron userData directory, which the app creates on first launch
+    # rather than at install time - so even a silent install would report
+    # "ran but still isn't detected".
+    #
+    # Linux - the only official install method is an interactive
+    # installer.sh (sudo AppArmor-profile prompt, no documented silent
+    # flag) - same risk class the original design excluded
+    # text-generation-webui's git-clone path for.
     return _install_via_package_manager(
         key="anythingllm",
         label="AnythingLLM",
@@ -2161,7 +2181,6 @@ def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> E
         is_installed=is_anythingllm_installed,
         on_output=on_output,
         brew_cask="anythingllm",
-        winget_id="MintplexLabs.AnythingLLM",
     )
 
 
