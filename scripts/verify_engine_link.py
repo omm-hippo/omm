@@ -33,6 +33,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+# Not a TTY under CI, so stdout defaults to block-buffered - every
+# on_output=print line from the installer subprocess (and this script's own
+# diagnostics) would otherwise sit in the buffer and only appear, all at
+# once and out of order relative to stderr, when the process exits. Real-time,
+# correctly ordered logs are the only way to diagnose a run that fails
+# intermittently, since a failed run can't be reproduced after the fact.
+sys.stdout.reconfigure(line_buffering=True)
+
 from omm import linker, scan_import  # noqa: E402
 
 
@@ -75,6 +83,15 @@ def verify_ollama(gguf_path: Path, ollama_tag: str) -> None:
     the tag yet. Retries instead of trusting a single call."""
     import time
 
+    manifest_path = (
+        linker.ollama_models_dir()
+        / "manifests" / "registry.ollama.ai" / "library" / ollama_tag / "latest"
+    )
+    print(
+        f"verify_ollama: expecting manifest at {manifest_path} "
+        f"(exists={manifest_path.exists()})"
+    )
+
     list_output = ""
     for attempt in range(10):
         result = _run(["ollama", "list"])
@@ -85,7 +102,10 @@ def verify_ollama(gguf_path: Path, ollama_tag: str) -> None:
             break
         time.sleep(2)
     else:
-        _fail(f"`ollama list` never showed {ollama_tag!r} after 10 tries:\n{list_output}")
+        _fail(
+            f"`ollama list` never showed {ollama_tag!r} after 10 tries "
+            f"(manifest on disk now: exists={manifest_path.exists()}):\n{list_output}"
+        )
 
     result = _run(["ollama", "show", ollama_tag])
     if result.returncode != 0:
@@ -269,9 +289,19 @@ def _ensure_ollama_dir_writable() -> None:
     if platform.system() != "Linux":
         return
     models_dir = linker.ollama_models_dir()
+    print(
+        f"ollama_models_dir() resolved to {models_dir} "
+        f"(exists={models_dir.exists()}, writable={os.access(models_dir, os.W_OK)})"
+    )
     if not models_dir.exists() or os.access(models_dir, os.W_OK):
         return
-    subprocess.run(["sudo", "chmod", "-R", "a+rwX", str(models_dir)], check=False)
+    result = subprocess.run(
+        ["sudo", "chmod", "-R", "a+rwX", str(models_dir)], capture_output=True, text=True
+    )
+    print(
+        f"sudo chmod -R a+rwX {models_dir}: returncode={result.returncode} "
+        f"stderr={result.stderr.strip()!r}"
+    )
 
 
 def main() -> None:
