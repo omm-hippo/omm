@@ -22,21 +22,21 @@ from pathlib import Path
 
 
 def set_signal(artifact_path: Path, *, id_: str, message: str, fixed_in_version: str | None) -> None:
-    artifact = json.loads(artifact_path.read_text())
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     signal = {"id": id_, "message": message}
     if fixed_in_version:
         signal["fixed_in_version"] = fixed_in_version
     artifact["emergency"] = signal
-    artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+    artifact_path.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
 
 
 def clear_signal(artifact_path: Path) -> None:
-    artifact = json.loads(artifact_path.read_text())
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     if "emergency" not in artifact:
         print("No emergency field present - nothing to clear.")
         return
     del artifact["emergency"]
-    artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+    artifact_path.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
 
 
 def main() -> None:

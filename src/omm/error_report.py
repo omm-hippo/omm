@@ -185,7 +185,7 @@ def log_attempt(outcome: str, detail: str = "") -> None:
     try:
         path = _log_path()
         with locked(path, timeout=30):
-            lines = path.read_text().splitlines() if path.exists() else []
+            lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
             lines.append(json.dumps({
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "outcome": outcome,
@@ -200,7 +200,7 @@ def _read_pending_unlocked(path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        loaded = json.loads(path.read_text())
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     if not isinstance(loaded, list):

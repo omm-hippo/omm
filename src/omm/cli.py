@@ -482,7 +482,7 @@ def _omm_version() -> str:
     even though the commit hash and code have moved on."""
     if package_metadata.install_source() is package_metadata.InstallSource.GIT:
         try:
-            text = (SRC_DIR / "pyproject.toml").read_text()
+            text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
         except OSError:
             text = None
         if text is not None:
@@ -1082,6 +1082,8 @@ def _src_head_commit() -> str | None:
             ["git", "-C", str(SRC_DIR), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -1114,6 +1116,8 @@ def _remote_head_commit(ref: str = "main") -> str | None:
             ["git", "ls-remote", _BARE_REPO_URL, ref],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -1372,7 +1376,15 @@ class _LegacyPipxState:
 
 def _run_pipx_query(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_pipx_child_env(),
+            timeout=timeout,
+        )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="command timed out")
 
@@ -1854,8 +1866,30 @@ def _finalize_legacy_pipx_migration(
     return _cleanup_legacy_pipx_environment(verification)
 
 
+def _pipx_child_env() -> dict[str, str]:
+    """Environment for a piped `pipx` child that makes its output UTF-8.
+
+    pipx is itself a Python program, so with stdout redirected it encodes
+    using the locale code page (cp949 on Korean Windows) unless told
+    otherwise. Setting PYTHONIOENCODING makes the child emit the UTF-8 that
+    `_run_pipx_install` decodes, instead of leaving the two ends to disagree
+    the moment a package name or install path contains a non-ASCII
+    character (a Korean Windows user profile directory is enough)."""
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 def _run_pipx_install(args: list[str], progress: Progress, task_id) -> subprocess.CompletedProcess:
-    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    proc = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_pipx_child_env(),
+    )
     output_lines: list[str] = []
     stage = 0
     for line in proc.stdout:
@@ -1875,7 +1909,7 @@ def _declared_dependency_names() -> list[str] | None:
     """Package names from the freshly-pulled SRC_DIR/pyproject.toml's
     [project] dependencies, or None if the file can't be read/parsed."""
     try:
-        text = (SRC_DIR / "pyproject.toml").read_text()
+        text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
     except OSError:
         return None
     match = re.search(r"dependencies\s*=\s*\[(.*?)\]", text, re.DOTALL)
@@ -1956,6 +1990,8 @@ def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedPr
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
     except subprocess.TimeoutExpired:
@@ -1966,7 +2002,12 @@ def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedPr
         return clone
 
     head = subprocess.run(
-        ["git", "-C", str(tmp_dir), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10
+        ["git", "-C", str(tmp_dir), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
     )
     if head.returncode != 0:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1988,7 +2029,14 @@ def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedPr
 
 def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="git command timed out")
 

@@ -14,7 +14,7 @@ def load_registry() -> dict[str, Any]:
     if not REGISTRY_PATH.exists():
         return {}
     try:
-        data = json.loads(REGISTRY_PATH.read_text())
+        data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         backup_corrupt_file(REGISTRY_PATH)
         return {}

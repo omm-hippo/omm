@@ -72,7 +72,12 @@ def _fail(message: str) -> None:
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(args, capture_output=True, text=True, timeout=30)
+    # Engine CLIs (ollama, lms) write UTF-8 to a pipe on every platform; the
+    # interpreter default would be cp949 on Korean Windows and crash this
+    # script on the first non-ASCII byte in a model name or path.
+    return subprocess.run(
+        args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
+    )
 
 
 def verify_ollama(gguf_path: Path, ollama_tag: str) -> None:
@@ -208,7 +213,7 @@ def _verify_ollama_format_manifest(models_dir: Path, ollama_tag: str, gguf_path:
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / ollama_tag / "latest"
     if not manifest_path.is_file():
         _fail(f"{engine_label} manifest not found at {manifest_path}")
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     expected_sha = sha256_file(gguf_path)
     digests = [
         layer["digest"].removeprefix("sha256:")
@@ -306,7 +311,11 @@ def _ensure_ollama_dir_writable() -> None:
     if not models_dir.exists() or os.access(models_dir, os.W_OK):
         return
     result = subprocess.run(
-        ["sudo", "chmod", "-R", "a+rwX", str(models_dir)], capture_output=True, text=True
+        ["sudo", "chmod", "-R", "a+rwX", str(models_dir)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     print(
         f"sudo chmod -R a+rwX {models_dir}: returncode={result.returncode} "

@@ -1457,7 +1457,12 @@ def write_evidence(report: dict, path: Path) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+        # ensure_ascii=False means this really does emit non-ASCII bytes, so
+        # the locale default (cp949 on Korean Windows) would raise
+        # UnicodeEncodeError on any character outside it rather than mojibake.
+        temporary.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
         temporary.replace(path)
     except OSError as e:
         raise QualityEvaluationError(f"Could not write evidence to {path}: {e}") from e

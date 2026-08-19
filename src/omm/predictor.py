@@ -205,7 +205,7 @@ def load_cached_model() -> dict | None:
     if not RECOMMEND_MODEL_PATH.exists():
         return None
     try:
-        return validate_model_artifact(json.loads(RECOMMEND_MODEL_PATH.read_text()))
+        return validate_model_artifact(json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError, ValueError):
         return None
 

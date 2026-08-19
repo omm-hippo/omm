@@ -187,6 +187,8 @@ def smoke_index_install(
             env=command_env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
         expected_version = f"omm {version}"
@@ -265,6 +267,8 @@ def pipx_smoke(index_url: str, pyproject: Path = PYPROJECT) -> None:
             env=environment,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
         expected_version = f"omm {version}"
