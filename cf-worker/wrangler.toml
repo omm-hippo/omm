@@ -1,0 +1,18 @@
+name = "omm-telemetry-gateway"
+main = "src/index.ts"
+compatibility_date = "2025-01-09"
+
+[vars]
+# Leading hex-zero characters required of the PoW hash. Each extra character
+# roughly 16x's the average solve time - see cf-worker/src/pow.ts.
+POW_DIFFICULTY_PREFIX_LENGTH = "5"
+# Reject requests whose client-supplied timestamp is further than this from
+# the Worker's own clock, in either direction (replay-window control).
+POW_MAX_SKEW_MS = "300000"
+RTDB_DATABASE_URL = "https://localfit-8ab57-default-rtdb.firebaseio.com"
+
+# Set via `npm run secret:firebase-key` (pipes the downloaded service-account
+# JSON file into `wrangler secret put` - never commit that file or paste its
+# contents anywhere). Declared here only as documentation; wrangler secrets
+# are not defined in this file.
+# secrets: FIREBASE_SERVICE_ACCOUNT_JSON
