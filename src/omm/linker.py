@@ -1115,6 +1115,18 @@ def link_ollama(
                 manifest_path.unlink()
                 _update_link_ownership(manifest_path, None)
             atomic_write_text(manifest_path, manifest_json)
+            # atomic_write_text's tempfile.mkstemp() defaults to mode 0600
+            # (owner read/write only), which os.replace() carries straight
+            # through to the final path. Invisible on a single-user desktop
+            # where the writer and Ollama's daemon are the same account, but
+            # under a systemd-managed install (issue #117) the daemon runs
+            # as its own dedicated user - confirmed live in CI, it gets a
+            # flat "permission denied" opening this exact file and the
+            # model never appears in `ollama list`, no matter how long you
+            # wait. Ollama's own writes aren't secret, so match what
+            # `ollama create` itself would leave behind.
+            if platform.system() != "Windows":
+                manifest_path.chmod(0o644)
             try:
                 written_back = json.loads(manifest_path.read_text())
             except (OSError, ValueError) as e:

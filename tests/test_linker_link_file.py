@@ -406,6 +406,27 @@ def test_link_ollama_skips_rehash_when_already_correctly_linked(isolated_omm_hom
     assert manifest.exists()
 
 
+@pytest.mark.skipif(platform.system() == "Windows", reason="POSIX file mode bits only")
+def test_link_ollama_manifest_is_readable_by_other_users(isolated_omm_home, tmp_path, monkeypatch):
+    """atomic_write_text's tempfile.mkstemp() defaults to mode 0600 (owner
+    only), which os.replace() carries through unchanged. Invisible on a
+    single-user desktop where the writer and Ollama's daemon are the same
+    account, but under a systemd-managed install (issue #117) the daemon
+    runs as its own dedicated user - confirmed live in CI: the daemon gets
+    a flat "permission denied" opening this exact file, and the model
+    never shows up in `ollama list` no matter how long you wait."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+
+    linker.link_ollama(source, "model", models_dir=models_dir)
+
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    mode = manifest.stat().st_mode & 0o777
+    assert mode & 0o044 == 0o044, f"manifest mode {oct(mode)} isn't group/other readable"
+
+
 def test_ollama_force_preserves_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
     """Force never turns an unproven manifest into an OMM-owned file."""
     source = tmp_path / "source.gguf"
