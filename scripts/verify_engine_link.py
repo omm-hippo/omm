@@ -100,6 +100,16 @@ def verify_ollama(gguf_path: Path, ollama_tag: str) -> None:
         list_output = result.stdout
         if ollama_tag in list_output:
             break
+        # Diagnostic only: does `ollama show` (a direct per-tag lookup)
+        # see the manifest when `ollama list` (a full-store listing)
+        # doesn't? Tells us whether `list` specifically is cached/lagged
+        # or whether the daemon isn't picking up the direct write at all.
+        show_probe = _run(["ollama", "show", ollama_tag])
+        print(
+            f"attempt {attempt + 1}: not in `ollama list` yet; "
+            f"`ollama show {ollama_tag}` returncode={show_probe.returncode} "
+            f"stderr={show_probe.stderr.strip()!r}"
+        )
         time.sleep(2)
     else:
         _fail(
