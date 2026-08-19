@@ -8,6 +8,7 @@ via `pip install -e ".[dev,server]"`.
 
 | Package | License |
 |---|---|
+| annotated-doc | MIT |
 | annotated-types | MIT |
 | anyio | MIT |
 | certifi | MPL-2.0 (file-level copyleft; does not affect this project's license) |
