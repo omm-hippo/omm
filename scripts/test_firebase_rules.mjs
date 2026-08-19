@@ -827,6 +827,119 @@ for (const [name, changes] of [
   assert.equal(rejected.ok, false, `v9 accepted ${name}`);
 }
 
+// --- v9 host background load (issue #32) ----------------------------------
+//
+// A steady background load depresses every speed sample by about the same
+// amount, so the run stays internally tight and RAM never moves: the two
+// original v9 signals both read healthy. `host_cpu_load_percent` is the
+// evidence, and `loaded` is the label. The field is optional so that clients
+// predating it keep validating unchanged; `loaded` is valid only when the
+// field is present and at least 25, and the precedence
+// pressured > unstable > loaded > clean is enforced in both directions.
+
+const v9Loaded = await request("telemetry", "POST", {
+  ...v9Success,
+  measurement_quality: "loaded",
+  host_cpu_load_percent: 47.5,
+});
+assert.equal(v9Loaded.ok, true, "v9 rejected a consistently labelled loaded measurement");
+
+const v9LoadedAtThreshold = await request("telemetry", "POST", {
+  ...v9Success,
+  measurement_quality: "loaded",
+  host_cpu_load_percent: 25,
+});
+assert.equal(
+  v9LoadedAtThreshold.ok,
+  true,
+  "v9 rejected a loaded measurement exactly at the 25% threshold",
+);
+
+const v9AttestedIdle = await request("telemetry", "POST", {
+  ...v9Success,
+  host_cpu_load_percent: 3.2,
+});
+assert.equal(
+  v9AttestedIdle.ok,
+  true,
+  "v9 rejected a clean measurement carrying a quiet host reading",
+);
+
+// Pressure and dispersion both outrank host load, so a busy reading does not
+// change their labels - it is only recorded alongside them.
+const v9PressuredOnBusyHost = await request("telemetry", "POST", {
+  ...v9Success,
+  measurement_quality: "pressured",
+  memory_pressure_observed: true,
+  host_cpu_load_percent: 80,
+});
+assert.equal(
+  v9PressuredOnBusyHost.ok,
+  true,
+  "v9 rejected a pressured measurement that also saw a busy host",
+);
+
+const v9UnstableOnBusyHost = await request("telemetry", "POST", {
+  ...v9Success,
+  measurement_quality: "unstable",
+  tokens_per_sec_mad_ratio: 0.2,
+  host_cpu_load_percent: 80,
+});
+assert.equal(
+  v9UnstableOnBusyHost.ok,
+  true,
+  "v9 rejected an unstable measurement that also saw a busy host",
+);
+
+for (const [name, changes] of [
+  ["loaded label without a host reading", { measurement_quality: "loaded" }],
+  [
+    "loaded label on a quiet host",
+    { measurement_quality: "loaded", host_cpu_load_percent: 4 },
+  ],
+  [
+    "busy host still labelled clean",
+    { host_cpu_load_percent: 61 },
+  ],
+  [
+    "loaded label outranking dispersion",
+    {
+      measurement_quality: "loaded",
+      tokens_per_sec_mad_ratio: 0.4,
+      host_cpu_load_percent: 61,
+    },
+  ],
+  [
+    "loaded label outranking memory pressure",
+    {
+      measurement_quality: "loaded",
+      memory_pressure_observed: true,
+      host_cpu_load_percent: 61,
+    },
+  ],
+  ["host reading above 100", { host_cpu_load_percent: 140 }],
+  ["negative host reading", { host_cpu_load_percent: -1 }],
+  ["non-numeric host reading", { host_cpu_load_percent: "high" }],
+]) {
+  const rejected = await request("telemetry", "POST", { ...v9Success, ...changes });
+  assert.equal(rejected.ok, false, `v9 accepted ${name}`);
+}
+
+// Regression pin for deployed clients: the three original labels must keep
+// validating with no host reading at all, exactly as they did before.
+for (const [name, changes] of [
+  ["clean", {}],
+  ["pressured", { measurement_quality: "pressured", memory_pressure_observed: true }],
+  ["unstable", { measurement_quality: "unstable", tokens_per_sec_mad_ratio: 0.2 }],
+]) {
+  const accepted = await request("telemetry", "POST", { ...v9Success, ...changes });
+  assert.equal(
+    accepted.ok,
+    true,
+    `v9 rejected an old-shape ${name} row that carries no host reading`,
+  );
+}
+
 const v9FailureRejected = await request("telemetry", "POST", {
   ...v8Transient,
   benchmark_version: 9,

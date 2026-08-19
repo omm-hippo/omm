@@ -42,6 +42,7 @@ from omm.featurize import (  # noqa: E402
     parse_chip_score,
 )
 from omm.atomic import atomic_write_text, locked  # noqa: E402
+from omm.hardware import BUSY_CPU_PERCENT  # noqa: E402
 from scripts.model_quality_gate import (  # noqa: E402
     InsufficientTelemetryError,
     compare_artifacts,
@@ -215,6 +216,7 @@ INTENTIONALLY_EXCLUDED_REASONS = frozenset({
     "transient_error_excluded",
     "pressured_measurement_excluded",
     "unstable_measurement_excluded",
+    "loaded_measurement_excluded",
 })
 
 
@@ -328,20 +330,46 @@ def _extract_features_and_reason(
         )
         quality = row.get("measurement_quality")
         pressure = row.get("memory_pressure_observed")
+        # Optional: rows from clients older than the host-load change carry
+        # no reading, and so are judged by the two original signals alone.
+        raw_host_load = row.get("host_cpu_load_percent")
+        host_load = (
+            None
+            if raw_host_load is None
+            else _direct_bounded_number(raw_host_load, 0.0, 100.0)
+        )
         if (
             row.get("measurement_profile") != "contribute-v1"
             or context_length != 1024
             or num_batch != 128
-            or quality not in ("clean", "pressured", "unstable")
+            or quality not in ("clean", "pressured", "unstable", "loaded")
             or not isinstance(pressure, bool)
             or row.get("memory_estimate_source") not in ("gguf_header", "profile_fallback")
             or row.get("memory_estimate_confidence") not in ("low", "medium", "high")
             or None in (before, minimum, after, mad_ratio, *estimates)
+            or (raw_host_load is not None and host_load is None)
             or minimum > min(before, after)
             or (pressure and quality != "pressured")
             or (not pressure and quality == "pressured")
             or (not pressure and quality == "clean" and mad_ratio > 0.15)
             or (not pressure and quality == "unstable" and mad_ratio <= 0.15)
+            or (quality == "loaded" and host_load is None)
+            # Precedence: pressured > unstable > loaded > clean, matching
+            # database.rules.json and the collector. Only rows carrying a
+            # reading can be checked against it.
+            or (
+                host_load is not None
+                and quality
+                != (
+                    "pressured"
+                    if pressure
+                    else "unstable"
+                    if mad_ratio > 0.15
+                    else "loaded"
+                    if host_load >= BUSY_CPU_PERCENT
+                    else "clean"
+                )
+            )
         ):
             return None, None, "invalid_measurement_metadata"
 
@@ -464,6 +492,18 @@ def _real_row_to_sample(row: dict) -> tuple[tuple[list[float], float] | None, st
                 return None, "pressured_measurement_excluded"
             if quality == "unstable":
                 return None, "unstable_measurement_excluded"
+            # A load-depressed run is internally tight and reads low, so it
+            # would otherwise train the regressor as an honest measurement of
+            # a slower machine (issue #32). Excluded, not invalid - but only
+            # on the strength of a real reading. An intentional exclusion is
+            # waved past the rejection-rate gate, so a row must not be able
+            # to claim one by asserting a label with no evidence behind it.
+            if quality == "loaded":
+                if _direct_bounded_number(
+                    row.get("host_cpu_load_percent"), 0.0, 100.0
+                ) is None:
+                    return None, "invalid_measurement_metadata"
+                return None, "loaded_measurement_excluded"
             if quality != "clean":
                 return None, "invalid_measurement_quality"
     features, tokens_per_sec, reason = _extract_features_and_reason(row, require_speed=True)
