@@ -110,7 +110,7 @@ def _systemd_ollama_models_dir() -> Path | None:
         result = subprocess.run(
             ["systemctl", "show", "ollama.service", "--property=ActiveState,User,Environment"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=3,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -686,7 +686,7 @@ def _lmstudio_server_status(lms_path: str, timeout: float = 5) -> dict | None:
     try:
         result = subprocess.run(
             [lms_path, "server", "status", "--json"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -716,7 +716,7 @@ def _start_lmstudio_server(
     running or `timeout` elapses. Bounded - never waits indefinitely."""
     try:
         subprocess.run(
-            [lms_path, "server", "start"], capture_output=True, text=True, timeout=timeout
+            [lms_path, "server", "start"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -735,7 +735,7 @@ def _stop_lmstudio_server(lms_path: str) -> None:
     module started itself; failures here must never surface as an install
     error."""
     try:
-        subprocess.run([lms_path, "server", "stop"], capture_output=True, text=True, timeout=10)
+        subprocess.run([lms_path, "server", "stop"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         pass
 
@@ -744,7 +744,7 @@ def _lmstudio_list_models(lms_path: str, timeout: float = 15) -> list[dict] | No
     """List models `lms` currently sees on disk. None on any failure."""
     try:
         result = subprocess.run(
-            [lms_path, "ls", "--json"], capture_output=True, text=True, timeout=timeout,
+            [lms_path, "ls", "--json"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -834,7 +834,7 @@ def _lms_unload(lms_path: str, model_key: str) -> None:
     cleanly rather than raising, but this still never propagates a
     failure either way."""
     try:
-        subprocess.run([lms_path, "unload", model_key], capture_output=True, text=True, timeout=15)
+        subprocess.run([lms_path, "unload", model_key], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         pass
 
@@ -1963,7 +1963,7 @@ def _stream_subprocess(
     the process itself couldn't start (caller turns that into a result)."""
     try:
         proc = subprocess.Popen(
-            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace"
         )
     except OSError:
         raise
