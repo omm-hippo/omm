@@ -37,6 +37,7 @@ from filelock import Timeout as FileLockTimeout
 from omm import config
 from omm.atomic import atomic_write_text, locked
 from omm.config import load_config
+from omm import package_metadata
 from omm.telemetry import secure_endpoint
 
 SCHEMA_VERSION = 1
@@ -267,12 +268,8 @@ def catalog_ref(repo_id: str | None, filename: str | None) -> str | None:
 def _client_version() -> str | None:
     """Read the installed version without importing `omm.cli` (which imports
     this module)."""
-    import importlib.metadata
-
     try:
-        return importlib.metadata.version("omm")
-    except importlib.metadata.PackageNotFoundError:
-        return None
+        return package_metadata.version()
     except Exception:
         return None
 

@@ -48,6 +48,7 @@ from omm import (
     linker,
     memory_guard as memory_guard_mod,
     onboarding,
+    package_metadata,
     predictor,
     quality as quality_mod,
     recommend_ui,
@@ -479,20 +480,19 @@ def _omm_version() -> str:
     install` (see _deps_satisfied's docstring), so importlib.metadata would
     keep reporting a stale version after every git-pull-only `omm update`
     even though the commit hash and code have moved on."""
-    try:
-        text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
-    except OSError:
-        text = None
-    if text is not None:
-        match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
-        if match:
-            return match.group(1)
+    if package_metadata.install_source() is package_metadata.InstallSource.GIT:
+        try:
+            text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
+        except OSError:
+            text = None
+        if text is not None:
+            match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+            if match:
+                return match.group(1)
 
-    import importlib.metadata
-
     try:
-        return importlib.metadata.version("omm")
-    except importlib.metadata.PackageNotFoundError:
+        return package_metadata.version()
+    except Exception:
         return "dev"
 
 
@@ -525,11 +525,18 @@ def _telemetry_destination_line() -> str:
 @app.callback(invoke_without_command=True)
 def _root(
     ctx: typer.Context,
+    version_flag: Annotated[
+        bool,
+        typer.Option("--version", help="Show the installed OMM version and exit.", is_eager=True),
+    ] = False,
     json_flag: Annotated[bool, typer.Option("--json", help="Print output as JSON where supported.")] = False,
     yes_flag: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompts. For scripting.")] = False,
     quiet_flag: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress progress bars and background status/hint lines (errors and results still print).")] = False,
     no_color_flag: Annotated[bool, typer.Option("--no-color", help="Disable colored output.")] = False,
 ) -> None:
+    if version_flag:
+        typer.echo(f"omm {_omm_version()}")
+        raise typer.Exit(0)
     opts = ctx.ensure_object(GlobalOptions)
     opts.json = opts.json or json_flag
     opts.yes = opts.yes or yes_flag
@@ -1050,6 +1057,8 @@ SRC_DIR = _PACKAGE_CHECKOUT if (_PACKAGE_CHECKOUT / ".git").exists() else OMM_HO
 def _update_channel() -> str:
     """'stable' or 'beta', from `omm setting version` (config key
     update_channel). Anything else in config falls back to stable."""
+    if package_metadata.install_source() is not package_metadata.InstallSource.GIT:
+        return "stable"
     channel = load_config().get("update_channel")
     return "beta" if channel == "beta" else "stable"
 
@@ -1064,6 +1073,8 @@ def _src_head_commit() -> str | None:
     install has migrated to the git-pull update mechanism. None if not
     migrated yet, or if the clone is missing/corrupted (triggers
     self-healing re-migration in update())."""
+    if package_metadata.install_source() is not package_metadata.InstallSource.GIT:
+        return None
     if not (SRC_DIR / ".git").exists():
         return None
     try:
@@ -1087,18 +1098,14 @@ def _installed_commit() -> str | None:
     editable clone (SRC_DIR) first, then falls back to pip's PEP 610
     direct_url.json vcs_info - present for not-yet-migrated installs that
     still used a plain `pipx install <git-URL>` VCS snapshot."""
-    import importlib.metadata
-
     src_commit = _src_head_commit()
     if src_commit:
         return src_commit
-    try:
-        raw = importlib.metadata.distribution("omm").read_text("direct_url.json")
-    except importlib.metadata.PackageNotFoundError:
+    install_record = package_metadata.direct_url()
+    if not install_record:
         return None
-    if not raw:
-        return None
-    return json.loads(raw).get("vcs_info", {}).get("commit_id")
+    vcs_info = install_record.get("vcs_info", {})
+    return vcs_info.get("commit_id") if isinstance(vcs_info, dict) else None
 
 
 def _remote_head_commit(ref: str = "main") -> str | None:
@@ -1336,10 +1343,527 @@ def import_cmd(
 _PIPX_INSTALL_STAGES = [
     "creating virtual environment",
     "determining package name",
-    "installing omm from spec",
+    "from spec",
     "done!",
     "installed package",
 ]
+_PIPX_COMMAND = "pipx"
+_PIPX_CURRENT_ENV = package_metadata.DISTRIBUTION_NAME
+_PIPX_LEGACY_ENV = "omm"
+_PIPX_EXPECTED_APPS = {"omm", "localfit-server"}
+
+
+@dataclass(frozen=True)
+class _PipxInstallVerification:
+    local_venvs: Path
+    bin_dir: Path
+    snapshot: dict
+    internal_omm: Path
+    exposed_omm: Path
+    expected_version: str
+
+
+@dataclass(frozen=True)
+class _LegacyPipxState:
+    local_venvs: Path
+    bin_dir: Path
+    snapshot: dict
+    internal_omm: Path
+    exposed_omm: Path
+    owned_apps: tuple[tuple[Path, Path], ...] = ()
+    expected_version: str = ""
+
+
+def _run_pipx_query(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_pipx_child_env(),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="command timed out")
+
+
+def _pipx_snapshot_path(value: object) -> Path | None:
+    if isinstance(value, str):
+        return Path(value)
+    if isinstance(value, dict) and value.get("__type__") == "Path":
+        raw_path = value.get("__Path__")
+        return Path(raw_path) if isinstance(raw_path, str) else None
+    return None
+
+
+def _pipx_owned_app_paths(apps: list[str], app_paths: list[Path]) -> dict[str, Path] | None:
+    """Match pipx app paths by filename, never by list ordering."""
+
+    matched: dict[str, Path] = {}
+    for app in apps:
+        expected_names = {app.casefold(), f"{app}.exe".casefold()}
+        candidates = [path for path in app_paths if path.name.casefold() in expected_names]
+        if len(candidates) != 1:
+            return None
+        matched[app] = candidates[0]
+    return matched
+
+
+def _pipx_app_exposure_matches(internal_app: Path, exposed_app: Path) -> bool:
+    if not internal_app.is_file() or not exposed_app.is_file():
+        return False
+    if platform.system() == "Windows":
+        try:
+            return sha256_file(internal_app) == sha256_file(exposed_app)
+        except OSError:
+            return False
+    try:
+        return os.path.samefile(internal_app, exposed_app)
+    except OSError:
+        return False
+
+
+def _pipx_environment_value(name: str) -> tuple[Path | None, str | None]:
+    result = _run_pipx_query([_PIPX_COMMAND, "environment", "--value", name])
+    if result.returncode != 0 or not result.stdout.strip():
+        detail = result.stderr.strip() or f"pipx returned no value for {name}"
+        return None, detail
+    return Path(result.stdout.strip()).expanduser(), None
+
+
+def _pipx_metadata(snapshot: dict, environment: str) -> dict | None:
+    venvs = snapshot.get("venvs")
+    if not isinstance(venvs, dict):
+        return None
+    metadata = venvs.get(environment)
+    if not isinstance(metadata, dict):
+        return None
+    if isinstance(metadata.get("metadata"), dict):
+        metadata = metadata["metadata"]
+    return metadata
+
+
+def _pipx_snapshot() -> tuple[dict | None, str | None]:
+    listed = _run_pipx_query([_PIPX_COMMAND, "list", "--json"])
+    if listed.returncode != 0:
+        return None, listed.stderr.strip() or "pipx list --json failed"
+    try:
+        snapshot = json.loads(listed.stdout)
+    except (TypeError, ValueError):
+        return None, "pipx list --json returned invalid JSON"
+    if (
+        not isinstance(snapshot, dict)
+        or not isinstance(snapshot.get("pipx_spec_version"), str)
+        or not isinstance(snapshot.get("venvs"), dict)
+    ):
+        return None, "pipx list --json did not contain a versioned venvs map"
+    return snapshot, None
+
+
+def _verify_pipx_installation() -> tuple[_PipxInstallVerification | None, str | None]:
+    """Verify pipx metadata, internal app, exposed app, and exact version."""
+
+    local_venvs, error = _pipx_environment_value("PIPX_LOCAL_VENVS")
+    if error:
+        return None, error
+    bin_dir, error = _pipx_environment_value("PIPX_BIN_DIR")
+    if error:
+        return None, error
+    assert local_venvs is not None and bin_dir is not None
+
+    snapshot, error = _pipx_snapshot()
+    if error:
+        return None, error
+    assert snapshot is not None
+    metadata = _pipx_metadata(snapshot, _PIPX_CURRENT_ENV)
+    if metadata is None:
+        return None, f"pipx environment {_PIPX_CURRENT_ENV!r} was not found"
+    # pipx metadata 0.5 (used by pipx 1.11.1) has no `environment` field;
+    # newer metadata may include it, in which case it must match exactly.
+    if metadata.get("environment") not in (None, _PIPX_CURRENT_ENV):
+        return None, "pipx environment metadata did not identify omm-model exactly"
+    main_package = metadata.get("main_package")
+    if not isinstance(main_package, dict):
+        return None, "pipx omm-model environment has no main_package metadata"
+    if main_package.get("package") != package_metadata.DISTRIBUTION_NAME:
+        return None, "pipx omm-model environment contains the wrong main package"
+
+    expected_version = _omm_version()
+    if main_package.get("package_version") != expected_version:
+        return None, "pipx omm-model environment contains the wrong package version"
+    apps = main_package.get("apps")
+    app_paths = main_package.get("app_paths")
+    if not isinstance(apps, list) or set(apps) != _PIPX_EXPECTED_APPS:
+        return None, "pipx omm-model environment exposes an unexpected app set"
+    if not isinstance(app_paths, list) or len(app_paths) != len(apps):
+        return None, "pipx omm-model app paths do not match its app list"
+    decoded_paths = [_pipx_snapshot_path(value) for value in app_paths]
+    if any(path is None for path in decoded_paths):
+        return None, "pipx omm-model app metadata contains an invalid path"
+    valid_paths = [path for path in decoded_paths if path is not None]
+    internal_by_name = _pipx_owned_app_paths(apps, valid_paths)
+    if internal_by_name is None:
+        return None, "pipx omm-model app paths do not identify each app exactly"
+    expected_venv = (local_venvs / _PIPX_CURRENT_ENV).resolve()
+    for app, internal_app in internal_by_name.items():
+        try:
+            internal_app.resolve().relative_to(expected_venv)
+        except (OSError, ValueError):
+            return None, f"pipx internal {app} executable is outside the omm-model environment"
+        exposed_app = bin_dir / (
+            f"{app}.exe" if platform.system() == "Windows" else app
+        )
+        if not _pipx_app_exposure_matches(internal_app, exposed_app):
+            return None, f"the exposed {app} command does not match the omm-model executable"
+
+    internal_omm = internal_by_name["omm"]
+    exposed_omm = bin_dir / ("omm.exe" if platform.system() == "Windows" else "omm")
+
+    expected_output = f"omm {expected_version}"
+    for executable, label in ((internal_omm, "internal"), (exposed_omm, "exposed")):
+        version_result = _run_pipx_query([str(executable), "--version"])
+        if version_result.returncode != 0 or version_result.stdout.strip() != expected_output:
+            return None, f"pipx {label} omm executable failed exact version verification"
+
+    return (
+        _PipxInstallVerification(
+            local_venvs=local_venvs,
+            bin_dir=bin_dir,
+            snapshot=snapshot,
+            internal_omm=internal_omm,
+            exposed_omm=exposed_omm,
+            expected_version=expected_version,
+        ),
+        None,
+    )
+
+
+def _capture_legacy_pipx_state() -> tuple[_LegacyPipxState | None, str | None]:
+    local_venvs, error = _pipx_environment_value("PIPX_LOCAL_VENVS")
+    if error:
+        return None, error
+    bin_dir, error = _pipx_environment_value("PIPX_BIN_DIR")
+    if error:
+        return None, error
+    assert local_venvs is not None and bin_dir is not None
+    expected_legacy_venv = (local_venvs / _PIPX_LEGACY_ENV).resolve()
+    try:
+        running_venv = Path(sys.prefix).resolve()
+    except OSError:
+        return None, "the running Python environment could not be resolved"
+    if running_venv != expected_legacy_venv:
+        return None, "the running process is not inside the legacy pipx omm environment"
+    snapshot, error = _pipx_snapshot()
+    if error:
+        return None, error
+    assert snapshot is not None
+    metadata = _pipx_metadata(snapshot, _PIPX_LEGACY_ENV)
+    if metadata is None or metadata.get("environment") not in (None, _PIPX_LEGACY_ENV):
+        return None, "the running legacy pipx environment was not identified exactly"
+    main_package = metadata.get("main_package")
+    if not isinstance(main_package, dict) or main_package.get("package") != _PIPX_LEGACY_ENV:
+        return None, "the legacy pipx environment contains the wrong main package"
+    legacy_version = main_package.get("package_version")
+    if not isinstance(legacy_version, str) or not legacy_version:
+        return None, "the legacy pipx environment has no exact package version"
+    apps = main_package.get("apps")
+    app_paths = main_package.get("app_paths")
+    if not isinstance(apps, list) or set(apps) != _PIPX_EXPECTED_APPS:
+        return None, "the legacy pipx environment exposes an unexpected app set"
+    if not isinstance(app_paths, list) or len(app_paths) != len(apps):
+        return None, "the legacy pipx environment has invalid app paths"
+    decoded_paths = [_pipx_snapshot_path(value) for value in app_paths]
+    if any(path is None for path in decoded_paths):
+        return None, "the legacy pipx environment has an undecodable app path"
+    valid_paths = [path for path in decoded_paths if path is not None]
+    internal_by_name = _pipx_owned_app_paths(apps, valid_paths)
+    if internal_by_name is None:
+        return None, "the legacy pipx app paths do not identify each app exactly"
+    for app, internal_app in internal_by_name.items():
+        try:
+            internal_app.resolve().relative_to(expected_legacy_venv)
+        except (OSError, ValueError):
+            return None, f"the legacy internal {app} executable is outside its environment"
+    internal_omm = internal_by_name["omm"]
+    executable_name = "omm.exe" if platform.system() == "Windows" else "omm"
+    exposed_omm = bin_dir / executable_name
+    owned_apps = tuple(
+        (
+            internal_by_name[app],
+            bin_dir / (f"{app}.exe" if platform.system() == "Windows" else app),
+        )
+        for app in sorted(_PIPX_EXPECTED_APPS)
+    )
+    state = _LegacyPipxState(
+        local_venvs=local_venvs,
+        bin_dir=bin_dir,
+        snapshot=snapshot,
+        internal_omm=internal_omm,
+        exposed_omm=exposed_omm,
+        owned_apps=owned_apps,
+        expected_version=legacy_version,
+    )
+    verified, error = _verify_legacy_pipx_execution(state)
+    return (state, None) if verified else (None, error)
+
+
+def _verify_legacy_pipx_execution(state: _LegacyPipxState) -> tuple[bool, str | None]:
+    snapshot, error = _pipx_snapshot()
+    if error:
+        return False, error
+    assert snapshot is not None
+    metadata = _pipx_metadata(snapshot, _PIPX_LEGACY_ENV)
+    if metadata is None or metadata.get("environment") not in (None, _PIPX_LEGACY_ENV):
+        return False, "legacy pipx metadata is missing"
+    main_package = metadata.get("main_package")
+    if not isinstance(main_package, dict) or main_package.get("package") != _PIPX_LEGACY_ENV:
+        return False, "legacy pipx main package identity changed"
+    expected_version = state.expected_version or _omm_version()
+    if main_package.get("package_version") != expected_version:
+        return False, "legacy pipx package version changed"
+    apps = main_package.get("apps")
+    app_paths = main_package.get("app_paths")
+    if not isinstance(apps, list) or set(apps) != _PIPX_EXPECTED_APPS:
+        return False, "legacy pipx app set changed"
+    if not isinstance(app_paths, list) or len(app_paths) != len(apps):
+        return False, "legacy pipx app path metadata changed"
+    decoded_paths = [_pipx_snapshot_path(value) for value in app_paths]
+    if any(path is None for path in decoded_paths):
+        return False, "legacy pipx app path metadata became invalid"
+    valid_paths = [path for path in decoded_paths if path is not None]
+    current_internal_by_name = _pipx_owned_app_paths(apps, valid_paths)
+    if current_internal_by_name is None:
+        return False, "legacy pipx app paths no longer identify each app exactly"
+    owned_apps = state.owned_apps or ((state.internal_omm, state.exposed_omm),)
+    captured_internal_by_name = _pipx_owned_app_paths(
+        sorted(_PIPX_EXPECTED_APPS), [internal for internal, _ in owned_apps]
+    )
+    if captured_internal_by_name is None:
+        return False, "captured legacy app paths are ambiguous"
+    expected_legacy_venv = (state.local_venvs / _PIPX_LEGACY_ENV).resolve()
+    for app, current_internal in current_internal_by_name.items():
+        captured_internal = captured_internal_by_name[app]
+        try:
+            current_internal.resolve().relative_to(expected_legacy_venv)
+        except (OSError, ValueError):
+            return False, f"legacy app {app} moved outside its environment"
+        if current_internal.absolute() != captured_internal.absolute():
+            return False, f"legacy app {app} internal path changed"
+    for internal_app, exposed_app in owned_apps:
+        if not _pipx_app_exposure_matches(internal_app, exposed_app):
+            return False, f"legacy app {internal_app.name} has the wrong exposed identity"
+    expected_output = f"omm {expected_version}"
+    for executable in (state.internal_omm, state.exposed_omm):
+        result = _run_pipx_query([str(executable), "--version"])
+        if result.returncode != 0 or result.stdout.strip() != expected_output:
+            return False, "legacy omm failed exact version verification"
+    return True, None
+
+
+def _restore_legacy_pipx_exposure(state: _LegacyPipxState) -> tuple[bool, str | None]:
+    owned_apps = state.owned_apps or ((state.internal_omm, state.exposed_omm),)
+    for internal_app, exposed_app in owned_apps:
+        temporary = exposed_app.with_name(
+            f".{exposed_app.name}.omm-rollback-{os.getpid()}"
+        )
+        try:
+            temporary.unlink(missing_ok=True)
+            if platform.system() == "Windows":
+                shutil.copy2(internal_app, temporary)
+            else:
+                temporary.symlink_to(internal_app)
+            os.replace(temporary, exposed_app)
+        except OSError as error:
+            temporary.unlink(missing_ok=True)
+            return False, f"{exposed_app}: {error}"
+    return True, None
+
+
+def _legacy_rollback_instructions(state: _LegacyPipxState) -> str:
+    owned_apps = state.owned_apps or ((state.internal_omm, state.exposed_omm),)
+    if platform.system() == "Windows":
+        restore_commands = [
+            f'copy /Y "{internal}" "{exposed}"' for internal, exposed in owned_apps
+        ]
+    else:
+        restore_commands = [
+            f'ln -sf "{internal}" "{exposed}"' for internal, exposed in owned_apps
+        ]
+    return "\n".join(["pipx uninstall omm-model", *restore_commands])
+
+
+def _rollback_legacy_pipx_migration(
+    state: _LegacyPipxState,
+    reason: str,
+) -> subprocess.CompletedProcess:
+    """Best-effort rollback after any unverified new-environment result."""
+
+    rollback_details: list[str] = []
+    snapshot, snapshot_error = _pipx_snapshot()
+    if snapshot is None:
+        rollback_details.append(snapshot_error or "could not read pipx metadata")
+    else:
+        new_metadata = _pipx_metadata(snapshot, _PIPX_CURRENT_ENV)
+        if new_metadata is not None:
+            main_package = new_metadata.get("main_package")
+            safe_new_environment = (
+                new_metadata.get("environment") in (None, _PIPX_CURRENT_ENV)
+                and isinstance(main_package, dict)
+                and main_package.get("package") == package_metadata.DISTRIBUTION_NAME
+            )
+            if safe_new_environment:
+                uninstall = _run_pipx_query(
+                    [_PIPX_COMMAND, "uninstall", _PIPX_CURRENT_ENV]
+                )
+                if uninstall.returncode != 0:
+                    rollback_details.append(
+                        uninstall.stderr.strip() or "pipx uninstall omm-model failed"
+                    )
+            else:
+                rollback_details.append("refused to remove an unverified omm-model environment")
+
+    restored, restore_error = _restore_legacy_pipx_exposure(state)
+    if not restored:
+        rollback_details.append(restore_error or "legacy exposure restore failed")
+    legacy_ok, legacy_error = _verify_legacy_pipx_execution(state) if restored else (False, None)
+    if not legacy_ok:
+        rollback_details.append(legacy_error or "legacy execution verification failed")
+
+    instructions = _legacy_rollback_instructions(state)
+    if legacy_ok:
+        detail = "; ".join(rollback_details)
+        suffix = f" Remaining cleanup: {detail}." if detail else ""
+        message = (
+            f"{reason}\nThe legacy omm command was restored and verified.{suffix}\n"
+            f"Retry later. If needed, run:\n{instructions}"
+        )
+    else:
+        detail = "; ".join(rollback_details) or "unknown rollback failure"
+        message = (
+            f"{reason}\nAutomatic rollback could not be verified ({detail}). Run:\n"
+            f"{instructions}"
+        )
+    return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
+
+
+def _legacy_pipx_environment_is_current(verification: _PipxInstallVerification) -> bool:
+    metadata = _pipx_metadata(verification.snapshot, _PIPX_LEGACY_ENV)
+    if metadata is None:
+        return False
+    main_package = metadata.get("main_package")
+    if (
+        metadata.get("environment") not in (None, _PIPX_LEGACY_ENV)
+        or not isinstance(main_package, dict)
+        or main_package.get("package") != _PIPX_LEGACY_ENV
+        or "omm" not in main_package.get("apps", [])
+    ):
+        return False
+    try:
+        return Path(sys.prefix).resolve() == (
+            verification.local_venvs / _PIPX_LEGACY_ENV
+        ).resolve()
+    except OSError:
+        return False
+
+
+def _warn_legacy_pipx_cleanup(detail: str) -> None:
+    err_console.print(
+        "[warning]The new omm-model pipx environment is verified, but the legacy "
+        f"omm environment was kept ({escape(detail)}).[/warning]\n"
+        "Close other OMM terminals, then run: pipx uninstall omm"
+    )
+
+
+def _cleanup_legacy_pipx_environment(
+    verification: _PipxInstallVerification,
+) -> subprocess.CompletedProcess:
+    """Remove only the verified currently-running legacy environment.
+
+    Cleanup failure is non-fatal because the new environment and exposed app
+    were already verified. On Windows in particular, the current legacy venv
+    may remain locked until this process exits.
+    """
+
+    if not _legacy_pipx_environment_is_current(verification):
+        _warn_legacy_pipx_cleanup("it could not be identified safely")
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    uninstall = _run_pipx_query([_PIPX_COMMAND, "uninstall", _PIPX_LEGACY_ENV])
+    if uninstall.returncode != 0:
+        ensured = _ensure_new_pipx_installation_after_cleanup(legacy_removed=False)
+        if ensured.returncode != 0:
+            return ensured
+        _warn_legacy_pipx_cleanup(uninstall.stderr.strip() or "pipx uninstall failed")
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    # pipx 1.11.1 has no `expose` command. First check whether uninstall
+    # preserved the new app link; only reinstall the already-verified editable
+    # spec when repair is actually needed.
+    return _ensure_new_pipx_installation_after_cleanup(legacy_removed=True)
+
+
+def _ensure_new_pipx_installation_after_cleanup(
+    *, legacy_removed: bool,
+) -> subprocess.CompletedProcess:
+    reverified, error = _verify_pipx_installation()
+    if reverified is not None:
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    repair = _run_pipx_install_with_progress(
+        [_PIPX_COMMAND, "install", "--force", "--editable", _install_spec()]
+    )
+    if repair.returncode != 0:
+        context = (
+            "Legacy pipx environment was removed"
+            if legacy_removed
+            else "Legacy pipx uninstall failed and may have changed shared app links"
+        )
+        return subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr=(
+                f"{context}, and the omm-model app link repair "
+                f"failed after verification reported {error}. Run: pipx install --force "
+                f"--editable {_install_spec()}\n{repair.stderr}"
+            ),
+        )
+    reverified, error = _verify_pipx_installation()
+    if reverified is None:
+        context = (
+            "Legacy pipx environment was removed"
+            if legacy_removed
+            else "Legacy pipx uninstall failed and may have changed shared app links"
+        )
+        return subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr=(
+                f"{context}, and omm-model failed final "
+                f"verification ({error}). Run: pipx install --force --editable "
+                f"{_install_spec()}"
+            ),
+        )
+    return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+
+def _finalize_legacy_pipx_migration(
+    install_result: subprocess.CompletedProcess,
+    legacy_state: _LegacyPipxState,
+) -> subprocess.CompletedProcess:
+    if install_result.returncode != 0:
+        reason = install_result.stderr.strip() or "pipx install failed"
+        return _rollback_legacy_pipx_migration(legacy_state, reason)
+    verification, error = _verify_pipx_installation()
+    if verification is None:
+        return _rollback_legacy_pipx_migration(
+            legacy_state,
+            "pipx reported a successful legacy migration, but the new omm-model "
+            f"environment failed verification ({error}).",
+        )
+    return _cleanup_legacy_pipx_environment(verification)
 
 
 def _pipx_child_env() -> dict[str, str]:
@@ -1574,17 +2098,54 @@ def _git_update_src(branch: str = "main") -> subprocess.CompletedProcess:
 def _perform_update(branch: str) -> subprocess.CompletedProcess:
     """Shared by `omm update` and `omm setting version` (channel switch):
     migrate-or-pull SRC_DIR onto `branch`, reinstalling via pipx only if
-    dependencies changed."""
+    dependencies changed or the editable environment still carries OMM's
+    validated legacy distribution name."""
+    source = package_metadata.install_source()
+    if source is not package_metadata.InstallSource.GIT:
+        return subprocess.CompletedProcess(
+            [], 1, stdout="", stderr=_package_managed_update_guidance(source)
+        )
+
+    found = package_metadata.find_distribution()
+    legacy_distribution = found is not None and found[0] != package_metadata.DISTRIBUTION_NAME
+    legacy_state = None
+    if legacy_distribution:
+        legacy_state, error = _capture_legacy_pipx_state()
+        if legacy_state is None:
+            return subprocess.CompletedProcess(
+                [],
+                1,
+                stdout="",
+                stderr=(
+                    "Refusing to migrate the legacy pipx environment because its rollback "
+                    f"state could not be verified ({error})."
+                ),
+            )
+
     migrated = _src_head_commit() is not None
     try:
         if not migrated:
-            return _migrate_to_editable_install(branch)
+            result = _migrate_to_editable_install(branch)
+            return (
+                _finalize_legacy_pipx_migration(result, legacy_state)
+                if legacy_state is not None
+                else result
+            )
         console.print(f"Updating omm from {REPO_URL} ({branch}) ...")
         result = _git_update_src(branch)
-        if result.returncode == 0 and not _deps_satisfied():
-            result = _run_pipx_install_with_progress(
-                ["pipx", "install", "--force", "--editable", _install_spec()]
-            )
+        if result.returncode == 0:
+            dependencies_satisfied = _deps_satisfied()
+            if legacy_distribution or not dependencies_satisfied:
+                # With the renamed distribution, pipx derives a new
+                # `omm-model` environment from this spec. `--force` lets the
+                # successfully-created environment take over the shared
+                # `omm` app link; if installation fails, the non-zero result
+                # is propagated and data refresh is skipped by the caller.
+                result = _run_pipx_install_with_progress(
+                    [_PIPX_COMMAND, "install", "--force", "--editable", _install_spec()]
+                )
+                if legacy_state is not None:
+                    result = _finalize_legacy_pipx_migration(result, legacy_state)
         return result
     except FileNotFoundError:
         err_console.print(
@@ -1595,6 +2156,43 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
     except OSError as e:
         err_console.print(f"[error]Update failed: {e}[/error]")
         raise typer.Exit(1) from e
+
+
+def _package_managed_update_guidance(
+    source: package_metadata.InstallSource,
+    attempted_command: str = "omm update",
+) -> str:
+    """Explain how to update without changing the installation mechanism."""
+
+    instructions = {
+        package_metadata.InstallSource.PIPX: (
+            "This OMM installation is managed by pipx.\n"
+            "Update it with: pipx upgrade omm-model"
+        ),
+        package_metadata.InstallSource.PYPI: (
+            "This OMM installation is managed as a Python package.\n"
+            "Update it with: python -m pip install --upgrade omm-model"
+        ),
+        package_metadata.InstallSource.HOMEBREW: (
+            "This OMM installation is managed by Homebrew.\n"
+            "Update it with: brew upgrade omm-hippo/omm/omm\n"
+            "If the tap is already installed, `brew upgrade omm` also works."
+        ),
+        package_metadata.InstallSource.WINGET: (
+            "This OMM installation is managed by winget.\n"
+            "Update it with: winget upgrade --id OmmHippo.OMM -e"
+        ),
+        package_metadata.InstallSource.UNKNOWN: (
+            "This OMM installation is not a canonical OMM Git source checkout.\n"
+            "Update it with the same package manager that installed it."
+        ),
+    }
+    detail = instructions.get(source, instructions[package_metadata.InstallSource.UNKNOWN])
+    return (
+        f"{detail}\n"
+        f"`{attempted_command}` left the installation unchanged instead of replacing it "
+        "with an editable Git checkout."
+    )
 
 
 @app.command()
@@ -4645,6 +5243,26 @@ def configure_version(
         raise typer.Exit(1)
     requested = "beta" if beta else ("stable" if stable else None)
     current = load_config()
+    source = package_metadata.install_source()
+    if source is not package_metadata.InstallSource.GIT:
+        if requested == "beta":
+            err_console.print(
+                "[error]The beta channel requires a Git source installation. "
+                "This package-managed installation was left unchanged.[/error]\n"
+                f"{_package_managed_update_guidance(source, 'omm setting version --beta')}"
+            )
+            raise typer.Exit(1)
+        if requested == "stable" and current.get("update_channel") == "beta":
+            current = config_mod.update_config(update_channel="stable")
+            console.print("[success]Using stable package-managed releases.[/success]")
+        commit = _installed_commit()
+        table = Table(title="Update channel", show_header=False)
+        table.add_column("Field", style="accent")
+        table.add_column("Value")
+        table.add_row("Channel", "stable (package-managed)")
+        table.add_row("Commit", commit[:7] if commit else "unknown")
+        console.print(table)
+        return
     if requested and requested != (current.get("update_channel") or "stable"):
         branch = _channel_branch(requested)
         result = _perform_update(branch)

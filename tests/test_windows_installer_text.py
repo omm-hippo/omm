@@ -129,7 +129,7 @@ def test_installers_pin_pipx_to_validated_python_and_use_versioned_staging():
     sh = (ROOT / "install.sh").read_text(encoding="utf-8")
 
     assert 'Invoke-Python -m pipx @args' in ps1
-    assert '--python $PythonExecutable $InstallSpec' in ps1
+    assert '$installArguments = @("install", "--force", "--editable", "--python", $PythonExecutable, $InstallSpec)' in ps1
     assert '--source winget' in ps1
     assert 'checkout-' in ps1 and '$SourcesDir' in ps1
 
@@ -143,10 +143,70 @@ def test_uninstallers_exist_and_preserve_models_without_purge():
     ps1 = (ROOT / "uninstall.ps1").read_text(encoding="utf-8")
     sh = (ROOT / "uninstall.sh").read_text(encoding="utf-8")
 
-    assert "pipx uninstall omm" in ps1
-    assert "pipx uninstall omm" in sh
+    for script in (ps1, sh):
+        assert "omm-model" in script
+        assert "omm" in script
+        assert "list --json" in script
+        assert "PIPX_LOCAL_VENVS" in script
     assert "if ($Purge)" in ps1
     assert 'if [ "$PURGE" = "1" ]' in sh
+
+
+def test_installers_verify_new_environment_before_removing_verified_legacy():
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert '$PipxEnvironment = "omm-model"' in ps1
+    assert '$LegacyPipxEnvironment = "omm"' in ps1
+    assert 'Removing verified legacy pipx environment: $LegacyPipxEnvironment' in ps1
+    assert ps1.index("if (-not (Test-InstalledOmmModel))") < ps1.index(
+        'Removing verified legacy pipx environment: $LegacyPipxEnvironment'
+    )
+    assert 'Invoke-PipxStatus -Arguments @("uninstall", $LegacyPipxEnvironment)' in ps1
+
+    assert 'PIPX_ENV="omm-model"' in sh
+    assert 'LEGACY_PIPX_ENV="omm"' in sh
+    assert "run_pipx install --force --editable" in sh
+    assert 'Removing verified legacy pipx environment: $LEGACY_PIPX_ENV' in sh
+    assert 'run_pipx uninstall "$LEGACY_PIPX_ENV"' in sh
+    assert sh.index("if ! verify_installed_omm_model; then") < sh.index(
+        'Removing verified legacy pipx environment: $LEGACY_PIPX_ENV'
+    )
+
+
+def test_uninstallers_check_actual_pipx_environments_before_removal():
+    ps1 = (ROOT / "uninstall.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "uninstall.sh").read_text(encoding="utf-8")
+
+    assert 'Invoke-Pipx list --json' in ps1
+    assert 'Test-PipxSnapshotIdentity' in ps1
+    assert '$null -ne $metadata.environment' in ps1
+    assert 'main.package -cne $Distribution' in ps1
+    assert 'main.suffix -cne ""' in ps1
+    assert '"omm.cli:main"' in ps1
+
+    assert 'run_pipx list --json' in sh
+    assert 'pipx_snapshot_environment_is' in sh
+    assert 'metadata.get("environment") in (None, name)' in sh
+    assert 'main.get("package") == distribution' in sh
+    assert 'main.get("suffix") == ""' in sh
+    assert 'entry_points[0].value != "omm.cli:main"' in sh
+
+
+def test_installers_reject_ambiguous_legacy_sources_and_verify_exact_app():
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    for script in (ps1, sh):
+        assert 'host == "github.com"' in script
+        assert 'normalized_path in {' in script
+        assert 're.fullmatch(r"[0-9a-fA-F]{40}"' in script
+        assert '"remote", "get-url", "origin"' in script
+        assert "is_relative_to" not in script
+    assert '[ "$PIPX_BIN_DIR/omm" -ef "$PIPX_LOCAL_VENVS/$PIPX_ENV/bin/omm" ]' in sh
+    assert '[ "$version_output" = "omm $EXPECTED_VERSION" ]' in sh
+    assert 'Get-FileHash -LiteralPath $ommApp -Algorithm SHA256' in ps1
+    assert '-ceq "omm $ExpectedVersion"' in ps1
 
 
 def test_uninstallers_require_managed_custom_home_and_never_delete_the_container_recursively():
@@ -176,3 +236,12 @@ def test_installers_create_custom_home_ownership_marker():
 
     assert 'Join-Path $OmmHome ".omm-managed"' in ps1
     assert '"$OMM_HOME/.omm-managed"' in sh
+
+
+def test_powershell_verifiers_use_stdin_instead_of_multiline_dash_c():
+    installer = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    uninstaller = (ROOT / "uninstall.ps1").read_text(encoding="utf-8")
+
+    for script in (installer, uninstaller):
+        assert "$OmmEnvironmentVerifier | & $environmentPython -" in script
+        assert "-c $OmmEnvironmentVerifier" not in script

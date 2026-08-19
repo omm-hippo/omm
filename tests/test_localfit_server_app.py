@@ -1,8 +1,20 @@
-"""Tests for localfit_server.app models."""
+"""Tests for the localfit_server package."""
+
+import sys
 
 import pytest
 
 from localfit_server.app import BenchmarkEvent
+from localfit_server import __main__ as server_main
+
+
+def test_server_missing_extra_names_the_published_distribution(monkeypatch):
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        server_main.main()
+
+    assert "pip install 'omm-model[server]'" in str(exc_info.value)
 
 
 def test_benchmark_event_accepts_v8_chip_score_fields():

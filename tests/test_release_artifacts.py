@@ -88,8 +88,8 @@ def test_checksum_manifest_rejects_unexpected_entries(tmp_path):
         release_artifacts.validate_checksums(tmp_path)
 
 
-def test_release_workflow_builds_and_smoke_installs_without_publishing():
-    workflow_path = ROOT / ".github" / "workflows" / "release-artifacts.yml"
+def test_release_workflow_builds_smoke_installs_and_gates_publishing():
+    workflow_path = ROOT / ".github" / "workflows" / "release.yml"
     if not workflow_path.is_file():
         pytest.skip("GitHub workflow files are excluded from the Docker build context")
     workflow = workflow_path.read_text(encoding="utf-8")
@@ -101,8 +101,21 @@ def test_release_workflow_builds_and_smoke_installs_without_publishing():
     assert "scripts/release_artifacts.py smoke-install" in workflow
     assert "ubuntu-latest, macos-latest, windows-latest" in workflow
     assert 'python: ["3.10", "3.14"]' in workflow
-    assert "pypi" not in workflow.lower()
-    assert "gh release create" not in workflow
+    assert re.search(r"(?m)^  release-tests:\n(?:    .*\n)*?    needs: smoke-install$", workflow)
+    assert "pypa/gh-action-pypi-publish@dc37677" in workflow
+    assert "environment:\n      name: testpypi" in workflow
+    assert "environment:\n      name: pypi" in workflow
+    assert workflow.count("id-token: write") == 2
+    assert workflow.count(
+        "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+    ) == 3
+    assert "needs: [smoke-install, release-tests]" in workflow
+    assert "needs: publish-testpypi" in workflow
+    assert "needs: verify-testpypi" in workflow
+    assert "needs: publish-pypi" in workflow
+    assert "needs: verify-pypi-files" in workflow
+    assert "python-release-packages" in workflow
+    assert "python-release-dist" in workflow
     assert "persist-credentials: false" in workflow
     assert "cache: pip" not in workflow
     assert not re.search(r"uses:\s+[^\s#]+@v\d", workflow)

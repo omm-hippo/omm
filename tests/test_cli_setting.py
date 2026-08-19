@@ -1,11 +1,23 @@
 import subprocess
 
+import pytest
 import questionary
 from typer.testing import CliRunner
 
 from omm import catalog, cli, config
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _canonical_git_install(monkeypatch):
+    """Keep Git-channel tests independent of whether .git is in the test image."""
+
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
 
 
 def test_setting_catalog_trust_saves_verified_public_key(isolated_omm_home, monkeypatch):
@@ -105,6 +117,68 @@ def test_setting_version_switch_to_beta_runs_perform_update_and_saves_config(iso
     assert calls == ["beta"]
     assert config.load_config()["update_channel"] == "beta"
     assert "beta" in result.stdout.lower()
+
+
+def test_setting_version_beta_refuses_package_managed_install_without_migrating(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.WINGET,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda branch: (_ for _ in ()).throw(AssertionError("must not migrate")),
+    )
+
+    result = runner.invoke(cli.app, ["setting", "version", "--beta"])
+
+    assert result.exit_code == 1
+    assert "beta channel requires a git source installation" in result.stderr.lower()
+    assert "winget upgrade --id OmmHippo.OMM -e" in result.stderr
+    assert "`omm setting version --beta` left the installation unchanged" in result.stderr
+    assert config.load_config().get("update_channel", "stable") == "stable"
+
+
+def test_setting_version_package_managed_ignores_saved_beta_on_read(
+    isolated_omm_home, monkeypatch
+):
+    config.update_config(update_channel="beta")
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.PIPX,
+    )
+
+    result = runner.invoke(cli.app, ["setting", "version"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "stable (package-managed)" in result.stdout
+    assert "beta (beta)" not in result.stdout
+
+
+def test_setting_version_stable_normalizes_package_managed_beta_without_git_update(
+    isolated_omm_home, monkeypatch
+):
+    config.update_config(update_channel="beta")
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.PYPI,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda branch: (_ for _ in ()).throw(AssertionError("must not run Git update")),
+    )
+
+    result = runner.invoke(cli.app, ["setting", "version", "--stable"])
+
+    assert result.exit_code == 0, result.stdout
+    assert config.load_config()["update_channel"] == "stable"
+    assert "stable (package-managed)" in result.stdout
 
 
 def test_setting_version_switch_failure_does_not_persist_channel(isolated_omm_home, monkeypatch):
