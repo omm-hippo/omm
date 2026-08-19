@@ -59,14 +59,14 @@ def test_link_jan_rejects_symlinked_model_directory(
 
 def test_read_jan_model_path_extracts_field(tmp_path):
     config_path = tmp_path / "model.yml"
-    config_path.write_text('model_path: "/some/path/model.gguf"\nname: "x"\nsize_bytes: 5\n')
+    config_path.write_text('model_path: "/some/path/model.gguf"\nname: "x"\nsize_bytes: 5\n', encoding="utf-8")
 
     assert linker.read_jan_model_path(config_path) == "/some/path/model.gguf"
 
 
 def test_read_jan_model_path_returns_none_when_missing(tmp_path):
     config_path = tmp_path / "model.yml"
-    config_path.write_text('name: "x"\n')
+    config_path.write_text('name: "x"\n', encoding="utf-8")
 
     assert linker.read_jan_model_path(config_path) is None
 
@@ -93,7 +93,7 @@ def test_link_jan_refuses_to_overwrite_unowned_manifest(
     monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
     config_path = models_dir / "tinyllama-q4" / "model.yml"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text('model_path: "/user/model.gguf"\nname: "user"\n')
+    config_path.write_text('model_path: "/user/model.gguf"\nname: "user"\n', encoding="utf-8")
 
     with pytest.raises(linker.LinkError, match="unowned Jan manifest"):
         linker.link_jan(gguf_path, "tinyllama-q4")
@@ -106,7 +106,7 @@ def test_unlink_jan_preserves_unowned_manifest(isolated_omm_home, tmp_path, monk
     monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
     config_path = models_dir / "user-model" / "model.yml"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text('model_path: "/missing/user.gguf"\n')
+    config_path.write_text('model_path: "/missing/user.gguf"\n', encoding="utf-8")
 
     linker.unlink_jan("user-model")
 
@@ -122,7 +122,8 @@ def test_unlink_jan_preserves_owned_manifest_modified_in_place(
     monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
     config_path = linker.link_jan(gguf_path, "model")
     config_path.write_text(
-        f"model_path: {json.dumps(str(gguf_path))}\nname: \"user-edited\"\n"
+        f"model_path: {json.dumps(str(gguf_path))}\nname: \"user-edited\"\n",
+        encoding="utf-8",
     )
 
     linker.unlink_jan("model")
@@ -163,7 +164,7 @@ def test_autoremove_jan_preserves_unowned_broken_manifest(
     monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
     config_path = models_dir / "user-model" / "model.yml"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text(f'model_path: "{tmp_path / "missing.gguf"}"\n')
+    config_path.write_text(f'model_path: "{tmp_path / "missing.gguf"}"\n', encoding="utf-8")
 
     assert linker.autoremove_jan() == 0
     assert config_path.exists()
@@ -530,7 +531,7 @@ def test_autoremove_jan_skips_manifest_it_cannot_unlink(tmp_path, monkeypatch):
     model_dir = models_dir / "model-id"
     model_dir.mkdir(parents=True)
     config_path = model_dir / "model.yml"
-    config_path.write_text('model_path: "/gone/model.gguf"\n')
+    config_path.write_text('model_path: "/gone/model.gguf"\n', encoding="utf-8")
     monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
     monkeypatch.setattr(Path, "unlink", lambda self, missing_ok=False: (_ for _ in ()).throw(OSError("permission denied")))
 

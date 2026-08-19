@@ -65,7 +65,7 @@ def _load() -> dict[str, list[str]]:
     if path is None or not path.exists():
         return {"seen": [], "last_results": []}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"seen": [], "last_results": []}
     return {
@@ -80,7 +80,7 @@ def _save(data: dict[str, list[str]]) -> None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data))
+        path.write_text(json.dumps(data), encoding="utf-8")
     except OSError:
         pass
 

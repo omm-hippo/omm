@@ -37,6 +37,7 @@ from filelock import Timeout as FileLockTimeout
 from omm import config
 from omm.atomic import atomic_write_text, locked
 from omm.config import load_config
+from omm import package_metadata
 from omm.telemetry import secure_endpoint
 
 SCHEMA_VERSION = 1
@@ -190,7 +191,7 @@ def log_attempt(outcome: str, detail: str = "") -> None:
     try:
         path = _log_path()
         with locked(path, timeout=30):
-            lines = path.read_text().splitlines() if path.exists() else []
+            lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
             lines.append(json.dumps({
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "outcome": outcome,
@@ -205,7 +206,7 @@ def _read_pending_unlocked(path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        loaded = json.loads(path.read_text())
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     if not isinstance(loaded, list):
@@ -273,12 +274,8 @@ def catalog_ref(repo_id: str | None, filename: str | None) -> str | None:
 def _client_version() -> str | None:
     """Read the installed version without importing `omm.cli` (which imports
     this module)."""
-    import importlib.metadata
-
     try:
-        return importlib.metadata.version("omm")
-    except importlib.metadata.PackageNotFoundError:
-        return None
+        return package_metadata.version()
     except Exception:
         return None
 

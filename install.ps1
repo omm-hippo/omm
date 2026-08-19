@@ -241,6 +241,241 @@ function Invoke-Pipx {
     Invoke-Python -m pipx @args
 }
 
+$PipxEnvironment = "omm-model"
+$LegacyPipxEnvironment = "omm"
+
+function Get-PipxSnapshot {
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativePref = $PSNativeCommandUseErrorActionPreference
+    $ok = $false
+    $output = @()
+    try {
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        $output = @(Invoke-Pipx list --json 2>$null)
+        $ok = $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $previousNativePref
+    }
+    if (-not $ok) {
+        throw "Could not inspect existing pipx environments; refusing an unsafe migration."
+    }
+    try {
+        return (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine) | ConvertFrom-Json
+    } catch {
+        throw "Could not parse pipx environment metadata; refusing an unsafe migration."
+    }
+}
+
+function Test-PipxSnapshotEnvironment {
+    param($Snapshot, [string]$Name)
+    if ($null -eq $Snapshot -or $null -eq $Snapshot.venvs) { return $false }
+    $matches = @($Snapshot.venvs.PSObject.Properties | Where-Object { $_.Name -ceq $Name })
+    return $matches.Count -eq 1
+}
+
+function Test-PipxSnapshotIdentity {
+    param($Snapshot, [string]$Name, [string]$Distribution)
+    if (-not (Test-PipxSnapshotEnvironment $Snapshot $Name)) { return $false }
+    $property = @($Snapshot.venvs.PSObject.Properties | Where-Object { $_.Name -ceq $Name })[0]
+    $metadata = $property.Value.metadata
+    $main = $metadata.main_package
+    if (($null -ne $metadata.environment -and $metadata.environment -cne $Name) -or $main.package -cne $Distribution -or $main.suffix -cne "") {
+        return $false
+    }
+    if (@($main.apps | Where-Object { $_ -ceq "omm" }).Count -ne 1) { return $false }
+    $expectedDir = Join-Path (Join-Path $PipxLocalVenvs $Name) "Scripts"
+    $ommPaths = @($main.app_paths | ForEach-Object {
+        $path = [string]$_.'__Path__'
+        if ([IO.Path]::GetFileName($path) -in @("omm", "omm.exe")) { $path }
+    })
+    if ($ommPaths.Count -ne 1) { return $false }
+    $actualDir = [IO.Path]::GetFullPath((Split-Path -Parent $ommPaths[0])).TrimEnd('\')
+    $expectedDir = [IO.Path]::GetFullPath($expectedDir).TrimEnd('\')
+    return $actualDir.Equals($expectedDir, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-PipxEnvironmentPython {
+    param([string]$Name)
+    $candidate = Join-Path (Join-Path $PipxLocalVenvs $Name) "Scripts\python.exe"
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    return $null
+}
+
+$OmmEnvironmentVerifier = @'
+import importlib.metadata
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
+
+distribution, omm_home, require_source, expected_version = sys.argv[1:]
+try:
+    dist = importlib.metadata.distribution(distribution)
+except importlib.metadata.PackageNotFoundError:
+    raise SystemExit(1)
+
+entry_points = [
+    ep for ep in dist.entry_points
+    if ep.group == "console_scripts" and ep.name == "omm"
+]
+if len(entry_points) != 1 or entry_points[0].value != "omm.cli:main":
+    raise SystemExit(1)
+if expected_version and dist.version != expected_version:
+    raise SystemExit(1)
+if require_source != "1":
+    raise SystemExit(0)
+
+raw_direct_url = dist.read_text("direct_url.json")
+if not raw_direct_url:
+    raise SystemExit(1)
+try:
+    direct_url = json.loads(raw_direct_url)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+
+def known_repo(value: str) -> bool:
+    value = value.strip()
+    if value.startswith("git@github.com:"):
+        host, path = "github.com", "/" + value.split(":", 1)[1]
+    else:
+        parsed_repo = urlparse(value)
+        host, path = (parsed_repo.hostname or "").lower(), parsed_repo.path
+    normalized_path = "/" + path.strip("/").removesuffix(".git").lower()
+    return host == "github.com" and normalized_path in {
+        "/omm-hippo/omm",
+        "/minigu5/omm",
+        "/minigu5/localfit",
+    }
+
+url = str(direct_url.get("url", ""))
+if direct_url.get("vcs_info") and known_repo(url):
+    raise SystemExit(0)
+
+parsed = urlparse(url)
+if parsed.scheme != "file":
+    raise SystemExit(1)
+source = Path(url2pathname(unquote(parsed.path))).resolve()
+home = Path(omm_home).resolve()
+legacy_source = (home / "src").resolve()
+versioned_root = (home / "sources").resolve()
+is_versioned_source = (
+    source.parent == versioned_root
+    and re.fullmatch(r"[0-9a-fA-F]{40}", source.name) is not None
+)
+if source != legacy_source and not is_versioned_source:
+    raise SystemExit(1)
+try:
+    origin = subprocess.run(
+        ["git", "-C", str(source), "remote", "get-url", "origin"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+except (OSError, subprocess.CalledProcessError):
+    raise SystemExit(1)
+raise SystemExit(0 if known_repo(origin) else 1)
+'@
+
+function Test-OmmPipxEnvironment {
+    param([string]$Name, [string]$Distribution, [switch]$RequireLegacySource, [string]$ExpectedVersion = "")
+    $environmentPython = Get-PipxEnvironmentPython $Name
+    if (-not $environmentPython) { return $false }
+    $requireSource = if ($RequireLegacySource) { "1" } else { "0" }
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativePref = $PSNativeCommandUseErrorActionPreference
+    $ok = $false
+    try {
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        # Windows PowerShell 5.1 can strip quotes from a multi-line native
+        # `-c` argument. Feed the verifier on stdin so its Python source is
+        # intact; only plain data values remain argv entries.
+        $OmmEnvironmentVerifier | & $environmentPython - $Distribution $OmmHome $requireSource $ExpectedVersion *> $null
+        $ok = $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $previousNativePref
+    }
+    return $ok
+}
+
+function Invoke-PipxStatus {
+    param([string[]]$Arguments, [switch]$Quiet)
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativePref = $PSNativeCommandUseErrorActionPreference
+    $ok = $false
+    $output = @()
+    try {
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        $output = @(Invoke-Pipx @Arguments 2>&1)
+        $ok = $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $previousNativePref
+    }
+    if (-not $Quiet) {
+        foreach ($line in $output) { Write-Host ([string]$line) }
+    }
+    return $ok
+}
+
+function Test-InstalledOmmModel {
+    try { $snapshot = Get-PipxSnapshot } catch { return $false }
+    if (-not (Test-PipxSnapshotIdentity $snapshot $PipxEnvironment $PipxEnvironment)) { return $false }
+    if (-not (Test-OmmPipxEnvironment $PipxEnvironment $PipxEnvironment -ExpectedVersion $ExpectedVersion)) { return $false }
+    $ommApp = Join-Path $PipxBinDir "omm.exe"
+    $internalApp = Join-Path (Join-Path (Join-Path $PipxLocalVenvs $PipxEnvironment) "Scripts") "omm.exe"
+    if (-not (Test-Path -LiteralPath $ommApp -PathType Leaf)) { return $false }
+    if (-not (Test-Path -LiteralPath $internalApp -PathType Leaf)) { return $false }
+    try {
+        if ((Get-FileHash -LiteralPath $ommApp -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $internalApp -Algorithm SHA256).Hash) {
+            return $false
+        }
+    } catch { return $false }
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativePref = $PSNativeCommandUseErrorActionPreference
+    $ok = $false
+    $versionOutput = @()
+    try {
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        $versionOutput = @(& $ommApp --version 2>&1)
+        $ok = $LASTEXITCODE -eq 0 -and (($versionOutput -join "`n").Trim() -ceq "omm $ExpectedVersion")
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $previousNativePref
+    }
+    return $ok
+}
+
+function Test-ExposedExistingEnvironment {
+    param([string]$Name, [string]$Distribution, [switch]$RequireLegacySource)
+    try {
+        $snapshot = Get-PipxSnapshot
+        if (-not (Test-PipxSnapshotIdentity $snapshot $Name $Distribution)) { return $false }
+        if (-not (Test-OmmPipxEnvironment $Name $Distribution -RequireLegacySource:$RequireLegacySource)) { return $false }
+        $environmentPython = Get-PipxEnvironmentPython $Name
+        $internalApp = Join-Path (Join-Path (Join-Path $PipxLocalVenvs $Name) "Scripts") "omm.exe"
+        $exposedApp = Join-Path $PipxBinDir "omm.exe"
+        if (-not (Test-Path -LiteralPath $internalApp -PathType Leaf) -or -not (Test-Path -LiteralPath $exposedApp -PathType Leaf)) {
+            return $false
+        }
+        if ((Get-FileHash -LiteralPath $internalApp -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $exposedApp -Algorithm SHA256).Hash) {
+            return $false
+        }
+        $expectedVersion = (& $environmentPython -c "import importlib.metadata, sys; print(importlib.metadata.version(sys.argv[1]))" $Distribution).Trim()
+        if ($LASTEXITCODE -ne 0) { return $false }
+        $versionOutput = (& $exposedApp --version).Trim()
+        return ($LASTEXITCODE -eq 0 -and $versionOutput -ceq "omm $expectedVersion")
+    } catch {
+        return $false
+    }
+}
+
 function Test-PipxAvailable {
     try {
         Invoke-Python -m pipx --version *> $null
@@ -260,6 +495,25 @@ if (-not (Test-PipxAvailable)) {
 }
 Invoke-Pipx ensurepath
 $PythonExecutable = (Invoke-Python -c "import sys; print(sys.executable)").Trim()
+$PipxLocalVenvs = ([string](Invoke-Pipx environment --value PIPX_LOCAL_VENVS)).Trim()
+$PipxBinDir = ([string](Invoke-Pipx environment --value PIPX_BIN_DIR)).Trim()
+$PipxSnapshot = Get-PipxSnapshot
+$LegacyPipxPresent = Test-PipxSnapshotEnvironment $PipxSnapshot $LegacyPipxEnvironment
+if ($LegacyPipxPresent -and (
+    -not (Test-PipxSnapshotIdentity $PipxSnapshot $LegacyPipxEnvironment $LegacyPipxEnvironment) -or
+    -not (Test-OmmPipxEnvironment $LegacyPipxEnvironment $LegacyPipxEnvironment -RequireLegacySource)
+)) {
+    Write-Error "Refusing to replace unrelated pipx environment 'omm'. Remove or rename that environment manually first."
+    exit 1
+}
+$NewPipxPresent = Test-PipxSnapshotEnvironment $PipxSnapshot $PipxEnvironment
+if ($NewPipxPresent -and (
+    -not (Test-PipxSnapshotIdentity $PipxSnapshot $PipxEnvironment $PipxEnvironment) -or
+    -not (Test-OmmPipxEnvironment $PipxEnvironment $PipxEnvironment)
+)) {
+    Write-Error "Refusing to replace an unverified $PipxEnvironment pipx environment."
+    exit 1
+}
 
 New-Item -ItemType Directory -Force -Path $SourcesDir | Out-Null
 $StagingDir = Join-Path $SourcesDir ("checkout-" + $PID + "-" + [guid]::NewGuid().ToString("N"))
@@ -305,15 +559,93 @@ if (Test-Path $SrcDir) {
 } else {
     Move-Item -LiteralPath $StagingDir -Destination $SrcDir
 }
+$versionMatch = Select-String -LiteralPath (Join-Path $SrcDir "pyproject.toml") -Pattern '^version = "([^"]+)"\s*$' | Select-Object -First 1
+if ($null -eq $versionMatch) {
+    Write-Error "Could not determine the project version from the verified checkout."
+    exit 1
+}
+$ExpectedVersion = $versionMatch.Matches[0].Groups[1].Value
 
 # Install NVML only when the machine actually exposes an NVIDIA driver.
 $InstallSpec = if (Test-CommandExists "nvidia-smi") { "$SrcDir[nvidia]" } else { $SrcDir }
 
 Write-Host "Installing omm (editable) from $SrcDir ..."
-Invoke-Pipx install --force --editable --python $PythonExecutable $InstallSpec
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "pipx install failed."
+# pipx names the new environment after the distribution (`omm-model`)
+# while old Git installs used `omm`. Install and verify the new environment
+# first so an install failure leaves the working legacy CLI untouched. pipx
+# --force moves the shared `omm` app link to the new environment; current pipx
+# preserves that foreign-owned link when the legacy environment is removed.
+$installArguments = @("install", "--force", "--editable", "--python", $PythonExecutable, $InstallSpec)
+function Restore-PipxAfterFailedInstall {
+    $rollbackState = "not-needed"
+    try { $currentSnapshot = Get-PipxSnapshot } catch { $currentSnapshot = $null }
+    if ($null -ne $currentSnapshot -and (Test-PipxSnapshotEnvironment $currentSnapshot $PipxEnvironment)) {
+        if ($NewPipxPresent) {
+            [void](Invoke-PipxStatus -Arguments @("reinstall", $PipxEnvironment) -Quiet)
+        } else {
+            [void](Invoke-PipxStatus -Arguments @("uninstall", $PipxEnvironment) -Quiet)
+        }
+    }
+    if ($LegacyPipxPresent) {
+        if ((Invoke-PipxStatus -Arguments @("reinstall", $LegacyPipxEnvironment) -Quiet) -and
+            (Test-ExposedExistingEnvironment $LegacyPipxEnvironment $LegacyPipxEnvironment -RequireLegacySource)) {
+            $rollbackState = "verified"
+        } else {
+            $rollbackState = "uncertain"
+        }
+    } elseif ($NewPipxPresent) {
+        if (Test-ExposedExistingEnvironment $PipxEnvironment $PipxEnvironment) {
+            $rollbackState = "verified"
+        } else {
+            $rollbackState = "uncertain"
+        }
+    } else {
+        try { $currentSnapshot = Get-PipxSnapshot } catch { $currentSnapshot = $null }
+        if ($null -eq $currentSnapshot -or (Test-PipxSnapshotEnvironment $currentSnapshot $PipxEnvironment)) {
+            $rollbackState = "uncertain"
+        }
+    }
+    return $rollbackState
+}
+function Write-FailedInstallRecovery {
+    param([string]$Reason, [string]$RollbackState)
+    Write-Warning $Reason
+    if ($RollbackState -eq "verified") {
+        Write-Warning "The pre-existing omm command was restored and verified."
+    } elseif ($RollbackState -eq "uncertain") {
+        Write-Warning "The previous environment was not removed, but its omm command could not be verified after rollback; run 'pipx reinstall omm' or 'pipx reinstall omm-model'."
+    }
+}
+if (-not (Invoke-PipxStatus -Arguments $installArguments)) {
+    $rollbackState = Restore-PipxAfterFailedInstall
+    Write-FailedInstallRecovery "pipx install failed; the legacy environment was not removed." $rollbackState
     exit 1
+}
+if (-not (Test-InstalledOmmModel)) {
+    $rollbackState = Restore-PipxAfterFailedInstall
+    Write-FailedInstallRecovery "The new $PipxEnvironment environment or its omm command failed verification; the legacy environment was not removed." $rollbackState
+    exit 1
+}
+if ($LegacyPipxPresent) {
+    Write-Host "Removing verified legacy pipx environment: $LegacyPipxEnvironment"
+    if (-not (Invoke-PipxStatus -Arguments @("uninstall", $LegacyPipxEnvironment))) {
+        Write-Warning "Could not remove the verified legacy pipx environment."
+        if (Test-InstalledOmmModel) {
+            Write-Warning "The new omm command remains installed and was verified."
+        } elseif ((Invoke-PipxStatus -Arguments $installArguments) -and (Test-InstalledOmmModel)) {
+            Write-Warning "The new omm command was repaired and verified after the pipx failure."
+        } else {
+            Write-Warning "pipx may have removed the omm command link before failing; repair could not be verified. Run 'pipx reinstall omm-model'."
+        }
+        exit 1
+    }
+    if (-not (Test-InstalledOmmModel)) {
+        Write-Warning "Repairing the new omm command after legacy cleanup ..."
+        if (-not (Invoke-PipxStatus -Arguments $installArguments) -or -not (Test-InstalledOmmModel)) {
+            Write-Error "The new omm command could not be verified after legacy cleanup."
+            exit 1
+        }
+    }
 }
 
 # Marks custom OMM_HOME directories as installer-managed. The uninstaller

@@ -31,7 +31,7 @@ def load_profiles(path: Path | None = None) -> dict:
     if not target.exists():
         return {"schema_version": 1, "profiles": {}}
     try:
-        payload = json.loads(target.read_text())
+        payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {"schema_version": 1, "profiles": {}}
     if payload.get("schema_version") != 1 or not isinstance(payload.get("profiles"), dict):
@@ -93,6 +93,6 @@ def record_calibration(
     }
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     temporary.replace(target)
     return payload["profiles"][key]["factor"]

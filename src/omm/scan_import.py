@@ -97,7 +97,7 @@ def _scan_ollama_format(engine: str, models_dir: Path) -> list[ExternalGguf]:
         if not manifest_path.is_file():
             continue
         try:
-            manifest = json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             continue
         rel = manifest_path.relative_to(manifests_root)

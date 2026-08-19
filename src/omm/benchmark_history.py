@@ -65,7 +65,7 @@ def _load() -> dict[str, Any]:
     if not path.exists():
         return {"entries": {}, "failures": {}}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"entries": {}, "failures": {}}
     return {

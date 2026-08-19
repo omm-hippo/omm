@@ -82,7 +82,7 @@ def lmstudio_home_dir() -> Path:
     """
     pointer = Path.home() / ".lmstudio-home-pointer"
     if pointer.exists():
-        return Path(pointer.read_text().strip())
+        return Path(pointer.read_text(encoding="utf-8").strip())
     if (Path.home() / ".cache" / "lm-studio").exists():
         return Path.home() / ".cache" / "lm-studio"
     return Path.home() / ".lmstudio"
@@ -206,7 +206,7 @@ def _load_link_ownership() -> dict[str, dict[str, object]]:
     if not LINK_OWNERSHIP_PATH.exists():
         return {}
     try:
-        data = json.loads(LINK_OWNERSHIP_PATH.read_text())
+        data = json.loads(LINK_OWNERSHIP_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         backup_corrupt_file(LINK_OWNERSHIP_PATH)
         return {}
@@ -918,7 +918,7 @@ def _ollama_link_already_current(manifest_path: Path, gguf_path: Path, blobs_dir
     if not _owned_manifest(manifest_path, expected_source=gguf_path):
         return False
     try:
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
     digest = next(
@@ -1128,7 +1128,7 @@ def link_ollama(
             if platform.system() != "Windows":
                 manifest_path.chmod(0o644)
             try:
-                written_back = json.loads(manifest_path.read_text())
+                written_back = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, ValueError) as e:
                 manifest_path.unlink(missing_ok=True)
                 raise LinkError(
@@ -1199,7 +1199,7 @@ def _manifest_format_known_good(ollama_version: str) -> bool | None:
     if not path.exists():
         return None
     try:
-        cache = json.loads(path.read_text())
+        cache = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if cache.get("ollama_version") != ollama_version:
@@ -1334,7 +1334,7 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
 
     with tempfile.TemporaryDirectory() as tmp:
         modelfile = Path(tmp) / "Modelfile"
-        modelfile.write_text(f"FROM {gguf_path}\n")
+        modelfile.write_text(f"FROM {gguf_path}\n", encoding="utf-8")
         try:
             result = subprocess.run(
                 [exe, "create", model_name, "-f", str(modelfile)],
@@ -1443,7 +1443,7 @@ def unlink_ollama(
         if not _owned_manifest(manifest_path, expected_source=expected_source):
             return
         try:
-            manifest = json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             model_digests = _manifest_blob_digests(manifest)
         except (OSError, json.JSONDecodeError):
             model_digests = set()
@@ -1471,7 +1471,7 @@ def unlink_ollama(
             if not other.is_file():
                 continue
             try:
-                data = json.loads(other.read_text())
+                data = json.loads(other.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
             referenced.update(_manifest_blob_digests(data))
@@ -1522,7 +1522,7 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
     if broken_digests and manifests_root.exists():
         for manifest_path in list(manifests_root.rglob("latest")):
             try:
-                manifest = json.loads(manifest_path.read_text())
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue
             layer_digests = {
@@ -1683,7 +1683,7 @@ def read_jan_model_path(config_path: Path) -> str | None:
     this one field read back, so a tiny regex stands in for a full YAML
     parser rather than adding a new dependency for it."""
     try:
-        text = config_path.read_text()
+        text = config_path.read_text(encoding="utf-8")
     except OSError:
         return None
     match = _JAN_MODEL_PATH_RE.search(text)
@@ -1914,9 +1914,13 @@ def has_automated_installer(key: str) -> bool:
     if key == "jan":
         return True
     if key == "anythingllm":
-        # No flatpak/Linux path was ever built for this one (see
-        # _install_anythingllm) - only brew (Darwin) and winget (Windows).
-        return platform.system() in ("Darwin", "Windows")
+        # Brew-cask (Darwin) only. No flatpak/Linux path was ever built for
+        # this one, and the Windows winget package is gone - see
+        # _install_anythingllm for both. Windows used to be listed here,
+        # which made the wizard attempt a winget install that could not
+        # possibly succeed and then fall back to a manual URL; reporting it
+        # unsupported shows that same guidance up front instead.
+        return platform.system() == "Darwin"
     if key == "mstystudio":
         # Brew-cask only - no winget package targets the current app (see
         # _install_mstystudio) and no Linux package manager exists at all.
@@ -2047,6 +2051,17 @@ def _install_lmstudio(
             )
         try:
             returncode = _stream_subprocess(
+                # Deliberately NOT pinning [Console]::OutputEncoding here, unlike
+                # hardware._powershell_json. Setting it inside a child that
+                # shares the caller's console calls SetConsoleOutputCP and
+                # leaves the *user's terminal* on code page 65001 after omm
+                # exits (measured on Korean Windows: 949 before, 65001 after).
+                # hardware.py can dodge that with CREATE_NO_WINDOW because its
+                # probe is headless; an interactive installer should keep the
+                # console it was given. The only cost is that non-ASCII in the
+                # installer's own progress lines may render as U+FFFD - they
+                # are displayed and never parsed, and _stream_subprocess's
+                # errors="replace" (PR #127) already makes that non-fatal.
                 [powershell, "-NoProfile", "-Command", "irm https://lmstudio.ai/install.ps1 | iex"],
                 on_output,
             )
@@ -2138,11 +2153,27 @@ def _install_jan(*, on_output: Callable[[str], None] | None = None) -> EngineIns
 
 
 def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
-    # Linux deliberately has no flatpak_id/download path here: the only
-    # official Linux install method is an interactive installer.sh (sudo
-    # AppArmor-profile prompt, no documented silent flag) - same risk
-    # class the original design excluded text-generation-webui's git-clone
-    # path for. Falls through to unsupported_platform on Linux.
+    # Brew cask only. Both other platforms deliberately fall through to
+    # unsupported_platform:
+    #
+    # Windows - there is no winget package any more. MintplexLabs.AnythingLLM
+    # was removed from the community repo on 2025-02-18 by
+    # microsoft/winget-pkgs#230632 ("New installer URL is behind captcha"),
+    # and no manifest for this app exists under any publisher id today
+    # (re-verified against microsoft/winget-pkgs and against a real
+    # `winget search` on 2026-08-19: zero results, exit 0x8A150014). Keeping
+    # the id here only bought an attempt that always failed. A direct
+    # download of the vendor's AnythingLLMDesktop.exe was considered and
+    # rejected: it is a ~396 MB NSIS installer with no vendor-documented
+    # silent flag, and is_anythingllm_installed() on Windows keys off the
+    # Electron userData directory, which the app creates on first launch
+    # rather than at install time - so even a silent install would report
+    # "ran but still isn't detected".
+    #
+    # Linux - the only official install method is an interactive
+    # installer.sh (sudo AppArmor-profile prompt, no documented silent
+    # flag) - same risk class the original design excluded
+    # text-generation-webui's git-clone path for.
     return _install_via_package_manager(
         key="anythingllm",
         label="AnythingLLM",
@@ -2150,7 +2181,6 @@ def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> E
         is_installed=is_anythingllm_installed,
         on_output=on_output,
         brew_cask="anythingllm",
-        winget_id="MintplexLabs.AnythingLLM",
     )
 
 

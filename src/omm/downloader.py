@@ -75,7 +75,7 @@ def _sidecar_path(part_path: Path) -> Path:
 
 def _read_sidecar(sidecar_path: Path) -> dict | None:
     try:
-        with sidecar_path.open("r") as f:
+        with sidecar_path.open("r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return None
@@ -91,7 +91,7 @@ def _write_sidecar(
     # Write-to-temp-then-rename so a crash mid-write can't leave behind a
     # half-written JSON file that would poison the next resume attempt.
     tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
-    with tmp.open("w") as f:
+    with tmp.open("w", encoding="utf-8") as f:
         json.dump(
             {
                 "url": url,
@@ -183,7 +183,7 @@ def _load_resume_metadata(
     meta_path: Path, url: str, resume_pos: int
 ) -> tuple[str, int] | None:
     try:
-        metadata = json.loads(meta_path.read_text())
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
         etag = metadata["etag"]
         total_size = metadata["total_size"]
     except (OSError, ValueError, KeyError, TypeError):

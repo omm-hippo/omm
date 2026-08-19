@@ -159,7 +159,7 @@ def fetch_real_rows(url: str = TELEMETRY_URL) -> list[dict]:
 def load_telemetry_file(path: Path) -> list[dict]:
     """Load Firebase-shaped JSON, a JSON list, or local benchmark JSONL."""
     try:
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
     except OSError as error:
         raise ValueError(f"could not read {path}: {error}") from error
     try:
@@ -852,7 +852,7 @@ def train_artifact(
 def load_candidates() -> list[dict]:
     candidates_path = Path(__file__).resolve().parent.parent / "published" / "candidates.json"
     if candidates_path.exists():
-        return json.loads(candidates_path.read_text())
+        return json.loads(candidates_path.read_text(encoding="utf-8"))
     print("Warning: no published/candidates.json found, falling back to curated index only.")
     from omm.hub import CURATED_INDEX
 
@@ -897,7 +897,7 @@ def main() -> None:
             # The telemetry corpus hasn't grown enough yet, not a code bug.
             # Republish the baseline unchanged rather than failing CI.
             try:
-                baseline_text = args.baseline.read_text()
+                baseline_text = args.baseline.read_text(encoding="utf-8")
             except OSError as read_error:
                 raise ValueError(
                     f"could not read baseline artifact {args.baseline}: {read_error}"
@@ -923,7 +923,7 @@ def main() -> None:
                 )
             return
         try:
-            baseline_text = args.baseline.read_text()
+            baseline_text = args.baseline.read_text(encoding="utf-8")
             baseline = json.loads(baseline_text)
         except (OSError, json.JSONDecodeError) as error:
             raise ValueError(f"could not read baseline artifact {args.baseline}: {error}") from error

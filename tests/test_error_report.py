@@ -206,6 +206,12 @@ def test_a_queued_report_carries_only_allow_listed_fields(isolated_omm_home):
     assert report["catalog_ref"] == "org/model-GGUF:model-Q4.gguf"
 
 
+def test_client_version_uses_central_distribution_metadata(monkeypatch):
+    monkeypatch.setattr(error_report.package_metadata, "version", lambda: "0.2.119")
+
+    assert error_report._client_version() == "0.2.119"
+
+
 def test_a_queued_report_never_carries_a_user_directory(isolated_omm_home):
     _write_config(error_report_send_policy="always")
 

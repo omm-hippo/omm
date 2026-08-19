@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 def _write(path: Path, content: str, private: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content + "\n")
+    path.write_text(content + "\n", encoding="utf-8")
     if private:
         path.chmod(0o600)
 
@@ -38,7 +38,7 @@ def generate_keys(private_path: Path, public_path: Path) -> None:
 
 def sign(artifact: Path, private_path: Path, manifest_path: Path) -> None:
     content = artifact.read_bytes()
-    private_raw = base64.b64decode(private_path.read_text().strip(), validate=True)
+    private_raw = base64.b64decode(private_path.read_text(encoding="utf-8").strip(), validate=True)
     private_key = Ed25519PrivateKey.from_private_bytes(private_raw)
     signature = private_key.sign(content)
     manifest = {
@@ -49,7 +49,7 @@ def sign(artifact: Path, private_path: Path, manifest_path: Path) -> None:
         "signed_at": datetime.now(timezone.utc).isoformat(),
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 def main() -> None:
