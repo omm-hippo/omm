@@ -111,7 +111,7 @@ def main() -> None:
         candidates.append(c)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(json.dumps(candidates, indent=2))
+    OUTPUT_PATH.write_text(json.dumps(candidates, indent=2), encoding="utf-8")
     print(
         f"Wrote {OUTPUT_PATH} ({len(candidates)} candidates, {len(trending)} from HF trending, "
         f"{len(modelscope_candidates)} from ModelScope)"

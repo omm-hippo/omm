@@ -163,7 +163,7 @@ def load_config() -> dict[str, Any]:
         save_config(fresh)
         return fresh
     try:
-        data = json.loads(CONFIG_PATH.read_text())
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         backup_corrupt_file(CONFIG_PATH)
         return dict(DEFAULT_CONFIG)
@@ -186,7 +186,7 @@ def update_config(**changes: Any) -> dict[str, Any]:
         data: dict[str, Any] = {}
         if CONFIG_PATH.exists():
             try:
-                loaded = json.loads(CONFIG_PATH.read_text())
+                loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     data = loaded
                 else:

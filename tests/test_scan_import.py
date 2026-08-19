@@ -162,15 +162,21 @@ def test_scan_jan_resolves_absolute_and_relative_model_paths(tmp_path, monkeypat
     absolute_gguf.parent.mkdir(parents=True)
     absolute_gguf.write_bytes(b"abs-bytes")
     (models_dir / "abs-entry").mkdir(parents=True)
+    # encoding pinned on every model.yml fixture below: Jan writes YAML as
+    # UTF-8 and read_jan_model_path now decodes it as UTF-8, so a fixture left
+    # on the locale default silently tests the wrong thing - and outright fails
+    # where tmp_path itself is non-ASCII, as on a Korean Windows checkout.
     (models_dir / "abs-entry" / "model.yml").write_text(
-        f"model_path: {json.dumps(str(absolute_gguf))}\nname: \"abs-entry\"\n"
+        f"model_path: {json.dumps(str(absolute_gguf))}\nname: \"abs-entry\"\n",
+        encoding="utf-8",
     )
 
     rel_gguf = jan_data_dir / "llamacpp" / "models" / "rel-entry" / "model.gguf"
     rel_gguf.parent.mkdir(parents=True)
     rel_gguf.write_bytes(b"rel-bytes")
     (models_dir / "rel-entry" / "model.yml").write_text(
-        'model_path: "llamacpp/models/rel-entry/model.gguf"\nname: "rel-entry"\n'
+        'model_path: "llamacpp/models/rel-entry/model.gguf"\nname: "rel-entry"\n',
+        encoding="utf-8",
     )
 
     # already-adopted entry (model_path resolves to a symlink) must be skipped
@@ -181,7 +187,8 @@ def test_scan_jan_resolves_absolute_and_relative_model_paths(tmp_path, monkeypat
     already_linked.write_bytes(b"hub-bytes")
     _mock_symlinks(monkeypatch).add(already_linked.absolute())
     (models_dir / "already-linked" / "model.yml").write_text(
-        f'model_path: "{models_dir / "already-linked" / "model.gguf"}"\nname: "already-linked"\n'
+        f'model_path: "{models_dir / "already-linked" / "model.gguf"}"\nname: "already-linked"\n',
+        encoding="utf-8",
     )
 
     found = scan_import.scan_jan()

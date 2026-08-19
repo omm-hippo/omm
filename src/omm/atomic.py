@@ -55,7 +55,7 @@ def atomic_write_text(path: Path, content: str) -> None:
 def backup_corrupt_file(path: Path) -> Path | None:
     """Preserve unreadable state before callers continue with safe defaults."""
     try:
-        content = path.read_text(errors="replace")
+        content = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     digest = hashlib.sha256(content.encode()).hexdigest()[:12]
