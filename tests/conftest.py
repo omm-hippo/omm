@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from omm import calibration, catalog, cli, config, linker, predictor, registry, scan_import
+from omm import (
+    calibration,
+    catalog,
+    cli,
+    config,
+    hardware,
+    linker,
+    predictor,
+    registry,
+    scan_import,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +42,20 @@ def _no_real_engine_writes(tmp_path, monkeypatch):
     yield
     linker.find_koboldcpp_binary.cache_clear()
     linker.find_textgenwebui_root.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _quiet_host_cpu(monkeypatch):
+    """Report an idle host to every test that benchmarks something.
+
+    ``hardware.sample_cpu_utilization_percent`` reads the real machine, so
+    without this the background-load guard would decide whether a benchmark
+    counts as clean based on whatever else the CI runner happens to be doing,
+    and would block for the sampling window on every such test. Patching
+    psutil rather than the omm function keeps the guard's own logic under
+    test; tests about the guard re-patch either layer themselves and win,
+    because a test's own monkeypatch is applied after this fixture."""
+    monkeypatch.setattr(hardware.psutil, "cpu_percent", lambda interval=None: 1.0)
 
 
 @pytest.fixture(autouse=True)

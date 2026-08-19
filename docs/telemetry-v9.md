@@ -46,3 +46,24 @@ The speed regressor consumes only `clean` v9 rows. Pressured and unstable
 rows remain auditable and may still provide a positive model-fit observation,
 but cannot distort throughput training. Firebase rules, the self-hosted
 collector, training importer, and quality gate enforce the same contract.
+
+## What `measurement_quality` still does not describe
+
+Both quality signals answer questions about the run's own samples. The MAD
+ratio measures how much they disagreed with each other, and
+`memory_pressure_observed` measures whether available RAM dipped. Neither
+sees a steady, memory-light background load - a compile, a video, another
+agent - which depresses every sample by roughly the same amount. Such a run
+is internally tight and lands as `clean`, so it reaches the speed regressor
+as an honest measurement of a slower machine (issue #32).
+
+omm now samples system-wide CPU utilization before a benchmark starts, warns
+when other programs are already busy, and withholds that measurement from the
+local calibration factor. That guard is deliberately client-side and
+local-only: the deployed rules bind `measurement_quality` to the other two
+signals - `unstable` is valid only with a MAD ratio above 0.15, `pressured`
+only with `memory_pressure_observed` true - so a load-depressed run cannot
+be relabelled under either existing value, and a fourth value would need the
+rules deployed ahead of any client that sends it. Carrying host load in
+telemetry therefore remains open, and would want its own field rather than a
+new enum value.

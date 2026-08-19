@@ -709,6 +709,53 @@ def test_auto_calibrate_runs_silently_when_cached_model_available(isolated_omm_h
     assert recorded["predicted_tokens_per_sec"] == 20.0
 
 
+def test_auto_calibrate_is_skipped_when_the_host_cpu_was_already_busy(
+    isolated_omm_home, monkeypatch, capsys
+):
+    """A load-depressed number is exactly the transient error a per-machine
+    correction factor must not absorb, and a plain install has no dispersion
+    or memory-pressure record to catch it with."""
+    monkeypatch.setattr(
+        cli.predictor, "load_cached_model", lambda: {"trees": [{"leaf": True, "value": 20.0}]}
+    )
+    hw_stub = SimpleNamespace(
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=16.0,
+        ram_available_gb=12.0,
+        vram_total_gb=None,
+        vram_free_gb=None,
+        unified_memory=False,
+        gpu_name=None,
+        gpu_tflops=None,
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: hw_stub)
+    monkeypatch.setattr(
+        cli.predictor,
+        "predict_speed_interval",
+        lambda *args, **kwargs: (20.0, 20.0, 20.0),
+    )
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 30.0)
+    monkeypatch.setattr(cli, "sample_cpu_utilization_percent", lambda: 55.0)
+    monkeypatch.setattr(
+        cli.calibration,
+        "record_calibration",
+        lambda hardware, **kwargs: (_ for _ in ()).throw(
+            AssertionError("calibration must not absorb a load-depressed benchmark")
+        ),
+    )
+
+    cli._install_impl(_resolved())
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Local calibration not updated" in output
+    assert "other programs were using the CPU" in output
+
+
 def test_resolve_upload_decision_always_skips_prompt(isolated_omm_home):
     cli.config_mod.update_config(telemetry_send_policy="always")
 

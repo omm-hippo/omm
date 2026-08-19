@@ -74,10 +74,12 @@ from omm.engines import RuntimeAdapterError, RuntimeModelRef, find_runtime_model
 from omm.engines.lmstudio import LMStudioAdapter
 from omm.engines.ollama import OllamaAdapter
 from omm.hardware import (
+    BUSY_CPU_PERCENT,
     HardwareInfo,
     WindowsCommitInfo,
     available_ram_gb,
     calculate_memory_budget,
+    sample_cpu_utilization_percent,
     scan_hardware,
     windows_commit_info,
 )
@@ -2061,6 +2063,32 @@ def _run_interruptible(fn, stop_event: threading.Event | None):
         pool.shutdown(wait=False)
 
 
+def _background_cpu_load_is_high() -> bool:
+    """Warn, before a benchmark starts, if other programs are already busy.
+
+    Sustained background load depresses every speed sample by about the same
+    amount, so the run stays internally tight and the existing dispersion
+    signals - tokens_per_sec_min/max and the v9 MAD/median ratio - report it
+    as a clean measurement of a machine that is simply slower than it is.
+    A reading taken here, while omm is not generating anything, is the only
+    place that distinction can be drawn.
+
+    Best-effort and advisory: an unavailable reading is treated as unknown,
+    never as idle, and never blocks the benchmark.
+    """
+    percent = sample_cpu_utilization_percent()
+    if percent is None or percent < BUSY_CPU_PERCENT:
+        return False
+    err_console.print(
+        f"[warning]Other programs are using about {percent:.0f}% of this machine's "
+        "CPU. Background load lowers decode speed without widening the spread "
+        "between speed samples, so this benchmark can read low while still "
+        "looking internally consistent. Close heavy programs and re-run for a "
+        "number comparable to an idle machine.[/warning]"
+    )
+    return True
+
+
 def _maybe_auto_calibrate(
     filename: str, repo_id: str | None, dest: Path, tokens_per_sec: float
 ) -> None:
@@ -2945,6 +2973,9 @@ def _install_impl(
             )
         if not opts.quiet:
             console.print("Benchmarking...")
+        # Sampled here, before the daemon is started and the model is loaded,
+        # so the reading describes other programs rather than omm's own work.
+        host_cpu_busy = _background_cpu_load_is_high()
         started_daemon = None
         pressure_watcher = None
         if (
@@ -3292,18 +3323,29 @@ def _install_impl(
 
         if tokens_per_sec:
             console.print(f"[accent]{tokens_per_sec:.1f} tok/s[/accent]")
+            # The dispersion and memory checks below only apply to contribute
+            # runs, which record the samples and the pressure window they need.
+            # The background-load check applies to every benchmark: a plain
+            # install would otherwise fold a load-depressed number straight
+            # into the local calibration factor, which is exactly the kind of
+            # transient error calibration is supposed to be free of.
             stable_for_calibration = not contribute_mode or (
                 memory_measurement is not None
                 and memory_measurement.get("memory_pressure_observed") is False
                 and speed_samples is not None
                 and contribute_memory.speed_mad_ratio(speed_samples) <= 0.15
             )
-            if stable_for_calibration:
+            if stable_for_calibration and not host_cpu_busy:
                 _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec)
-            else:
+            elif not stable_for_calibration:
                 console.print(
                     "[muted]Local calibration not updated because this measurement "
                     "was pressured or unstable.[/muted]"
+                )
+            else:
+                console.print(
+                    "[muted]Local calibration not updated because this measurement "
+                    "was taken while other programs were using the CPU.[/muted]"
                 )
 
             want_upload = not no_upload and (
@@ -4376,6 +4418,11 @@ def calibrate(
         err_console.print("[error]This model has no usable baseline speed prediction.[/error]")
         raise typer.Exit(1)
     tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    # Warn but do not refuse: this measurement was asked for explicitly, and
+    # the caller is the one who can decide whether to close things and retry.
+    # The automatic post-install calibration, which nobody asked for, does
+    # skip itself instead.
+    _background_cpu_load_is_high()
     measured = benchmark.benchmark_ollama(tag)
     if measured is None or measured <= 0:
         err_console.print("[error]Calibration requires a running Ollama model server.[/error]")
@@ -5114,6 +5161,10 @@ def benchmark_cmd(
     if output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output = config_mod.EVALUATIONS_DIR / f"quality-{stamp}.json"
+    # Advisory only: `omm benchmark` records evidence the caller reads and may
+    # upload, so a busy machine is worth saying out loud before the run rather
+    # than leaving it invisible in a number that looks tight.
+    _background_cpu_load_is_high()
     try:
         try:
             with Progress(
