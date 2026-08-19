@@ -19,6 +19,7 @@ def _systemctl_show_result(stdout: str, returncode: int = 0) -> subprocess.Compl
     return subprocess.CompletedProcess(args=["systemctl"], returncode=returncode, stdout=stdout, stderr="")
 
 
+@pytest.mark.skipif(platform.system() == "Windows", reason="pwd module doesn't exist on Windows")
 def test_ollama_models_dir_uses_systemd_service_users_home(monkeypatch, tmp_path):
     """When ollama.service is active under a dedicated system user, the
     daemon's models dir must be resolved from *that* user's home, not the
