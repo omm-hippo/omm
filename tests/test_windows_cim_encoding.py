@@ -69,10 +69,16 @@ def test_powershell_json_roundtrips_a_korean_value():
 
 
 def test_utf8_pin_is_load_bearing():
-    """Without the pin the bytes are not UTF-8, so the pin is what fixes this.
+    """Without the pin the value does not survive, so the pin is the fix.
 
     Guards against someone deleting ``_PS_FORCE_UTF8`` because "PowerShell
-    outputs UTF-8 anyway" - on this machine it emphatically does not.
+    outputs UTF-8 anyway". It does not, and it fails in two different ways
+    depending on the console code page, both of which count here:
+
+    * at a code page that *can* represent the text (949, Korean Windows) the
+      bytes are cp949 and simply are not valid UTF-8;
+    * at one that cannot (437, a US runner) PowerShell writes literal ``?``
+      instead, which decodes fine and is the wrong value.
     """
     bare = _raw_stdout(_MAKE_KOREAN + _EMIT)
     pinned = _raw_stdout(_MAKE_KOREAN + hardware._PS_FORCE_UTF8 + _EMIT)
@@ -80,8 +86,16 @@ def test_utf8_pin_is_load_bearing():
     assert json.loads(pinned.decode("utf-8"))["Name"] == _KOREAN
     if bare == pinned:
         pytest.skip("this machine's PowerShell already defaults to UTF-8 output")
-    with pytest.raises(UnicodeDecodeError):
-        bare.decode("utf-8")
+
+    try:
+        decoded = json.loads(bare.decode("utf-8"))["Name"]
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return  # not even decodable as UTF-8; the pin is what makes it so
+    assert decoded != _KOREAN, (
+        "unpinned PowerShell output round-tripped correctly, which contradicts "
+        "the reason _PS_FORCE_UTF8 exists - re-check the console code page "
+        "behaviour before removing it"
+    )
 
 
 @pytest.mark.parametrize("code_page", [949, 65001, 437])
