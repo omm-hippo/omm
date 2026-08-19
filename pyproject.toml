@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "omm"
-version = "0.2.121"
+version = "0.2.122"
 description = "Open source Model Manager - a package manager for local LLMs (GGUF)"
 requires-python = ">=3.10"
 license = "MIT"
