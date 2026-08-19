@@ -55,6 +55,14 @@ TELEMETRY_URL = "http://127.0.0.1:8000/v1/benchmarks/export"
 MIN_REAL_ROWS = 10
 MAX_REAL_ROWS = 5000
 REAL_BOOTSTRAP_WEIGHT = 12.0
+# Once the quality gate has enough telemetry, keep the broad synthetic prior
+# rather than switching to a success-only telemetry corpus.  Real benchmark
+# rows do not contain enough negative fit examples to preserve the model-size
+# boundary by themselves, and sparse hardware contexts can otherwise erase it.
+# Eight gives each real configuration substantially more influence without
+# overwhelming the prior that protects unseen hardware/model combinations.
+QUALITY_GATE_REAL_WEIGHT = 8.0
+BOOTSTRAP_METHOD = "dense_moe_parameter_quantization_grid_v2"
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "published" / "localfit-recommend-model.json"
 
 RAM_GRID = [4, 8, 16, 24, 32, 64, 128]
@@ -766,6 +774,31 @@ def synthetic_rows_from_rules() -> tuple[list[list[float]], list[float]]:
     return X, y
 
 
+def training_data_with_synthetic_prior(
+    real_X: list[list[float]],
+    real_y: list[float],
+    *,
+    real_weight: float,
+) -> tuple[list[list[float]], list[float], list[float]]:
+    """Blend real telemetry with the broad cold-start capacity prior.
+
+    The telemetry speed dataset intentionally contains successful benchmarks
+    only.  Keeping the synthetic prior therefore protects fit boundaries and
+    unseen hardware contexts while the weighted real rows still drive measured
+    performance corrections.
+    """
+    if len(real_X) != len(real_y):
+        raise ValueError("real_X and real_y must have the same number of rows")
+    if not math.isfinite(real_weight) or real_weight <= 0:
+        raise ValueError("real_weight must be a positive finite number")
+    synth_X, synth_y = synthetic_rows_from_rules()
+    return (
+        synth_X + real_X,
+        synth_y + real_y,
+        [1.0] * len(synth_X) + [real_weight] * len(real_X),
+    )
+
+
 def export_node(tree, node_id: int) -> dict:
     if tree.children_left[node_id] == _tree.TREE_LEAF:
         return {"leaf": True, "value": float(tree.value[node_id][0][0])}
@@ -898,12 +931,17 @@ def main() -> None:
         train_X, train_y, holdout_X, holdout_y = stable_holdout_split(
             real_X, real_y, args.holdout_fraction
         )
-        candidate = train_artifact(
+        candidate_X, candidate_y, candidate_weights = training_data_with_synthetic_prior(
             train_X,
             train_y,
-            sample_weight=None,
-            training_mode="telemetry",
-            bootstrap_method=None,
+            real_weight=QUALITY_GATE_REAL_WEIGHT,
+        )
+        candidate = train_artifact(
+            candidate_X,
+            candidate_y,
+            sample_weight=candidate_weights,
+            training_mode="hybrid_telemetry",
+            bootstrap_method=BOOTSTRAP_METHOD,
             real_rows=real_rows,
             telemetry_audit=telemetry_audit,
             input_sources=input_sources,
@@ -972,26 +1010,33 @@ def main() -> None:
             with locked(args.output):
                 atomic_write_text(args.output, baseline_text)
             return
-        artifact = train_artifact(
+        final_X, final_y, final_weights = training_data_with_synthetic_prior(
             real_X,
             real_y,
-            sample_weight=None,
-            training_mode="telemetry",
-            bootstrap_method=None,
+            real_weight=QUALITY_GATE_REAL_WEIGHT,
+        )
+        artifact = train_artifact(
+            final_X,
+            final_y,
+            sample_weight=final_weights,
+            training_mode="hybrid_telemetry",
+            bootstrap_method=BOOTSTRAP_METHOD,
             real_rows=real_rows,
             telemetry_audit=telemetry_audit,
             input_sources=input_sources,
             evaluation=evaluation,
         )
     elif len(real_X) < MIN_REAL_ROWS:
-        synth_X, synth_y = synthetic_rows_from_rules()
-        print(f"Below {MIN_REAL_ROWS}-row threshold, adding {len(synth_X)} synthetic rows.")
-        X, y = synth_X + real_X, synth_y + real_y
-        sample_weight = [1.0] * len(synth_X) + [REAL_BOOTSTRAP_WEIGHT] * len(real_X)
+        X, y, sample_weight = training_data_with_synthetic_prior(
+            real_X,
+            real_y,
+            real_weight=REAL_BOOTSTRAP_WEIGHT,
+        )
+        print(f"Below {MIN_REAL_ROWS}-row threshold, adding {len(X) - len(real_X)} synthetic rows.")
         training_mode = "hybrid_bootstrap"
         artifact = train_artifact(
             X, y, sample_weight=sample_weight, training_mode=training_mode,
-            bootstrap_method="dense_moe_parameter_quantization_grid_v2", real_rows=real_rows,
+            bootstrap_method=BOOTSTRAP_METHOD, real_rows=real_rows,
             telemetry_audit=telemetry_audit, input_sources=input_sources, evaluation=None,
         )
     else:
