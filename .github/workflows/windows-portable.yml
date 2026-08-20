@@ -123,6 +123,7 @@ jobs:
           $manifestPath = "release-assets/winget/manifests/o/OmmHippo/OMM/$version"
           $winget = Get-Command winget -ErrorAction SilentlyContinue
           if ($null -eq $winget) { throw "winget is unavailable on this Windows runner" }
+          winget --version
           winget validate --manifest $manifestPath
           if ($LASTEXITCODE -ne 0) { throw "winget rejected the generated manifest" }
       - name: Exercise the archive from a winget-shaped path
