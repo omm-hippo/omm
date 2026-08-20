@@ -114,6 +114,7 @@ def test_release_workflow_builds_smoke_installs_and_gates_publishing():
     assert "needs: verify-testpypi" in workflow
     assert "needs: publish-pypi" in workflow
     assert "needs: verify-pypi-files" in workflow
+    assert "--staging" not in workflow
     assert "python-release-packages" in workflow
     assert "python-release-dist" in workflow
     assert "persist-credentials: false" in workflow

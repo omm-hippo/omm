@@ -48,6 +48,17 @@ def release_json_url(repository_url: str, name: str, version: str) -> str:
     )
 
 
+def integrity_provenance_url(
+    repository_url: str, name: str, version: str, filename: str
+) -> str:
+    base = repository_url.rstrip("/")
+    return (
+        f"{base}/integrity/{urllib.parse.quote(name, safe='')}/"
+        f"{urllib.parse.quote(version, safe='')}/"
+        f"{urllib.parse.quote(filename, safe='')}/provenance"
+    )
+
+
 def fetch_release_json(
     repository_url: str,
     name: str,
@@ -68,6 +79,26 @@ def fetch_release_json(
                 time.sleep(delay_seconds)
     raise ReleaseValidationError(
         f"release metadata did not become available at {url}: {last_error}"
+    )
+
+
+def fetch_url_bytes(
+    url: str,
+    *,
+    attempts: int = 12,
+    delay_seconds: float = 10,
+) -> bytes:
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                return response.read()
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+            last_error = error
+            if attempt + 1 < attempts:
+                time.sleep(delay_seconds)
+    raise ReleaseValidationError(
+        f"repository content did not become available at {url}: {last_error}"
     )
 
 
@@ -208,26 +239,42 @@ def smoke_index_install(
 def verify_attestations(
     repository_url: str,
     dist_dir: Path,
+    pyproject: Path = PYPROJECT,
     *,
-    staging: bool,
     source_repository: str = REPOSITORY_URL,
 ) -> None:
     executable = shutil.which("pypi-attestations")
     if executable is None:
         raise ReleaseValidationError("pypi-attestations is not installed")
-    urls = verify_repository_files(repository_url, dist_dir)
-    for url in urls:
-        command = [
-            executable,
-            "verify",
-            "pypi",
-            "--repository",
-            source_repository,
-        ]
-        if staging:
-            command.append("--staging")
-        command.append(url)
-        subprocess.run(command, check=True, timeout=SUBPROCESS_TIMEOUT_SECONDS)
+    name, version = project_identity(pyproject)
+    verify_repository_files(repository_url, dist_dir, pyproject)
+    archives = distribution_archives(dist_dir)
+    with tempfile.TemporaryDirectory(prefix="omm-provenance-") as temporary:
+        provenance_dir = Path(temporary)
+        for archive in archives:
+            provenance_url = integrity_provenance_url(
+                repository_url,
+                name,
+                version,
+                archive.name,
+            )
+            provenance_path = provenance_dir / f"{archive.name}.provenance"
+            provenance_path.write_bytes(fetch_url_bytes(provenance_url))
+            # TestPyPI is a staging package index, but the official publishing
+            # action signs its attestations with the public Sigstore service.
+            # pypi-attestations' --staging flag selects Sigstore's staging
+            # trust root instead, so both indexes must use the default here.
+            command = [
+                executable,
+                "verify",
+                "pypi",
+                "--repository",
+                source_repository,
+                "--provenance-file",
+                str(provenance_path),
+                str(archive),
+            ]
+            subprocess.run(command, check=True, timeout=SUBPROCESS_TIMEOUT_SECONDS)
 
 
 def pipx_smoke(index_url: str, pyproject: Path = PYPROJECT) -> None:
@@ -306,8 +353,6 @@ def _parser() -> argparse.ArgumentParser:
         command_parser.add_argument("--dist-dir", type=Path, default=ROOT / "dist")
         if command == "smoke-index-install":
             command_parser.add_argument("--index-url", required=True)
-        if command == "verify-attestations":
-            command_parser.add_argument("--staging", action="store_true")
 
     pipx_parser = subparsers.add_parser("pipx-smoke")
     pipx_parser.add_argument("--index-url", required=True)
@@ -326,7 +371,6 @@ def main() -> int:
             verify_attestations(
                 args.repository_url,
                 args.dist_dir,
-                staging=args.staging,
             )
         elif args.command == "pipx-smoke":
             pipx_smoke(args.index_url)

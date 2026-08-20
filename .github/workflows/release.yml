@@ -176,7 +176,6 @@ jobs:
           python scripts/pypi_release.py verify-attestations
           --repository-url https://test.pypi.org
           --dist-dir dist
-          --staging
       - name: Install OMM back from TestPyPI
         run: >-
           python scripts/pypi_release.py smoke-index-install
