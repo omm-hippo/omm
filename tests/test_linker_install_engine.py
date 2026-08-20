@@ -270,13 +270,15 @@ def test_install_via_package_manager_mac_uses_brew(monkeypatch):
     assert calls[0] == ["brew", "install", "--cask", "jan"]
 
 
-def test_install_via_package_manager_mac_retries_with_force_when_brew_no_ops(monkeypatch):
+def test_install_via_package_manager_mac_retries_with_reinstall_when_brew_no_ops(monkeypatch):
     """Reproduces a real-world state: brew has a Caskroom receipt for the
     cask (so a plain `brew install --cask` is a no-op, "already
     installed") but the app bundle itself is gone - e.g. the user dragged
-    it to the Trash instead of `brew uninstall --cask`. is_installed()
-    reflects the missing bundle first, then flips true once the --force
-    retry actually re-links it."""
+    it to the Trash instead of `brew uninstall --cask`. Confirmed against
+    a real Homebrew 6.0.18 that `install --cask --force` does NOT fix this
+    (still no-ops with exit 0); only `brew reinstall --cask` actually
+    re-moves the .app back into /Applications. is_installed() reflects the
+    missing bundle first, then flips true once the reinstall retry runs."""
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/local/bin/brew" if name == "brew" else None)
     calls = []
@@ -287,16 +289,16 @@ def test_install_via_package_manager_mac_retries_with_force_when_brew_no_ops(mon
 
     monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
 
-    installed_after_force = {"value": False}
+    installed_after_reinstall = {"value": False}
 
     def fake_is_installed():
-        return installed_after_force["value"]
+        return installed_after_reinstall["value"]
 
     original_stream_subprocess = linker._stream_subprocess
 
     def fake_stream_subprocess(args, on_output):
-        if "--force" in args:
-            installed_after_force["value"] = True
+        if "reinstall" in args:
+            installed_after_reinstall["value"] = True
         return original_stream_subprocess(args, on_output)
 
     monkeypatch.setattr(linker, "_stream_subprocess", fake_stream_subprocess)
@@ -307,12 +309,12 @@ def test_install_via_package_manager_mac_retries_with_force_when_brew_no_ops(mon
     )
 
     assert calls[0] == ["brew", "install", "--cask", "anythingllm"]
-    assert calls[1] == ["brew", "install", "--cask", "anythingllm", "--force"]
+    assert calls[1] == ["brew", "reinstall", "--cask", "anythingllm"]
     assert result.status == "installed"
     assert result.message == "AnythingLLM installed successfully."
 
 
-def test_install_via_package_manager_mac_force_retry_still_fails_reports_manual_link(monkeypatch):
+def test_install_via_package_manager_mac_reinstall_retry_still_fails_reports_manual_link(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/local/bin/brew" if name == "brew" else None)
     calls = []
@@ -330,7 +332,7 @@ def test_install_via_package_manager_mac_force_retry_still_fails_reports_manual_
 
     assert calls == [
         ["brew", "install", "--cask", "anythingllm"],
-        ["brew", "install", "--cask", "anythingllm", "--force"],
+        ["brew", "reinstall", "--cask", "anythingllm"],
     ]
     assert result.status == "failed"
     assert "still isn't detected" in result.message
