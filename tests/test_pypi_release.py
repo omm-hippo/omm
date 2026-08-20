@@ -202,6 +202,63 @@ def test_windows_executable_paths_are_explicit():
     assert pypi_release._bin_executable(root, "omm", "nt") == root / "omm.exe"
 
 
+def test_index_install_retry_recovers_after_propagation_delay(monkeypatch):
+    command = ["python", "-m", "pip", "install", "omm-model==1.2.3"]
+    calls: list[list[str]] = []
+    sleeps: list[float] = []
+
+    def fake_run(actual_command, **kwargs):
+        calls.append(actual_command)
+        assert kwargs == {
+            "check": True,
+            "timeout": pypi_release.SUBPROCESS_TIMEOUT_SECONDS,
+        }
+        if len(calls) < 3:
+            raise subprocess.CalledProcessError(1, actual_command)
+        return subprocess.CompletedProcess(actual_command, 0)
+
+    monkeypatch.setattr(pypi_release.subprocess, "run", fake_run)
+    monkeypatch.setattr(pypi_release.time, "sleep", sleeps.append)
+
+    pypi_release._run_index_install_with_retry(
+        command,
+        attempts=3,
+        delay_seconds=0.25,
+    )
+
+    assert calls == [command, command, command]
+    assert sleeps == [0.25, 0.25]
+
+
+def test_index_install_retry_raises_after_bound_is_exhausted(monkeypatch):
+    command = ["python", "-m", "pip", "install", "omm-model==1.2.3"]
+    calls = 0
+    sleeps: list[float] = []
+
+    def fake_run(actual_command, **kwargs):
+        nonlocal calls
+        calls += 1
+        assert actual_command == command
+        assert kwargs == {
+            "check": True,
+            "timeout": pypi_release.SUBPROCESS_TIMEOUT_SECONDS,
+        }
+        raise subprocess.CalledProcessError(1, actual_command)
+
+    monkeypatch.setattr(pypi_release.subprocess, "run", fake_run)
+    monkeypatch.setattr(pypi_release.time, "sleep", sleeps.append)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        pypi_release._run_index_install_with_retry(
+            command,
+            attempts=2,
+            delay_seconds=0.5,
+        )
+
+    assert calls == 2
+    assert sleeps == [0.5]
+
+
 def test_pipx_smoke_rejects_a_dangling_launcher(tmp_path, monkeypatch):
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
