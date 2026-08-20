@@ -1,0 +1,179 @@
+name: Build Windows portable release
+
+"on":
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing signed OMM release version, without the v prefix
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/windows-portable.yml"
+      - "pyproject.toml"
+      - "requirements-windows-portable.txt"
+      - "scripts/windows_portable.py"
+      - "src/**"
+      - "tests/test_windows_portable.py"
+      - "LICENSE"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-portable-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build and exercise Windows x64 portable package
+    runs-on: windows-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out trusted packaging tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tooling
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the source being packaged
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          architecture: x64
+      - name: Resolve and validate the packaged version
+        id: identity
+        shell: pwsh
+        run: |
+          $version = python tooling/scripts/windows_portable.py project-version --pyproject source/pyproject.toml
+          if ($LASTEXITCODE -ne 0) { throw "project identity validation failed" }
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and $version -ne "${{ inputs.version }}") {
+            throw "tag input ${{ inputs.version }} does not match project version $version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Verify the signed tag and main ancestry
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        working-directory: source
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git -c gpg.ssh.allowedSignersFile=src/omm/trust/allowed_signers verify-tag "v${{ steps.identity.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { throw "signed tag verification failed" }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw "release tag is not in main history" }
+      - name: Install the pinned freezer and runtime graph
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input
+          -r tooling/requirements-windows-portable.txt
+      - name: Build and install the exact source wheel
+        shell: pwsh
+        run: |
+          python -m build --wheel --no-isolation --outdir wheelhouse source
+          if ($LASTEXITCODE -ne 0) { throw "wheel build failed" }
+          $wheels = @(Get-ChildItem -LiteralPath wheelhouse -Filter *.whl)
+          if ($wheels.Count -ne 1) { throw "expected exactly one wheel" }
+          python -m pip install --disable-pip-version-check --no-input --no-deps $wheels[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "wheel install failed" }
+      - name: Build the standalone command
+        run: >-
+          python tooling/scripts/windows_portable.py build
+          --version "${{ steps.identity.outputs.version }}"
+          --output-dir portable
+      - name: Package and verify the winget archive
+        shell: pwsh
+        run: |
+          python tooling/scripts/windows_portable.py package `
+            --version "${{ steps.identity.outputs.version }}" `
+            --executable portable/omm.exe `
+            --license source/LICENSE `
+            --output-dir release-assets
+          if ($LASTEXITCODE -ne 0) { throw "portable packaging failed" }
+          $archive = "release-assets/omm-windows-x64-${{ steps.identity.outputs.version }}.zip"
+          python tooling/scripts/windows_portable.py verify `
+            --version "${{ steps.identity.outputs.version }}" `
+            --archive $archive
+          if ($LASTEXITCODE -ne 0) { throw "portable archive verification failed" }
+      - name: Exercise the archive from a winget-shaped path
+        shell: pwsh
+        run: |
+          $installRoot = Join-Path $env:RUNNER_TEMP "Microsoft/WinGet/Packages/OmmHippo.OMM_Source"
+          $dataRoot = Join-Path $env:RUNNER_TEMP "omm-portable-data"
+          New-Item -ItemType Directory -Force -Path $installRoot, $dataRoot | Out-Null
+          Expand-Archive `
+            -LiteralPath "release-assets/omm-windows-x64-${{ steps.identity.outputs.version }}.zip" `
+            -DestinationPath $installRoot
+          $command = Join-Path $installRoot "omm.exe"
+          & $command --version
+          if ($LASTEXITCODE -ne 0) { throw "version probe failed" }
+          & $command --help
+          if ($LASTEXITCODE -ne 0) { throw "help probe failed" }
+          Set-Content -LiteralPath (Join-Path $dataRoot "preserve-me") -Value "user data"
+          $env:OMM_HOME = $dataRoot
+          $updateOutput = (& $command update 2>&1 | Out-String)
+          if ($LASTEXITCODE -eq 0) { throw "package-managed update unexpectedly mutated the install" }
+          if ($updateOutput -notmatch "winget upgrade --id OmmHippo.OMM -e") {
+            throw "winget update guidance was not reported: $updateOutput"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $dataRoot "preserve-me"))) {
+            throw "package probe removed user data"
+          }
+      - name: Upload the validated portable bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-portable-${{ steps.identity.outputs.version }}
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Attest the portable archive
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3.1.0
+        with:
+          subject-path: release-assets/omm-windows-x64-${{ steps.identity.outputs.version }}.zip
+
+  publish:
+    name: Attach the validated bundle to the existing GitHub Release
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-portable-${{ inputs.version }}
+          path: release-assets
+      - name: Upload once or verify an identical existing asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          for asset in \
+            "omm-windows-x64-${VERSION}.zip" \
+            "omm-windows-x64-${VERSION}.zip.sha256"
+          do
+            count="$(gh api "repos/${GH_REPO}/releases/tags/v${VERSION}" \
+              --jq "[.assets[] | select(.name == \"${asset}\")] | length")"
+            if [ "${count}" = "0" ]; then
+              gh release upload "v${VERSION}" "release-assets/${asset}" --repo "${GH_REPO}"
+            elif [ "${count}" = "1" ]; then
+              mkdir -p downloaded
+              gh release download "v${VERSION}" --repo "${GH_REPO}" \
+                --pattern "${asset}" --dir downloaded --clobber
+              cmp "release-assets/${asset}" "downloaded/${asset}"
+            else
+              echo "release contains duplicate asset names for ${asset}" >&2
+              exit 1
+            fi
+          done
