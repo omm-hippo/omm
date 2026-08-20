@@ -70,3 +70,26 @@ def test_executable_probe_rejects_wrong_format(tmp_path):
 
     with pytest.raises(npm_binary.NpmBinaryError, match="does not match target"):
         npm_binary.validate_executable(executable, "linux-x64-gnu", "1.2.3")
+
+
+def test_executable_probe_reports_captured_failure_output(tmp_path, monkeypatch):
+    executable = tmp_path / "omm"
+    executable.write_bytes(bytes.fromhex("7f454c46") + b" executable")
+
+    def fake_run(command, **kwargs):
+        raise subprocess.CalledProcessError(
+            1,
+            command,
+            output="startup output",
+            stderr="loader failure",
+        )
+
+    monkeypatch.setattr(npm_binary.subprocess, "run", fake_run)
+
+    with pytest.raises(npm_binary.NpmBinaryError) as raised:
+        npm_binary.validate_executable(executable, "linux-x64-gnu", "1.2.3")
+
+    message = str(raised.value)
+    assert "--version" in message
+    assert "startup output" in message
+    assert "loader failure" in message

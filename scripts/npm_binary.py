@@ -116,28 +116,33 @@ def _validate_magic(executable: Path, target: str) -> None:
         raise NpmBinaryError(f"executable does not match target {target}")
 
 
+def _run_probe(executable: Path, flag: str) -> subprocess.CompletedProcess[str]:
+    command = [str(executable), flag]
+    try:
+        return subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+    except subprocess.CalledProcessError as error:
+        stdout = error.stdout or "<empty>"
+        stderr = error.stderr or "<empty>"
+        raise NpmBinaryError(
+            f"standalone command failed ({error.returncode}): {' '.join(command)}\n"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        ) from error
+
+
 def validate_executable(executable: Path, target: str, version: str) -> None:
     _validate_magic(executable, target)
-    version_result = subprocess.run(
-        [str(executable), "--version"],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=120,
-    )
+    version_result = _run_probe(executable, "--version")
     if f"omm {version}" not in f"{version_result.stdout}\n{version_result.stderr}":
         raise NpmBinaryError("standalone command reported the wrong version")
-    help_result = subprocess.run(
-        [str(executable), "--help"],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=120,
-    )
+    help_result = _run_probe(executable, "--help")
     if "Example usage:" not in f"{help_result.stdout}\n{help_result.stderr}":
         raise NpmBinaryError("standalone command help probe failed")
 
