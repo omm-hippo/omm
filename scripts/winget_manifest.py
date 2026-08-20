@@ -16,9 +16,8 @@ except ImportError:  # Direct execution from the scripts directory.
 
 
 PACKAGE_IDENTIFIER = "OmmHippo.OMM"
-# The community repository accepts 1.10.0, and this compatibility baseline
-# covers every field used by the ZIP + nested portable manifest.
-MANIFEST_VERSION = "1.10.0"
+# The community repository's current manifest submission template requires 1.12.
+MANIFEST_VERSION = "1.12.0"
 _SHA256_PATTERN = re.compile(r"[0-9A-Fa-f]{64}")
 
 
