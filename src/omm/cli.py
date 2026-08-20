@@ -5489,6 +5489,7 @@ def setting_menu(ctx: typer.Context) -> None:
         catalog_manifest = current.get("catalog_manifest_url") or "not configured"
         update_channel = current.get("update_channel") or "stable"
         memory_guard_policy = current.get("memory_guard_policy", "ask")
+        error_reports_policy = error_report.send_policy(current)
 
         choice = _ask_select(
             questionary.select(
@@ -5510,6 +5511,9 @@ def setting_menu(ctx: typer.Context) -> None:
                     questionary.Choice("Catalog rollback", value="catalog-rollback"),
                     questionary.Choice(
                         f"Memory guard (current: {memory_guard_policy})", value="memory-guard"
+                    ),
+                    questionary.Choice(
+                        f"Error reports (current: {error_reports_policy})", value="error-reports"
                     ),
                     questionary.Choice("← Back", value="back"),
                 ],
@@ -5589,6 +5593,24 @@ def setting_menu(ctx: typer.Context) -> None:
             )
             if action is not None and action != "back":
                 configure_memory_guard(policy=action, poll_seconds=None, low_memory_seconds=None)
+        elif choice == "error-reports":
+            action = _ask_select(
+                questionary.select(
+                    f"Error reports (current: {error_reports_policy}):",
+                    choices=[
+                        questionary.Choice("Ask once per `omm contribute` run", value="ask"),
+                        questionary.Choice("Always send", value="enable"),
+                        questionary.Choice("Never send (default)", value="disable"),
+                        questionary.Choice("← Back", value="back"),
+                    ],
+                )
+            )
+            if action is not None and action != "back":
+                configure_error_reports(
+                    enable=(action == "enable"),
+                    disable=(action == "disable"),
+                    ask=(action == "ask"),
+                )
 
         if not _ask_confirm("Change another setting?", default=True):
             return
