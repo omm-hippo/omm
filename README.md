@@ -4,11 +4,23 @@
 
 ## Install
 
+**Verified Git-source installer (macOS / Linux):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
+```
+
+This bootstraps `python3`, `git`, and `pipx` if missing (Debian/Ubuntu via `apt`, or Homebrew on macOS), then installs `omm` as an isolated CLI via `pipx`. Open a new shell afterward so your `PATH` picks up `omm`.
+
 **PyPI (macOS, Linux, and Windows):**
 
 ```sh
 python -m pip install omm-model
 ```
+
+This does not go through the signed-commit verification described below; it
+relies on PyPI's own account security and TLS, the same trust model as
+installing any other PyPI package.
 
 For an isolated command-line installation, `pipx` is recommended:
 
@@ -27,14 +39,6 @@ python -m pip uninstall omm-model
 pipx upgrade omm-model
 pipx uninstall omm-model
 ```
-
-**Verified Git-source installer (macOS / Linux):**
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
-```
-
-This bootstraps `python3`, `git`, and `pipx` if missing (Debian/Ubuntu via `apt`, or Homebrew on macOS), then installs `omm` as an isolated CLI via `pipx`. Open a new shell afterward so your `PATH` picks up `omm`.
 
 **Verified Git-source installer (Windows PowerShell):**
 
@@ -123,7 +127,7 @@ Run a downloaded script with `-Purge` (PowerShell) or `--purge` (sh) to remove t
 ```sh
 omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
 omm scan [--json]  # Print a hardware, runner, and model summary (RAM, VRAM, OS)
-omm recommend  # Suggest a model that fits this machine, then offer to install it
+omm recommend [--json]  # Suggest a model that fits this machine, then offer to install it
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm benchmark <name>...  # Local quality + speed smoke evidence for one or more installed models
 omm search <query> [--json] [--skip-unfit] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated models, cached candidates, and HuggingFace
@@ -141,11 +145,13 @@ omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy i
 omm autoremove  # Clean up broken symlinks and orphaned partial downloads
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
 omm update  # Update a canonical OMM Git-source install; package installs print their manager command
-omm setting  # Interactive menu for telemetry, upload policy, version, calibration, and catalog trust
+omm setting  # Interactive menu for telemetry, upload policy, error reports, version, theme, calibration, and catalog trust
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
 omm setting upload --enable|--disable|--ask  # Configure the benchmark-upload send policy
+omm setting error-reports --enable|--disable|--ask  # Configure the opt-in crash/error-report send policy
 omm setting memory-guard --policy ask|block|observe  # Protect Ollama loads from live memory pressure
+omm setting theme [--set NAME]  # Show or change omm's output color theme
 omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
 omm setting catalog-status  # Show signed recommendation data and rollback snapshots
@@ -166,7 +172,7 @@ shown by `omm info`.
 
 ### Scripting
 
-All errors, warnings, and confirmation prompts print to stderr; `--json` output (supported on `search`/`list`/`info`/`benchmark`/`tune`/`scan`) is the only thing written to stdout, so it's safe to pipe (e.g. `omm list --json | jq .`). Any command that would otherwise prompt for confirmation fails fast with a non-zero exit code when there's no terminal attached instead of hanging — pass `--yes`/`-y` (works on every command that has a confirmation prompt) or the relevant flag (`install --skip-unfit`, `install --upload`/`--no-upload`) to run it unattended.
+All errors, warnings, and confirmation prompts print to stderr; `--json` output (supported on `search`/`list`/`info`/`benchmark`/`tune`/`scan`/`recommend`) is the only thing written to stdout, so it's safe to pipe (e.g. `omm list --json | jq .`). Any command that would otherwise prompt for confirmation fails fast with a non-zero exit code when there's no terminal attached instead of hanging — pass `--yes`/`-y` (works on every command that has a confirmation prompt) or the relevant flag (`install --skip-unfit`, `install --upload`/`--no-upload`) to run it unattended.
 
 Four global flags work either before or after the subcommand name (`omm --json search foo` and `omm search foo --json` are equivalent): `--json` (structured output, where supported — see above), `--yes`/`-y` (skip confirmation prompts), `--quiet`/`-q` (suppresses progress bars and background status/hint lines — e.g. download progress, "Verifying checksum...", scan's "Run: omm link" nudge; errors, warnings, and the result of what you asked for still print), and `--no-color` (disable ANSI colors on omm's own console output and its download progress bar; the `NO_COLOR` environment variable does the same). Passing `--json` or `--yes` to a command that doesn't use them prints a warning to stderr instead of silently doing nothing. Exit codes are consistent across every command: `0` success, `1` failure, `2` usage error (bad flag/argument).
 
@@ -185,9 +191,10 @@ command adapts after memory-heavy applications are opened or closed.
 `omm benchmark` runs a versioned eight-item bilingual arithmetic smoke pack
 against models already installed in Ollama. It stores parsed answers,
 correctness, pinned model metadata, and fixed-length timings under
-`~/.omm/evaluations/`; it stores no generated text. Opt-in v7 telemetry sends
-CPU model, architecture, and core counts so speed predictions can distinguish
-otherwise identical Linux `x86_64` machines.
+`~/.omm/evaluations/`; it stores no generated text. Opt-in telemetry sends a locally
+computed CPU chip score (and GPU chip score, when a GPU is present) plus
+architecture and core counts — never the raw CPU/GPU model name — so speed
+predictions can distinguish otherwise identical Linux `x86_64` machines.
 Results are uploaded only after explicit opt-in. The pack is intentionally
 small and is not a leaderboard.
 
