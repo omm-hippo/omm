@@ -207,7 +207,7 @@ def _load_link_ownership() -> dict[str, dict[str, object]]:
         return {}
     try:
         data = json.loads(LINK_OWNERSHIP_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         backup_corrupt_file(LINK_OWNERSHIP_PATH)
         return {}
     if not isinstance(data, dict):
@@ -919,7 +919,7 @@ def _ollama_link_already_current(manifest_path: Path, gguf_path: Path, blobs_dir
         return False
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return False
     digest = next(
         (
@@ -1445,7 +1445,7 @@ def unlink_ollama(
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             model_digests = _manifest_blob_digests(manifest)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             model_digests = set()
         # Blobs are content-addressed and can be shared by a user manifest or
         # another omm model. Only remove an omm-owned blob after no remaining
@@ -1472,7 +1472,7 @@ def unlink_ollama(
                 continue
             try:
                 data = json.loads(other.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError):
                 continue
             referenced.update(_manifest_blob_digests(data))
     for digest in model_digests - referenced:
@@ -1523,7 +1523,7 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
         for manifest_path in list(manifests_root.rglob("latest")):
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
+            except (OSError, ValueError):
                 continue
             layer_digests = {
                 layer["digest"].replace(":", "-") for layer in manifest.get("layers", [])

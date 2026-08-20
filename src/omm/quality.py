@@ -181,7 +181,7 @@ def load_pack(path: Path | None = None) -> tuple[dict, str]:
         raise QualityEvaluationError("quality pack exceeds the 1 MB safety limit")
     try:
         pack = json.loads(raw)
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise QualityEvaluationError(f"quality pack is not valid JSON: {error}") from error
     if not isinstance(pack, dict) or pack.get("schema_version") != 1:
         raise QualityEvaluationError("quality pack must be a schema-version 1 object")

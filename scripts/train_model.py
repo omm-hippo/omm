@@ -160,7 +160,7 @@ def load_telemetry_file(path: Path) -> list[dict]:
     """Load Firebase-shaped JSON, a JSON list, or local benchmark JSONL."""
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise ValueError(f"could not read {path}: {error}") from error
     try:
         payload = json.loads(raw)
@@ -925,7 +925,7 @@ def main() -> None:
         try:
             baseline_text = args.baseline.read_text(encoding="utf-8")
             baseline = json.loads(baseline_text)
-        except (OSError, json.JSONDecodeError) as error:
+        except (OSError, ValueError) as error:
             raise ValueError(f"could not read baseline artifact {args.baseline}: {error}") from error
         validate_artifact(baseline, FEATURE_ORDER)
         train_X, train_y, holdout_X, holdout_y = stable_holdout_split(

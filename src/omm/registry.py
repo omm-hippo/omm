@@ -15,7 +15,7 @@ def load_registry() -> dict[str, Any]:
         return {}
     try:
         data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         backup_corrupt_file(REGISTRY_PATH)
         return {}
     if not isinstance(data, dict):
