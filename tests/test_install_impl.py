@@ -556,6 +556,89 @@ def test_benchmark_always_runs_but_upload_needs_confirm(isolated_omm_home, monke
     assert outcome.telemetry_sent is False
 
 
+class _StoppedThenRunningAdapter:
+    """health() is unreachable until the daemon is started, mimicking the
+    real adapter's view of `omm install`'s daemon-autostart path."""
+
+    key = "ollama"
+
+    def __init__(self):
+        self.checks = 0
+
+    def health(self):
+        self.checks += 1
+        return RuntimeHealth(self.checks > 1, "1.0")
+
+    def list_models(self):
+        return [RuntimeModel("tinyllama", "tinyllama", False)]
+
+
+def test_install_offers_to_start_ollama_when_stopped_then_benchmarks_and_uploads(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _StoppedThenRunningAdapter())
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "stopped")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    started_proc = object()
+    start_calls, stop_calls = [], []
+    monkeypatch.setattr(
+        cli.benchmark, "start_ollama_daemon", lambda: start_calls.append(1) or started_proc
+    )
+    monkeypatch.setattr(cli.benchmark, "stop_ollama_daemon", lambda proc: stop_calls.append(proc))
+    confirms = []
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda prompt, *a, **k: confirms.append(prompt) or True
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 55.0)
+    uploaded = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: uploaded.append(event) or True
+    )
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
+
+    outcome = cli._install_impl(
+        _resolved(), verify_runtime_after_install=True, runtime_load_consent=None,
+    )
+
+    assert start_calls == [1]
+    assert stop_calls == [started_proc]
+    assert outcome.tokens_per_sec == 55.0
+    assert outcome.telemetry_sent is True
+    assert uploaded != []
+    assert any("Start it now" in p for p in confirms)
+    assert any("Load" in p and "memory" in p for p in confirms)
+
+
+def test_install_skips_ollama_autostart_prompt_when_declined(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _StoppedThenRunningAdapter())
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "stopped")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(
+        cli.benchmark,
+        "start_ollama_daemon",
+        lambda: (_ for _ in ()).throw(AssertionError("should not start")),
+    )
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(
+        cli.benchmark,
+        "benchmark_ollama",
+        lambda tag: (_ for _ in ()).throw(AssertionError("should not benchmark")),
+    )
+
+    outcome = cli._install_impl(
+        _resolved(), verify_runtime_after_install=True, runtime_load_consent=None, no_upload=True,
+    )
+
+    assert outcome.tokens_per_sec is None
+    assert outcome.compatibility_status == "failed"
+
+
 class _InstallCompatibilityAdapter:
     key = "ollama"
 

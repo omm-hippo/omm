@@ -3847,10 +3847,23 @@ def _install_impl(
     )
     model_was_preloaded = False
     ollama_runtime_version = None
+    ollama_daemon_handle = None
     if run_ollama_benchmark and verify_runtime_after_install:
         adapter = _compatibility_adapter("ollama")
         health = adapter.health()
         ollama_runtime_version = health.version
+        if not health.reachable and benchmark.ollama_install_state() == "stopped":
+            # Installed but not running - offer to start it, same
+            # start/ask/stop-when-done pattern as `_ensure_engine_running`
+            # uses for contribute/benchmark, so a plain install can still
+            # get a real measurement instead of only the ML prediction.
+            try:
+                ollama_daemon_handle = _ensure_ollama_running("install", assume_yes=assume_yes)
+            except typer.Exit:
+                ollama_daemon_handle = None
+            if ollama_daemon_handle is not None:
+                health = adapter.health()
+                ollama_runtime_version = health.version
         if not health.reachable:
             _record_install_compatibility(
                 filename,
@@ -3889,6 +3902,9 @@ def _install_impl(
                     )
                     runtime_load_declined = True
                     run_ollama_benchmark = False
+                    if ollama_daemon_handle is not None:
+                        _stop_engine_daemon("ollama", ollama_daemon_handle)
+                        ollama_daemon_handle = None
 
     if run_ollama_benchmark or run_lmstudio_benchmark:
         if run_lmstudio_benchmark and not use_quality_eval:
@@ -3907,7 +3923,7 @@ def _install_impl(
         # so the reading describes other programs rather than omm's own work.
         host_cpu_load_percent = _sample_background_cpu_load()
         host_cpu_busy = _cpu_load_is_high(host_cpu_load_percent)
-        started_daemon = None
+        started_daemon = ollama_daemon_handle
         pressure_watcher = None
         if (
             not verify_runtime_after_install
