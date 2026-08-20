@@ -418,10 +418,15 @@ def unlink_owned_link(path: Path, expected_source: Path | None = None) -> bool:
     return False
 
 
-def _unlink_owned_link_with_retry(path: Path, attempts: int = 8) -> bool:
+def _unlink_owned_link_with_retry(
+    path: Path, expected_source: Path | None = None, attempts: int = 8
+) -> bool:
+    """Retry an unlink against a Windows sharing violation (WinError 32):
+    a model file just unloaded by Ollama/LM Studio/a custom app can hold
+    its handle open for a moment after the engine reports it as stopped."""
     for attempt in range(attempts):
         try:
-            return unlink_owned_link(path)
+            return unlink_owned_link(path, expected_source=expected_source)
         except PermissionError:
             if attempt == attempts - 1:
                 raise
@@ -660,7 +665,7 @@ def link_custom_directory(
 
 def unlink_custom_directory(filename: str, directory: Path) -> None:
     dst = directory.expanduser() / Path(filename.replace("\\", "/")).name
-    unlink_owned_link(dst, expected_source=MODELS_DIR / filename)
+    _unlink_owned_link_with_retry(dst, expected_source=MODELS_DIR / filename)
 
 
 def autoremove_custom_directory(directory: Path) -> int:
@@ -684,7 +689,7 @@ def unlink_lmstudio(filename: str, repo_id: str | None) -> None:
     dst = root / publisher / repo / Path(filename.replace("\\", "/")).name
     if not dst.parent.resolve().is_relative_to(root.resolve()):
         raise LinkError("Refusing LM Studio path outside the managed model directory.")
-    if unlink_owned_link(dst, expected_source=MODELS_DIR / filename):
+    if _unlink_owned_link_with_retry(dst, expected_source=MODELS_DIR / filename):
         for parent in (dst.parent, dst.parent.parent):
             try:
                 parent.rmdir()
@@ -706,14 +711,22 @@ def unlink_lmstudio(filename: str, repo_id: str | None) -> None:
 def _lms_cli_path() -> str | None:
     """Locate the `lms` CLI LM Studio bootstraps on first run. Not
     guaranteed to be on PATH in a non-interactive shell even when
-    installed, so also check the well-known bootstrap location directly -
+    installed (same stale-PATH-right-after-install gap `find_ollama_executable`
+    works around), so also check the well-known bootstrap location directly -
     confirmed via `lms bootstrap` against a real LM Studio 0.4.20 install,
-    which installs to <lmstudio_home_dir>/bin/lms."""
+    which installs to <lmstudio_home_dir>/bin/lms (lms.exe on Windows - the
+    extensionless name never exists there, so it must be checked first or
+    every Windows caller silently sees "not installed")."""
     found = shutil.which("lms")
     if found is not None:
         return found
-    candidate = lmstudio_home_dir() / "bin" / "lms"
-    return str(candidate) if candidate.is_file() else None
+    bin_dir = lmstudio_home_dir() / "bin"
+    names = ["lms.exe", "lms"] if platform.system() == "Windows" else ["lms"]
+    for name in names:
+        candidate = bin_dir / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def _lmstudio_server_status(lms_path: str, timeout: float = 5) -> dict | None:

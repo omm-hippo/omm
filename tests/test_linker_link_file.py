@@ -224,6 +224,42 @@ def test_windows_hardlink_lifecycle_removes_only_recorded_link(isolated_omm_home
     assert destination.read_bytes() == b"someone else's model"
 
 
+def test_unlink_custom_directory_retries_past_transient_permission_error(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A model just unloaded by a custom app can hold its handle open for a
+    moment on Windows (WinError 32) - unlink_custom_directory must retry
+    instead of raising, same as the Ollama blob cleanup already does."""
+    source = linker.MODELS_DIR / "model.gguf"
+    source.parent.mkdir(exist_ok=True)
+    source.write_bytes(b"weights")
+    directory = tmp_path / "custom"
+    destination = linker.link_custom_directory(source, directory)
+    assert destination.exists()
+
+    monkeypatch.setattr(linker.time, "sleep", lambda seconds: None)
+    calls = {"n": 0}
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, missing_ok=False):
+        # Only the actual model file is a "locked handle" in this scenario -
+        # the ownership-registry's own temp-file cleanup unlink must not be
+        # counted/faked, or it would throw off the retry-count assertion.
+        if self != destination:
+            return real_unlink(self, missing_ok=missing_ok)
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError("WinError 32")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    linker.unlink_custom_directory(source.name, directory)
+
+    assert not destination.exists()
+    assert calls["n"] == 3
+
+
 def test_windows_hardlink_lmstudio_and_ollama_uninstall_lifecycle(isolated_omm_home, tmp_path, monkeypatch):
     _force_windows_hardlinks(monkeypatch)
     source = linker.MODELS_DIR / "hub.gguf"
@@ -248,7 +284,7 @@ def test_windows_hardlink_lmstudio_and_ollama_uninstall_lifecycle(isolated_omm_h
 def test_windows_owned_blob_delete_retries_transient_file_lock(monkeypatch, tmp_path):
     calls = []
 
-    def flaky_unlink(path):
+    def flaky_unlink(path, expected_source=None):
         calls.append(path)
         if len(calls) < 3:
             raise PermissionError("mapped file still open")

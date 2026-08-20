@@ -1216,12 +1216,26 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
         return
     if version_check.should_start_check(branch):
         version_check.mark_checking(branch)
+        args = [sys.executable, "-m", "omm.cli", "_bg-version-check"]
+        # `start_new_session` (setsid) is POSIX-only - CPython's Windows
+        # _execute_child ignores it entirely, so the child stays in the
+        # parent's process group and can be torn down with it (e.g. the
+        # console window closing) before the `git ls-remote` it runs
+        # finishes. DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP is the
+        # Windows equivalent of actually detaching it.
+        if platform.system() == "Windows":
+            kwargs = {
+                "creationflags": subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+            }
+        else:
+            kwargs = {"start_new_session": True}
         try:
             subprocess.Popen(
-                [sys.executable, "-m", "omm.cli", "_bg-version-check"],
+                args,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
+                **kwargs,
             )
         except OSError:
             pass
@@ -2148,10 +2162,17 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
                     result = _finalize_legacy_pipx_migration(result, legacy_state)
         return result
     except FileNotFoundError:
-        err_console.print(
-            "[error]git or pipx not found. Install them first, or rerun the installer:[/error]\n"
-            "  curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh"
-        )
+        if platform.system() == "Windows":
+            err_console.print(
+                "[error]git or pipx not found. Install them first, or rerun the installer:[/error]\n"
+                "  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
+                "irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex"
+            )
+        else:
+            err_console.print(
+                "[error]git or pipx not found. Install them first, or rerun the installer:[/error]\n"
+                "  curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh"
+            )
         raise typer.Exit(1)
     except OSError as e:
         err_console.print(f"[error]Update failed: {e}[/error]")
@@ -4442,11 +4463,8 @@ def _cleanup_download_parts(destination: Path) -> bool:
     cleaned = False
     for path in (part, _sidecar_path(part), metadata):
         if path.exists():
-            try:
-                path.unlink()
-                cleaned = True
-            except OSError:
-                pass
+            _unlink_with_retry(path)
+            cleaned = cleaned or not path.exists()
     return cleaned
 
 
@@ -4457,11 +4475,8 @@ def _cleanup_incomplete_install(filename: str) -> bool:
         return False
     cleaned = _cleanup_download_parts(dest)
     if dest.exists():
-        try:
-            dest.unlink()
-            cleaned = True
-        except OSError:
-            pass
+        _unlink_with_retry(dest)
+        cleaned = cleaned or not dest.exists()
     return cleaned
 
 
