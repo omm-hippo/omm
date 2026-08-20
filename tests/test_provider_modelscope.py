@@ -12,6 +12,16 @@ from omm.providers import modelscope
 from omm.providers.base import ModelResolutionError
 
 
+@pytest.fixture(autouse=True)
+def _clear_list_repo_files_cache():
+    """Most tests here reuse the same repo_id ("org/repo") against different
+    mocked responses - without clearing it, _list_repo_files' lru_cache
+    would serve an earlier test's mocked payload to a later one."""
+    modelscope._list_repo_files.cache_clear()
+    yield
+    modelscope._list_repo_files.cache_clear()
+
+
 class _FakeResponse:
     def __init__(self, status_code=200, payload=None):
         self.status_code = status_code
