@@ -40,6 +40,25 @@ pipx upgrade omm-model
 pipx uninstall omm-model
 ```
 
+**Homebrew Tap (macOS):**
+
+```sh
+brew install omm-hippo/omm/omm
+```
+
+Upgrade or remove the formula with Homebrew. Removing the formula preserves
+downloaded models and settings under `OMM_HOME`:
+
+```sh
+brew upgrade omm-hippo/omm/omm
+brew uninstall omm-hippo/omm/omm
+```
+
+The Homebrew formula and PyPI package can move on separate release schedules;
+use `brew info omm-hippo/omm/omm` to see the version currently provided by the
+Tap. `omm update` does not modify a Homebrew installation and instead prints
+the matching `brew upgrade` command.
+
 **Verified Git-source installer (Windows PowerShell):**
 
 ```powershell
@@ -61,6 +80,16 @@ Both installers clone to a versioned staging directory, verify the signed commit
 pipx installation it leaves files unchanged and prints the matching package
 manager upgrade command. The Git-only beta channel is likewise unavailable to
 package-managed installations.
+
+### Package-channel verification
+
+| Installation path | Highest verified level | Remaining limitation |
+|---|---|---|
+| PyPI / pipx | Simulator-verified on GitHub-hosted Windows, macOS, and Ubuntu runners using the public package | A real upgrade from the first public release remains a separate user-path check |
+| Homebrew Tap | Physical-device-verified on an Apple Silicon Mac for public Tap install, `omm --version`, `brew test`, upgrade guidance, and uninstall | Intel Mac installation is not yet physical-device-verified |
+
+Additional package-manager commands are added here only after their public
+registry path has been installed and verified.
 
 ### Local AI runners
 
