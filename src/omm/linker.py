@@ -53,6 +53,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import tarfile
 import time
@@ -123,7 +124,19 @@ def _systemd_ollama_models_dir() -> Path | None:
         props[key] = value
     if props.get("ActiveState") != "active":
         return None
-    for env_pair in props.get("Environment", "").split():
+    # systemd prints Environment= as a shell-quoted, space-separated list, so
+    # an entry whose value contains spaces comes back quoted as a single word
+    # ("OLLAMA_MODELS=/mnt/ollama models"). A plain str.split() would slice
+    # that path in half at the first space and hand back a directory that
+    # doesn't exist; shlex.split() unquotes it the way a shell would. Fall
+    # back to a naive split if the quoting is somehow unbalanced, so a weird
+    # unit can't take ollama_models_dir() down with a ValueError.
+    environment = props.get("Environment", "")
+    try:
+        env_pairs = shlex.split(environment)
+    except ValueError:
+        env_pairs = environment.split()
+    for env_pair in env_pairs:
         key, _, value = env_pair.partition("=")
         if key == "OLLAMA_MODELS" and value:
             return Path(value).expanduser()
