@@ -121,6 +121,41 @@ def test_install_ollama_linux_failure_message_includes_manual_link(monkeypatch):
     assert "https://ollama.com/download" in result.message
 
 
+def test_find_ollama_executable_windows_finds_documented_location_when_path_stale(
+    tmp_path, monkeypatch
+):
+    """winget updates the registry PATH, but the already-running `omm setup`
+    process keeps the PATH it started with - `shutil.which` alone stays
+    blind to a just-finished install until the terminal restarts."""
+    executable = tmp_path / "Programs" / "Ollama" / "ollama.exe"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"")
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.delenv("ProgramFiles", raising=False)
+
+    assert linker.find_ollama_executable() == executable
+
+
+def test_is_ollama_installed_windows_true_when_only_stale_path_location_found(
+    tmp_path, monkeypatch
+):
+    """Directly reproduces the `omm setup` wizard reporting a just-completed
+    winget install as failed: no `~/.ollama` yet, and PATH not refreshed in
+    this process, but the binary is already on disk where winget put it."""
+    executable = tmp_path / "Programs" / "Ollama" / "ollama.exe"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"")
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.delenv("ProgramFiles", raising=False)
+    monkeypatch.setattr(linker.Path, "home", lambda: tmp_path / "not-home")
+
+    assert linker.is_ollama_installed() is True
+
+
 def test_install_ollama_mac_failure_message_includes_manual_link(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)

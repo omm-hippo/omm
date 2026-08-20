@@ -6,7 +6,6 @@ quality.py's _generate_with_runtime when engine="lmstudio" is selected.
 
 from __future__ import annotations
 
-import os
 import platform
 import shutil
 import statistics
@@ -15,6 +14,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from omm.linker import find_ollama_executable  # noqa: F401 - re-exported for callers
+
 OLLAMA_HOST = "http://localhost:11434"
 _BENCHMARK_PROMPT = "Explain what an operating system is."
 # Matches quality._speed_probe's measured num_predict, so speed numbers from
@@ -22,36 +23,6 @@ _BENCHMARK_PROMPT = "Explain what an operating system is."
 _NUM_PREDICT = 64
 _DAEMON_START_TIMEOUT = 15.0
 _last_daemon_start_error: str | None = None
-
-
-def find_ollama_executable() -> Path | None:
-    """Find Ollama even when a freshly installed Windows PATH is stale."""
-    on_path = shutil.which("ollama")
-    if on_path:
-        return Path(on_path)
-    if platform.system() != "Windows":
-        return None
-
-    roots = []
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    program_files = os.environ.get("ProgramFiles")
-    if local_app_data:
-        roots.extend(
-            [
-                Path(local_app_data) / "Programs" / "Ollama",
-                Path(local_app_data) / "Ollama",
-            ]
-        )
-    if program_files:
-        roots.append(Path(program_files) / "Ollama")
-    for root in roots:
-        candidate = root / "ollama.exe"
-        try:
-            if candidate.is_file():
-                return candidate
-        except OSError:
-            continue
-    return None
 
 
 def ollama_install_state() -> str:

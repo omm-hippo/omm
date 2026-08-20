@@ -172,6 +172,43 @@ def is_lmstudio_installed() -> bool:
     return lmstudio_home_dir().exists()
 
 
+def find_ollama_executable() -> Path | None:
+    """Find Ollama even when a freshly installed Windows PATH is stale.
+
+    winget writes the new PATH entry to the registry, but an already-running
+    process (like the `omm setup` wizard that just triggered the install)
+    keeps the PATH it started with - `shutil.which` alone stays blind to the
+    fresh install until the terminal restarts. Falling back to Ollama's
+    documented install locations catches it immediately instead.
+    """
+    on_path = shutil.which("ollama")
+    if on_path:
+        return Path(on_path)
+    if platform.system() != "Windows":
+        return None
+
+    roots = []
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    program_files = os.environ.get("ProgramFiles")
+    if local_app_data:
+        roots.extend(
+            [
+                Path(local_app_data) / "Programs" / "Ollama",
+                Path(local_app_data) / "Ollama",
+            ]
+        )
+    if program_files:
+        roots.append(Path(program_files) / "Ollama")
+    for root in roots:
+        candidate = root / "ollama.exe"
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
 def is_ollama_installed() -> bool:
     # Homebrew's ollama-app cask installs Ollama.app; the plain `ollama`
     # formula (common on Linux/Homebrew-CLI setups) installs only the
@@ -179,7 +216,7 @@ def is_ollama_installed() -> bool:
     # isn't reported as "not installed".
     if platform.system() == "Darwin":
         return _app_bundle_installed("Ollama") or shutil.which("ollama") is not None
-    return (Path.home() / ".ollama").exists() or shutil.which("ollama") is not None
+    return (Path.home() / ".ollama").exists() or find_ollama_executable() is not None
 
 
 class LinkError(Exception):
@@ -1174,7 +1211,7 @@ def _ollama_cli_version() -> str | None:
     compatibility probe below runs once per Ollama upgrade instead of on
     every link. Works even with no daemon running (~15-30ms observed,
     confirmed live) - it's a pure CLI query, not a network round trip."""
-    exe = shutil.which("ollama")
+    exe = find_ollama_executable()
     if exe is None:
         return None
     try:
@@ -1224,7 +1261,7 @@ def _ollama_accepts_manifest(model_name: str) -> bool | None:
     hand-rolled shape has drifted from what this Ollama version expects),
     None if the daemon isn't reachable at all - nothing to compare against,
     not a format problem."""
-    exe = shutil.which("ollama")
+    exe = find_ollama_executable()
     if exe is None:
         return None
     try:
@@ -1262,7 +1299,7 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
     Without this, `unlink_ollama`/`autoremove_ollama` would treat the
     resulting manifest as unowned and silently refuse to ever clean it up.
     """
-    exe = shutil.which("ollama")
+    exe = find_ollama_executable()
     if exe is None:
         raise LinkError(
             f"Ollama's manifest format has changed and omm's link for {model_name} no "
