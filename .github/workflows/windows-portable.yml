@@ -105,6 +105,55 @@ jobs:
             --version "${{ steps.identity.outputs.version }}" `
             --archive $archive
           if ($LASTEXITCODE -ne 0) { throw "portable archive verification failed" }
+      - name: Reuse a verified immutable release asset on reruns
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $version = "${{ steps.identity.outputs.version }}"
+          $archiveName = "omm-windows-x64-$version.zip"
+          $checksumName = "$archiveName.sha256"
+          $releaseJson = gh api "repos/$env:GH_REPO/releases/tags/v$version"
+          if ($LASTEXITCODE -ne 0) { throw "could not inspect the existing GitHub Release" }
+          $release = $releaseJson | ConvertFrom-Json
+          $archiveAssets = @($release.assets | Where-Object { $_.name -eq $archiveName })
+          $checksumAssets = @($release.assets | Where-Object { $_.name -eq $checksumName })
+          if ($archiveAssets.Count -eq 0 -and $checksumAssets.Count -eq 0) {
+            Write-Host "No Windows release assets exist yet; the new validated build remains authoritative."
+            return
+          }
+          if ($archiveAssets.Count -ne 1 -or $checksumAssets.Count -ne 1) {
+            throw "the release must contain either neither asset or exactly one archive and checksum"
+          }
+
+          New-Item -ItemType Directory -Force -Path published-assets | Out-Null
+          gh release download "v$version" --repo $env:GH_REPO `
+            --pattern $archiveName --pattern $checksumName `
+            --dir published-assets --clobber
+          if ($LASTEXITCODE -ne 0) { throw "could not download the existing Windows release assets" }
+
+          $publishedArchive = Join-Path published-assets $archiveName
+          $publishedChecksum = Join-Path published-assets $checksumName
+          $checksumLine = (Get-Content -LiteralPath $publishedChecksum -Raw).Trim()
+          $checksumPattern = '^(?<hash>[0-9A-Fa-f]{64})  ' + [regex]::Escape($archiveName) + '$'
+          if ($checksumLine -notmatch $checksumPattern) {
+            throw "the published checksum file has an unexpected format"
+          }
+          $actualHash = (Get-FileHash -LiteralPath $publishedArchive -Algorithm SHA256).Hash
+          if ($actualHash.ToLowerInvariant() -ne $Matches.hash.ToLowerInvariant()) {
+            throw "the published archive does not match its checksum"
+          }
+          gh attestation verify $publishedArchive --repo $env:GH_REPO
+          if ($LASTEXITCODE -ne 0) { throw "the published archive has no valid repository attestation" }
+
+          Copy-Item -LiteralPath $publishedArchive -Destination "release-assets/$archiveName" -Force
+          Copy-Item -LiteralPath $publishedChecksum -Destination "release-assets/$checksumName" -Force
+          python tooling/scripts/windows_portable.py verify `
+            --version $version `
+            --archive "release-assets/$archiveName"
+          if ($LASTEXITCODE -ne 0) { throw "the published archive failed structural verification" }
       - name: Generate and validate the WinGet manifest set
         shell: pwsh
         run: |
