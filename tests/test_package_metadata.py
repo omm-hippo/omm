@@ -1,4 +1,5 @@
 import importlib.metadata
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -234,4 +235,86 @@ def test_unrecognized_install_without_distribution_stays_unknown(monkeypatch, tm
         package_metadata, "_installation_paths", lambda distribution: [Path("/unknown/place")]
     )
 
+    assert package_metadata.install_source() is package_metadata.InstallSource.UNKNOWN
+
+
+def _write_npm_package(tmp_path, monkeypatch, *, overrides=None):
+    current = _FakeDistribution(version="0.2.142")
+    package_name = "@omm-hippo/omm-darwin-arm64"
+    target = "darwin-arm64"
+    binary_name = "bin/omm"
+    binary = tmp_path / binary_name
+    binary.parent.mkdir()
+    binary.write_bytes(b"standalone omm")
+    manifest = {
+        "name": package_name,
+        "version": "0.2.142",
+        "os": ["darwin"],
+        "cpu": ["arm64"],
+        "omm": {
+            "distribution": "omm-model",
+            "target": target,
+            "binary": binary_name,
+        },
+    }
+    for key, value in (overrides or {}).items():
+        if key.startswith("omm."):
+            manifest["omm"][key.removeprefix("omm.")] = value
+        else:
+            manifest[key] = value
+    (tmp_path / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(package_metadata, "_package_checkout", lambda: tmp_path / "checkout")
+    monkeypatch.setattr(
+        package_metadata, "find_distribution", lambda: ("omm-model", current)
+    )
+    monkeypatch.setattr(package_metadata, "direct_url", lambda distribution=None: None)
+    monkeypatch.setattr(
+        package_metadata,
+        "_installation_paths",
+        lambda distribution: [Path("/ordinary/site-packages")],
+    )
+    monkeypatch.setattr(
+        package_metadata,
+        "_npm_target",
+        lambda: (package_name, target, binary_name, "darwin", "arm64"),
+    )
+    monkeypatch.setenv("OMM_NPM_PACKAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("OMM_NPM_LAUNCHER_PACKAGE", "@omm-hippo/omm")
+    monkeypatch.setattr(package_metadata.sys, "executable", str(binary))
+    return binary
+
+
+def test_verified_npm_package_is_classified(monkeypatch, tmp_path):
+    _write_npm_package(tmp_path, monkeypatch)
+
+    assert package_metadata.install_source() is package_metadata.InstallSource.NPM
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"name": "@example/omm-darwin-arm64"},
+        {"version": "9.9.9"},
+        {"os": ["linux"]},
+        {"cpu": ["x64"]},
+        {"omm.distribution": "unrelated"},
+        {"omm.target": "darwin-x64"},
+        {"omm.binary": "bin/other"},
+    ],
+)
+def test_invalid_npm_manifest_fails_closed(monkeypatch, tmp_path, overrides):
+    _write_npm_package(tmp_path, monkeypatch, overrides=overrides)
+
+    assert package_metadata.install_source() is package_metadata.InstallSource.UNKNOWN
+
+
+def test_npm_claim_requires_exact_launcher_and_executable(monkeypatch, tmp_path):
+    _write_npm_package(tmp_path, monkeypatch)
+    monkeypatch.setenv("OMM_NPM_LAUNCHER_PACKAGE", "@example/omm")
+    assert package_metadata.install_source() is package_metadata.InstallSource.UNKNOWN
+
+    monkeypatch.setenv("OMM_NPM_LAUNCHER_PACKAGE", "@omm-hippo/omm")
+    other = tmp_path / "other-omm"
+    other.write_bytes(b"other")
+    monkeypatch.setattr(package_metadata.sys, "executable", str(other))
     assert package_metadata.install_source() is package_metadata.InstallSource.UNKNOWN

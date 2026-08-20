@@ -1,0 +1,39 @@
+{
+  "name": "@omm-hippo/omm",
+  "version": "0.2.142",
+  "description": "npm launcher for the Open Model Manager CLI",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omm-hippo/omm.git",
+    "directory": "packaging/npm/launcher"
+  },
+  "homepage": "https://github.com/omm-hippo/omm",
+  "bugs": "https://github.com/omm-hippo/omm/issues",
+  "bin": {
+    "omm": "bin/omm.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "targets.json"
+  ],
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "optionalDependencies": {
+    "@omm-hippo/omm-darwin-arm64": "0.2.142",
+    "@omm-hippo/omm-darwin-x64": "0.2.142",
+    "@omm-hippo/omm-linux-arm64-gnu": "0.2.142",
+    "@omm-hippo/omm-linux-x64-gnu": "0.2.142",
+    "@omm-hippo/omm-win32-x64": "0.2.142"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

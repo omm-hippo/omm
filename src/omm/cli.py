@@ -2203,6 +2203,10 @@ def _package_managed_update_guidance(
             "This OMM installation is managed by winget.\n"
             "Update it with: winget upgrade --id OmmHippo.OMM -e"
         ),
+        package_metadata.InstallSource.NPM: (
+            "This OMM installation is managed by npm.\n"
+            "Update it with: npm update --global @omm-hippo/omm"
+        ),
         package_metadata.InstallSource.UNKNOWN: (
             "This OMM installation is not a canonical OMM Git source checkout.\n"
             "Update it with the same package manager that installed it."
