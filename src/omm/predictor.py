@@ -252,7 +252,10 @@ def predict_speed_interval(
     apply_calibration: bool = True,
 ) -> tuple[float, float, float]:
     """Predicted speed plus tree-disagreement interval for one engine."""
-    if candidate_fits_memory(hw, candidate) is False:
+    # Unknown fit (metadata too sparse to size the model) must not be
+    # treated as "fits" - an unsized model could easily be too large for
+    # this hardware, so fail safe rather than recommend a guess.
+    if candidate_fits_memory(hw, candidate) is not True:
         return 0.0, 0.0, 0.0
     features = build_prediction_features(hw, candidate, engine=engine)
     mean, low, high = predict_ensemble_range(trees, features)
