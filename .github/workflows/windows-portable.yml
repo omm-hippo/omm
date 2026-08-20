@@ -319,7 +319,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
           Set-Content -LiteralPath (Join-Path $dataRoot "preserve-me") -Value "user data"
           $env:OMM_HOME = $dataRoot
-          winget uninstall --id OmmHippo.OMM -e `
+          # The package is not in the community source yet, so use the same
+          # local manifest for correlation during this pre-submission smoke test.
+          winget uninstall --manifest $manifestPath `
             --silent `
             --accept-source-agreements `
             --disable-interactivity
