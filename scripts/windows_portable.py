@@ -132,6 +132,8 @@ def validate_executable(executable: Path, version: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
     )
     version_output = f"{version_result.stdout}\n{version_result.stderr}"
@@ -145,6 +147,8 @@ def validate_executable(executable: Path, version: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
     )
     help_output = f"{help_result.stdout}\n{help_result.stderr}"

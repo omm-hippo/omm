@@ -12,8 +12,10 @@ name: Build Windows portable release
       - ".github/workflows/windows-portable.yml"
       - "pyproject.toml"
       - "requirements-windows-portable.txt"
+      - "scripts/winget_manifest.py"
       - "scripts/windows_portable.py"
       - "src/**"
+      - "tests/test_winget_manifest.py"
       - "tests/test_windows_portable.py"
       - "LICENSE"
 
@@ -103,6 +105,26 @@ jobs:
             --version "${{ steps.identity.outputs.version }}" `
             --archive $archive
           if ($LASTEXITCODE -ne 0) { throw "portable archive verification failed" }
+      - name: Generate and validate the WinGet manifest set
+        shell: pwsh
+        run: |
+          $version = "${{ steps.identity.outputs.version }}"
+          $archive = "release-assets/omm-windows-x64-$version.zip"
+          $releaseDate = git -C source show -s --format=%cs HEAD
+          if ($LASTEXITCODE -ne 0) { throw "could not resolve the release date" }
+          $installerUrl = "https://github.com/omm-hippo/omm/releases/download/v$version/omm-windows-x64-$version.zip"
+          python tooling/scripts/winget_manifest.py `
+            --version $version `
+            --archive $archive `
+            --release-date $releaseDate `
+            --installer-url $installerUrl `
+            --output-dir release-assets/winget
+          if ($LASTEXITCODE -ne 0) { throw "WinGet manifest generation failed" }
+          $manifestPath = "release-assets/winget/manifests/o/OmmHippo/OMM/$version"
+          $winget = Get-Command winget -ErrorAction SilentlyContinue
+          if ($null -eq $winget) { throw "winget is unavailable on this Windows runner" }
+          winget validate --manifest $manifestPath
+          if ($LASTEXITCODE -ne 0) { throw "winget rejected the generated manifest" }
       - name: Exercise the archive from a winget-shaped path
         shell: pwsh
         run: |
@@ -187,3 +209,47 @@ jobs:
               exit 1
             fi
           done
+
+  verify-winget-install:
+    name: Install and uninstall through the published WinGet manifest
+    if: github.event_name == 'workflow_dispatch'
+    needs: publish
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-portable-${{ inputs.version }}
+          path: release-assets
+      - name: Exercise the published user install and uninstall path
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          $manifestPath = "release-assets/winget/manifests/o/OmmHippo/OMM/$version"
+          $winget = Get-Command winget -ErrorAction SilentlyContinue
+          if ($null -eq $winget) { throw "winget is unavailable on this Windows runner" }
+          winget settings --enable LocalManifestFiles
+          if ($LASTEXITCODE -ne 0) { throw "could not enable local manifest files" }
+          winget install --manifest $manifestPath `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements `
+            --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw "WinGet installation failed" }
+          $command = Get-Command omm -ErrorAction Stop
+          & $command.Source --version
+          if ($LASTEXITCODE -ne 0) { throw "installed command version probe failed" }
+          $dataRoot = Join-Path $env:RUNNER_TEMP "omm-winget-user-data"
+          New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
+          Set-Content -LiteralPath (Join-Path $dataRoot "preserve-me") -Value "user data"
+          $env:OMM_HOME = $dataRoot
+          winget uninstall --id OmmHippo.OMM -e --silent --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw "WinGet uninstall failed" }
+          if (Get-Command omm -ErrorAction SilentlyContinue) {
+            throw "omm command remains exposed after WinGet uninstall"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $dataRoot "preserve-me"))) {
+            throw "WinGet uninstall removed user data"
+          }

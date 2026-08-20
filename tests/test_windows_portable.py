@@ -104,6 +104,8 @@ def test_executable_probe_checks_version_and_help(tmp_path, monkeypatch):
             "check": True,
             "capture_output": True,
             "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
             "timeout": 120,
         }
         output = "omm 1.2.3" if command[-1] == "--version" else "Example usage:"
@@ -120,9 +122,10 @@ def test_executable_probe_checks_version_and_help(tmp_path, monkeypatch):
 
 
 def test_windows_portable_workflow_is_pinned_and_release_gated():
-    workflow = (ROOT / ".github/workflows/windows-portable.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow_path = ROOT / ".github/workflows/windows-portable.yml"
+    if not workflow_path.is_file():
+        pytest.skip("GitHub workflow files are excluded from the Docker build context")
+    workflow = workflow_path.read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
@@ -134,6 +137,10 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert "gh release upload" in workflow and "gh release upload --clobber" not in workflow
     assert "[System.Diagnostics.ProcessStartInfo]::new()" in workflow
     assert "$process.ExitCode -eq 0" in workflow
+    assert "winget validate --manifest" in workflow
+    assert "winget install --manifest" in workflow
+    assert "winget uninstall --id OmmHippo.OMM -e" in workflow
+    assert "scripts/winget_manifest.py" in workflow
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
     assert "actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661" in workflow
 
