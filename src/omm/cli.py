@@ -5625,16 +5625,21 @@ def search(
     local_matches = search_mod.match_candidates(pool, query)
 
     local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
-    hf_matches = [
-        c
-        for c in search_mod.search_huggingface(query)
-        if c.get("repo_id") not in local_repo_ids
-    ]
-    ms_matches = [
-        c
-        for c in (search_mod.search_modelscope(query) if not skip_ms else [])
-        if c.get("repo_id") not in local_repo_ids
-    ]
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        hf_future = executor.submit(search_mod.search_huggingface, query)
+        ms_future = (
+            executor.submit(search_mod.search_modelscope, query) if not skip_ms else None
+        )
+        hf_matches = [
+            c for c in hf_future.result() if c.get("repo_id") not in local_repo_ids
+        ]
+        ms_matches = [
+            c
+            for c in (ms_future.result() if ms_future else [])
+            if c.get("repo_id") not in local_repo_ids
+        ]
 
     combined = search_mod.dedupe_by_base_repo(local_matches + hf_matches + ms_matches)
     if provider is not None:
