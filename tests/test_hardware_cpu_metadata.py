@@ -4,6 +4,50 @@ from types import SimpleNamespace
 from omm import hardware
 
 
+def test_macos_os_version_prefers_product_version_without_kernel_fallback(monkeypatch):
+    monkeypatch.setattr(
+        hardware.platform,
+        "mac_ver",
+        lambda: ("26.5.2", ("", "", ""), "arm64"),
+    )
+    monkeypatch.setattr(
+        hardware.platform,
+        "release",
+        lambda: (_ for _ in ()).throw(AssertionError("kernel fallback must not run")),
+    )
+
+    assert hardware._os_version("Darwin") == "26.5.2"
+
+
+def test_macos_os_version_falls_back_when_product_version_is_empty(monkeypatch):
+    monkeypatch.setattr(hardware.platform, "mac_ver", lambda: ("", ("", "", ""), "arm64"))
+    monkeypatch.setattr(hardware.platform, "release", lambda: "25.5.0")
+
+    assert hardware._os_version("Darwin") == "25.5.0"
+
+
+def test_macos_os_version_falls_back_when_product_version_probe_fails(monkeypatch):
+    monkeypatch.setattr(
+        hardware.platform,
+        "mac_ver",
+        lambda: (_ for _ in ()).throw(OSError("sw_vers unavailable")),
+    )
+    monkeypatch.setattr(hardware.platform, "release", lambda: "25.5.0")
+
+    assert hardware._os_version("Darwin") == "25.5.0"
+
+
+def test_non_macos_os_version_uses_release_without_mac_probe(monkeypatch):
+    monkeypatch.setattr(
+        hardware.platform,
+        "mac_ver",
+        lambda: (_ for _ in ()).throw(AssertionError("mac probe must not run")),
+    )
+    monkeypatch.setattr(hardware.platform, "release", lambda: "6.8.0")
+
+    assert hardware._os_version("Linux") == "6.8.0"
+
+
 def test_commit_counters_report_both_headroom_and_the_whole_limit():
     info = hardware._windows_commit_info(3_000_000, 5_000_000, 4096)
     assert info.available_gb == 7.62939453125

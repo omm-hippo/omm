@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "artifact": "recommend-model.json",
-  "artifact_sha256": "a07e9a5993b711ad86460e6e7f17d7c26755b2c670d837804f0d466b3e4211fa",
-  "signature": "QEk/yj41c5Xauy2o/WuqF77Yr73QDfhR3vdKj3vHaF5umqPZDxshLqoA6vJhMThp0JksvMpaU41DUei2ZwWkDw==",
-  "signed_at": "2026-08-19T03:43:59.047163+00:00"
+  "artifact": "localfit-recommend-model.json",
+  "artifact_sha256": "35d35929039e75788c09ba21ad7508446a1c3942ecea428eaae1eee0c7a819af",
+  "signature": "SPxum/c2pQ0knbvf01wJYB/KY8yC3y3pmcA2Y3X2MO7Lg5tBsvg5lLcB19A6ZfoB/S9Uoov5G4jwUmVNyEgIDw==",
+  "signed_at": "2026-08-20T03:43:24.003949+00:00"
 }

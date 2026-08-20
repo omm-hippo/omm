@@ -35,6 +35,18 @@ def test_release_json_url_quotes_distribution_identity():
     ) == "https://test.pypi.org/pypi/omm-model/1.2.3%2Btest/json"
 
 
+def test_integrity_provenance_url_quotes_distribution_identity():
+    assert pypi_release.integrity_provenance_url(
+        "https://test.pypi.org/",
+        "omm-model",
+        "1.2.3+test",
+        "omm model-1.2.3+test.tar.gz",
+    ) == (
+        "https://test.pypi.org/integrity/omm-model/1.2.3%2Btest/"
+        "omm%20model-1.2.3%2Btest.tar.gz/provenance"
+    )
+
+
 def test_repository_verification_checks_metadata_and_downloaded_bytes(tmp_path, monkeypatch):
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
@@ -105,6 +117,82 @@ def test_repository_verification_rejects_an_extra_remote_file(tmp_path, monkeypa
         )
 
 
+def test_attestation_verification_uses_local_archives_and_repository_provenance(
+    tmp_path, monkeypatch
+):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "omm-model"\nversion = "1.2.3"\n',
+        encoding="utf-8",
+    )
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    wheel = dist_dir / "omm_model-1.2.3-py3-none-any.whl"
+    sdist = dist_dir / "omm_model-1.2.3.tar.gz"
+    wheel.write_bytes(b"wheel")
+    sdist.write_bytes(b"sdist")
+    release_artifacts = sys.modules["release_artifacts"]
+    release_artifacts.write_checksums(dist_dir)
+
+    monkeypatch.setattr(
+        pypi_release,
+        "verify_repository_files",
+        lambda *_args, **_kwargs: [
+            "https://test-files.pythonhosted.org/wheel",
+            "https://test-files.pythonhosted.org/sdist",
+        ],
+    )
+    monkeypatch.setattr(
+        pypi_release.shutil,
+        "which",
+        lambda _name: "/tools/pypi-attestations",
+    )
+    fetched: list[str] = []
+
+    def fake_fetch(url, **_kwargs):
+        fetched.append(url)
+        return b"provenance"
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        assert kwargs == {
+            "check": True,
+            "timeout": pypi_release.SUBPROCESS_TIMEOUT_SECONDS,
+        }
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(pypi_release, "fetch_url_bytes", fake_fetch)
+    monkeypatch.setattr(pypi_release.subprocess, "run", fake_run)
+
+    pypi_release.verify_attestations(
+        "https://test.pypi.org",
+        dist_dir,
+        pyproject,
+    )
+
+    assert fetched == [
+        "https://test.pypi.org/integrity/omm-model/1.2.3/"
+        "omm_model-1.2.3-py3-none-any.whl/provenance",
+        "https://test.pypi.org/integrity/omm-model/1.2.3/"
+        "omm_model-1.2.3.tar.gz/provenance",
+    ]
+    assert [command[-1] for command in commands] == [str(wheel), str(sdist)]
+    for command, archive in zip(commands, (wheel, sdist), strict=True):
+        assert command[:6] == [
+            "/tools/pypi-attestations",
+            "verify",
+            "pypi",
+            "--repository",
+            "https://github.com/omm-hippo/omm",
+            "--provenance-file",
+        ]
+        assert command[6].endswith(f"{archive.name}.provenance")
+        assert "--staging" not in command
+        assert "test-files.pythonhosted.org" not in " ".join(command)
+
+
 def test_windows_executable_paths_are_explicit():
     root = Path("C:/temp/release")
 
@@ -112,6 +200,63 @@ def test_windows_executable_paths_are_explicit():
         root / "Scripts" / "python.exe"
     )
     assert pypi_release._bin_executable(root, "omm", "nt") == root / "omm.exe"
+
+
+def test_index_install_retry_recovers_after_propagation_delay(monkeypatch):
+    command = ["python", "-m", "pip", "install", "omm-model==1.2.3"]
+    calls: list[list[str]] = []
+    sleeps: list[float] = []
+
+    def fake_run(actual_command, **kwargs):
+        calls.append(actual_command)
+        assert kwargs == {
+            "check": True,
+            "timeout": pypi_release.SUBPROCESS_TIMEOUT_SECONDS,
+        }
+        if len(calls) < 3:
+            raise subprocess.CalledProcessError(1, actual_command)
+        return subprocess.CompletedProcess(actual_command, 0)
+
+    monkeypatch.setattr(pypi_release.subprocess, "run", fake_run)
+    monkeypatch.setattr(pypi_release.time, "sleep", sleeps.append)
+
+    pypi_release._run_index_install_with_retry(
+        command,
+        attempts=3,
+        delay_seconds=0.25,
+    )
+
+    assert calls == [command, command, command]
+    assert sleeps == [0.25, 0.25]
+
+
+def test_index_install_retry_raises_after_bound_is_exhausted(monkeypatch):
+    command = ["python", "-m", "pip", "install", "omm-model==1.2.3"]
+    calls = 0
+    sleeps: list[float] = []
+
+    def fake_run(actual_command, **kwargs):
+        nonlocal calls
+        calls += 1
+        assert actual_command == command
+        assert kwargs == {
+            "check": True,
+            "timeout": pypi_release.SUBPROCESS_TIMEOUT_SECONDS,
+        }
+        raise subprocess.CalledProcessError(1, actual_command)
+
+    monkeypatch.setattr(pypi_release.subprocess, "run", fake_run)
+    monkeypatch.setattr(pypi_release.time, "sleep", sleeps.append)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        pypi_release._run_index_install_with_retry(
+            command,
+            attempts=2,
+            delay_seconds=0.5,
+        )
+
+    assert calls == 2
+    assert sleeps == [0.5]
 
 
 def test_pipx_smoke_rejects_a_dangling_launcher(tmp_path, monkeypatch):
