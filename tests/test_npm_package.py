@@ -48,7 +48,8 @@ def test_stage_launcher_has_an_exact_allowlist_and_stays_private(tmp_path):
     manifest = json.loads((staged / "package.json").read_text(encoding="utf-8"))
     assert manifest["private"] is True
     assert npm_package._file_allowlist(staged) == npm_package.EXPECTED_LAUNCHER_FILES
-    assert (staged / "bin" / "omm.js").stat().st_mode & 0o111
+    if os.name != "nt":
+        assert (staged / "bin" / "omm.js").stat().st_mode & 0o111
 
 
 @pytest.mark.parametrize(
