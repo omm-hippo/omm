@@ -404,7 +404,7 @@ def test_stop_event_set_before_download_raises_contribution_stopped(isolated_omm
     stop_event = threading.Event()
     stop_event.set()
 
-    with pytest.raises(cli.ContributionStopped) as exc_info:
+    with pytest.raises(cli.InstallInterrupted) as exc_info:
         cli._install_impl(_resolved(), stop_event=stop_event)
 
     assert exc_info.value.filename == "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
@@ -425,7 +425,7 @@ def test_stop_event_set_during_benchmark_raises_contribution_stopped(isolated_om
     stop_event = threading.Event()
     threading.Timer(0.05, stop_event.set).start()
 
-    with pytest.raises(cli.ContributionStopped):
+    with pytest.raises(cli.InstallInterrupted):
         cli._install_impl(_resolved(), stop_event=stop_event)
 
 

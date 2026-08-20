@@ -90,6 +90,49 @@ def test_install_runs_benchmark_and_telemetry_on_yes(isolated_omm_home, monkeypa
     assert sent[0][1] is True
 
 
+def test_install_esc_interrupt_cleans_up_and_exits_130(isolated_omm_home, monkeypatch):
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    monkeypatch.setattr(
+        cli,
+        "resolve_model",
+        lambda name: ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo"),
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        assert kwargs["stop_event"] is not None
+        raise cli.InstallInterrupted(filename)
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    cleaned = []
+    monkeypatch.setattr(cli, "_cleanup_interrupted_install", lambda name: cleaned.append(name))
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+
+    assert result.exit_code == 0
+    assert cleaned == [filename]
+    assert "Cancelled" in result.stderr
+
+
+def test_install_keyboard_interrupt_cleans_up_partial_download(isolated_omm_home, monkeypatch):
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    monkeypatch.setattr(
+        cli,
+        "resolve_model",
+        lambda name: ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo"),
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    cleaned = []
+    monkeypatch.setattr(cli, "_cleanup_interrupted_install", lambda name: cleaned.append(name))
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+
+    assert cleaned == [filename]
+
+
 def test_install_declined_runtime_load_skips_benchmark_and_upload(isolated_omm_home, monkeypatch):
     _stub_successful_install(monkeypatch, isolated_omm_home)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")

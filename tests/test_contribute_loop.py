@@ -172,7 +172,7 @@ def test_keyboard_interrupt_uses_owned_cleanup_path(isolated_omm_home, monkeypat
     )
     cleaned = []
     monkeypatch.setattr(
-        cli, "_cleanup_stopped_contribution", lambda filename: cleaned.append(filename)
+        cli, "_cleanup_interrupted_install", lambda filename: cleaned.append(filename)
     )
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
@@ -919,7 +919,7 @@ def test_contribution_stopped_cleans_up_and_breaks(isolated_omm_home, monkeypatc
     _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
-        raise cli.ContributionStopped("model.gguf")
+        raise cli.InstallInterrupted("model.gguf")
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     events = []

@@ -2882,9 +2882,9 @@ class InstallOutcome:
     benchmark_engine: str | None = None
 
 
-class ContributionStopped(Exception):
-    """Esc fired mid-download or mid-benchmark inside `_install_impl`
-    while running under `omm contribute`."""
+class InstallInterrupted(Exception):
+    """Esc fired mid-download or mid-benchmark inside `_install_impl`,
+    whether that's a single `omm install` or `omm contribute`'s loop."""
 
     def __init__(self, filename: str) -> None:
         super().__init__(filename)
@@ -3707,7 +3707,7 @@ def _install_impl(
                 download_file(url, dest, quiet=opts.quiet, no_color=opts.no_color)
             downloaded_now = True
         except DownloadCancelled as e:
-            raise ContributionStopped(filename) from e
+            raise InstallInterrupted(filename) from e
         except InsufficientDiskSpaceError as e:
             _cleanup_incomplete_install(filename)
             err_console.print(f"[error]{e}[/error]")
@@ -4126,9 +4126,9 @@ def _install_impl(
                                 continue
                             raise
                 except _Interrupted as e:
-                    raise ContributionStopped(filename) from e
+                    raise InstallInterrupted(filename) from e
                 except quality_mod.QualityEvaluationCancelled as e:
-                    raise ContributionStopped(filename) from e
+                    raise InstallInterrupted(filename) from e
                 except quality_mod.QualityEvaluationError as error:
                     result = None
                     eval_error = error
@@ -4190,7 +4190,7 @@ def _install_impl(
                         )
                         engine_version = quality_mod.ollama_version()
                 except _Interrupted as e:
-                    raise ContributionStopped(filename) from e
+                    raise InstallInterrupted(filename) from e
                 finally:
                     if not model_was_preloaded:
                         quality_mod.unload_model(ollama_tag)
@@ -4426,6 +4426,8 @@ def install(
         _print_install_suggestions(model_name)
         raise typer.Exit(1) from e
 
+    listener = _EscListener()
+    listener.start()
     try:
         outcome = _install_impl(
             resolved,
@@ -4442,10 +4444,25 @@ def install(
             ),
             preferred_runtime=load_config().get("default_engine"),
             enforce_memory_guard=True,
+            stop_event=listener.stop_event,
         )
     except DownloadError as error:
         err_console.print(f"[error]{error}[/error]")
         raise typer.Exit(1) from error
+    except InstallInterrupted as e:
+        _cleanup_interrupted_install(e.filename)
+        err_console.print("[warning]Cancelled.[/warning]")
+        raise typer.Exit(0) from e
+    except KeyboardInterrupt:
+        # Windows Ctrl+C is a console control event, not the Esc listener's
+        # stop_event - it can land mid-download, mid-checksum, or mid-link
+        # instead of at the _run_interruptible() checkpoints stop_event
+        # covers. Route it through the same unload-before-delete cleanup so
+        # it doesn't strand a partial GGUF or a linked-but-unregistered file.
+        _cleanup_interrupted_install(resolved.filename)
+        raise
+    finally:
+        listener.stop_event.set()
 
     console.print(f"[success]Ω Installed {outcome.filename}[/success]")
     if outcome.linked.get("ollama"):
@@ -6911,7 +6928,7 @@ class _DeferredContribution:
     attempts: int = 0
 
 
-def _cleanup_stopped_contribution(filename: str) -> None:
+def _cleanup_interrupted_install(filename: str) -> None:
     """Unload first, then unlink/delete; required for Windows file handles."""
     reg = registry.load_registry()
     found_name, entry = _lookup_entry(filename, reg)
@@ -7197,13 +7214,14 @@ def _telemetry_row_count(endpoint: str) -> int | None:
 
 
 class _EscListener:
-    """Background key-listener so Esc can interrupt `omm contribute` even
-    mid-download/mid-benchmark, not just at a questionary prompt. No-ops
-    (Ctrl+C is still the fallback) when stdin isn't a real terminal - tests,
-    CI, and piped input all fall into this path. Uses `sys.stdin.isatty()`
-    rather than session_cache.py's `os.ttyname()` idiom: that call doesn't
-    exist on Windows at all, which used to skip starting this listener
-    there entirely and left Esc permanently dead on Windows."""
+    """Background key-listener so Esc can interrupt `omm install` or
+    `omm contribute` even mid-download/mid-benchmark, not just at a
+    questionary prompt. No-ops (Ctrl+C is still the fallback) when stdin
+    isn't a real terminal - tests, CI, and piped input all fall into this
+    path. Uses `sys.stdin.isatty()` rather than session_cache.py's
+    `os.ttyname()` idiom: that call doesn't exist on Windows at all, which
+    used to skip starting this listener there entirely and left Esc
+    permanently dead on Windows."""
 
     def __init__(self) -> None:
         self.stop_event = threading.Event()
@@ -7432,8 +7450,8 @@ def _run_contribution_loop(
                     memory_plan.estimate if memory_plan is not None else None
                 ),
             )
-        except ContributionStopped as e:
-            _cleanup_stopped_contribution(e.filename)
+        except InstallInterrupted as e:
+            _cleanup_interrupted_install(e.filename)
             break
         except KeyboardInterrupt:
             # On Windows Ctrl+C is a console control event, not the Esc
@@ -7442,7 +7460,7 @@ def _run_contribution_loop(
             # same unload-before-delete cleanup path while the active filename
             # is still known instead of letting it escape and strand a GGUF.
             stop_event.set()
-            _cleanup_stopped_contribution(filename)
+            _cleanup_interrupted_install(filename)
             break
         except (DownloadError, ModelResolutionError, linker.LinkError) as e:
             err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
@@ -7499,12 +7517,12 @@ def _run_contribution_loop(
                             memory_plan.estimate if memory_plan is not None else None
                         ),
                     )
-                except ContributionStopped as e:
-                    _cleanup_stopped_contribution(e.filename)
+                except InstallInterrupted as e:
+                    _cleanup_interrupted_install(e.filename)
                     break
                 except KeyboardInterrupt:
                     stop_event.set()
-                    _cleanup_stopped_contribution(filename)
+                    _cleanup_interrupted_install(filename)
                     break
                 except (DownloadError, linker.LinkError) as e:
                     err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
