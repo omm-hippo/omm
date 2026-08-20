@@ -124,8 +124,32 @@ jobs:
           $winget = Get-Command winget -ErrorAction SilentlyContinue
           if ($null -eq $winget) { throw "winget is unavailable on this Windows runner" }
           winget --version
-          winget validate --manifest $manifestPath
-          if ($LASTEXITCODE -ne 0) { throw "winget rejected the generated manifest" }
+          $validationOutput = (& winget validate --manifest $manifestPath 2>&1) | Out-String
+          $validationExit = $LASTEXITCODE
+          Write-Host $validationOutput
+          if ($validationExit -eq 0) {
+            if ($validationOutput -notmatch "Manifest validation succeeded") {
+              throw "winget did not confirm manifest validation"
+            }
+          } else {
+            if ($validationOutput -notmatch "Manifest validation succeeded with warnings") {
+              throw "winget rejected the generated manifest"
+            }
+            $warningLines = @(
+              $validationOutput -split "`r?`n" |
+                Where-Object { $_ -like "Manifest Warning:*" }
+            )
+            if ($warningLines.Count -ne 3) {
+              throw "expected exactly three schema compatibility warnings: $validationOutput"
+            }
+            foreach ($warning in $warningLines) {
+              if ($warning -notmatch "schema header URL does not match the expected pattern") {
+                throw "unexpected winget validation warning: $warning"
+              }
+            }
+            winget validate --manifest $manifestPath --ignore-warnings
+            if ($LASTEXITCODE -ne 0) { throw "winget schema validation failed" }
+          }
       - name: Exercise the archive from a winget-shaped path
         shell: pwsh
         run: |

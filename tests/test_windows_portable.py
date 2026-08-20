@@ -138,6 +138,8 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert "[System.Diagnostics.ProcessStartInfo]::new()" in workflow
     assert "$process.ExitCode -eq 0" in workflow
     assert "winget validate --manifest" in workflow
+    assert "expected exactly three schema compatibility warnings" in workflow
+    assert "--ignore-warnings" in workflow
     assert "winget install --manifest" in workflow
     assert "winget uninstall --id OmmHippo.OMM -e" in workflow
     assert workflow.count("--accept-source-agreements") == 2

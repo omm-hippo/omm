@@ -37,7 +37,7 @@ def test_manifest_set_is_exact_and_uses_the_release_archive_hash(tmp_path):
     installer = (manifest_dir / "OmmHippo.OMM.installer.yaml").read_text(
         encoding="utf-8"
     )
-    assert "ManifestVersion: 1.10.0" in installer
+    assert "ManifestVersion: 1.12.0" in installer
     assert "InstallerType: zip" in installer
     assert "NestedInstallerType: portable" in installer
     assert "RelativeFilePath: omm.exe" in installer
