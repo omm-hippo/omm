@@ -30,6 +30,8 @@ from release_artifacts import (
 ROOT = Path(__file__).resolve().parents[1]
 SUBPROCESS_TIMEOUT_SECONDS = 300
 REPOSITORY_URL = "https://github.com/omm-hippo/omm"
+INDEX_INSTALL_ATTEMPTS = 18
+INDEX_INSTALL_DELAY_SECONDS = 10.0
 
 
 def _sha256(path: Path) -> str:
@@ -159,6 +161,35 @@ def _bin_executable(root: Path, name: str, platform_name: str = os.name) -> Path
     return root / f"{name}{suffix}"
 
 
+def _run_index_install_with_retry(
+    command: list[str],
+    *,
+    attempts: int = INDEX_INSTALL_ATTEMPTS,
+    delay_seconds: float = INDEX_INSTALL_DELAY_SECONDS,
+) -> None:
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+
+    for attempt in range(1, attempts + 1):
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            )
+            return
+        except subprocess.CalledProcessError:
+            if attempt == attempts:
+                raise
+            print(
+                "package index install did not succeed; "
+                f"retrying in {delay_seconds:g}s "
+                f"({attempt}/{attempts})",
+                file=sys.stderr,
+            )
+            time.sleep(delay_seconds)
+
+
 def smoke_index_install(
     index_url: str, dist_dir: Path, pyproject: Path = PYPROJECT
 ) -> None:
@@ -186,7 +217,7 @@ def smoke_index_install(
             check=True,
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
-        subprocess.run(
+        _run_index_install_with_retry(
             [
                 *common,
                 "install",
@@ -197,8 +228,6 @@ def smoke_index_install(
                 index_url,
                 f"{name}=={version}",
             ],
-            check=True,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
         probe = (
             "import importlib.metadata, omm, localfit_server; "
