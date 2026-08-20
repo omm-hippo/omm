@@ -9,7 +9,9 @@ certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.1
 click==8.4.2
-cryptography==50.0.0
+# 49+ no longer ships an Intel macOS wheel. Building it against the runner's
+# Homebrew OpenSSL produces a frozen binary with an incompatible libssl.
+cryptography==48.0.0
 filelock==3.32.3
 idna==3.19
 markdown-it-py==4.2.0
