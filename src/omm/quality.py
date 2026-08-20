@@ -1329,8 +1329,18 @@ def collect_evidence(
     confirm_performance_timeout: bool = False,
     on_model_start: Callable[[str, int, int], None] | None = None,
     on_daemon_event: Callable[[str], None] | None = None,
+    daemon_ref: dict | None = None,
 ) -> dict:
     """Evaluate `tags` against `engine`.
+
+    `daemon_ref`, if given, is updated in place (`daemon_ref["proc"] = ...`)
+    whenever this function restarts a crashed daemon mid-batch, mirroring
+    `_run_contribution_loop`'s own `daemon_ref` parameter. Without it, a
+    caller that started the original daemon and holds that handle for its
+    own teardown would stop the wrong (already-dead) process and leak the
+    replacement this function actually started - on Windows the leak is
+    invisible (CREATE_NO_WINDOW hides it) and it keeps holding the loaded
+    model's GPU/RAM.
 
     For engine="ollama" (default), `tags` are Ollama tags exactly as
     before. For engine="lmstudio", `tags` are LM Studio modelKey strings
@@ -1376,9 +1386,13 @@ def collect_evidence(
                     "Attempting to restart it..."
                 )
             if engine == "lmstudio":
-                restart_failed = not linker.start_lmstudio_daemon()
+                restarted = linker.start_lmstudio_daemon()
+                restart_failed = not restarted
             else:
-                restart_failed = benchmark.start_ollama_daemon() is None
+                restarted = benchmark.start_ollama_daemon()
+                restart_failed = restarted is None
+            if not restart_failed and daemon_ref is not None:
+                daemon_ref["proc"] = restarted
             if restart_failed:
                 consecutive_daemon_failures += 1
                 if consecutive_daemon_failures >= _MAX_CONSECUTIVE_DAEMON_FAILURES:

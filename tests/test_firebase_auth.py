@@ -111,3 +111,48 @@ def test_get_id_token_returns_none_on_malformed_response(isolated_omm_home, monk
     monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200, {"idToken": "only-half"}))
 
     assert firebase_auth.get_id_token() is None
+
+
+def test_save_cache_restricts_acl_to_current_user_on_windows(isolated_omm_home, monkeypatch):
+    """POSIX incidentally gets owner-only protection for this refresh-token
+    cache from tempfile.mkstemp's 0600 mode; Windows has no equivalent, so
+    the file would otherwise inherit its parent directory's ACL - this
+    verifies the icacls hardening actually runs on Windows."""
+    monkeypatch.setattr(firebase_auth.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("USERNAME", "testuser")
+    calls = []
+    monkeypatch.setattr(
+        firebase_auth.subprocess,
+        "run",
+        lambda args, **kwargs: calls.append(args),
+    )
+
+    firebase_auth._save_cache({"id_token": "x", "refresh_token": "y", "expires_at": 0})
+
+    assert len(calls) == 1
+    assert calls[0][0] == "icacls"
+    assert calls[0][-1] == "testuser:F"
+
+
+def test_save_cache_skips_acl_hardening_off_windows(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(firebase_auth.platform, "system", lambda: "Darwin")
+    calls = []
+    monkeypatch.setattr(firebase_auth.subprocess, "run", lambda *a, **k: calls.append(a))
+
+    firebase_auth._save_cache({"id_token": "x", "refresh_token": "y", "expires_at": 0})
+
+    assert calls == []
+
+
+def test_harden_windows_file_permissions_swallows_icacls_failure(isolated_omm_home, monkeypatch):
+    """Best-effort: icacls missing/failing must never break saving the
+    token cache."""
+    monkeypatch.setattr(firebase_auth.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("USERNAME", "testuser")
+
+    def raise_missing(*a, **k):
+        raise OSError("icacls not found")
+
+    monkeypatch.setattr(firebase_auth.subprocess, "run", raise_missing)
+
+    firebase_auth._harden_windows_file_permissions(_cache_file(isolated_omm_home))

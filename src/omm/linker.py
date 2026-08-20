@@ -298,8 +298,35 @@ def _record_symlink(dst: Path, src: Path) -> None:
     _record_ownership(dst, src, "symlink")
 
 
+def _ownership_record(path: Path) -> dict[str, object] | None:
+    """Look up `path`'s ownership record, tolerating a casing mismatch on
+    Windows.
+
+    `_link_key` never normalizes case, so a custom-directory path typed
+    with different capitalization across two `omm` invocations (NTFS
+    itself is case-insensitive; the exact string typed is not) would
+    otherwise miss its own registry entry entirely - `link_file` would
+    then treat an omm-owned link as unrecorded and could refuse to touch
+    it ("Refusing to replace unowned existing file"). Every caller of this
+    helper still re-verifies device/inode (or content hash) before trusting
+    the record, so a case-insensitive match can never be mistaken for a
+    different file's ownership - it only recovers a record that's
+    provably for this exact path.
+    """
+    records = _load_link_ownership()
+    key = _link_key(path)
+    record = records.get(key)
+    if record is not None or platform.system() != "Windows":
+        return record
+    folded = key.casefold()
+    for other_key, other_record in records.items():
+        if other_key.casefold() == folded:
+            return other_record
+    return None
+
+
 def _owned_hardlink(path: Path) -> bool:
-    record = _load_link_ownership().get(_link_key(path))
+    record = _ownership_record(path)
     if not record or record.get("kind") != "hardlink" or path.is_symlink() or not path.exists():
         return False
     try:
@@ -310,7 +337,7 @@ def _owned_hardlink(path: Path) -> bool:
 
 
 def _owned_symlink(path: Path) -> bool:
-    record = _load_link_ownership().get(_link_key(path))
+    record = _ownership_record(path)
     if not record or record.get("kind") != "symlink" or not path.is_symlink():
         return False
     if "device" in record and "inode" in record:
@@ -331,7 +358,7 @@ def _owned_symlink(path: Path) -> bool:
 
 
 def _owned_copy(path: Path) -> bool:
-    record = _load_link_ownership().get(_link_key(path))
+    record = _ownership_record(path)
     if not record or record.get("kind") != "copy" or path.is_symlink() or not path.exists():
         return False
     try:
@@ -363,7 +390,7 @@ def _matches_requested_link(src: Path, dst: Path) -> bool:
 
 
 def _owned_manifest(path: Path, expected_source: Path | None = None) -> bool:
-    record = _load_link_ownership().get(_link_key(path))
+    record = _ownership_record(path)
     if not record or record.get("kind") != "manifest" or not path.exists() or path.is_symlink():
         return False
     # A manifest written by _fallback_to_native_create has source=None -
@@ -400,7 +427,7 @@ def unlink_owned_link(path: Path, expected_source: Path | None = None) -> bool:
     removed so callers can preserve ordinary user files at managed paths.
     """
     if expected_source is not None:
-        record = _load_link_ownership().get(_link_key(path))
+        record = _ownership_record(path)
         if not record or record.get("source") != _link_key(expected_source):
             return False
     if _owned_symlink(path):
@@ -509,14 +536,14 @@ def link_file(
         # ownership-registry rewrite. Cheap ownership-record checks only;
         # no full-file read. Otherwise every unchanged model got its
         # link torn down and rebuilt on every repeat `omm link`/`install`.
-        record = _load_link_ownership().get(_link_key(dst))
+        record = _ownership_record(dst)
         if record and record.get("source") == _link_key(src):
             if record.get("kind") == "symlink" and _owned_symlink(dst):
                 return "symlink"
             if record.get("kind") == "hardlink" and _owned_hardlink(dst):
                 return "hardlink"
         if not unlink_owned_link(dst, expected_source=src):
-            record = _load_link_ownership().get(_link_key(dst))
+            record = _ownership_record(dst)
             if record and record.get("kind") in {"symlink", "hardlink"}:
                 raise LinkError(
                     f"Refusing to replace an omm link for a different model at {dst}."

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import platform
 import shutil
+import signal
 import statistics
 import subprocess
 import tempfile
@@ -65,7 +66,13 @@ def start_ollama_daemon(timeout: float = _DAEMON_START_TIMEOUT) -> subprocess.Po
         return None
     error_log = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
     try:
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if platform.system() == "Windows" else 0
+        if platform.system() == "Windows":
+            # CREATE_NEW_PROCESS_GROUP is required for stop_ollama_daemon's
+            # CTRL_BREAK_EVENT to target only this process - without it, the
+            # event would also hit omm's own console/process.
+            creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            creationflags = 0
         proc = subprocess.Popen(
             [str(executable), "serve"],
             stdout=subprocess.DEVNULL,
@@ -99,10 +106,27 @@ def start_ollama_daemon(timeout: float = _DAEMON_START_TIMEOUT) -> subprocess.Po
 
 
 def stop_ollama_daemon(proc: subprocess.Popen) -> None:
-    """Stop a daemon previously started by ``start_ollama_daemon``."""
+    """Stop a daemon previously started by ``start_ollama_daemon``.
+
+    On Windows, ``Popen.terminate()`` maps straight to ``TerminateProcess``
+    - a hard kill that delivers no signal at all, so Ollama's own Go
+    runtime never runs its shutdown path and the per-model "runner"
+    subprocess(es) it spawns are left orphaned, still holding GPU/RAM
+    (invisible in the taskbar since the daemon was started with
+    CREATE_NO_WINDOW). ``CTRL_BREAK_EVENT`` is the Windows analogue of
+    SIGTERM Ollama can actually catch and cascade-kill its children with -
+    it only reaches a process started in its own process group, which
+    start_ollama_daemon sets up via CREATE_NEW_PROCESS_GROUP.
+    """
     if proc.poll() is not None:
         return
-    proc.terminate()
+    if platform.system() == "Windows":
+        try:
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        except (OSError, ValueError):
+            pass
+    else:
+        proc.terminate()
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:

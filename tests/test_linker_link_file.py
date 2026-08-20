@@ -9,6 +9,37 @@ import pytest
 from omm import config, linker
 
 
+def test_ownership_record_finds_case_variant_key_on_windows(monkeypatch):
+    """NTFS is case-insensitive but `_link_key` preserves whatever case a
+    path was typed with. A custom-directory path retyped with different
+    capitalization across two `omm` invocations must still find its own
+    registry entry, or `link_file` would treat an omm-owned link as
+    unrecorded and could refuse to touch it."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    stored_path = Path("D:/Models/sub/model.gguf")
+    record = {"kind": "hardlink", "source": "x"}
+    monkeypatch.setattr(
+        linker, "_load_link_ownership", lambda: {linker._link_key(stored_path): record}
+    )
+
+    queried_path = Path("d:/models/SUB/MODEL.gguf")
+
+    assert linker._ownership_record(queried_path) is record
+
+
+def test_ownership_record_stays_case_sensitive_off_windows(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    stored_path = Path("/models/model.gguf")
+    record = {"kind": "hardlink", "source": "x"}
+    monkeypatch.setattr(
+        linker, "_load_link_ownership", lambda: {linker._link_key(stored_path): record}
+    )
+
+    queried_path = Path("/models/MODEL.gguf")
+
+    assert linker._ownership_record(queried_path) is None
+
+
 def test_link_file_creates_symlink_by_default(isolated_omm_home, tmp_path):
     src = tmp_path / "model.gguf"
     src.write_bytes(b"weights")

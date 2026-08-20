@@ -14,6 +14,9 @@ raises the bar for abuse, it does not eliminate it.
 from __future__ import annotations
 
 import json
+import os
+import platform
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -44,10 +47,40 @@ def _load_cache() -> dict[str, Any]:
         return {}
 
 
+def _harden_windows_file_permissions(path: Path) -> None:
+    """Best-effort NTFS ACL restriction to the current user only.
+
+    POSIX incidentally gets owner-only protection for this refresh-token
+    cache from `tempfile.mkstemp`'s 0600 mode surviving `atomic_write_text`'s
+    `os.replace` (rename preserves the temp file's mode). Windows has no
+    permission-bit equivalent, so without this the file inherits whatever
+    ACL its parent directory has - on a shared machine, potentially
+    readable by other accounts. Best-effort and silent: `icacls` missing,
+    insufficient privilege, or any other failure just means the token
+    cache stays at the parent directory's default ACL - telemetry auth
+    still works either way, matching this module's never-raises contract.
+    """
+    if platform.system() != "Windows":
+        return
+    username = os.environ.get("USERNAME")
+    if not username:
+        return
+    try:
+        subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{username}:F"],
+            capture_output=True,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def _save_cache(session: dict[str, Any]) -> None:
     try:
         with locked(_cache_path(), timeout=10):
             atomic_write_text(_cache_path(), json.dumps(session))
+        _harden_windows_file_permissions(_cache_path())
     except (OSError, FileLockTimeout):
         pass
 

@@ -6115,6 +6115,7 @@ def benchmark_cmd(
         raise typer.Exit(1)
     _print_engine_selection_notice(engine)
     engine, started_daemon = _ensure_engine_running(engine, "benchmark")
+    daemon_ref = {"proc": started_daemon}
     lmstudio_models: dict[str, dict] | None = None
     if engine == "lmstudio":
         installed = _lmstudio_installed_models()
@@ -6182,6 +6183,7 @@ def benchmark_cmd(
                     confirm_performance_timeout=confirm_performance_timeout,
                     on_model_start=_on_model_start,
                     on_daemon_event=_on_daemon_event,
+                    daemon_ref=daemon_ref,
                 )
                 progress.update(task_id, completed=len(models))
             quality_mod.write_evidence(report, output)
@@ -6286,8 +6288,8 @@ def benchmark_cmd(
         if not successes:
             raise typer.Exit(1)
     finally:
-        if started_daemon is not None:
-            _stop_engine_daemon(engine, started_daemon)
+        if daemon_ref["proc"] is not None:
+            _stop_engine_daemon(engine, daemon_ref["proc"])
 
 
 def _telemetry_send_failure_text() -> str:
@@ -7196,16 +7198,28 @@ class _EscListener:
         self._thread.start()
 
     def _run_windows(self) -> None:
-        """Poll Esc without consuming Ctrl+C or any other console input."""
+        """Poll Esc without consuming Ctrl+C or any other console input.
+
+        `GetAsyncKeyState` reports *global* OS-wide key state, not input
+        scoped to this console - alone, it would abort `omm contribute` if
+        the user presses Escape while any other window has focus (e.g.
+        alt-tabbed away during a long benchmark). Gated on
+        `GetForegroundWindow() == GetConsoleWindow()` so Escape only counts
+        while omm's own console is the one actually receiving keystrokes.
+        """
         try:
             import ctypes
 
-            get_async_key_state = ctypes.windll.user32.GetAsyncKeyState
+            user32 = ctypes.windll.user32
+            get_async_key_state = user32.GetAsyncKeyState
             get_async_key_state.argtypes = [ctypes.c_int]
             get_async_key_state.restype = ctypes.c_short
+            get_foreground_window = user32.GetForegroundWindow
+            get_console_window = ctypes.windll.kernel32.GetConsoleWindow
             escape_was_down = False
             while not self.stop_event.is_set():
-                escape_is_down = bool(get_async_key_state(0x1B) & 0x8000)
+                console_has_focus = get_foreground_window() == get_console_window()
+                escape_is_down = console_has_focus and bool(get_async_key_state(0x1B) & 0x8000)
                 if escape_is_down and not escape_was_down:
                     self.stop_event.set()
                     return
