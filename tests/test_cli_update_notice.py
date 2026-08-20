@@ -157,6 +157,7 @@ def test_maybe_start_update_check_spawns_detached_child_when_stale_and_not_in_fl
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old_sha")
     monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda *a, **k: (False, None))
     monkeypatch.setattr(cli.version_check, "should_start_check", lambda *a, **k: True)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
     marked = []
     monkeypatch.setattr(cli.version_check, "mark_checking", lambda *a, **k: marked.append(1))
     popen_calls = []
