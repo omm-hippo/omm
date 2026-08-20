@@ -246,6 +246,20 @@ def calculate_memory_budget(hw: HardwareInfo) -> MemoryBudget:
 _OS_DISPLAY_NAMES = {"Darwin": "macOS"}
 
 
+def _os_version(raw_os_name: str) -> str:
+    """Return the user-facing OS version, not Darwin's kernel version."""
+    if raw_os_name != "Darwin":
+        return platform.release()
+
+    try:
+        product_version = platform.mac_ver()[0]
+    except (IndexError, OSError, subprocess.SubprocessError, TypeError, ValueError):
+        product_version = ""
+    if isinstance(product_version, str) and product_version.strip():
+        return product_version.strip()
+    return platform.release()
+
+
 def _is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
@@ -522,7 +536,7 @@ def _scan_hardware() -> HardwareInfo:
 
     raw_os_name = platform.system()
     os_name = _OS_DISPLAY_NAMES.get(raw_os_name, raw_os_name)
-    os_version = platform.release()
+    os_version = _os_version(raw_os_name)
 
     cpu_arch = platform.machine() or "unknown"
     cpu_physical_cores = int(psutil.cpu_count(logical=False) or 0)
