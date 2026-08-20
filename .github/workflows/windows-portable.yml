@@ -246,7 +246,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
           Set-Content -LiteralPath (Join-Path $dataRoot "preserve-me") -Value "user data"
           $env:OMM_HOME = $dataRoot
-          winget uninstall --id OmmHippo.OMM -e --silent --disable-interactivity
+          winget uninstall --id OmmHippo.OMM -e `
+            --silent `
+            --accept-source-agreements `
+            --disable-interactivity
           if ($LASTEXITCODE -ne 0) { throw "WinGet uninstall failed" }
           if (Get-Command omm -ErrorAction SilentlyContinue) {
             throw "omm command remains exposed after WinGet uninstall"

@@ -140,6 +140,7 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert "winget validate --manifest" in workflow
     assert "winget install --manifest" in workflow
     assert "winget uninstall --id OmmHippo.OMM -e" in workflow
+    assert workflow.count("--accept-source-agreements") == 2
     assert "scripts/winget_manifest.py" in workflow
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
     assert "actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661" in workflow
