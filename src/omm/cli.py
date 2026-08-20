@@ -164,11 +164,11 @@ class GlobalOptions:
 # Commands whose output --json actually restructures. Every other command
 # silently ignores the flag - warn instead so a script piping --json from
 # one of them doesn't get plain-text garbage with exit code 0 (see #81).
-_JSON_CAPABLE = {"search", "list", "info", "benchmark", "tune", "scan"}
+_JSON_CAPABLE = {"search", "list", "info", "benchmark", "tune", "scan", "recommend"}
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
-_YES_CAPABLE = {"install", "import", "uninstall", "upgrade", "contribute"}
+_YES_CAPABLE = {"install", "import", "uninstall", "upgrade", "contribute", "recommend"}
 
 
 def _global_opts() -> GlobalOptions:
@@ -2556,20 +2556,44 @@ def _select_recommended_model(
     return selected
 
 
+def _print_recommend_json(ranked: list[tuple[dict, float | None]], refs: list[str]) -> None:
+    rows = recommend_ui.build_rows(ranked, refs)
+    console.print_json(
+        data=[
+            {
+                "rank": index + 1,
+                "ref": row.value,
+                "name": row.display_name,
+                "predicted_tokens_per_second": row.speed,
+                "memory_required_gb": row.memory_gb,
+                "use_case": row.use_case,
+                "description": row.description,
+                "warning": row.warning,
+            }
+            for index, row in enumerate(rows)
+        ]
+    )
+
+
 @app.command()
 @global_flags
 def recommend() -> None:
     """Suggest a model to install for this hardware.
 
     Ranked by a model trained on real install telemetry, falling back to
-    the static rules when that trained model can't be fetched."""
+    the static rules when that trained model can't be fetched.
+
+    --json prints the ranked candidates and installs nothing. --yes skips
+    the interactive picker and installs the top-ranked candidate."""
     import requests
 
     info = scan_hardware()
     config = load_config()
+    json_output = _global_opts().json
+    auto_yes = _global_opts().yes
 
     artifact, changed = _load_recommendation_with_change_note(config)
-    if changed and not _global_opts().quiet:
+    if changed and not _global_opts().quiet and not json_output:
         console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
     if artifact and artifact.get("candidates"):
         ranked = predictor.rank_candidates(artifact, info)
@@ -2580,20 +2604,26 @@ def recommend() -> None:
 
         refs = [search_mod.exact_install_ref(c) for c, speed in viable]
         session_cache.record_seen(refs)
-        selected = _select_recommended_model(info, viable, refs)
-        if selected is None:
-            err_console.print("[warning]Cancelled.[/warning]")
-            raise typer.Exit(0)
+        if json_output:
+            _print_recommend_json(viable, refs)
+            return
+        if auto_yes:
+            selected = refs[0]
+        else:
+            selected = _select_recommended_model(info, viable, refs)
+            if selected is None:
+                err_console.print("[warning]Cancelled.[/warning]")
+                raise typer.Exit(0)
         install(selected)
         return
 
-    if not _global_opts().quiet:
+    if not _global_opts().quiet and not json_output:
         console.print("[muted]No trained model available, falling back to static rules.[/muted]")
     rules_url = config.get("rules_url")
     if rules_url:
         try:
             _, rules_changed = rules_mod.refresh_rules_with_change_note(rules_url)
-            if rules_changed and not _global_opts().quiet:
+            if rules_changed and not _global_opts().quiet and not json_output:
                 console.print("[muted]Fetched updated rules from GitHub.[/muted]")
         except requests.RequestException:
             pass
@@ -2608,15 +2638,19 @@ def recommend() -> None:
         err_console.print("[error]No model in the current rules fits this hardware.[/error]")
         raise typer.Exit(1)
 
-    session_cache.record_seen([r["name"] for r in matches])
-    selected = _select_recommended_model(
-        info,
-        [(rule, None) for rule in matches],
-        [rule["name"] for rule in matches],
-    )
-    if selected is None:
-        err_console.print("[warning]Cancelled.[/warning]")
-        raise typer.Exit(0)
+    ranked_rules = [(rule, None) for rule in matches]
+    refs = [rule["name"] for rule in matches]
+    session_cache.record_seen(refs)
+    if json_output:
+        _print_recommend_json(ranked_rules, refs)
+        return
+    if auto_yes:
+        selected = refs[0]
+    else:
+        selected = _select_recommended_model(info, ranked_rules, refs)
+        if selected is None:
+            err_console.print("[warning]Cancelled.[/warning]")
+            raise typer.Exit(0)
 
     install(selected)
 
