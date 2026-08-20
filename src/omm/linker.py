@@ -834,6 +834,21 @@ def _lmstudio_list_models(lms_path: str, timeout: float = 15) -> list[dict] | No
     return data if isinstance(data, list) else None
 
 
+def _lmstudio_find_model_key(models: list[dict], publisher: str, repo: str, filename: str) -> str | None:
+    """Match logic behind `_lmstudio_model_key`, factored out so a caller
+    that already has a fetched `lms ls --json` list can reuse it instead
+    of triggering a second `lms` subprocess call for the same lookup."""
+    expected = f"{publisher}/{repo}/{filename}"
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if isinstance(path, str) and path.replace("\\", "/") == expected:
+            key = entry.get("modelKey")
+            return key if isinstance(key, str) else None
+    return None
+
+
 def _lmstudio_model_key(lms_path: str, publisher: str, repo: str, filename: str) -> str | None:
     """Resolve the modelKey LM Studio's API and `lms load`/`lms unload`
     actually expect for a just-linked model, by matching the on-disk path
@@ -847,15 +862,7 @@ def _lmstudio_model_key(lms_path: str, publisher: str, repo: str, filename: str)
     models = _lmstudio_list_models(lms_path)
     if models is None:
         return None
-    expected = f"{publisher}/{repo}/{filename}"
-    for entry in models:
-        if not isinstance(entry, dict):
-            continue
-        path = entry.get("path")
-        if isinstance(path, str) and path.replace("\\", "/") == expected:
-            key = entry.get("modelKey")
-            return key if isinstance(key, str) else None
-    return None
+    return _lmstudio_find_model_key(models, publisher, repo, filename)
 
 
 _LMSTUDIO_PROBE_TIMEOUT_SECONDS = 120
@@ -1663,11 +1670,12 @@ def jan_models_dir() -> Path:
 
 
 def is_jan_installed() -> bool:
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         return _app_bundle_installed("Jan")
     if jan_app_dir().exists():
         return True
-    if platform.system() == "Linux" and shutil.which("flatpak") is not None:
+    if system == "Linux" and shutil.which("flatpak") is not None:
         # jan_app_dir() (~/.config/Jan) is only created the first time Jan
         # actually launches - a flatpak install that succeeded but was
         # never run leaves nothing there yet, which used to make
@@ -2208,6 +2216,23 @@ def _install_via_package_manager(
 
     if is_installed():
         return EngineInstallResult(key, "installed", f"{label} installed successfully.")
+
+    # brew refuses to touch a cask it already has a receipt for ("already
+    # installed", no-op, exit 0) even when the app bundle itself is gone -
+    # e.g. the user dragged it to the Trash instead of `brew uninstall
+    # --cask`. is_installed() (a real /Applications bundle check) still
+    # says no, so retry once with --force, which makes brew re-link the
+    # cask's artifacts regardless of its receipt. Cheap when the cask
+    # really was already fully installed (skips the same no-op path);
+    # only case that matters is this stale-receipt one.
+    if system == "Darwin" and args is not None and args[:3] == ["brew", "install", "--cask"]:
+        try:
+            returncode = _stream_subprocess([*args, "--force"], on_output)
+        except OSError as e:
+            return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
+        if is_installed():
+            return EngineInstallResult(key, "installed", f"{label} installed successfully.")
+
     detail = f" (installer exited with code {returncode})" if returncode else ""
     return EngineInstallResult(
         key,
@@ -2754,13 +2779,13 @@ def resolve_lmstudio_model(repo_id: str | None, filename: str) -> dict | None:
         return None
 
     publisher, repo = _lmstudio_publisher_repo(repo_id, filename)
-    # Use existing path-matching logic to get the model key
-    model_key = _lmstudio_model_key(lms_path, publisher, repo, filename)
-    if model_key is None:
-        return None
-
     models = _lmstudio_list_models(lms_path)
     if models is None:
+        return None
+
+    # Use existing path-matching logic to get the model key
+    model_key = _lmstudio_find_model_key(models, publisher, repo, filename)
+    if model_key is None:
         return None
 
     # Second pass: find the entry by modelKey and extract metadata
