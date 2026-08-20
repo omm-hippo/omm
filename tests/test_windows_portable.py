@@ -132,6 +132,8 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert "contents: write" in workflow
     assert 'gh release upload "v${VERSION}" "release-assets/${asset}" --repo' in workflow
     assert "gh release upload" in workflow and "gh release upload --clobber" not in workflow
+    assert "[System.Diagnostics.ProcessStartInfo]::new()" in workflow
+    assert "$process.ExitCode -eq 0" in workflow
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
     assert "actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661" in workflow
 

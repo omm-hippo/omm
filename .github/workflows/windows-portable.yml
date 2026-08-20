@@ -119,8 +119,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "help probe failed" }
           Set-Content -LiteralPath (Join-Path $dataRoot "preserve-me") -Value "user data"
           $env:OMM_HOME = $dataRoot
-          $updateOutput = (& $command update 2>&1 | Out-String)
-          if ($LASTEXITCODE -eq 0) { throw "package-managed update unexpectedly mutated the install" }
+          $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = $command
+          $startInfo.ArgumentList.Add("update")
+          $startInfo.UseShellExecute = $false
+          $startInfo.RedirectStandardOutput = $true
+          $startInfo.RedirectStandardError = $true
+          $process = [System.Diagnostics.Process]::new()
+          $process.StartInfo = $startInfo
+          if (-not $process.Start()) { throw "could not start the update probe" }
+          $updateOutput = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
+          $process.WaitForExit()
+          if ($process.ExitCode -eq 0) { throw "package-managed update unexpectedly mutated the install" }
           if ($updateOutput -notmatch "winget upgrade --id OmmHippo.OMM -e") {
             throw "winget update guidance was not reported: $updateOutput"
           }
