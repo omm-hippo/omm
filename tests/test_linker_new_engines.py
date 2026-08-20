@@ -559,6 +559,19 @@ def test_lms_cli_path_falls_back_to_bootstrap_location(tmp_path, monkeypatch):
     assert linker._lms_cli_path() == str(lms_file)
 
 
+def test_lms_cli_path_finds_windows_exe_bootstrap_location(tmp_path, monkeypatch):
+    """The bootstrapped binary is `lms.exe` on Windows - the extensionless
+    `lms` name checked by the POSIX path never exists there."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: None)
+    monkeypatch.setattr(linker, "lmstudio_home_dir", lambda: tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    lms_file = bin_dir / "lms.exe"
+    lms_file.write_bytes(b"")
+    assert linker._lms_cli_path() == str(lms_file)
+
+
 def test_lms_cli_path_returns_none_when_not_found(tmp_path, monkeypatch):
     monkeypatch.setattr(linker.shutil, "which", lambda name: None)
     monkeypatch.setattr(linker, "lmstudio_home_dir", lambda: tmp_path)

@@ -696,6 +696,7 @@ def test_confirm_performance_timeout_flag_is_forwarded_to_collect_evidence(isola
     def fake_collect_evidence(
         models, hw, pack_path=None, speed_runs=3, confirm_performance_timeout=False,
         on_model_start=None, on_daemon_event=None, engine="ollama", lmstudio_models=None,
+        daemon_ref=None,
     ):
         seen["confirm_performance_timeout"] = confirm_performance_timeout
         return _full_report()
@@ -717,6 +718,7 @@ def test_confirm_performance_timeout_flag_defaults_to_false(isolated_omm_home, m
     def fake_collect_evidence(
         models, hw, pack_path=None, speed_runs=3, confirm_performance_timeout=False,
         on_model_start=None, on_daemon_event=None, engine="ollama", lmstudio_models=None,
+        daemon_ref=None,
     ):
         seen["confirm_performance_timeout"] = confirm_performance_timeout
         return _full_report()

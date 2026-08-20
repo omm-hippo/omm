@@ -9,6 +9,37 @@ import pytest
 from omm import config, linker
 
 
+def test_ownership_record_finds_case_variant_key_on_windows(monkeypatch):
+    """NTFS is case-insensitive but `_link_key` preserves whatever case a
+    path was typed with. A custom-directory path retyped with different
+    capitalization across two `omm` invocations must still find its own
+    registry entry, or `link_file` would treat an omm-owned link as
+    unrecorded and could refuse to touch it."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    stored_path = Path("D:/Models/sub/model.gguf")
+    record = {"kind": "hardlink", "source": "x"}
+    monkeypatch.setattr(
+        linker, "_load_link_ownership", lambda: {linker._link_key(stored_path): record}
+    )
+
+    queried_path = Path("d:/models/SUB/MODEL.gguf")
+
+    assert linker._ownership_record(queried_path) is record
+
+
+def test_ownership_record_stays_case_sensitive_off_windows(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    stored_path = Path("/models/model.gguf")
+    record = {"kind": "hardlink", "source": "x"}
+    monkeypatch.setattr(
+        linker, "_load_link_ownership", lambda: {linker._link_key(stored_path): record}
+    )
+
+    queried_path = Path("/models/MODEL.gguf")
+
+    assert linker._ownership_record(queried_path) is None
+
+
 def test_link_file_creates_symlink_by_default(isolated_omm_home, tmp_path):
     src = tmp_path / "model.gguf"
     src.write_bytes(b"weights")
@@ -224,6 +255,42 @@ def test_windows_hardlink_lifecycle_removes_only_recorded_link(isolated_omm_home
     assert destination.read_bytes() == b"someone else's model"
 
 
+def test_unlink_custom_directory_retries_past_transient_permission_error(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A model just unloaded by a custom app can hold its handle open for a
+    moment on Windows (WinError 32) - unlink_custom_directory must retry
+    instead of raising, same as the Ollama blob cleanup already does."""
+    source = linker.MODELS_DIR / "model.gguf"
+    source.parent.mkdir(exist_ok=True)
+    source.write_bytes(b"weights")
+    directory = tmp_path / "custom"
+    destination = linker.link_custom_directory(source, directory)
+    assert destination.exists()
+
+    monkeypatch.setattr(linker.time, "sleep", lambda seconds: None)
+    calls = {"n": 0}
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, missing_ok=False):
+        # Only the actual model file is a "locked handle" in this scenario -
+        # the ownership-registry's own temp-file cleanup unlink must not be
+        # counted/faked, or it would throw off the retry-count assertion.
+        if self != destination:
+            return real_unlink(self, missing_ok=missing_ok)
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError("WinError 32")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    linker.unlink_custom_directory(source.name, directory)
+
+    assert not destination.exists()
+    assert calls["n"] == 3
+
+
 def test_windows_hardlink_lmstudio_and_ollama_uninstall_lifecycle(isolated_omm_home, tmp_path, monkeypatch):
     _force_windows_hardlinks(monkeypatch)
     source = linker.MODELS_DIR / "hub.gguf"
@@ -248,7 +315,7 @@ def test_windows_hardlink_lmstudio_and_ollama_uninstall_lifecycle(isolated_omm_h
 def test_windows_owned_blob_delete_retries_transient_file_lock(monkeypatch, tmp_path):
     calls = []
 
-    def flaky_unlink(path):
+    def flaky_unlink(path, expected_source=None):
         calls.append(path)
         if len(calls) < 3:
             raise PermissionError("mapped file still open")

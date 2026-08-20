@@ -239,6 +239,40 @@ def test_collect_evidence_recovers_from_daemon_crash_mid_batch(monkeypatch):
     assert any("restart" in event.lower() for event in events)
 
 
+def test_collect_evidence_surfaces_restarted_daemon_handle_via_daemon_ref(monkeypatch):
+    """A caller (e.g. `omm benchmark`) holds the handle of the daemon *it*
+    started for its own teardown. When collect_evidence restarts a daemon
+    that crashed mid-batch, the caller's stale handle must be updated to
+    the live replacement, or teardown stops the wrong (already-dead)
+    process and leaks the new one - invisible on Windows because
+    CREATE_NO_WINDOW hides it, but still holding the loaded model's
+    GPU/RAM."""
+    version_calls = {"count": 0}
+
+    def fake_ollama_version():
+        version_calls["count"] += 1
+        return None if version_calls["count"] == 1 else "0.30.10"
+
+    restarted_handle = object()
+    monkeypatch.setattr(quality, "ollama_version", fake_ollama_version)
+    monkeypatch.setattr(quality.benchmark, "start_ollama_daemon", lambda: restarted_handle)
+    monkeypatch.setattr(
+        quality,
+        "evaluate_model",
+        lambda tag, pack, speed_runs=3: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+    daemon_ref = {"proc": "original_stale_handle"}
+
+    quality.collect_evidence(
+        ["model:one"],
+        _hardware(),
+        daemon_ref=daemon_ref,
+    )
+
+    assert daemon_ref["proc"] is restarted_handle
+
+
 def test_collect_evidence_gives_up_after_max_daemon_restart_failures(monkeypatch):
     """Daemon never comes back - stop after the failure cap instead of
     burning a full per-request timeout on every remaining tag."""

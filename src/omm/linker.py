@@ -172,6 +172,43 @@ def is_lmstudio_installed() -> bool:
     return lmstudio_home_dir().exists()
 
 
+def find_ollama_executable() -> Path | None:
+    """Find Ollama even when a freshly installed Windows PATH is stale.
+
+    winget writes the new PATH entry to the registry, but an already-running
+    process (like the `omm setup` wizard that just triggered the install)
+    keeps the PATH it started with - `shutil.which` alone stays blind to the
+    fresh install until the terminal restarts. Falling back to Ollama's
+    documented install locations catches it immediately instead.
+    """
+    on_path = shutil.which("ollama")
+    if on_path:
+        return Path(on_path)
+    if platform.system() != "Windows":
+        return None
+
+    roots = []
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    program_files = os.environ.get("ProgramFiles")
+    if local_app_data:
+        roots.extend(
+            [
+                Path(local_app_data) / "Programs" / "Ollama",
+                Path(local_app_data) / "Ollama",
+            ]
+        )
+    if program_files:
+        roots.append(Path(program_files) / "Ollama")
+    for root in roots:
+        candidate = root / "ollama.exe"
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
 def is_ollama_installed() -> bool:
     # Homebrew's ollama-app cask installs Ollama.app; the plain `ollama`
     # formula (common on Linux/Homebrew-CLI setups) installs only the
@@ -179,7 +216,7 @@ def is_ollama_installed() -> bool:
     # isn't reported as "not installed".
     if platform.system() == "Darwin":
         return _app_bundle_installed("Ollama") or shutil.which("ollama") is not None
-    return (Path.home() / ".ollama").exists() or shutil.which("ollama") is not None
+    return (Path.home() / ".ollama").exists() or find_ollama_executable() is not None
 
 
 class LinkError(Exception):
@@ -207,7 +244,7 @@ def _load_link_ownership() -> dict[str, dict[str, object]]:
         return {}
     try:
         data = json.loads(LINK_OWNERSHIP_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         backup_corrupt_file(LINK_OWNERSHIP_PATH)
         return {}
     if not isinstance(data, dict):
@@ -261,8 +298,35 @@ def _record_symlink(dst: Path, src: Path) -> None:
     _record_ownership(dst, src, "symlink")
 
 
+def _ownership_record(path: Path) -> dict[str, object] | None:
+    """Look up `path`'s ownership record, tolerating a casing mismatch on
+    Windows.
+
+    `_link_key` never normalizes case, so a custom-directory path typed
+    with different capitalization across two `omm` invocations (NTFS
+    itself is case-insensitive; the exact string typed is not) would
+    otherwise miss its own registry entry entirely - `link_file` would
+    then treat an omm-owned link as unrecorded and could refuse to touch
+    it ("Refusing to replace unowned existing file"). Every caller of this
+    helper still re-verifies device/inode (or content hash) before trusting
+    the record, so a case-insensitive match can never be mistaken for a
+    different file's ownership - it only recovers a record that's
+    provably for this exact path.
+    """
+    records = _load_link_ownership()
+    key = _link_key(path)
+    record = records.get(key)
+    if record is not None or platform.system() != "Windows":
+        return record
+    folded = key.casefold()
+    for other_key, other_record in records.items():
+        if other_key.casefold() == folded:
+            return other_record
+    return None
+
+
 def _owned_hardlink(path: Path) -> bool:
-    record = _load_link_ownership().get(_link_key(path))
+    record = _ownership_record(path)
     if not record or record.get("kind") != "hardlink" or path.is_symlink() or not path.exists():
         return False
     try:
@@ -273,7 +337,7 @@ def _owned_hardlink(path: Path) -> bool:
 
 
 def _owned_symlink(path: Path) -> bool:
-    record = _load_link_ownership().get(_link_key(path))
+    record = _ownership_record(path)
     if not record or record.get("kind") != "symlink" or not path.is_symlink():
         return False
     if "device" in record and "inode" in record:
@@ -294,7 +358,7 @@ def _owned_symlink(path: Path) -> bool:
 
 
 def _owned_copy(path: Path) -> bool:
-    record = _load_link_ownership().get(_link_key(path))
+    record = _ownership_record(path)
     if not record or record.get("kind") != "copy" or path.is_symlink() or not path.exists():
         return False
     try:
@@ -326,7 +390,7 @@ def _matches_requested_link(src: Path, dst: Path) -> bool:
 
 
 def _owned_manifest(path: Path, expected_source: Path | None = None) -> bool:
-    record = _load_link_ownership().get(_link_key(path))
+    record = _ownership_record(path)
     if not record or record.get("kind") != "manifest" or not path.exists() or path.is_symlink():
         return False
     # A manifest written by _fallback_to_native_create has source=None -
@@ -363,7 +427,7 @@ def unlink_owned_link(path: Path, expected_source: Path | None = None) -> bool:
     removed so callers can preserve ordinary user files at managed paths.
     """
     if expected_source is not None:
-        record = _load_link_ownership().get(_link_key(path))
+        record = _ownership_record(path)
         if not record or record.get("source") != _link_key(expected_source):
             return False
     if _owned_symlink(path):
@@ -381,10 +445,15 @@ def unlink_owned_link(path: Path, expected_source: Path | None = None) -> bool:
     return False
 
 
-def _unlink_owned_link_with_retry(path: Path, attempts: int = 8) -> bool:
+def _unlink_owned_link_with_retry(
+    path: Path, expected_source: Path | None = None, attempts: int = 8
+) -> bool:
+    """Retry an unlink against a Windows sharing violation (WinError 32):
+    a model file just unloaded by Ollama/LM Studio/a custom app can hold
+    its handle open for a moment after the engine reports it as stopped."""
     for attempt in range(attempts):
         try:
-            return unlink_owned_link(path)
+            return unlink_owned_link(path, expected_source=expected_source)
         except PermissionError:
             if attempt == attempts - 1:
                 raise
@@ -467,14 +536,14 @@ def link_file(
         # ownership-registry rewrite. Cheap ownership-record checks only;
         # no full-file read. Otherwise every unchanged model got its
         # link torn down and rebuilt on every repeat `omm link`/`install`.
-        record = _load_link_ownership().get(_link_key(dst))
+        record = _ownership_record(dst)
         if record and record.get("source") == _link_key(src):
             if record.get("kind") == "symlink" and _owned_symlink(dst):
                 return "symlink"
             if record.get("kind") == "hardlink" and _owned_hardlink(dst):
                 return "hardlink"
         if not unlink_owned_link(dst, expected_source=src):
-            record = _load_link_ownership().get(_link_key(dst))
+            record = _ownership_record(dst)
             if record and record.get("kind") in {"symlink", "hardlink"}:
                 raise LinkError(
                     f"Refusing to replace an omm link for a different model at {dst}."
@@ -623,7 +692,7 @@ def link_custom_directory(
 
 def unlink_custom_directory(filename: str, directory: Path) -> None:
     dst = directory.expanduser() / Path(filename.replace("\\", "/")).name
-    unlink_owned_link(dst, expected_source=MODELS_DIR / filename)
+    _unlink_owned_link_with_retry(dst, expected_source=MODELS_DIR / filename)
 
 
 def autoremove_custom_directory(directory: Path) -> int:
@@ -647,7 +716,7 @@ def unlink_lmstudio(filename: str, repo_id: str | None) -> None:
     dst = root / publisher / repo / Path(filename.replace("\\", "/")).name
     if not dst.parent.resolve().is_relative_to(root.resolve()):
         raise LinkError("Refusing LM Studio path outside the managed model directory.")
-    if unlink_owned_link(dst, expected_source=MODELS_DIR / filename):
+    if _unlink_owned_link_with_retry(dst, expected_source=MODELS_DIR / filename):
         for parent in (dst.parent, dst.parent.parent):
             try:
                 parent.rmdir()
@@ -669,14 +738,22 @@ def unlink_lmstudio(filename: str, repo_id: str | None) -> None:
 def _lms_cli_path() -> str | None:
     """Locate the `lms` CLI LM Studio bootstraps on first run. Not
     guaranteed to be on PATH in a non-interactive shell even when
-    installed, so also check the well-known bootstrap location directly -
+    installed (same stale-PATH-right-after-install gap `find_ollama_executable`
+    works around), so also check the well-known bootstrap location directly -
     confirmed via `lms bootstrap` against a real LM Studio 0.4.20 install,
-    which installs to <lmstudio_home_dir>/bin/lms."""
+    which installs to <lmstudio_home_dir>/bin/lms (lms.exe on Windows - the
+    extensionless name never exists there, so it must be checked first or
+    every Windows caller silently sees "not installed")."""
     found = shutil.which("lms")
     if found is not None:
         return found
-    candidate = lmstudio_home_dir() / "bin" / "lms"
-    return str(candidate) if candidate.is_file() else None
+    bin_dir = lmstudio_home_dir() / "bin"
+    names = ["lms.exe", "lms"] if platform.system() == "Windows" else ["lms"]
+    for name in names:
+        candidate = bin_dir / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def _lmstudio_server_status(lms_path: str, timeout: float = 5) -> dict | None:
@@ -919,7 +996,7 @@ def _ollama_link_already_current(manifest_path: Path, gguf_path: Path, blobs_dir
         return False
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return False
     digest = next(
         (
@@ -1174,7 +1251,7 @@ def _ollama_cli_version() -> str | None:
     compatibility probe below runs once per Ollama upgrade instead of on
     every link. Works even with no daemon running (~15-30ms observed,
     confirmed live) - it's a pure CLI query, not a network round trip."""
-    exe = shutil.which("ollama")
+    exe = find_ollama_executable()
     if exe is None:
         return None
     try:
@@ -1224,7 +1301,7 @@ def _ollama_accepts_manifest(model_name: str) -> bool | None:
     hand-rolled shape has drifted from what this Ollama version expects),
     None if the daemon isn't reachable at all - nothing to compare against,
     not a format problem."""
-    exe = shutil.which("ollama")
+    exe = find_ollama_executable()
     if exe is None:
         return None
     try:
@@ -1262,7 +1339,7 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
     Without this, `unlink_ollama`/`autoremove_ollama` would treat the
     resulting manifest as unowned and silently refuse to ever clean it up.
     """
-    exe = shutil.which("ollama")
+    exe = find_ollama_executable()
     if exe is None:
         raise LinkError(
             f"Ollama's manifest format has changed and omm's link for {model_name} no "
@@ -1445,7 +1522,7 @@ def unlink_ollama(
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             model_digests = _manifest_blob_digests(manifest)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             model_digests = set()
         # Blobs are content-addressed and can be shared by a user manifest or
         # another omm model. Only remove an omm-owned blob after no remaining
@@ -1472,7 +1549,7 @@ def unlink_ollama(
                 continue
             try:
                 data = json.loads(other.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError):
                 continue
             referenced.update(_manifest_blob_digests(data))
     for digest in model_digests - referenced:
@@ -1523,7 +1600,7 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
         for manifest_path in list(manifests_root.rglob("latest")):
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
+            except (OSError, ValueError):
                 continue
             layer_digests = {
                 layer["digest"].replace(":", "-") for layer in manifest.get("layers", [])

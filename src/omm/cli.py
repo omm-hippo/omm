@@ -164,11 +164,11 @@ class GlobalOptions:
 # Commands whose output --json actually restructures. Every other command
 # silently ignores the flag - warn instead so a script piping --json from
 # one of them doesn't get plain-text garbage with exit code 0 (see #81).
-_JSON_CAPABLE = {"search", "list", "info", "benchmark", "tune", "scan"}
+_JSON_CAPABLE = {"search", "list", "info", "benchmark", "tune", "scan", "recommend"}
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
-_YES_CAPABLE = {"install", "import", "uninstall", "upgrade", "contribute"}
+_YES_CAPABLE = {"install", "import", "uninstall", "upgrade", "contribute", "recommend"}
 
 
 def _global_opts() -> GlobalOptions:
@@ -1216,12 +1216,26 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
         return
     if version_check.should_start_check(branch):
         version_check.mark_checking(branch)
+        args = [sys.executable, "-m", "omm.cli", "_bg-version-check"]
+        # `start_new_session` (setsid) is POSIX-only - CPython's Windows
+        # _execute_child ignores it entirely, so the child stays in the
+        # parent's process group and can be torn down with it (e.g. the
+        # console window closing) before the `git ls-remote` it runs
+        # finishes. DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP is the
+        # Windows equivalent of actually detaching it.
+        if platform.system() == "Windows":
+            kwargs = {
+                "creationflags": subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+            }
+        else:
+            kwargs = {"start_new_session": True}
         try:
             subprocess.Popen(
-                [sys.executable, "-m", "omm.cli", "_bg-version-check"],
+                args,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
+                **kwargs,
             )
         except OSError:
             pass
@@ -2148,10 +2162,17 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
                     result = _finalize_legacy_pipx_migration(result, legacy_state)
         return result
     except FileNotFoundError:
-        err_console.print(
-            "[error]git or pipx not found. Install them first, or rerun the installer:[/error]\n"
-            "  curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh"
-        )
+        if platform.system() == "Windows":
+            err_console.print(
+                "[error]git or pipx not found. Install them first, or rerun the installer:[/error]\n"
+                "  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
+                "irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex"
+            )
+        else:
+            err_console.print(
+                "[error]git or pipx not found. Install them first, or rerun the installer:[/error]\n"
+                "  curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh"
+            )
         raise typer.Exit(1)
     except OSError as e:
         err_console.print(f"[error]Update failed: {e}[/error]")
@@ -2535,20 +2556,44 @@ def _select_recommended_model(
     return selected
 
 
+def _print_recommend_json(ranked: list[tuple[dict, float | None]], refs: list[str]) -> None:
+    rows = recommend_ui.build_rows(ranked, refs)
+    console.print_json(
+        data=[
+            {
+                "rank": index + 1,
+                "ref": row.value,
+                "name": row.display_name,
+                "predicted_tokens_per_second": row.speed,
+                "memory_required_gb": row.memory_gb,
+                "use_case": row.use_case,
+                "description": row.description,
+                "warning": row.warning,
+            }
+            for index, row in enumerate(rows)
+        ]
+    )
+
+
 @app.command()
 @global_flags
 def recommend() -> None:
     """Suggest a model to install for this hardware.
 
     Ranked by a model trained on real install telemetry, falling back to
-    the static rules when that trained model can't be fetched."""
+    the static rules when that trained model can't be fetched.
+
+    --json prints the ranked candidates and installs nothing. --yes skips
+    the interactive picker and installs the top-ranked candidate."""
     import requests
 
     info = scan_hardware()
     config = load_config()
+    json_output = _global_opts().json
+    auto_yes = _global_opts().yes
 
     artifact, changed = _load_recommendation_with_change_note(config)
-    if changed and not _global_opts().quiet:
+    if changed and not _global_opts().quiet and not json_output:
         console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
     if artifact and artifact.get("candidates"):
         ranked = predictor.rank_candidates(artifact, info)
@@ -2559,20 +2604,26 @@ def recommend() -> None:
 
         refs = [search_mod.exact_install_ref(c) for c, speed in viable]
         session_cache.record_seen(refs)
-        selected = _select_recommended_model(info, viable, refs)
-        if selected is None:
-            err_console.print("[warning]Cancelled.[/warning]")
-            raise typer.Exit(0)
+        if json_output:
+            _print_recommend_json(viable, refs)
+            return
+        if auto_yes:
+            selected = refs[0]
+        else:
+            selected = _select_recommended_model(info, viable, refs)
+            if selected is None:
+                err_console.print("[warning]Cancelled.[/warning]")
+                raise typer.Exit(0)
         install(selected)
         return
 
-    if not _global_opts().quiet:
+    if not _global_opts().quiet and not json_output:
         console.print("[muted]No trained model available, falling back to static rules.[/muted]")
     rules_url = config.get("rules_url")
     if rules_url:
         try:
             _, rules_changed = rules_mod.refresh_rules_with_change_note(rules_url)
-            if rules_changed and not _global_opts().quiet:
+            if rules_changed and not _global_opts().quiet and not json_output:
                 console.print("[muted]Fetched updated rules from GitHub.[/muted]")
         except requests.RequestException:
             pass
@@ -2587,15 +2638,19 @@ def recommend() -> None:
         err_console.print("[error]No model in the current rules fits this hardware.[/error]")
         raise typer.Exit(1)
 
-    session_cache.record_seen([r["name"] for r in matches])
-    selected = _select_recommended_model(
-        info,
-        [(rule, None) for rule in matches],
-        [rule["name"] for rule in matches],
-    )
-    if selected is None:
-        err_console.print("[warning]Cancelled.[/warning]")
-        raise typer.Exit(0)
+    ranked_rules = [(rule, None) for rule in matches]
+    refs = [rule["name"] for rule in matches]
+    session_cache.record_seen(refs)
+    if json_output:
+        _print_recommend_json(ranked_rules, refs)
+        return
+    if auto_yes:
+        selected = refs[0]
+    else:
+        selected = _select_recommended_model(info, ranked_rules, refs)
+        if selected is None:
+            err_console.print("[warning]Cancelled.[/warning]")
+            raise typer.Exit(0)
 
     install(selected)
 
@@ -2861,9 +2916,9 @@ class InstallOutcome:
     benchmark_engine: str | None = None
 
 
-class ContributionStopped(Exception):
-    """Esc fired mid-download or mid-benchmark inside `_install_impl`
-    while running under `omm contribute`."""
+class InstallInterrupted(Exception):
+    """Esc fired mid-download or mid-benchmark inside `_install_impl`,
+    whether that's a single `omm install` or `omm contribute`'s loop."""
 
     def __init__(self, filename: str) -> None:
         super().__init__(filename)
@@ -3686,7 +3741,7 @@ def _install_impl(
                 download_file(url, dest, quiet=opts.quiet, no_color=opts.no_color)
             downloaded_now = True
         except DownloadCancelled as e:
-            raise ContributionStopped(filename) from e
+            raise InstallInterrupted(filename) from e
         except InsufficientDiskSpaceError as e:
             _cleanup_incomplete_install(filename)
             err_console.print(f"[error]{e}[/error]")
@@ -3792,10 +3847,23 @@ def _install_impl(
     )
     model_was_preloaded = False
     ollama_runtime_version = None
+    ollama_daemon_handle = None
     if run_ollama_benchmark and verify_runtime_after_install:
         adapter = _compatibility_adapter("ollama")
         health = adapter.health()
         ollama_runtime_version = health.version
+        if not health.reachable and benchmark.ollama_install_state() == "stopped":
+            # Installed but not running - offer to start it, same
+            # start/ask/stop-when-done pattern as `_ensure_engine_running`
+            # uses for contribute/benchmark, so a plain install can still
+            # get a real measurement instead of only the ML prediction.
+            try:
+                ollama_daemon_handle = _ensure_ollama_running("install", assume_yes=assume_yes)
+            except typer.Exit:
+                ollama_daemon_handle = None
+            if ollama_daemon_handle is not None:
+                health = adapter.health()
+                ollama_runtime_version = health.version
         if not health.reachable:
             _record_install_compatibility(
                 filename,
@@ -3834,6 +3902,9 @@ def _install_impl(
                     )
                     runtime_load_declined = True
                     run_ollama_benchmark = False
+                    if ollama_daemon_handle is not None:
+                        _stop_engine_daemon("ollama", ollama_daemon_handle)
+                        ollama_daemon_handle = None
 
     if run_ollama_benchmark or run_lmstudio_benchmark:
         if run_lmstudio_benchmark and not use_quality_eval:
@@ -3852,7 +3923,7 @@ def _install_impl(
         # so the reading describes other programs rather than omm's own work.
         host_cpu_load_percent = _sample_background_cpu_load()
         host_cpu_busy = _cpu_load_is_high(host_cpu_load_percent)
-        started_daemon = None
+        started_daemon = ollama_daemon_handle
         pressure_watcher = None
         if (
             not verify_runtime_after_install
@@ -4105,9 +4176,9 @@ def _install_impl(
                                 continue
                             raise
                 except _Interrupted as e:
-                    raise ContributionStopped(filename) from e
+                    raise InstallInterrupted(filename) from e
                 except quality_mod.QualityEvaluationCancelled as e:
-                    raise ContributionStopped(filename) from e
+                    raise InstallInterrupted(filename) from e
                 except quality_mod.QualityEvaluationError as error:
                     result = None
                     eval_error = error
@@ -4169,7 +4240,7 @@ def _install_impl(
                         )
                         engine_version = quality_mod.ollama_version()
                 except _Interrupted as e:
-                    raise ContributionStopped(filename) from e
+                    raise InstallInterrupted(filename) from e
                 finally:
                     if not model_was_preloaded:
                         quality_mod.unload_model(ollama_tag)
@@ -4405,6 +4476,8 @@ def install(
         _print_install_suggestions(model_name)
         raise typer.Exit(1) from e
 
+    listener = _EscListener()
+    listener.start()
     try:
         outcome = _install_impl(
             resolved,
@@ -4421,10 +4494,25 @@ def install(
             ),
             preferred_runtime=load_config().get("default_engine"),
             enforce_memory_guard=True,
+            stop_event=listener.stop_event,
         )
     except DownloadError as error:
         err_console.print(f"[error]{error}[/error]")
         raise typer.Exit(1) from error
+    except InstallInterrupted as e:
+        _cleanup_interrupted_install(e.filename)
+        err_console.print("[warning]Cancelled.[/warning]")
+        raise typer.Exit(0) from e
+    except KeyboardInterrupt:
+        # Windows Ctrl+C is a console control event, not the Esc listener's
+        # stop_event - it can land mid-download, mid-checksum, or mid-link
+        # instead of at the _run_interruptible() checkpoints stop_event
+        # covers. Route it through the same unload-before-delete cleanup so
+        # it doesn't strand a partial GGUF or a linked-but-unregistered file.
+        _cleanup_interrupted_install(resolved.filename)
+        raise
+    finally:
+        listener.stop_event.set()
 
     console.print(f"[success]Ω Installed {outcome.filename}[/success]")
     if outcome.linked.get("ollama"):
@@ -4442,11 +4530,8 @@ def _cleanup_download_parts(destination: Path) -> bool:
     cleaned = False
     for path in (part, _sidecar_path(part), metadata):
         if path.exists():
-            try:
-                path.unlink()
-                cleaned = True
-            except OSError:
-                pass
+            _unlink_with_retry(path)
+            cleaned = cleaned or not path.exists()
     return cleaned
 
 
@@ -4457,11 +4542,8 @@ def _cleanup_incomplete_install(filename: str) -> bool:
         return False
     cleaned = _cleanup_download_parts(dest)
     if dest.exists():
-        try:
-            dest.unlink()
-            cleaned = True
-        except OSError:
-            pass
+        _unlink_with_retry(dest)
+        cleaned = cleaned or not dest.exists()
     return cleaned
 
 
@@ -5474,6 +5556,7 @@ def setting_menu(ctx: typer.Context) -> None:
         catalog_manifest = current.get("catalog_manifest_url") or "not configured"
         update_channel = current.get("update_channel") or "stable"
         memory_guard_policy = current.get("memory_guard_policy", "ask")
+        error_reports_policy = error_report.send_policy(current)
 
         choice = _ask_select(
             questionary.select(
@@ -5495,6 +5578,9 @@ def setting_menu(ctx: typer.Context) -> None:
                     questionary.Choice("Catalog rollback", value="catalog-rollback"),
                     questionary.Choice(
                         f"Memory guard (current: {memory_guard_policy})", value="memory-guard"
+                    ),
+                    questionary.Choice(
+                        f"Error reports (current: {error_reports_policy})", value="error-reports"
                     ),
                     questionary.Choice("← Back", value="back"),
                 ],
@@ -5574,6 +5660,24 @@ def setting_menu(ctx: typer.Context) -> None:
             )
             if action is not None and action != "back":
                 configure_memory_guard(policy=action, poll_seconds=None, low_memory_seconds=None)
+        elif choice == "error-reports":
+            action = _ask_select(
+                questionary.select(
+                    f"Error reports (current: {error_reports_policy}):",
+                    choices=[
+                        questionary.Choice("Ask once per `omm contribute` run", value="ask"),
+                        questionary.Choice("Always send", value="enable"),
+                        questionary.Choice("Never send (default)", value="disable"),
+                        questionary.Choice("← Back", value="back"),
+                    ],
+                )
+            )
+            if action is not None and action != "back":
+                configure_error_reports(
+                    enable=(action == "enable"),
+                    disable=(action == "disable"),
+                    ask=(action == "ask"),
+                )
 
         if not _ask_confirm("Change another setting?", default=True):
             return
@@ -5625,16 +5729,21 @@ def search(
     local_matches = search_mod.match_candidates(pool, query)
 
     local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
-    hf_matches = [
-        c
-        for c in search_mod.search_huggingface(query)
-        if c.get("repo_id") not in local_repo_ids
-    ]
-    ms_matches = [
-        c
-        for c in (search_mod.search_modelscope(query) if not skip_ms else [])
-        if c.get("repo_id") not in local_repo_ids
-    ]
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        hf_future = executor.submit(search_mod.search_huggingface, query)
+        ms_future = (
+            executor.submit(search_mod.search_modelscope, query) if not skip_ms else None
+        )
+        hf_matches = [
+            c for c in hf_future.result() if c.get("repo_id") not in local_repo_ids
+        ]
+        ms_matches = [
+            c
+            for c in (ms_future.result() if ms_future else [])
+            if c.get("repo_id") not in local_repo_ids
+        ]
 
     combined = search_mod.dedupe_by_base_repo(local_matches + hf_matches + ms_matches)
     if provider is not None:
@@ -6095,6 +6204,7 @@ def benchmark_cmd(
         raise typer.Exit(1)
     _print_engine_selection_notice(engine)
     engine, started_daemon = _ensure_engine_running(engine, "benchmark")
+    daemon_ref = {"proc": started_daemon}
     lmstudio_models: dict[str, dict] | None = None
     if engine == "lmstudio":
         installed = _lmstudio_installed_models()
@@ -6162,6 +6272,7 @@ def benchmark_cmd(
                     confirm_performance_timeout=confirm_performance_timeout,
                     on_model_start=_on_model_start,
                     on_daemon_event=_on_daemon_event,
+                    daemon_ref=daemon_ref,
                 )
                 progress.update(task_id, completed=len(models))
             quality_mod.write_evidence(report, output)
@@ -6266,8 +6377,8 @@ def benchmark_cmd(
         if not successes:
             raise typer.Exit(1)
     finally:
-        if started_daemon is not None:
-            _stop_engine_daemon(engine, started_daemon)
+        if daemon_ref["proc"] is not None:
+            _stop_engine_daemon(engine, daemon_ref["proc"])
 
 
 def _telemetry_send_failure_text() -> str:
@@ -6867,7 +6978,7 @@ class _DeferredContribution:
     attempts: int = 0
 
 
-def _cleanup_stopped_contribution(filename: str) -> None:
+def _cleanup_interrupted_install(filename: str) -> None:
     """Unload first, then unlink/delete; required for Windows file handles."""
     reg = registry.load_registry()
     found_name, entry = _lookup_entry(filename, reg)
@@ -7153,13 +7264,14 @@ def _telemetry_row_count(endpoint: str) -> int | None:
 
 
 class _EscListener:
-    """Background key-listener so Esc can interrupt `omm contribute` even
-    mid-download/mid-benchmark, not just at a questionary prompt. No-ops
-    (Ctrl+C is still the fallback) when stdin isn't a real terminal - tests,
-    CI, and piped input all fall into this path. Uses `sys.stdin.isatty()`
-    rather than session_cache.py's `os.ttyname()` idiom: that call doesn't
-    exist on Windows at all, which used to skip starting this listener
-    there entirely and left Esc permanently dead on Windows."""
+    """Background key-listener so Esc can interrupt `omm install` or
+    `omm contribute` even mid-download/mid-benchmark, not just at a
+    questionary prompt. No-ops (Ctrl+C is still the fallback) when stdin
+    isn't a real terminal - tests, CI, and piped input all fall into this
+    path. Uses `sys.stdin.isatty()` rather than session_cache.py's
+    `os.ttyname()` idiom: that call doesn't exist on Windows at all, which
+    used to skip starting this listener there entirely and left Esc
+    permanently dead on Windows."""
 
     def __init__(self) -> None:
         self.stop_event = threading.Event()
@@ -7176,16 +7288,28 @@ class _EscListener:
         self._thread.start()
 
     def _run_windows(self) -> None:
-        """Poll Esc without consuming Ctrl+C or any other console input."""
+        """Poll Esc without consuming Ctrl+C or any other console input.
+
+        `GetAsyncKeyState` reports *global* OS-wide key state, not input
+        scoped to this console - alone, it would abort `omm contribute` if
+        the user presses Escape while any other window has focus (e.g.
+        alt-tabbed away during a long benchmark). Gated on
+        `GetForegroundWindow() == GetConsoleWindow()` so Escape only counts
+        while omm's own console is the one actually receiving keystrokes.
+        """
         try:
             import ctypes
 
-            get_async_key_state = ctypes.windll.user32.GetAsyncKeyState
+            user32 = ctypes.windll.user32
+            get_async_key_state = user32.GetAsyncKeyState
             get_async_key_state.argtypes = [ctypes.c_int]
             get_async_key_state.restype = ctypes.c_short
+            get_foreground_window = user32.GetForegroundWindow
+            get_console_window = ctypes.windll.kernel32.GetConsoleWindow
             escape_was_down = False
             while not self.stop_event.is_set():
-                escape_is_down = bool(get_async_key_state(0x1B) & 0x8000)
+                console_has_focus = get_foreground_window() == get_console_window()
+                escape_is_down = console_has_focus and bool(get_async_key_state(0x1B) & 0x8000)
                 if escape_is_down and not escape_was_down:
                     self.stop_event.set()
                     return
@@ -7376,8 +7500,8 @@ def _run_contribution_loop(
                     memory_plan.estimate if memory_plan is not None else None
                 ),
             )
-        except ContributionStopped as e:
-            _cleanup_stopped_contribution(e.filename)
+        except InstallInterrupted as e:
+            _cleanup_interrupted_install(e.filename)
             break
         except KeyboardInterrupt:
             # On Windows Ctrl+C is a console control event, not the Esc
@@ -7386,7 +7510,7 @@ def _run_contribution_loop(
             # same unload-before-delete cleanup path while the active filename
             # is still known instead of letting it escape and strand a GGUF.
             stop_event.set()
-            _cleanup_stopped_contribution(filename)
+            _cleanup_interrupted_install(filename)
             break
         except (DownloadError, ModelResolutionError, linker.LinkError) as e:
             err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
@@ -7443,12 +7567,12 @@ def _run_contribution_loop(
                             memory_plan.estimate if memory_plan is not None else None
                         ),
                     )
-                except ContributionStopped as e:
-                    _cleanup_stopped_contribution(e.filename)
+                except InstallInterrupted as e:
+                    _cleanup_interrupted_install(e.filename)
                     break
                 except KeyboardInterrupt:
                     stop_event.set()
-                    _cleanup_stopped_contribution(filename)
+                    _cleanup_interrupted_install(filename)
                     break
                 except (DownloadError, linker.LinkError) as e:
                     err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")

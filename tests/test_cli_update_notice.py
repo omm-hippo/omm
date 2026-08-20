@@ -157,6 +157,7 @@ def test_maybe_start_update_check_spawns_detached_child_when_stale_and_not_in_fl
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old_sha")
     monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda *a, **k: (False, None))
     monkeypatch.setattr(cli.version_check, "should_start_check", lambda *a, **k: True)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
     marked = []
     monkeypatch.setattr(cli.version_check, "mark_checking", lambda *a, **k: marked.append(1))
     popen_calls = []
@@ -171,6 +172,30 @@ def test_maybe_start_update_check_spawns_detached_child_when_stale_and_not_in_fl
     assert args == [sys.executable, "-m", "omm.cli", "_bg-version-check"]
     assert kwargs["start_new_session"] is True
     assert ctx.close_callbacks == []
+
+
+def test_maybe_start_update_check_windows_uses_detached_process_flags(monkeypatch):
+    """start_new_session is POSIX-only (CPython's Windows _execute_child
+    ignores it), so the spawned `git ls-remote` child would stay attached
+    to the parent's process group on Windows without an explicit
+    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP creationflags."""
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old_sha")
+    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda *a, **k: (False, None))
+    monkeypatch.setattr(cli.version_check, "should_start_check", lambda *a, **k: True)
+    monkeypatch.setattr(cli.version_check, "mark_checking", lambda *a, **k: None)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(cli.subprocess, "DETACHED_PROCESS", 0x00000008, raising=False)
+    monkeypatch.setattr(cli.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
+    popen_calls = []
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda args, **kwargs: popen_calls.append((args, kwargs)))
+    ctx = _FakeCtx("list")
+
+    cli._maybe_start_update_check(ctx)
+
+    assert len(popen_calls) == 1
+    _, kwargs = popen_calls[0]
+    assert "start_new_session" not in kwargs
+    assert kwargs["creationflags"] == 0x00000008 | 0x00000200
 
 
 def test_maybe_start_update_check_skips_spawn_when_check_already_in_flight(monkeypatch):

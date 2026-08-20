@@ -310,6 +310,52 @@ def test_setting_bare_menu_upload_submenu_has_back_option(isolated_omm_home, mon
     assert config.load_config()["telemetry_send_policy"] == "ask"
 
 
+def test_setting_bare_menu_offers_error_reports(isolated_omm_home, monkeypatch):
+    """`error-reports` exists as a standalone `omm setting error-reports`
+    subcommand but was missing from the interactive menu's choice list -
+    only reachable if you already knew the exact subcommand name."""
+    captured_choices: list = []
+
+    def fake_select(message, choices=None, **kwargs):
+        captured_choices.append(choices)
+        return None
+
+    monkeypatch.setattr(questionary, "select", fake_select)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: None)
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    labels = [choice.title for choice in captured_choices[0]]
+    values = [choice.value for choice in captured_choices[0]]
+    assert "error-reports" in values
+    assert any("Error reports" in label and "never" in label for label in labels)
+
+
+def test_setting_bare_menu_error_reports_submenu_saves_policy(isolated_omm_home, monkeypatch):
+    config.update_config(
+        telemetry_endpoint="http://127.0.0.1:8000/v1/telemetry.json",
+        telemetry_backend="self_hosted",
+    )
+    answers = iter(["error-reports", "ask", None])
+    captured_choices: list = []
+
+    def fake_select(message, choices=None, **kwargs):
+        captured_choices.append(choices)
+        return None
+
+    monkeypatch.setattr(questionary, "select", fake_select)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    error_reports_labels = [choice.title for choice in captured_choices[1]]
+    assert error_reports_labels[-1] == "← Back"
+    assert config.load_config()["error_report_send_policy"] == "ask"
+
+
 def test_setting_bare_menu_version_submenu_switches_channel(isolated_omm_home, monkeypatch):
     answers = iter(["version", "beta", None])
     captured_choices: list = []

@@ -32,7 +32,7 @@ def load_profiles(path: Path | None = None) -> dict:
         return {"schema_version": 1, "profiles": {}}
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return {"schema_version": 1, "profiles": {}}
     if payload.get("schema_version") != 1 or not isinstance(payload.get("profiles"), dict):
         return {"schema_version": 1, "profiles": {}}

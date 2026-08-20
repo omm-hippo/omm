@@ -10,6 +10,7 @@ from pathlib import Path
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from omm.atomic import atomic_write_text, locked
 from omm.config import CATALOG_HISTORY_DIR, RECOMMEND_MODEL_PATH
 
 
@@ -96,12 +97,15 @@ def rollback(
     )
     if selected is None:
         raise FileNotFoundError("no previous catalog snapshot is available")
-    payload = json.loads(selected.read_text(encoding="utf-8"))
+    snapshot_text = selected.read_text(encoding="utf-8")
+    payload = json.loads(snapshot_text)
     if not isinstance(payload, dict):
         raise CatalogVerificationError("catalog snapshot is not a JSON object")
     archive_current_artifact(destination, history_dir)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(destination.suffix + ".tmp")
-    temporary.write_bytes(selected.read_bytes())
-    temporary.replace(destination)
+    # Same lock + retrying replace predictor.py uses to write this same
+    # path: a raw write_bytes()+replace() here would skip the
+    # PermissionError retry atomic_write_text already needed for Windows
+    # AV/indexing transiently holding the destination open.
+    with locked(destination):
+        atomic_write_text(destination, snapshot_text)
     return selected

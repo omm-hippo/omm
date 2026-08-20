@@ -63,6 +63,29 @@ class InsufficientDiskSpaceError(DownloadError):
     pass
 
 
+def _replace_with_retry(part_path: Path, dest: Path, attempts: int = 8) -> None:
+    """Retry the final rename past a transient Windows sharing violation.
+
+    POSIX `rename()` silently succeeds even when the destination is open
+    elsewhere; Windows raises `PermissionError` instead (e.g. an AV
+    scanner briefly holding the just-removed prior file, or a stale
+    engine handle). Most such locks clear within a second or two, so
+    retry with backoff before surfacing a real, actionable error instead
+    of a raw traceback.
+    """
+    for attempt in range(attempts):
+        try:
+            part_path.replace(dest)
+            return
+        except PermissionError as error:
+            if attempt == attempts - 1:
+                raise DownloadError(
+                    f"Could not finalize the download at {dest}: {error}. "
+                    "Another program may have the file open - close it and try again."
+                ) from error
+            time.sleep(min(0.1 * (2**attempt), 1.0))
+
+
 def _sidecar_path(part_path: Path) -> Path:
     """Path to the JSON file tracking per-range progress of a parallel
     download, so an interrupted download can resume only the unfinished
@@ -438,7 +461,7 @@ def _run_range_workers(
             raise disk_full
         raise DownloadError(str(errors[0])) from errors[0]
 
-    part_path.replace(dest)
+    _replace_with_retry(part_path, dest)
     sidecar_path.unlink(missing_ok=True)
 
 
@@ -657,7 +680,7 @@ def _download_single_stream(
             f"Downloaded file is {part_path.stat().st_size} bytes; "
             f"expected {final_total}."
         )
-    part_path.replace(dest)
+    _replace_with_retry(part_path, dest)
     meta_path.unlink(missing_ok=True)
 
 

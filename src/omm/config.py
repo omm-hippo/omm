@@ -189,7 +189,7 @@ def load_config() -> dict[str, Any]:
         return fresh
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         backup_corrupt_file(CONFIG_PATH)
         return dict(DEFAULT_CONFIG)
     if not isinstance(data, dict):
@@ -216,7 +216,7 @@ def update_config(**changes: Any) -> dict[str, Any]:
                     data = loaded
                 else:
                     backup_corrupt_file(CONFIG_PATH)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError):
                 backup_corrupt_file(CONFIG_PATH)
         current = _merge_config(data)
         current.update(changes)
@@ -241,7 +241,7 @@ def add_storage_saved_bytes(delta: int) -> int:
                     data = loaded
                 else:
                     backup_corrupt_file(CONFIG_PATH)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError):
                 backup_corrupt_file(CONFIG_PATH)
         current = _merge_config(data)
         total = int(current["storage_saved_bytes"]) + delta

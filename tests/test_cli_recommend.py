@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import questionary
 from typer.testing import CliRunner
 
@@ -97,3 +99,75 @@ def test_recommend_without_quiet_prints_status_lines(monkeypatch, isolated_omm_h
     assert result.exit_code == 1
     assert "Fetched updated recommendation data" in result.output
     assert "No trained model available" in result.output
+
+
+def test_recommend_json_lists_candidates_without_installing(monkeypatch, isolated_omm_home):
+    candidate = {
+        "name": "org/repo",
+        "repo_id": "org/repo",
+        "filename": "model.gguf",
+        "provider": "modelscope",
+        "description": "test",
+    }
+    artifact = {"candidates": [candidate]}
+
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor, "rank_candidates", lambda artifact, hw: [(candidate, 42.0)]
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+
+    def fail_install(*a, **k):
+        raise AssertionError("install() must not run under --json")
+
+    monkeypatch.setattr(cli, "install", fail_install)
+    monkeypatch.setattr(cli, "_select_recommended_model", fail_install)
+
+    result = runner.invoke(cli.app, ["recommend", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    rows = json.loads(result.stdout)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["rank"] == 1
+    assert row["ref"] == "ms:org/repo:model.gguf"
+    assert row["name"] == cli.recommend_ui.humanize_model_name(candidate)
+    assert row["predicted_tokens_per_second"] == 42.0
+
+
+def test_recommend_yes_installs_top_candidate_without_prompting(monkeypatch, isolated_omm_home):
+    candidate = {
+        "name": "org/repo",
+        "repo_id": "org/repo",
+        "filename": "model.gguf",
+        "provider": "modelscope",
+        "description": "test",
+    }
+    artifact = {"candidates": [candidate]}
+
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor, "rank_candidates", lambda artifact, hw: [(candidate, 42.0)]
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+
+    def fail_select(*a, **k):
+        raise AssertionError("interactive picker must not run under --yes")
+
+    monkeypatch.setattr(cli, "_select_recommended_model", fail_select)
+
+    installed = []
+    monkeypatch.setattr(cli, "install", lambda ref: installed.append(ref))
+
+    result = runner.invoke(cli.app, ["recommend", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert installed == ["ms:org/repo:model.gguf"]

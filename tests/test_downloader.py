@@ -28,6 +28,46 @@ class _FakeResp:
         pass
 
 
+def test_replace_with_retry_succeeds_after_transient_permission_error(tmp_path, monkeypatch):
+    """POSIX rename() silently succeeds over an open file; Windows raises
+    PermissionError instead (e.g. AV briefly holding the destination).
+    Most such locks clear within a second or two."""
+    part = tmp_path / "model.gguf.part"
+    dest = tmp_path / "model.gguf"
+    part.write_bytes(b"data")
+    monkeypatch.setattr(downloader.time, "sleep", lambda seconds: None)
+    calls = {"n": 0}
+    real_replace = Path.replace
+
+    def flaky_replace(self, target):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError("WinError 32")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(downloader.Path, "replace", flaky_replace)
+
+    downloader._replace_with_retry(part, dest)
+
+    assert dest.read_bytes() == b"data"
+    assert calls["n"] == 3
+
+
+def test_replace_with_retry_raises_download_error_after_exhausting_attempts(tmp_path, monkeypatch):
+    part = tmp_path / "model.gguf.part"
+    dest = tmp_path / "model.gguf"
+    part.write_bytes(b"data")
+    monkeypatch.setattr(downloader.time, "sleep", lambda seconds: None)
+
+    def always_locked(self, target):
+        raise PermissionError("WinError 32")
+
+    monkeypatch.setattr(downloader.Path, "replace", always_locked)
+
+    with pytest.raises(downloader.DownloadError, match="Could not finalize"):
+        downloader._replace_with_retry(part, dest, attempts=3)
+
+
 def test_download_file_converts_enospc_write_error_to_insufficient_disk_space_error(tmp_path, monkeypatch):
     dest = tmp_path / "model.gguf"
     monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)

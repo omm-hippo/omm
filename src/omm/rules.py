@@ -38,7 +38,7 @@ def _read_rules_file() -> list[dict] | None:
         return None
     try:
         return json.loads(RULES_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         backup_corrupt_file(RULES_PATH)
         return None
 

@@ -9,6 +9,7 @@ downloader.py's _probe_range_support for the corresponding fix."""
 
 from __future__ import annotations
 
+from functools import lru_cache
 from urllib.parse import quote_plus
 
 from omm.providers.base import ModelResolutionError
@@ -17,7 +18,12 @@ MS_REPO_FILES = "https://modelscope.cn/api/v1/models/{repo_id}/repo/files"
 MS_DOWNLOAD = "https://modelscope.cn/api/v1/models/{repo_id}/repo"
 
 
+@lru_cache(maxsize=128)
 def _list_repo_files(repo_id: str, timeout: float = 15) -> list[dict]:
+    """Cached for the process lifetime: fetch_repo_files, remote_file_size,
+    and remote_file_sha256 all hit this same listing for the same repo_id
+    (e.g. once per quant variant when the install prompt is ranking them),
+    and the response doesn't change within a single command invocation."""
     import requests
 
     try:
@@ -80,7 +86,10 @@ def remote_file_size(repo_id: str, filename: str) -> int | None:
     failure (404, network error, gated repo, etc.) - never raises. Matches
     the HuggingFace provider's contract for best-effort metadata."""
     try:
-        files = _list_repo_files(repo_id)
+        # Must match fetch_repo_files' call shape (repo_id, timeout=15)
+        # exactly, or the lru_cache key differs and this misses the cache
+        # it exists to hit.
+        files = _list_repo_files(repo_id, timeout=15)
     except ModelResolutionError:
         return None
     for f in files:
@@ -95,7 +104,10 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
     failure (404, network error, gated repo, etc.) - never raises. Matches
     the HuggingFace provider's contract for best-effort metadata."""
     try:
-        files = _list_repo_files(repo_id)
+        # Must match fetch_repo_files' call shape (repo_id, timeout=15)
+        # exactly, or the lru_cache key differs and this misses the cache
+        # it exists to hit.
+        files = _list_repo_files(repo_id, timeout=15)
     except ModelResolutionError:
         return None
     for f in files:
