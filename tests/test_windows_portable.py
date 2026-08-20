@@ -149,7 +149,8 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert "expected exactly three schema compatibility warnings" in workflow
     assert "--ignore-warnings" in workflow
     assert "winget install --manifest" in workflow
-    assert "winget uninstall --id OmmHippo.OMM -e" in workflow
+    assert "winget uninstall --manifest $manifestPath" in workflow
+    assert "local manifest for correlation" in workflow
     assert workflow.count("--accept-source-agreements") == 2
     assert "scripts/winget_manifest.py" in workflow
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
