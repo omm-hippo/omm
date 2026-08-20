@@ -159,13 +159,15 @@ def run_theme_step(console: Console) -> str:
     here is not treated as aborting the whole wizard - nothing
     destructive has happened yet, so falling back to the guess is safe."""
     recommended = theme.detect_recommended()
+    default = recommended or "dark"
 
     if not _stdin_is_tty():
-        config_mod.update_config(theme=recommended)
-        theme.apply_theme_to_console(console, recommended)
-        return recommended
+        config_mod.update_config(theme=default)
+        theme.apply_theme_to_console(console, default)
+        return default
 
-    chosen = theme.run_picker(recommended, current_label="recommended") or recommended
+    label = "recommended" if recommended else None
+    chosen = theme.run_picker(default, current_label=label) or default
     config_mod.update_config(theme=chosen)
     theme.apply_theme_to_console(console, chosen)
     return chosen
