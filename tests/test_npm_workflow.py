@@ -1,14 +1,17 @@
 from pathlib import Path
 import re
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_npm_workflow_is_validation_only_and_pinned():
-    workflow = (ROOT / ".github" / "workflows" / "npm-package.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow_path = ROOT / ".github" / "workflows" / "npm-package.yml"
+    if not workflow_path.is_file():
+        pytest.skip("GitHub workflows are excluded from the runtime Docker image")
+    workflow = workflow_path.read_text(encoding="utf-8")
 
     assert 'node: ["22", "24"]' in workflow
     for runner in (
