@@ -92,10 +92,12 @@ brew upgrade omm-hippo/omm/omm
 brew uninstall omm-hippo/omm/omm
 ```
 
-The Homebrew formula and PyPI package can move on separate release schedules;
-use `brew info omm-hippo/omm/omm` to see the version currently provided by the
-Tap. `omm update` does not modify a Homebrew installation and instead prints
-the matching `brew upgrade` command.
+After a tagged PyPI release passes its public install checks, GitHub notifies
+the Homebrew Tap. Homebrew intentionally applies its upstream release cooldown
+before opening an automated Formula update PR, so the Tap can temporarily lag
+behind PyPI. Use `brew info omm-hippo/omm/omm` to see the version currently
+provided by the Tap. `omm update` does not modify a Homebrew installation and
+instead prints the matching `brew upgrade` command.
 
 **6. macOS notes.** Set `OMM_HOME` before installation and on later runs to put the model hub elsewhere:
 
