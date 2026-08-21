@@ -48,6 +48,46 @@ def test_pyinstaller_command_copies_runtime_metadata(tmp_path):
     assert command[command.index("--collect-data") + 1] == "omm"
 
 
+def test_build_environment_is_reproducible(monkeypatch):
+    monkeypatch.setenv("PYTHONHASHSEED", "random")
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "123")
+
+    environment = npm_binary.build_environment()
+
+    assert environment["PYTHONHASHSEED"] == "0"
+    assert environment["SOURCE_DATE_EPOCH"] == "0"
+
+
+def test_checked_in_entry_script_is_stable():
+    assert npm_binary.ENTRY_SCRIPT == ROOT / "scripts" / "npm_entry.py"
+    assert npm_binary.ENTRY_SCRIPT.read_text(encoding="utf-8").endswith(
+        'if __name__ == "__main__":\n    main()\n'
+    )
+
+
+def test_build_uses_stable_entry_and_reproducible_environment(tmp_path, monkeypatch):
+    output_dir = tmp_path / "dist"
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "omm").write_bytes(bytes.fromhex("cffaedfe") + b" executable")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(npm_binary, "current_target", lambda: "darwin-arm64")
+    monkeypatch.setattr(npm_binary, "project_version", lambda: "0.2.147")
+    monkeypatch.setattr(npm_binary, "validate_executable", lambda *args: None)
+    monkeypatch.setattr(npm_binary.subprocess, "run", fake_run)
+
+    npm_binary.build(output_dir, "darwin-arm64")
+
+    command, options = calls[0]
+    assert command[-1] == str(npm_binary.ENTRY_SCRIPT)
+    assert options["env"]["PYTHONHASHSEED"] == "0"
+    assert options["env"]["SOURCE_DATE_EPOCH"] == "0"
+
+
 def test_executable_probe_checks_version_and_help(tmp_path, monkeypatch):
     executable = tmp_path / "omm"
     executable.write_bytes(bytes.fromhex("7f454c46") + b" executable")

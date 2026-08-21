@@ -345,7 +345,8 @@ def smoke_registry(version: str, target_name: str, registry: str = REGISTRY) -> 
             _npm(),
             "install",
             "--ignore-scripts",
-            "--package-lock-only",
+            "--no-audit",
+            "--no-fund",
             "--registry",
             registry,
             f"{npm_package.LAUNCHER_NAME}@{version}",
@@ -378,6 +379,52 @@ def _registry_integrity(package: PackageInfo, registry: str) -> str | None:
     raise NpmReleaseError(
         f"npm registry lookup failed for {package.name}@{package.version}: {result.stderr}"
     )
+
+
+def reuse_published_packages(pack_dir: Path, registry: str = REGISTRY) -> None:
+    """Replace rebuilt tarballs with immutable bytes already in the registry."""
+
+    packages = verify_bundle(pack_dir, write_checksums=True)
+    for package in packages:
+        published_integrity = _registry_integrity(package, registry)
+        if published_integrity is None:
+            print(f"Not published yet; keeping built bytes: {package.name}@{package.version}")
+            continue
+        with tempfile.TemporaryDirectory(prefix="omm-npm-published-") as temporary:
+            destination = Path(temporary)
+            _run(
+                _npm(),
+                "pack",
+                f"{package.name}@{package.version}",
+                "--ignore-scripts",
+                "--pack-destination",
+                str(destination),
+                "--json",
+                "--registry",
+                registry,
+            )
+            downloaded_tarballs = list(destination.glob("*.tgz"))
+            if len(downloaded_tarballs) != 1:
+                raise NpmReleaseError(
+                    f"npm pack returned {len(downloaded_tarballs)} tarballs for "
+                    f"{package.name}@{package.version}"
+                )
+            downloaded = inspect_tarball(downloaded_tarballs[0])
+            if (
+                downloaded.name,
+                downloaded.version,
+                downloaded.target,
+            ) != (package.name, package.version, package.target):
+                raise NpmReleaseError(
+                    f"downloaded registry package identity does not match {package.name}"
+                )
+            if _integrity(downloaded.path) != published_integrity:
+                raise NpmReleaseError(
+                    f"downloaded registry package integrity does not match {package.name}"
+                )
+            shutil.copyfile(downloaded.path, package.path)
+            print(f"Reused published bytes: {package.name}@{package.version}")
+    verify_bundle(pack_dir, write_checksums=True)
 
 
 def publish_bundle(pack_dir: Path, registry: str = REGISTRY) -> None:
@@ -443,6 +490,10 @@ def _parser() -> argparse.ArgumentParser:
     publish = commands.add_parser("publish-bundle")
     publish.add_argument("--pack-dir", type=Path, required=True)
     publish.add_argument("--registry", default=REGISTRY)
+
+    reuse = commands.add_parser("reuse-published")
+    reuse.add_argument("--pack-dir", type=Path, required=True)
+    reuse.add_argument("--registry", default=REGISTRY)
     return parser
 
 
@@ -457,6 +508,8 @@ def main(argv: list[str] | None = None) -> int:
             smoke_registry(args.version, args.target, args.registry)
         elif args.command == "publish-bundle":
             publish_bundle(args.pack_dir, args.registry)
+        elif args.command == "reuse-published":
+            reuse_published_packages(args.pack_dir, args.registry)
     except (NpmReleaseError, OSError, subprocess.SubprocessError) as error:
         print(f"npm release validation failed: {error}", file=sys.stderr)
         return 1
