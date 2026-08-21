@@ -61,7 +61,7 @@ Detailed walkthrough: <https://omm-site-sage.vercel.app/install/windows>
 
 **1. Open this app.** Open **Terminal** (Applications → Utilities → Terminal), or any terminal emulator you already use. The command runs under `sh`/`zsh`/`bash`.
 
-**2. Requirements.** Python 3.10+. The installer bootstraps `python3`, `git`, and `pipx` if missing (Homebrew on macOS), then installs `omm` as an isolated CLI via `pipx`. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
+**2. Requirements.** Python 3.10+ and git must already be present: the installer checks for them and exits with `Python 3.10+ not found` or `git not found. Install git first` if either is missing. Install Python 3.10+ from [python.org](https://www.python.org/downloads/) or Homebrew, and git with the Xcode Command Line Tools (`xcode-select --install`) or Homebrew. `pipx` is bootstrapped with `pip` if missing (Homebrew and other PEP-668 "externally-managed" Pythons are handled with `--break-system-packages`), and `omm` is then installed as an isolated CLI via `pipx`. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
 
 **3. Run the installer.**
 
@@ -121,7 +121,7 @@ Detailed walkthrough: <https://omm-site-sage.vercel.app/install/macos>
 
 **1. Open this app.** Any terminal emulator. The command runs under `sh`/`bash`.
 
-**2. Requirements.** Python 3.10+. On Debian/Ubuntu the installer bootstraps `python3`, `python3-venv`, `git`, and `pipx` via `apt` if they are missing, then installs `omm` as an isolated CLI via `pipx`. On distributions without `apt`, install Python 3.10+ and git yourself first. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
+**2. Requirements.** Python 3.10+. On Debian/Ubuntu the installer bootstraps `python3`, `python3-venv`, and `git` via `apt` if they are missing; on distributions without `apt`, install Python 3.10+ and git yourself first or the installer exits with `Python 3.10+ not found` or `git not found. Install git first`. `pipx` is bootstrapped with `pip` if missing (PEP-668 "externally-managed" Pythons are handled with `--break-system-packages`), and `omm` is then installed as an isolated CLI via `pipx`. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
 
 **3. Run the installer.**
 
