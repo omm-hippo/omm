@@ -108,12 +108,20 @@ def test_release_workflow_builds_smoke_installs_and_gates_publishing():
     assert workflow.count("id-token: write") == 2
     assert workflow.count(
         "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
-    ) == 3
+    ) == 4
     assert "needs: [smoke-install, release-tests]" in workflow
     assert "needs: publish-testpypi" in workflow
     assert "needs: verify-testpypi" in workflow
     assert "needs: publish-pypi" in workflow
     assert "needs: verify-pypi-files" in workflow
+    assert re.search(
+        r"(?m)^  sync-homebrew:\n(?:    .*\n)*?    needs: verify-pypi-install$",
+        workflow,
+    )
+    assert "secrets.HOMEBREW_TAP_DISPATCH_TOKEN" in workflow
+    assert '"repos/omm-hippo/homebrew-omm/dispatches"' in workflow
+    assert "event_type=pypi_release_verified" in workflow
+    assert "client_payload[source_sha]=${GITHUB_SHA}" in workflow
     assert "--staging" not in workflow
     assert "python-release-packages" in workflow
     assert "python-release-dist" in workflow
