@@ -14,12 +14,15 @@ import shutil
 import struct
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 import click
 import typer
@@ -496,7 +499,10 @@ def _omm_version() -> str:
     install` (see _deps_satisfied's docstring), so importlib.metadata would
     keep reporting a stale version after every git-pull-only `omm update`
     even though the commit hash and code have moved on."""
-    if package_metadata.install_source() is package_metadata.InstallSource.GIT:
+    if (
+        package_metadata.install_source() is package_metadata.InstallSource.GIT
+        and _editable_install_uses_src()
+    ):
         try:
             text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
         except OSError:
@@ -1109,15 +1115,56 @@ def _src_head_commit() -> str | None:
     return result.stdout.strip()
 
 
+def _editable_install_uses_src(install_record: dict | None = None) -> bool:
+    """True only when PEP 610 proves the installed package uses SRC_DIR.
+
+    A cloned ``~/.omm/src`` is not proof that the currently executing pipx
+    environment is editable. A failed one-time migration can leave that clone
+    behind while the environment still runs an older VCS snapshot.
+    """
+    if install_record is None:
+        try:
+            install_record = package_metadata.direct_url()
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+    if not isinstance(install_record, dict):
+        return False
+    dir_info = install_record.get("dir_info")
+    if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+        return False
+    raw_url = install_record.get("url")
+    if not isinstance(raw_url, str):
+        return False
+    try:
+        parsed = urlsplit(raw_url)
+    except ValueError:
+        return False
+    if (
+        parsed.scheme != "file"
+        or parsed.netloc not in {"", "localhost"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    raw_path = url2pathname(unquote(parsed.path))
+    if platform.system() == "Windows" and re.fullmatch(r"/[A-Za-z]:.*", raw_path):
+        raw_path = raw_path[1:]
+    try:
+        return Path(raw_path).resolve() == SRC_DIR.resolve()
+    except OSError:
+        return False
+
+
 def _installed_commit() -> str | None:
-    """The commit omm is actually running from. Checks the persistent
-    editable clone (SRC_DIR) first, then falls back to pip's PEP 610
-    direct_url.json vcs_info - present for not-yet-migrated installs that
-    still used a plain `pipx install <git-URL>` VCS snapshot."""
-    src_commit = _src_head_commit()
-    if src_commit:
-        return src_commit
+    """The commit the installed package actually executes.
+
+    PEP 610 identifies whether this environment is the migrated editable
+    install or an older VCS snapshot. Never treat a merely-present SRC_DIR as
+    installed code: it may be residue from a failed migration.
+    """
     install_record = package_metadata.direct_url()
+    if _editable_install_uses_src(install_record):
+        return _src_head_commit()
     if not install_record:
         return None
     vcs_info = install_record.get("vcs_info", {})
@@ -1907,6 +1954,28 @@ def _pipx_child_env() -> dict[str, str]:
     character (a Korean Windows user profile directory is enough)."""
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
+    # `python -m pipx ensurepath` updates future login shells, not the shell
+    # already running the installer. On macOS a user install commonly lands
+    # in ~/Library/Python/X.Y/bin, so the first `omm update` must make that
+    # interpreter's user scripts directory visible to its pipx child itself.
+    user_scheme = "nt_user" if os.name == "nt" else (
+        "osx_framework_user" if sys.platform == "darwin" else "posix_user"
+    )
+    try:
+        user_scripts = sysconfig.get_path("scripts", scheme=user_scheme)
+    except (KeyError, TypeError, ValueError):
+        user_scripts = None
+    path_entries = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry]
+    fallback_dirs = [Path.home() / ".local" / "bin"]
+    if user_scripts:
+        fallback_dirs.insert(0, Path(user_scripts))
+    normalized = {os.path.normcase(os.path.abspath(entry)) for entry in path_entries}
+    for directory in fallback_dirs:
+        key = os.path.normcase(os.path.abspath(directory))
+        if key not in normalized:
+            path_entries.append(str(directory))
+            normalized.add(key)
+    env["PATH"] = os.pathsep.join(path_entries)
     return env
 
 
@@ -1992,6 +2061,35 @@ def _run_pipx_install_with_progress(args: list[str]) -> subprocess.CompletedProc
     return result
 
 
+def _verified_pipx_install_result(
+    result: subprocess.CompletedProcess,
+) -> subprocess.CompletedProcess:
+    """Convert a false-successful pipx result into an updater failure."""
+    if result.returncode != 0:
+        return result
+    verification, error = _verify_pipx_installation()
+    if verification is not None:
+        return result
+    detail = error or "unknown pipx verification failure"
+    return subprocess.CompletedProcess(
+        result.args,
+        1,
+        stdout=result.stdout,
+        stderr=(
+            "pipx reported a successful install, but the new omm-model "
+            f"environment failed exact verification ({detail})."
+        ),
+    )
+
+
+def _remove_update_path(path: Path) -> None:
+    """Remove only one updater-owned scratch/backup path."""
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedProcess:
     """First-run (or self-heal) path: clone the repo into a scratch dir,
     swap it into place as SRC_DIR only once the clone has actually
@@ -2050,11 +2148,35 @@ def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedPr
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
 
-    shutil.rmtree(SRC_DIR, ignore_errors=True)
-    tmp_dir.rename(SRC_DIR)
-    return _run_pipx_install_with_progress(
-        ["pipx", "install", "--force", "--editable", _install_spec()]
+    backup_dir = SRC_DIR.with_name(
+        f"{SRC_DIR.name}.previous-{os.getpid()}-{time.time_ns()}"
     )
+    had_existing_src = SRC_DIR.exists() or SRC_DIR.is_symlink()
+    try:
+        if had_existing_src:
+            SRC_DIR.rename(backup_dir)
+        tmp_dir.rename(SRC_DIR)
+    except OSError:
+        if had_existing_src and backup_dir.exists() and not SRC_DIR.exists():
+            backup_dir.rename(SRC_DIR)
+        raise
+
+    install_succeeded = False
+    try:
+        result = _verified_pipx_install_result(
+            _run_pipx_install_with_progress(
+                [_PIPX_COMMAND, "install", "--force", "--editable", _install_spec()]
+            )
+        )
+        install_succeeded = result.returncode == 0
+        return result
+    finally:
+        if install_succeeded:
+            _remove_update_path(backup_dir)
+        else:
+            _remove_update_path(SRC_DIR)
+            if had_existing_src and backup_dir.exists():
+                backup_dir.rename(SRC_DIR)
 
 
 def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -2153,6 +2275,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
             )
 
     migrated = _src_head_commit() is not None
+    editable_install = _editable_install_uses_src()
     try:
         if not migrated:
             result = _migrate_to_editable_install(branch)
@@ -2165,7 +2288,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
         result = _git_update_src(branch)
         if result.returncode == 0:
             dependencies_satisfied = _deps_satisfied()
-            if legacy_distribution or not dependencies_satisfied:
+            if legacy_distribution or not dependencies_satisfied or not editable_install:
                 # With the renamed distribution, pipx derives a new
                 # `omm-model` environment from this spec. `--force` lets the
                 # successfully-created environment take over the shared
@@ -2174,6 +2297,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
                 result = _run_pipx_install_with_progress(
                     [_PIPX_COMMAND, "install", "--force", "--editable", _install_spec()]
                 )
+                result = _verified_pipx_install_result(result)
                 if legacy_state is not None:
                     result = _finalize_legacy_pipx_migration(result, legacy_state)
         return result
@@ -2247,11 +2371,12 @@ def update() -> None:
     by default, or beta)."""
     branch = _channel_branch()
     migrated = _src_head_commit() is not None
+    editable_install = _editable_install_uses_src()
     installed = _installed_commit()
     latest = _remote_head_commit(branch) if installed else None
     if latest:
         version_check.record(latest, branch)
-    if migrated and installed and latest and installed == latest:
+    if migrated and editable_install and installed and latest and installed == latest:
         console.print(f"[muted]omm is already up to date - {_version_line(installed)}[/muted]")
         _refresh_data()
         return
