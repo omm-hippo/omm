@@ -194,6 +194,42 @@ def test_ollama_probe_disables_thinking_for_bounded_visible_answer(runtime_serve
     assert probe_payload["think"] is False
 
 
+def test_ollama_probe_reuses_the_context_from_its_own_load(runtime_server):
+    base_url, state = runtime_server
+    adapter = OllamaAdapter(base_url)
+    receipt = adapter.load(
+        RuntimeModelRef("local-model"), LoadOptions(context_length=1536)
+    )
+
+    assert adapter.generate(receipt, ProbeRequest()).text == "OK"
+    generate_payloads = [
+        payload
+        for method, path, payload in state["calls"]
+        if method == "POST"
+        and path == "/api/generate"
+        and payload.get("keep_alive") != 0
+    ]
+    assert generate_payloads[0]["options"]["num_ctx"] == 1536
+    assert generate_payloads[1]["options"]["num_ctx"] == 1536
+
+
+def test_ollama_probe_does_not_override_a_preloaded_context(runtime_server):
+    base_url, state = runtime_server
+    state["loaded"] = True
+    adapter = OllamaAdapter(base_url)
+    receipt = adapter.load(
+        RuntimeModelRef("local-model"), LoadOptions(context_length=1536)
+    )
+
+    assert adapter.generate(receipt, ProbeRequest()).text == "OK"
+    probe_payload = next(
+        payload
+        for method, path, payload in reversed(state["calls"])
+        if method == "POST" and path == "/api/generate" and payload.get("prompt")
+    )
+    assert "num_ctx" not in probe_payload["options"]
+
+
 def test_ollama_probe_retries_without_think_for_non_thinking_model(runtime_server):
     base_url, state = runtime_server
     state["no_thinking_support"] = True
