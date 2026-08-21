@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import subprocess
+import json
 import sys
 import tarfile
 from pathlib import Path
@@ -22,13 +22,13 @@ def _magic(target: str) -> bytes:
 
 
 def _pack(source: Path, destination: Path) -> None:
-    subprocess.run(
-        ["npm", "pack", str(source), "--pack-destination", str(destination), "--json"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    metadata = json.loads((source / "package.json").read_text(encoding="utf-8"))
+    package_name = str(metadata["name"]).removeprefix("@").replace("/", "-")
+    archive = destination / f"{package_name}-{metadata['version']}.tgz"
+    with tarfile.open(archive, "w:gz") as bundle:
+        for path in sorted(source.rglob("*")):
+            if path.is_file():
+                bundle.add(path, arcname=Path("package") / path.relative_to(source))
 
 
 def _bundle(tmp_path: Path) -> Path:
