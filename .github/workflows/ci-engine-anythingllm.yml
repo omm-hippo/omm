@@ -1,4 +1,4 @@
-name: "Engine link check: AnythingLLM"
+name: "Engine link/import check: AnythingLLM"
 
 "on":
   push:
@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   verify:
-    name: Real AnythingLLM (brew) install + omm link + manifest recognition (macos-latest)
+    name: Real AnythingLLM (brew) install + omm link/import + manifest recognition (macos-latest)
     # No Linux automated installer exists for AnythingLLM at all (its
     # Linux installer.sh is interactive, sudo AppArmor prompt, no silent
     # flag - deliberately excluded, see _install_anythingllm and issue
@@ -49,7 +49,7 @@ jobs:
           cache: pip
       - name: Install omm
         run: python -m pip install -e .
-      - name: Install, link, and verify AnythingLLM's bundled-Ollama manifest sees the linked model
+      - name: Install, link, import, and verify AnythingLLM's bundled-Ollama store in both directions
         # AnythingLLM has no headless CLI (unlike Ollama/LM Studio), so
         # this checks the manifest+blob it writes to its own bundled
         # Ollama-format store directly rather than driving the Electron

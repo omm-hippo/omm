@@ -1,4 +1,4 @@
-name: "Engine link check: LM Studio"
+name: "Engine link/import check: LM Studio"
 
 "on":
   push:
@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   verify:
-    name: Real llmster/lms install + omm link + recognition (ubuntu-latest)
+    name: Real llmster/lms install + omm link/import + recognition (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,7 +39,7 @@ jobs:
           cache: pip
       - name: Install omm
         run: python -m pip install -e .
-      - name: Install, link, and verify LM Studio (llmster) recognizes the linked model
+      - name: Install, link, import, and verify LM Studio (llmster) recognizes both directions
         # _install_lmstudio installs llmster - LM Studio's headless
         # CLI+daemon core, not the GUI app - so this needs no display.
         run: python scripts/verify_engine_link.py lmstudio

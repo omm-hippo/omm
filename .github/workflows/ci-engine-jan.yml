@@ -1,4 +1,4 @@
-name: "Engine link check: Jan"
+name: "Engine link/import check: Jan"
 
 "on":
   push:
@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   verify:
-    name: Real Jan (flatpak) install + omm link + model.yml recognition (ubuntu-latest)
+    name: Real Jan (flatpak) install + omm link/import + model.yml recognition (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -65,7 +65,7 @@ jobs:
           });
           EOF
           sudo systemctl restart polkit
-      - name: Install, link, and verify Jan's model.yml scan sees the linked model
+      - name: Install, link, import, and verify Jan's model.yml scan sees both directions
         # Jan never needs to actually launch - scan_jan() just reads the
         # model.yml manifest omm writes, so no daemon/GUI step here.
         run: python scripts/verify_engine_link.py jan
