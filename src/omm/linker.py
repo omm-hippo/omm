@@ -1085,6 +1085,109 @@ def validate_ollama_tag(model_name: str) -> str:
     return model_name
 
 
+def _ollama_runtime_name_from_manifest_path(
+    manifest_path: Path, manifests_root: Path
+) -> str | None:
+    """Translate an Ollama manifest path into the name exposed by its API."""
+    try:
+        parts = manifest_path.relative_to(manifests_root).parts
+    except ValueError:
+        return None
+    if len(parts) < 4:
+        return None
+
+    registry_name, namespace, *model_and_tag = parts
+    model_parts = model_and_tag[:-1]
+    tag = model_and_tag[-1]
+    if not registry_name or not namespace or not model_parts or not tag:
+        return None
+
+    if registry_name == "registry.ollama.ai":
+        prefix = [] if namespace == "library" else [namespace]
+    else:
+        prefix = [registry_name, namespace]
+    model_name = "/".join([*prefix, *model_parts])
+    return f"{model_name}:{tag}" if model_name else None
+
+
+def _ollama_runtime_names_for_digest(
+    model_sha256: object, *, models_dir: Path | None = None
+) -> tuple[str, ...]:
+    """Return exact Ollama API names whose model layer has this GGUF digest."""
+    if not isinstance(model_sha256, str):
+        return ()
+    digest_hex = model_sha256.strip().casefold()
+    if digest_hex.startswith("sha256:"):
+        digest_hex = digest_hex.removeprefix("sha256:")
+    if re.fullmatch(r"[0-9a-f]{64}", digest_hex) is None:
+        return ()
+    if models_dir is None:
+        models_dir = ollama_models_dir()
+    manifests_root = models_dir / "manifests"
+    if not manifests_root.is_dir():
+        return ()
+
+    expected_digest = f"sha256:{digest_hex}"
+    names: set[str] = set()
+    for manifest_path in manifests_root.rglob("*"):
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        layers = manifest.get("layers") if isinstance(manifest, dict) else None
+        if not isinstance(layers, list) or not any(
+            isinstance(layer, dict)
+            and layer.get("mediaType") == "application/vnd.ollama.image.model"
+            and str(layer.get("digest", "")).casefold() == expected_digest
+            for layer in layers
+        ):
+            continue
+        runtime_name = _ollama_runtime_name_from_manifest_path(
+            manifest_path, manifests_root
+        )
+        if runtime_name:
+            names.add(runtime_name)
+    return tuple(sorted(names))
+
+
+def resolve_ollama_runtime_name(
+    filename: str, entry: dict, *, models_dir: Path | None = None
+) -> str:
+    """Resolve the exact Ollama API tag without guessing colon placement.
+
+    Imported models historically stored only a filename-safe ``ollama_name``
+    (for example ``qwen3-4b``) even when Ollama exposed ``qwen3:4b``. Prefer
+    the exact tag recorded by new imports. For legacy entries, match the
+    registry's GGUF SHA-256 against Ollama manifests; the digest avoids an
+    unsafe hyphen-to-colon heuristic.
+    """
+    explicit = entry.get("ollama_runtime_name")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    link_name = entry.get("ollama_name")
+    if not isinstance(link_name, str) or not link_name.strip():
+        link_name = sanitize_ollama_tag(filename)
+    else:
+        link_name = link_name.strip()
+
+    candidates = _ollama_runtime_names_for_digest(
+        entry.get("sha256"), models_dir=models_dir
+    )
+    matching_link_name = tuple(
+        candidate
+        for candidate in candidates
+        if sanitize_ollama_tag(candidate) == link_name.casefold()
+    )
+    if len(matching_link_name) == 1:
+        return matching_link_name[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    return link_name
+
+
 def _guess_param_size(filename: str) -> str:
     m = re.search(r"(\d+(?:\.\d+)?)[Bb](?:[-_.]|$)", filename)
     return f"{m.group(1)}B" if m else "unknown"

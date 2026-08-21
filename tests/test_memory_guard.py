@@ -301,6 +301,18 @@ def test_registry_ownership_is_required_and_model_names_are_not_guessed():
     assert guard.omm_managed_model_ids(registry_data, "ollama") == {"owned"}
 
 
+def test_registry_ownership_prefers_exact_ollama_runtime_name():
+    registry_data = {
+        "qwen3-4b.gguf": {
+            "linked": {"ollama": True},
+            "ollama_name": "qwen3-4b",
+            "ollama_runtime_name": "qwen3:4b",
+        }
+    }
+
+    assert guard.omm_managed_model_ids(registry_data, "ollama") == {"qwen3:4b"}
+
+
 class _FakeLmStudioAdapter:
     def __init__(self, models):
         self._models = models

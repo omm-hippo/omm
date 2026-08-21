@@ -2780,11 +2780,13 @@ def _resolve_benchmark_tag(arg: str) -> str:
         return arg
     filename = _resolve_ref(arg)
     entry = registry.load_registry().get(filename)
-    tag = entry.get("ollama_name") if entry else None
-    if not tag:
+    if not entry or not any(
+        isinstance(entry.get(field), str) and entry[field].strip()
+        for field in ("ollama_runtime_name", "ollama_name")
+    ):
         err_console.print(f"[error]{filename} has no Ollama tag; link it with `omm link` first.[/error]")
         raise typer.Exit(1)
-    return tag
+    return linker.resolve_ollama_runtime_name(filename, entry)
 
 
 def _predicted_fastest_filenames(
@@ -4592,7 +4594,7 @@ def _remove_one(filename: str, entry: dict) -> None:
         registry.remove_entry(filename)
         return
     linked = entry.get("linked", {})
-    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
     if linked.get("ollama") and benchmark.ollama_daemon_reachable():
         quality_mod.ensure_model_unloaded(ollama_tag, max_wait_seconds=10)
     for spec in linker.ENGINES:
@@ -4705,8 +4707,20 @@ def _compatibility_adapter(engine: str):
 
 def _compatibility_model_ref(filename: str, entry: dict, engine: str) -> RuntimeModelRef:
     if engine == "ollama":
-        tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
-        return RuntimeModelRef(tag, (tag.removesuffix(":latest"),))
+        tag = linker.resolve_ollama_runtime_name(filename, entry)
+        link_name = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+        aliases = tuple(
+            dict.fromkeys(
+                value
+                for value in (
+                    tag.removesuffix(":latest"),
+                    link_name,
+                    link_name.removesuffix(":latest"),
+                )
+                if value and value != tag
+            )
+        )
+        return RuntimeModelRef(tag, aliases)
     repo_id = entry.get("repo_id")
     key = repo_id if isinstance(repo_id, str) and "/" in repo_id else f"local/{Path(filename).stem}"
     aliases = tuple(
@@ -4883,7 +4897,7 @@ def info(
     size_gb = entry.get("size_bytes", 0) / (1024**3)
     linked = entry.get("linked", {})
 
-    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
 
     if json_output:
         console.print_json(
@@ -5597,7 +5611,7 @@ def calibrate(
     if predicted <= 0:
         err_console.print("[error]This model has no usable baseline speed prediction.[/error]")
         raise typer.Exit(1)
-    tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    tag = linker.resolve_ollama_runtime_name(filename, entry)
     # Warn but do not refuse: this measurement was asked for explicitly, and
     # the caller is the one who can decide whether to close things and retry.
     # The automatic post-install calibration, which nobody asked for, does
@@ -6236,10 +6250,12 @@ def _guard_benchmark_models(models: list[str]) -> None:
         entry = next(
             (
                 value
-                for value in entries.values()
+                for filename, value in entries.items()
+                if isinstance(filename, str)
                 if isinstance(value, dict)
-                and isinstance(value.get("ollama_name"), str)
-                and memory_guard_mod._same_ollama_id(value["ollama_name"], tag)
+                and memory_guard_mod._same_ollama_id(
+                    linker.resolve_ollama_runtime_name(filename, value), tag
+                )
             ),
             None,
         )
@@ -6474,7 +6490,15 @@ def benchmark_cmd(
             registry_entries = registry.load_registry()
             for model in successes:
                 entry = next(
-                    (e for e in registry_entries.values() if e.get("ollama_name") == model["tag"]),
+                    (
+                        e
+                        for filename, e in registry_entries.items()
+                        if isinstance(filename, str)
+                        and isinstance(e, dict)
+                        and memory_guard_mod._same_ollama_id(
+                            linker.resolve_ollama_runtime_name(filename, e), model["tag"]
+                        )
+                    ),
                     None,
                 )
                 samples = model["speed"]["samples_tokens_per_sec"]
@@ -7121,7 +7145,7 @@ def _cleanup_interrupted_install(filename: str) -> None:
     reg = registry.load_registry()
     found_name, entry = _lookup_entry(filename, reg)
     if entry:
-        ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+        ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
         if benchmark.ollama_daemon_reachable():
             quality_mod.ensure_model_unloaded(ollama_tag)
         _remove_one(found_name, entry)
