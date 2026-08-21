@@ -57,7 +57,12 @@ def test_npm_release_workflow_is_gated_and_verifies_every_public_path():
     assert "NODE_AUTH_TOKEN" not in workflow
     assert "npm@11.19.0" in workflow
     assert "scripts/npm_release.py verify-bundle" in workflow
-    assert "scripts/npm_release.py reuse-published" in workflow
+    assert (
+        "- name: Reuse immutable packages already published to npm\n"
+        "        if: github.event_name != 'pull_request'\n"
+        "        run: python scripts/npm_release.py reuse-published --pack-dir dist/npm-pack"
+        in workflow
+    )
     assert "scripts/npm_release.py publish-bundle" in workflow
     assert "scripts/npm_release.py smoke-registry" in workflow
     assert "npm audit signatures" not in workflow
