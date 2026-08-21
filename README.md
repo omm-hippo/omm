@@ -55,6 +55,8 @@ irm https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.ps1 | iex
 
 Download that script and run it with `-Purge` to remove the model hub and settings too.
 
+Runner note: AnythingLLM and Msty are not automated on Windows; the runner checklist prints their download page instead.
+
 Detailed walkthrough: <https://omm-site-sage.vercel.app/install/windows>
 
 ### macOS
@@ -249,7 +251,7 @@ The first bare `omm` run on a fresh install (or `omm setup` any time after) show
 | Ollama | macOS, Linux, Windows | — |
 | LM Studio | macOS, Linux, Windows (headless `lms` CLI) | — |
 | Jan | macOS (Homebrew), Windows (winget), Linux (Flatpak) | wherever that package manager isn't installed |
-| AnythingLLM | macOS (Homebrew), Windows (winget) | Linux |
+| AnythingLLM | macOS (Homebrew) | Windows, Linux |
 | Msty | macOS (Homebrew) | Windows, Linux |
 | KoboldCpp | macOS (Apple Silicon), Linux (x86_64), Windows | Intel Mac, other architectures |
 | text-generation-webui | macOS (any arch), Linux/Windows (x86_64) | ARM Linux/Windows |
