@@ -18,6 +18,7 @@ name: Build, verify, and publish npm release
       - "requirements-npm-binary.txt"
       - "requirements-windows-portable.txt"
       - "scripts/npm_binary.py"
+      - "scripts/npm_entry.py"
       - "scripts/npm_package.py"
       - "scripts/npm_release.py"
       - "scripts/windows_portable.py"

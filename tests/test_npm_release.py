@@ -107,3 +107,35 @@ def test_existing_registry_package_must_have_identical_bytes(tmp_path, monkeypat
 
     with pytest.raises(npm_release.NpmReleaseError, match="different bytes"):
         npm_release.publish_bundle(pack)
+
+
+def test_registry_signature_audit_installs_dependencies(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(executable, *arguments, **kwargs):
+        calls.append((executable, arguments, kwargs))
+        return npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+    monkeypatch.setattr(npm_release, "_probe_install", lambda *args: None)
+
+    npm_release.smoke_registry(
+        "0.2.147",
+        "darwin-arm64",
+        "https://registry.example/",
+    )
+
+    audit_install = calls[2]
+    assert audit_install[1][:4] == (
+        "install",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+    )
+    assert "--package-lock-only" not in audit_install[1]
+    assert audit_install[2]["cwd"].name == "audit"
+    assert calls[3][1] == ("audit", "signatures")
+    assert calls[3][2]["cwd"] == audit_install[2]["cwd"]
