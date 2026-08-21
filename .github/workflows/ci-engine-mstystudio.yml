@@ -1,4 +1,4 @@
-name: "Engine link check: Msty"
+name: "Engine link/import check: Msty"
 
 "on":
   push:
@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   verify:
-    name: Real Msty (brew cask) install + omm link + filesystem recognition (macos-latest)
+    name: Real Msty (brew cask) install + omm link/import + filesystem recognition (macos-latest)
     # brew cask is the only automated install path at all for Msty - no
     # winget package targets current "Msty Studio" (only the deprecated
     # pre-rebrand app), and no Linux package manager exists. macos-latest
@@ -43,5 +43,5 @@ jobs:
           cache: pip
       - name: Install omm
         run: python -m pip install -e .
-      - name: Install, link, and verify Msty's models dir sees the linked model
+      - name: Install, link, import, and verify Msty's models dir in both directions
         run: python scripts/verify_engine_link.py mstystudio
