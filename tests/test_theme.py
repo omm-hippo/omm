@@ -103,14 +103,14 @@ def test_detect_recommended_reads_colorfgbg_dark_background(monkeypatch):
     assert theme.detect_recommended() == "dark"
 
 
-def test_detect_recommended_defaults_to_dark_when_unset(monkeypatch):
+def test_detect_recommended_returns_none_when_unset(monkeypatch):
     monkeypatch.delenv("COLORFGBG", raising=False)
-    assert theme.detect_recommended() == "dark"
+    assert theme.detect_recommended() is None
 
 
-def test_detect_recommended_defaults_to_dark_on_garbage_value(monkeypatch):
+def test_detect_recommended_returns_none_on_garbage_value(monkeypatch):
     monkeypatch.setenv("COLORFGBG", "not-a-number")
-    assert theme.detect_recommended() == "dark"
+    assert theme.detect_recommended() is None
 
 
 def test_apply_theme_to_console_sets_no_color_for_no_color_preset():

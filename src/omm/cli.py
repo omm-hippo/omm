@@ -141,6 +141,23 @@ try:
 except ImportError:
     pass
 
+
+def _get_current_context():
+    """Return click's `get_current_context`, from whichever click Typer
+    actually pushed onto. Typer >=0.16 forks click internally as
+    typer._click with its own thread-local context stack; older Typer
+    (the pypi-installed default at time of writing pins no upper bound)
+    pushes onto the standalone `click` package's stack instead. Importing
+    the wrong one means get_current_context() finds no active context and
+    raises RuntimeError, or - as originally shipped here - the import
+    itself raises ModuleNotFoundError on installs without typer._click."""
+    try:
+        from typer._click.globals import get_current_context
+    except ImportError:
+        from click.globals import get_current_context
+    return get_current_context
+
+
 @dataclass
 class GlobalOptions:
     """Merged state for the 4 global flags, shared via ctx.obj. A value
@@ -175,7 +192,7 @@ def _global_opts() -> GlobalOptions:
     """Read the merged GlobalOptions for the command currently running.
     Falls back to defaults when called outside an active Click/Typer
     context (e.g. a test calling an `_impl` function directly)."""
-    from typer._click.globals import get_current_context
+    get_current_context = _get_current_context()
 
     try:
         return get_current_context().ensure_object(GlobalOptions)
@@ -232,9 +249,7 @@ def global_flags(func):
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        from typer._click.globals import get_current_context
-
-        ctx = get_current_context()
+        ctx = _get_current_context()()
         opts = ctx.ensure_object(GlobalOptions)
         if kwargs.pop("json_flag", False):
             opts.json = True

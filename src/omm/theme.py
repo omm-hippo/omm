@@ -102,10 +102,17 @@ def build_rich_theme(name: str) -> Theme:
     return Theme(styles)
 
 
-def detect_recommended() -> str:
-    """Best-effort guess only - always "light" or "dark", never raises.
-    No OSC terminal queries (unreliable inside multiplexers, can hang);
-    this only pre-selects the picker cursor, the user always confirms."""
+def detect_recommended() -> str | None:
+    """Best-effort guess only - "light", "dark", or `None` if undetected,
+    never raises. No OSC terminal queries (unreliable inside
+    multiplexers, can hang); this only pre-selects the picker cursor,
+    the user always confirms.
+
+    Returns `None` rather than guessing when `COLORFGBG` isn't set,
+    since most terminal emulators (Terminal.app, iTerm2's defaults,
+    Ghostty, ...) never set it - always falling back to one theme would
+    show a "(recommended)" badge on it regardless of the terminal's
+    actual background, which is worse than showing no badge."""
     raw = os.environ.get("COLORFGBG", "")
     if raw:
         try:
@@ -114,7 +121,7 @@ def detect_recommended() -> str:
             bg = None
         if bg is not None:
             return "light" if bg == 7 or 9 <= bg <= 15 else "dark"
-    return "dark"
+    return None
 
 
 def apply_theme_to_console(console: Console, name: str) -> None:
@@ -207,13 +214,15 @@ def _build_picker_key_bindings(state: dict, options: list[str]):
     return bindings
 
 
-def run_picker(current: str, *, current_label: str = "current", allow_back: bool = False) -> str | None:
+def run_picker(current: str, *, current_label: str | None = "current", allow_back: bool = False) -> str | None:
     """Live picker: an arrow-key list of presets with a preview pane
     above it that redraws in the highlighted preset's real colors on
     every move, so you see the effect of a choice before committing to
     it instead of scrolling through every preset's block up front.
     Returns the picked name, or `None` on cancel (Escape/Ctrl+C) or
-    "← Back"."""
+    "← Back". `current_label=None` starts the cursor on `current`
+    without printing any "(...)" suffix next to it - for when `current`
+    is just a fallback default, not something worth badging."""
     from prompt_toolkit.application import Application
     from prompt_toolkit.formatted_text import ANSI
     from prompt_toolkit.layout import HSplit, Layout, Window
@@ -233,7 +242,7 @@ def run_picker(current: str, *, current_label: str = "current", allow_back: bool
         fragments = []
         for i, name in enumerate(options):
             marker = "❯ " if i == state["index"] else "  "
-            suffix = f" ({current_label})" if name == current and name in THEME_NAMES else ""
+            suffix = f" ({current_label})" if current_label and name == current and name in THEME_NAMES else ""
             style = "reverse" if i == state["index"] else ""
             fragments.append((style, f"{marker}{name}{suffix}\n"))
         return fragments

@@ -415,8 +415,9 @@ def _ownership_record(path: Path) -> dict[str, object] | None:
     return None
 
 
-def _owned_hardlink(path: Path) -> bool:
-    record = _ownership_record(path)
+def _owned_hardlink(path: Path, record: dict[str, object] | None = None) -> bool:
+    if record is None:
+        record = _ownership_record(path)
     if not record or record.get("kind") != "hardlink" or path.is_symlink() or not path.exists():
         return False
     try:
@@ -426,8 +427,9 @@ def _owned_hardlink(path: Path) -> bool:
     return record.get("device") == stat.st_dev and record.get("inode") == stat.st_ino
 
 
-def _owned_symlink(path: Path) -> bool:
-    record = _ownership_record(path)
+def _owned_symlink(path: Path, record: dict[str, object] | None = None) -> bool:
+    if record is None:
+        record = _ownership_record(path)
     if not record or record.get("kind") != "symlink" or not path.is_symlink():
         return False
     if "device" in record and "inode" in record:
@@ -447,8 +449,9 @@ def _owned_symlink(path: Path) -> bool:
         return False
 
 
-def _owned_copy(path: Path) -> bool:
-    record = _ownership_record(path)
+def _owned_copy(path: Path, record: dict[str, object] | None = None) -> bool:
+    if record is None:
+        record = _ownership_record(path)
     if not record or record.get("kind") != "copy" or path.is_symlink() or not path.exists():
         return False
     try:
@@ -479,8 +482,11 @@ def _matches_requested_link(src: Path, dst: Path) -> bool:
         return False
 
 
-def _owned_manifest(path: Path, expected_source: Path | None = None) -> bool:
-    record = _ownership_record(path)
+def _owned_manifest(
+    path: Path, expected_source: Path | None = None, record: dict[str, object] | None = None
+) -> bool:
+    if record is None:
+        record = _ownership_record(path)
     if not record or record.get("kind") != "manifest" or not path.exists() or path.is_symlink():
         return False
     # A manifest written by _fallback_to_native_create has source=None -
@@ -510,25 +516,33 @@ def _owned_manifest(path: Path, expected_source: Path | None = None) -> bool:
     return record.get("content_sha256") == content_sha256
 
 
-def unlink_owned_link(path: Path, expected_source: Path | None = None) -> bool:
+def unlink_owned_link(
+    path: Path, expected_source: Path | None = None, record: dict[str, object] | None = None
+) -> bool:
     """Remove an omm symlink or a recorded, unchanged omm hard link.
 
     Never removes an unrecorded regular file.  Returns whether a link was
     removed so callers can preserve ordinary user files at managed paths.
+
+    `record` lets a caller that already loaded this path's ownership
+    record (e.g. `link_file`) pass it straight through instead of making
+    this function - and each of the `_owned_*` checks below - reload and
+    re-parse the same on-disk registry file for the same path.
     """
-    if expected_source is not None:
+    if record is None:
         record = _ownership_record(path)
+    if expected_source is not None:
         if not record or record.get("source") != _link_key(expected_source):
             return False
-    if _owned_symlink(path):
+    if _owned_symlink(path, record):
         path.unlink()
         _update_link_ownership(path, None)
         return True
-    if _owned_hardlink(path):
+    if _owned_hardlink(path, record):
         path.unlink()
         _update_link_ownership(path, None)
         return True
-    if _owned_copy(path):
+    if _owned_copy(path, record):
         path.unlink()
         _update_link_ownership(path, None)
         return True
@@ -628,12 +642,11 @@ def link_file(
         # link torn down and rebuilt on every repeat `omm link`/`install`.
         record = _ownership_record(dst)
         if record and record.get("source") == _link_key(src):
-            if record.get("kind") == "symlink" and _owned_symlink(dst):
+            if record.get("kind") == "symlink" and _owned_symlink(dst, record):
                 return "symlink"
-            if record.get("kind") == "hardlink" and _owned_hardlink(dst):
+            if record.get("kind") == "hardlink" and _owned_hardlink(dst, record):
                 return "hardlink"
-        if not unlink_owned_link(dst, expected_source=src):
-            record = _ownership_record(dst)
+        if not unlink_owned_link(dst, expected_source=src, record=record):
             if record and record.get("kind") in {"symlink", "hardlink"}:
                 raise LinkError(
                     f"Refusing to replace an omm link for a different model at {dst}."
@@ -924,6 +937,21 @@ def _lmstudio_list_models(lms_path: str, timeout: float = 15) -> list[dict] | No
     return data if isinstance(data, list) else None
 
 
+def _lmstudio_find_model_key(models: list[dict], publisher: str, repo: str, filename: str) -> str | None:
+    """Match logic behind `_lmstudio_model_key`, factored out so a caller
+    that already has a fetched `lms ls --json` list can reuse it instead
+    of triggering a second `lms` subprocess call for the same lookup."""
+    expected = f"{publisher}/{repo}/{filename}"
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if isinstance(path, str) and path.replace("\\", "/") == expected:
+            key = entry.get("modelKey")
+            return key if isinstance(key, str) else None
+    return None
+
+
 def _lmstudio_model_key(lms_path: str, publisher: str, repo: str, filename: str) -> str | None:
     """Resolve the modelKey LM Studio's API and `lms load`/`lms unload`
     actually expect for a just-linked model, by matching the on-disk path
@@ -937,15 +965,7 @@ def _lmstudio_model_key(lms_path: str, publisher: str, repo: str, filename: str)
     models = _lmstudio_list_models(lms_path)
     if models is None:
         return None
-    expected = f"{publisher}/{repo}/{filename}"
-    for entry in models:
-        if not isinstance(entry, dict):
-            continue
-        path = entry.get("path")
-        if isinstance(path, str) and path.replace("\\", "/") == expected:
-            key = entry.get("modelKey")
-            return key if isinstance(key, str) else None
-    return None
+    return _lmstudio_find_model_key(models, publisher, repo, filename)
 
 
 _LMSTUDIO_PROBE_TIMEOUT_SECONDS = 120
@@ -1783,11 +1803,12 @@ def jan_models_dir() -> Path:
 
 
 def is_jan_installed() -> bool:
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         return _app_bundle_installed("Jan")
     if jan_app_dir().exists():
         return True
-    if platform.system() == "Linux" and shutil.which("flatpak") is not None:
+    if system == "Linux" and shutil.which("flatpak") is not None:
         # jan_app_dir() (~/.config/Jan) is only created the first time Jan
         # actually launches - a flatpak install that succeeded but was
         # never run leaves nothing there yet, which used to make
@@ -2328,6 +2349,29 @@ def _install_via_package_manager(
 
     if is_installed():
         return EngineInstallResult(key, "installed", f"{label} installed successfully.")
+
+    # brew refuses to touch a cask it already has a receipt for ("already
+    # installed", no-op, exit 0) even when the app bundle itself is gone -
+    # e.g. the user dragged it to the Trash instead of `brew uninstall
+    # --cask`. is_installed() (a real /Applications bundle check) still
+    # says no, so retry with `brew reinstall --cask`, which uninstalls and
+    # reinstalls regardless of the receipt's version. `install --cask
+    # --force` was tried first but does NOT fix this: confirmed against a
+    # real Homebrew 6.0.18 that a Trashed AnythingLLM.app still reports
+    # "Not upgrading anythingllm, the latest version is already installed"
+    # and exits 0 with `--force` too, leaving the Caskroom symlink pointing
+    # at nothing - only `reinstall` actually re-moves the .app back into
+    # /Applications. Cheap when the cask really was already fully
+    # installed (skips the same no-op path); only case that matters is
+    # this stale-receipt one.
+    if system == "Darwin" and args is not None and args[:3] == ["brew", "install", "--cask"]:
+        try:
+            returncode = _stream_subprocess(["brew", "reinstall", "--cask", brew_cask], on_output)
+        except OSError as e:
+            return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
+        if is_installed():
+            return EngineInstallResult(key, "installed", f"{label} installed successfully.")
+
     detail = f" (installer exited with code {returncode})" if returncode else ""
     return EngineInstallResult(
         key,
@@ -2874,13 +2918,13 @@ def resolve_lmstudio_model(repo_id: str | None, filename: str) -> dict | None:
         return None
 
     publisher, repo = _lmstudio_publisher_repo(repo_id, filename)
-    # Use existing path-matching logic to get the model key
-    model_key = _lmstudio_model_key(lms_path, publisher, repo, filename)
-    if model_key is None:
-        return None
-
     models = _lmstudio_list_models(lms_path)
     if models is None:
+        return None
+
+    # Use existing path-matching logic to get the model key
+    model_key = _lmstudio_find_model_key(models, publisher, repo, filename)
+    if model_key is None:
         return None
 
     # Second pass: find the entry by modelKey and extract metadata

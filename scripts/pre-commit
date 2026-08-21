@@ -7,6 +7,7 @@
 set -e
 
 PYPROJECT="pyproject.toml"
+NPM_LAUNCHER="packaging/npm/launcher/package.json"
 
 if git diff --cached -- "$PYPROJECT" | grep -q '^[+-]version = '; then
     exit 0
@@ -21,3 +22,9 @@ next="$major.$minor.$((patch + 1))"
 sed -E "s/^version = \"$current\"/version = \"$next\"/" "$PYPROJECT" > "$PYPROJECT.tmp"
 mv "$PYPROJECT.tmp" "$PYPROJECT"
 git add "$PYPROJECT"
+
+if [ -f "$NPM_LAUNCHER" ]; then
+    sed -E "s/\"$current\"/\"$next\"/g" "$NPM_LAUNCHER" > "$NPM_LAUNCHER.tmp"
+    mv "$NPM_LAUNCHER.tmp" "$NPM_LAUNCHER"
+    git add "$NPM_LAUNCHER"
+fi

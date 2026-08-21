@@ -298,6 +298,26 @@ def test_run_theme_step_falls_back_to_recommendation_on_cancel(monkeypatch, isol
     assert result == "light"
 
 
+def test_run_theme_step_falls_back_to_dark_default_without_badge_when_undetected(monkeypatch, isolated_omm_home):
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(onboarding.theme, "detect_recommended", lambda: None)
+    seen = {}
+
+    def _fake_picker(current, *, current_label=None, **k):
+        seen["current"] = current
+        seen["current_label"] = current_label
+        return None
+
+    monkeypatch.setattr(onboarding.theme, "run_picker", _fake_picker)
+    console = _console()
+
+    result = onboarding.run_theme_step(console)
+
+    assert seen["current"] == "dark"
+    assert seen["current_label"] is None
+    assert result == "dark"
+
+
 def test_run_wizard_runs_theme_step_before_hardware_summary(monkeypatch):
     order = []
     monkeypatch.setattr(onboarding, "run_theme_step", lambda c: order.append("theme") or "dark")
