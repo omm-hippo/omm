@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Validate and stage OMM's npm launcher and platform packages.
 
-The source manifests stay private until the npm organization and trusted
-publisher have been configured.  This module deliberately creates private
-staging packages as well, so validation cannot accidentally become a publish.
+The checked-in source manifests always stay private. Release automation may
+request publishable copies in a separate staging directory after the signed
+release identity and package contents have been validated.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import re
 import shutil
 from pathlib import Path
 from typing import Any
-
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
@@ -110,7 +109,11 @@ def targets(path: Path = TARGETS_FILE) -> dict[str, dict[str, str]]:
     return parsed
 
 
-def validate_launcher_source(source: Path = LAUNCHER_SOURCE) -> None:
+def validate_launcher_source(
+    source: Path = LAUNCHER_SOURCE,
+    *,
+    expected_private: bool = True,
+) -> None:
     manifest = _read_json(source / "package.json")
     version = project_version()
     target_map = targets(source / "targets.json")
@@ -118,8 +121,9 @@ def validate_launcher_source(source: Path = LAUNCHER_SOURCE) -> None:
     scripts = manifest.get("scripts")
     if manifest.get("name") != LAUNCHER_NAME or manifest.get("version") != version:
         raise NpmPackageError("npm launcher name/version must match the OMM release")
-    if manifest.get("private") is not True:
-        raise NpmPackageError("npm launcher must remain private before registry setup")
+    if manifest.get("private") is not expected_private:
+        state = "private" if expected_private else "publishable"
+        raise NpmPackageError(f"npm launcher must be {state}")
     if manifest.get("bin") != {"omm": "bin/omm.js"}:
         raise NpmPackageError("npm launcher must expose only the omm command")
     if manifest.get("engines") != {"node": ">=22.14.0"}:
@@ -158,7 +162,15 @@ def _file_allowlist(root: Path) -> set[str]:
     }
 
 
-def stage_launcher(output_dir: Path) -> Path:
+def _copy_text_lf(source: Path, destination: Path) -> None:
+    destination.write_text(
+        source.read_text(encoding="utf-8"),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def stage_launcher(output_dir: Path, *, publishable: bool = False) -> Path:
     validate_launcher_source()
     destination = output_dir / "omm-launcher"
     if destination.exists():
@@ -167,18 +179,27 @@ def stage_launcher(output_dir: Path) -> Path:
     (destination / "lib").mkdir()
     shutil.copy2(LAUNCHER_SOURCE / "package.json", destination / "package.json")
     shutil.copy2(LAUNCHER_SOURCE / "targets.json", destination / "targets.json")
-    shutil.copy2(LAUNCHER_SOURCE / "bin" / "omm.js", destination / "bin" / "omm.js")
+    _copy_text_lf(
+        LAUNCHER_SOURCE / "bin" / "omm.js",
+        destination / "bin" / "omm.js",
+    )
     shutil.copy2(
         LAUNCHER_SOURCE / "lib" / "launcher.js", destination / "lib" / "launcher.js"
     )
     shutil.copy2(LICENSE_FILE, destination / "LICENSE")
+    if publishable:
+        manifest = _read_json(destination / "package.json")
+        manifest["private"] = False
+        (destination / "package.json").write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
     (destination / "bin" / "omm.js").chmod(0o755)
-    validate_launcher_package(destination)
+    validate_launcher_package(destination, publishable=publishable)
     return destination
 
 
-def validate_launcher_package(root: Path) -> None:
-    validate_launcher_source(root)
+def validate_launcher_package(root: Path, *, publishable: bool = False) -> None:
+    validate_launcher_source(root, expected_private=not publishable)
     actual = _file_allowlist(root)
     if actual != EXPECTED_LAUNCHER_FILES:
         raise NpmPackageError(
@@ -209,6 +230,8 @@ def stage_platform_package(
     target_name: str,
     binary: Path,
     output_dir: Path,
+    *,
+    publishable: bool = False,
 ) -> Path:
     target_map = targets()
     if target_name not in target_map:
@@ -230,7 +253,7 @@ def stage_platform_package(
         "version": version,
         "description": f"Open Model Manager CLI binary for {target_name}",
         "license": "MIT",
-        "private": True,
+        "private": not publishable,
         "repository": {
             "type": "git",
             "url": "git+https://github.com/omm-hippo/omm.git",
@@ -252,15 +275,21 @@ def stage_platform_package(
     (destination / "package.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    validate_platform_package(destination, target_name)
+    validate_platform_package(destination, target_name, publishable=publishable)
     return destination
 
 
-def validate_platform_package(root: Path, target_name: str) -> None:
+def validate_platform_package(
+    root: Path,
+    target_name: str,
+    *,
+    publishable: bool = False,
+) -> None:
     target = targets()[target_name]
     version = project_version()
     manifest = _read_json(root / "package.json")
     binary = root / target["binary"]
+    expected_private = not publishable
     expected_files = {"LICENSE", "package.json", target["binary"]}
     if _file_allowlist(root) != expected_files:
         raise NpmPackageError("platform package contains files outside its allowlist")
@@ -268,7 +297,7 @@ def validate_platform_package(root: Path, target_name: str) -> None:
     if (
         manifest.get("name") != target["package"]
         or manifest.get("version") != version
-        or manifest.get("private") is not True
+        or manifest.get("private") is not expected_private
         or manifest.get("os") != [target["os"]]
         or manifest.get("cpu") != [target["cpu"]]
         or manifest.get("publishConfig") != {"access": "public", "provenance": True}
@@ -295,12 +324,15 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("validate")
+    commands.add_parser("version")
     launcher = commands.add_parser("stage-launcher")
     launcher.add_argument("--output-dir", type=Path, required=True)
+    launcher.add_argument("--publishable", action="store_true")
     platform_package = commands.add_parser("stage-platform")
     platform_package.add_argument("--target", choices=sorted(targets()), required=True)
     platform_package.add_argument("--binary", type=Path, required=True)
     platform_package.add_argument("--output-dir", type=Path, required=True)
+    platform_package.add_argument("--publishable", action="store_true")
     return parser
 
 
@@ -308,10 +340,17 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "validate":
         validate_launcher_source()
+    elif args.command == "version":
+        print(project_version())
     elif args.command == "stage-launcher":
-        stage_launcher(args.output_dir)
+        stage_launcher(args.output_dir, publishable=args.publishable)
     elif args.command == "stage-platform":
-        stage_platform_package(args.target, args.binary, args.output_dir)
+        stage_platform_package(
+            args.target,
+            args.binary,
+            args.output_dir,
+            publishable=args.publishable,
+        )
     return 0
 
 

@@ -9,9 +9,10 @@ belongs to an npm user or organization namespace, so it makes the official
 project owner clearer than the unrelated PyPI distribution name.
 
 The source manifests intentionally contain `"private": true`. They are design
-and validation inputs, not publishable packages. Do not remove that guard until
-the npm organization, package ownership, two-factor authentication, protected
-GitHub Environment, and Trusted Publisher have been verified.
+and validation inputs, not publishable packages. Release automation creates
+separate publishable copies only after checking the signed release identity,
+file allowlists, package metadata, and native binary formats. The checked-in
+guard is never removed.
 
 The npm package never runs Python, pip, pipx, a remote installer, or a network
 request from `preinstall`, `install`, or `postinstall`.
@@ -58,38 +59,61 @@ the Python/npm metadata contract. It has read-only permissions and contains no
 
 `scripts/npm_package.py` rejects symlinked binaries, wrong executable formats,
 version drift, unexpected files, missing licenses, package identity drift, and
-install lifecycle scripts. Staged packages remain private. A separate native
-build job freezes the actual OMM command on macOS arm64/Intel and glibc Linux
-x64/arm64, installs private launcher/platform tarballs, and exercises version,
-help, npm-managed update guidance, and uninstall. Windows remains excluded
-until the separate Winget task has a verified public portable artifact.
+install lifecycle scripts. The validation workflow stages private packages. A
+separate native build job freezes the actual OMM command on macOS arm64/Intel
+and glibc Linux x64/arm64, installs private launcher/platform tarballs, and
+exercises version, help, npm-managed update guidance, and uninstall.
+
+The separate `npm-release.yml` workflow builds all five native targets from an
+exact OMM source revision, creates the launcher last, verifies the complete
+six-package bundle and its SHA-256 manifest, and exercises install, execution,
+npm-managed update guidance, and uninstall on every target before publishing.
+Release tags must be signed, match `pyproject.toml`, and point into `main`.
+
+The publish job is disabled unless the repository variable
+`NPM_TRUSTED_PUBLISHING` is exactly `enabled`. It also uses the protected `npm`
+GitHub Environment. Only that job receives `id-token: write`; no npm token is
+accepted by the workflow. Platform packages publish before the launcher. A
+rerun accepts an existing version only when its registry integrity matches the
+validated tarball exactly. Destination jobs then install from npmjs, verify
+registry signatures and provenance, run OMM, check update guidance, and remove
+the package on all five hosted targets.
 
 ## Registry setup required later
 
-At the time this design was added, local `npm whoami` returned `ENEEDAUTH`, the
-`omm-hippo` organization lookup returned `Scope not found`, and both
-`@omm-hippo/omm` and `omm-model` returned registry 404 responses. A 404 does not
-reserve a name.
+The `omm-hippo` organization has been created and its owner enabled account
+two-factor authentication. The six intended packages still return registry
+404 responses, so their names are not reserved and no public user path exists.
+The CLI must be authenticated again immediately before the first publication;
+browser authentication does not prove terminal authentication.
 
 Once the organization exists, each launcher/platform package needs its own npm
 Trusted Publisher configuration. The intended GitHub settings are:
 
 - Organization: `omm-hippo`
 - Repository: `omm`
-- Workflow filename: a future `npm-release.yml`
+- Workflow filename: `npm-release.yml`
 - Environment: `npm`
 - Allowed action: publish, or staged publish if the release is staged
 
 Trusted Publishing currently requires a GitHub-hosted runner, `id-token: write`,
 Node.js 22.14 or newer, and npm 11.5.1 or newer. Publishing through it creates
-provenance automatically. The publish job must receive OIDC only after all
-platform packages have been built and verified, and the launcher must be made
-available only after the matching platform versions exist.
+provenance automatically. `npm-release.yml` pins npm 11.19.0 for publishing.
+
+npm requires a package to exist before a Trusted Publisher can be configured,
+and staged publishing cannot create a brand-new package. Therefore the first
+six package versions require an explicitly approved one-time bootstrap with
+2FA. After that, configure every package for
+`omm-hippo / omm / npm-release.yml / npm` with `npm publish` permission, enable
+the repository variable, and use only the protected OIDC job for later
+versions. The launcher must not become public before every matching platform
+package exists.
 
 ## Verification levels
 
-- **Implemented:** launcher, target contract, private staging packager, npm
-  install-source detection, and validation-only workflow exist.
+- **Implemented:** launcher, target contract, private and publishable staging
+  packagers, npm install-source detection, validation workflow, and gated
+  release workflow exist.
 - **Unit-verified:** focused Node and Python tests, package allowlist checks,
   workflow lint, and workflow security audit pass locally.
 - **Simulator-verified:** requires clean installation, execution, update, and
@@ -99,6 +123,7 @@ available only after the matching platform versions exist.
   on an Apple Silicon Mac: install, `omm --version`, `omm --help`, npm-managed
   update guidance without Git mutation, and uninstall. This does not verify the
   public registry path.
-- **Not verified / 미검증:** npm organization ownership, Trusted Publisher,
-  public publishing, provenance destination results, hosted multi-platform jobs,
-  public install/upgrade/uninstall, Intel Mac, and Linux remain unverified.
+- **Not verified / 미검증:** first package bootstrap, Trusted Publisher,
+  protected `npm` Environment, public publishing, provenance destination
+  results, release-workflow hosted jobs, public install/upgrade/uninstall,
+  physical Intel Mac, and physical Linux remain unverified.
