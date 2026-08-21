@@ -324,6 +324,41 @@ verify_exposed_existing_environment() {
     [ "$version_output" = "omm $expected_version" ]
 }
 
+ensure_pipx_bin_path() {
+    # `pipx ensurepath` updates shell startup files, but it cannot update the
+    # environment of this already-running `curl | sh` process. Add the bin
+    # directory here as well so every command in this installer sees the same
+    # PATH, and so a freshly opened shell can find `omm` immediately.
+    case ":$PATH:" in
+        *":$PIPX_BIN_DIR:"*) ;;
+        *) PATH="$PIPX_BIN_DIR:$PATH"; export PATH ;;
+    esac
+
+    # macOS Terminal and iTerm start zsh as a login shell, which reads
+    # ~/.zprofile. pipx's automatic profile detection is not reliable when
+    # the installer itself is run through `sh` (and it may only update a
+    # non-login startup file), so make the login-shell contract explicit.
+    case "$(uname -s 2>/dev/null || true)" in
+        Darwin)
+            zprofile="$HOME/.zprofile"
+            if [ -e "$zprofile" ] && [ ! -f "$zprofile" ]; then
+                echo "Cannot configure zsh PATH: $zprofile is not a regular file." >&2
+                return 1
+            fi
+            if ! grep -Fq "$PIPX_BIN_DIR" "$zprofile" 2>/dev/null; then
+                # Escape the two characters that could change the shell
+                # assignment while preserving the literal $PATH expansion.
+                shell_path=$(printf '%s' "$PIPX_BIN_DIR" | sed 's/[\\"]/\\&/g')
+                if ! printf '\n# Added by omm installer for pipx applications.\nexport PATH="%s:$PATH"\n' \
+                    "$shell_path" >> "$zprofile"; then
+                    echo "Cannot configure zsh PATH in $zprofile." >&2
+                    return 1
+                fi
+            fi
+            ;;
+    esac
+}
+
 if ! "$PY" -m pipx --version >/dev/null 2>&1; then
     echo "pipx not found, installing it..."
     if "$PY" -m pip install --user --quiet pipx 2>/dev/null; then
@@ -334,11 +369,14 @@ if ! "$PY" -m pipx --version >/dev/null 2>&1; then
         # only manages its own isolated venvs afterward.
         "$PY" -m pip install --user --quiet --break-system-packages pipx
     fi
-    run_pipx ensurepath
 fi
 
 PIPX_LOCAL_VENVS=$(run_pipx environment --value PIPX_LOCAL_VENVS)
 PIPX_BIN_DIR=$(run_pipx environment --value PIPX_BIN_DIR)
+# Keep pipx's normal shell integration for non-macOS shells, then explicitly
+# make the path reliable for macOS login zsh and for this process itself.
+run_pipx ensurepath >/dev/null 2>&1 || true
+ensure_pipx_bin_path
 if ! refresh_pipx_snapshot; then
     echo "Could not inspect existing pipx environments; refusing an unsafe migration." >&2
     exit 1
@@ -505,6 +543,6 @@ done
 rm -rf "$OMM_HOME/src" 2>/dev/null || true
 
 echo
-echo "Done. If 'omm' isn't found, open a new shell (pipx just updated your PATH)."
+echo "Done. Open a new shell so zsh loads the pipx PATH configured by the installer."
 echo "Try:  omm scan"
 echo "Tip: run 'omm --install-completion' once (then restart your shell) to enable Tab completion for install/uninstall."

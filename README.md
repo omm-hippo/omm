@@ -29,7 +29,7 @@
 curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
 ```
 
-This bootstraps `python3`, `git`, and `pipx` if missing (Debian/Ubuntu via `apt`, or Homebrew on macOS), then installs `omm` as an isolated CLI via `pipx`. Open a new shell afterward so your `PATH` picks up `omm`.
+This bootstraps `python3`, `git`, and `pipx` if missing (Debian/Ubuntu via `apt`, or Homebrew on macOS), then installs `omm` as an isolated CLI via `pipx`. On macOS, the installer also persists pipx's executable directory in `~/.zprofile`, so a newly opened zsh finds `omm` automatically.
 
 ### PyPI (macOS, Linux, and Windows)
 
