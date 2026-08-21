@@ -14,8 +14,10 @@ name: Build, verify, and publish Python release
       - "src/**"
       - "scripts/release_artifacts.py"
       - "scripts/pypi_release.py"
+      - "scripts/distribution_versions.py"
       - "tests/test_release_artifacts.py"
       - "tests/test_pypi_release.py"
+      - "tests/test_distribution_versions.py"
       - "LICENSE"
       - "README.md"
 
@@ -262,3 +264,19 @@ jobs:
         run: >-
           python scripts/pypi_release.py pipx-smoke
           --index-url https://pypi.org/simple/
+
+  verify-distribution-sync:
+    name: Verify PyPI and Homebrew version sync
+    needs: verify-pypi-files
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Require PyPI, Homebrew, and source versions to match
+        run: python scripts/distribution_versions.py
