@@ -1,0 +1,142 @@
+name: Validate npm package design
+
+"on":
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/npm-package.yml"
+      - "packaging/npm/**"
+      - "requirements-npm-binary.txt"
+      - "scripts/npm_binary.py"
+      - "scripts/npm_package.py"
+      - "src/omm/package_metadata.py"
+      - "src/omm/cli.py"
+      - "tests/test_npm_package.py"
+      - "tests/test_npm_binary.py"
+      - "tests/test_npm_workflow.py"
+      - "tests/test_package_metadata.py"
+      - "tests/test_cli_update.py"
+  pull_request:
+    paths:
+      - ".github/workflows/npm-package.yml"
+      - "packaging/npm/**"
+      - "requirements-npm-binary.txt"
+      - "scripts/npm_binary.py"
+      - "scripts/npm_package.py"
+      - "src/omm/package_metadata.py"
+      - "src/omm/cli.py"
+      - "tests/test_npm_package.py"
+      - "tests/test_npm_binary.py"
+      - "tests/test_npm_workflow.py"
+      - "tests/test_package_metadata.py"
+      - "tests/test_cli_update.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-package-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  launcher:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+        os:
+          - ubuntu-24.04
+          - ubuntu-22.04-arm
+          - macos-26
+          - macos-15-intel
+          - windows-2025
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Test launcher without installing dependencies
+        run: npm --prefix packaging/npm/launcher test
+      - name: Inspect the private package allowlist
+        run: npm pack --dry-run --json
+        working-directory: packaging/npm/launcher
+
+  contract:
+    name: Python package contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Validate the unpublished npm contract
+        run: python scripts/npm_package.py validate
+      - name: Run focused Python tests
+        run: |
+          python -m pip install --disable-pip-version-check --no-input -e ".[dev]"
+          python -m pytest -q tests/test_npm_binary.py tests/test_npm_package.py tests/test_npm_workflow.py tests/test_package_metadata.py tests/test_cli_update.py
+
+  binary:
+    name: Standalone OMM on ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x64-gnu
+          - os: ubuntu-22.04-arm
+            target: linux-arm64-gnu
+          - os: macos-26
+            target: darwin-arm64
+          - os: macos-15-intel
+            target: darwin-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install pinned standalone build graph
+        run: |
+          python -m pip install --disable-pip-version-check --no-input -r requirements-npm-binary.txt
+          python -m pip install --disable-pip-version-check --no-input --no-deps --no-build-isolation .
+      - name: Build and probe the native OMM command
+        run: python scripts/npm_binary.py build --expected-target "${{ matrix.target }}" --output-dir dist/npm-binary
+      - name: Stage private npm packages
+        run: |
+          python scripts/npm_package.py stage-launcher --output-dir dist/npm-stage
+          python scripts/npm_package.py stage-platform --target "${{ matrix.target }}" --binary dist/npm-binary/omm --output-dir dist/npm-stage
+          mkdir -p dist/npm-pack
+          npm pack dist/npm-stage/omm-launcher --pack-destination dist/npm-pack --json
+          npm pack "dist/npm-stage/${{ matrix.target }}" --pack-destination dist/npm-pack --json
+      - name: Exercise private tarball install, run, update guidance, and uninstall
+        shell: bash
+        run: | # zizmor: ignore[adhoc-packages] installs only allowlisted tarballs built in this job
+          npm_prefix="$RUNNER_TEMP/omm-npm-prefix"
+          omm_home="$RUNNER_TEMP/omm-npm-home"
+          npm install --global --prefix "$npm_prefix" --ignore-scripts --no-audit --no-fund dist/npm-pack/*.tgz
+          "$npm_prefix/bin/omm" --version
+          "$npm_prefix/bin/omm" --help
+          set +e
+          update_output=$(OMM_HOME="$omm_home" "$npm_prefix/bin/omm" update 2>&1)
+          update_status=$?
+          set -e
+          printf '%s\n' "$update_output"
+          test "$update_status" -eq 1
+          grep -F "npm update --global @omm-hippo/omm" <<<"$update_output"
+          test ! -e "$omm_home/src"
+          npm uninstall --global --prefix "$npm_prefix" @omm-hippo/omm @omm-hippo/omm-${{ matrix.target }}
+          test ! -e "$npm_prefix/bin/omm"

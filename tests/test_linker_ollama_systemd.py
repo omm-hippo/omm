@@ -7,6 +7,7 @@ daemon never scanned, so `ollama list` never showed the linked model.
 """
 
 import platform
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -53,11 +54,56 @@ def test_ollama_models_dir_honors_systemd_units_own_olama_models_env(monkeypatch
     monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path / "invoking-process-models"))
 
     def fake_run(args, **kwargs):
-        return _systemctl_show_result(f"ActiveState=active\nUser=ollama\nEnvironment=OLLAMA_MODELS={unit_models_dir}\n")
+        # systemd shell-quotes each Environment entry, so mirror that here -
+        # tmp_path itself can contain spaces (a checkout under "C:\My Repos",
+        # a --basetemp with a space), and an unquoted fixture would be lying
+        # about what `systemctl show` actually prints. See issue #130.
+        entry = shlex.quote(f"OLLAMA_MODELS={unit_models_dir}")
+        return _systemctl_show_result(f"ActiveState=active\nUser=ollama\nEnvironment={entry}\n")
 
     monkeypatch.setattr(linker.subprocess, "run", fake_run)
 
     assert linker.ollama_models_dir() == unit_models_dir
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        "'OLLAMA_MODELS=/mnt/ollama models'",
+        '"OLLAMA_MODELS=/mnt/ollama models"',
+        "OLLAMA_HOST=127.0.0.1:11434 'OLLAMA_MODELS=/mnt/ollama models'",
+    ],
+    ids=["single-quoted", "double-quoted", "alongside-other-vars"],
+)
+def test_ollama_models_dir_handles_unit_env_path_with_spaces(monkeypatch, environment):
+    """systemd quotes Environment= entries containing spaces; splitting on
+    whitespace instead of unquoting used to truncate the models dir at the
+    first space and return "/mnt/ollama" (issue #130)."""
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None)
+    monkeypatch.delenv("OLLAMA_MODELS", raising=False)
+
+    def fake_run(args, **kwargs):
+        return _systemctl_show_result(f"ActiveState=active\nUser=ollama\nEnvironment={environment}\n")
+
+    monkeypatch.setattr(linker.subprocess, "run", fake_run)
+
+    assert linker.ollama_models_dir() == Path("/mnt/ollama models")
+
+
+def test_ollama_models_dir_survives_unbalanced_unit_env_quoting(monkeypatch, tmp_path):
+    """Malformed quoting must not raise out of ollama_models_dir() - fall
+    back to the naive split rather than taking the whole command down."""
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None)
+    monkeypatch.delenv("OLLAMA_MODELS", raising=False)
+
+    def fake_run(args, **kwargs):
+        return _systemctl_show_result("ActiveState=active\nUser=ollama\nEnvironment=OLLAMA_MODELS=\"/mnt/models\n")
+
+    monkeypatch.setattr(linker.subprocess, "run", fake_run)
+
+    assert linker.ollama_models_dir() == Path('"/mnt/models')
 
 
 def test_ollama_models_dir_falls_back_when_service_not_active(monkeypatch, tmp_path):

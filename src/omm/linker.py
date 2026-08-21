@@ -53,6 +53,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import tarfile
 import time
@@ -63,7 +64,7 @@ import zipfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from omm import config
 from omm.gguf import read_gguf_metadata
@@ -123,7 +124,19 @@ def _systemd_ollama_models_dir() -> Path | None:
         props[key] = value
     if props.get("ActiveState") != "active":
         return None
-    for env_pair in props.get("Environment", "").split():
+    # systemd prints Environment= as a shell-quoted, space-separated list, so
+    # an entry whose value contains spaces comes back quoted as a single word
+    # ("OLLAMA_MODELS=/mnt/ollama models"). A plain str.split() would slice
+    # that path in half at the first space and hand back a directory that
+    # doesn't exist; shlex.split() unquotes it the way a shell would. Fall
+    # back to a naive split if the quoting is somehow unbalanced, so a weird
+    # unit can't take ollama_models_dir() down with a ValueError.
+    environment = props.get("Environment", "")
+    try:
+        env_pairs = shlex.split(environment)
+    except ValueError:
+        env_pairs = environment.split()
+    for env_pair in env_pairs:
         key, _, value = env_pair.partition("=")
         if key == "OLLAMA_MODELS" and value:
             return Path(value).expanduser()
@@ -160,6 +173,83 @@ def _app_bundle_installed(app_name: str) -> bool:
     if platform.system() != "Darwin":
         return False
     return any((root / f"{app_name}.app").exists() for root in _APP_BUNDLE_SEARCH_ROOTS)
+
+
+_DESKTOP_ENTRY_SEARCH_ROOTS = [
+    Path.home() / ".local" / "share" / "applications",
+    Path("/usr/local/share/applications"),
+    Path("/usr/share/applications"),
+]
+
+
+def _windows_install_artifact_exists(dir_names: Sequence[str], shortcut_glob: str) -> bool:
+    """Windows-only: whether an installer left install-*time* artifacts behind.
+
+    An Electron app's userData directory (%APPDATA%\\<product>) is created the
+    first time the app *launches*, not when it is installed - so checking it
+    alone reports an installed-but-never-launched app as "not installed".
+    The installer, by contrast, writes its program directory and Start Menu
+    shortcut during install. Probing those is the Windows counterpart of
+    _app_bundle_installed on Darwin and of the `flatpak info` check
+    is_jan_installed uses on Linux.
+
+    `dir_names` are checked under the electron-builder per-user default
+    (%LOCALAPPDATA%\\Programs) and under %ProgramFiles% for a machine-wide
+    install; `shortcut_glob` is matched in both the per-user and the
+    all-users Start Menu, at the top level and one folder deep (installers
+    put shortcuts either directly in Programs or in their own subfolder).
+    """
+    if platform.system() != "Windows":
+        return False
+    program_roots = []
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        program_roots.append(Path(local_app_data) / "Programs")
+    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        value = os.environ.get(variable)
+        if value:
+            program_roots.append(Path(value))
+    for root in program_roots:
+        for name in dir_names:
+            try:
+                if (root / name).is_dir():
+                    return True
+            except OSError:
+                continue
+    for variable in ("APPDATA", "ProgramData"):
+        value = os.environ.get(variable)
+        if not value:
+            continue
+        menu = Path(value) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        for pattern in (shortcut_glob, f"*/{shortcut_glob}"):
+            try:
+                if any(menu.glob(pattern)):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _linux_install_artifact_exists(install_dirs: Sequence[Path], desktop_entry_glob: str) -> bool:
+    """Linux-only: same install-vs-first-run distinction as
+    _windows_install_artifact_exists. ~/.config/<product> only appears once
+    the app has been run, while the installer writes its own program
+    directory and a freedesktop .desktop entry up front."""
+    if platform.system() != "Linux":
+        return False
+    for directory in install_dirs:
+        try:
+            if directory.is_dir():
+                return True
+        except OSError:
+            continue
+    for root in _DESKTOP_ENTRY_SEARCH_ROOTS:
+        try:
+            if any(root.glob(desktop_entry_glob)):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def is_lmstudio_installed() -> bool:
@@ -1665,10 +1755,40 @@ def anythingllm_ollama_models_dir() -> Path:
     return anythingllm_app_dir() / "storage" / "models" / "ollama"
 
 
+# The Windows installer is electron-builder NSIS, whose per-user default
+# install directory is %LOCALAPPDATA%\Programs\<productName>; the folder name
+# has shipped under both the product name and the package name, so all the
+# spellings are checked rather than betting on one.
+_ANYTHINGLLM_WINDOWS_INSTALL_DIRS = (
+    "AnythingLLM",
+    "AnythingLLM Desktop",
+    "anythingllm-desktop",
+)
+# Linux has no package-manager install: the official installer.sh unpacks the
+# app into this fixed directory under $HOME.
+_ANYTHINGLLM_LINUX_INSTALL_DIRS = [Path.home() / "AnythingLLMDesktop"]
+
+
 def is_anythingllm_installed() -> bool:
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
+        # The .app bundle is written at install time, so macOS never had the
+        # first-run gap the other two platforms did.
         return _app_bundle_installed("AnythingLLM")
-    return anythingllm_app_dir().exists()
+    # anythingllm_app_dir() is the Electron userData directory, which only
+    # exists once AnythingLLM has been launched at least once. Keep it (it
+    # catches installs in non-default locations), but OR it with the
+    # install-time artifacts so an installed-but-never-launched app is not
+    # reported as missing.
+    if anythingllm_app_dir().exists():
+        return True
+    if system == "Windows":
+        return _windows_install_artifact_exists(
+            _ANYTHINGLLM_WINDOWS_INSTALL_DIRS, "AnythingLLM*.lnk"
+        )
+    return _linux_install_artifact_exists(
+        _ANYTHINGLLM_LINUX_INSTALL_DIRS, "*nythingllm*.desktop"
+    )
 
 
 # --- Jan (llamacpp-extension, model.yml manifest) ---------------------------
@@ -2286,10 +2406,10 @@ def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> E
     # the id here only bought an attempt that always failed. A direct
     # download of the vendor's AnythingLLMDesktop.exe was considered and
     # rejected: it is a ~396 MB NSIS installer with no vendor-documented
-    # silent flag, and is_anythingllm_installed() on Windows keys off the
-    # Electron userData directory, which the app creates on first launch
-    # rather than at install time - so even a silent install would report
-    # "ran but still isn't detected".
+    # silent flag. (The second half of that argument - that detection would
+    # miss a silent install because it keyed off the first-run-only Electron
+    # userData directory - no longer holds: is_anythingllm_installed() now
+    # also probes the install directory and Start Menu shortcut.)
     #
     # Linux - the only official install method is an interactive
     # installer.sh (sudo AppArmor-profile prompt, no documented silent

@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -41,8 +42,41 @@ class InstallSource(str, Enum):
     PIPX = "pipx"
     HOMEBREW = "homebrew"
     WINGET = "winget"
+    NPM = "npm"
     PYPI = "pypi"
     UNKNOWN = "unknown"
+
+
+_NPM_PACKAGE_ROOT_ENV = "OMM_NPM_PACKAGE_ROOT"
+_NPM_LAUNCHER_PACKAGE_ENV = "OMM_NPM_LAUNCHER_PACKAGE"
+_NPM_LAUNCHER_PACKAGE = "@omm-hippo/omm"
+_NPM_TARGETS = {
+    ("darwin", "arm64"): (
+        "@omm-hippo/omm-darwin-arm64",
+        "darwin-arm64",
+        "bin/omm",
+    ),
+    ("darwin", "x64"): (
+        "@omm-hippo/omm-darwin-x64",
+        "darwin-x64",
+        "bin/omm",
+    ),
+    ("linux", "arm64"): (
+        "@omm-hippo/omm-linux-arm64-gnu",
+        "linux-arm64-gnu",
+        "bin/omm",
+    ),
+    ("linux", "x64"): (
+        "@omm-hippo/omm-linux-x64-gnu",
+        "linux-x64-gnu",
+        "bin/omm",
+    ),
+    ("win32", "x64"): (
+        "@omm-hippo/omm-win32-x64",
+        "win32-x64",
+        "bin/omm.exe",
+    ),
+}
 
 
 def _legacy_distribution_is_ours(distribution: importlib.metadata.Distribution) -> bool:
@@ -150,6 +184,92 @@ def _is_inside(path: Path, parent: Path) -> bool:
     return True
 
 
+def _npm_machine() -> str | None:
+    machine = platform.machine().casefold()
+    if machine in {"amd64", "x86_64"}:
+        return "x64"
+    if machine in {"aarch64", "arm64"}:
+        return "arm64"
+    return None
+
+
+def _npm_target() -> tuple[str, str, str, str, str] | None:
+    machine = _npm_machine()
+    if machine is None:
+        return None
+    target = _NPM_TARGETS.get((sys.platform, machine))
+    if target is None:
+        return None
+    package_name, target_name, binary = target
+    return package_name, target_name, binary, sys.platform, machine
+
+
+def _npm_install_is_verified(
+    installed_distribution: importlib.metadata.Distribution | None,
+) -> bool:
+    """Require the launcher, package manifest, version, and binary to agree.
+
+    The JavaScript launcher sets the package root before starting the bundled
+    executable.  Treating that environment variable alone as proof would let
+    an unrelated wrapper claim npm ownership, so the adjacent npm manifest and
+    the currently executing binary must also match the declared target.
+    """
+
+    raw_root = os.environ.get(_NPM_PACKAGE_ROOT_ENV)
+    launcher = os.environ.get(_NPM_LAUNCHER_PACKAGE_ENV)
+    target = _npm_target()
+    if (
+        not raw_root
+        or launcher != _NPM_LAUNCHER_PACKAGE
+        or installed_distribution is None
+        or target is None
+    ):
+        return False
+
+    package_name, target_name, binary_name, expected_os, expected_cpu = target
+    root_path = Path(raw_root)
+    if not root_path.is_absolute():
+        return False
+    try:
+        root = root_path.resolve(strict=True)
+        manifest_path = root / "package.json"
+        if not manifest_path.is_file() or manifest_path.is_symlink():
+            return False
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return False
+    if not isinstance(manifest, dict):
+        return False
+
+    metadata = manifest.get("omm")
+    if not isinstance(metadata, dict):
+        return False
+    if (
+        manifest.get("name") != package_name
+        or manifest.get("version") != installed_distribution.version
+        or manifest.get("os") != [expected_os]
+        or manifest.get("cpu") != [expected_cpu]
+        or metadata.get("distribution") != DISTRIBUTION_NAME
+        or metadata.get("target") != target_name
+        or metadata.get("binary") != binary_name
+    ):
+        return False
+    if expected_os == "linux" and manifest.get("libc") != ["glibc"]:
+        return False
+
+    binary_path = root / binary_name
+    if not binary_path.is_file() or binary_path.is_symlink():
+        return False
+    try:
+        binary = binary_path.resolve(strict=True)
+        executable = Path(sys.executable).resolve(strict=True)
+    except OSError:
+        return False
+    if not _is_inside(binary, root):
+        return False
+    return executable == binary
+
+
 def _allowed_git_origin(url: object) -> bool:
     """Accept only the canonical OMM repository and its historical names.
 
@@ -245,6 +365,17 @@ def install_source() -> InstallSource:
 
     paths = _installation_paths(installed_distribution)
     normalized_paths = [_normalized_path(path) for path in paths]
+
+    npm_claimed = bool(
+        os.environ.get(_NPM_PACKAGE_ROOT_ENV)
+        or os.environ.get(_NPM_LAUNCHER_PACKAGE_ENV)
+    )
+    if npm_claimed:
+        return (
+            InstallSource.NPM
+            if _npm_install_is_verified(installed_distribution)
+            else InstallSource.UNKNOWN
+        )
 
     pipx_home = os.environ.get("PIPX_HOME")
     if (Path(sys.prefix) / "pipx_metadata.json").is_file() or any(

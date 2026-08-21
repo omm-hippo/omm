@@ -86,6 +86,10 @@ def test_update_migrates_when_not_yet_migrated_even_if_commit_matches(monkeypatc
             cli.package_metadata.InstallSource.WINGET,
             "winget upgrade --id OmmHippo.OMM -e",
         ),
+        (
+            cli.package_metadata.InstallSource.NPM,
+            "npm update --global @omm-hippo/omm",
+        ),
     ],
 )
 def test_package_managed_update_refuses_git_migration_and_shows_manager_command(
