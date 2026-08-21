@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tarfile
 from pathlib import Path
@@ -31,15 +32,15 @@ def _pack(source: Path, destination: Path) -> None:
                 bundle.add(path, arcname=Path("package") / path.relative_to(source))
 
 
-def _bundle(tmp_path: Path) -> Path:
+def _bundle(tmp_path: Path, binary_suffix: bytes = b"") -> Path:
     stage = tmp_path / "stage"
     pack = tmp_path / "pack"
-    pack.mkdir()
+    pack.mkdir(parents=True)
     launcher = npm_package.stage_launcher(stage, publishable=True)
     _pack(launcher, pack)
     for target in npm_package.targets():
         binary = tmp_path / f"binary-{target}"
-        binary.write_bytes(_magic(target) + b" OMM standalone")
+        binary.write_bytes(_magic(target) + b" OMM standalone" + binary_suffix)
         platform_package = npm_package.stage_platform_package(
             target,
             binary,
@@ -107,6 +108,79 @@ def test_existing_registry_package_must_have_identical_bytes(tmp_path, monkeypat
 
     with pytest.raises(npm_release.NpmReleaseError, match="different bytes"):
         npm_release.publish_bundle(pack)
+
+
+def test_reuse_published_packages_replaces_rebuilt_bytes(tmp_path, monkeypatch):
+    built_pack = _bundle(tmp_path / "built", b" rebuilt")
+    published_pack = _bundle(tmp_path / "published", b" published")
+    package_name = npm_package.targets()["win32-x64"]["package"]
+    built = next(
+        package
+        for package in npm_release.verify_bundle(built_pack, write_checksums=True)
+        if package.name == package_name
+    )
+    published = next(
+        package
+        for package in npm_release.verify_bundle(published_pack, write_checksums=True)
+        if package.name == package_name
+    )
+
+    monkeypatch.setattr(
+        npm_release,
+        "_registry_integrity",
+        lambda package, registry: (
+            npm_release._integrity(published.path) if package.name == package_name else None
+        ),
+    )
+
+    def fake_run(executable, *arguments, **kwargs):
+        destination = Path(arguments[arguments.index("--pack-destination") + 1])
+        shutil.copyfile(published.path, destination / published.path.name)
+        return npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout="[]", stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    npm_release.reuse_published_packages(built_pack)
+
+    assert built.path.read_bytes() == published.path.read_bytes()
+    npm_release.verify_bundle(built_pack)
+
+
+def test_reuse_published_packages_rejects_registry_integrity_mismatch(
+    tmp_path, monkeypatch
+):
+    built_pack = _bundle(tmp_path / "built", b" rebuilt")
+    published_pack = _bundle(tmp_path / "published", b" published")
+    package_name = npm_package.targets()["win32-x64"]["package"]
+    published = next(
+        package
+        for package in npm_release.verify_bundle(published_pack, write_checksums=True)
+        if package.name == package_name
+    )
+
+    monkeypatch.setattr(
+        npm_release,
+        "_registry_integrity",
+        lambda package, registry: (
+            "sha512-wrong" if package.name == package_name else None
+        ),
+    )
+
+    def fake_run(executable, *arguments, **kwargs):
+        destination = Path(arguments[arguments.index("--pack-destination") + 1])
+        shutil.copyfile(published.path, destination / published.path.name)
+        return npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout="[]", stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    with pytest.raises(npm_release.NpmReleaseError, match="integrity does not match"):
+        npm_release.reuse_published_packages(built_pack)
 
 
 def test_registry_signature_audit_installs_dependencies(tmp_path, monkeypatch):

@@ -222,6 +222,8 @@ jobs:
           pattern: npm-package-*
           path: dist/npm-pack
           merge-multiple: true
+      - name: Reuse immutable packages already published to npm
+        run: python scripts/npm_release.py reuse-published --pack-dir dist/npm-pack
       - name: Verify package identities, files, and checksums
         run: python scripts/npm_release.py verify-bundle --pack-dir dist/npm-pack --write-checksums
       - name: Store the complete validated release bundle
