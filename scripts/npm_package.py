@@ -162,6 +162,14 @@ def _file_allowlist(root: Path) -> set[str]:
     }
 
 
+def _copy_text_lf(source: Path, destination: Path) -> None:
+    destination.write_text(
+        source.read_text(encoding="utf-8"),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
 def stage_launcher(output_dir: Path, *, publishable: bool = False) -> Path:
     validate_launcher_source()
     destination = output_dir / "omm-launcher"
@@ -171,7 +179,10 @@ def stage_launcher(output_dir: Path, *, publishable: bool = False) -> Path:
     (destination / "lib").mkdir()
     shutil.copy2(LAUNCHER_SOURCE / "package.json", destination / "package.json")
     shutil.copy2(LAUNCHER_SOURCE / "targets.json", destination / "targets.json")
-    shutil.copy2(LAUNCHER_SOURCE / "bin" / "omm.js", destination / "bin" / "omm.js")
+    _copy_text_lf(
+        LAUNCHER_SOURCE / "bin" / "omm.js",
+        destination / "bin" / "omm.js",
+    )
     shutil.copy2(
         LAUNCHER_SOURCE / "lib" / "launcher.js", destination / "lib" / "launcher.js"
     )
