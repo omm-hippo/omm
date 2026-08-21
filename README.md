@@ -9,6 +9,7 @@
   - [PyPI (macOS, Linux, and Windows)](#pypi-macos-linux-and-windows)
   - [Homebrew Tap (macOS)](#homebrew-tap-macos)
   - [Verified Git-source installer (Windows PowerShell)](#verified-git-source-installer-windows-powershell)
+  - [Not currently public installation paths](#not-currently-public-installation-paths)
 - [Usage](#usage)
   - [Setup & discovery](#setup--discovery)
   - [Install & manage models](#install--manage-models)
@@ -29,30 +30,49 @@
 curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
 ```
 
-This bootstraps `python3`, `git`, and `pipx` if missing (Debian/Ubuntu via `apt`, or Homebrew on macOS), then installs `omm` as an isolated CLI via `pipx`. On macOS, the installer also persists pipx's executable directory in `~/.zprofile`, so a newly opened zsh finds `omm` automatically.
+This bootstraps `python3`, `git`, and `pipx` if missing, then installs `omm` as an isolated CLI via `pipx`. On macOS it uses Homebrew when Python 3.10+ or git is missing; if Homebrew is not installed, it bootstraps Homebrew with Homebrew's official installer. On Linux it supports `apt-get`, `dnf`, `yum`, `pacman`, and `apk` when the current user can install system packages. On macOS, the installer also persists pipx's executable directory in `~/.zprofile`, so a newly opened zsh finds `omm` automatically.
+
+Homebrew requires a supported macOS and Apple's Xcode Command Line Tools. To require a pre-existing Homebrew installation instead of allowing the installer to bootstrap it, export `OMM_AUTO_INSTALL_HOMEBREW=0` before running the command.
 
 ### PyPI (macOS, Linux, and Windows)
 
 ```sh
-python -m pip install omm-model
+# macOS / Linux (Python 3.10+ and pip must already be installed)
+python3 -m pip install omm-model
+
+# Windows (Python 3.10+ and pip must already be installed)
+py -m pip install omm-model
 ```
 
 This does not go through the signed-commit verification described below; it
 relies on PyPI's own account security and TLS, the same trust model as
-installing any other PyPI package.
+installing any other PyPI package. It is a package-manager path, not a
+zero-prerequisite installer: install Python and pip first on a clean computer.
 
 For an isolated command-line installation, `pipx` is recommended:
 
 ```sh
-pipx install omm-model
+# If pipx is not installed yet, install it with the same Python first.
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+python3 -m pipx install omm-model
 ```
+
+On Windows, use `py -m pip`, `py -m pipx`, and `py -m pipx ensurepath` instead.
+If the operating system marks Python as externally managed, install pipx from
+the operating system package manager or use the Git-source installer above.
 
 The distribution name is `omm-model`; the installed command and Python import
 remain `omm`. Upgrade and remove it with the same tool that installed it:
 
 ```sh
-python -m pip install --upgrade omm-model
-python -m pip uninstall omm-model
+# macOS / Linux
+python3 -m pip install --upgrade omm-model
+python3 -m pip uninstall omm-model
+
+# Windows
+py -m pip install --upgrade omm-model
+py -m pip uninstall omm-model
 
 # Or, for pipx:
 pipx upgrade omm-model
@@ -77,6 +97,14 @@ The Homebrew formula and PyPI package can move on separate release schedules;
 use `brew info omm-hippo/omm/omm` to see the version currently provided by the
 Tap. `omm update` does not modify a Homebrew installation and instead prints
 the matching `brew upgrade` command.
+
+### Not currently public installation paths
+
+The npm launcher and platform packages are still private release artifacts;
+their public registry packages have not been published yet. The Windows
+portable/Winget files are built and tested as release artifacts, but a public
+Winget package is not currently documented or verified. Do not use either path
+as a user installation command yet.
 
 ### Verified Git-source installer (Windows PowerShell)
 
