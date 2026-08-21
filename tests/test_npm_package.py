@@ -9,7 +9,6 @@ import pytest
 
 from omm import package_metadata
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "npm_package", ROOT / "scripts" / "npm_package.py"
@@ -52,6 +51,21 @@ def test_stage_launcher_has_an_exact_allowlist_and_stays_private(tmp_path):
         assert (staged / "bin" / "omm.js").stat().st_mode & 0o111
 
 
+def test_publishable_launcher_is_staged_without_weakening_source_guard(tmp_path):
+    staged = npm_package.stage_launcher(tmp_path, publishable=True)
+
+    npm_package.validate_launcher_source()
+    npm_package.validate_launcher_package(staged, publishable=True)
+    source_manifest = json.loads(
+        (npm_package.LAUNCHER_SOURCE / "package.json").read_text(encoding="utf-8")
+    )
+    staged_manifest = json.loads(
+        (staged / "package.json").read_text(encoding="utf-8")
+    )
+    assert source_manifest["private"] is True
+    assert staged_manifest["private"] is False
+
+
 @pytest.mark.parametrize(
     ("target", "magic"),
     [
@@ -72,6 +86,26 @@ def test_stage_platform_package_is_private_and_exact(tmp_path, target, magic):
         staged / manifest["omm"]["binary"]
     )
     assert not LIFECYCLE_SCRIPTS.intersection(manifest.get("scripts", {}))
+
+
+def test_publishable_platform_is_explicit_and_still_exact(tmp_path):
+    binary = tmp_path / "omm.exe"
+    binary.write_bytes(b"MZ" + b" standalone OMM")
+    staged = npm_package.stage_platform_package(
+        "win32-x64",
+        binary,
+        tmp_path / "out",
+        publishable=True,
+    )
+
+    npm_package.validate_platform_package(
+        staged,
+        "win32-x64",
+        publishable=True,
+    )
+    manifest = json.loads((staged / "package.json").read_text(encoding="utf-8"))
+    assert manifest["private"] is False
+    assert manifest["publishConfig"] == {"access": "public", "provenance": True}
 
 
 LIFECYCLE_SCRIPTS = {"preinstall", "install", "postinstall", "prepare"}
