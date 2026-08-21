@@ -5,6 +5,10 @@
 ## Table of contents
 
 - [Install](#install)
+  - [Verified Git-source installer (macOS / Linux)](#verified-git-source-installer-macos--linux)
+  - [PyPI (macOS, Linux, and Windows)](#pypi-macos-linux-and-windows)
+  - [Homebrew Tap (macOS)](#homebrew-tap-macos)
+  - [Verified Git-source installer (Windows PowerShell)](#verified-git-source-installer-windows-powershell)
 - [Usage](#usage)
   - [Setup & discovery](#setup--discovery)
   - [Install & manage models](#install--manage-models)
@@ -19,7 +23,7 @@
 
 ## Install
 
-**Verified Git-source installer (macOS / Linux):**
+### Verified Git-source installer (macOS / Linux)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
@@ -27,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
 
 This bootstraps `python3`, `git`, and `pipx` if missing (Debian/Ubuntu via `apt`, or Homebrew on macOS), then installs `omm` as an isolated CLI via `pipx`. Open a new shell afterward so your `PATH` picks up `omm`.
 
-**PyPI (macOS, Linux, and Windows):**
+### PyPI (macOS, Linux, and Windows)
 
 ```sh
 python -m pip install omm-model
@@ -55,7 +59,7 @@ pipx upgrade omm-model
 pipx uninstall omm-model
 ```
 
-**Homebrew Tap (macOS):**
+### Homebrew Tap (macOS)
 
 ```sh
 brew install omm-hippo/omm/omm
@@ -74,7 +78,7 @@ use `brew info omm-hippo/omm/omm` to see the version currently provided by the
 Tap. `omm update` does not modify a Homebrew installation and instead prints
 the matching `brew upgrade` command.
 
-**Verified Git-source installer (Windows PowerShell):**
+### Verified Git-source installer (Windows PowerShell)
 
 ```powershell
 # This must run before irm: script-internal TLS settings are too late for its first download.
