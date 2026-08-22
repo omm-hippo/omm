@@ -5,10 +5,11 @@
 ## Table of contents
 
 - [Install](#install)
-  - [Verified Git-source installer (macOS / Linux)](#verified-git-source-installer-macos--linux)
-  - [PyPI (macOS, Linux, and Windows)](#pypi-macos-linux-and-windows)
-  - [Homebrew Tap (macOS)](#homebrew-tap-macos)
-  - [Verified Git-source installer (Windows PowerShell)](#verified-git-source-installer-windows-powershell)
+  - [Windows](#windows)
+  - [macOS](#macos)
+  - [Linux](#linux)
+  - [Any OS via PyPI or pipx](#any-os-via-pypi-or-pipx)
+  - [Troubleshooting](#troubleshooting)
   - [Not currently public installation paths](#not-currently-public-installation-paths)
 - [Usage](#usage)
   - [Setup & discovery](#setup--discovery)
@@ -24,17 +25,169 @@
 
 ## Install
 
-### Verified Git-source installer (macOS / Linux)
+Pick your OS and follow one path from top to bottom:
+
+- [Windows](#windows) — PowerShell one-liner (verified Git-source installer)
+- [macOS](#macos) — Terminal one-liner, or the Homebrew Tap
+- [Linux](#linux) — shell one-liner
+- [Any OS via PyPI or pipx](#any-os-via-pypi-or-pipx) — `pip` / `pipx`, no signature verification
+- [Troubleshooting](#troubleshooting) — what you see, why, and how to fix it
+
+### Windows
+
+**1. Open this app.** Open **PowerShell** — either Windows PowerShell 5.1 (Start menu → "Windows PowerShell") or PowerShell 7 (`pwsh`). Windows Terminal is fine as long as the active tab is a PowerShell tab. Do **not** use Command Prompt (`cmd.exe`), and do not paste the one-liner into Git Bash or WSL; those are Unix shells and need the [Linux](#linux) path instead.
+
+**2. Requirements.** Python 3.10+. Windows 10 22H2/11 is the supported baseline. The installer bootstraps Python and git via [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) if they are missing (winget is built into Windows 10 2004+ and Windows 11 — on older Windows, install [Python 3.10+](https://www.python.org/downloads/) and [git](https://git-scm.com/downloads) manually first), then installs `omm` through that exact validated Python interpreter. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
+
+**3. Run the installer.** Both lines are one command; paste them together.
+
+```powershell
+# This must run before irm: script-internal TLS settings are too late for its first download.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
+```
+
+**4. After install.** Open a new PowerShell window so your `PATH` picks up `omm`, then run:
+
+```powershell
+omm        # first run: setup wizard (hardware scan + engine checklist)
+omm scan   # hardware, runner, and model summary
+```
+
+**5. Windows notes.** Model exposure tries an unprivileged same-volume hard link first, then a symbolic link (Developer Mode or Administrator), then an owned copy. Before copying, omm checks destination free space and reports that the model now consumes additional bytes. File junctions do not apply because model targets are files, not directories.
+
+Set `OMM_HOME` before installation and on later runs to put the model hub on another volume. Runners omm installs itself (KoboldCpp, text-generation-webui, AnythingLLM, Msty) go to `OMM_HOME\apps` and installer downloads to `OMM_HOME\tmp`, so nothing large lands on the system drive. (AnythingLLM still keeps its bundled Ollama and starter model, ~5 GB, under `%APPDATA%` - its installer offers no way to move that.)
+
+```powershell
+[Environment]::SetEnvironmentVariable("OMM_HOME", "D:\omm", "User")
+$env:OMM_HOME = "D:\omm"
+```
+
+Install native shell completion once, then restart the shell:
+
+```powershell
+omm --install-completion powershell
+```
+
+Remove a Git-source installation while preserving downloaded models and settings:
+
+```powershell
+irm https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.ps1 | iex
+```
+
+Download that script and run it with `-Purge` to remove the model hub and settings too.
+
+Runner note: on Windows x64 the checklist downloads the official AnythingLLM and Msty installers and runs them silently into `OMM_HOME\apps` (no winget package exists for either); on ARM Windows it prints their download page instead.
+
+Detailed walkthrough: <https://www.omm.run/install/windows>
+
+### macOS
+
+**1. Open this app.** Open **Terminal** (Applications → Utilities → Terminal), or any terminal emulator you already use. The command runs under `sh`/`zsh`/`bash`.
+
+**2. Requirements.** Python 3.10+ and git. The installer uses Homebrew when either is missing: if Homebrew itself is not installed, it bootstraps Homebrew with Homebrew's official installer first (Homebrew requires a supported macOS and Apple's Xcode Command Line Tools). To require a pre-existing Homebrew installation instead of letting the installer bootstrap it, export `OMM_AUTO_INSTALL_HOMEBREW=0` before running the command. `pipx` is bootstrapped with `pip` if missing (Homebrew and other PEP-668 "externally-managed" Pythons are handled with `--break-system-packages`), and `omm` is then installed as an isolated CLI via `pipx`. The installer also persists pipx's executable directory in `~/.zprofile`, so a newly opened zsh finds `omm` automatically. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
+
+**3. Run the installer.**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
 ```
 
-This bootstraps `python3`, `git`, and `pipx` if missing, then installs `omm` as an isolated CLI via `pipx`. On macOS it uses Homebrew when Python 3.10+ or git is missing; if Homebrew is not installed, it bootstraps Homebrew with Homebrew's official installer. On Linux it supports `apt-get`, `dnf`, `yum`, `pacman`, and `apk` when the current user can install system packages. On macOS, the installer also persists pipx's executable directory in `~/.zprofile`, so a newly opened zsh finds `omm` automatically.
+**4. After install.** Open a new shell afterward so your `PATH` picks up `omm`, then run:
 
-Homebrew requires a supported macOS and Apple's Xcode Command Line Tools. To require a pre-existing Homebrew installation instead of allowing the installer to bootstrap it, export `OMM_AUTO_INSTALL_HOMEBREW=0` before running the command.
+```sh
+omm        # first run: setup wizard (hardware scan + engine checklist)
+omm scan   # hardware, runner, and model summary
+```
 
-### PyPI (macOS, Linux, and Windows)
+**5. Homebrew Tap (alternative).**
+
+```sh
+brew install omm-hippo/omm/omm
+```
+
+Upgrade or remove the formula with Homebrew. Removing the formula preserves
+downloaded models and settings under `OMM_HOME`:
+
+```sh
+brew upgrade omm-hippo/omm/omm
+brew uninstall omm-hippo/omm/omm
+```
+
+After a tagged PyPI release passes its public install checks, GitHub notifies
+the Homebrew Tap. Homebrew intentionally applies its upstream release cooldown
+before opening an automated Formula update PR, so the Tap can temporarily lag
+behind PyPI. Use `brew info omm-hippo/omm/omm` to see the version currently
+provided by the Tap. `omm update` does not modify a Homebrew installation and
+instead prints the matching `brew upgrade` command.
+
+**6. macOS notes.** Set `OMM_HOME` before installation and on later runs to put the model hub elsewhere:
+
+```sh
+export OMM_HOME=/mnt/models/omm
+```
+
+Install native shell completion once, then restart the shell:
+
+```sh
+omm --install-completion bash  # or zsh/fish
+```
+
+Remove a Git-source installation while preserving downloaded models and settings:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.sh | sh
+```
+
+Download that script and run it with `--purge` to remove the model hub and settings too.
+
+Detailed walkthrough: <https://www.omm.run/install/macos>
+
+### Linux
+
+**1. Open this app.** Any terminal emulator. The command runs under `sh`/`bash`.
+
+**2. Requirements.** Python 3.10+. The installer bootstraps `python3`, `python3-venv`/equivalent, and `git` via whichever supported package manager is present — `apt-get`, `dnf`, `yum`, `pacman`, or `apk` — when the current user can install system packages; on an unsupported distribution, install Python 3.10+ and git yourself first or the installer exits with `Python 3.10+ not found` or `git not found. Install git first`. `pipx` is bootstrapped with `pip` if missing (PEP-668 "externally-managed" Pythons are handled with `--break-system-packages`), and `omm` is then installed as an isolated CLI via `pipx`. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
+
+**3. Run the installer.**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
+```
+
+**4. After install.** Open a new shell afterward so your `PATH` picks up `omm`, then run:
+
+```sh
+omm        # first run: setup wizard (hardware scan + engine checklist)
+omm scan   # hardware, runner, and model summary
+```
+
+**5. Linux notes.** Set `OMM_HOME` before installation and on later runs to put the model hub on another volume:
+
+```sh
+export OMM_HOME=/mnt/models/omm
+```
+
+Install native shell completion once, then restart the shell:
+
+```sh
+omm --install-completion bash  # or zsh/fish
+```
+
+Remove a Git-source installation while preserving downloaded models and settings:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.sh | sh
+```
+
+Download that script and run it with `--purge` to remove the model hub and settings too.
+
+Runner note: omm installs Jan on Linux through Flatpak, so `flatpak` must be present for that entry in the runner checklist.
+
+Detailed walkthrough: <https://www.omm.run/install/linux>
+
+### Any OS via PyPI or pipx
+
+Works on macOS, Linux, and Windows:
 
 ```sh
 # macOS / Linux (Python 3.10+ and pip must already be installed)
@@ -79,47 +232,45 @@ pipx upgrade omm-model
 pipx uninstall omm-model
 ```
 
-### Homebrew Tap (macOS)
+Both commands preserve downloaded models and settings under `OMM_HOME`.
 
-```sh
-brew install omm-hippo/omm/omm
-```
+### Troubleshooting
 
-Upgrade or remove the formula with Homebrew. Removing the formula preserves
-downloaded models and settings under `OMM_HOME`:
+Match the message you see, not the step you think you are on.
 
-```sh
-brew upgrade omm-hippo/omm/omm
-brew uninstall omm-hippo/omm/omm
-```
-
-The Homebrew formula and PyPI package can move on separate release schedules;
-use `brew info omm-hippo/omm/omm` to see the version currently provided by the
-Tap. `omm update` does not modify a Homebrew installation and instead prints
-the matching `brew upgrade` command.
+| What you see | Why | Fix |
+|---|---|---|
+| PowerShell says `sh` is not recognized, or `curl` rejects `-fsSL` | The macOS/Linux `curl … \| sh` line was pasted into PowerShell, where `curl` is an alias for `Invoke-WebRequest` and there is no `sh` | Use the [Windows](#windows) command instead |
+| `irm` or `iex` is not recognized | You are in Command Prompt (`cmd.exe`), not PowerShell | Open PowerShell (or switch the Windows Terminal tab to PowerShell) and rerun |
+| `Windows detected. Run the native PowerShell installer instead:` | The `install.sh` one-liner was run under Git Bash/MSYS/Cygwin, which the script refuses | Run the [Windows](#windows) PowerShell command |
+| The download fails, times out, or reports a TLS/SSL error on Windows | The default security protocol negotiated an older TLS version | Run the `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;` pre-line in the same command, before `irm`. Behind a corporate proxy, configure the proxy for PowerShell first |
+| `Python not found. Install Python 3.10+ first` (Windows) or `Python 3.10+ not found` (macOS/Linux) | No runnable Python 3.10+ was found, and the winget/Homebrew/package-manager bootstrap could not supply one | Install [Python 3.10+](https://www.python.org/downloads/), open a new shell, and rerun |
+| `git not found. Install git first (needed to fetch omm from GitHub)` | git is missing and could not be bootstrapped | Install [git](https://git-scm.com/downloads), open a new shell, and rerun |
+| `git 2.34+ is required to verify SSH commit signatures` | Older git cannot check SSH commit signatures, and the installer fails closed rather than trusting an unverified checkout | Upgrade git to 2.34 or newer and rerun |
+| `Signature verification failed - refusing to install untrusted code.` | The fetched commit is not signed by the expected trust anchor | Do not bypass it. Stop and report the failure at <https://github.com/omm-hippo/omm/issues> |
+| `Refusing to replace unrelated pipx environment 'omm'.` | A different tool already owns a pipx environment named `omm` | Remove or rename that environment manually, then rerun |
+| `Refusing to replace an unverified omm-model pipx environment.` | An existing `omm-model` pipx environment could not be confirmed as OMM's | Inspect it with `pipx list`, remove it if it is safe to remove, then rerun |
+| `Could not inspect existing pipx environments; refusing an unsafe migration.` | pipx metadata could not be read | Repair the pipx installation (`python -m pip install --user --upgrade pipx`) and rerun |
+| `git clone failed.` | The staging clone could not be fetched | Check network/proxy access to `github.com` and rerun |
+| `omm` is not found after a successful install | The new `PATH` entry is not in the shell that ran the installer | Open a new terminal window and try again |
+| winget is unavailable (older Windows) | winget ships with Windows 10 2004+ and Windows 11 only | Install [Python 3.10+](https://www.python.org/downloads/) and [git](https://git-scm.com/downloads) manually first, then rerun the installer |
+| Homebrew bootstrap fails or is refused on macOS | `curl`/`/bin/bash` are unavailable, or `OMM_AUTO_INSTALL_HOMEBREW=0` was set without Homebrew already installed | Install [Homebrew](https://brew.sh) yourself, or unset `OMM_AUTO_INSTALL_HOMEBREW`, then rerun |
+| pipx fails with `ensurepip is not available`, or `python3`/`git` are missing on an unsupported Linux distribution | The Linux bootstrap only automates `apt-get`, `dnf`, `yum`, `pacman`, and `apk` | Install `python3` (3.10+), the venv package for it, and `git` with your distribution's package manager, then rerun |
+| Jan cannot be installed from the runner checklist on Linux | omm installs Jan on Linux via Flatpak | Install `flatpak` (and the Flathub remote), then rerun `omm setup` |
+| `Refusing unsafe OMM_HOME`, `Refusing non-absolute OMM_HOME`, or `Refusing OMM_HOME that contains the current directory` | `OMM_HOME` points at `/`, your home directory, a relative path, or the directory you are running from | Set `OMM_HOME` to a dedicated absolute path and rerun from outside it |
+| `Refusing unrecognized custom OMM_HOME (missing .omm-managed)` during uninstall | The uninstaller only removes homes that an omm installer marked as its own | Remove the directory yourself if it really is your model hub |
 
 ### Not currently public installation paths
 
-The npm launcher and platform packages are still private release artifacts;
-their public registry packages have not been published yet. The Windows
-portable/Winget files are built and tested as release artifacts, but a public
-Winget package is not currently documented or verified. Do not use either path
-as a user installation command yet.
-
-### Verified Git-source installer (Windows PowerShell)
-
-```powershell
-# This must run before irm: script-internal TLS settings are too late for its first download.
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
-```
-
-This bootstraps Python and git via [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) if missing (built into Windows 10 2004+ and Windows 11 — on older Windows, install [Python 3.10+](https://www.python.org/downloads/) and [git](https://git-scm.com/downloads) manually first), then installs `omm` through that exact validated Python interpreter. Open a new PowerShell window afterward so your `PATH` picks up `omm`. On Windows, model exposure tries an unprivileged same-volume hard link first, then a symbolic link (Developer Mode or Administrator), then an owned copy. Before copying, omm checks destination free space and reports that the model now consumes additional bytes. File junctions do not apply because model targets are files, not directories.
-
-Requirements: Python 3.10+. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
+The Windows portable/Winget files are built and tested as release artifacts,
+but a public Winget package is not currently documented or verified. Do not
+use that path as a user installation command yet.
 
 ### Supported platforms
 
 `omm` is tested in CI on Windows, macOS, and Linux with Python 3.10+. Windows 10 22H2/11 is the supported Windows baseline because that matches Ollama's native Windows requirements. Hardware scan, install, linking, benchmark, update, and contribution flows are cross-platform; Ollama remains the only benchmark engine.
+
+### Updates and verification
 
 Both installers clone to a versioned staging directory, verify the signed commit against a bootstrap trust anchor, and only then switch pipx to it. Do not replace this with an unverified `git clone` plus `pipx install` if commit authenticity matters.
 
@@ -147,7 +298,7 @@ The first bare `omm` run on a fresh install (or `omm setup` any time after) show
 | Ollama | macOS, Linux, Windows | — |
 | LM Studio | macOS, Linux, Windows (headless `lms` CLI) | — |
 | Jan | macOS (Homebrew), Windows (winget), Linux (Flatpak) | wherever that package manager isn't installed |
-| AnythingLLM | macOS (Homebrew), Windows (winget) | Linux |
+| AnythingLLM | macOS (Homebrew) | Windows, Linux |
 | Msty | macOS (Homebrew) | Windows, Linux |
 | KoboldCpp | macOS (Apple Silicon), Linux (x86_64), Windows | Intel Mac, other architectures |
 | text-generation-webui | macOS (any arch), Linux/Windows (x86_64) | ARM Linux/Windows |
@@ -156,47 +307,17 @@ Every currently-installed runner is also listed (marked as already installed, no
 
 ### Storage location
 
-The model hub and omm state default to `~/.omm`. Set `OMM_HOME` before installation and on later runs to put them on another volume:
-
-```powershell
-[Environment]::SetEnvironmentVariable("OMM_HOME", "D:\omm", "User")
-$env:OMM_HOME = "D:\omm"
-```
-
-```sh
-export OMM_HOME=/mnt/models/omm
-```
+The model hub and omm state default to `~/.omm`. Set `OMM_HOME` before installation and on later runs to put them on another volume (see the snippet in your OS section above).
 
 Ollama's own model location follows `OLLAMA_MODELS`. LM Studio follows its home pointer; set `OMM_LMSTUDIO_MODELS_DIR` when LM Studio uses a custom directory that omm cannot discover automatically.
 
 ### Completion and uninstall
 
-Install native shell completion once, then restart the shell:
-
-```powershell
-omm --install-completion powershell
-```
-
-```sh
-omm --install-completion bash  # or zsh/fish
-```
-
-For a PyPI installation, use `python -m pip uninstall omm-model`; for pipx,
+Each OS section above carries the completion and uninstall commands for that shell. For a PyPI installation, use `python -m pip uninstall omm-model`; for pipx,
 use `pipx uninstall omm-model`. Both commands preserve downloaded models and
 settings under `OMM_HOME`.
 
-To remove a Git-source installer installation while preserving downloaded
-models and settings:
-
-```powershell
-irm https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.ps1 | iex
-```
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.sh | sh
-```
-
-Run a downloaded script with `-Purge` (PowerShell) or `--purge` (sh) to remove the model hub and settings too. Purge removes only known omm-owned paths and leaves unrelated files in a custom `OMM_HOME` untouched. Installers mark custom homes so uninstallers can refuse ambiguous or unsafe locations; shell profiles are never rewritten during uninstall.
+Purge (`-Purge` on PowerShell, `--purge` on sh) removes only known omm-owned paths and leaves unrelated files in a custom `OMM_HOME` untouched. Installers mark custom homes so uninstallers can refuse ambiguous or unsafe locations; shell profiles are never rewritten during uninstall.
 
 ## Usage
 
@@ -215,6 +336,8 @@ omm help [command]  # Show help, same as --help
 
 ```sh
 omm install <name> [--skip-unfit] [--upload/--no-upload] [--force] [--verify-runtime|--no-verify-runtime]  # Download, link, and optionally verify a model
+omm fit <name> [--json]  # Memory card: does this model (installed or not) fit next to what is running right now?
+omm run [name] [--engine NAME]  # Chat with an installed model: Ollama in the terminal, KoboldCpp/text-generation-webui with the model loaded, GUI apps opened
 omm import [directory] [--yes]  # Adopt GGUF files already sitting in Ollama/LM Studio (or a given directory) into the hub
 omm uninstall <name> [--dry-run]  # Uninstall a model and clean up its symlinks/manifests (alias: rm)
 omm uninstall all [--yes] [--dry-run]  # Uninstall every model installed via omm

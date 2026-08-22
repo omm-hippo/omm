@@ -78,6 +78,22 @@ def test_scan_ollama_skips_config_blobs_and_symlinks(tmp_path, monkeypatch):
     assert found[0].engine == "ollama"
 
 
+def test_scan_ollama_preserves_nonlibrary_namespace_in_runtime_name(tmp_path, monkeypatch):
+    models_dir = tmp_path / "ollama"
+    blobs_dir = models_dir / "blobs"
+    manifests_root = models_dir / "manifests"
+    blobs_dir.mkdir(parents=True)
+    model_digest = "d" * 64
+    (blobs_dir / f"sha256-{model_digest}").write_bytes(b"gguf-bytes")
+    _write_manifest(manifests_root, "acme", "llama3", "latest", model_digest)
+    monkeypatch.setattr(scan_import.linker, "ollama_models_dir", lambda: models_dir)
+
+    found = scan_import.scan_ollama()
+
+    assert len(found) == 1
+    assert found[0].display_name == "acme/llama3:latest"
+
+
 def test_scan_lmstudio_skips_symlinks(tmp_path, monkeypatch):
     models_dir = tmp_path / "lmstudio" / "models"
     real_dir = models_dir / "org" / "repo"
@@ -244,6 +260,8 @@ def test_adopt_group_merges_duplicate_across_engines_and_reports_saved_bytes(iso
     entry = registry.load_registry()["model.gguf"]
     assert entry["sha256"] == "deadbeef"
     assert entry["linked"] == _all_linked(lmstudio=True, ollama=True)
+    assert entry["ollama_name"] == "model"
+    assert entry["ollama_runtime_name"] == "llama3:latest"
 
 
 def test_adopt_group_links_into_other_installed_engines_beyond_discovery_location(
@@ -314,6 +332,7 @@ def test_adopt_group_reuses_existing_hub_copy_for_same_hash(isolated_omm_home, t
 
     entry = registry.load_registry()["existing.gguf"]
     assert entry["linked"] == _all_linked(lmstudio=True, ollama=True)  # merged, lmstudio flag preserved
+    assert entry["ollama_runtime_name"] == "existing:latest"
 
 
 def test_adopt_group_preserves_duplicate_changed_after_scan(isolated_omm_home, tmp_path):

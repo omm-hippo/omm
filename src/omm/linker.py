@@ -55,6 +55,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat as stat_module
 import tarfile
 import time
 import struct
@@ -201,7 +202,7 @@ def _windows_install_artifact_exists(dir_names: Sequence[str], shortcut_glob: st
     """
     if platform.system() != "Windows":
         return False
-    program_roots = []
+    program_roots = [engine_install_dir()]
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         program_roots.append(Path(local_app_data) / "Programs")
@@ -211,8 +212,11 @@ def _windows_install_artifact_exists(dir_names: Sequence[str], shortcut_glob: st
             program_roots.append(Path(value))
     for root in program_roots:
         for name in dir_names:
+            # An installer that died early (full disk, see
+            # _install_windows_direct) leaves an empty folder behind; only
+            # a folder holding an .exe counts as installed.
             try:
-                if (root / name).is_dir():
+                if any(p.suffix.lower() == ".exe" for p in (root / name).iterdir()):
                     return True
             except OSError:
                 continue
@@ -1085,6 +1089,109 @@ def validate_ollama_tag(model_name: str) -> str:
     return model_name
 
 
+def _ollama_runtime_name_from_manifest_path(
+    manifest_path: Path, manifests_root: Path
+) -> str | None:
+    """Translate an Ollama manifest path into the name exposed by its API."""
+    try:
+        parts = manifest_path.relative_to(manifests_root).parts
+    except ValueError:
+        return None
+    if len(parts) < 4:
+        return None
+
+    registry_name, namespace, *model_and_tag = parts
+    model_parts = model_and_tag[:-1]
+    tag = model_and_tag[-1]
+    if not registry_name or not namespace or not model_parts or not tag:
+        return None
+
+    if registry_name == "registry.ollama.ai":
+        prefix = [] if namespace == "library" else [namespace]
+    else:
+        prefix = [registry_name, namespace]
+    model_name = "/".join([*prefix, *model_parts])
+    return f"{model_name}:{tag}" if model_name else None
+
+
+def _ollama_runtime_names_for_digest(
+    model_sha256: object, *, models_dir: Path | None = None
+) -> tuple[str, ...]:
+    """Return exact Ollama API names whose model layer has this GGUF digest."""
+    if not isinstance(model_sha256, str):
+        return ()
+    digest_hex = model_sha256.strip().casefold()
+    if digest_hex.startswith("sha256:"):
+        digest_hex = digest_hex.removeprefix("sha256:")
+    if re.fullmatch(r"[0-9a-f]{64}", digest_hex) is None:
+        return ()
+    if models_dir is None:
+        models_dir = ollama_models_dir()
+    manifests_root = models_dir / "manifests"
+    if not manifests_root.is_dir():
+        return ()
+
+    expected_digest = f"sha256:{digest_hex}"
+    names: set[str] = set()
+    for manifest_path in manifests_root.rglob("*"):
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        layers = manifest.get("layers") if isinstance(manifest, dict) else None
+        if not isinstance(layers, list) or not any(
+            isinstance(layer, dict)
+            and layer.get("mediaType") == "application/vnd.ollama.image.model"
+            and str(layer.get("digest", "")).casefold() == expected_digest
+            for layer in layers
+        ):
+            continue
+        runtime_name = _ollama_runtime_name_from_manifest_path(
+            manifest_path, manifests_root
+        )
+        if runtime_name:
+            names.add(runtime_name)
+    return tuple(sorted(names))
+
+
+def resolve_ollama_runtime_name(
+    filename: str, entry: dict, *, models_dir: Path | None = None
+) -> str:
+    """Resolve the exact Ollama API tag without guessing colon placement.
+
+    Imported models historically stored only a filename-safe ``ollama_name``
+    (for example ``qwen3-4b``) even when Ollama exposed ``qwen3:4b``. Prefer
+    the exact tag recorded by new imports. For legacy entries, match the
+    registry's GGUF SHA-256 against Ollama manifests; the digest avoids an
+    unsafe hyphen-to-colon heuristic.
+    """
+    explicit = entry.get("ollama_runtime_name")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    link_name = entry.get("ollama_name")
+    if not isinstance(link_name, str) or not link_name.strip():
+        link_name = sanitize_ollama_tag(filename)
+    else:
+        link_name = link_name.strip()
+
+    candidates = _ollama_runtime_names_for_digest(
+        entry.get("sha256"), models_dir=models_dir
+    )
+    matching_link_name = tuple(
+        candidate
+        for candidate in candidates
+        if sanitize_ollama_tag(candidate) == link_name.casefold()
+    )
+    if len(matching_link_name) == 1:
+        return matching_link_name[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    return link_name
+
+
 def _guess_param_size(filename: str) -> str:
     m = re.search(r"(\d+(?:\.\d+)?)[Bb](?:[-_.]|$)", filename)
     return f"{m.group(1)}B" if m else "unknown"
@@ -1953,10 +2060,20 @@ def mstystudio_models_dir() -> Path:
     return mstystudio_app_dir() / "models"
 
 
+# electron-builder NSIS per-user install folder names seen for Msty Studio.
+_MSTYSTUDIO_WINDOWS_INSTALL_DIRS = ("Msty Studio", "MstyStudio")
+
+
 def is_mstystudio_installed() -> bool:
     if platform.system() == "Darwin":
         return _app_bundle_installed("MstyStudio")
-    return mstystudio_app_dir().exists()
+    if mstystudio_app_dir().exists():
+        return True
+    if platform.system() == "Windows":
+        # Same installed-but-never-launched gap as AnythingLLM: the
+        # userData dir only appears on first launch.
+        return _windows_install_artifact_exists(_MSTYSTUDIO_WINDOWS_INSTALL_DIRS, "Msty*.lnk")
+    return False
 
 
 # --- KoboldCpp / text-generation-webui (no fixed install location) --------
@@ -1967,21 +2084,43 @@ def is_mstystudio_installed() -> bool:
 # (the koboldcpp binary itself; text-generation-webui's own source files)
 # in a short list of common places a user would keep them.
 
-_ENGINE_INSTALL_DIR = Path.home() / "Applications"
+# Where omm used to drop runners it installed itself. Still searched so
+# existing installs keep being detected, but new installs go to
+# engine_install_dir() (under OMM_HOME) so a user who moved omm off a full
+# system drive doesn't get multi-GiB runners written back onto it.
+_LEGACY_ENGINE_INSTALL_DIR = Path.home() / "Applications"
 
 _HEURISTIC_SEARCH_ROOTS = [
     Path.home(),
     Path.home() / "Downloads",
     Path.home() / "Documents",
     Path.home() / "Desktop",
-    _ENGINE_INSTALL_DIR,
+    _LEGACY_ENGINE_INSTALL_DIR,
     Path("/Applications"),
 ]
 
 
+def engine_install_dir() -> Path:
+    """<OMM_HOME>/apps - runners omm installs (KoboldCpp, text-generation-
+    webui, and the Windows direct installs) land here, on the same volume
+    as the model hub. Read through `config` at call time so the
+    `isolated_omm_home` fixture and OMM_HOME both apply."""
+    return config.OMM_HOME / "apps"
+
+
+def engine_tmp_dir() -> Path:
+    """<OMM_HOME>/tmp - installer downloads and the TEMP handed to NSIS
+    installers, so a full system drive can't break an install."""
+    return config.OMM_HOME / "tmp"
+
+
+def _heuristic_search_roots() -> list[Path]:
+    return [engine_install_dir(), *_HEURISTIC_SEARCH_ROOTS]
+
+
 @lru_cache(maxsize=1)
 def find_koboldcpp_binary() -> Path | None:
-    for root in _HEURISTIC_SEARCH_ROOTS:
+    for root in _heuristic_search_roots():
         try:
             entries = list(root.iterdir())
         except OSError:
@@ -2021,7 +2160,7 @@ _TEXTGENWEBUI_NAME_HINT = re.compile(
 
 @lru_cache(maxsize=1)
 def find_textgenwebui_root() -> Path | None:
-    for root in _HEURISTIC_SEARCH_ROOTS:
+    for root in _heuristic_search_roots():
         try:
             entries = list(root.iterdir())
         except OSError:
@@ -2138,11 +2277,11 @@ def has_automated_installer(key: str) -> bool:
         # which made the wizard attempt a winget install that could not
         # possibly succeed and then fall back to a manual URL; reporting it
         # unsupported shows that same guidance up front instead.
-        return platform.system() == "Darwin"
+        return platform.system() == "Darwin" or _windows_direct_install_supported()
     if key == "mstystudio":
         # Brew-cask only - no winget package targets the current app (see
         # _install_mstystudio) and no Linux package manager exists at all.
-        return platform.system() == "Darwin"
+        return platform.system() == "Darwin" or _windows_direct_install_supported()
     if key == "koboldcpp":
         return (platform.system(), platform.machine()) in _KOBOLDCPP_ASSET_BY_PLATFORM
     if key == "textgenwebui":
@@ -2178,14 +2317,20 @@ def install_engine(
 
 
 def _stream_subprocess(
-    args: list[str], on_output: Callable[[str], None] | None
+    args: list[str] | str,
+    on_output: Callable[[str], None] | None,
+    *,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str] | None:
     """Runs args, streaming each stdout line to on_output as it arrives.
     Returns (returncode, None-marker) via the process wait(), or None if
-    the process itself couldn't start (caller turns that into a result)."""
+    the process itself couldn't start (caller turns that into a result).
+    `args` may be a pre-built command-line string for installers whose
+    argument syntax Windows' argv re-quoting would break (NSIS /D=)."""
     try:
         proc = subprocess.Popen(
-            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace"
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+            env=env,
         )
     except OSError:
         raise
@@ -2380,6 +2525,142 @@ def _install_via_package_manager(
     )
 
 
+def _windows_direct_install_supported() -> bool:
+    """The vendor .exe installers below are x64-only."""
+    return platform.system() == "Windows" and platform.machine().upper() in ("AMD64", "X86_64")
+
+
+def free_space_shortfall(path: Path, required_bytes: int, what: str) -> str | None:
+    """None if the volume holding `path` has `required_bytes` (plus the
+    usual safety reserve) free, else a one-line explanation naming the
+    volume, what needs the space, and how much is missing. Installers call
+    this before downloading anything: a full drive otherwise surfaces as an
+    NSIS installer that exits with code 2 after two seconds, or a curl that
+    dies mid-transfer - both far harder to diagnose than this message."""
+    required = required_bytes + disk_safety_reserve(required_bytes)
+    try:
+        free = shutil.disk_usage(disk_usage_path(path)).free
+    except OSError as error:
+        return f"Could not check free space for {path}: {error}"
+    if free >= required:
+        return None
+    volume = path.drive or str(disk_usage_path(path))
+    return (
+        f"{what} needs about {required / 1024**3:.1f} GiB on {volume} but only "
+        f"{free / 1024**3:.1f} GiB is free there"
+    )
+
+
+@dataclass(frozen=True)
+class _WindowsDirectInstaller:
+    """A vendor-hosted NSIS (electron-builder) installer omm downloads and
+    runs silently, for apps that have no winget package. Verified by hand
+    on Windows 11 (2026-08-22): `/currentuser /S /D=<dir>` installs both
+    apps below unattended; without free space on the TEMP volume the same
+    installers exit 2 within seconds having created only an empty folder."""
+    url: str
+    filename: str
+    install_dir_name: str
+    # download + unpacked app, on the OMM_HOME volume
+    required_bytes: int
+    # what the app writes under %APPDATA% on first run/install (C: no
+    # matter where the app itself lives) - 0 when negligible
+    appdata_bytes: int = 0
+    note: str | None = None
+
+
+def _install_windows_direct(
+    *,
+    key: str,
+    label: str,
+    manual_url: str,
+    installer: _WindowsDirectInstaller,
+    is_installed: Callable[[], bool],
+    on_output: Callable[[str], None] | None,
+) -> EngineInstallResult:
+    if not _windows_direct_install_supported():
+        return EngineInstallResult(
+            key, "unsupported_platform", f"No automated installer for this platform - install manually from {manual_url}"
+        )
+
+    def say(line: str) -> None:
+        if on_output is not None:
+            on_output(line)
+
+    tmp_dir = engine_tmp_dir()
+    target_dir = engine_install_dir() / installer.install_dir_name
+    shortfall = free_space_shortfall(engine_install_dir(), installer.required_bytes, f"Installing {label}")
+    if shortfall is None and installer.appdata_bytes:
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            shortfall = free_space_shortfall(
+                Path(appdata), installer.appdata_bytes, f"{label}'s own data folder (%APPDATA%)"
+            )
+    if shortfall is not None:
+        return EngineInstallResult(
+            key,
+            "failed",
+            f"{shortfall}. Free up space (or set OMM_HOME to a roomier drive) and re-run `omm setup`.",
+        )
+
+    download_path = tmp_dir / installer.filename
+    say(f"Downloading {label} installer ({installer.required_bytes / 1024**3:.1f} GiB incl. unpacked app) from {installer.url}")
+    if installer.note:
+        say(installer.note)
+    try:
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        returncode = _stream_subprocess(["curl", "-fsSL", installer.url, "-o", str(download_path)], on_output)
+    except OSError as e:
+        return EngineInstallResult(key, "failed", f"Could not download {label}: {e}")
+    if returncode != 0 or not download_path.exists():
+        download_path.unlink(missing_ok=True)
+        return EngineInstallResult(
+            key, "failed", f"Download failed (curl exited with code {returncode}). Install manually from {manual_url}"
+        )
+
+    # NSIS rules: /S must be upper-case, /D=<dir> must be the LAST argument
+    # and must not be quoted even if the path has spaces - so hand Windows
+    # one pre-built command line instead of an argv list it would re-quote.
+    # TEMP/TMP point at OMM_HOME/tmp so the ~GiB unpack never lands on C:.
+    command = f'"{download_path}" /currentuser /S /D={target_dir}'
+    env = dict(os.environ, TEMP=str(tmp_dir), TMP=str(tmp_dir))
+    say(f"Running the {label} installer silently into {target_dir} ...")
+    try:
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        returncode = _stream_subprocess(command, on_output, env=env)
+    except OSError as e:
+        return EngineInstallResult(key, "failed", f"Could not start the {label} installer: {e}")
+    finally:
+        download_path.unlink(missing_ok=True)
+
+    if is_installed():
+        return EngineInstallResult(key, "installed", f"{label} installed to {target_dir}.")
+    detail = f" (installer exited with code {returncode})" if returncode else ""
+    return EngineInstallResult(
+        key, "failed", f"Installer ran but {label} still isn't detected{detail}. Install manually from {manual_url}"
+    )
+
+
+_ANYTHINGLLM_WINDOWS_INSTALLER = _WindowsDirectInstaller(
+    url="https://cdn.anythingllm.com/latest/AnythingLLMDesktop.exe",
+    filename="AnythingLLMDesktop.exe",
+    install_dir_name="AnythingLLM",
+    required_bytes=int(2.2 * 1024**3),  # 0.4 GiB download + 1.6 GiB app
+    appdata_bytes=int(5 * 1024**3),  # bundled Ollama + starter model
+    note=(
+        "AnythingLLM's installer also downloads its bundled Ollama and a starter model "
+        "(~5 GiB, kept under %APPDATA% on the Windows drive) - this can take 10+ minutes."
+    ),
+)
+
+_MSTYSTUDIO_WINDOWS_INSTALLER = _WindowsDirectInstaller(
+    url="https://next-assets.msty.studio/app/latest/win/MstyStudio_x64.exe",
+    filename="MstyStudio_x64.exe",
+    install_dir_name="MstyStudio",
+    required_bytes=int(1.2 * 1024**3),  # 0.2 GiB download + 0.9 GiB app
+)
+
+
 def _install_jan(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
     return _install_via_package_manager(
         key="jan",
@@ -2415,6 +2696,15 @@ def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> E
     # installer.sh (sudo AppArmor-profile prompt, no documented silent
     # flag) - same risk class the original design excluded
     # text-generation-webui's git-clone path for.
+    if platform.system() == "Windows":
+        return _install_windows_direct(
+            key="anythingllm",
+            label="AnythingLLM",
+            manual_url="https://docs.anythingllm.com/installation-desktop/overview",
+            installer=_ANYTHINGLLM_WINDOWS_INSTALLER,
+            is_installed=is_anythingllm_installed,
+            on_output=on_output,
+        )
     return _install_via_package_manager(
         key="anythingllm",
         label="AnythingLLM",
@@ -2430,6 +2720,15 @@ def _install_mstystudio(*, on_output: Callable[[str], None] | None = None) -> En
     # (CloudStack.Msty) targets the deprecated pre-rebrand "Msty" app, not
     # current "Msty Studio" - using it would install the wrong software.
     # No Linux package manager exists at all.
+    if platform.system() == "Windows":
+        return _install_windows_direct(
+            key="mstystudio",
+            label="Msty",
+            manual_url="https://msty.ai/products/studio/",
+            installer=_MSTYSTUDIO_WINDOWS_INSTALLER,
+            is_installed=is_mstystudio_installed,
+            on_output=on_output,
+        )
     return _install_via_package_manager(
         key="mstystudio",
         label="Msty",
@@ -2458,7 +2757,10 @@ def _install_koboldcpp(*, on_output: Callable[[str], None] | None = None) -> Eng
             f"No koboldcpp build for {system}/{machine} - see https://github.com/LostRuins/koboldcpp/releases",
         )
 
-    dest_dir = _ENGINE_INSTALL_DIR / "koboldcpp"
+    dest_dir = engine_install_dir() / "koboldcpp"
+    shortfall = free_space_shortfall(engine_install_dir(), 1024**3, "Installing KoboldCpp")
+    if shortfall is not None:
+        return EngineInstallResult("koboldcpp", "failed", f"{shortfall}. Free up space (or set OMM_HOME to a roomier drive) and retry.")
     dest_name = "koboldcpp.exe" if system == "Windows" else "koboldcpp"
     dest_path = dest_dir / dest_name
     url = f"https://github.com/LostRuins/koboldcpp/releases/latest/download/{asset}"
@@ -2568,19 +2870,244 @@ def _textgenwebui_asset_name(hw: HardwareInfo) -> str | None:
     return f"linux-{_textgenwebui_variant(hw)}"
 
 
+_WINDOWS_RESERVED_ARCHIVE_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+
+
+def _safe_archive_member_parts(name: str) -> tuple[str, ...]:
+    """Return a platform-independent safe relative archive path.
+
+    ZIP and tar member names use forward slashes. Reject alternate Windows
+    spellings too so an archive has the same meaning on every supported
+    Python/OS combination instead of becoming unsafe only after it moves to
+    Windows.
+    """
+    if not name or "\x00" in name or "\\" in name or name.startswith("/"):
+        raise OSError(f"unsafe archive member path: {name!r}")
+
+    raw_parts = name.split("/")
+    if any(part == ".." for part in raw_parts):
+        raise OSError(f"unsafe archive member path: {name!r}")
+    parts = tuple(part for part in raw_parts if part not in ("", "."))
+    if not parts:
+        raise OSError(f"unsafe archive member path: {name!r}")
+
+    for part in parts:
+        # Colons include drive-relative/absolute paths and NTFS alternate
+        # data streams. Trailing spaces/dots and DOS device names can alias
+        # other paths or devices on Windows even though they are ordinary
+        # filename characters on POSIX.
+        if ":" in part or part.endswith((" ", ".")):
+            raise OSError(f"unsafe archive member path: {name!r}")
+        windows_basename = part.split(".", 1)[0].upper()
+        if windows_basename in _WINDOWS_RESERVED_ARCHIVE_NAMES:
+            raise OSError(f"unsafe archive member path: {name!r}")
+    return parts
+
+
+def _safe_archive_link_target_parts(
+    member_parts: tuple[str, ...], linkname: str
+) -> tuple[str, ...]:
+    """Resolve a tar symlink target without allowing it outside the root.
+
+    Portable TextGen releases contain many ordinary relative symlinks (the
+    embedded Python runtime alone has ``python3 -> python3.13``).  Rejecting
+    every link makes the official archive unusable, while handing links to
+    ``tarfile.extractall`` reintroduces traversal.  Resolve the target
+    lexically, require it to stay below the archive's single top-level
+    directory, and materialize it only after all regular payloads are done.
+    """
+    if (
+        not linkname
+        or "\x00" in linkname
+        or "\\" in linkname
+        or linkname.startswith("/")
+    ):
+        raise OSError(f"unsafe archive link target: {linkname!r}")
+
+    resolved = list(member_parts[:-1])
+    for part in linkname.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            # Keep the first component: it is the archive's validated root.
+            if len(resolved) <= 1:
+                raise OSError(f"unsafe archive link target: {linkname!r}")
+            resolved.pop()
+            continue
+        try:
+            safe_part = _safe_archive_member_parts(part)
+        except OSError as exc:
+            raise OSError(f"unsafe archive link target: {linkname!r}") from exc
+        if len(safe_part) != 1:
+            raise OSError(f"unsafe archive link target: {linkname!r}")
+        resolved.append(part)
+
+    if not resolved or resolved[0] != member_parts[0]:
+        raise OSError(f"unsafe archive link target: {linkname!r}")
+    return tuple(resolved)
+
+
+def _reject_archive_symlink_descendants(
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> None:
+    """No payload path may use an archive symlink as a parent directory."""
+    seen: set[tuple[str, ...]] = set()
+    symlinks = {parts for _, parts, is_dir, _ in entries if is_dir is None}
+    for _, parts, _, _ in entries:
+        if parts in seen:
+            raise OSError(f"duplicate archive member path: {'/'.join(parts)!r}")
+        seen.add(parts)
+        if any(parts[:depth] in symlinks for depth in range(1, len(parts))):
+            raise OSError(f"archive member traverses a symlink: {'/'.join(parts)!r}")
+
+
+def _archive_top_level(
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> str:
+    roots = {parts[0] for _, parts, _, _ in entries}
+    if len(roots) != 1:
+        raise OSError("archive must contain exactly one top-level directory")
+    return next(iter(roots))
+
+
+def _validated_zip_entries(
+    zf: zipfile.ZipFile,
+) -> list[tuple[zipfile.ZipInfo, tuple[str, ...], bool, int]]:
+    entries: list[tuple[zipfile.ZipInfo, tuple[str, ...], bool, int]] = []
+    for member in zf.infolist():
+        parts = _safe_archive_member_parts(member.filename)
+        is_dir = member.is_dir()
+        unix_mode = member.external_attr >> 16 if member.create_system == 3 else 0
+        file_type = stat_module.S_IFMT(unix_mode)
+        allowed_type = stat_module.S_IFDIR if is_dir else stat_module.S_IFREG
+        if file_type not in (0, allowed_type):
+            raise OSError(f"unsupported archive member type: {member.filename!r}")
+        mode = unix_mode & 0o777
+        if mode == 0:
+            mode = 0o755 if is_dir else 0o644
+        entries.append((member, parts, is_dir, mode))
+    return entries
+
+
+def _validated_tar_entries(
+    tf: tarfile.TarFile,
+) -> list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]]:
+    entries: list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]] = []
+    for member in tf.getmembers():
+        parts = _safe_archive_member_parts(member.name)
+        if member.isdir():
+            is_dir = True
+        elif member.isfile():
+            is_dir = False
+        elif member.issym():
+            _safe_archive_link_target_parts(parts, member.linkname)
+            # None distinguishes a validated symlink from files/directories.
+            is_dir = None
+        else:
+            # Hard links, devices, FIFOs, and other special archive entries
+            # remain unsupported. This is explicit rather than relying on
+            # Python-version-dependent tar extraction filter defaults.
+            raise OSError(f"unsupported archive member type: {member.name!r}")
+        entries.append((member, parts, is_dir, member.mode & 0o777))
+    _reject_archive_symlink_descendants(entries)
+    return entries
+
+
+def _prepare_archive_output(
+    staging: Path, parts: tuple[str, ...], is_dir: bool
+) -> Path:
+    output = staging.joinpath(*parts)
+    if is_dir:
+        output.mkdir(parents=True, exist_ok=True)
+    else:
+        output.parent.mkdir(parents=True, exist_ok=True)
+    return output
+
+
 def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
     """Extracts the portable release into dest_dir and returns the
     resulting top-level folder (named textgen-<version> by the archive
-    itself - verified against real release bytes)."""
-    if archive_path.suffix == ".zip":
-        with zipfile.ZipFile(archive_path) as zf:
-            top_level = {name.split("/")[0] for name in zf.namelist()}
-            zf.extractall(dest_dir)
-    else:
-        with tarfile.open(archive_path) as tf:
-            top_level = {member.name.split("/")[0] for member in tf.getmembers()}
-            tf.extractall(dest_dir)
-    return dest_dir / next(iter(top_level))
+    itself - verified against real release bytes).
+
+    All entries are validated before writing anything, then ordinary files
+    and directories are copied manually into a fresh staging directory.
+    This gives Python 3.10 through 3.14 the same policy and avoids both the
+    historical unfiltered tar behavior and destination symlink traversal.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".omm-extract-", dir=dest_dir) as temp_name:
+        staging = Path(temp_name)
+        directory_modes: list[tuple[Path, int]] = []
+        pending_symlinks: list[tuple[Path, str]] = []
+
+        if archive_path.suffix.lower() == ".zip":
+            with zipfile.ZipFile(archive_path) as zf:
+                entries = _validated_zip_entries(zf)
+                top_level = _archive_top_level(entries)
+                final_path = dest_dir / top_level
+                if final_path.exists() or final_path.is_symlink():
+                    raise OSError(f"archive destination already exists: {final_path}")
+                for member, parts, is_dir, mode in entries:
+                    output = _prepare_archive_output(staging, parts, is_dir is True)
+                    if is_dir:
+                        directory_modes.append((output, mode))
+                        continue
+                    with zf.open(member, "r") as source, output.open("xb") as target:
+                        shutil.copyfileobj(source, target)
+                    output.chmod(mode)
+        else:
+            with tarfile.open(archive_path) as tf:
+                entries = _validated_tar_entries(tf)
+                top_level = _archive_top_level(entries)
+                final_path = dest_dir / top_level
+                if final_path.exists() or final_path.is_symlink():
+                    raise OSError(f"archive destination already exists: {final_path}")
+                for member, parts, is_dir, mode in entries:
+                    output = _prepare_archive_output(staging, parts, is_dir is True)
+                    if is_dir is True:
+                        directory_modes.append((output, mode))
+                        continue
+                    if is_dir is None:
+                        pending_symlinks.append((output, member.linkname))
+                        continue
+                    source = tf.extractfile(member)
+                    if source is None:
+                        raise OSError(f"could not read archive member: {member.name!r}")
+                    with source, output.open("xb") as target:
+                        shutil.copyfileobj(source, target)
+                    output.chmod(mode)
+
+        # Links are deliberately last: no subsequent archive write can follow
+        # one into another location. Their targets were already proven to stay
+        # under this archive root by _safe_archive_link_target_parts.
+        for output, linkname in pending_symlinks:
+            # Archive link names always use POSIX separators.  Build a native
+            # relative Path so Windows stores a usable reparse target too;
+            # passing ``../lib/foo`` through unchanged creates a link that
+            # pathlib can identify but cannot follow on Windows.
+            output.symlink_to(Path(*linkname.split("/")))
+
+        # Keep parent directories writable while files and links are being
+        # created; apply archive permissions only after all payloads are in place.
+        for directory, mode in sorted(
+            directory_modes, key=lambda item: len(item[0].parts), reverse=True
+        ):
+            directory.chmod(mode)
+
+        staged_root = staging / top_level
+        if staged_root.is_symlink() or not staged_root.is_dir():
+            raise OSError("archive top-level entry must be a directory")
+        if final_path.exists() or final_path.is_symlink():
+            raise OSError(f"archive destination already exists: {final_path}")
+        staged_root.rename(final_path)
+        return final_path
 
 
 def _install_textgenwebui(
@@ -2626,7 +3153,10 @@ def _install_textgenwebui(
             f"No release build found for {platform_tag} - see {_TEXTGENWEBUI_RELEASES_URL}",
         )
 
-    dest_root = _ENGINE_INSTALL_DIR
+    dest_root = engine_install_dir()
+    shortfall = free_space_shortfall(dest_root, 8 * 1024**3, "Installing text-generation-webui")
+    if shortfall is not None:
+        return EngineInstallResult("textgenwebui", "failed", f"{shortfall}. Free up space (or set OMM_HOME to a roomier drive) and retry.")
     dest_root.mkdir(parents=True, exist_ok=True)
     archive_path = dest_root / match["name"]
 

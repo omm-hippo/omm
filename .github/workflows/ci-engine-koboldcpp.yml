@@ -1,4 +1,4 @@
-name: "Engine link check: KoboldCpp"
+name: "Engine link/import check: KoboldCpp"
 
 "on":
   push:
@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   verify:
-    name: Real KoboldCpp binary + omm link + filesystem recognition (ubuntu-latest)
+    name: Real KoboldCpp binary + omm link/import + filesystem recognition (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,7 +39,7 @@ jobs:
           cache: pip
       - name: Install omm
         run: python -m pip install -e .
-      - name: Install, link, and verify KoboldCpp's models dir sees the linked model
+      - name: Install, link, import, and verify KoboldCpp's models dir in both directions
         # KoboldCpp never auto-scans its models dir (it has to be launched
         # with --admindir pointed at it) - so recognition here means the
         # file lands exactly where a real launch would expect it, not a

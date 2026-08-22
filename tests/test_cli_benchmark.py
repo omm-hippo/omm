@@ -83,6 +83,30 @@ def test_benchmark_saves_local_report_and_asks_before_upload(isolated_omm_home, 
     assert sent == []
 
 
+def test_benchmark_memory_guard_matches_exact_ollama_runtime_name(monkeypatch):
+    monkeypatch.setattr(
+        cli.registry,
+        "load_registry",
+        lambda: {
+            "qwen3-4b.gguf": {
+                "ollama_name": "qwen3-4b",
+                "ollama_runtime_name": "qwen3:4b",
+                "size_bytes": 1024**3,
+            }
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "_guard_ollama_load",
+        lambda tag, required_gb: calls.append((tag, required_gb)) or (True, None, False),
+    )
+
+    cli._guard_benchmark_models(["qwen3:4b"])
+
+    assert calls == [("qwen3:4b", 1.2)]
+
+
 def test_benchmark_json_before_subcommand(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)

@@ -14,12 +14,15 @@ import shutil
 import struct
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 import click
 import typer
@@ -44,7 +47,10 @@ from omm import (
     config as config_mod,
     contribute_memory,
     contribute_state,
+    doctor as doctor_mod,
     error_report,
+    fit_ui,
+    launcher,
     linker,
     memory_guard as memory_guard_mod,
     onboarding,
@@ -181,7 +187,16 @@ class GlobalOptions:
 # Commands whose output --json actually restructures. Every other command
 # silently ignores the flag - warn instead so a script piping --json from
 # one of them doesn't get plain-text garbage with exit code 0 (see #81).
-_JSON_CAPABLE = {"search", "list", "info", "benchmark", "tune", "scan", "recommend"}
+_JSON_CAPABLE = {
+    "search",
+    "list",
+    "info",
+    "benchmark",
+    "tune",
+    "scan",
+    "recommend",
+    "doctor",
+}
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
@@ -317,6 +332,7 @@ Tuning & quality:
 
 Maintenance:
   omm scan
+  omm doctor
   omm setup
   omm engine install
   omm upgrade [MODEL]
@@ -345,6 +361,16 @@ class _RootHelpGroup(typer.core.TyperGroup):
     def get_command(self, ctx: click.Context, cmd_name: str):
         cmd_name = _COMMAND_ALIASES.get(cmd_name, cmd_name)
         return super().get_command(ctx, cmd_name)
+
+
+def _table(*args, **kwargs) -> Table:
+    """Every table omm prints, in the site's hierarchy: dim rules and
+    title, bold header row. Column styles stay per call site (labels are
+    `label`, values `value`, filenames `accent`)."""
+    kwargs.setdefault("border_style", "rule")
+    kwargs.setdefault("header_style", "heading")
+    kwargs.setdefault("title_style", "muted")
+    return Table(*args, **kwargs)
 
 
 app = typer.Typer(
@@ -495,7 +521,10 @@ def _omm_version() -> str:
     install` (see _deps_satisfied's docstring), so importlib.metadata would
     keep reporting a stale version after every git-pull-only `omm update`
     even though the commit hash and code have moved on."""
-    if package_metadata.install_source() is package_metadata.InstallSource.GIT:
+    if (
+        package_metadata.install_source() is package_metadata.InstallSource.GIT
+        and _editable_install_uses_src()
+    ):
         try:
             text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
         except OSError:
@@ -557,11 +586,23 @@ def _root(
     opts.yes = opts.yes or yes_flag
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
-    theme_mod.apply_theme_to_console(console, load_config().get("theme", "dark"))
-    theme_mod.apply_theme_to_console(err_console, load_config().get("theme", "dark"))
+    doctor_mode = ctx.invoked_subcommand == "doctor"
+    theme = (
+        doctor_mod.read_theme_read_only()
+        if doctor_mode
+        else load_config().get("theme", "dark")
+    )
+    theme_mod.apply_theme_to_console(console, theme)
+    theme_mod.apply_theme_to_console(err_console, theme)
     if opts.no_color:
         console.no_color = True
         err_console.no_color = True
+    # `omm doctor` promises a literal read-only snapshot. The normal root
+    # prelude can create/migrate config, spawn an update checker, offer to
+    # import models, and flush queued network events, so return directly to
+    # the subcommand before any of those hooks are reached.
+    if doctor_mode:
+        return
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
         # Bare `omm` prints a real (if short) result, so it counts as a
@@ -595,9 +636,22 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
+    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
-    ("Maintenance", ["scan", "setup", "engine", "import", "autoremove", "link", "update", "help"]),
+    (
+        "Maintenance",
+        [
+            "scan",
+            "doctor",
+            "setup",
+            "engine",
+            "import",
+            "autoremove",
+            "link",
+            "update",
+            "help",
+        ],
+    ),
 ]
 
 
@@ -935,8 +989,8 @@ def scan() -> None:
         )
         return
 
-    table = Table(title="omm hardware scan")
-    table.add_column("Field", style="accent")
+    table = _table(title="omm hardware scan")
+    table.add_column("Field", style="label")
     table.add_column("Value", style="value")
 
     table.add_row("OS", f"{info.os_name} {info.os_version}")
@@ -965,9 +1019,9 @@ def scan() -> None:
 
     console.print(table)
 
-    engine_table = Table(title="Local AI runners", box=None)
-    engine_table.add_column("Program", style="accent")
-    engine_table.add_column("Status", style="value")
+    engine_table = _table(title="Local AI runners", box=None)
+    engine_table.add_column("Program", style="label")
+    engine_table.add_column("Status", style="success")
     for spec in linker.ENGINES:
         if installed[spec.key]:
             engine_table.add_row(spec.label, "installed")
@@ -975,13 +1029,15 @@ def scan() -> None:
     console.print(engine_table)
     note = _missing_engines_note(installed)
     if note and not opts.quiet:
-        console.print(note)
+        console.print(note, style="muted")
 
-    model_table = Table(title="Local AI models", box=None)
-    model_table.add_column("Model", style="accent")
-    model_table.add_column("Location", style="value")
-    model_table.add_column("Engine(s)")
-    model_table.add_column("Managed by omm")
+    model_table = _table(title="Local AI models", box=None)
+    # Model names get the room first: a truncated `tinyllama-1.1b-cha…` is
+    # what the user has to type back, the path is only where it lives.
+    model_table.add_column("Model", style="accent", overflow="ellipsis", min_width=30)
+    model_table.add_column("Location", style="value", overflow="ellipsis")
+    model_table.add_column("Engine(s)", style="muted")
+    model_table.add_column("Managed by omm", style="muted", no_wrap=True)
     for filename, entry in reg.items():
         linked = entry.get("linked", {})
         engines = [name for name, on in linked.items() if on]
@@ -1108,15 +1164,56 @@ def _src_head_commit() -> str | None:
     return result.stdout.strip()
 
 
+def _editable_install_uses_src(install_record: dict | None = None) -> bool:
+    """True only when PEP 610 proves the installed package uses SRC_DIR.
+
+    A cloned ``~/.omm/src`` is not proof that the currently executing pipx
+    environment is editable. A failed one-time migration can leave that clone
+    behind while the environment still runs an older VCS snapshot.
+    """
+    if install_record is None:
+        try:
+            install_record = package_metadata.direct_url()
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+    if not isinstance(install_record, dict):
+        return False
+    dir_info = install_record.get("dir_info")
+    if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+        return False
+    raw_url = install_record.get("url")
+    if not isinstance(raw_url, str):
+        return False
+    try:
+        parsed = urlsplit(raw_url)
+    except ValueError:
+        return False
+    if (
+        parsed.scheme != "file"
+        or parsed.netloc not in {"", "localhost"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    raw_path = url2pathname(unquote(parsed.path))
+    if platform.system() == "Windows" and re.fullmatch(r"/[A-Za-z]:.*", raw_path):
+        raw_path = raw_path[1:]
+    try:
+        return Path(raw_path).resolve() == SRC_DIR.resolve()
+    except OSError:
+        return False
+
+
 def _installed_commit() -> str | None:
-    """The commit omm is actually running from. Checks the persistent
-    editable clone (SRC_DIR) first, then falls back to pip's PEP 610
-    direct_url.json vcs_info - present for not-yet-migrated installs that
-    still used a plain `pipx install <git-URL>` VCS snapshot."""
-    src_commit = _src_head_commit()
-    if src_commit:
-        return src_commit
+    """The commit the installed package actually executes.
+
+    PEP 610 identifies whether this environment is the migrated editable
+    install or an older VCS snapshot. Never treat a merely-present SRC_DIR as
+    installed code: it may be residue from a failed migration.
+    """
     install_record = package_metadata.direct_url()
+    if _editable_install_uses_src(install_record):
+        return _src_head_commit()
     if not install_record:
         return None
     vcs_info = install_record.get("vcs_info", {})
@@ -1146,7 +1243,7 @@ def _cached_remote_head_commit(ref: str = "main") -> str | None:
     return version_check.cached_remote_head(_remote_head_commit, ref)
 
 
-_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "help", "_bg-version-check"}
+_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check"}
 
 
 @app.command(name="_bg-version-check", hidden=True)
@@ -1188,10 +1285,10 @@ def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch:
         return
     version_check.record(latest, branch)
     if latest != installed:
-        err_console.print("[warning]Update available! Run: [bold]omm update[/bold][/warning]")
+        err_console.print("[muted]Update available! Run: omm update[/muted]")
 
 
-_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "help", "update", "_bg-version-check"}
+_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
 
 
 def _maybe_run_onboarding(ctx: typer.Context) -> None:
@@ -1261,6 +1358,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "help",
     "import",
     "contribute",
+    "doctor",
     "_bg-version-check",
 }
 
@@ -1380,6 +1478,17 @@ _PIPX_COMMAND = "pipx"
 _PIPX_CURRENT_ENV = package_metadata.DISTRIBUTION_NAME
 _PIPX_LEGACY_ENV = "omm"
 _PIPX_EXPECTED_APPS = {"omm", "localfit-server"}
+
+
+def _pipx_app_names(apps: object) -> list[str] | None:
+    """pipx records app names as the launcher filenames, so on Windows the
+    metadata says `omm.exe` / `localfit-server.exe` where POSIX says
+    `omm` / `localfit-server`. Strip the suffix so every app-set check
+    below compares the same names on both platforms. None if the
+    metadata isn't a list of strings."""
+    if not isinstance(apps, list) or not all(isinstance(app, str) for app in apps):
+        return None
+    return [app[:-4] if app.casefold().endswith(".exe") else app for app in apps]
 
 
 @dataclass(frozen=True)
@@ -1522,9 +1631,9 @@ def _verify_pipx_installation() -> tuple[_PipxInstallVerification | None, str | 
     expected_version = _omm_version()
     if main_package.get("package_version") != expected_version:
         return None, "pipx omm-model environment contains the wrong package version"
-    apps = main_package.get("apps")
+    apps = _pipx_app_names(main_package.get("apps"))
     app_paths = main_package.get("app_paths")
-    if not isinstance(apps, list) or set(apps) != _PIPX_EXPECTED_APPS:
+    if apps is None or set(apps) != _PIPX_EXPECTED_APPS:
         return None, "pipx omm-model environment exposes an unexpected app set"
     if not isinstance(app_paths, list) or len(app_paths) != len(apps):
         return None, "pipx omm-model app paths do not match its app list"
@@ -1597,9 +1706,9 @@ def _capture_legacy_pipx_state() -> tuple[_LegacyPipxState | None, str | None]:
     legacy_version = main_package.get("package_version")
     if not isinstance(legacy_version, str) or not legacy_version:
         return None, "the legacy pipx environment has no exact package version"
-    apps = main_package.get("apps")
+    apps = _pipx_app_names(main_package.get("apps"))
     app_paths = main_package.get("app_paths")
-    if not isinstance(apps, list) or set(apps) != _PIPX_EXPECTED_APPS:
+    if apps is None or set(apps) != _PIPX_EXPECTED_APPS:
         return None, "the legacy pipx environment exposes an unexpected app set"
     if not isinstance(app_paths, list) or len(app_paths) != len(apps):
         return None, "the legacy pipx environment has invalid app paths"
@@ -1652,9 +1761,9 @@ def _verify_legacy_pipx_execution(state: _LegacyPipxState) -> tuple[bool, str | 
     expected_version = state.expected_version or _omm_version()
     if main_package.get("package_version") != expected_version:
         return False, "legacy pipx package version changed"
-    apps = main_package.get("apps")
+    apps = _pipx_app_names(main_package.get("apps"))
     app_paths = main_package.get("app_paths")
-    if not isinstance(apps, list) or set(apps) != _PIPX_EXPECTED_APPS:
+    if apps is None or set(apps) != _PIPX_EXPECTED_APPS:
         return False, "legacy pipx app set changed"
     if not isinstance(app_paths, list) or len(app_paths) != len(apps):
         return False, "legacy pipx app path metadata changed"
@@ -1906,6 +2015,28 @@ def _pipx_child_env() -> dict[str, str]:
     character (a Korean Windows user profile directory is enough)."""
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
+    # `python -m pipx ensurepath` updates future login shells, not the shell
+    # already running the installer. On macOS a user install commonly lands
+    # in ~/Library/Python/X.Y/bin, so the first `omm update` must make that
+    # interpreter's user scripts directory visible to its pipx child itself.
+    user_scheme = "nt_user" if os.name == "nt" else (
+        "osx_framework_user" if sys.platform == "darwin" else "posix_user"
+    )
+    try:
+        user_scripts = sysconfig.get_path("scripts", scheme=user_scheme)
+    except (KeyError, TypeError, ValueError):
+        user_scripts = None
+    path_entries = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry]
+    fallback_dirs = [Path.home() / ".local" / "bin"]
+    if user_scripts:
+        fallback_dirs.insert(0, Path(user_scripts))
+    normalized = {os.path.normcase(os.path.abspath(entry)) for entry in path_entries}
+    for directory in fallback_dirs:
+        key = os.path.normcase(os.path.abspath(directory))
+        if key not in normalized:
+            path_entries.append(str(directory))
+            normalized.add(key)
+    env["PATH"] = os.pathsep.join(path_entries)
     return env
 
 
@@ -1991,6 +2122,35 @@ def _run_pipx_install_with_progress(args: list[str]) -> subprocess.CompletedProc
     return result
 
 
+def _verified_pipx_install_result(
+    result: subprocess.CompletedProcess,
+) -> subprocess.CompletedProcess:
+    """Convert a false-successful pipx result into an updater failure."""
+    if result.returncode != 0:
+        return result
+    verification, error = _verify_pipx_installation()
+    if verification is not None:
+        return result
+    detail = error or "unknown pipx verification failure"
+    return subprocess.CompletedProcess(
+        result.args,
+        1,
+        stdout=result.stdout,
+        stderr=(
+            "pipx reported a successful install, but the new omm-model "
+            f"environment failed exact verification ({detail})."
+        ),
+    )
+
+
+def _remove_update_path(path: Path) -> None:
+    """Remove only one updater-owned scratch/backup path."""
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedProcess:
     """First-run (or self-heal) path: clone the repo into a scratch dir,
     swap it into place as SRC_DIR only once the clone has actually
@@ -2049,11 +2209,35 @@ def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedPr
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
 
-    shutil.rmtree(SRC_DIR, ignore_errors=True)
-    tmp_dir.rename(SRC_DIR)
-    return _run_pipx_install_with_progress(
-        ["pipx", "install", "--force", "--editable", _install_spec()]
+    backup_dir = SRC_DIR.with_name(
+        f"{SRC_DIR.name}.previous-{os.getpid()}-{time.time_ns()}"
     )
+    had_existing_src = SRC_DIR.exists() or SRC_DIR.is_symlink()
+    try:
+        if had_existing_src:
+            SRC_DIR.rename(backup_dir)
+        tmp_dir.rename(SRC_DIR)
+    except OSError:
+        if had_existing_src and backup_dir.exists() and not SRC_DIR.exists():
+            backup_dir.rename(SRC_DIR)
+        raise
+
+    install_succeeded = False
+    try:
+        result = _verified_pipx_install_result(
+            _run_pipx_install_with_progress(
+                [_PIPX_COMMAND, "install", "--force", "--editable", _install_spec()]
+            )
+        )
+        install_succeeded = result.returncode == 0
+        return result
+    finally:
+        if install_succeeded:
+            _remove_update_path(backup_dir)
+        else:
+            _remove_update_path(SRC_DIR)
+            if had_existing_src and backup_dir.exists():
+                backup_dir.rename(SRC_DIR)
 
 
 def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -2152,6 +2336,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
             )
 
     migrated = _src_head_commit() is not None
+    editable_install = _editable_install_uses_src()
     try:
         if not migrated:
             result = _migrate_to_editable_install(branch)
@@ -2164,7 +2349,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
         result = _git_update_src(branch)
         if result.returncode == 0:
             dependencies_satisfied = _deps_satisfied()
-            if legacy_distribution or not dependencies_satisfied:
+            if legacy_distribution or not dependencies_satisfied or not editable_install:
                 # With the renamed distribution, pipx derives a new
                 # `omm-model` environment from this spec. `--force` lets the
                 # successfully-created environment take over the shared
@@ -2173,6 +2358,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
                 result = _run_pipx_install_with_progress(
                     [_PIPX_COMMAND, "install", "--force", "--editable", _install_spec()]
                 )
+                result = _verified_pipx_install_result(result)
                 if legacy_state is not None:
                     result = _finalize_legacy_pipx_migration(result, legacy_state)
         return result
@@ -2237,6 +2423,46 @@ def _package_managed_update_guidance(
 
 @app.command()
 @global_flags
+def doctor() -> None:
+    """Diagnose the OMM install and Ollama links without changing state.
+
+    WARN findings keep exit code 0; definite FAIL findings exit 1.
+    """
+    report = doctor_mod.collect_report(
+        module_path=Path(__file__).resolve(),
+        command_path=doctor_mod.running_command_path(),
+    )
+    if _global_opts().json:
+        console.print_json(data=report.as_dict())
+    else:
+        table = Table(title="omm doctor")
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Check", style="accent", no_wrap=True)
+        table.add_column("Detail")
+        status_styles = {"PASS": "success", "WARN": "warning", "FAIL": "error"}
+        for check in report.checks:
+            style = status_styles[check.status]
+            table.add_row(
+                f"[{style}]{check.status}[/{style}]",
+                escape(check.name),
+                escape(check.detail),
+            )
+        console.print(table)
+        counts = {
+            status: sum(check.status == status for check in report.checks)
+            for status in ("PASS", "WARN", "FAIL")
+        }
+        overall_style = status_styles[report.status]
+        console.print(
+            f"[{overall_style}]Overall: {report.status}[/{overall_style}] "
+            f"({counts['PASS']} pass, {counts['WARN']} warn, {counts['FAIL']} fail)"
+        )
+    if report.status == "FAIL":
+        raise typer.Exit(1)
+
+
+@app.command()
+@global_flags
 def update() -> None:
     """Reinstall omm from the latest source and refresh its data.
 
@@ -2246,11 +2472,12 @@ def update() -> None:
     by default, or beta)."""
     branch = _channel_branch()
     migrated = _src_head_commit() is not None
+    editable_install = _editable_install_uses_src()
     installed = _installed_commit()
     latest = _remote_head_commit(branch) if installed else None
     if latest:
         version_check.record(latest, branch)
-    if migrated and installed and latest and installed == latest:
+    if migrated and editable_install and installed and latest and installed == latest:
         console.print(f"[muted]omm is already up to date - {_version_line(installed)}[/muted]")
         _refresh_data()
         return
@@ -2675,8 +2902,8 @@ def recommend() -> None:
 
 
 def _print_runtime_profile(profile: tuning.RuntimeProfile) -> None:
-    table = Table(title=f"Recommended {profile.profile_name} runtime profile")
-    table.add_column("Setting", style="accent")
+    table = _table(title=f"Recommended {profile.profile_name} runtime profile")
+    table.add_column("Setting", style="label")
     table.add_column("Starting value")
     table.add_row("Context length", f"{profile.context_length:,} tokens")
     table.add_row("GPU offload", profile.gpu_offload_label)
@@ -2779,11 +3006,13 @@ def _resolve_benchmark_tag(arg: str) -> str:
         return arg
     filename = _resolve_ref(arg)
     entry = registry.load_registry().get(filename)
-    tag = entry.get("ollama_name") if entry else None
-    if not tag:
+    if not entry or not any(
+        isinstance(entry.get(field), str) and entry[field].strip()
+        for field in ("ollama_runtime_name", "ollama_name")
+    ):
         err_console.print(f"[error]{filename} has no Ollama tag; link it with `omm link` first.[/error]")
         raise typer.Exit(1)
-    return tag
+    return linker.resolve_ollama_runtime_name(filename, entry)
 
 
 def _predicted_fastest_filenames(
@@ -4540,6 +4769,8 @@ def install(
         if spec.key != "ollama" and outcome.linked.get(spec.key):
             console.print(f"  {spec.label}: visible in your local models list")
     console.print(f"  Uninstall with: [accent]omm uninstall {outcome.filename}[/accent]")
+    if any(outcome.linked.get(spec.key) for spec in linker.ENGINES):
+        console.print(f"  Run it now: [accent]omm run {outcome.filename}[/accent]")
     _report_lmstudio_load_verification(outcome)
 
 
@@ -4589,7 +4820,7 @@ def _remove_one(filename: str, entry: dict) -> None:
         registry.remove_entry(filename)
         return
     linked = entry.get("linked", {})
-    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
     if linked.get("ollama") and benchmark.ollama_daemon_reachable():
         quality_mod.ensure_model_unloaded(ollama_tag, max_wait_seconds=10)
     for spec in linker.ENGINES:
@@ -4702,8 +4933,20 @@ def _compatibility_adapter(engine: str):
 
 def _compatibility_model_ref(filename: str, entry: dict, engine: str) -> RuntimeModelRef:
     if engine == "ollama":
-        tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
-        return RuntimeModelRef(tag, (tag.removesuffix(":latest"),))
+        tag = linker.resolve_ollama_runtime_name(filename, entry)
+        link_name = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+        aliases = tuple(
+            dict.fromkeys(
+                value
+                for value in (
+                    tag.removesuffix(":latest"),
+                    link_name,
+                    link_name.removesuffix(":latest"),
+                )
+                if value and value != tag
+            )
+        )
+        return RuntimeModelRef(tag, aliases)
     repo_id = entry.get("repo_id")
     key = repo_id if isinstance(repo_id, str) and "/" in repo_id else f"local/{Path(filename).stem}"
     aliases = tuple(
@@ -4880,7 +5123,7 @@ def info(
     size_gb = entry.get("size_bytes", 0) / (1024**3)
     linked = entry.get("linked", {})
 
-    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
 
     if json_output:
         console.print_json(
@@ -4898,8 +5141,8 @@ def info(
         )
         return
 
-    table = Table(title=filename, show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title=filename, show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     repo_label = entry.get("repo_id") or "(direct URL install)"
     provider = entry.get("provider")
@@ -4933,9 +5176,13 @@ def info(
             )
 
     console.print(table)
+    size_bytes = entry.get("size_bytes", 0)
+    if isinstance(size_bytes, (int, float)) and size_bytes > 0:
+        console.print()
+        console.print(_fit_card(filename, int(size_bytes)))
     note = _missing_engines_note(installed)
     if note:
-        console.print(note)
+        console.print(note, style="muted")
 
 
 def _update_one(filename: str, entry: dict) -> str:
@@ -5046,6 +5293,191 @@ def _update_one(filename: str, entry: dict) -> str:
     return "updated"
 
 
+def _pick_run_engine(entry: dict, requested: str | None) -> str:
+    """Which runner `omm run` should start for this registry entry.
+
+    `requested` (the --engine flag) wins if the model is linked there;
+    otherwise the configured `default_engine`, otherwise the first
+    linked-and-installed runner in launcher.ENGINE_PRIORITY. Exits with a
+    readable message instead of guessing when nothing qualifies."""
+    known = {spec.key for spec in linker.ENGINES}
+    linked = entry.get("linked", {}) or {}
+    if requested is not None:
+        if requested not in known:
+            err_console.print(
+                f"[error]Unknown engine '{requested}'. Choose from: {', '.join(sorted(known))}.[/error]"
+            )
+            raise typer.Exit(2)
+        if not linked.get(requested):
+            err_console.print(
+                f"[error]This model is not linked into {_engine_label(requested)}. "
+                f"Run `omm link --engine {requested}` first.[/error]"
+            )
+            raise typer.Exit(1)
+        return requested
+
+    candidates = [
+        key for key in launcher.ENGINE_PRIORITY
+        if linked.get(key) and linker.is_engine_installed(key)
+    ]
+    configured = load_config().get("default_engine")
+    if configured in candidates:
+        return configured
+    if candidates:
+        return candidates[0]
+    err_console.print(
+        "[error]This model is not linked into any installed runner. "
+        "Run `omm link` to repair links, or `omm setup` to install a runner.[/error]"
+    )
+    raise typer.Exit(1)
+
+
+def _pick_run_model(reg: dict) -> str:
+    """`omm run` with no model name: use the only installed model, or ask
+    when there are several. Non-TTY callers must name the model."""
+    names = sorted(reg)
+    if not names:
+        err_console.print(
+            "[error]No models installed yet. Try `omm recommend` to pick one that fits this PC.[/error]"
+        )
+        raise typer.Exit(1)
+    if len(names) == 1:
+        return names[0]
+    if not _stdin_is_tty():
+        err_console.print(
+            "[error]Several models are installed; name one: `omm run <model>` (see `omm list`).[/error]"
+        )
+        raise typer.Exit(1)
+    import questionary
+
+    choice = _add_escape_to_cancel(
+        questionary.select("Which model do you want to run?", choices=names)
+    ).ask()
+    if choice is None:
+        raise typer.Abort()
+    return choice
+
+
+@app.command()
+@global_flags
+def run(
+    model_name: str = typer.Argument(
+        None, autocompletion=complete_remove_filename, help="Installed model (see `omm list`)."
+    ),
+    engine: str = typer.Option(
+        None, "--engine", "-e",
+        help="Runner to use (ollama, lmstudio, jan, koboldcpp, textgenwebui, anythingllm, mstystudio).",
+    ),
+) -> None:
+    """Start a chat with an installed model - Ollama chats right here in the terminal,
+    KoboldCpp/text-generation-webui start with the model loaded, GUI apps are opened."""
+    reg = registry.load_registry()
+    if model_name is None:
+        model_name = _pick_run_model(reg)
+    model_name = _resolve_ref(model_name)
+    filename, entry = _lookup_entry(model_name, reg)
+    if entry is None:
+        err_console.print(f"[error]{model_name} is not installed via omm. See `omm list`.[/error]")
+        raise typer.Exit(1)
+
+    chosen = _pick_run_engine(entry, engine)
+    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    console.print(
+        f"[accent]{filename}[/accent] via [bold]{_engine_label(chosen)}[/bold] "
+        f"[muted]({launcher.launch_description(chosen)})[/muted]"
+    )
+
+    daemon_handle = None
+    if chosen == "ollama":
+        daemon_handle = _ensure_ollama_running("run", assume_yes=_global_opts().yes)
+        if daemon_handle is not None:
+            console.print("[muted]Started Ollama in the background for this chat.[/muted]")
+        console.print("[muted]Type /bye to leave the chat.[/muted]")
+    try:
+        result = launcher.launch(
+            chosen,
+            model_filename=filename,
+            model_path=MODELS_DIR / filename,
+            ollama_tag=ollama_tag,
+        )
+    finally:
+        if daemon_handle is not None:
+            _stop_engine_daemon("ollama", daemon_handle)
+    if not result.ok:
+        err_console.print(f"[error]{result.message}[/error]")
+        raise typer.Exit(1)
+    console.print(f"[success]{result.message}[/success]")
+
+
+def _fit_card(label: str, size_bytes: int):
+    """The omm.run memory card for one model on this PC."""
+    hw = scan_hardware()
+    budget = calculate_memory_budget(hw)
+    size_gb = size_bytes / (1024**3)
+    required_gb = predictor.estimate_required_memory_gb({"size_bytes": size_bytes}) or size_gb
+    return fit_ui.render_fit(
+        hw=hw,
+        budget=budget,
+        model_label=label,
+        size_gb=size_gb,
+        required_gb=required_gb,
+        width=console.size.width,
+    )
+
+
+@app.command()
+@global_flags
+def fit(
+    model_name: str = typer.Argument(
+        ..., autocompletion=complete_install_name, help="Installed model, curated id, repo/file, or search number."
+    ),
+) -> None:
+    """Show whether a model fits this PC's memory right now - installed or not - as a bar
+    over what other apps use, the OS reserve, and the install cap."""
+    model_name = _resolve_ref(model_name)
+    reg = registry.load_registry()
+    filename, entry = _lookup_entry(model_name, reg)
+    if entry is not None and isinstance(entry.get("size_bytes"), (int, float)) and entry["size_bytes"] > 0:
+        label, size_bytes = filename, int(entry["size_bytes"])
+    else:
+        try:
+            resolved = resolve_model(model_name)
+        except ModelResolutionError as error:
+            err_console.print(f"[error]{error}[/error]")
+            raise typer.Exit(1) from error
+        size_bytes = None
+        if resolved.repo_id and resolved.provider:
+            size_bytes = remote_file_size(resolved.provider, resolved.repo_id, resolved.filename)
+        if not size_bytes:
+            err_console.print(
+                f"[error]Could not determine the size of {resolved.filename} "
+                "(not installed, and the provider did not report a file size).[/error]"
+            )
+            raise typer.Exit(1)
+        label = resolved.filename
+    if _global_opts().json:
+        hw = scan_hardware()
+        budget = calculate_memory_budget(hw)
+        size_gb = size_bytes / (1024**3)
+        required_gb = predictor.estimate_required_memory_gb({"size_bytes": size_bytes}) or size_gb
+        v = fit_ui.verdict(required_gb, budget)
+        console.print_json(
+            data={
+                "model": label,
+                "size_gb": round(size_gb, 2),
+                "required_gb": round(required_gb, 2),
+                "in_use_gb": round(max(0.0, hw.ram_total_gb - hw.ram_available_gb), 2),
+                "reserved_gb": round(budget.ram_safety_reserve_gb, 2),
+                "model_budget_gb": round(budget.model_budget_gb, 2),
+                "install_cap_gb": round(budget.install_budget_gb, 2),
+                "status": v.status,
+                "message": v.message,
+            }
+        )
+        return
+    console.print(_fit_card(label, size_bytes))
+
+
 @app.command()
 @global_flags
 def upgrade(
@@ -5145,7 +5577,7 @@ def list_models(
         session_cache.record_results(list(reg.keys()))
         return
 
-    table = Table(title="omm models")
+    table = _table(title="omm models")
     table.add_column("#", justify="right")
     table.add_column("Filename", style="accent")
     table.add_column("Size", justify="right")
@@ -5189,8 +5621,8 @@ def configure_telemetry(
             )
     if changes:
         current = config_mod.update_config(**changes)
-    table = Table(title="Telemetry destination", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Telemetry destination", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Backend", str(current.get("telemetry_backend") or "local"))
     table.add_row("Endpoint", str(current.get("telemetry_endpoint") or "not configured"))
@@ -5222,8 +5654,8 @@ def configure_upload(
         changes["telemetry_send_policy"] = "ask"
     if changes:
         current = config_mod.update_config(**changes)
-    table = Table(title="Benchmark upload policy", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Benchmark upload policy", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     policy = current.get("telemetry_send_policy", "ask")
     table.add_row("Uploads", {"always": "always", "never": "never", "ask": "ask (default)"}[policy])
@@ -5270,8 +5702,8 @@ def configure_error_reports(
         discarded = error_report.discard_pending()
         if discarded:
             console.print(f"[muted]Discarded {discarded} queued error report(s).[/muted]")
-    table = Table(title="Error report policy", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Error report policy", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     labels = {
         "always": "always",
@@ -5318,8 +5750,8 @@ def configure_memory_guard(
     if low_memory_seconds is not None:
         changes["memory_guard_low_memory_seconds"] = low_memory_seconds
     current = config_mod.update_config(**changes) if changes else load_config()
-    table = Table(title="Memory Guard", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Memory Guard", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Policy", str(current["memory_guard_policy"]))
     table.add_row("Poll interval", f"{current['memory_guard_poll_seconds']} seconds")
@@ -5357,8 +5789,8 @@ def configure_version(
             current = config_mod.update_config(update_channel="stable")
             console.print("[success]Using stable package-managed releases.[/success]")
         commit = _installed_commit()
-        table = Table(title="Update channel", show_header=False)
-        table.add_column("Field", style="accent")
+        table = _table(title="Update channel", show_header=False)
+        table.add_column("Field", style="label")
         table.add_column("Value")
         table.add_row("Channel", "stable (package-managed)")
         table.add_row("Commit", commit[:7] if commit else "unknown")
@@ -5378,8 +5810,8 @@ def configure_version(
         _refresh_data()
     channel = current.get("update_channel") or "stable"
     commit = _installed_commit()
-    table = Table(title="Update channel", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Update channel", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Channel", f"{channel} ({_channel_branch(channel)})")
     table.add_row("Commit", commit[:7] if commit else "unknown")
@@ -5424,8 +5856,8 @@ def configure_theme(
         current = config_mod.update_config(theme=set_name)
         theme_mod.apply_theme_to_console(console, set_name)
         theme_mod.apply_theme_to_console(err_console, set_name)
-    table = Table(title="Color theme", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Color theme", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Theme", str(current.get("theme", "dark")))
     console.print(table)
@@ -5478,7 +5910,7 @@ def calibrate(
     if predicted <= 0:
         err_console.print("[error]This model has no usable baseline speed prediction.[/error]")
         raise typer.Exit(1)
-    tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    tag = linker.resolve_ollama_runtime_name(filename, entry)
     # Warn but do not refuse: this measurement was asked for explicitly, and
     # the caller is the one who can decide whether to close things and retry.
     # The automatic post-install calibration, which nobody asked for, does
@@ -5539,8 +5971,8 @@ def catalog_status() -> None:
             fingerprint = catalog.public_key_fingerprint(public_key)
         except catalog.CatalogVerificationError:
             fingerprint = "invalid"
-    table = Table(title="Recommendation catalog", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Recommendation catalog", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Signed manifest", str(current.get("catalog_manifest_url") or "not configured"))
     table.add_row("Trusted key", fingerprint)
@@ -5829,12 +6261,12 @@ def search(
                 )
             else:
                 if not header_printed:
-                    console.print(f"[accent]==> {family}[/accent]")
+                    console.print(f"[heading]==> {family}[/heading]")
                     header_printed = True
                 if fits_hardware:
-                    console.print(f"  [{len(refs)}] {ref}  [muted]{desc}[/muted]")
+                    console.print(f"  [muted][{len(refs)}][/muted] [accent]{ref}[/accent]  [muted]{desc}[/muted]")
                 else:
-                    console.print(f"  [{len(refs)}] [error]{ref}  (predicted not to run on this hardware)[/error]")
+                    console.print(f"  [muted][{len(refs)}][/muted] {ref}  [error](predicted not to run on this hardware)[/error]")
         if not json_output and header_printed:
             console.print()
         if limit is not None and len(refs) >= limit:
@@ -6117,10 +6549,12 @@ def _guard_benchmark_models(models: list[str]) -> None:
         entry = next(
             (
                 value
-                for value in entries.values()
+                for filename, value in entries.items()
+                if isinstance(filename, str)
                 if isinstance(value, dict)
-                and isinstance(value.get("ollama_name"), str)
-                and memory_guard_mod._same_ollama_id(value["ollama_name"], tag)
+                and memory_guard_mod._same_ollama_id(
+                    linker.resolve_ollama_runtime_name(filename, value), tag
+                )
             ),
             None,
         )
@@ -6305,7 +6739,7 @@ def benchmark_cmd(
         transient = [m for m in report["models"] if m.get("outcome") == "transient_error"]
 
         if successes:
-            table = Table(title="Localfit reproducible quality evidence")
+            table = _table(title="Localfit reproducible quality evidence")
             table.add_column("Model", style="accent")
             table.add_column("Parameters")
             table.add_column("Quantization")
@@ -6355,7 +6789,15 @@ def benchmark_cmd(
             registry_entries = registry.load_registry()
             for model in successes:
                 entry = next(
-                    (e for e in registry_entries.values() if e.get("ollama_name") == model["tag"]),
+                    (
+                        e
+                        for filename, e in registry_entries.items()
+                        if isinstance(filename, str)
+                        and isinstance(e, dict)
+                        and memory_guard_mod._same_ollama_id(
+                            linker.resolve_ollama_runtime_name(filename, e), model["tag"]
+                        )
+                    ),
                     None,
                 )
                 samples = model["speed"]["samples_tokens_per_sec"]
@@ -7002,7 +7444,7 @@ def _cleanup_interrupted_install(filename: str) -> None:
     reg = registry.load_registry()
     found_name, entry = _lookup_entry(filename, reg)
     if entry:
-        ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+        ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
         if benchmark.ollama_daemon_reachable():
             quality_mod.ensure_model_unloaded(ollama_tag)
         _remove_one(found_name, entry)
