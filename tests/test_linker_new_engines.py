@@ -362,7 +362,24 @@ def test_is_anythingllm_installed_detects_never_launched_install_on_windows(
     %LOCALAPPDATA%\\Programs, but %APPDATA%\\anythingllm-desktop is only
     created the first time the app is launched - an installed app that was
     never opened used to read as "not installed"."""
-    (anythingllm_windows_env / "Local" / "Programs" / install_dir_name).mkdir(parents=True)
+    program_dir = anythingllm_windows_env / "Local" / "Programs" / install_dir_name
+    program_dir.mkdir(parents=True)
+    (program_dir / "AnythingLLM.exe").write_bytes(b"")
+    assert linker.is_anythingllm_installed() is True
+
+
+def test_is_anythingllm_installed_ignores_empty_program_dir_on_windows(anythingllm_windows_env):
+    """A full disk makes the NSIS installer exit after creating only the
+    target folder (seen live); that husk must not read as installed."""
+    (anythingllm_windows_env / "Local" / "Programs" / "AnythingLLM").mkdir(parents=True)
+    assert linker.is_anythingllm_installed() is False
+
+
+def test_is_anythingllm_installed_detects_install_under_omm_home_apps(anythingllm_windows_env, monkeypatch):
+    apps = anythingllm_windows_env / "omm-home" / "apps"
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: apps)
+    (apps / "AnythingLLM").mkdir(parents=True)
+    (apps / "AnythingLLM" / "AnythingLLM.exe").write_bytes(b"")
     assert linker.is_anythingllm_installed() is True
 
 
@@ -371,6 +388,7 @@ def test_is_anythingllm_installed_detects_machine_wide_install_on_windows(
 ):
     monkeypatch.setenv("ProgramFiles", str(anythingllm_windows_env / "Program Files"))
     (anythingllm_windows_env / "Program Files" / "AnythingLLM").mkdir(parents=True)
+    (anythingllm_windows_env / "Program Files" / "AnythingLLM" / "AnythingLLM.exe").write_bytes(b"")
     assert linker.is_anythingllm_installed() is True
 
 
