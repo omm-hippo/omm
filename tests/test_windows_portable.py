@@ -136,13 +136,22 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert 'gh release upload "v${VERSION}" "release-assets/${asset}" --repo' in workflow
     assert "gh release upload" in workflow and "gh release upload --clobber" not in workflow
     reuse_step = "Reuse a verified immutable release asset on reruns"
+    defender_step = "Scan the verified portable executable with Microsoft Defender"
     manifest_step = "Generate and validate the WinGet manifest set"
     assert reuse_step in workflow
-    assert workflow.index(reuse_step) < workflow.index(manifest_step)
+    assert defender_step in workflow
+    assert workflow.index(reuse_step) < workflow.index(defender_step)
+    assert workflow.index(defender_step) < workflow.index(manifest_step)
     assert "gh attestation verify $publishedArchive --repo $env:GH_REPO" in workflow
     assert "the published archive does not match its checksum" in workflow
     assert "exactly one archive and checksum" in workflow
     assert 'Copy-Item -LiteralPath $publishedArchive -Destination "release-assets/$archiveName"' in workflow
+    assert "Remove-MpPreference -ExclusionPath $excludedRoot" in workflow
+    assert "AMServiceEnabled" in workflow
+    assert "AntivirusEnabled" in workflow
+    assert "Get-MpThreatDetection" in workflow
+    assert "-DisableRemediation" in workflow
+    assert "$scanExit -eq 2" in workflow
     assert "[System.Diagnostics.ProcessStartInfo]::new()" in workflow
     assert "$process.ExitCode -eq 0" in workflow
     assert "winget validate --manifest" in workflow
