@@ -2610,7 +2610,66 @@ def _safe_archive_member_parts(name: str) -> tuple[str, ...]:
     return parts
 
 
-def _archive_top_level(entries: Sequence[tuple[object, tuple[str, ...], bool, int]]) -> str:
+def _safe_archive_link_target_parts(
+    member_parts: tuple[str, ...], linkname: str
+) -> tuple[str, ...]:
+    """Resolve a tar symlink target without allowing it outside the root.
+
+    Portable TextGen releases contain many ordinary relative symlinks (the
+    embedded Python runtime alone has ``python3 -> python3.13``).  Rejecting
+    every link makes the official archive unusable, while handing links to
+    ``tarfile.extractall`` reintroduces traversal.  Resolve the target
+    lexically, require it to stay below the archive's single top-level
+    directory, and materialize it only after all regular payloads are done.
+    """
+    if (
+        not linkname
+        or "\x00" in linkname
+        or "\\" in linkname
+        or linkname.startswith("/")
+    ):
+        raise OSError(f"unsafe archive link target: {linkname!r}")
+
+    resolved = list(member_parts[:-1])
+    for part in linkname.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            # Keep the first component: it is the archive's validated root.
+            if len(resolved) <= 1:
+                raise OSError(f"unsafe archive link target: {linkname!r}")
+            resolved.pop()
+            continue
+        try:
+            safe_part = _safe_archive_member_parts(part)
+        except OSError as exc:
+            raise OSError(f"unsafe archive link target: {linkname!r}") from exc
+        if len(safe_part) != 1:
+            raise OSError(f"unsafe archive link target: {linkname!r}")
+        resolved.append(part)
+
+    if not resolved or resolved[0] != member_parts[0]:
+        raise OSError(f"unsafe archive link target: {linkname!r}")
+    return tuple(resolved)
+
+
+def _reject_archive_symlink_descendants(
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> None:
+    """No payload path may use an archive symlink as a parent directory."""
+    seen: set[tuple[str, ...]] = set()
+    symlinks = {parts for _, parts, is_dir, _ in entries if is_dir is None}
+    for _, parts, _, _ in entries:
+        if parts in seen:
+            raise OSError(f"duplicate archive member path: {'/'.join(parts)!r}")
+        seen.add(parts)
+        if any(parts[:depth] in symlinks for depth in range(1, len(parts))):
+            raise OSError(f"archive member traverses a symlink: {'/'.join(parts)!r}")
+
+
+def _archive_top_level(
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> str:
     roots = {parts[0] for _, parts, _, _ in entries}
     if len(roots) != 1:
         raise OSError("archive must contain exactly one top-level directory")
@@ -2638,20 +2697,25 @@ def _validated_zip_entries(
 
 def _validated_tar_entries(
     tf: tarfile.TarFile,
-) -> list[tuple[tarfile.TarInfo, tuple[str, ...], bool, int]]:
-    entries: list[tuple[tarfile.TarInfo, tuple[str, ...], bool, int]] = []
+) -> list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]]:
+    entries: list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]] = []
     for member in tf.getmembers():
         parts = _safe_archive_member_parts(member.name)
         if member.isdir():
             is_dir = True
         elif member.isfile():
             is_dir = False
+        elif member.issym():
+            _safe_archive_link_target_parts(parts, member.linkname)
+            # None distinguishes a validated symlink from files/directories.
+            is_dir = None
         else:
-            # Never materialize links, devices, FIFOs, or other special
-            # archive entries. This is explicit rather than relying on the
+            # Hard links, devices, FIFOs, and other special archive entries
+            # remain unsupported. This is explicit rather than relying on
             # Python-version-dependent tar extraction filter defaults.
             raise OSError(f"unsupported archive member type: {member.name!r}")
         entries.append((member, parts, is_dir, member.mode & 0o777))
+    _reject_archive_symlink_descendants(entries)
     return entries
 
 
@@ -2680,6 +2744,7 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
     with tempfile.TemporaryDirectory(prefix=".omm-extract-", dir=dest_dir) as temp_name:
         staging = Path(temp_name)
         directory_modes: list[tuple[Path, int]] = []
+        pending_symlinks: list[tuple[Path, str]] = []
 
         if archive_path.suffix.lower() == ".zip":
             with zipfile.ZipFile(archive_path) as zf:
@@ -2689,7 +2754,7 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
                 if final_path.exists() or final_path.is_symlink():
                     raise OSError(f"archive destination already exists: {final_path}")
                 for member, parts, is_dir, mode in entries:
-                    output = _prepare_archive_output(staging, parts, is_dir)
+                    output = _prepare_archive_output(staging, parts, is_dir is True)
                     if is_dir:
                         directory_modes.append((output, mode))
                         continue
@@ -2704,9 +2769,12 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
                 if final_path.exists() or final_path.is_symlink():
                     raise OSError(f"archive destination already exists: {final_path}")
                 for member, parts, is_dir, mode in entries:
-                    output = _prepare_archive_output(staging, parts, is_dir)
-                    if is_dir:
+                    output = _prepare_archive_output(staging, parts, is_dir is True)
+                    if is_dir is True:
                         directory_modes.append((output, mode))
+                        continue
+                    if is_dir is None:
+                        pending_symlinks.append((output, member.linkname))
                         continue
                     source = tf.extractfile(member)
                     if source is None:
@@ -2715,8 +2783,14 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
                         shutil.copyfileobj(source, target)
                     output.chmod(mode)
 
-        # Keep parent directories writable while files are being created;
-        # apply archive permissions only after all payload bytes are in place.
+        # Links are deliberately last: no subsequent archive write can follow
+        # one into another location. Their targets were already proven to stay
+        # under this archive root by _safe_archive_link_target_parts.
+        for output, linkname in pending_symlinks:
+            output.symlink_to(linkname)
+
+        # Keep parent directories writable while files and links are being
+        # created; apply archive permissions only after all payloads are in place.
         for directory, mode in sorted(
             directory_modes, key=lambda item: len(item[0].parts), reverse=True
         ):

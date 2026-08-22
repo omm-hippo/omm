@@ -740,12 +740,11 @@ def test_extract_textgenwebui_tar_rejects_parent_path_escape(tmp_path):
 @pytest.mark.parametrize(
     ("member_type", "linkname"),
     [
-        (tarfile.SYMTYPE, "../../outside"),
         (tarfile.LNKTYPE, "textgen-4.9/regular.txt"),
         (tarfile.FIFOTYPE, ""),
     ],
 )
-def test_extract_textgenwebui_tar_rejects_links_and_special_files(
+def test_extract_textgenwebui_tar_rejects_hardlinks_and_special_files(
     tmp_path, member_type, linkname
 ):
     archive_path = tmp_path / "malicious.tar.gz"
@@ -762,6 +761,81 @@ def test_extract_textgenwebui_tar_rejects_links_and_special_files(
     dest_dir.mkdir()
 
     with pytest.raises(OSError, match="unsupported archive member"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert not (dest_dir / "textgen-4.9").exists()
+
+
+def test_extract_textgenwebui_tar_preserves_safe_relative_symlinks(tmp_path):
+    archive_path = tmp_path / "release.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        python = tarfile.TarInfo("textgen-4.9/app/bin/python3.13")
+        python.mode = 0o755
+        python.size = len(b"python")
+        tf.addfile(python, io.BytesIO(b"python"))
+
+        python_link = tarfile.TarInfo("textgen-4.9/app/bin/python3")
+        python_link.type = tarfile.SYMTYPE
+        python_link.linkname = "python3.13"
+        tf.addfile(python_link)
+
+        library = tarfile.TarInfo("textgen-4.9/app/lib/runtime.so")
+        library.size = len(b"library")
+        tf.addfile(library, io.BytesIO(b"library"))
+
+        library_link = tarfile.TarInfo("textgen-4.9/app/bin/runtime.so")
+        library_link.type = tarfile.SYMTYPE
+        library_link.linkname = "../lib/runtime.so"
+        tf.addfile(library_link)
+
+    extracted = linker._extract_textgenwebui_archive(archive_path, tmp_path / "dest")
+
+    assert (extracted / "app/bin/python3").is_symlink()
+    assert (extracted / "app/bin/python3").read_bytes() == b"python"
+    assert (extracted / "app/bin/runtime.so").is_symlink()
+    assert (extracted / "app/bin/runtime.so").read_bytes() == b"library"
+
+
+@pytest.mark.parametrize(
+    "linkname",
+    ["../../../outside", "/tmp/outside", "C:/outside", "..\\..\\outside"],
+)
+def test_extract_textgenwebui_tar_rejects_escaping_symlink_targets(
+    tmp_path, linkname
+):
+    archive_path = tmp_path / "malicious.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        unsafe = tarfile.TarInfo("textgen-4.9/app/unsafe")
+        unsafe.type = tarfile.SYMTYPE
+        unsafe.linkname = linkname
+        tf.addfile(unsafe)
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    with pytest.raises(OSError, match="unsafe archive link target"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert not (dest_dir / "textgen-4.9").exists()
+    assert not (tmp_path / "outside").exists()
+
+
+def test_extract_textgenwebui_tar_rejects_member_below_symlink(tmp_path):
+    archive_path = tmp_path / "malicious.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        link = tarfile.TarInfo("textgen-4.9/app/link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "target"
+        tf.addfile(link)
+
+        payload = tarfile.TarInfo("textgen-4.9/app/link/payload")
+        payload.size = 1
+        tf.addfile(payload, io.BytesIO(b"x"))
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    with pytest.raises(OSError, match="traverses a symlink"):
         linker._extract_textgenwebui_archive(archive_path, dest_dir)
 
     assert not (dest_dir / "textgen-4.9").exists()
