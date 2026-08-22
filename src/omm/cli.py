@@ -70,7 +70,7 @@ from omm import (
     version_check,
 )
 from omm import contribute as contribute_mod
-from omm.completion import complete_install_name, complete_remove_filename
+from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
 from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
 from omm.downloader import (
     DownloadCancelled,
@@ -1078,13 +1078,38 @@ def setup_cmd() -> None:
 
 @engine_app.command(name="install")
 @global_flags
-def engine_install_cmd() -> None:
-    """Interactively pick local AI runner programs (Ollama, LM Studio, etc.) to install."""
-    selected = onboarding.run_engine_checklist(console)
-    if selected is None:
-        raise typer.Abort()
-    if selected:
-        onboarding.install_selected_engines(console, selected)
+def engine_install_cmd(
+    engine: str = typer.Argument(
+        None,
+        autocompletion=complete_engine_key,
+        help="Engine key to install directly, skipping the checklist "
+        "(ollama, lmstudio, jan, anythingllm, mstystudio, textgenwebui, koboldcpp).",
+    ),
+) -> None:
+    """Install a local AI runner program (Ollama, LM Studio, etc.).
+
+    With no argument, interactively pick from a checklist. With an engine
+    key, install that one runner directly."""
+    if engine is None:
+        selected = onboarding.run_engine_checklist(console)
+        if selected is None:
+            raise typer.Abort()
+        if selected:
+            onboarding.install_selected_engines(console, selected)
+        return
+
+    key = engine.strip().lower()
+    valid_engines = {spec.key for spec in linker.ENGINES}
+    if key not in valid_engines:
+        err_console.print(
+            f"[error]engine must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/error]"
+        )
+        raise typer.Exit(2)
+    if linker.is_engine_installed(key):
+        label = next(spec.label for spec in linker.ENGINES if spec.key == key)
+        console.print(f"[muted]{label} is already installed.[/muted]")
+        return
+    onboarding.install_selected_engines(console, [key])
 
 
 def _refresh_data() -> None:
