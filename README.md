@@ -34,7 +34,7 @@ omm scan   # hardware, runner, and model summary
 
 **5. Windows notes.** Model exposure tries an unprivileged same-volume hard link first, then a symbolic link (Developer Mode or Administrator), then an owned copy. Before copying, omm checks destination free space and reports that the model now consumes additional bytes. File junctions do not apply because model targets are files, not directories.
 
-Set `OMM_HOME` before installation and on later runs to put the model hub on another volume:
+Set `OMM_HOME` before installation and on later runs to put the model hub on another volume. Runners omm installs itself (KoboldCpp, text-generation-webui, AnythingLLM, Msty) go to `OMM_HOME\apps` and installer downloads to `OMM_HOME\tmp`, so nothing large lands on the system drive. (AnythingLLM still keeps its bundled Ollama and starter model, ~5 GB, under `%APPDATA%` - its installer offers no way to move that.)
 
 ```powershell
 [Environment]::SetEnvironmentVariable("OMM_HOME", "D:\omm", "User")
@@ -55,7 +55,7 @@ irm https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.ps1 | iex
 
 Download that script and run it with `-Purge` to remove the model hub and settings too.
 
-Runner note: AnythingLLM and Msty are not automated on Windows; the runner checklist prints their download page instead.
+Runner note: on Windows x64 the checklist downloads the official AnythingLLM and Msty installers and runs them silently into `OMM_HOME\apps` (no winget package exists for either); on ARM Windows it prints their download page instead.
 
 Detailed walkthrough: <https://omm-site-sage.vercel.app/install/windows>
 
