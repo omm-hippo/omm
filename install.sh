@@ -337,6 +337,17 @@ if ! "$PY" -m pipx --version >/dev/null 2>&1; then
     run_pipx ensurepath
 fi
 
+# pipx's shared venv (pip/setuptools) is borrowed by every `pipx install`;
+# a half-upgraded pip in there (seen on Windows as `ImportError: cannot
+# import name 'get_runnable_pip'`) kills every install before omm's code is
+# reached. If its pip can't print a version, drop it - pipx rebuilds it.
+PIPX_SHARED_LIBS=$(run_pipx environment --value PIPX_SHARED_LIBS 2>/dev/null || true)
+if [ -n "$PIPX_SHARED_LIBS" ] && [ -x "$PIPX_SHARED_LIBS/bin/python" ] \
+    && ! "$PIPX_SHARED_LIBS/bin/python" -m pip --version >/dev/null 2>&1; then
+    echo "pipx's shared pip is broken; rebuilding it..."
+    rm -rf "$PIPX_SHARED_LIBS"
+fi
+
 PIPX_LOCAL_VENVS=$(run_pipx environment --value PIPX_LOCAL_VENVS)
 PIPX_BIN_DIR=$(run_pipx environment --value PIPX_BIN_DIR)
 if ! refresh_pipx_snapshot; then
