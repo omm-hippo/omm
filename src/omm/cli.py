@@ -49,6 +49,7 @@ from omm import (
     contribute_state,
     doctor as doctor_mod,
     error_report,
+    fit_ui,
     launcher,
     linker,
     memory_guard as memory_guard_mod,
@@ -635,7 +636,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "run", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
+    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
     (
         "Maintenance",
@@ -5175,6 +5176,10 @@ def info(
             )
 
     console.print(table)
+    size_bytes = entry.get("size_bytes", 0)
+    if isinstance(size_bytes, (int, float)) and size_bytes > 0:
+        console.print()
+        console.print(_fit_card(filename, int(size_bytes)))
     note = _missing_engines_note(installed)
     if note:
         console.print(note, style="muted")
@@ -5402,6 +5407,75 @@ def run(
         err_console.print(f"[error]{result.message}[/error]")
         raise typer.Exit(1)
     console.print(f"[success]{result.message}[/success]")
+
+
+def _fit_card(label: str, size_bytes: int):
+    """The omm.run memory card for one model on this PC."""
+    hw = scan_hardware()
+    budget = calculate_memory_budget(hw)
+    size_gb = size_bytes / (1024**3)
+    required_gb = predictor.estimate_required_memory_gb({"size_bytes": size_bytes}) or size_gb
+    return fit_ui.render_fit(
+        hw=hw,
+        budget=budget,
+        model_label=label,
+        size_gb=size_gb,
+        required_gb=required_gb,
+        width=console.size.width,
+    )
+
+
+@app.command()
+@global_flags
+def fit(
+    model_name: str = typer.Argument(
+        ..., autocompletion=complete_install_name, help="Installed model, curated id, repo/file, or search number."
+    ),
+) -> None:
+    """Show whether a model fits this PC's memory right now - installed or not - as a bar
+    over what other apps use, the OS reserve, and the install cap."""
+    model_name = _resolve_ref(model_name)
+    reg = registry.load_registry()
+    filename, entry = _lookup_entry(model_name, reg)
+    if entry is not None and isinstance(entry.get("size_bytes"), (int, float)) and entry["size_bytes"] > 0:
+        label, size_bytes = filename, int(entry["size_bytes"])
+    else:
+        try:
+            resolved = resolve_model(model_name)
+        except ModelResolutionError as error:
+            err_console.print(f"[error]{error}[/error]")
+            raise typer.Exit(1) from error
+        size_bytes = None
+        if resolved.repo_id and resolved.provider:
+            size_bytes = remote_file_size(resolved.provider, resolved.repo_id, resolved.filename)
+        if not size_bytes:
+            err_console.print(
+                f"[error]Could not determine the size of {resolved.filename} "
+                "(not installed, and the provider did not report a file size).[/error]"
+            )
+            raise typer.Exit(1)
+        label = resolved.filename
+    if _global_opts().json:
+        hw = scan_hardware()
+        budget = calculate_memory_budget(hw)
+        size_gb = size_bytes / (1024**3)
+        required_gb = predictor.estimate_required_memory_gb({"size_bytes": size_bytes}) or size_gb
+        v = fit_ui.verdict(required_gb, budget)
+        console.print_json(
+            data={
+                "model": label,
+                "size_gb": round(size_gb, 2),
+                "required_gb": round(required_gb, 2),
+                "in_use_gb": round(max(0.0, hw.ram_total_gb - hw.ram_available_gb), 2),
+                "reserved_gb": round(budget.ram_safety_reserve_gb, 2),
+                "model_budget_gb": round(budget.model_budget_gb, 2),
+                "install_cap_gb": round(budget.install_budget_gb, 2),
+                "status": v.status,
+                "message": v.message,
+            }
+        )
+        return
+    console.print(_fit_card(label, size_bytes))
 
 
 @app.command()
