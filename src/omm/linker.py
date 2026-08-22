@@ -2787,7 +2787,11 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
         # one into another location. Their targets were already proven to stay
         # under this archive root by _safe_archive_link_target_parts.
         for output, linkname in pending_symlinks:
-            output.symlink_to(linkname)
+            # Archive link names always use POSIX separators.  Build a native
+            # relative Path so Windows stores a usable reparse target too;
+            # passing ``../lib/foo`` through unchanged creates a link that
+            # pathlib can identify but cannot follow on Windows.
+            output.symlink_to(Path(*linkname.split("/")))
 
         # Keep parent directories writable while files and links are being
         # created; apply archive permissions only after all payloads are in place.

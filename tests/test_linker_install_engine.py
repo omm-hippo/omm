@@ -678,7 +678,11 @@ def test_extract_textgenwebui_archive_handles_zip(tmp_path):
     assert result == dest_dir / "textgen-4.9"
     assert (result / "app" / "server.py").exists()
     assert (result / "user_data" / "models" / "place-your-models-here.txt").exists()
-    assert (result / "start.sh").stat().st_mode & 0o111 == 0o111
+    assert (result / "start.sh").read_text() == "#!/bin/sh\n"
+    if sys.platform != "win32":
+        # Windows has no POSIX executable bits; chmod only maps the writable
+        # bit to its read-only file attribute there.
+        assert (result / "start.sh").stat().st_mode & 0o111 == 0o111
 
 
 def test_extract_textgenwebui_archive_handles_tar_gz(tmp_path):
@@ -701,7 +705,9 @@ def test_extract_textgenwebui_archive_handles_tar_gz(tmp_path):
 
     assert result == dest_dir / "textgen-4.9"
     assert (result / "app" / "server.py").exists()
-    assert (result / "start.sh").stat().st_mode & 0o111 == 0o111
+    assert (result / "start.sh").read_text() == "#!/bin/sh\n"
+    if sys.platform != "win32":
+        assert (result / "start.sh").stat().st_mode & 0o111 == 0o111
 
 
 @pytest.mark.parametrize(
