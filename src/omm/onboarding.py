@@ -65,7 +65,16 @@ def print_hardware_summary(console: Console) -> None:
     table.add_row("OS", f"{info.os_name} {info.os_version}")
     table.add_row("CPU", info.cpu)
     table.add_row("RAM (total)", f"{info.ram_total_gb:.1f} GB")
-    table.add_row("Safe model budget", f"{budget.model_budget_gb:.1f} GB")
+    # Same total-RAM-based figure `omm recommend` shows as MODEL MEMORY, so
+    # the two screens agree. The live number (free RAM right now minus a
+    # reserve) used to be shown here alone, which on a busy machine read
+    # as "0.3 GB" next to recommend's "12.4 GB" - confusing, not wrong.
+    table.add_row("Model budget", f"{budget.install_budget_gb:.1f} GB")
+    if budget.constrained_by_live_usage:
+        table.add_row(
+            "Free right now",
+            f"{budget.model_budget_gb:.1f} GB (close other apps before running big models)",
+        )
     if info.gpu_name:
         table.add_row("GPU", info.gpu_name)
     console.print(table)
@@ -198,7 +207,9 @@ def run_engine_checklist(console: Console) -> list[str] | None:
             "Install any local AI runners you'd like to use? (space to select, enter to confirm)",
             choices=[
                 questionary.Choice(
-                    title=label, value=key, disabled="installed" if installed else None
+                    title=label if linker.has_automated_installer(key) else f"{label} (manual install)",
+                    value=key,
+                    disabled="installed" if installed else None,
                 )
                 for key, label, installed in choices
             ],
@@ -224,6 +235,7 @@ def install_selected_engines(console: Console, selected: list[str]) -> None:
         if not linker.has_automated_installer(key):
             console.print(
                 f"[warning]{spec.label} isn't auto-installable yet.[/warning] "
+                f"Install it yourself, then re-run `omm setup` or `omm link`. "
                 f"See {COMPATIBLE_PROGRAMS_URL}"
             )
             continue
@@ -253,6 +265,10 @@ def run_wizard(console: Console) -> None:
     console.print(
         "\n[success]Setup complete.[/success] "
         "Run `omm setting` any time to change telemetry, upload, or update-channel settings.\n"
+    )
+    console.print(
+        "[accent]Next:[/accent] `omm recommend` picks a model that fits this PC and installs it, "
+        "then `omm run` starts chatting with it.\n"
     )
     console.print(
         "[muted]Error reports are off unless you turn them on: "

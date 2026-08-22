@@ -45,6 +45,7 @@ from omm import (
     contribute_memory,
     contribute_state,
     error_report,
+    launcher,
     linker,
     memory_guard as memory_guard_mod,
     onboarding,
@@ -595,7 +596,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
+    ("Core", ["search", "install", "run", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
     ("Maintenance", ["scan", "setup", "engine", "import", "autoremove", "link", "update", "help"]),
 ]
@@ -4540,6 +4541,8 @@ def install(
         if spec.key != "ollama" and outcome.linked.get(spec.key):
             console.print(f"  {spec.label}: visible in your local models list")
     console.print(f"  Uninstall with: [accent]omm uninstall {outcome.filename}[/accent]")
+    if any(outcome.linked.get(spec.key) for spec in linker.ENGINES):
+        console.print(f"  Run it now: [accent]omm run {outcome.filename}[/accent]")
     _report_lmstudio_load_verification(outcome)
 
 
@@ -5044,6 +5047,122 @@ def _update_one(filename: str, entry: dict) -> str:
         linked=linked,
     )
     return "updated"
+
+
+def _pick_run_engine(entry: dict, requested: str | None) -> str:
+    """Which runner `omm run` should start for this registry entry.
+
+    `requested` (the --engine flag) wins if the model is linked there;
+    otherwise the configured `default_engine`, otherwise the first
+    linked-and-installed runner in launcher.ENGINE_PRIORITY. Exits with a
+    readable message instead of guessing when nothing qualifies."""
+    known = {spec.key for spec in linker.ENGINES}
+    linked = entry.get("linked", {}) or {}
+    if requested is not None:
+        if requested not in known:
+            err_console.print(
+                f"[error]Unknown engine '{requested}'. Choose from: {', '.join(sorted(known))}.[/error]"
+            )
+            raise typer.Exit(2)
+        if not linked.get(requested):
+            err_console.print(
+                f"[error]This model is not linked into {_engine_label(requested)}. "
+                f"Run `omm link --engine {requested}` first.[/error]"
+            )
+            raise typer.Exit(1)
+        return requested
+
+    candidates = [
+        key for key in launcher.ENGINE_PRIORITY
+        if linked.get(key) and linker.is_engine_installed(key)
+    ]
+    configured = load_config().get("default_engine")
+    if configured in candidates:
+        return configured
+    if candidates:
+        return candidates[0]
+    err_console.print(
+        "[error]This model is not linked into any installed runner. "
+        "Run `omm link` to repair links, or `omm setup` to install a runner.[/error]"
+    )
+    raise typer.Exit(1)
+
+
+def _pick_run_model(reg: dict) -> str:
+    """`omm run` with no model name: use the only installed model, or ask
+    when there are several. Non-TTY callers must name the model."""
+    names = sorted(reg)
+    if not names:
+        err_console.print(
+            "[error]No models installed yet. Try `omm recommend` to pick one that fits this PC.[/error]"
+        )
+        raise typer.Exit(1)
+    if len(names) == 1:
+        return names[0]
+    if not _stdin_is_tty():
+        err_console.print(
+            "[error]Several models are installed; name one: `omm run <model>` (see `omm list`).[/error]"
+        )
+        raise typer.Exit(1)
+    import questionary
+
+    choice = _add_escape_to_cancel(
+        questionary.select("Which model do you want to run?", choices=names)
+    ).ask()
+    if choice is None:
+        raise typer.Abort()
+    return choice
+
+
+@app.command()
+@global_flags
+def run(
+    model_name: str = typer.Argument(
+        None, autocompletion=complete_remove_filename, help="Installed model (see `omm list`)."
+    ),
+    engine: str = typer.Option(
+        None, "--engine", "-e",
+        help="Runner to use (ollama, lmstudio, jan, koboldcpp, textgenwebui, anythingllm, mstystudio).",
+    ),
+) -> None:
+    """Start a chat with an installed model - Ollama chats right here in the terminal,
+    KoboldCpp/text-generation-webui start with the model loaded, GUI apps are opened."""
+    reg = registry.load_registry()
+    if model_name is None:
+        model_name = _pick_run_model(reg)
+    model_name = _resolve_ref(model_name)
+    filename, entry = _lookup_entry(model_name, reg)
+    if entry is None:
+        err_console.print(f"[error]{model_name} is not installed via omm. See `omm list`.[/error]")
+        raise typer.Exit(1)
+
+    chosen = _pick_run_engine(entry, engine)
+    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    console.print(
+        f"[accent]{filename}[/accent] via [bold]{_engine_label(chosen)}[/bold] "
+        f"[muted]({launcher.launch_description(chosen)})[/muted]"
+    )
+
+    daemon_handle = None
+    if chosen == "ollama":
+        daemon_handle = _ensure_ollama_running("run", assume_yes=_global_opts().yes)
+        if daemon_handle is not None:
+            console.print("[muted]Started Ollama in the background for this chat.[/muted]")
+        console.print("[muted]Type /bye to leave the chat.[/muted]")
+    try:
+        result = launcher.launch(
+            chosen,
+            model_filename=filename,
+            model_path=MODELS_DIR / filename,
+            ollama_tag=ollama_tag,
+        )
+    finally:
+        if daemon_handle is not None:
+            _stop_engine_daemon("ollama", daemon_handle)
+    if not result.ok:
+        err_console.print(f"[error]{result.message}[/error]")
+        raise typer.Exit(1)
+    console.print(f"[success]{result.message}[/success]")
 
 
 @app.command()
