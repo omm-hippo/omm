@@ -423,14 +423,14 @@ def test_has_automated_installer_true_for_anythingllm_on_mac(monkeypatch):
     assert linker.has_automated_installer("anythingllm") is True
 
 
-def test_has_automated_installer_false_for_anythingllm_on_windows_and_linux(monkeypatch):
-    """Brew-cask only. The winget package MintplexLabs.AnythingLLM was
-    removed from the community repo in 2025 (microsoft/winget-pkgs#230632)
-    and no replacement manifest exists under any publisher id, and no
-    flatpak/Linux path was ever built (see _install_anythingllm) - the
-    onboarding checklist must not claim auto-install is available on
-    either platform."""
+def test_has_automated_installer_for_anythingllm_windows_x64_only(monkeypatch):
+    """No winget package exists (microsoft/winget-pkgs#230632), so Windows
+    uses the vendor's NSIS installer directly - x64 only. Linux has no
+    non-interactive path at all."""
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
+    assert linker.has_automated_installer("anythingllm") is True
+    monkeypatch.setattr(linker.platform, "machine", lambda: "ARM64")
     assert linker.has_automated_installer("anythingllm") is False
     monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
     assert linker.has_automated_installer("anythingllm") is False
@@ -454,21 +454,114 @@ def test_install_anythingllm_mac_uses_brew_cask(monkeypatch):
     assert calls[0] == ["brew", "install", "--cask", "anythingllm"]
 
 
-def test_install_anythingllm_windows_is_unsupported_without_running_winget(monkeypatch):
-    """The winget package MintplexLabs.AnythingLLM was removed from the
-    community repo on 2025-02-18 (microsoft/winget-pkgs#230632, "New
-    installer URL is behind captcha") and nothing replaced it, so a winget
-    install can only ever fail with "no applications found". Windows must
-    report unsupported_platform with the manual download link instead of
-    spawning winget at all."""
+def _windows_x64(monkeypatch, tmp_path):
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(linker.shutil, "which", lambda name: "winget.exe" if name == "winget" else None)
-    monkeypatch.setattr(linker, "is_anythingllm_installed", lambda: False)
+    monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path / "apps")
+    monkeypatch.setattr(linker, "engine_tmp_dir", lambda: tmp_path / "tmp")
+    monkeypatch.setattr(linker, "free_space_shortfall", lambda path, required, what: None)
+
+
+def test_install_anythingllm_windows_downloads_and_runs_nsis_silently(monkeypatch, tmp_path):
+    """Verified live on Windows 11: the vendor installer accepts
+    `/currentuser /S /D=<dir>`; /D= must be last and unquoted, and TEMP
+    must point somewhere with room or the installer exits 2 at once."""
+    _windows_x64(monkeypatch, tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    installed = {"now": False}
+    monkeypatch.setattr(linker, "is_anythingllm_installed", lambda: installed["now"])
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs.get("env")))
+        if isinstance(args, list) and args[0] == "curl":
+            dest = Path(args[args.index("-o") + 1])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"installer")
+        else:
+            installed["now"] = True
+        return _FakeProc([])
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker.install_engine("anythingllm")
+
+    assert result.status == "installed", result.message
+    curl_args, _ = calls[0]
+    assert curl_args[:2] == ["curl", "-fsSL"] and "cdn.anythingllm.com" in curl_args[2]
+    command, env = calls[1]
+    assert isinstance(command, str)
+    assert command.endswith(f"/currentuser /S /D={tmp_path / 'apps' / 'AnythingLLM'}")
+    assert env["TEMP"] == str(tmp_path / "tmp") and env["TMP"] == str(tmp_path / "tmp")
+    assert not (tmp_path / "tmp" / "AnythingLLMDesktop.exe").exists(), "installer download is cleaned up"
+
+
+def test_install_mstystudio_windows_downloads_and_runs_nsis_silently(monkeypatch, tmp_path):
+    _windows_x64(monkeypatch, tmp_path)
+    monkeypatch.setattr(linker, "is_mstystudio_installed", lambda: True)
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        if isinstance(args, list) and args[0] == "curl":
+            dest = Path(args[args.index("-o") + 1])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"installer")
+        return _FakeProc([])
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker.install_engine("mstystudio")
+
+    assert result.status == "installed", result.message
+    assert "next-assets.msty.studio" in calls[0][2]
+    assert calls[1].endswith(f"/D={tmp_path / 'apps' / 'MstyStudio'}")
+
+
+def test_install_windows_direct_refuses_without_free_space_before_downloading(monkeypatch, tmp_path):
+    """The live failure mode: with 0.1 GiB free the NSIS installer exits 2
+    after two seconds leaving an empty folder. Say so up front instead."""
+    _windows_x64(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        linker, "free_space_shortfall",
+        lambda path, required, what: f"{what} needs about 2.5 GiB on D: but only 0.1 GiB is free there",
+    )
 
     def fail_popen(*args, **kwargs):
-        raise AssertionError("no subprocess may be spawned for AnythingLLM on Windows")
+        raise AssertionError("nothing may be downloaded when the disk is full")
 
     monkeypatch.setattr(linker.subprocess, "Popen", fail_popen)
+
+    result = linker.install_engine("anythingllm")
+
+    assert result.status == "failed"
+    assert "0.1 GiB is free" in result.message
+    assert "OMM_HOME" in result.message
+
+
+def test_install_windows_direct_reports_failed_when_still_not_detected(monkeypatch, tmp_path):
+    _windows_x64(monkeypatch, tmp_path)
+    monkeypatch.setattr(linker, "is_mstystudio_installed", lambda: False)
+
+    def fake_popen(args, **kwargs):
+        if isinstance(args, list) and args[0] == "curl":
+            dest = Path(args[args.index("-o") + 1])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"installer")
+            return _FakeProc([])
+        return _FakeProc([], returncode=2)
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker.install_engine("mstystudio")
+
+    assert result.status == "failed"
+    assert "code 2" in result.message and "msty.ai" in result.message
+
+
+def test_install_anythingllm_windows_arm_is_unsupported(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "ARM64")
 
     result = linker.install_engine("anythingllm")
 
@@ -493,11 +586,14 @@ def test_has_automated_installer_true_for_mstystudio(monkeypatch):
     assert linker.has_automated_installer("mstystudio") is True
 
 
-def test_has_automated_installer_false_for_mstystudio_on_windows_and_linux(monkeypatch):
-    """Brew-cask only - no winget package targets current Msty Studio (the
-    only winget entry targets the deprecated pre-rebrand app) and no Linux
-    package manager exists at all."""
+def test_has_automated_installer_for_mstystudio_windows_x64_only(monkeypatch):
+    """No winget package targets current Msty Studio (CloudStack.Msty is the
+    deprecated pre-rebrand app), so Windows uses the vendor installer
+    directly - x64 only. No Linux package manager exists at all."""
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
+    assert linker.has_automated_installer("mstystudio") is True
+    monkeypatch.setattr(linker.platform, "machine", lambda: "ARM64")
     assert linker.has_automated_installer("mstystudio") is False
     monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
     assert linker.has_automated_installer("mstystudio") is False
@@ -521,11 +617,9 @@ def test_install_mstystudio_mac_uses_brew_cask(monkeypatch):
     assert calls[0] == ["brew", "install", "--cask", "mstystudio"]
 
 
-def test_install_mstystudio_windows_is_unsupported(monkeypatch):
-    """No current winget package exists for Msty Studio - the only one in
-    winget-pkgs (CloudStack.Msty) targets the deprecated legacy app and
-    must not be used."""
+def test_install_mstystudio_windows_arm_is_unsupported(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "ARM64")
 
     result = linker.install_engine("mstystudio")
 
@@ -558,7 +652,7 @@ def test_has_automated_installer_false_for_koboldcpp_unsupported_platform(monkey
 
 def test_install_koboldcpp_downloads_to_applications_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
-    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path)
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
     linker.find_koboldcpp_binary.cache_clear()
@@ -594,7 +688,7 @@ def test_install_koboldcpp_unsupported_arch_is_unsupported_platform(monkeypatch)
 
 def test_install_koboldcpp_reports_failed_when_still_not_detected(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
-    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path)
     monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
     monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
     linker.find_koboldcpp_binary.cache_clear()
@@ -616,7 +710,7 @@ def test_install_koboldcpp_truncated_download_is_cleaned_up_and_reported_failed(
     binary must never reach that check - it must be deleted and reported
     "failed" first."""
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
-    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path)
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
     linker.find_koboldcpp_binary.cache_clear()
@@ -702,7 +796,7 @@ def test_install_textgenwebui_picks_cpu_variant_with_no_gpu(monkeypatch, tmp_pat
     monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
     monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
-    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path)
     linker.find_textgenwebui_root.cache_clear()
 
     # No GPU: use a fake HardwareInfo rather than relying on the real
@@ -765,7 +859,7 @@ def test_install_textgenwebui_picks_cuda_variant_with_nvidia_gpu(monkeypatch, tm
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
     monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
-    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path)
     linker.find_textgenwebui_root.cache_clear()
 
     fake_hw = HardwareInfo(
@@ -821,7 +915,7 @@ def test_install_textgenwebui_mac_uses_arch_specific_asset(monkeypatch, tmp_path
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
-    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path)
     linker.find_textgenwebui_root.cache_clear()
 
     fake_release = {
@@ -924,7 +1018,7 @@ def test_install_textgenwebui_truncated_download_is_cleaned_up_and_reported_fail
     attempted on a known-bad download."""
     monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
     monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path)
 
     fake_release = {
         "assets": [
