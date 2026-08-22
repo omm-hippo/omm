@@ -56,7 +56,9 @@ class LaunchResult:
 
 
 def _windows_programs_roots() -> list[Path]:
-    roots: list[Path] = []
+    # Apps omm installed itself live under OMM_HOME/apps; vendor defaults
+    # are %LOCALAPPDATA%\Programs and Program Files.
+    roots: list[Path] = [linker.engine_install_dir()]
     for var in ("LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"):
         value = os.environ.get(var)
         if value:

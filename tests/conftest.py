@@ -36,6 +36,8 @@ def _no_real_engine_writes(tmp_path, monkeypatch):
         linker, "LINK_OWNERSHIP_PATH", tmp_path / "_no_real_link_ownership.json"
     )
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path / "_no_real_heuristic_root"])
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path / "_no_real_omm_apps")
+    monkeypatch.setattr(linker, "engine_tmp_dir", lambda: tmp_path / "_no_real_omm_tmp")
     monkeypatch.setattr(linker, "_APP_BUNDLE_SEARCH_ROOTS", [tmp_path / "_no_real_app_bundle_root"])
     linker.find_koboldcpp_binary.cache_clear()
     linker.find_textgenwebui_root.cache_clear()

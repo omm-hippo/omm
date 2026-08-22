@@ -77,8 +77,30 @@ def print_hardware_summary(console: Console) -> None:
         )
     if info.gpu_name:
         table.add_row("GPU", info.gpu_name)
+    home = config_mod.OMM_HOME
+    free_gb = _free_gb(home)
+    if free_gb is not None:
+        table.add_row("omm home", f"{home}  ({free_gb:.1f} GB free)")
     console.print(table)
     console.print()
+    if free_gb is not None and free_gb < LOW_DISK_GB:
+        console.print(
+            f"[warning]Only {free_gb:.1f} GB is free on the drive holding omm's home. "
+            "Models and runners install there - set OMM_HOME to a roomier drive "
+            "(e.g. `OMM_HOME=D:\\omm`, see README) before installing anything.[/warning]\n"
+        )
+
+
+LOW_DISK_GB = 10.0
+
+
+def _free_gb(path) -> float | None:
+    import shutil
+
+    try:
+        return shutil.disk_usage(linker.disk_usage_path(path)).free / 1024**3
+    except OSError:
+        return None
 
 
 def _engine_choices() -> list[tuple[str, str, bool]]:
