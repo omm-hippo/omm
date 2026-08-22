@@ -55,6 +55,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat as stat_module
 import tarfile
 import time
 import struct
@@ -2766,19 +2767,244 @@ def _textgenwebui_asset_name(hw: HardwareInfo) -> str | None:
     return f"linux-{_textgenwebui_variant(hw)}"
 
 
+_WINDOWS_RESERVED_ARCHIVE_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+
+
+def _safe_archive_member_parts(name: str) -> tuple[str, ...]:
+    """Return a platform-independent safe relative archive path.
+
+    ZIP and tar member names use forward slashes. Reject alternate Windows
+    spellings too so an archive has the same meaning on every supported
+    Python/OS combination instead of becoming unsafe only after it moves to
+    Windows.
+    """
+    if not name or "\x00" in name or "\\" in name or name.startswith("/"):
+        raise OSError(f"unsafe archive member path: {name!r}")
+
+    raw_parts = name.split("/")
+    if any(part == ".." for part in raw_parts):
+        raise OSError(f"unsafe archive member path: {name!r}")
+    parts = tuple(part for part in raw_parts if part not in ("", "."))
+    if not parts:
+        raise OSError(f"unsafe archive member path: {name!r}")
+
+    for part in parts:
+        # Colons include drive-relative/absolute paths and NTFS alternate
+        # data streams. Trailing spaces/dots and DOS device names can alias
+        # other paths or devices on Windows even though they are ordinary
+        # filename characters on POSIX.
+        if ":" in part or part.endswith((" ", ".")):
+            raise OSError(f"unsafe archive member path: {name!r}")
+        windows_basename = part.split(".", 1)[0].upper()
+        if windows_basename in _WINDOWS_RESERVED_ARCHIVE_NAMES:
+            raise OSError(f"unsafe archive member path: {name!r}")
+    return parts
+
+
+def _safe_archive_link_target_parts(
+    member_parts: tuple[str, ...], linkname: str
+) -> tuple[str, ...]:
+    """Resolve a tar symlink target without allowing it outside the root.
+
+    Portable TextGen releases contain many ordinary relative symlinks (the
+    embedded Python runtime alone has ``python3 -> python3.13``).  Rejecting
+    every link makes the official archive unusable, while handing links to
+    ``tarfile.extractall`` reintroduces traversal.  Resolve the target
+    lexically, require it to stay below the archive's single top-level
+    directory, and materialize it only after all regular payloads are done.
+    """
+    if (
+        not linkname
+        or "\x00" in linkname
+        or "\\" in linkname
+        or linkname.startswith("/")
+    ):
+        raise OSError(f"unsafe archive link target: {linkname!r}")
+
+    resolved = list(member_parts[:-1])
+    for part in linkname.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            # Keep the first component: it is the archive's validated root.
+            if len(resolved) <= 1:
+                raise OSError(f"unsafe archive link target: {linkname!r}")
+            resolved.pop()
+            continue
+        try:
+            safe_part = _safe_archive_member_parts(part)
+        except OSError as exc:
+            raise OSError(f"unsafe archive link target: {linkname!r}") from exc
+        if len(safe_part) != 1:
+            raise OSError(f"unsafe archive link target: {linkname!r}")
+        resolved.append(part)
+
+    if not resolved or resolved[0] != member_parts[0]:
+        raise OSError(f"unsafe archive link target: {linkname!r}")
+    return tuple(resolved)
+
+
+def _reject_archive_symlink_descendants(
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> None:
+    """No payload path may use an archive symlink as a parent directory."""
+    seen: set[tuple[str, ...]] = set()
+    symlinks = {parts for _, parts, is_dir, _ in entries if is_dir is None}
+    for _, parts, _, _ in entries:
+        if parts in seen:
+            raise OSError(f"duplicate archive member path: {'/'.join(parts)!r}")
+        seen.add(parts)
+        if any(parts[:depth] in symlinks for depth in range(1, len(parts))):
+            raise OSError(f"archive member traverses a symlink: {'/'.join(parts)!r}")
+
+
+def _archive_top_level(
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> str:
+    roots = {parts[0] for _, parts, _, _ in entries}
+    if len(roots) != 1:
+        raise OSError("archive must contain exactly one top-level directory")
+    return next(iter(roots))
+
+
+def _validated_zip_entries(
+    zf: zipfile.ZipFile,
+) -> list[tuple[zipfile.ZipInfo, tuple[str, ...], bool, int]]:
+    entries: list[tuple[zipfile.ZipInfo, tuple[str, ...], bool, int]] = []
+    for member in zf.infolist():
+        parts = _safe_archive_member_parts(member.filename)
+        is_dir = member.is_dir()
+        unix_mode = member.external_attr >> 16 if member.create_system == 3 else 0
+        file_type = stat_module.S_IFMT(unix_mode)
+        allowed_type = stat_module.S_IFDIR if is_dir else stat_module.S_IFREG
+        if file_type not in (0, allowed_type):
+            raise OSError(f"unsupported archive member type: {member.filename!r}")
+        mode = unix_mode & 0o777
+        if mode == 0:
+            mode = 0o755 if is_dir else 0o644
+        entries.append((member, parts, is_dir, mode))
+    return entries
+
+
+def _validated_tar_entries(
+    tf: tarfile.TarFile,
+) -> list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]]:
+    entries: list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]] = []
+    for member in tf.getmembers():
+        parts = _safe_archive_member_parts(member.name)
+        if member.isdir():
+            is_dir = True
+        elif member.isfile():
+            is_dir = False
+        elif member.issym():
+            _safe_archive_link_target_parts(parts, member.linkname)
+            # None distinguishes a validated symlink from files/directories.
+            is_dir = None
+        else:
+            # Hard links, devices, FIFOs, and other special archive entries
+            # remain unsupported. This is explicit rather than relying on
+            # Python-version-dependent tar extraction filter defaults.
+            raise OSError(f"unsupported archive member type: {member.name!r}")
+        entries.append((member, parts, is_dir, member.mode & 0o777))
+    _reject_archive_symlink_descendants(entries)
+    return entries
+
+
+def _prepare_archive_output(
+    staging: Path, parts: tuple[str, ...], is_dir: bool
+) -> Path:
+    output = staging.joinpath(*parts)
+    if is_dir:
+        output.mkdir(parents=True, exist_ok=True)
+    else:
+        output.parent.mkdir(parents=True, exist_ok=True)
+    return output
+
+
 def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
     """Extracts the portable release into dest_dir and returns the
     resulting top-level folder (named textgen-<version> by the archive
-    itself - verified against real release bytes)."""
-    if archive_path.suffix == ".zip":
-        with zipfile.ZipFile(archive_path) as zf:
-            top_level = {name.split("/")[0] for name in zf.namelist()}
-            zf.extractall(dest_dir)
-    else:
-        with tarfile.open(archive_path) as tf:
-            top_level = {member.name.split("/")[0] for member in tf.getmembers()}
-            tf.extractall(dest_dir)
-    return dest_dir / next(iter(top_level))
+    itself - verified against real release bytes).
+
+    All entries are validated before writing anything, then ordinary files
+    and directories are copied manually into a fresh staging directory.
+    This gives Python 3.10 through 3.14 the same policy and avoids both the
+    historical unfiltered tar behavior and destination symlink traversal.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".omm-extract-", dir=dest_dir) as temp_name:
+        staging = Path(temp_name)
+        directory_modes: list[tuple[Path, int]] = []
+        pending_symlinks: list[tuple[Path, str]] = []
+
+        if archive_path.suffix.lower() == ".zip":
+            with zipfile.ZipFile(archive_path) as zf:
+                entries = _validated_zip_entries(zf)
+                top_level = _archive_top_level(entries)
+                final_path = dest_dir / top_level
+                if final_path.exists() or final_path.is_symlink():
+                    raise OSError(f"archive destination already exists: {final_path}")
+                for member, parts, is_dir, mode in entries:
+                    output = _prepare_archive_output(staging, parts, is_dir is True)
+                    if is_dir:
+                        directory_modes.append((output, mode))
+                        continue
+                    with zf.open(member, "r") as source, output.open("xb") as target:
+                        shutil.copyfileobj(source, target)
+                    output.chmod(mode)
+        else:
+            with tarfile.open(archive_path) as tf:
+                entries = _validated_tar_entries(tf)
+                top_level = _archive_top_level(entries)
+                final_path = dest_dir / top_level
+                if final_path.exists() or final_path.is_symlink():
+                    raise OSError(f"archive destination already exists: {final_path}")
+                for member, parts, is_dir, mode in entries:
+                    output = _prepare_archive_output(staging, parts, is_dir is True)
+                    if is_dir is True:
+                        directory_modes.append((output, mode))
+                        continue
+                    if is_dir is None:
+                        pending_symlinks.append((output, member.linkname))
+                        continue
+                    source = tf.extractfile(member)
+                    if source is None:
+                        raise OSError(f"could not read archive member: {member.name!r}")
+                    with source, output.open("xb") as target:
+                        shutil.copyfileobj(source, target)
+                    output.chmod(mode)
+
+        # Links are deliberately last: no subsequent archive write can follow
+        # one into another location. Their targets were already proven to stay
+        # under this archive root by _safe_archive_link_target_parts.
+        for output, linkname in pending_symlinks:
+            # Archive link names always use POSIX separators.  Build a native
+            # relative Path so Windows stores a usable reparse target too;
+            # passing ``../lib/foo`` through unchanged creates a link that
+            # pathlib can identify but cannot follow on Windows.
+            output.symlink_to(Path(*linkname.split("/")))
+
+        # Keep parent directories writable while files and links are being
+        # created; apply archive permissions only after all payloads are in place.
+        for directory, mode in sorted(
+            directory_modes, key=lambda item: len(item[0].parts), reverse=True
+        ):
+            directory.chmod(mode)
+
+        staged_root = staging / top_level
+        if staged_root.is_symlink() or not staged_root.is_dir():
+            raise OSError("archive top-level entry must be a directory")
+        if final_path.exists() or final_path.is_symlink():
+            raise OSError(f"archive destination already exists: {final_path}")
+        staged_root.rename(final_path)
+        return final_path
 
 
 def _install_textgenwebui(

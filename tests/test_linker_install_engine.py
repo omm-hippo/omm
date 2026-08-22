@@ -1,4 +1,8 @@
+import io
+import stat
 import sys
+import tarfile
+import zipfile
 
 import pytest
 import requests
@@ -751,12 +755,14 @@ def test_has_automated_installer_false_for_textgenwebui_on_arm_linux(monkeypatch
 def test_extract_textgenwebui_archive_handles_zip(tmp_path):
     """Real zip bytes, no mocking - exercises the .zip branch and the
     top-level-folder inference for real."""
-    import zipfile
-
     archive_path = tmp_path / "textgen-portable-4.9-windows-cpu.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("textgen-4.9/app/server.py", "# fake")
         zf.writestr("textgen-4.9/user_data/models/place-your-models-here.txt", "")
+        executable = zipfile.ZipInfo("textgen-4.9/start.sh")
+        executable.create_system = 3
+        executable.external_attr = (stat.S_IFREG | 0o755) << 16
+        zf.writestr(executable, "#!/bin/sh\n")
 
     dest_dir = tmp_path / "dest"
     dest_dir.mkdir()
@@ -766,16 +772,21 @@ def test_extract_textgenwebui_archive_handles_zip(tmp_path):
     assert result == dest_dir / "textgen-4.9"
     assert (result / "app" / "server.py").exists()
     assert (result / "user_data" / "models" / "place-your-models-here.txt").exists()
+    assert (result / "start.sh").read_text() == "#!/bin/sh\n"
+    if sys.platform != "win32":
+        # Windows has no POSIX executable bits; chmod only maps the writable
+        # bit to its read-only file attribute there.
+        assert (result / "start.sh").stat().st_mode & 0o111 == 0o111
 
 
 def test_extract_textgenwebui_archive_handles_tar_gz(tmp_path):
     """Real tar.gz bytes, no mocking - exercises the tarfile branch (the
     else clause covering everything that isn't .zip)."""
-    import tarfile
-
     src_dir = tmp_path / "textgen-4.9"
     (src_dir / "app").mkdir(parents=True)
     (src_dir / "app" / "server.py").write_text("# fake")
+    (src_dir / "start.sh").write_text("#!/bin/sh\n")
+    (src_dir / "start.sh").chmod(0o755)
 
     archive_path = tmp_path / "textgen-portable-4.9-linux-cpu.tar.gz"
     with tarfile.open(archive_path, "w:gz") as tf:
@@ -788,6 +799,270 @@ def test_extract_textgenwebui_archive_handles_tar_gz(tmp_path):
 
     assert result == dest_dir / "textgen-4.9"
     assert (result / "app" / "server.py").exists()
+    assert (result / "start.sh").read_text() == "#!/bin/sh\n"
+    if sys.platform != "win32":
+        assert (result / "start.sh").stat().st_mode & 0o111 == 0o111
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    [
+        "/absolute/path",
+        "C:/absolute/path",
+        "textgen-4.9\\outside",
+        "textgen-4.9/NUL.txt",
+        "textgen-4.9/file:stream",
+        "textgen-4.9/trailing.",
+    ],
+)
+def test_safe_archive_member_parts_rejects_cross_platform_aliases(member_name):
+    with pytest.raises(OSError, match="unsafe archive member"):
+        linker._safe_archive_member_parts(member_name)
+
+
+def test_extract_textgenwebui_tar_rejects_parent_path_escape(tmp_path):
+    archive_path = tmp_path / "malicious.tar.gz"
+    payload = b"escaped"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        member = tarfile.TarInfo("../escaped.txt")
+        member.size = len(payload)
+        tf.addfile(member, io.BytesIO(payload))
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    with pytest.raises(OSError, match="unsafe archive member"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+@pytest.mark.parametrize(
+    ("member_type", "linkname"),
+    [
+        (tarfile.LNKTYPE, "textgen-4.9/regular.txt"),
+        (tarfile.FIFOTYPE, ""),
+    ],
+)
+def test_extract_textgenwebui_tar_rejects_hardlinks_and_special_files(
+    tmp_path, member_type, linkname
+):
+    archive_path = tmp_path / "malicious.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        regular = tarfile.TarInfo("textgen-4.9/regular.txt")
+        regular.size = 1
+        tf.addfile(regular, io.BytesIO(b"x"))
+        unsafe = tarfile.TarInfo("textgen-4.9/unsafe")
+        unsafe.type = member_type
+        unsafe.linkname = linkname
+        tf.addfile(unsafe)
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    with pytest.raises(OSError, match="unsupported archive member"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert not (dest_dir / "textgen-4.9").exists()
+
+
+def test_extract_textgenwebui_tar_preserves_safe_relative_symlinks(tmp_path):
+    archive_path = tmp_path / "release.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        python = tarfile.TarInfo("textgen-4.9/app/bin/python3.13")
+        python.mode = 0o755
+        python.size = len(b"python")
+        tf.addfile(python, io.BytesIO(b"python"))
+
+        python_link = tarfile.TarInfo("textgen-4.9/app/bin/python3")
+        python_link.type = tarfile.SYMTYPE
+        python_link.linkname = "python3.13"
+        tf.addfile(python_link)
+
+        library = tarfile.TarInfo("textgen-4.9/app/lib/runtime.so")
+        library.size = len(b"library")
+        tf.addfile(library, io.BytesIO(b"library"))
+
+        library_link = tarfile.TarInfo("textgen-4.9/app/bin/runtime.so")
+        library_link.type = tarfile.SYMTYPE
+        library_link.linkname = "../lib/runtime.so"
+        tf.addfile(library_link)
+
+    extracted = linker._extract_textgenwebui_archive(archive_path, tmp_path / "dest")
+
+    assert (extracted / "app/bin/python3").is_symlink()
+    assert (extracted / "app/bin/python3").read_bytes() == b"python"
+    assert (extracted / "app/bin/runtime.so").is_symlink()
+    assert (extracted / "app/bin/runtime.so").read_bytes() == b"library"
+
+
+@pytest.mark.parametrize(
+    "linkname",
+    ["../../../outside", "/tmp/outside", "C:/outside", "..\\..\\outside"],
+)
+def test_extract_textgenwebui_tar_rejects_escaping_symlink_targets(
+    tmp_path, linkname
+):
+    archive_path = tmp_path / "malicious.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        unsafe = tarfile.TarInfo("textgen-4.9/app/unsafe")
+        unsafe.type = tarfile.SYMTYPE
+        unsafe.linkname = linkname
+        tf.addfile(unsafe)
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    with pytest.raises(OSError, match="unsafe archive link target"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert not (dest_dir / "textgen-4.9").exists()
+    assert not (tmp_path / "outside").exists()
+
+
+def test_extract_textgenwebui_tar_rejects_member_below_symlink(tmp_path):
+    archive_path = tmp_path / "malicious.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        link = tarfile.TarInfo("textgen-4.9/app/link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "target"
+        tf.addfile(link)
+
+        payload = tarfile.TarInfo("textgen-4.9/app/link/payload")
+        payload.size = 1
+        tf.addfile(payload, io.BytesIO(b"x"))
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    with pytest.raises(OSError, match="traverses a symlink"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert not (dest_dir / "textgen-4.9").exists()
+
+
+def test_extract_textgenwebui_zip_rejects_parent_path_escape(tmp_path):
+    archive_path = tmp_path / "malicious.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("../escaped.txt", "escaped")
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    with pytest.raises(OSError, match="unsafe archive member"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_extract_textgenwebui_zip_rejects_declared_symlink(tmp_path):
+    archive_path = tmp_path / "malicious.zip"
+    symlink = zipfile.ZipInfo("textgen-4.9/unsafe")
+    symlink.create_system = 3
+    symlink.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr(symlink, "../../outside")
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    with pytest.raises(OSError, match="unsupported archive member"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert not (dest_dir / "textgen-4.9").exists()
+
+
+def test_extract_textgenwebui_refuses_preexisting_top_level_symlink(tmp_path):
+    archive_path = tmp_path / "release.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("textgen-4.9/app/server.py", "# fake")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+    (dest_dir / "textgen-4.9").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(OSError, match="already exists"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert not (outside / "app" / "server.py").exists()
+
+
+def test_extract_textgenwebui_rejects_multiple_top_level_roots(tmp_path):
+    archive_path = tmp_path / "multiple-roots.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("textgen-4.9/app/server.py", "# fake")
+        zf.writestr("unexpected/file.txt", "unexpected")
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    with pytest.raises(OSError, match="exactly one top-level directory"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+def test_extract_textgenwebui_rejects_empty_archive(tmp_path):
+    archive_path = tmp_path / "empty.zip"
+    with zipfile.ZipFile(archive_path, "w"):
+        pass
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    with pytest.raises(OSError, match="exactly one top-level directory"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+def test_install_textgenwebui_rejects_malicious_archive_and_cleans_download(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(linker, "scan_hardware", lambda: object())
+    install_dir = tmp_path / "engines"
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: install_dir)
+
+    asset_name = "textgen-portable-4.9-macos-arm64.tar.gz"
+
+    class _FakeResponse:
+        def json(self):
+            return {
+                "assets": [
+                    {
+                        "name": asset_name,
+                        "browser_download_url": "https://example.test/malicious.tar.gz",
+                    }
+                ]
+            }
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: _FakeResponse())
+
+    def fake_stream_subprocess(args, on_output):
+        archive_path = Path(args[args.index("-o") + 1])
+        payload = b"escaped"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            member = tarfile.TarInfo("../escaped-from-install.txt")
+            member.size = len(payload)
+            tf.addfile(member, io.BytesIO(payload))
+        return 0
+
+    monkeypatch.setattr(linker, "_stream_subprocess", fake_stream_subprocess)
+
+    result = linker.install_engine("textgenwebui")
+
+    assert result.status == "failed"
+    assert "unsafe archive member" in result.message
+    assert not (tmp_path / "escaped-from-install.txt").exists()
+    assert not (install_dir / asset_name).exists()
+    assert list(install_dir.iterdir()) == []
 
 
 def test_install_textgenwebui_picks_cpu_variant_with_no_gpu(monkeypatch, tmp_path):
