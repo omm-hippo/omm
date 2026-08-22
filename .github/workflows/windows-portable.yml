@@ -154,6 +154,101 @@ jobs:
             --version $version `
             --archive "release-assets/$archiveName"
           if ($LASTEXITCODE -ne 0) { throw "the published archive failed structural verification" }
+      - name: Scan the verified portable executable with Microsoft Defender
+        shell: pwsh
+        run: |
+          $version = "${{ steps.identity.outputs.version }}"
+          $archive = Resolve-Path "release-assets/omm-windows-x64-$version.zip"
+          $scanRoot = Join-Path $env:RUNNER_TEMP "omm-defender-scan"
+          if (Test-Path -LiteralPath $scanRoot) {
+            Remove-Item -LiteralPath $scanRoot -Recurse -Force
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $scanRoot
+          $executable = (Resolve-Path (Join-Path $scanRoot "omm.exe")).Path
+
+          foreach ($command in @(
+            "Get-MpComputerStatus",
+            "Get-MpPreference",
+            "Get-MpThreatDetection",
+            "Remove-MpPreference",
+            "Set-MpPreference"
+          )) {
+            if ($null -eq (Get-Command $command -ErrorAction SilentlyContinue)) {
+              throw "Microsoft Defender command is unavailable: $command"
+            }
+          }
+
+          $preference = Get-MpPreference
+          foreach ($excludedRoot in @("C:\", "D:\")) {
+            if ($preference.ExclusionPath -contains $excludedRoot) {
+              Remove-MpPreference -ExclusionPath $excludedRoot
+            }
+          }
+          Set-MpPreference `
+            -DisableArchiveScanning $false `
+            -DisableBehaviorMonitoring $false `
+            -DisableIOAVProtection $false `
+            -DisableRealtimeMonitoring $false `
+            -PUAProtection Enabled
+
+          $remainingExclusions = @(Get-MpPreference).ExclusionPath
+          foreach ($excludedRoot in @("C:\", "D:\")) {
+            if ($remainingExclusions -contains $excludedRoot) {
+              throw "Microsoft Defender still excludes the scan volume: $excludedRoot"
+            }
+          }
+
+          $platformCommands = @(
+            Get-ChildItem `
+              -Path "$env:ProgramData/Microsoft/Windows Defender/Platform/*/MpCmdRun.exe" `
+              -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending
+          )
+          if ($platformCommands.Count -gt 0) {
+            $mpCmdRun = $platformCommands[0].FullName
+          } else {
+            $mpCmdRun = "$env:ProgramFiles/Windows Defender/MpCmdRun.exe"
+          }
+          if (-not (Test-Path -LiteralPath $mpCmdRun -PathType Leaf)) {
+            throw "Microsoft Defender command-line scanner is unavailable"
+          }
+
+          & $mpCmdRun -SignatureUpdate
+          if ($LASTEXITCODE -ne 0) { throw "Microsoft Defender signature update failed" }
+          $status = Get-MpComputerStatus
+          $status |
+            Select-Object AMServiceEnabled, AntivirusEnabled, AntivirusSignatureVersion, AntivirusSignatureLastUpdated |
+            Format-List |
+            Out-String |
+            Write-Host
+          if (-not $status.AMServiceEnabled -or -not $status.AntivirusEnabled) {
+            throw "Microsoft Defender antivirus engine is not enabled"
+          }
+
+          $scanOutput = (& $mpCmdRun `
+            -Scan `
+            -ScanType 3 `
+            -File $executable `
+            -DisableRemediation 2>&1) | Out-String
+          $scanExit = $LASTEXITCODE
+          Write-Host $scanOutput
+          $detections = @(
+            Get-MpThreatDetection |
+              Where-Object { ($_.Resources -join "`n") -like "*$executable*" }
+          )
+          if ($detections.Count -gt 0) {
+            $detections |
+              Select-Object ThreatID, ThreatStatusID, InitialDetectionTime, Resources |
+              Format-List |
+              Out-String |
+              Write-Host
+          }
+          if ($scanExit -eq 2 -or $detections.Count -gt 0) {
+            throw "Microsoft Defender detected the verified OMM executable"
+          }
+          if ($scanExit -ne 0) {
+            throw "Microsoft Defender scan failed with exit code $scanExit"
+          }
       - name: Generate and validate the WinGet manifest set
         shell: pwsh
         run: |
