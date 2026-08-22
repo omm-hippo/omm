@@ -1471,3 +1471,16 @@ def test_update_with_quiet_flag_does_not_crash(monkeypatch):
     result = runner.invoke(cli.app, ["update", "--quiet"])
 
     assert result.exit_code == 0, result.stdout
+
+
+def test_pipx_app_names_strip_windows_launcher_suffix():
+    """pipx on Windows records apps as `omm.exe` / `localfit-server.exe`
+    (verified on a real Windows 11 pipx 1.16 install); `omm update` used
+    to compare that verbatim against {"omm", "localfit-server"} and refuse
+    the legacy-environment migration with "exposes an unexpected app set"."""
+    assert cli._pipx_app_names(["localfit-server.exe", "omm.exe"]) == ["localfit-server", "omm"]
+    assert cli._pipx_app_names(["omm", "localfit-server"]) == ["omm", "localfit-server"]
+    assert cli._pipx_app_names(["OMM.EXE"]) == ["OMM"]
+    assert cli._pipx_app_names("omm") is None
+    assert cli._pipx_app_names(["omm", 3]) is None
+    assert set(cli._pipx_app_names(["localfit-server.exe", "omm.exe"])) == cli._PIPX_EXPECTED_APPS
