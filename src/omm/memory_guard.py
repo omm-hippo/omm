@@ -257,7 +257,13 @@ def omm_managed_model_ids(registry_data: Mapping[str, object], engine: str) -> s
         if not isinstance(linked, dict) or linked.get(engine) is not True:
             continue
         if engine == "ollama":
-            runtime_id = raw_entry.get("ollama_name")
+            from omm import linker
+
+            runtime_id = (
+                linker.resolve_ollama_runtime_name(filename, raw_entry)
+                if isinstance(filename, str)
+                else None
+            )
             if isinstance(runtime_id, str) and runtime_id:
                 managed.add(runtime_id)
         elif isinstance(filename, str) and filename:

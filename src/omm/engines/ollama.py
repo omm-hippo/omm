@@ -101,7 +101,13 @@ class OllamaAdapter:
             refreshed = find_runtime_model(self.list_models(), RuntimeModelRef(selected.key))
             if refreshed is None or not refreshed.loaded:
                 raise RuntimeAdapterError("load_failed", "Ollama did not report the model as loaded")
-            return LoadReceipt(refreshed, refreshed.instance_id or refreshed.key, False, True)
+            return LoadReceipt(
+                refreshed,
+                refreshed.instance_id or refreshed.key,
+                False,
+                True,
+                options,
+            )
         except RuntimeAdapterError as original:
             try:
                 uncertain = find_runtime_model(
@@ -126,16 +132,25 @@ class OllamaAdapter:
             raise original
 
     def generate(self, receipt: LoadReceipt, request: ProbeRequest) -> ProbeResult:
+        generation_options = {
+            "temperature": 0,
+            "seed": 0,
+            "num_predict": request.max_output_tokens,
+        }
+        load_options = getattr(receipt, "load_options", None)
+        if isinstance(load_options, LoadOptions):
+            # Ollama treats an omitted num_ctx as its runtime default. If the
+            # preceding load used a different context, omitting it here tears
+            # down that runner and initializes the model a second time. Only
+            # pin the context for a model OMM loaded itself; a preloaded user's
+            # unknown runtime settings must stay untouched.
+            generation_options["num_ctx"] = load_options.context_length
         base_payload = {
             "model": receipt.model.key,
             "prompt": request.prompt,
             "stream": False,
             "keep_alive": -1,
-            "options": {
-                "temperature": 0,
-                "seed": 0,
-                "num_predict": request.max_output_tokens,
-            },
+            "options": generation_options,
         }
         try:
             response = self._client.request(

@@ -47,6 +47,7 @@ from omm import (
     config as config_mod,
     contribute_memory,
     contribute_state,
+    doctor as doctor_mod,
     error_report,
     launcher,
     linker,
@@ -185,7 +186,16 @@ class GlobalOptions:
 # Commands whose output --json actually restructures. Every other command
 # silently ignores the flag - warn instead so a script piping --json from
 # one of them doesn't get plain-text garbage with exit code 0 (see #81).
-_JSON_CAPABLE = {"search", "list", "info", "benchmark", "tune", "scan", "recommend"}
+_JSON_CAPABLE = {
+    "search",
+    "list",
+    "info",
+    "benchmark",
+    "tune",
+    "scan",
+    "recommend",
+    "doctor",
+}
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
@@ -321,6 +331,7 @@ Tuning & quality:
 
 Maintenance:
   omm scan
+  omm doctor
   omm setup
   omm engine install
   omm upgrade [MODEL]
@@ -564,11 +575,23 @@ def _root(
     opts.yes = opts.yes or yes_flag
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
-    theme_mod.apply_theme_to_console(console, load_config().get("theme", "dark"))
-    theme_mod.apply_theme_to_console(err_console, load_config().get("theme", "dark"))
+    doctor_mode = ctx.invoked_subcommand == "doctor"
+    theme = (
+        doctor_mod.read_theme_read_only()
+        if doctor_mode
+        else load_config().get("theme", "dark")
+    )
+    theme_mod.apply_theme_to_console(console, theme)
+    theme_mod.apply_theme_to_console(err_console, theme)
     if opts.no_color:
         console.no_color = True
         err_console.no_color = True
+    # `omm doctor` promises a literal read-only snapshot. The normal root
+    # prelude can create/migrate config, spawn an update checker, offer to
+    # import models, and flush queued network events, so return directly to
+    # the subcommand before any of those hooks are reached.
+    if doctor_mode:
+        return
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
         # Bare `omm` prints a real (if short) result, so it counts as a
@@ -604,7 +627,20 @@ def _root(
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
     ("Core", ["search", "install", "run", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
-    ("Maintenance", ["scan", "setup", "engine", "import", "autoremove", "link", "update", "help"]),
+    (
+        "Maintenance",
+        [
+            "scan",
+            "doctor",
+            "setup",
+            "engine",
+            "import",
+            "autoremove",
+            "link",
+            "update",
+            "help",
+        ],
+    ),
 ]
 
 
@@ -1194,7 +1230,7 @@ def _cached_remote_head_commit(ref: str = "main") -> str | None:
     return version_check.cached_remote_head(_remote_head_commit, ref)
 
 
-_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "help", "_bg-version-check"}
+_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check"}
 
 
 @app.command(name="_bg-version-check", hidden=True)
@@ -1239,7 +1275,7 @@ def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch:
         err_console.print("[warning]Update available! Run: [bold]omm update[/bold][/warning]")
 
 
-_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "help", "update", "_bg-version-check"}
+_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
 
 
 def _maybe_run_onboarding(ctx: typer.Context) -> None:
@@ -1309,6 +1345,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "help",
     "import",
     "contribute",
+    "doctor",
     "_bg-version-check",
 }
 
@@ -2362,6 +2399,46 @@ def _package_managed_update_guidance(
 
 @app.command()
 @global_flags
+def doctor() -> None:
+    """Diagnose the OMM install and Ollama links without changing state.
+
+    WARN findings keep exit code 0; definite FAIL findings exit 1.
+    """
+    report = doctor_mod.collect_report(
+        module_path=Path(__file__).resolve(),
+        command_path=doctor_mod.running_command_path(),
+    )
+    if _global_opts().json:
+        console.print_json(data=report.as_dict())
+    else:
+        table = Table(title="omm doctor")
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Check", style="accent", no_wrap=True)
+        table.add_column("Detail")
+        status_styles = {"PASS": "success", "WARN": "warning", "FAIL": "error"}
+        for check in report.checks:
+            style = status_styles[check.status]
+            table.add_row(
+                f"[{style}]{check.status}[/{style}]",
+                escape(check.name),
+                escape(check.detail),
+            )
+        console.print(table)
+        counts = {
+            status: sum(check.status == status for check in report.checks)
+            for status in ("PASS", "WARN", "FAIL")
+        }
+        overall_style = status_styles[report.status]
+        console.print(
+            f"[{overall_style}]Overall: {report.status}[/{overall_style}] "
+            f"({counts['PASS']} pass, {counts['WARN']} warn, {counts['FAIL']} fail)"
+        )
+    if report.status == "FAIL":
+        raise typer.Exit(1)
+
+
+@app.command()
+@global_flags
 def update() -> None:
     """Reinstall omm from the latest source and refresh its data.
 
@@ -2905,11 +2982,13 @@ def _resolve_benchmark_tag(arg: str) -> str:
         return arg
     filename = _resolve_ref(arg)
     entry = registry.load_registry().get(filename)
-    tag = entry.get("ollama_name") if entry else None
-    if not tag:
+    if not entry or not any(
+        isinstance(entry.get(field), str) and entry[field].strip()
+        for field in ("ollama_runtime_name", "ollama_name")
+    ):
         err_console.print(f"[error]{filename} has no Ollama tag; link it with `omm link` first.[/error]")
         raise typer.Exit(1)
-    return tag
+    return linker.resolve_ollama_runtime_name(filename, entry)
 
 
 def _predicted_fastest_filenames(
@@ -4717,7 +4796,7 @@ def _remove_one(filename: str, entry: dict) -> None:
         registry.remove_entry(filename)
         return
     linked = entry.get("linked", {})
-    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
     if linked.get("ollama") and benchmark.ollama_daemon_reachable():
         quality_mod.ensure_model_unloaded(ollama_tag, max_wait_seconds=10)
     for spec in linker.ENGINES:
@@ -4830,8 +4909,20 @@ def _compatibility_adapter(engine: str):
 
 def _compatibility_model_ref(filename: str, entry: dict, engine: str) -> RuntimeModelRef:
     if engine == "ollama":
-        tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
-        return RuntimeModelRef(tag, (tag.removesuffix(":latest"),))
+        tag = linker.resolve_ollama_runtime_name(filename, entry)
+        link_name = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+        aliases = tuple(
+            dict.fromkeys(
+                value
+                for value in (
+                    tag.removesuffix(":latest"),
+                    link_name,
+                    link_name.removesuffix(":latest"),
+                )
+                if value and value != tag
+            )
+        )
+        return RuntimeModelRef(tag, aliases)
     repo_id = entry.get("repo_id")
     key = repo_id if isinstance(repo_id, str) and "/" in repo_id else f"local/{Path(filename).stem}"
     aliases = tuple(
@@ -5008,7 +5099,7 @@ def info(
     size_gb = entry.get("size_bytes", 0) / (1024**3)
     linked = entry.get("linked", {})
 
-    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
 
     if json_output:
         console.print_json(
@@ -5722,7 +5813,7 @@ def calibrate(
     if predicted <= 0:
         err_console.print("[error]This model has no usable baseline speed prediction.[/error]")
         raise typer.Exit(1)
-    tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    tag = linker.resolve_ollama_runtime_name(filename, entry)
     # Warn but do not refuse: this measurement was asked for explicitly, and
     # the caller is the one who can decide whether to close things and retry.
     # The automatic post-install calibration, which nobody asked for, does
@@ -6361,10 +6452,12 @@ def _guard_benchmark_models(models: list[str]) -> None:
         entry = next(
             (
                 value
-                for value in entries.values()
+                for filename, value in entries.items()
+                if isinstance(filename, str)
                 if isinstance(value, dict)
-                and isinstance(value.get("ollama_name"), str)
-                and memory_guard_mod._same_ollama_id(value["ollama_name"], tag)
+                and memory_guard_mod._same_ollama_id(
+                    linker.resolve_ollama_runtime_name(filename, value), tag
+                )
             ),
             None,
         )
@@ -6599,7 +6692,15 @@ def benchmark_cmd(
             registry_entries = registry.load_registry()
             for model in successes:
                 entry = next(
-                    (e for e in registry_entries.values() if e.get("ollama_name") == model["tag"]),
+                    (
+                        e
+                        for filename, e in registry_entries.items()
+                        if isinstance(filename, str)
+                        and isinstance(e, dict)
+                        and memory_guard_mod._same_ollama_id(
+                            linker.resolve_ollama_runtime_name(filename, e), model["tag"]
+                        )
+                    ),
                     None,
                 )
                 samples = model["speed"]["samples_tokens_per_sec"]
@@ -7246,7 +7347,7 @@ def _cleanup_interrupted_install(filename: str) -> None:
     reg = registry.load_registry()
     found_name, entry = _lookup_entry(filename, reg)
     if entry:
-        ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+        ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
         if benchmark.ollama_daemon_reachable():
             quality_mod.ensure_model_unloaded(ollama_tag)
         _remove_one(found_name, entry)
