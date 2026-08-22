@@ -237,7 +237,7 @@ def print_screen(console: Console, info: object, candidate_count: int) -> None:
             hardware,
             title=f"[bold {ACCENT}]This PC[/]",
             title_align="left",
-            border_style="bright_black",
+            border_style="rule",
             box=box.ROUNDED,
             padding=(0, 1),
         )
@@ -321,7 +321,7 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
             ),
             title=Text(row.display_name, style=f"bold {ACCENT}"),
             title_align="left",
-            border_style="bright_black",
+            border_style="rule",
             box=box.ROUNDED,
             padding=(0, 1),
         )

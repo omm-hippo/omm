@@ -41,36 +41,42 @@ def test_light_preset_is_legible_on_a_light_background():
     pre-theming code, which are both near-invisible on an actual light
     terminal background - see the module docstring."""
     styles = theme.build_rich_theme("light").styles
-    assert styles["error"].color.name == "red"
     assert styles["error"].bold is True
     assert styles["warning"].color is not None
     assert styles["warning"].color.name not in ("yellow", "white")
     assert styles["warning"].bold is not True
-    assert styles["success"].color.name == "green"
     assert styles["success"].bold is True
-    assert styles["accent"].color.name == "blue"
+    # The site's pressed amber (#D89400), not the dark preset's #FFB000,
+    # which washes out on white.
+    assert styles["accent"].color.triplet.hex == "#d89400"
     assert styles["accent"].bold is True
     assert styles["muted"].dim is True
     assert styles["value"].color is None
+    assert styles["label"].dim is True and styles["rule"].dim is True
 
 
 def test_dark_preset_differs_from_light_in_accent_warning_and_value():
-    """error/success use plain red/green in both, since those already
-    read fine on either background; accent/warning/value are the roles
-    that actually depend on which background they're read against."""
     light = theme.build_rich_theme("light").styles
     dark = theme.build_rich_theme("dark").styles
     for role in ("accent", "warning", "value"):
         assert dark[role] != light[role], f"{role} should differ between light and dark"
-    for role in ("error", "success", "muted"):
-        assert dark[role].color == light[role].color
+    for role in ("error", "success"):
         assert dark[role].bold == light[role].bold
 
 
-def test_dark_preset_keeps_yellow_and_white_which_read_fine_on_black():
+def test_dark_preset_uses_the_omm_site_tokens_verbatim():
+    """The website's terminal mock-ups reproduce real omm output in these
+    colours (omm-site design/DIRECTION.md tokens); the real CLI must
+    match them so the two don't drift apart."""
     styles = theme.build_rich_theme("dark").styles
-    assert styles["warning"].color.name == "yellow"
-    assert styles["value"].color.name == "white"
+    assert styles["accent"].color.triplet.hex == "#ffb000"
+    assert styles["warning"].color.triplet.hex == "#ffb000"
+    assert styles["success"].color.triplet.hex == "#5bd98a"
+    assert styles["error"].color.triplet.hex == "#f2645a"
+    assert styles["value"].color.triplet.hex == "#f4f4f4"
+    assert styles["heading"].bold is True
+    for role in ("muted", "label", "rule"):
+        assert styles[role].color.triplet.hex == "#767676"
 
 
 def test_high_contrast_alert_roles_use_inverse_video_blocks():
@@ -84,7 +90,7 @@ def test_high_contrast_non_alert_roles_do_not_force_a_foreground_color():
     only reads well against one kind of background, which defeats the
     point of a preset meant to be legible on any terminal."""
     styles = theme.build_rich_theme("high-contrast").styles
-    for role in ("accent", "muted", "value"):
+    for role in ("accent", "muted", "value", "heading", "label", "rule"):
         assert styles[role].color is None, f"{role} should not force a foreground color"
         assert styles[role].bgcolor is None, f"{role} should not force a background color"
     assert styles["accent"].bold is True

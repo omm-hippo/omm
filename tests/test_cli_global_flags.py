@@ -48,27 +48,36 @@ def test_no_color_flag_disables_ansi_codes(isolated_omm_home, monkeypatch):
     config.update_config(theme="light")
     monkeypatch.setattr(
         cli, "console",
-        Console(force_terminal=True, highlight=False, theme=theme_mod.build_rich_theme("light")),
+        Console(
+            force_terminal=True, color_system="truecolor", highlight=False,
+            theme=theme_mod.build_rich_theme("light"),
+        ),
     )
     monkeypatch.setattr(
         cli, "err_console",
-        Console(stderr=True, force_terminal=True, highlight=False, theme=theme_mod.build_rich_theme("light")),
+        Console(
+            stderr=True, force_terminal=True, color_system="truecolor", highlight=False,
+            theme=theme_mod.build_rich_theme("light"),
+        ),
     )
+    from omm import registry
+
+    registry.save_registry({"model.gguf": {"size_bytes": 1024**3, "linked": {"ollama": True}}})
 
     # Rich's Console.no_color only strips color SGR codes, not every
-    # escape sequence - bold/italic/reset codes (used for the table's
-    # title and header row) legitimately survive --no-color, so this
-    # checks for the accent column's own code specifically rather than
-    # for "\x1b[" being absent entirely. `light`'s accent is bold blue,
-    # which rich emits as one combined SGR sequence (\x1b[1;34m), not a
-    # bare \x1b[34m.
-    with_color = runner.invoke(cli.app, ["setting", "version"])
+    # escape sequence - bold/dim/reset codes (used for the table's title,
+    # header row and label column) legitimately survive --no-color, so
+    # this checks for the accent column's own colour specifically rather
+    # than for "\x1b[" being absent entirely. `light`'s accent is
+    # #d89400, which truecolor emits as the 38;2;216;148;0 SGR.
+    accent_sgr = "38;2;216;148;0"
+    with_color = runner.invoke(cli.app, ["list"])
     assert with_color.exit_code == 0, with_color.stdout
-    assert "\x1b[1;34m" in with_color.stdout
+    assert accent_sgr in with_color.stdout
 
-    without_color = runner.invoke(cli.app, ["--no-color", "setting", "version"])
+    without_color = runner.invoke(cli.app, ["--no-color", "list"])
     assert without_color.exit_code == 0, without_color.stdout
-    assert "\x1b[1;34m" not in without_color.stdout
+    assert accent_sgr not in without_color.stdout
 
 
 def test_json_on_unsupported_command_warns_instead_of_silently_no_opping(isolated_omm_home):

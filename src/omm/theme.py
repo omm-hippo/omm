@@ -32,33 +32,48 @@ from rich.console import Console
 from rich.style import Style
 from rich.theme import Theme
 
-ROLES = ("error", "warning", "success", "accent", "muted", "value")
+# Roles, and the omm-site design tokens each preset mirrors (design/DIRECTION.md
+# in omm-site): the website's terminal mock-ups are reproductions of real omm
+# output, so the real thing should carry the same hierarchy - dim rules and
+# labels, bright values, one amber accent, green for success.
+#
+#   error    term-err   #F2645A      heading  ink-0 bold  (table headers, section titles)
+#   warning  term-warn  #FFB000      label    ink-3       (the "Field"/"Program" column)
+#   success  term-ok    #5BD98A      rule     ink-3       (box-drawing lines)
+#   accent   accent     #FFB000      muted    ink-3
+#   value    ink-0      #F4F4F4
+ROLES = ("error", "warning", "success", "accent", "muted", "value", "heading", "label", "rule")
 THEME_NAMES = ("light", "dark", "high-contrast", "no-color")
 
 _BASE_STYLES: dict[str, dict[str, Style]] = {
     "light": {
-        "error": Style(color="red", bold=True),
-        # Plain "yellow" is legible on a dark terminal but all but
-        # disappears on a light/white one; this darker gold keeps the
-        # same "warning" hue readable on a light background.
-        "warning": Style(color="dark_goldenrod"),
-        "success": Style(color="green", bold=True),
-        "accent": Style(color="blue", bold=True),
+        "error": Style(color="#c0392b", bold=True),
+        # The site's amber is a dark-background colour; on white it needs
+        # the pressed variant (accent-press #D89400) to stay readable.
+        "warning": Style(color="#b07500"),
+        "success": Style(color="#1f8a4c", bold=True),
+        "accent": Style(color="#d89400", bold=True),
         "muted": Style(dim=True),
         # No forced color: a light-background terminal's own default
         # foreground is already dark and readable, and hardcoding
         # "white" here (as the pre-theming code did) is invisible on it.
         "value": Style(),
+        "heading": Style(bold=True),
+        "label": Style(dim=True),
+        "rule": Style(dim=True),
     },
     "dark": {
-        "error": Style(color="red", bold=True),
-        "warning": Style(color="yellow"),
-        "success": Style(color="green", bold=True),
-        # Plain terminal blue reads as a near-illegible navy on a black
-        # background (the classic Ubuntu-bash directory-color problem).
-        "accent": Style(color="bright_cyan", bold=True),
-        "muted": Style(dim=True),
-        "value": Style(color="white"),
+        # Hex values are the omm-site tokens verbatim; rich downgrades
+        # them to the nearest 256/16-colour on terminals without truecolor.
+        "error": Style(color="#f2645a", bold=True),
+        "warning": Style(color="#ffb000"),
+        "success": Style(color="#5bd98a", bold=True),
+        "accent": Style(color="#ffb000", bold=True),
+        "muted": Style(color="#767676"),
+        "value": Style(color="#f4f4f4"),
+        "heading": Style(color="#f4f4f4", bold=True),
+        "label": Style(color="#767676"),
+        "rule": Style(color="#767676"),
     },
     "high-contrast": {
         "error": Style(color="white", bgcolor="red", bold=True),
@@ -72,6 +87,9 @@ _BASE_STYLES: dict[str, dict[str, Style]] = {
         "accent": Style(bold=True, underline=True),
         "muted": Style(dim=True),
         "value": Style(bold=True),
+        "heading": Style(bold=True, underline=True),
+        "label": Style(),
+        "rule": Style(),
     },
 }
 
