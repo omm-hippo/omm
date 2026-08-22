@@ -44,6 +44,7 @@ from omm import (
     config as config_mod,
     contribute_memory,
     contribute_state,
+    doctor as doctor_mod,
     error_report,
     launcher,
     linker,
@@ -182,7 +183,16 @@ class GlobalOptions:
 # Commands whose output --json actually restructures. Every other command
 # silently ignores the flag - warn instead so a script piping --json from
 # one of them doesn't get plain-text garbage with exit code 0 (see #81).
-_JSON_CAPABLE = {"search", "list", "info", "benchmark", "tune", "scan", "recommend"}
+_JSON_CAPABLE = {
+    "search",
+    "list",
+    "info",
+    "benchmark",
+    "tune",
+    "scan",
+    "recommend",
+    "doctor",
+}
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
@@ -318,6 +328,7 @@ Tuning & quality:
 
 Maintenance:
   omm scan
+  omm doctor
   omm setup
   omm engine install
   omm upgrade [MODEL]
@@ -558,11 +569,23 @@ def _root(
     opts.yes = opts.yes or yes_flag
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
-    theme_mod.apply_theme_to_console(console, load_config().get("theme", "dark"))
-    theme_mod.apply_theme_to_console(err_console, load_config().get("theme", "dark"))
+    doctor_mode = ctx.invoked_subcommand == "doctor"
+    theme = (
+        doctor_mod.read_theme_read_only()
+        if doctor_mode
+        else load_config().get("theme", "dark")
+    )
+    theme_mod.apply_theme_to_console(console, theme)
+    theme_mod.apply_theme_to_console(err_console, theme)
     if opts.no_color:
         console.no_color = True
         err_console.no_color = True
+    # `omm doctor` promises a literal read-only snapshot. The normal root
+    # prelude can create/migrate config, spawn an update checker, offer to
+    # import models, and flush queued network events, so return directly to
+    # the subcommand before any of those hooks are reached.
+    if doctor_mode:
+        return
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
         # Bare `omm` prints a real (if short) result, so it counts as a
@@ -598,7 +621,20 @@ def _root(
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
     ("Core", ["search", "install", "run", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
-    ("Maintenance", ["scan", "setup", "engine", "import", "autoremove", "link", "update", "help"]),
+    (
+        "Maintenance",
+        [
+            "scan",
+            "doctor",
+            "setup",
+            "engine",
+            "import",
+            "autoremove",
+            "link",
+            "update",
+            "help",
+        ],
+    ),
 ]
 
 
@@ -1147,7 +1183,7 @@ def _cached_remote_head_commit(ref: str = "main") -> str | None:
     return version_check.cached_remote_head(_remote_head_commit, ref)
 
 
-_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "help", "_bg-version-check"}
+_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check"}
 
 
 @app.command(name="_bg-version-check", hidden=True)
@@ -1192,7 +1228,7 @@ def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch:
         err_console.print("[warning]Update available! Run: [bold]omm update[/bold][/warning]")
 
 
-_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "help", "update", "_bg-version-check"}
+_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
 
 
 def _maybe_run_onboarding(ctx: typer.Context) -> None:
@@ -1262,6 +1298,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "help",
     "import",
     "contribute",
+    "doctor",
     "_bg-version-check",
 }
 
@@ -2234,6 +2271,46 @@ def _package_managed_update_guidance(
         f"`{attempted_command}` left the installation unchanged instead of replacing it "
         "with an editable Git checkout."
     )
+
+
+@app.command()
+@global_flags
+def doctor() -> None:
+    """Diagnose the OMM install and Ollama links without changing state.
+
+    WARN findings keep exit code 0; definite FAIL findings exit 1.
+    """
+    report = doctor_mod.collect_report(
+        module_path=Path(__file__).resolve(),
+        command_path=doctor_mod.running_command_path(),
+    )
+    if _global_opts().json:
+        console.print_json(data=report.as_dict())
+    else:
+        table = Table(title="omm doctor")
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Check", style="accent", no_wrap=True)
+        table.add_column("Detail")
+        status_styles = {"PASS": "success", "WARN": "warning", "FAIL": "error"}
+        for check in report.checks:
+            style = status_styles[check.status]
+            table.add_row(
+                f"[{style}]{check.status}[/{style}]",
+                escape(check.name),
+                escape(check.detail),
+            )
+        console.print(table)
+        counts = {
+            status: sum(check.status == status for check in report.checks)
+            for status in ("PASS", "WARN", "FAIL")
+        }
+        overall_style = status_styles[report.status]
+        console.print(
+            f"[{overall_style}]Overall: {report.status}[/{overall_style}] "
+            f"({counts['PASS']} pass, {counts['WARN']} warn, {counts['FAIL']} fail)"
+        )
+    if report.status == "FAIL":
+        raise typer.Exit(1)
 
 
 @app.command()
