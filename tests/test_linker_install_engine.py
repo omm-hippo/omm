@@ -1025,7 +1025,7 @@ def test_install_textgenwebui_rejects_malicious_archive_and_cleans_download(
     monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(linker, "scan_hardware", lambda: object())
     install_dir = tmp_path / "engines"
-    monkeypatch.setattr(linker, "_ENGINE_INSTALL_DIR", install_dir)
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: install_dir)
 
     asset_name = "textgen-portable-4.9-macos-arm64.tar.gz"
 
