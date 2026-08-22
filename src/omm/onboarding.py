@@ -59,8 +59,8 @@ def print_hardware_summary(console: Console) -> None:
     info = scan_hardware()
     budget = calculate_memory_budget(info)
 
-    table = Table(title="Your machine", box=None)
-    table.add_column("Field", style="accent")
+    table = Table(title="Your machine", box=None, title_style="muted", header_style="heading")
+    table.add_column("Field", style="label")
     table.add_column("Value", style="value")
     table.add_row("OS", f"{info.os_name} {info.os_version}")
     table.add_row("CPU", info.cpu)
