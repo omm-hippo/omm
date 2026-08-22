@@ -57,7 +57,7 @@ Download that script and run it with `-Purge` to remove the model hub and settin
 
 Runner note: on Windows x64 the checklist downloads the official AnythingLLM and Msty installers and runs them silently into `OMM_HOME\apps` (no winget package exists for either); on ARM Windows it prints their download page instead.
 
-Detailed walkthrough: <https://omm-site-sage.vercel.app/install/windows>
+Detailed walkthrough: <https://www.omm.run/install/windows>
 
 ### macOS
 
@@ -119,7 +119,7 @@ curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.sh | s
 
 Download that script and run it with `--purge` to remove the model hub and settings too.
 
-Detailed walkthrough: <https://omm-site-sage.vercel.app/install/macos>
+Detailed walkthrough: <https://www.omm.run/install/macos>
 
 ### Linux
 
@@ -162,7 +162,7 @@ Download that script and run it with `--purge` to remove the model hub and setti
 
 Runner note: omm installs Jan on Linux through Flatpak, so `flatpak` must be present for that entry in the runner checklist.
 
-Detailed walkthrough: <https://omm-site-sage.vercel.app/install/linux>
+Detailed walkthrough: <https://www.omm.run/install/linux>
 
 ### Any OS via PyPI or pipx
 
