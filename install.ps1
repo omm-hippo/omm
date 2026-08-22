@@ -151,9 +151,12 @@ function Test-PythonCommand {
         # child process plus a short timeout keeps the installer responsive.
         $startInfo = New-Object System.Diagnostics.ProcessStartInfo
         $startInfo.FileName = $Python.Executable
+        # Require pip too: an MSYS2/MinGW python.exe on PATH (C:\msys64\...)
+        # is a real 3.12 but ships without pip, so the pipx bootstrap below
+        # would die with "No module named pip". Skip it and keep looking.
         $startInfo.Arguments = (@($Python.Arguments) + @(
             "-c",
-            '"import sys; print(1 if sys.version_info >= (3, 10) else 0)"'
+            '"import sys, importlib.util; print(1 if sys.version_info >= (3, 10) and importlib.util.find_spec(\"pip\") else 0)"'
         )) -join " "
         $startInfo.UseShellExecute = $false
         $startInfo.RedirectStandardOutput = $true
@@ -284,7 +287,8 @@ function Test-PipxSnapshotIdentity {
     if (($null -ne $metadata.environment -and $metadata.environment -cne $Name) -or $main.package -cne $Distribution -or $main.suffix -cne "") {
         return $false
     }
-    if (@($main.apps | Where-Object { $_ -ceq "omm" }).Count -ne 1) { return $false }
+    # pipx on Windows records apps as launcher filenames ("omm.exe").
+    if (@($main.apps | Where-Object { $_ -in @("omm", "omm.exe") }).Count -ne 1) { return $false }
     $expectedDir = Join-Path (Join-Path $PipxLocalVenvs $Name) "Scripts"
     $ommPaths = @($main.app_paths | ForEach-Object {
         $path = [string]$_.'__Path__'
@@ -503,7 +507,9 @@ if ($LegacyPipxPresent -and (
     -not (Test-PipxSnapshotIdentity $PipxSnapshot $LegacyPipxEnvironment $LegacyPipxEnvironment) -or
     -not (Test-OmmPipxEnvironment $LegacyPipxEnvironment $LegacyPipxEnvironment -RequireLegacySource)
 )) {
-    Write-Error "Refusing to replace unrelated pipx environment 'omm'. Remove or rename that environment manually first."
+    Write-Error ("Refusing to replace pipx environment 'omm': it is not an omm install this installer recognises " +
+        "(typically because OMM_HOME moved after the original install, or its source checkout was deleted). " +
+        "Your models and settings under OMM_HOME are not affected. Run `pipx uninstall omm`, then re-run this installer.")
     exit 1
 }
 $NewPipxPresent = Test-PipxSnapshotEnvironment $PipxSnapshot $PipxEnvironment
