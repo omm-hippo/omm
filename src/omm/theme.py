@@ -250,6 +250,10 @@ def run_picker(current: str, *, current_label: str | None = "current", allow_bac
     bindings = _build_picker_key_bindings(state, options)
     root = HSplit(
         [
+            Window(
+                FormattedTextControl("Preview - how each kind of omm message will look:"),
+                dont_extend_height=True,
+            ),
             Window(FormattedTextControl(_preview_fragments), dont_extend_height=True, always_hide_cursor=True),
             Window(height=1, char=" "),
             Window(
