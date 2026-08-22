@@ -49,6 +49,7 @@ from omm import (
     contribute_state,
     doctor as doctor_mod,
     error_report,
+    fit_ui,
     launcher,
     linker,
     memory_guard as memory_guard_mod,
@@ -362,6 +363,16 @@ class _RootHelpGroup(typer.core.TyperGroup):
         return super().get_command(ctx, cmd_name)
 
 
+def _table(*args, **kwargs) -> Table:
+    """Every table omm prints, in the site's hierarchy: dim rules and
+    title, bold header row. Column styles stay per call site (labels are
+    `label`, values `value`, filenames `accent`)."""
+    kwargs.setdefault("border_style", "rule")
+    kwargs.setdefault("header_style", "heading")
+    kwargs.setdefault("title_style", "muted")
+    return Table(*args, **kwargs)
+
+
 app = typer.Typer(
     name="omm",
     help="Open source Model Manager - package manager for local LLMs (GGUF).",
@@ -625,7 +636,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "run", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
+    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
     (
         "Maintenance",
@@ -978,8 +989,8 @@ def scan() -> None:
         )
         return
 
-    table = Table(title="omm hardware scan")
-    table.add_column("Field", style="accent")
+    table = _table(title="omm hardware scan")
+    table.add_column("Field", style="label")
     table.add_column("Value", style="value")
 
     table.add_row("OS", f"{info.os_name} {info.os_version}")
@@ -1008,9 +1019,9 @@ def scan() -> None:
 
     console.print(table)
 
-    engine_table = Table(title="Local AI runners", box=None)
-    engine_table.add_column("Program", style="accent")
-    engine_table.add_column("Status", style="value")
+    engine_table = _table(title="Local AI runners", box=None)
+    engine_table.add_column("Program", style="label")
+    engine_table.add_column("Status", style="success")
     for spec in linker.ENGINES:
         if installed[spec.key]:
             engine_table.add_row(spec.label, "installed")
@@ -1018,13 +1029,15 @@ def scan() -> None:
     console.print(engine_table)
     note = _missing_engines_note(installed)
     if note and not opts.quiet:
-        console.print(note)
+        console.print(note, style="muted")
 
-    model_table = Table(title="Local AI models", box=None)
-    model_table.add_column("Model", style="accent")
-    model_table.add_column("Location", style="value")
-    model_table.add_column("Engine(s)")
-    model_table.add_column("Managed by omm")
+    model_table = _table(title="Local AI models", box=None)
+    # Model names get the room first: a truncated `tinyllama-1.1b-cha…` is
+    # what the user has to type back, the path is only where it lives.
+    model_table.add_column("Model", style="accent", overflow="ellipsis", min_width=30)
+    model_table.add_column("Location", style="value", overflow="ellipsis")
+    model_table.add_column("Engine(s)", style="muted")
+    model_table.add_column("Managed by omm", style="muted", no_wrap=True)
     for filename, entry in reg.items():
         linked = entry.get("linked", {})
         engines = [name for name, on in linked.items() if on]
@@ -1272,7 +1285,7 @@ def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch:
         return
     version_check.record(latest, branch)
     if latest != installed:
-        err_console.print("[warning]Update available! Run: [bold]omm update[/bold][/warning]")
+        err_console.print("[muted]Update available! Run: omm update[/muted]")
 
 
 _SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
@@ -2889,8 +2902,8 @@ def recommend() -> None:
 
 
 def _print_runtime_profile(profile: tuning.RuntimeProfile) -> None:
-    table = Table(title=f"Recommended {profile.profile_name} runtime profile")
-    table.add_column("Setting", style="accent")
+    table = _table(title=f"Recommended {profile.profile_name} runtime profile")
+    table.add_column("Setting", style="label")
     table.add_column("Starting value")
     table.add_row("Context length", f"{profile.context_length:,} tokens")
     table.add_row("GPU offload", profile.gpu_offload_label)
@@ -5128,8 +5141,8 @@ def info(
         )
         return
 
-    table = Table(title=filename, show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title=filename, show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     repo_label = entry.get("repo_id") or "(direct URL install)"
     provider = entry.get("provider")
@@ -5163,9 +5176,13 @@ def info(
             )
 
     console.print(table)
+    size_bytes = entry.get("size_bytes", 0)
+    if isinstance(size_bytes, (int, float)) and size_bytes > 0:
+        console.print()
+        console.print(_fit_card(filename, int(size_bytes)))
     note = _missing_engines_note(installed)
     if note:
-        console.print(note)
+        console.print(note, style="muted")
 
 
 def _update_one(filename: str, entry: dict) -> str:
@@ -5392,6 +5409,75 @@ def run(
     console.print(f"[success]{result.message}[/success]")
 
 
+def _fit_card(label: str, size_bytes: int):
+    """The omm.run memory card for one model on this PC."""
+    hw = scan_hardware()
+    budget = calculate_memory_budget(hw)
+    size_gb = size_bytes / (1024**3)
+    required_gb = predictor.estimate_required_memory_gb({"size_bytes": size_bytes}) or size_gb
+    return fit_ui.render_fit(
+        hw=hw,
+        budget=budget,
+        model_label=label,
+        size_gb=size_gb,
+        required_gb=required_gb,
+        width=console.size.width,
+    )
+
+
+@app.command()
+@global_flags
+def fit(
+    model_name: str = typer.Argument(
+        ..., autocompletion=complete_install_name, help="Installed model, curated id, repo/file, or search number."
+    ),
+) -> None:
+    """Show whether a model fits this PC's memory right now - installed or not - as a bar
+    over what other apps use, the OS reserve, and the install cap."""
+    model_name = _resolve_ref(model_name)
+    reg = registry.load_registry()
+    filename, entry = _lookup_entry(model_name, reg)
+    if entry is not None and isinstance(entry.get("size_bytes"), (int, float)) and entry["size_bytes"] > 0:
+        label, size_bytes = filename, int(entry["size_bytes"])
+    else:
+        try:
+            resolved = resolve_model(model_name)
+        except ModelResolutionError as error:
+            err_console.print(f"[error]{error}[/error]")
+            raise typer.Exit(1) from error
+        size_bytes = None
+        if resolved.repo_id and resolved.provider:
+            size_bytes = remote_file_size(resolved.provider, resolved.repo_id, resolved.filename)
+        if not size_bytes:
+            err_console.print(
+                f"[error]Could not determine the size of {resolved.filename} "
+                "(not installed, and the provider did not report a file size).[/error]"
+            )
+            raise typer.Exit(1)
+        label = resolved.filename
+    if _global_opts().json:
+        hw = scan_hardware()
+        budget = calculate_memory_budget(hw)
+        size_gb = size_bytes / (1024**3)
+        required_gb = predictor.estimate_required_memory_gb({"size_bytes": size_bytes}) or size_gb
+        v = fit_ui.verdict(required_gb, budget)
+        console.print_json(
+            data={
+                "model": label,
+                "size_gb": round(size_gb, 2),
+                "required_gb": round(required_gb, 2),
+                "in_use_gb": round(max(0.0, hw.ram_total_gb - hw.ram_available_gb), 2),
+                "reserved_gb": round(budget.ram_safety_reserve_gb, 2),
+                "model_budget_gb": round(budget.model_budget_gb, 2),
+                "install_cap_gb": round(budget.install_budget_gb, 2),
+                "status": v.status,
+                "message": v.message,
+            }
+        )
+        return
+    console.print(_fit_card(label, size_bytes))
+
+
 @app.command()
 @global_flags
 def upgrade(
@@ -5491,7 +5577,7 @@ def list_models(
         session_cache.record_results(list(reg.keys()))
         return
 
-    table = Table(title="omm models")
+    table = _table(title="omm models")
     table.add_column("#", justify="right")
     table.add_column("Filename", style="accent")
     table.add_column("Size", justify="right")
@@ -5535,8 +5621,8 @@ def configure_telemetry(
             )
     if changes:
         current = config_mod.update_config(**changes)
-    table = Table(title="Telemetry destination", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Telemetry destination", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Backend", str(current.get("telemetry_backend") or "local"))
     table.add_row("Endpoint", str(current.get("telemetry_endpoint") or "not configured"))
@@ -5568,8 +5654,8 @@ def configure_upload(
         changes["telemetry_send_policy"] = "ask"
     if changes:
         current = config_mod.update_config(**changes)
-    table = Table(title="Benchmark upload policy", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Benchmark upload policy", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     policy = current.get("telemetry_send_policy", "ask")
     table.add_row("Uploads", {"always": "always", "never": "never", "ask": "ask (default)"}[policy])
@@ -5616,8 +5702,8 @@ def configure_error_reports(
         discarded = error_report.discard_pending()
         if discarded:
             console.print(f"[muted]Discarded {discarded} queued error report(s).[/muted]")
-    table = Table(title="Error report policy", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Error report policy", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     labels = {
         "always": "always",
@@ -5664,8 +5750,8 @@ def configure_memory_guard(
     if low_memory_seconds is not None:
         changes["memory_guard_low_memory_seconds"] = low_memory_seconds
     current = config_mod.update_config(**changes) if changes else load_config()
-    table = Table(title="Memory Guard", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Memory Guard", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Policy", str(current["memory_guard_policy"]))
     table.add_row("Poll interval", f"{current['memory_guard_poll_seconds']} seconds")
@@ -5703,8 +5789,8 @@ def configure_version(
             current = config_mod.update_config(update_channel="stable")
             console.print("[success]Using stable package-managed releases.[/success]")
         commit = _installed_commit()
-        table = Table(title="Update channel", show_header=False)
-        table.add_column("Field", style="accent")
+        table = _table(title="Update channel", show_header=False)
+        table.add_column("Field", style="label")
         table.add_column("Value")
         table.add_row("Channel", "stable (package-managed)")
         table.add_row("Commit", commit[:7] if commit else "unknown")
@@ -5724,8 +5810,8 @@ def configure_version(
         _refresh_data()
     channel = current.get("update_channel") or "stable"
     commit = _installed_commit()
-    table = Table(title="Update channel", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Update channel", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Channel", f"{channel} ({_channel_branch(channel)})")
     table.add_row("Commit", commit[:7] if commit else "unknown")
@@ -5770,8 +5856,8 @@ def configure_theme(
         current = config_mod.update_config(theme=set_name)
         theme_mod.apply_theme_to_console(console, set_name)
         theme_mod.apply_theme_to_console(err_console, set_name)
-    table = Table(title="Color theme", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Color theme", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Theme", str(current.get("theme", "dark")))
     console.print(table)
@@ -5885,8 +5971,8 @@ def catalog_status() -> None:
             fingerprint = catalog.public_key_fingerprint(public_key)
         except catalog.CatalogVerificationError:
             fingerprint = "invalid"
-    table = Table(title="Recommendation catalog", show_header=False)
-    table.add_column("Field", style="accent")
+    table = _table(title="Recommendation catalog", show_header=False)
+    table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Signed manifest", str(current.get("catalog_manifest_url") or "not configured"))
     table.add_row("Trusted key", fingerprint)
@@ -6175,12 +6261,12 @@ def search(
                 )
             else:
                 if not header_printed:
-                    console.print(f"[accent]==> {family}[/accent]")
+                    console.print(f"[heading]==> {family}[/heading]")
                     header_printed = True
                 if fits_hardware:
-                    console.print(f"  [{len(refs)}] {ref}  [muted]{desc}[/muted]")
+                    console.print(f"  [muted][{len(refs)}][/muted] [accent]{ref}[/accent]  [muted]{desc}[/muted]")
                 else:
-                    console.print(f"  [{len(refs)}] [error]{ref}  (predicted not to run on this hardware)[/error]")
+                    console.print(f"  [muted][{len(refs)}][/muted] {ref}  [error](predicted not to run on this hardware)[/error]")
         if not json_output and header_printed:
             console.print()
         if limit is not None and len(refs) >= limit:
@@ -6653,7 +6739,7 @@ def benchmark_cmd(
         transient = [m for m in report["models"] if m.get("outcome") == "transient_error"]
 
         if successes:
-            table = Table(title="Localfit reproducible quality evidence")
+            table = _table(title="Localfit reproducible quality evidence")
             table.add_column("Model", style="accent")
             table.add_column("Parameters")
             table.add_column("Quantization")
