@@ -498,6 +498,32 @@ if (-not (Test-PipxAvailable)) {
     Update-SessionPath
 }
 Invoke-Pipx ensurepath
+
+# pipx keeps one shared venv (pip/setuptools) that every `pipx install`
+# borrows. On a machine where pipx has been around for a while that venv
+# can hold a half-upgraded pip (seen live: `ImportError: cannot import name
+# 'get_runnable_pip'`), and then *every* install dies at "determining
+# package name" before omm's own code is even reached. Probe it once; if
+# its pip can't even print a version, drop the directory - pipx rebuilds
+# it from scratch on the next install.
+function Repair-PipxSharedLibs {
+    $shared = ([string](Invoke-Pipx environment --value PIPX_SHARED_LIBS)).Trim()
+    if (-not $shared -or -not (Test-Path -LiteralPath $shared)) { return }
+    $sharedPython = Join-Path $shared "Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $sharedPython -PathType Leaf)) { return }
+    $healthy = $false
+    try {
+        & $sharedPython -m pip --version *> $null
+        $healthy = ($LASTEXITCODE -eq 0)
+    } catch {
+        $healthy = $false
+    }
+    if (-not $healthy) {
+        Write-Host "pipx's shared pip is broken; rebuilding it..."
+        Remove-Item -LiteralPath $shared -Recurse -Force
+    }
+}
+Repair-PipxSharedLibs
 $PythonExecutable = (Invoke-Python -c "import sys; print(sys.executable)").Trim()
 $PipxLocalVenvs = ([string](Invoke-Pipx environment --value PIPX_LOCAL_VENVS)).Trim()
 $PipxBinDir = ([string](Invoke-Pipx environment --value PIPX_BIN_DIR)).Trim()
