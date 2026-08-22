@@ -356,7 +356,13 @@ def _registered_ollama_tags(registry_data: dict) -> list[tuple[str, str, str]]:
         ):
             continue
         stored_tag = stored.strip() if isinstance(stored, str) else ""
-        runtime_tag = runtime.strip() if isinstance(runtime, str) else stored_tag
+        if isinstance(runtime, str) or isinstance(stored, str):
+            try:
+                runtime_tag = linker.resolve_ollama_runtime_name(filename, raw_entry)
+            except (OSError, TypeError, ValueError):
+                runtime_tag = runtime.strip() if isinstance(runtime, str) else stored_tag
+        else:
+            runtime_tag = ""
         mappings.append((filename, stored_tag or runtime_tag, runtime_tag))
     return mappings
 

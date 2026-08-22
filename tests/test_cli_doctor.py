@@ -285,6 +285,26 @@ def test_ollama_checks_compare_saved_runtime_tags_with_actual_api_tags(monkeypat
     assert all("intentionally-unlinked" not in check.name for check in checks)
 
 
+def test_registered_ollama_tags_use_legacy_manifest_resolution(monkeypatch):
+    calls = []
+
+    def fake_resolve(filename, entry):
+        calls.append((filename, entry))
+        return "qwen3:4b"
+
+    monkeypatch.setattr(doctor.linker, "resolve_ollama_runtime_name", fake_resolve)
+    entry = {
+        "linked": {"ollama": True},
+        "ollama_name": "qwen3-4b",
+        "sha256": "a" * 64,
+    }
+
+    mappings = doctor._registered_ollama_tags({"qwen3-4b.gguf": entry})
+
+    assert mappings == [("qwen3-4b.gguf", "qwen3-4b", "qwen3:4b")]
+    assert calls == [("qwen3-4b.gguf", entry)]
+
+
 def test_ollama_api_tags_uses_exact_read_only_tags_endpoint(monkeypatch):
     calls = []
 
