@@ -1467,6 +1467,17 @@ _PIPX_LEGACY_ENV = "omm"
 _PIPX_EXPECTED_APPS = {"omm", "localfit-server"}
 
 
+def _pipx_app_names(apps: object) -> list[str] | None:
+    """pipx records app names as the launcher filenames, so on Windows the
+    metadata says `omm.exe` / `localfit-server.exe` where POSIX says
+    `omm` / `localfit-server`. Strip the suffix so every app-set check
+    below compares the same names on both platforms. None if the
+    metadata isn't a list of strings."""
+    if not isinstance(apps, list) or not all(isinstance(app, str) for app in apps):
+        return None
+    return [app[:-4] if app.casefold().endswith(".exe") else app for app in apps]
+
+
 @dataclass(frozen=True)
 class _PipxInstallVerification:
     local_venvs: Path
@@ -1607,9 +1618,9 @@ def _verify_pipx_installation() -> tuple[_PipxInstallVerification | None, str | 
     expected_version = _omm_version()
     if main_package.get("package_version") != expected_version:
         return None, "pipx omm-model environment contains the wrong package version"
-    apps = main_package.get("apps")
+    apps = _pipx_app_names(main_package.get("apps"))
     app_paths = main_package.get("app_paths")
-    if not isinstance(apps, list) or set(apps) != _PIPX_EXPECTED_APPS:
+    if apps is None or set(apps) != _PIPX_EXPECTED_APPS:
         return None, "pipx omm-model environment exposes an unexpected app set"
     if not isinstance(app_paths, list) or len(app_paths) != len(apps):
         return None, "pipx omm-model app paths do not match its app list"
@@ -1682,9 +1693,9 @@ def _capture_legacy_pipx_state() -> tuple[_LegacyPipxState | None, str | None]:
     legacy_version = main_package.get("package_version")
     if not isinstance(legacy_version, str) or not legacy_version:
         return None, "the legacy pipx environment has no exact package version"
-    apps = main_package.get("apps")
+    apps = _pipx_app_names(main_package.get("apps"))
     app_paths = main_package.get("app_paths")
-    if not isinstance(apps, list) or set(apps) != _PIPX_EXPECTED_APPS:
+    if apps is None or set(apps) != _PIPX_EXPECTED_APPS:
         return None, "the legacy pipx environment exposes an unexpected app set"
     if not isinstance(app_paths, list) or len(app_paths) != len(apps):
         return None, "the legacy pipx environment has invalid app paths"
@@ -1737,9 +1748,9 @@ def _verify_legacy_pipx_execution(state: _LegacyPipxState) -> tuple[bool, str | 
     expected_version = state.expected_version or _omm_version()
     if main_package.get("package_version") != expected_version:
         return False, "legacy pipx package version changed"
-    apps = main_package.get("apps")
+    apps = _pipx_app_names(main_package.get("apps"))
     app_paths = main_package.get("app_paths")
-    if not isinstance(apps, list) or set(apps) != _PIPX_EXPECTED_APPS:
+    if apps is None or set(apps) != _PIPX_EXPECTED_APPS:
         return False, "legacy pipx app set changed"
     if not isinstance(app_paths, list) or len(app_paths) != len(apps):
         return False, "legacy pipx app path metadata changed"
