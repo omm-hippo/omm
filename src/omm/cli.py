@@ -2896,7 +2896,19 @@ def recommend() -> None:
         console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
     if artifact and artifact.get("candidates"):
         ranked = predictor.rank_candidates(artifact, info)
-        viable = [(c, speed) for c, speed in ranked if speed > 0][:10]
+        usable = [
+            (c, speed) for c, speed in ranked if speed >= predictor.MIN_USABLE_TOKENS_PER_SECOND
+        ]
+        if usable:
+            usable.sort(
+                key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
+                reverse=True,
+            )
+            viable = usable[:10]
+        else:
+            # Nothing clears the usable-speed floor (very weak hardware) - fall
+            # back to the fastest candidates available rather than show nothing.
+            viable = [(c, speed) for c, speed in ranked if speed > 0][:10]
         if not viable:
             err_console.print("[error]No model is predicted to run on this hardware.[/error]")
             raise typer.Exit(1)

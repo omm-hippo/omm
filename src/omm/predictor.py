@@ -33,6 +33,14 @@ class ModelFetchError(Exception):
 MODEL_MEMORY_OVERHEAD = 1.2
 SUPPORTED_MODEL_VERSION = 4
 
+# Roughly average human reading speed. rank_candidates() sorts by predicted
+# speed alone, so a smaller model is always ranked above a larger one that's
+# still perfectly usable - left unfiltered, the top of that list is always
+# the tiniest models on the list, no matter how much memory headroom the
+# hardware has. Candidates at or above this floor are "fast enough" and get
+# re-sorted by size so the recommend list actually uses the available budget.
+MIN_USABLE_TOKENS_PER_SECOND = 5.0
+
 
 def validate_model_artifact(artifact: object) -> dict:
     """Validate an untrusted JSON model before it reaches the predictor."""
