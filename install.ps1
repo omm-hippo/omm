@@ -154,9 +154,18 @@ function Test-PythonCommand {
         # Require pip too: an MSYS2/MinGW python.exe on PATH (C:\msys64\...)
         # is a real 3.12 but ships without pip, so the pipx bootstrap below
         # would die with "No module named pip". Skip it and keep looking.
+        #
+        # Reject the Microsoft Store Python outright (sys.executable under
+        # WindowsApps\PythonSoftwareFoundation.Python...). Store apps run
+        # with filesystem virtualization: writes to %LOCALAPPDATA% silently
+        # land in ...\Packages\<app>\LocalCache\Local\ instead, so pipx
+        # creates its venv in one place and then reads it from the other
+        # ("failed to locate pyvenv.cfg"), and the shared pip venv ends up
+        # half-written. Seen live 2026-08-23 on the bare-name `python`
+        # fallback, which Windows resolves to the Store alias.
         $startInfo.Arguments = (@($Python.Arguments) + @(
             "-c",
-            '"import sys, importlib.util; print(1 if sys.version_info >= (3, 10) and importlib.util.find_spec(\"pip\") else 0)"'
+            '"import sys, importlib.util; exe = sys.executable.lower(); store = (\"windowsapps\" in exe) or (\"pythonsoftwarefoundation.python\" in exe); print(1 if sys.version_info >= (3, 10) and importlib.util.find_spec(\"pip\") and not store else 0)"'
         )) -join " "
         $startInfo.UseShellExecute = $false
         $startInfo.RedirectStandardOutput = $true
@@ -199,11 +208,13 @@ function Get-PythonCommand {
     foreach ($candidate in $resolved) {
         if (Test-PythonCommand $candidate) { return $candidate }
     }
-    # Probe execution, rather than trusting Get-Command. Prefer python.org /
-    # winget's `python`, then the py launcher, before asking winget to install.
+    # Probe execution, rather than trusting Get-Command. The `py` launcher
+    # (python.org installs register it) goes before the bare `python` name:
+    # on a PC whose PATH lacks python.org's directory, bare `python` is the
+    # Microsoft Store alias, which Test-PythonCommand rejects anyway.
     foreach ($candidate in @(
-        [pscustomobject]@{ Executable = "python"; Arguments = @() },
-        [pscustomobject]@{ Executable = "py"; Arguments = @("-3") }
+        [pscustomobject]@{ Executable = "py"; Arguments = @("-3") },
+        [pscustomobject]@{ Executable = "python"; Arguments = @() }
     )) {
         if (Test-PythonCommand $candidate) { return $candidate }
     }
@@ -212,12 +223,16 @@ function Get-PythonCommand {
 
 $PythonCmd = Get-PythonCommand
 if (-not $PythonCmd) {
+    # Nothing usable - including the case where the only Python is the
+    # Microsoft Store one. winget's Python.Python.* is the python.org build.
+    Write-Host "No usable Python 3.10+ found (the Microsoft Store Python cannot host pipx environments)."
     if (Install-ViaWinget "Python.Python.3.12" "Python") {
         $PythonCmd = Get-PythonCommand
     }
 }
 if (-not $PythonCmd) {
-    Write-Error "Python not found. Install Python 3.10+ first: https://www.python.org/downloads/"
+    Write-Error ("Python 3.10+ not found. Install it from https://www.python.org/downloads/ (not the Microsoft Store " +
+        "version - Store apps virtualize the folders pipx needs) and re-run this installer.")
     exit 1
 }
 

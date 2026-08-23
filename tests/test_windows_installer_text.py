@@ -56,6 +56,22 @@ def test_installer_probes_a_runnable_supported_python_not_just_path_presence():
     assert "$process.Kill()" in script
 
 
+def test_installer_rejects_microsoft_store_python_and_prefers_py_launcher():
+    """Live failure 2026-08-23: on a PC whose PATH lacked python.org's dir,
+    the bare-name `python` fallback resolved to the Microsoft Store alias.
+    Store apps virtualize %LOCALAPPDATA% writes, so pipx wrote its venv to
+    ...\\LocalCache\\Local\\ and then read the real path ("failed to locate
+    pyvenv.cfg"). The probe must reject Store interpreters by
+    sys.executable, and `py -3` must be tried before bare `python`."""
+    script = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    probe = script.split("function Test-PythonCommand {", 1)[1].split("function Get-PythonCommand", 1)[0]
+    assert 'windowsapps' in probe and 'pythonsoftwarefoundation.python' in probe
+    assert "and not store" in probe
+    fallbacks = script.split("# Probe execution, rather than trusting Get-Command", 1)[1]
+    assert fallbacks.index('Executable = "py"; Arguments = @("-3")') < fallbacks.index('Executable = "python"')
+    assert "Microsoft Store" in script and "python.org/downloads" in script
+
+
 def test_installers_repair_a_broken_pipx_shared_venv_before_installing():
     """Seen live on a fresh-user run (Windows 11, old pipx present): the
     shared pip raised `cannot import name 'get_runnable_pip'` and every
