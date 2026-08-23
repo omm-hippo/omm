@@ -249,12 +249,18 @@ def run_picker(current: str, *, current_label: str | None = "current", allow_bac
     back = "← Back"
     options = list(THEME_NAMES) + ([back] if allow_back else [])
     state = {"index": options.index(current) if current in options else 0}
+    # render_preview_ansi rebuilds a rich Console+Theme from scratch; with
+    # only THEME_NAMES worth of distinct previews (4), computing each once
+    # and reusing it avoids redoing that work on every arrow-key redraw.
+    preview_cache: dict[str, ANSI] = {}
 
     def _preview_fragments():
         name = options[state["index"]]
         if name not in THEME_NAMES:
             return ANSI("")
-        return ANSI(render_preview_ansi(name))
+        if name not in preview_cache:
+            preview_cache[name] = ANSI(render_preview_ansi(name))
+        return preview_cache[name]
 
     def _list_fragments():
         fragments = []

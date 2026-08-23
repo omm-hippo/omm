@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
@@ -89,17 +90,22 @@ def curated_candidates() -> list[dict]:
 
 
 def main() -> None:
-    try:
-        trending = fetch_trending_candidates()
-    except requests.RequestException as e:
-        print(f"Warning: HF fetch failed ({e}), using curated candidates only.")
-        trending = []
+    # HF and ModelScope are independent network sources - fetch concurrently.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        trending_future = executor.submit(fetch_trending_candidates)
+        modelscope_future = executor.submit(fetch_modelscope_candidates)
 
-    try:
-        modelscope_candidates = fetch_modelscope_candidates()
-    except requests.RequestException as e:
-        print(f"Warning: ModelScope fetch failed ({e}), skipping.")
-        modelscope_candidates = []
+        try:
+            trending = trending_future.result()
+        except requests.RequestException as e:
+            print(f"Warning: HF fetch failed ({e}), using curated candidates only.")
+            trending = []
+
+        try:
+            modelscope_candidates = modelscope_future.result()
+        except requests.RequestException as e:
+            print(f"Warning: ModelScope fetch failed ({e}), skipping.")
+            modelscope_candidates = []
 
     seen_keys: set[tuple[str, str]] = set()
     candidates = []

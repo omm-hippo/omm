@@ -14,6 +14,7 @@ CI-only dependency (see requirements-train.txt), never shipped to users.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import math
@@ -997,6 +998,7 @@ def stable_holdout_split(
     )
 
 
+@functools.lru_cache(maxsize=1)
 def synthetic_rows_from_rules() -> tuple[list[list[float]], list[float]]:
     """Build a broad, deterministic bootstrap grid.
 
@@ -1005,6 +1007,11 @@ def synthetic_rows_from_rules() -> tuple[list[list[float]], list[float]]:
     nearly every sub-2B model. The denser parameter/quantization grid keeps the
     cold-start estimator honest about size differences while real telemetry
     remains the higher-weight source of truth.
+
+    Cached: this grid is pure and deterministic (no arguments), but the
+    quality-gate path calls `training_data_with_synthetic_prior` twice per
+    run (once for the candidate, once for the final artifact) - recomputing
+    the ~25k-row nested loop both times was pure waste.
     """
     X, y = [], []
     architectures = [(parameters, parameters) for parameters in PARAMETER_GRID_B]
@@ -1126,7 +1133,11 @@ def train_artifact(
     }
 
 
+@functools.lru_cache(maxsize=1)
 def load_candidates() -> list[dict]:
+    # Cached: the quality-gate path calls train_artifact() twice per run
+    # (candidate, then final artifact), each re-reading and re-parsing the
+    # same static published/candidates.json from disk.
     candidates_path = Path(__file__).resolve().parent.parent / "published" / "candidates.json"
     if candidates_path.exists():
         return json.loads(candidates_path.read_text(encoding="utf-8"))

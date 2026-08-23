@@ -2829,6 +2829,7 @@ def _select_recommended_model(
 ) -> str | None:
     import questionary
 
+    recommend_ui.set_no_color(_global_opts().no_color)
     rows = recommend_ui.build_rows(ranked, refs)
     recommend_ui.print_screen(console, info, len(rows))
     choices = [
@@ -3125,12 +3126,24 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
     available_gb = calculate_memory_budget(info).install_budget_gb
 
     variants = rank_quant_variants(error.candidates, available_gb, error.param_count_b)
+    needs_fetch = [variant for variant in variants if variant.required_gb is None]
+    sizes: dict[str, int | None] = {}
+    if needs_fetch:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(8, len(needs_fetch))) as executor:
+            fetched = executor.map(
+                lambda v: remote_file_size(error.provider, error.repo_id, v.filename),
+                needs_fetch,
+            )
+        sizes = {v.filename: size for v, size in zip(needs_fetch, fetched)}
+
     resolved_variants = []
     for variant in variants:
         if variant.required_gb is not None:
             resolved_variants.append(variant)
             continue
-        size_bytes = remote_file_size(error.provider, error.repo_id, variant.filename)
+        size_bytes = sizes.get(variant.filename)
         if size_bytes is None:
             resolved_variants.append(variant)
             continue
@@ -3385,13 +3398,24 @@ def _fetch_sibling_candidates(boundary: dict) -> list[dict]:
         scored.append((abs(bits - tried_bits), filename))
     scored.sort(key=lambda item: item[0])
 
+    from concurrent.futures import ThreadPoolExecutor
+
+    filenames = [filename for _, filename in scored]
+    if filenames:
+        with ThreadPoolExecutor(max_workers=min(8, len(filenames))) as executor:
+            sizes = list(
+                executor.map(lambda fn: remote_file_size(provider, repo_id, fn), filenames)
+            )
+    else:
+        sizes = []
+
     siblings = []
-    for _, filename in scored:
+    for filename, size_bytes in zip(filenames, sizes):
         candidate = dict(boundary)
         candidate["provider"] = provider
         candidate["filename"] = filename
         candidate.pop("quant_bits", None)
-        candidate["size_bytes"] = remote_file_size(provider, repo_id, filename)
+        candidate["size_bytes"] = size_bytes
         siblings.append(candidate)
     return siblings
 

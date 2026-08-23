@@ -359,6 +359,27 @@ def _update_link_ownership(path: Path, ownership: dict[str, object] | None) -> N
         atomic_write_text(LINK_OWNERSHIP_PATH, json.dumps(records, indent=2) + "\n")
 
 
+def _bulk_clear_link_ownership(paths: Sequence[Path]) -> None:
+    """Remove several ownership records in one locked read-modify-write.
+
+    An autoremove pass can find many broken links at once; clearing each
+    one through `_update_link_ownership` individually would reload and
+    rewrite the *entire* on-disk registry once per removed path (an O(n)
+    full-file read+write for n unrelated removals found in the same pass).
+    This reaches the same end state - every key in `paths` is gone from
+    the registry - with a single lock acquisition, read, and write no
+    matter how many paths are being cleared.
+    """
+    if not paths:
+        return
+    keys = [_link_key(path) for path in paths]
+    with locked(LINK_OWNERSHIP_PATH):
+        records = _load_link_ownership()
+        for key in keys:
+            records.pop(key, None)
+        atomic_write_text(LINK_OWNERSHIP_PATH, json.dumps(records, indent=2) + "\n")
+
+
 def _record_ownership(dst: Path, src: Path | None, kind: str) -> None:
     record = {
         "kind": kind,
@@ -810,9 +831,13 @@ def autoremove_custom_directory(directory: Path) -> int:
     if not directory.exists():
         return 0
     removed = 0
+    # Loaded once and reused for every candidate below instead of having
+    # unlink_owned_link's own ownership check reload and re-parse the whole
+    # on-disk registry per broken symlink found in this directory.
+    ownership = _load_link_ownership()
     for path in directory.iterdir():
         if path.is_symlink() and not path.exists():
-            if unlink_owned_link(path):
+            if unlink_owned_link(path, record=ownership.get(_link_key(path))):
                 removed += 1
     return removed
 
@@ -1818,9 +1843,14 @@ def autoremove_lmstudio() -> int:
         return 0
 
     removed = 0
+    # Loaded once and reused for every candidate below instead of having
+    # unlink_owned_link's own ownership check reload and re-parse the whole
+    # on-disk registry per broken symlink found in this (possibly large,
+    # recursively-walked) tree.
+    ownership = _load_link_ownership()
     for path in list(base.rglob("*")):
         if path.is_symlink() and not path.exists():
-            if unlink_owned_link(path):
+            if unlink_owned_link(path, record=ownership.get(_link_key(path))):
                 removed += 1
                 for parent in (path.parent, path.parent.parent):
                     try:
@@ -1856,13 +1886,18 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
         return (0, 0)
 
     broken_digests = set()
+    # Cleared together in one locked read-modify-write at the end instead of
+    # once per removed blob/manifest - a run that finds many broken links at
+    # once used to reload and rewrite the whole on-disk registry that many
+    # times over for no observable difference in the end state.
+    cleared_paths: list[Path] = []
     for blob in blobs_dir.iterdir():
         if blob.is_symlink() and not blob.exists():
             try:
                 blob.unlink()
             except OSError:
                 continue
-            _update_link_ownership(blob, None)
+            cleared_paths.append(blob)
             broken_digests.add(blob.name)
 
     manifests_removed = 0
@@ -1880,13 +1915,14 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
                     manifest_path.unlink()
                 except OSError:
                     continue
-                _update_link_ownership(manifest_path, None)
+                cleared_paths.append(manifest_path)
                 manifests_removed += 1
                 try:
                     manifest_path.parent.rmdir()
                 except OSError:
                     pass
 
+    _bulk_clear_link_ownership(cleared_paths)
     return (len(broken_digests), manifests_removed)
 
 

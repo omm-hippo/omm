@@ -130,9 +130,10 @@ def write_manifest_set(
     output_dir: Path,
 ) -> Path:
     windows_portable.verify_windows_archive(archive, version)
+    installer_sha256 = windows_portable.sha256(archive)
     contents = manifest_contents(
         version,
-        windows_portable.sha256(archive),
+        installer_sha256,
         release_date,
         release_installer_url,
     )
@@ -155,7 +156,7 @@ def write_manifest_set(
     verify_manifest_set(
         target,
         version,
-        windows_portable.sha256(archive),
+        installer_sha256,
         release_date,
         release_installer_url,
     )

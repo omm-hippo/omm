@@ -28,6 +28,21 @@ function isRequestBody(value: unknown): value is TelemetryRequestBody {
   return typeof v.event_json === "string" && typeof v.timestamp === "number" && typeof v.nonce === "number";
 }
 
+// FIREBASE_SERVICE_ACCOUNT_JSON is a static deploy-time secret - reparsing it
+// on every request is wasted work, so cache the parsed result keyed on the
+// raw string (cheap to compare, and correct if the secret is ever rotated).
+let cachedServiceAccount: { raw: string; parsed: ServiceAccount } | null = null;
+
+function loadServiceAccount(raw: string): ServiceAccount {
+  if (cachedServiceAccount && cachedServiceAccount.raw === raw) {
+    return cachedServiceAccount.parsed;
+  }
+  const parsed = JSON.parse(raw) as ServiceAccount;
+  if (!parsed.client_email || !parsed.private_key) throw new Error("missing fields");
+  cachedServiceAccount = { raw, parsed };
+  return parsed;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -74,9 +89,7 @@ export default {
 
     let serviceAccount: ServiceAccount;
     try {
-      const parsed = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_JSON) as ServiceAccount;
-      if (!parsed.client_email || !parsed.private_key) throw new Error("missing fields");
-      serviceAccount = parsed;
+      serviceAccount = loadServiceAccount(env.FIREBASE_SERVICE_ACCOUNT_JSON);
     } catch {
       return json({ error: "server misconfigured" }, 500);
     }

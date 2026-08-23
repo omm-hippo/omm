@@ -447,11 +447,11 @@ def queue_report(
         return None
 
 
-def _post_report(report: dict[str, Any]) -> bool:
+def _post_report(report: dict[str, Any], config_data: dict[str, Any] | None = None) -> bool:
     """POST one report. Returns True on 2xx, False on anything else."""
     import requests
 
-    target = endpoint()
+    target = endpoint(config_data)
     if target is None:
         log_attempt("skipped_no_endpoint")
         return False
@@ -483,10 +483,11 @@ def _post_report(report: dict[str, Any]) -> bool:
 
 def send_report(report: dict[str, Any], force: bool = False) -> bool:
     """Send one report immediately when policy (or one-run consent) allows."""
-    if not force and send_policy() != "always" and not run_consent():
+    config_data = read_config()
+    if not force and send_policy(config_data) != "always" and not run_consent():
         log_attempt("skipped_opt_out")
         return False
-    return _post_report(report)
+    return _post_report(report, config_data)
 
 
 def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH, force: bool = False) -> int:
@@ -499,9 +500,10 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH, force: bool
     answered the prompt) so a crash is never followed by an immediate
     upload the user never approved.
     """
-    if not force and send_policy() != "always":
+    config_data = read_config()
+    if not force and send_policy(config_data) != "always":
         return 0
-    if force and send_policy() == "never" and policy_is_set():
+    if force and send_policy(config_data) == "never" and policy_is_set(config_data):
         return 0
     path = _pending_path()
     try:
@@ -514,7 +516,7 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH, force: bool
             to_retry, still_pending = reports[:max_retries], reports[max_retries:]
             sent = 0
             for report in to_retry:
-                if _post_report(report):
+                if _post_report(report, config_data):
                     sent += 1
                 else:
                     still_pending.append(report)

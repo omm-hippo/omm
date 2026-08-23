@@ -694,10 +694,12 @@ def _attempt_download(
     no_color: bool = False,
 ) -> None:
     sidecar_path = _sidecar_path(part_path)
+    probed: tuple[int, bool, str | None] | None = None
 
     if part_path.exists() and sidecar_path.exists():
         state = _read_sidecar(sidecar_path)
-        total_size, supports_ranges, strong_etag = _probe_range_support(url)
+        probed = _probe_range_support(url)
+        total_size, supports_ranges, strong_etag = probed
         if (
             isinstance(state, dict)
             and supports_ranges
@@ -732,7 +734,12 @@ def _attempt_download(
             sidecar_path.unlink(missing_ok=True)
 
     if not part_path.exists():
-        total_size, supports_ranges, strong_etag = _probe_range_support(url)
+        # Reuse the probe already made above when this call fell through
+        # from a stale/failed resume attempt, instead of re-hitting the
+        # network for a result that hasn't changed within this attempt.
+        total_size, supports_ranges, strong_etag = (
+            probed if probed is not None else _probe_range_support(url)
+        )
         if (
             supports_ranges
             and strong_etag is not None
