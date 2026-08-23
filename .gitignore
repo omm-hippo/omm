@@ -21,3 +21,4 @@ cf-worker/node_modules/
 cf-worker/.wrangler/
 cf-worker/dist/
 cf-worker/.dev.vars
+.github/FUNDING.yml
