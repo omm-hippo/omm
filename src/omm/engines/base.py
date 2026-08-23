@@ -94,6 +94,7 @@ class LoadReceipt:
     instance_id: str
     was_already_loaded: bool
     loaded_by_omm: bool
+    load_options: LoadOptions | None = None
 
 
 @dataclass(frozen=True)

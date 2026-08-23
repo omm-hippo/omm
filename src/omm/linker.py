@@ -53,7 +53,9 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
+import stat as stat_module
 import tarfile
 import time
 import struct
@@ -63,7 +65,7 @@ import zipfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from omm import config
 from omm.gguf import read_gguf_metadata
@@ -123,7 +125,19 @@ def _systemd_ollama_models_dir() -> Path | None:
         props[key] = value
     if props.get("ActiveState") != "active":
         return None
-    for env_pair in props.get("Environment", "").split():
+    # systemd prints Environment= as a shell-quoted, space-separated list, so
+    # an entry whose value contains spaces comes back quoted as a single word
+    # ("OLLAMA_MODELS=/mnt/ollama models"). A plain str.split() would slice
+    # that path in half at the first space and hand back a directory that
+    # doesn't exist; shlex.split() unquotes it the way a shell would. Fall
+    # back to a naive split if the quoting is somehow unbalanced, so a weird
+    # unit can't take ollama_models_dir() down with a ValueError.
+    environment = props.get("Environment", "")
+    try:
+        env_pairs = shlex.split(environment)
+    except ValueError:
+        env_pairs = environment.split()
+    for env_pair in env_pairs:
         key, _, value = env_pair.partition("=")
         if key == "OLLAMA_MODELS" and value:
             return Path(value).expanduser()
@@ -160,6 +174,86 @@ def _app_bundle_installed(app_name: str) -> bool:
     if platform.system() != "Darwin":
         return False
     return any((root / f"{app_name}.app").exists() for root in _APP_BUNDLE_SEARCH_ROOTS)
+
+
+_DESKTOP_ENTRY_SEARCH_ROOTS = [
+    Path.home() / ".local" / "share" / "applications",
+    Path("/usr/local/share/applications"),
+    Path("/usr/share/applications"),
+]
+
+
+def _windows_install_artifact_exists(dir_names: Sequence[str], shortcut_glob: str) -> bool:
+    """Windows-only: whether an installer left install-*time* artifacts behind.
+
+    An Electron app's userData directory (%APPDATA%\\<product>) is created the
+    first time the app *launches*, not when it is installed - so checking it
+    alone reports an installed-but-never-launched app as "not installed".
+    The installer, by contrast, writes its program directory and Start Menu
+    shortcut during install. Probing those is the Windows counterpart of
+    _app_bundle_installed on Darwin and of the `flatpak info` check
+    is_jan_installed uses on Linux.
+
+    `dir_names` are checked under the electron-builder per-user default
+    (%LOCALAPPDATA%\\Programs) and under %ProgramFiles% for a machine-wide
+    install; `shortcut_glob` is matched in both the per-user and the
+    all-users Start Menu, at the top level and one folder deep (installers
+    put shortcuts either directly in Programs or in their own subfolder).
+    """
+    if platform.system() != "Windows":
+        return False
+    program_roots = [engine_install_dir()]
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        program_roots.append(Path(local_app_data) / "Programs")
+    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        value = os.environ.get(variable)
+        if value:
+            program_roots.append(Path(value))
+    for root in program_roots:
+        for name in dir_names:
+            # An installer that died early (full disk, see
+            # _install_windows_direct) leaves an empty folder behind; only
+            # a folder holding an .exe counts as installed.
+            try:
+                if any(p.suffix.lower() == ".exe" for p in (root / name).iterdir()):
+                    return True
+            except OSError:
+                continue
+    for variable in ("APPDATA", "ProgramData"):
+        value = os.environ.get(variable)
+        if not value:
+            continue
+        menu = Path(value) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        for pattern in (shortcut_glob, f"*/{shortcut_glob}"):
+            try:
+                if any(menu.glob(pattern)):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _linux_install_artifact_exists(install_dirs: Sequence[Path], desktop_entry_glob: str) -> bool:
+    """Linux-only: same install-vs-first-run distinction as
+    _windows_install_artifact_exists. ~/.config/<product> only appears once
+    the app has been run, while the installer writes its own program
+    directory and a freedesktop .desktop entry up front."""
+    if platform.system() != "Linux":
+        return False
+    for directory in install_dirs:
+        try:
+            if directory.is_dir():
+                return True
+        except OSError:
+            continue
+    for root in _DESKTOP_ENTRY_SEARCH_ROOTS:
+        try:
+            if any(root.glob(desktop_entry_glob)):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def is_lmstudio_installed() -> bool:
@@ -325,8 +419,9 @@ def _ownership_record(path: Path) -> dict[str, object] | None:
     return None
 
 
-def _owned_hardlink(path: Path) -> bool:
-    record = _ownership_record(path)
+def _owned_hardlink(path: Path, record: dict[str, object] | None = None) -> bool:
+    if record is None:
+        record = _ownership_record(path)
     if not record or record.get("kind") != "hardlink" or path.is_symlink() or not path.exists():
         return False
     try:
@@ -336,8 +431,9 @@ def _owned_hardlink(path: Path) -> bool:
     return record.get("device") == stat.st_dev and record.get("inode") == stat.st_ino
 
 
-def _owned_symlink(path: Path) -> bool:
-    record = _ownership_record(path)
+def _owned_symlink(path: Path, record: dict[str, object] | None = None) -> bool:
+    if record is None:
+        record = _ownership_record(path)
     if not record or record.get("kind") != "symlink" or not path.is_symlink():
         return False
     if "device" in record and "inode" in record:
@@ -357,8 +453,9 @@ def _owned_symlink(path: Path) -> bool:
         return False
 
 
-def _owned_copy(path: Path) -> bool:
-    record = _ownership_record(path)
+def _owned_copy(path: Path, record: dict[str, object] | None = None) -> bool:
+    if record is None:
+        record = _ownership_record(path)
     if not record or record.get("kind") != "copy" or path.is_symlink() or not path.exists():
         return False
     try:
@@ -389,8 +486,11 @@ def _matches_requested_link(src: Path, dst: Path) -> bool:
         return False
 
 
-def _owned_manifest(path: Path, expected_source: Path | None = None) -> bool:
-    record = _ownership_record(path)
+def _owned_manifest(
+    path: Path, expected_source: Path | None = None, record: dict[str, object] | None = None
+) -> bool:
+    if record is None:
+        record = _ownership_record(path)
     if not record or record.get("kind") != "manifest" or not path.exists() or path.is_symlink():
         return False
     # A manifest written by _fallback_to_native_create has source=None -
@@ -420,25 +520,33 @@ def _owned_manifest(path: Path, expected_source: Path | None = None) -> bool:
     return record.get("content_sha256") == content_sha256
 
 
-def unlink_owned_link(path: Path, expected_source: Path | None = None) -> bool:
+def unlink_owned_link(
+    path: Path, expected_source: Path | None = None, record: dict[str, object] | None = None
+) -> bool:
     """Remove an omm symlink or a recorded, unchanged omm hard link.
 
     Never removes an unrecorded regular file.  Returns whether a link was
     removed so callers can preserve ordinary user files at managed paths.
+
+    `record` lets a caller that already loaded this path's ownership
+    record (e.g. `link_file`) pass it straight through instead of making
+    this function - and each of the `_owned_*` checks below - reload and
+    re-parse the same on-disk registry file for the same path.
     """
-    if expected_source is not None:
+    if record is None:
         record = _ownership_record(path)
+    if expected_source is not None:
         if not record or record.get("source") != _link_key(expected_source):
             return False
-    if _owned_symlink(path):
+    if _owned_symlink(path, record):
         path.unlink()
         _update_link_ownership(path, None)
         return True
-    if _owned_hardlink(path):
+    if _owned_hardlink(path, record):
         path.unlink()
         _update_link_ownership(path, None)
         return True
-    if _owned_copy(path):
+    if _owned_copy(path, record):
         path.unlink()
         _update_link_ownership(path, None)
         return True
@@ -538,12 +646,11 @@ def link_file(
         # link torn down and rebuilt on every repeat `omm link`/`install`.
         record = _ownership_record(dst)
         if record and record.get("source") == _link_key(src):
-            if record.get("kind") == "symlink" and _owned_symlink(dst):
+            if record.get("kind") == "symlink" and _owned_symlink(dst, record):
                 return "symlink"
-            if record.get("kind") == "hardlink" and _owned_hardlink(dst):
+            if record.get("kind") == "hardlink" and _owned_hardlink(dst, record):
                 return "hardlink"
-        if not unlink_owned_link(dst, expected_source=src):
-            record = _ownership_record(dst)
+        if not unlink_owned_link(dst, expected_source=src, record=record):
             if record and record.get("kind") in {"symlink", "hardlink"}:
                 raise LinkError(
                     f"Refusing to replace an omm link for a different model at {dst}."
@@ -834,6 +941,21 @@ def _lmstudio_list_models(lms_path: str, timeout: float = 15) -> list[dict] | No
     return data if isinstance(data, list) else None
 
 
+def _lmstudio_find_model_key(models: list[dict], publisher: str, repo: str, filename: str) -> str | None:
+    """Match logic behind `_lmstudio_model_key`, factored out so a caller
+    that already has a fetched `lms ls --json` list can reuse it instead
+    of triggering a second `lms` subprocess call for the same lookup."""
+    expected = f"{publisher}/{repo}/{filename}"
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if isinstance(path, str) and path.replace("\\", "/") == expected:
+            key = entry.get("modelKey")
+            return key if isinstance(key, str) else None
+    return None
+
+
 def _lmstudio_model_key(lms_path: str, publisher: str, repo: str, filename: str) -> str | None:
     """Resolve the modelKey LM Studio's API and `lms load`/`lms unload`
     actually expect for a just-linked model, by matching the on-disk path
@@ -847,15 +969,7 @@ def _lmstudio_model_key(lms_path: str, publisher: str, repo: str, filename: str)
     models = _lmstudio_list_models(lms_path)
     if models is None:
         return None
-    expected = f"{publisher}/{repo}/{filename}"
-    for entry in models:
-        if not isinstance(entry, dict):
-            continue
-        path = entry.get("path")
-        if isinstance(path, str) and path.replace("\\", "/") == expected:
-            key = entry.get("modelKey")
-            return key if isinstance(key, str) else None
-    return None
+    return _lmstudio_find_model_key(models, publisher, repo, filename)
 
 
 _LMSTUDIO_PROBE_TIMEOUT_SECONDS = 120
@@ -973,6 +1087,109 @@ def validate_ollama_tag(model_name: str) -> str:
     ):
         raise LinkError("Unsafe Ollama model name.")
     return model_name
+
+
+def _ollama_runtime_name_from_manifest_path(
+    manifest_path: Path, manifests_root: Path
+) -> str | None:
+    """Translate an Ollama manifest path into the name exposed by its API."""
+    try:
+        parts = manifest_path.relative_to(manifests_root).parts
+    except ValueError:
+        return None
+    if len(parts) < 4:
+        return None
+
+    registry_name, namespace, *model_and_tag = parts
+    model_parts = model_and_tag[:-1]
+    tag = model_and_tag[-1]
+    if not registry_name or not namespace or not model_parts or not tag:
+        return None
+
+    if registry_name == "registry.ollama.ai":
+        prefix = [] if namespace == "library" else [namespace]
+    else:
+        prefix = [registry_name, namespace]
+    model_name = "/".join([*prefix, *model_parts])
+    return f"{model_name}:{tag}" if model_name else None
+
+
+def _ollama_runtime_names_for_digest(
+    model_sha256: object, *, models_dir: Path | None = None
+) -> tuple[str, ...]:
+    """Return exact Ollama API names whose model layer has this GGUF digest."""
+    if not isinstance(model_sha256, str):
+        return ()
+    digest_hex = model_sha256.strip().casefold()
+    if digest_hex.startswith("sha256:"):
+        digest_hex = digest_hex.removeprefix("sha256:")
+    if re.fullmatch(r"[0-9a-f]{64}", digest_hex) is None:
+        return ()
+    if models_dir is None:
+        models_dir = ollama_models_dir()
+    manifests_root = models_dir / "manifests"
+    if not manifests_root.is_dir():
+        return ()
+
+    expected_digest = f"sha256:{digest_hex}"
+    names: set[str] = set()
+    for manifest_path in manifests_root.rglob("*"):
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        layers = manifest.get("layers") if isinstance(manifest, dict) else None
+        if not isinstance(layers, list) or not any(
+            isinstance(layer, dict)
+            and layer.get("mediaType") == "application/vnd.ollama.image.model"
+            and str(layer.get("digest", "")).casefold() == expected_digest
+            for layer in layers
+        ):
+            continue
+        runtime_name = _ollama_runtime_name_from_manifest_path(
+            manifest_path, manifests_root
+        )
+        if runtime_name:
+            names.add(runtime_name)
+    return tuple(sorted(names))
+
+
+def resolve_ollama_runtime_name(
+    filename: str, entry: dict, *, models_dir: Path | None = None
+) -> str:
+    """Resolve the exact Ollama API tag without guessing colon placement.
+
+    Imported models historically stored only a filename-safe ``ollama_name``
+    (for example ``qwen3-4b``) even when Ollama exposed ``qwen3:4b``. Prefer
+    the exact tag recorded by new imports. For legacy entries, match the
+    registry's GGUF SHA-256 against Ollama manifests; the digest avoids an
+    unsafe hyphen-to-colon heuristic.
+    """
+    explicit = entry.get("ollama_runtime_name")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    link_name = entry.get("ollama_name")
+    if not isinstance(link_name, str) or not link_name.strip():
+        link_name = sanitize_ollama_tag(filename)
+    else:
+        link_name = link_name.strip()
+
+    candidates = _ollama_runtime_names_for_digest(
+        entry.get("sha256"), models_dir=models_dir
+    )
+    matching_link_name = tuple(
+        candidate
+        for candidate in candidates
+        if sanitize_ollama_tag(candidate) == link_name.casefold()
+    )
+    if len(matching_link_name) == 1:
+        return matching_link_name[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    return link_name
 
 
 def _guess_param_size(filename: str) -> str:
@@ -1493,11 +1710,37 @@ def _manifest_blob_digests(manifest: dict) -> set[str]:
     return digests
 
 
+def _manifest_model_layer_sha256(manifest: dict) -> str | None:
+    for layer in manifest.get("layers", []):
+        media_type = layer.get("mediaType")
+        digest = layer.get("digest")
+        if isinstance(media_type, str) and media_type.endswith("model") and isinstance(digest, str):
+            return digest.removeprefix("sha256:")
+    return None
+
+
 def unlink_ollama(
     model_name: str,
     models_dir: Path | None = None,
     expected_source: Path | None = None,
-) -> None:
+    expected_content_sha256: str | None = None,
+) -> bool:
+    """Returns whether a manifest was actually removed.
+
+    Ownership is normally proven by the link-ownership registry
+    (`_owned_manifest`). That registry can be silent on a manifest omm
+    genuinely created itself - installed before the registry existed, or
+    a record lost some other way - in which case falling back to "no
+    record, so do nothing" leaves the manifest (and its now-broken blob
+    symlink once the caller deletes the hub source file right after this
+    call returns) orphaned in Ollama forever, with no supported way for
+    the user to remove it again: `omm remove` already forgot the model,
+    and `omm list` no longer shows it. `expected_content_sha256` - the
+    sha256 the omm registry entry itself recorded for this file at
+    install time - gives a second, ownership-registry-independent proof:
+    if the manifest's model layer digest matches it exactly, this is
+    unambiguously the same model content omm is deleting, regardless of
+    whether the ownership record survived."""
     if models_dir is None:
         models_dir = ollama_models_dir()
     model_name = validate_ollama_tag(model_name)
@@ -1506,7 +1749,7 @@ def unlink_ollama(
         manifest_root / model_name / "latest"
     )
     if not manifest_path.parent.resolve().is_relative_to(manifest_root.resolve()):
-        return
+        return False
     # Locked against link_ollama's own manifest_path lock: unlinking used to
     # run unlocked, so a concurrent `omm install`/`omm link` for the same
     # model_name could interleave with this delete - link_ollama's read-back
@@ -1516,9 +1759,16 @@ def unlink_ollama(
     # believing the link succeeded when the manifest is actually gone.
     with locked(_engine_path_lock(manifest_path)):
         if not manifest_path.exists():
-            return
-        if not _owned_manifest(manifest_path, expected_source=expected_source):
-            return
+            return False
+        owned = _owned_manifest(manifest_path, expected_source=expected_source)
+        if not owned and expected_content_sha256 is not None:
+            try:
+                manifest_for_check = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                manifest_for_check = {}
+            owned = _manifest_model_layer_sha256(manifest_for_check) == expected_content_sha256
+        if not owned:
+            return False
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             model_digests = _manifest_blob_digests(manifest)
@@ -1530,7 +1780,7 @@ def unlink_ollama(
         try:
             manifest_path.unlink()
         except OSError:
-            return
+            return False
         _update_link_ownership(manifest_path, None)
         try:
             manifest_path.parent.rmdir()
@@ -1554,6 +1804,7 @@ def unlink_ollama(
             referenced.update(_manifest_blob_digests(data))
     for digest in model_digests - referenced:
         _unlink_owned_link_with_retry(models_dir / "blobs" / digest)
+    return True
 
 
 # --- Autoremove (broken symlink cleanup) ------------------------------
@@ -1581,7 +1832,22 @@ def autoremove_lmstudio() -> int:
 
 def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
     """Delete broken Ollama model-layer blob symlinks and any manifests
-    that reference them. Returns (blobs_removed, manifests_removed)."""
+    that reference them. Returns (blobs_removed, manifests_removed).
+
+    Neither half checks link ownership (see issue #171): a blob that is
+    already a dangling symlink has no data left to lose by removing the
+    dangling pointer itself, and a manifest whose model layer digest
+    matches one of those already-confirmed-dangling blobs can never load
+    regardless of who created it - the content is gone. Requiring an
+    ownership record here (as most other unlink paths correctly do, to
+    avoid touching a link/manifest they can't prove is theirs) only
+    protected records that had already stopped existing: a manifest
+    linked before the ownership registry existed, or one whose record
+    was lost some other way, would sit in `ollama list`/`omm benchmark
+    all` forever with a permanently broken blob and no supported way to
+    remove it - `omm remove` had already forgotten it, and this command
+    (the intended cleanup path for exactly this situation) silently
+    declined to touch it either."""
     if models_dir is None:
         models_dir = ollama_models_dir()
     blobs_dir = models_dir / "blobs"
@@ -1592,8 +1858,12 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
     broken_digests = set()
     for blob in blobs_dir.iterdir():
         if blob.is_symlink() and not blob.exists():
-            if unlink_owned_link(blob):
-                broken_digests.add(blob.name)
+            try:
+                blob.unlink()
+            except OSError:
+                continue
+            _update_link_ownership(blob, None)
+            broken_digests.add(blob.name)
 
     manifests_removed = 0
     if broken_digests and manifests_root.exists():
@@ -1605,7 +1875,7 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
             layer_digests = {
                 layer["digest"].replace(":", "-") for layer in manifest.get("layers", [])
             }
-            if layer_digests & broken_digests and _owned_manifest(manifest_path):
+            if layer_digests & broken_digests:
                 try:
                     manifest_path.unlink()
                 except OSError:
@@ -1645,10 +1915,40 @@ def anythingllm_ollama_models_dir() -> Path:
     return anythingllm_app_dir() / "storage" / "models" / "ollama"
 
 
+# The Windows installer is electron-builder NSIS, whose per-user default
+# install directory is %LOCALAPPDATA%\Programs\<productName>; the folder name
+# has shipped under both the product name and the package name, so all the
+# spellings are checked rather than betting on one.
+_ANYTHINGLLM_WINDOWS_INSTALL_DIRS = (
+    "AnythingLLM",
+    "AnythingLLM Desktop",
+    "anythingllm-desktop",
+)
+# Linux has no package-manager install: the official installer.sh unpacks the
+# app into this fixed directory under $HOME.
+_ANYTHINGLLM_LINUX_INSTALL_DIRS = [Path.home() / "AnythingLLMDesktop"]
+
+
 def is_anythingllm_installed() -> bool:
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
+        # The .app bundle is written at install time, so macOS never had the
+        # first-run gap the other two platforms did.
         return _app_bundle_installed("AnythingLLM")
-    return anythingllm_app_dir().exists()
+    # anythingllm_app_dir() is the Electron userData directory, which only
+    # exists once AnythingLLM has been launched at least once. Keep it (it
+    # catches installs in non-default locations), but OR it with the
+    # install-time artifacts so an installed-but-never-launched app is not
+    # reported as missing.
+    if anythingllm_app_dir().exists():
+        return True
+    if system == "Windows":
+        return _windows_install_artifact_exists(
+            _ANYTHINGLLM_WINDOWS_INSTALL_DIRS, "AnythingLLM*.lnk"
+        )
+    return _linux_install_artifact_exists(
+        _ANYTHINGLLM_LINUX_INSTALL_DIRS, "*nythingllm*.desktop"
+    )
 
 
 # --- Jan (llamacpp-extension, model.yml manifest) ---------------------------
@@ -1663,11 +1963,12 @@ def jan_models_dir() -> Path:
 
 
 def is_jan_installed() -> bool:
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         return _app_bundle_installed("Jan")
     if jan_app_dir().exists():
         return True
-    if platform.system() == "Linux" and shutil.which("flatpak") is not None:
+    if system == "Linux" and shutil.which("flatpak") is not None:
         # jan_app_dir() (~/.config/Jan) is only created the first time Jan
         # actually launches - a flatpak install that succeeded but was
         # never run leaves nothing there yet, which used to make
@@ -1812,10 +2113,20 @@ def mstystudio_models_dir() -> Path:
     return mstystudio_app_dir() / "models"
 
 
+# electron-builder NSIS per-user install folder names seen for Msty Studio.
+_MSTYSTUDIO_WINDOWS_INSTALL_DIRS = ("Msty Studio", "MstyStudio")
+
+
 def is_mstystudio_installed() -> bool:
     if platform.system() == "Darwin":
         return _app_bundle_installed("MstyStudio")
-    return mstystudio_app_dir().exists()
+    if mstystudio_app_dir().exists():
+        return True
+    if platform.system() == "Windows":
+        # Same installed-but-never-launched gap as AnythingLLM: the
+        # userData dir only appears on first launch.
+        return _windows_install_artifact_exists(_MSTYSTUDIO_WINDOWS_INSTALL_DIRS, "Msty*.lnk")
+    return False
 
 
 # --- KoboldCpp / text-generation-webui (no fixed install location) --------
@@ -1826,21 +2137,43 @@ def is_mstystudio_installed() -> bool:
 # (the koboldcpp binary itself; text-generation-webui's own source files)
 # in a short list of common places a user would keep them.
 
-_ENGINE_INSTALL_DIR = Path.home() / "Applications"
+# Where omm used to drop runners it installed itself. Still searched so
+# existing installs keep being detected, but new installs go to
+# engine_install_dir() (under OMM_HOME) so a user who moved omm off a full
+# system drive doesn't get multi-GiB runners written back onto it.
+_LEGACY_ENGINE_INSTALL_DIR = Path.home() / "Applications"
 
 _HEURISTIC_SEARCH_ROOTS = [
     Path.home(),
     Path.home() / "Downloads",
     Path.home() / "Documents",
     Path.home() / "Desktop",
-    _ENGINE_INSTALL_DIR,
+    _LEGACY_ENGINE_INSTALL_DIR,
     Path("/Applications"),
 ]
 
 
+def engine_install_dir() -> Path:
+    """<OMM_HOME>/apps - runners omm installs (KoboldCpp, text-generation-
+    webui, and the Windows direct installs) land here, on the same volume
+    as the model hub. Read through `config` at call time so the
+    `isolated_omm_home` fixture and OMM_HOME both apply."""
+    return config.OMM_HOME / "apps"
+
+
+def engine_tmp_dir() -> Path:
+    """<OMM_HOME>/tmp - installer downloads and the TEMP handed to NSIS
+    installers, so a full system drive can't break an install."""
+    return config.OMM_HOME / "tmp"
+
+
+def _heuristic_search_roots() -> list[Path]:
+    return [engine_install_dir(), *_HEURISTIC_SEARCH_ROOTS]
+
+
 @lru_cache(maxsize=1)
 def find_koboldcpp_binary() -> Path | None:
-    for root in _HEURISTIC_SEARCH_ROOTS:
+    for root in _heuristic_search_roots():
         try:
             entries = list(root.iterdir())
         except OSError:
@@ -1880,7 +2213,7 @@ _TEXTGENWEBUI_NAME_HINT = re.compile(
 
 @lru_cache(maxsize=1)
 def find_textgenwebui_root() -> Path | None:
-    for root in _HEURISTIC_SEARCH_ROOTS:
+    for root in _heuristic_search_roots():
         try:
             entries = list(root.iterdir())
         except OSError:
@@ -1997,11 +2330,11 @@ def has_automated_installer(key: str) -> bool:
         # which made the wizard attempt a winget install that could not
         # possibly succeed and then fall back to a manual URL; reporting it
         # unsupported shows that same guidance up front instead.
-        return platform.system() == "Darwin"
+        return platform.system() == "Darwin" or _windows_direct_install_supported()
     if key == "mstystudio":
         # Brew-cask only - no winget package targets the current app (see
         # _install_mstystudio) and no Linux package manager exists at all.
-        return platform.system() == "Darwin"
+        return platform.system() == "Darwin" or _windows_direct_install_supported()
     if key == "koboldcpp":
         return (platform.system(), platform.machine()) in _KOBOLDCPP_ASSET_BY_PLATFORM
     if key == "textgenwebui":
@@ -2037,14 +2370,20 @@ def install_engine(
 
 
 def _stream_subprocess(
-    args: list[str], on_output: Callable[[str], None] | None
+    args: list[str] | str,
+    on_output: Callable[[str], None] | None,
+    *,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str] | None:
     """Runs args, streaming each stdout line to on_output as it arrives.
     Returns (returncode, None-marker) via the process wait(), or None if
-    the process itself couldn't start (caller turns that into a result)."""
+    the process itself couldn't start (caller turns that into a result).
+    `args` may be a pre-built command-line string for installers whose
+    argument syntax Windows' argv re-quoting would break (NSIS /D=)."""
     try:
         proc = subprocess.Popen(
-            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace"
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+            env=env,
         )
     except OSError:
         raise
@@ -2208,12 +2547,171 @@ def _install_via_package_manager(
 
     if is_installed():
         return EngineInstallResult(key, "installed", f"{label} installed successfully.")
+
+    # brew refuses to touch a cask it already has a receipt for ("already
+    # installed", no-op, exit 0) even when the app bundle itself is gone -
+    # e.g. the user dragged it to the Trash instead of `brew uninstall
+    # --cask`. is_installed() (a real /Applications bundle check) still
+    # says no, so retry with `brew reinstall --cask`, which uninstalls and
+    # reinstalls regardless of the receipt's version. `install --cask
+    # --force` was tried first but does NOT fix this: confirmed against a
+    # real Homebrew 6.0.18 that a Trashed AnythingLLM.app still reports
+    # "Not upgrading anythingllm, the latest version is already installed"
+    # and exits 0 with `--force` too, leaving the Caskroom symlink pointing
+    # at nothing - only `reinstall` actually re-moves the .app back into
+    # /Applications. Cheap when the cask really was already fully
+    # installed (skips the same no-op path); only case that matters is
+    # this stale-receipt one.
+    if system == "Darwin" and args is not None and args[:3] == ["brew", "install", "--cask"]:
+        try:
+            returncode = _stream_subprocess(["brew", "reinstall", "--cask", brew_cask], on_output)
+        except OSError as e:
+            return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
+        if is_installed():
+            return EngineInstallResult(key, "installed", f"{label} installed successfully.")
+
     detail = f" (installer exited with code {returncode})" if returncode else ""
     return EngineInstallResult(
         key,
         "failed",
         f"Installer ran but {label} still isn't detected{detail}. Install manually from {manual_url}",
     )
+
+
+def _windows_direct_install_supported() -> bool:
+    """The vendor .exe installers below are x64-only."""
+    return platform.system() == "Windows" and platform.machine().upper() in ("AMD64", "X86_64")
+
+
+def free_space_shortfall(path: Path, required_bytes: int, what: str) -> str | None:
+    """None if the volume holding `path` has `required_bytes` (plus the
+    usual safety reserve) free, else a one-line explanation naming the
+    volume, what needs the space, and how much is missing. Installers call
+    this before downloading anything: a full drive otherwise surfaces as an
+    NSIS installer that exits with code 2 after two seconds, or a curl that
+    dies mid-transfer - both far harder to diagnose than this message."""
+    required = required_bytes + disk_safety_reserve(required_bytes)
+    try:
+        free = shutil.disk_usage(disk_usage_path(path)).free
+    except OSError as error:
+        return f"Could not check free space for {path}: {error}"
+    if free >= required:
+        return None
+    volume = path.drive or str(disk_usage_path(path))
+    return (
+        f"{what} needs about {required / 1024**3:.1f} GiB on {volume} but only "
+        f"{free / 1024**3:.1f} GiB is free there"
+    )
+
+
+@dataclass(frozen=True)
+class _WindowsDirectInstaller:
+    """A vendor-hosted NSIS (electron-builder) installer omm downloads and
+    runs silently, for apps that have no winget package. Verified by hand
+    on Windows 11 (2026-08-22): `/currentuser /S /D=<dir>` installs both
+    apps below unattended; without free space on the TEMP volume the same
+    installers exit 2 within seconds having created only an empty folder."""
+    url: str
+    filename: str
+    install_dir_name: str
+    # download + unpacked app, on the OMM_HOME volume
+    required_bytes: int
+    # what the app writes under %APPDATA% on first run/install (C: no
+    # matter where the app itself lives) - 0 when negligible
+    appdata_bytes: int = 0
+    note: str | None = None
+
+
+def _install_windows_direct(
+    *,
+    key: str,
+    label: str,
+    manual_url: str,
+    installer: _WindowsDirectInstaller,
+    is_installed: Callable[[], bool],
+    on_output: Callable[[str], None] | None,
+) -> EngineInstallResult:
+    if not _windows_direct_install_supported():
+        return EngineInstallResult(
+            key, "unsupported_platform", f"No automated installer for this platform - install manually from {manual_url}"
+        )
+
+    def say(line: str) -> None:
+        if on_output is not None:
+            on_output(line)
+
+    tmp_dir = engine_tmp_dir()
+    target_dir = engine_install_dir() / installer.install_dir_name
+    shortfall = free_space_shortfall(engine_install_dir(), installer.required_bytes, f"Installing {label}")
+    if shortfall is None and installer.appdata_bytes:
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            shortfall = free_space_shortfall(
+                Path(appdata), installer.appdata_bytes, f"{label}'s own data folder (%APPDATA%)"
+            )
+    if shortfall is not None:
+        return EngineInstallResult(
+            key,
+            "failed",
+            f"{shortfall}. Free up space (or set OMM_HOME to a roomier drive) and re-run `omm setup`.",
+        )
+
+    download_path = tmp_dir / installer.filename
+    say(f"Downloading {label} installer ({installer.required_bytes / 1024**3:.1f} GiB incl. unpacked app) from {installer.url}")
+    if installer.note:
+        say(installer.note)
+    try:
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        returncode = _stream_subprocess(["curl", "-fsSL", installer.url, "-o", str(download_path)], on_output)
+    except OSError as e:
+        return EngineInstallResult(key, "failed", f"Could not download {label}: {e}")
+    if returncode != 0 or not download_path.exists():
+        download_path.unlink(missing_ok=True)
+        return EngineInstallResult(
+            key, "failed", f"Download failed (curl exited with code {returncode}). Install manually from {manual_url}"
+        )
+
+    # NSIS rules: /S must be upper-case, /D=<dir> must be the LAST argument
+    # and must not be quoted even if the path has spaces - so hand Windows
+    # one pre-built command line instead of an argv list it would re-quote.
+    # TEMP/TMP point at OMM_HOME/tmp so the ~GiB unpack never lands on C:.
+    command = f'"{download_path}" /currentuser /S /D={target_dir}'
+    env = dict(os.environ, TEMP=str(tmp_dir), TMP=str(tmp_dir))
+    say(f"Running the {label} installer silently into {target_dir} ...")
+    try:
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        returncode = _stream_subprocess(command, on_output, env=env)
+    except OSError as e:
+        return EngineInstallResult(key, "failed", f"Could not start the {label} installer: {e}")
+    finally:
+        download_path.unlink(missing_ok=True)
+
+    if is_installed():
+        return EngineInstallResult(key, "installed", f"{label} installed to {target_dir}.")
+    detail = f" (installer exited with code {returncode})" if returncode else ""
+    return EngineInstallResult(
+        key, "failed", f"Installer ran but {label} still isn't detected{detail}. Install manually from {manual_url}"
+    )
+
+
+_ANYTHINGLLM_WINDOWS_INSTALLER = _WindowsDirectInstaller(
+    url="https://cdn.anythingllm.com/latest/AnythingLLMDesktop.exe",
+    filename="AnythingLLMDesktop.exe",
+    install_dir_name="AnythingLLM",
+    required_bytes=int(2.2 * 1024**3),  # 0.4 GiB download + 1.6 GiB app
+    appdata_bytes=int(5 * 1024**3),  # bundled Ollama + starter model
+    note=(
+        "AnythingLLM's installer also downloads its bundled Ollama and a starter model "
+        "(~5 GiB, kept under %APPDATA% on the Windows drive) - this can take 10+ minutes."
+    ),
+)
+
+_MSTYSTUDIO_WINDOWS_INSTALLER = _WindowsDirectInstaller(
+    url="https://next-assets.msty.studio/app/latest/win/MstyStudio_x64.exe",
+    filename="MstyStudio_x64.exe",
+    install_dir_name="MstyStudio",
+    required_bytes=int(1.2 * 1024**3),  # 0.2 GiB download + 0.9 GiB app
+)
 
 
 def _install_jan(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
@@ -2242,15 +2740,24 @@ def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> E
     # the id here only bought an attempt that always failed. A direct
     # download of the vendor's AnythingLLMDesktop.exe was considered and
     # rejected: it is a ~396 MB NSIS installer with no vendor-documented
-    # silent flag, and is_anythingllm_installed() on Windows keys off the
-    # Electron userData directory, which the app creates on first launch
-    # rather than at install time - so even a silent install would report
-    # "ran but still isn't detected".
+    # silent flag. (The second half of that argument - that detection would
+    # miss a silent install because it keyed off the first-run-only Electron
+    # userData directory - no longer holds: is_anythingllm_installed() now
+    # also probes the install directory and Start Menu shortcut.)
     #
     # Linux - the only official install method is an interactive
     # installer.sh (sudo AppArmor-profile prompt, no documented silent
     # flag) - same risk class the original design excluded
     # text-generation-webui's git-clone path for.
+    if platform.system() == "Windows":
+        return _install_windows_direct(
+            key="anythingllm",
+            label="AnythingLLM",
+            manual_url="https://docs.anythingllm.com/installation-desktop/overview",
+            installer=_ANYTHINGLLM_WINDOWS_INSTALLER,
+            is_installed=is_anythingllm_installed,
+            on_output=on_output,
+        )
     return _install_via_package_manager(
         key="anythingllm",
         label="AnythingLLM",
@@ -2266,6 +2773,15 @@ def _install_mstystudio(*, on_output: Callable[[str], None] | None = None) -> En
     # (CloudStack.Msty) targets the deprecated pre-rebrand "Msty" app, not
     # current "Msty Studio" - using it would install the wrong software.
     # No Linux package manager exists at all.
+    if platform.system() == "Windows":
+        return _install_windows_direct(
+            key="mstystudio",
+            label="Msty",
+            manual_url="https://msty.ai/products/studio/",
+            installer=_MSTYSTUDIO_WINDOWS_INSTALLER,
+            is_installed=is_mstystudio_installed,
+            on_output=on_output,
+        )
     return _install_via_package_manager(
         key="mstystudio",
         label="Msty",
@@ -2294,7 +2810,10 @@ def _install_koboldcpp(*, on_output: Callable[[str], None] | None = None) -> Eng
             f"No koboldcpp build for {system}/{machine} - see https://github.com/LostRuins/koboldcpp/releases",
         )
 
-    dest_dir = _ENGINE_INSTALL_DIR / "koboldcpp"
+    dest_dir = engine_install_dir() / "koboldcpp"
+    shortfall = free_space_shortfall(engine_install_dir(), 1024**3, "Installing KoboldCpp")
+    if shortfall is not None:
+        return EngineInstallResult("koboldcpp", "failed", f"{shortfall}. Free up space (or set OMM_HOME to a roomier drive) and retry.")
     dest_name = "koboldcpp.exe" if system == "Windows" else "koboldcpp"
     dest_path = dest_dir / dest_name
     url = f"https://github.com/LostRuins/koboldcpp/releases/latest/download/{asset}"
@@ -2404,19 +2923,244 @@ def _textgenwebui_asset_name(hw: HardwareInfo) -> str | None:
     return f"linux-{_textgenwebui_variant(hw)}"
 
 
+_WINDOWS_RESERVED_ARCHIVE_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+
+
+def _safe_archive_member_parts(name: str) -> tuple[str, ...]:
+    """Return a platform-independent safe relative archive path.
+
+    ZIP and tar member names use forward slashes. Reject alternate Windows
+    spellings too so an archive has the same meaning on every supported
+    Python/OS combination instead of becoming unsafe only after it moves to
+    Windows.
+    """
+    if not name or "\x00" in name or "\\" in name or name.startswith("/"):
+        raise OSError(f"unsafe archive member path: {name!r}")
+
+    raw_parts = name.split("/")
+    if any(part == ".." for part in raw_parts):
+        raise OSError(f"unsafe archive member path: {name!r}")
+    parts = tuple(part for part in raw_parts if part not in ("", "."))
+    if not parts:
+        raise OSError(f"unsafe archive member path: {name!r}")
+
+    for part in parts:
+        # Colons include drive-relative/absolute paths and NTFS alternate
+        # data streams. Trailing spaces/dots and DOS device names can alias
+        # other paths or devices on Windows even though they are ordinary
+        # filename characters on POSIX.
+        if ":" in part or part.endswith((" ", ".")):
+            raise OSError(f"unsafe archive member path: {name!r}")
+        windows_basename = part.split(".", 1)[0].upper()
+        if windows_basename in _WINDOWS_RESERVED_ARCHIVE_NAMES:
+            raise OSError(f"unsafe archive member path: {name!r}")
+    return parts
+
+
+def _safe_archive_link_target_parts(
+    member_parts: tuple[str, ...], linkname: str
+) -> tuple[str, ...]:
+    """Resolve a tar symlink target without allowing it outside the root.
+
+    Portable TextGen releases contain many ordinary relative symlinks (the
+    embedded Python runtime alone has ``python3 -> python3.13``).  Rejecting
+    every link makes the official archive unusable, while handing links to
+    ``tarfile.extractall`` reintroduces traversal.  Resolve the target
+    lexically, require it to stay below the archive's single top-level
+    directory, and materialize it only after all regular payloads are done.
+    """
+    if (
+        not linkname
+        or "\x00" in linkname
+        or "\\" in linkname
+        or linkname.startswith("/")
+    ):
+        raise OSError(f"unsafe archive link target: {linkname!r}")
+
+    resolved = list(member_parts[:-1])
+    for part in linkname.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            # Keep the first component: it is the archive's validated root.
+            if len(resolved) <= 1:
+                raise OSError(f"unsafe archive link target: {linkname!r}")
+            resolved.pop()
+            continue
+        try:
+            safe_part = _safe_archive_member_parts(part)
+        except OSError as exc:
+            raise OSError(f"unsafe archive link target: {linkname!r}") from exc
+        if len(safe_part) != 1:
+            raise OSError(f"unsafe archive link target: {linkname!r}")
+        resolved.append(part)
+
+    if not resolved or resolved[0] != member_parts[0]:
+        raise OSError(f"unsafe archive link target: {linkname!r}")
+    return tuple(resolved)
+
+
+def _reject_archive_symlink_descendants(
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> None:
+    """No payload path may use an archive symlink as a parent directory."""
+    seen: set[tuple[str, ...]] = set()
+    symlinks = {parts for _, parts, is_dir, _ in entries if is_dir is None}
+    for _, parts, _, _ in entries:
+        if parts in seen:
+            raise OSError(f"duplicate archive member path: {'/'.join(parts)!r}")
+        seen.add(parts)
+        if any(parts[:depth] in symlinks for depth in range(1, len(parts))):
+            raise OSError(f"archive member traverses a symlink: {'/'.join(parts)!r}")
+
+
+def _archive_top_level(
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> str:
+    roots = {parts[0] for _, parts, _, _ in entries}
+    if len(roots) != 1:
+        raise OSError("archive must contain exactly one top-level directory")
+    return next(iter(roots))
+
+
+def _validated_zip_entries(
+    zf: zipfile.ZipFile,
+) -> list[tuple[zipfile.ZipInfo, tuple[str, ...], bool, int]]:
+    entries: list[tuple[zipfile.ZipInfo, tuple[str, ...], bool, int]] = []
+    for member in zf.infolist():
+        parts = _safe_archive_member_parts(member.filename)
+        is_dir = member.is_dir()
+        unix_mode = member.external_attr >> 16 if member.create_system == 3 else 0
+        file_type = stat_module.S_IFMT(unix_mode)
+        allowed_type = stat_module.S_IFDIR if is_dir else stat_module.S_IFREG
+        if file_type not in (0, allowed_type):
+            raise OSError(f"unsupported archive member type: {member.filename!r}")
+        mode = unix_mode & 0o777
+        if mode == 0:
+            mode = 0o755 if is_dir else 0o644
+        entries.append((member, parts, is_dir, mode))
+    return entries
+
+
+def _validated_tar_entries(
+    tf: tarfile.TarFile,
+) -> list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]]:
+    entries: list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]] = []
+    for member in tf.getmembers():
+        parts = _safe_archive_member_parts(member.name)
+        if member.isdir():
+            is_dir = True
+        elif member.isfile():
+            is_dir = False
+        elif member.issym():
+            _safe_archive_link_target_parts(parts, member.linkname)
+            # None distinguishes a validated symlink from files/directories.
+            is_dir = None
+        else:
+            # Hard links, devices, FIFOs, and other special archive entries
+            # remain unsupported. This is explicit rather than relying on
+            # Python-version-dependent tar extraction filter defaults.
+            raise OSError(f"unsupported archive member type: {member.name!r}")
+        entries.append((member, parts, is_dir, member.mode & 0o777))
+    _reject_archive_symlink_descendants(entries)
+    return entries
+
+
+def _prepare_archive_output(
+    staging: Path, parts: tuple[str, ...], is_dir: bool
+) -> Path:
+    output = staging.joinpath(*parts)
+    if is_dir:
+        output.mkdir(parents=True, exist_ok=True)
+    else:
+        output.parent.mkdir(parents=True, exist_ok=True)
+    return output
+
+
 def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
     """Extracts the portable release into dest_dir and returns the
     resulting top-level folder (named textgen-<version> by the archive
-    itself - verified against real release bytes)."""
-    if archive_path.suffix == ".zip":
-        with zipfile.ZipFile(archive_path) as zf:
-            top_level = {name.split("/")[0] for name in zf.namelist()}
-            zf.extractall(dest_dir)
-    else:
-        with tarfile.open(archive_path) as tf:
-            top_level = {member.name.split("/")[0] for member in tf.getmembers()}
-            tf.extractall(dest_dir)
-    return dest_dir / next(iter(top_level))
+    itself - verified against real release bytes).
+
+    All entries are validated before writing anything, then ordinary files
+    and directories are copied manually into a fresh staging directory.
+    This gives Python 3.10 through 3.14 the same policy and avoids both the
+    historical unfiltered tar behavior and destination symlink traversal.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".omm-extract-", dir=dest_dir) as temp_name:
+        staging = Path(temp_name)
+        directory_modes: list[tuple[Path, int]] = []
+        pending_symlinks: list[tuple[Path, str]] = []
+
+        if archive_path.suffix.lower() == ".zip":
+            with zipfile.ZipFile(archive_path) as zf:
+                entries = _validated_zip_entries(zf)
+                top_level = _archive_top_level(entries)
+                final_path = dest_dir / top_level
+                if final_path.exists() or final_path.is_symlink():
+                    raise OSError(f"archive destination already exists: {final_path}")
+                for member, parts, is_dir, mode in entries:
+                    output = _prepare_archive_output(staging, parts, is_dir is True)
+                    if is_dir:
+                        directory_modes.append((output, mode))
+                        continue
+                    with zf.open(member, "r") as source, output.open("xb") as target:
+                        shutil.copyfileobj(source, target)
+                    output.chmod(mode)
+        else:
+            with tarfile.open(archive_path) as tf:
+                entries = _validated_tar_entries(tf)
+                top_level = _archive_top_level(entries)
+                final_path = dest_dir / top_level
+                if final_path.exists() or final_path.is_symlink():
+                    raise OSError(f"archive destination already exists: {final_path}")
+                for member, parts, is_dir, mode in entries:
+                    output = _prepare_archive_output(staging, parts, is_dir is True)
+                    if is_dir is True:
+                        directory_modes.append((output, mode))
+                        continue
+                    if is_dir is None:
+                        pending_symlinks.append((output, member.linkname))
+                        continue
+                    source = tf.extractfile(member)
+                    if source is None:
+                        raise OSError(f"could not read archive member: {member.name!r}")
+                    with source, output.open("xb") as target:
+                        shutil.copyfileobj(source, target)
+                    output.chmod(mode)
+
+        # Links are deliberately last: no subsequent archive write can follow
+        # one into another location. Their targets were already proven to stay
+        # under this archive root by _safe_archive_link_target_parts.
+        for output, linkname in pending_symlinks:
+            # Archive link names always use POSIX separators.  Build a native
+            # relative Path so Windows stores a usable reparse target too;
+            # passing ``../lib/foo`` through unchanged creates a link that
+            # pathlib can identify but cannot follow on Windows.
+            output.symlink_to(Path(*linkname.split("/")))
+
+        # Keep parent directories writable while files and links are being
+        # created; apply archive permissions only after all payloads are in place.
+        for directory, mode in sorted(
+            directory_modes, key=lambda item: len(item[0].parts), reverse=True
+        ):
+            directory.chmod(mode)
+
+        staged_root = staging / top_level
+        if staged_root.is_symlink() or not staged_root.is_dir():
+            raise OSError("archive top-level entry must be a directory")
+        if final_path.exists() or final_path.is_symlink():
+            raise OSError(f"archive destination already exists: {final_path}")
+        staged_root.rename(final_path)
+        return final_path
 
 
 def _install_textgenwebui(
@@ -2462,7 +3206,10 @@ def _install_textgenwebui(
             f"No release build found for {platform_tag} - see {_TEXTGENWEBUI_RELEASES_URL}",
         )
 
-    dest_root = _ENGINE_INSTALL_DIR
+    dest_root = engine_install_dir()
+    shortfall = free_space_shortfall(dest_root, 8 * 1024**3, "Installing text-generation-webui")
+    if shortfall is not None:
+        return EngineInstallResult("textgenwebui", "failed", f"{shortfall}. Free up space (or set OMM_HOME to a roomier drive) and retry.")
     dest_root.mkdir(parents=True, exist_ok=True)
     archive_path = dest_root / match["name"]
 
@@ -2648,8 +3395,13 @@ def link_engine(
 def unlink_engine(key: str, filename: str, entry: dict) -> None:
     ollama_tag = entry.get("ollama_name") or sanitize_ollama_tag(filename)
     expected_source = MODELS_DIR / filename
+    expected_sha256 = entry.get("sha256")
+    if not isinstance(expected_sha256, str):
+        expected_sha256 = None
     if key == "ollama":
-        unlink_ollama(ollama_tag, expected_source=expected_source)
+        unlink_ollama(
+            ollama_tag, expected_source=expected_source, expected_content_sha256=expected_sha256
+        )
     elif key == "lmstudio":
         unlink_lmstudio(filename, entry.get("repo_id"))
     elif key == "jan":
@@ -2659,6 +3411,7 @@ def unlink_engine(key: str, filename: str, entry: dict) -> None:
             ollama_tag,
             models_dir=anythingllm_ollama_models_dir(),
             expected_source=expected_source,
+            expected_content_sha256=expected_sha256,
         )
     elif key == "mstystudio":
         unlink_custom_directory(filename, mstystudio_models_dir())
@@ -2754,13 +3507,13 @@ def resolve_lmstudio_model(repo_id: str | None, filename: str) -> dict | None:
         return None
 
     publisher, repo = _lmstudio_publisher_repo(repo_id, filename)
-    # Use existing path-matching logic to get the model key
-    model_key = _lmstudio_model_key(lms_path, publisher, repo, filename)
-    if model_key is None:
-        return None
-
     models = _lmstudio_list_models(lms_path)
     if models is None:
+        return None
+
+    # Use existing path-matching logic to get the model key
+    model_key = _lmstudio_find_model_key(models, publisher, repo, filename)
+    if model_key is None:
         return None
 
     # Second pass: find the entry by modelKey and extract metadata

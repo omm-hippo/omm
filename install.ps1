@@ -151,9 +151,12 @@ function Test-PythonCommand {
         # child process plus a short timeout keeps the installer responsive.
         $startInfo = New-Object System.Diagnostics.ProcessStartInfo
         $startInfo.FileName = $Python.Executable
+        # Require pip too: an MSYS2/MinGW python.exe on PATH (C:\msys64\...)
+        # is a real 3.12 but ships without pip, so the pipx bootstrap below
+        # would die with "No module named pip". Skip it and keep looking.
         $startInfo.Arguments = (@($Python.Arguments) + @(
             "-c",
-            '"import sys; print(1 if sys.version_info >= (3, 10) else 0)"'
+            '"import sys, importlib.util; print(1 if sys.version_info >= (3, 10) and importlib.util.find_spec(\"pip\") else 0)"'
         )) -join " "
         $startInfo.UseShellExecute = $false
         $startInfo.RedirectStandardOutput = $true
@@ -284,7 +287,8 @@ function Test-PipxSnapshotIdentity {
     if (($null -ne $metadata.environment -and $metadata.environment -cne $Name) -or $main.package -cne $Distribution -or $main.suffix -cne "") {
         return $false
     }
-    if (@($main.apps | Where-Object { $_ -ceq "omm" }).Count -ne 1) { return $false }
+    # pipx on Windows records apps as launcher filenames ("omm.exe").
+    if (@($main.apps | Where-Object { $_ -in @("omm", "omm.exe") }).Count -ne 1) { return $false }
     $expectedDir = Join-Path (Join-Path $PipxLocalVenvs $Name) "Scripts"
     $ommPaths = @($main.app_paths | ForEach-Object {
         $path = [string]$_.'__Path__'
@@ -494,6 +498,32 @@ if (-not (Test-PipxAvailable)) {
     Update-SessionPath
 }
 Invoke-Pipx ensurepath
+
+# pipx keeps one shared venv (pip/setuptools) that every `pipx install`
+# borrows. On a machine where pipx has been around for a while that venv
+# can hold a half-upgraded pip (seen live: `ImportError: cannot import name
+# 'get_runnable_pip'`), and then *every* install dies at "determining
+# package name" before omm's own code is even reached. Probe it once; if
+# its pip can't even print a version, drop the directory - pipx rebuilds
+# it from scratch on the next install.
+function Repair-PipxSharedLibs {
+    $shared = ([string](Invoke-Pipx environment --value PIPX_SHARED_LIBS)).Trim()
+    if (-not $shared -or -not (Test-Path -LiteralPath $shared)) { return }
+    $sharedPython = Join-Path $shared "Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $sharedPython -PathType Leaf)) { return }
+    $healthy = $false
+    try {
+        & $sharedPython -m pip --version *> $null
+        $healthy = ($LASTEXITCODE -eq 0)
+    } catch {
+        $healthy = $false
+    }
+    if (-not $healthy) {
+        Write-Host "pipx's shared pip is broken; rebuilding it..."
+        Remove-Item -LiteralPath $shared -Recurse -Force
+    }
+}
+Repair-PipxSharedLibs
 $PythonExecutable = (Invoke-Python -c "import sys; print(sys.executable)").Trim()
 $PipxLocalVenvs = ([string](Invoke-Pipx environment --value PIPX_LOCAL_VENVS)).Trim()
 $PipxBinDir = ([string](Invoke-Pipx environment --value PIPX_BIN_DIR)).Trim()
@@ -503,7 +533,9 @@ if ($LegacyPipxPresent -and (
     -not (Test-PipxSnapshotIdentity $PipxSnapshot $LegacyPipxEnvironment $LegacyPipxEnvironment) -or
     -not (Test-OmmPipxEnvironment $LegacyPipxEnvironment $LegacyPipxEnvironment -RequireLegacySource)
 )) {
-    Write-Error "Refusing to replace unrelated pipx environment 'omm'. Remove or rename that environment manually first."
+    Write-Error ("Refusing to replace pipx environment 'omm': it is not an omm install this installer recognises " +
+        "(typically because OMM_HOME moved after the original install, or its source checkout was deleted). " +
+        "Your models and settings under OMM_HOME are not affected. Run `pipx uninstall omm`, then re-run this installer.")
     exit 1
 }
 $NewPipxPresent = Test-PipxSnapshotEnvironment $PipxSnapshot $PipxEnvironment
@@ -616,7 +648,23 @@ function Write-FailedInstallRecovery {
         Write-Warning "The previous environment was not removed, but its omm command could not be verified after rollback; run 'pipx reinstall omm' or 'pipx reinstall omm-model'."
     }
 }
-if (-not (Invoke-PipxStatus -Arguments $installArguments)) {
+# pipx upgrades its shared pip *during* `pipx install` when it thinks it is
+# stale, and with two pipx copies on one machine (Microsoft Store Python
+# and python.org Python both point at the same shared dir) that upgrade can
+# leave a half-replaced pip that the very same run then tries to use
+# ("cannot import name 'get_runnable_pip'"). Repair-PipxSharedLibs above
+# only sees the state *before* the run, so a failed install gets exactly
+# one retry after wiping the shared venv - the second run rebuilds it in
+# one piece. Verified live on Windows 11 (2026-08-23).
+function Invoke-PipxInstallWithRepair {
+    if (Invoke-PipxStatus -Arguments $installArguments) { return $true }
+    $shared = ([string](Invoke-Pipx environment --value PIPX_SHARED_LIBS)).Trim()
+    if (-not $shared -or -not (Test-Path -LiteralPath $shared)) { return $false }
+    Write-Host "pipx install failed; rebuilding pipx's shared pip and retrying once..."
+    Remove-Item -LiteralPath $shared -Recurse -Force -ErrorAction SilentlyContinue
+    return (Invoke-PipxStatus -Arguments $installArguments)
+}
+if (-not (Invoke-PipxInstallWithRepair)) {
     $rollbackState = Restore-PipxAfterFailedInstall
     Write-FailedInstallRecovery "pipx install failed; the legacy environment was not removed." $rollbackState
     exit 1

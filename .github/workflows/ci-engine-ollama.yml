@@ -1,4 +1,4 @@
-name: "Engine link check: Ollama"
+name: "Engine link/import check: Ollama"
 
 "on":
   push:
@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   verify:
-    name: Real Ollama install + omm link + recognition (ubuntu-latest)
+    name: Real Ollama install + omm link/import + recognition (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -41,5 +41,5 @@ jobs:
           cache: pip
       - name: Install omm
         run: python -m pip install -e .
-      - name: Install, link, and verify Ollama recognizes the linked model
+      - name: Install, link, import, and verify Ollama recognizes both directions
         run: python scripts/verify_engine_link.py ollama

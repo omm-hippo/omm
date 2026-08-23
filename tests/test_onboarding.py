@@ -215,25 +215,30 @@ def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
     assert onboarding.COMPATIBLE_PROGRAMS_URL in output
 
 
-def test_install_selected_engines_skips_anythingllm_install_attempt_on_windows(monkeypatch):
-    """AnythingLLM's winget package is gone (see linker._install_anythingllm),
-    so on Windows the wizard must say so up front instead of running an
-    install that is known in advance to fail and only then printing a
-    manual link. Uses the real has_automated_installer - this is the
-    behaviour that regressed in issue #129."""
+def test_install_selected_engines_runs_direct_installer_for_anythingllm_on_windows_x64(monkeypatch):
+    """AnythingLLM's winget package is gone, but Windows x64 now has a
+    direct vendor-installer path (linker._install_windows_direct), so the
+    wizard must hand the key to install_engine instead of linking out.
+    Uses the real has_automated_installer. ARM Windows still links out."""
     console = _console()
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
-
-    def fail_install(key, on_output=None):
-        raise AssertionError("install_engine must not be called for AnythingLLM on Windows")
-
-    monkeypatch.setattr(linker, "install_engine", fail_install)
+    monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(
+        linker,
+        "install_engine",
+        lambda key, on_output=None: linker.EngineInstallResult(key, "installed", "ok"),
+    )
 
     onboarding.install_selected_engines(console, ["anythingllm"])
 
     output = console.file.getvalue()
-    assert "isn't auto-installable yet" in output
-    assert "Installing AnythingLLM" not in output
+    assert "Installing AnythingLLM" in output
+    assert "isn't auto-installable yet" not in output
+
+    console = _console()
+    monkeypatch.setattr(linker.platform, "machine", lambda: "ARM64")
+    onboarding.install_selected_engines(console, ["anythingllm"])
+    assert "isn't auto-installable yet" in console.file.getvalue()
 
 
 def test_run_wizard_completes_with_no_engines_selected(monkeypatch):
@@ -296,6 +301,26 @@ def test_run_theme_step_falls_back_to_recommendation_on_cancel(monkeypatch, isol
     result = onboarding.run_theme_step(console)
 
     assert result == "light"
+
+
+def test_run_theme_step_falls_back_to_dark_default_without_badge_when_undetected(monkeypatch, isolated_omm_home):
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(onboarding.theme, "detect_recommended", lambda: None)
+    seen = {}
+
+    def _fake_picker(current, *, current_label=None, **k):
+        seen["current"] = current
+        seen["current_label"] = current_label
+        return None
+
+    monkeypatch.setattr(onboarding.theme, "run_picker", _fake_picker)
+    console = _console()
+
+    result = onboarding.run_theme_step(console)
+
+    assert seen["current"] == "dark"
+    assert seen["current_label"] is None
+    assert result == "dark"
 
 
 def test_run_wizard_runs_theme_step_before_hardware_summary(monkeypatch):

@@ -4,7 +4,7 @@ recommend-model artifact (never a live fetch)."""
 
 from __future__ import annotations
 
-from omm import hub, predictor, registry, session_cache
+from omm import hub, linker, predictor, registry, session_cache
 
 
 def complete_install_name(incomplete: str) -> list[str]:
@@ -22,3 +22,7 @@ def complete_install_name(incomplete: str) -> list[str]:
 def complete_remove_filename(incomplete: str) -> list[str]:
     filenames = registry.load_registry().keys()
     return sorted(f for f in filenames if f.startswith(incomplete))
+
+
+def complete_engine_key(incomplete: str) -> list[str]:
+    return sorted(spec.key for spec in linker.ENGINES if spec.key.startswith(incomplete))

@@ -116,7 +116,16 @@ def test_autoremove_ollama_removes_broken_blob_and_its_manifest(isolated_omm_hom
     assert (live_manifest_dir / "latest").exists()
 
 
-def test_autoremove_ollama_preserves_unowned_broken_blob_and_manifest(isolated_omm_home, tmp_path, monkeypatch):
+def test_autoremove_ollama_removes_unowned_broken_blob_and_manifest(isolated_omm_home, tmp_path, monkeypatch):
+    """Issue #171: a blob that is already a dangling symlink has no data
+    left to protect by leaving the dangling pointer alone, and a manifest
+    that references only that already-broken digest can never load
+    either way - both get cleaned up regardless of whether an ownership
+    record exists for them. Before this fix, a lost/legacy-link-era
+    ownership record left orphans like this permanently un-removable:
+    `omm list` had already forgotten them (no registry entry to compare
+    a content sha256 against, unlike `omm remove`'s equivalent fix), and
+    this command silently declined to touch them too."""
     models_dir = tmp_path / "ollama"
     blobs_dir = models_dir / "blobs"
     blobs_dir.mkdir(parents=True)
@@ -130,8 +139,34 @@ def test_autoremove_ollama_preserves_unowned_broken_blob_and_manifest(isolated_o
     manifest.parent.mkdir(parents=True)
     manifest.write_text(json.dumps({"layers": [{"digest": f"sha256:{digest}"}]}))
 
+    assert linker.autoremove_ollama(models_dir=models_dir) == (1, 1)
+    assert not blob.is_symlink()
+    assert not manifest.exists()
+
+
+def test_autoremove_ollama_preserves_unowned_but_still_valid_blob_and_manifest(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """The safety boundary that matters: a symlink that still resolves is
+    never touched, ownership record or not - only an already-dangling
+    symlink (no data left to lose) skips the ownership check."""
+    models_dir = tmp_path / "ollama"
+    blobs_dir = models_dir / "blobs"
+    blobs_dir.mkdir(parents=True)
+    digest = "d" * 64
+    blob = blobs_dir / f"sha256-{digest}"
+    real_target = tmp_path / "still-here.gguf"
+    real_target.write_bytes(b"real bytes")
+    try:
+        blob.symlink_to(real_target)
+    except OSError:
+        pytest.skip("creating symlinks needs Developer Mode or elevation on this Windows host")
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "user" / "latest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"layers": [{"digest": f"sha256:{digest}"}]}))
+
     assert linker.autoremove_ollama(models_dir=models_dir) == (0, 0)
-    assert blob.is_symlink()
+    assert blob.is_symlink() and blob.exists()
     assert manifest.exists()
 
 

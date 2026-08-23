@@ -32,33 +32,48 @@ from rich.console import Console
 from rich.style import Style
 from rich.theme import Theme
 
-ROLES = ("error", "warning", "success", "accent", "muted", "value")
+# Roles, and the omm-site design tokens each preset mirrors (design/DIRECTION.md
+# in omm-site): the website's terminal mock-ups are reproductions of real omm
+# output, so the real thing should carry the same hierarchy - dim rules and
+# labels, bright values, one amber accent, green for success.
+#
+#   error    term-err   #F2645A      heading  ink-0 bold  (table headers, section titles)
+#   warning  term-warn  #FFB000      label    ink-3       (the "Field"/"Program" column)
+#   success  term-ok    #5BD98A      rule     ink-3       (box-drawing lines)
+#   accent   accent     #FFB000      muted    ink-3
+#   value    ink-0      #F4F4F4
+ROLES = ("error", "warning", "success", "accent", "muted", "value", "heading", "label", "rule")
 THEME_NAMES = ("light", "dark", "high-contrast", "no-color")
 
 _BASE_STYLES: dict[str, dict[str, Style]] = {
     "light": {
-        "error": Style(color="red", bold=True),
-        # Plain "yellow" is legible on a dark terminal but all but
-        # disappears on a light/white one; this darker gold keeps the
-        # same "warning" hue readable on a light background.
-        "warning": Style(color="dark_goldenrod"),
-        "success": Style(color="green", bold=True),
-        "accent": Style(color="blue", bold=True),
+        "error": Style(color="#c0392b", bold=True),
+        # The site's amber is a dark-background colour; on white it needs
+        # the pressed variant (accent-press #D89400) to stay readable.
+        "warning": Style(color="#b07500"),
+        "success": Style(color="#1f8a4c", bold=True),
+        "accent": Style(color="#d89400", bold=True),
         "muted": Style(dim=True),
         # No forced color: a light-background terminal's own default
         # foreground is already dark and readable, and hardcoding
         # "white" here (as the pre-theming code did) is invisible on it.
         "value": Style(),
+        "heading": Style(bold=True),
+        "label": Style(dim=True),
+        "rule": Style(dim=True),
     },
     "dark": {
-        "error": Style(color="red", bold=True),
-        "warning": Style(color="yellow"),
-        "success": Style(color="green", bold=True),
-        # Plain terminal blue reads as a near-illegible navy on a black
-        # background (the classic Ubuntu-bash directory-color problem).
-        "accent": Style(color="bright_cyan", bold=True),
-        "muted": Style(dim=True),
-        "value": Style(color="white"),
+        # Hex values are the omm-site tokens verbatim; rich downgrades
+        # them to the nearest 256/16-colour on terminals without truecolor.
+        "error": Style(color="#f2645a", bold=True),
+        "warning": Style(color="#ffb000"),
+        "success": Style(color="#5bd98a", bold=True),
+        "accent": Style(color="#ffb000", bold=True),
+        "muted": Style(color="#767676"),
+        "value": Style(color="#f4f4f4"),
+        "heading": Style(color="#f4f4f4", bold=True),
+        "label": Style(color="#767676"),
+        "rule": Style(color="#767676"),
     },
     "high-contrast": {
         "error": Style(color="white", bgcolor="red", bold=True),
@@ -72,6 +87,9 @@ _BASE_STYLES: dict[str, dict[str, Style]] = {
         "accent": Style(bold=True, underline=True),
         "muted": Style(dim=True),
         "value": Style(bold=True),
+        "heading": Style(bold=True, underline=True),
+        "label": Style(),
+        "rule": Style(),
     },
 }
 
@@ -102,10 +120,17 @@ def build_rich_theme(name: str) -> Theme:
     return Theme(styles)
 
 
-def detect_recommended() -> str:
-    """Best-effort guess only - always "light" or "dark", never raises.
-    No OSC terminal queries (unreliable inside multiplexers, can hang);
-    this only pre-selects the picker cursor, the user always confirms."""
+def detect_recommended() -> str | None:
+    """Best-effort guess only - "light", "dark", or `None` if undetected,
+    never raises. No OSC terminal queries (unreliable inside
+    multiplexers, can hang); this only pre-selects the picker cursor,
+    the user always confirms.
+
+    Returns `None` rather than guessing when `COLORFGBG` isn't set,
+    since most terminal emulators (Terminal.app, iTerm2's defaults,
+    Ghostty, ...) never set it - always falling back to one theme would
+    show a "(recommended)" badge on it regardless of the terminal's
+    actual background, which is worse than showing no badge."""
     raw = os.environ.get("COLORFGBG", "")
     if raw:
         try:
@@ -114,7 +139,7 @@ def detect_recommended() -> str:
             bg = None
         if bg is not None:
             return "light" if bg == 7 or 9 <= bg <= 15 else "dark"
-    return "dark"
+    return None
 
 
 def apply_theme_to_console(console: Console, name: str) -> None:
@@ -207,13 +232,15 @@ def _build_picker_key_bindings(state: dict, options: list[str]):
     return bindings
 
 
-def run_picker(current: str, *, current_label: str = "current", allow_back: bool = False) -> str | None:
+def run_picker(current: str, *, current_label: str | None = "current", allow_back: bool = False) -> str | None:
     """Live picker: an arrow-key list of presets with a preview pane
     above it that redraws in the highlighted preset's real colors on
     every move, so you see the effect of a choice before committing to
     it instead of scrolling through every preset's block up front.
     Returns the picked name, or `None` on cancel (Escape/Ctrl+C) or
-    "← Back"."""
+    "← Back". `current_label=None` starts the cursor on `current`
+    without printing any "(...)" suffix next to it - for when `current`
+    is just a fallback default, not something worth badging."""
     from prompt_toolkit.application import Application
     from prompt_toolkit.formatted_text import ANSI
     from prompt_toolkit.layout import HSplit, Layout, Window
@@ -233,7 +260,7 @@ def run_picker(current: str, *, current_label: str = "current", allow_back: bool
         fragments = []
         for i, name in enumerate(options):
             marker = "❯ " if i == state["index"] else "  "
-            suffix = f" ({current_label})" if name == current and name in THEME_NAMES else ""
+            suffix = f" ({current_label})" if current_label and name == current and name in THEME_NAMES else ""
             style = "reverse" if i == state["index"] else ""
             fragments.append((style, f"{marker}{name}{suffix}\n"))
         return fragments
@@ -241,6 +268,10 @@ def run_picker(current: str, *, current_label: str = "current", allow_back: bool
     bindings = _build_picker_key_bindings(state, options)
     root = HSplit(
         [
+            Window(
+                FormattedTextControl("Preview - how each kind of omm message will look:"),
+                dont_extend_height=True,
+            ),
             Window(FormattedTextControl(_preview_fragments), dont_extend_height=True, always_hide_cursor=True),
             Window(height=1, char=" "),
             Window(

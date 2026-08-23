@@ -100,12 +100,15 @@ def _scan_ollama_format(engine: str, models_dir: Path) -> list[ExternalGguf]:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             continue
-        rel = manifest_path.relative_to(manifests_root)
-        tag = f"{rel.parent.name}:{rel.name}"
+        runtime_name = linker._ollama_runtime_name_from_manifest_path(
+            manifest_path, manifests_root
+        )
+        if runtime_name is None:
+            continue
         for layer in manifest.get("layers", []):
             if layer.get("mediaType") == _OLLAMA_MODEL_LAYER:
                 digest = layer["digest"].removeprefix("sha256:")
-                tags_by_digest.setdefault(digest, []).append(tag)
+                tags_by_digest.setdefault(digest, []).append(runtime_name)
 
     found = []
     for digest, tags in tags_by_digest.items():
@@ -242,6 +245,14 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
 
     linked = {spec.key: False for spec in linker.ENGINES}
     bytes_saved = 0
+    discovered_ollama_runtime_name = next(
+        (
+            loc.display_name
+            for loc in group.locations
+            if loc.engine == "ollama" and loc.display_name
+        ),
+        None,
+    )
 
     if existing_filename:
         hub_path = managed_path(existing_filename)
@@ -299,9 +310,14 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     filename = hub_path.name
     if existing_filename:
         ollama_tag = reg[existing_filename].get("ollama_name") or linker.sanitize_ollama_tag(existing_filename)
+        ollama_runtime_name = (
+            reg[existing_filename].get("ollama_runtime_name")
+            or discovered_ollama_runtime_name
+        )
         repo_id = reg[existing_filename].get("repo_id")
     else:
         ollama_tag = linker.sanitize_ollama_tag(filename)
+        ollama_runtime_name = discovered_ollama_runtime_name
         repo_id = None
 
     # The locations found by the scan only cover the engine(s) the file
@@ -321,10 +337,12 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             link_warnings.append(f"{spec.label} link skipped: {e}")
 
     if existing_filename:
-        registry.upsert_entry(existing_filename, linked=linked)
+        fields: dict[str, object] = {"linked": linked}
+        if ollama_runtime_name:
+            fields["ollama_runtime_name"] = ollama_runtime_name
+        registry.upsert_entry(existing_filename, **fields)
     else:
-        registry.upsert_entry(
-            filename,
+        fields = dict(
             sha256=group.sha256,
             version=group.sha256[:7],
             source="imported",
@@ -334,5 +352,8 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             repo_id=None,
             linked=linked,
         )
+        if ollama_runtime_name:
+            fields["ollama_runtime_name"] = ollama_runtime_name
+        registry.upsert_entry(filename, **fields)
 
     return AdoptResult(filename=filename, bytes_saved=bytes_saved, link_warnings=link_warnings)

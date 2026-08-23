@@ -42,17 +42,14 @@ def test_autoremove_reports_counts_from_both_engines(isolated_omm_home, monkeypa
     assert "1 broken Ollama link(s)" in result.stdout
 
 
-def test_autoremove_cleans_up_orphaned_part_and_gguf_files(isolated_omm_home, monkeypatch):
-    _stub_no_new_engines(monkeypatch)
-    monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
-    monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
+def test_cleanup_cleans_up_orphaned_part_and_gguf_files(isolated_omm_home, monkeypatch):
     cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
     orphan_part = cli.MODELS_DIR / "orphan.gguf.part"
     orphan_part.write_bytes(b"partial")
     orphan_full = cli.MODELS_DIR / "orphan2.gguf"
     orphan_full.write_bytes(b"complete")
 
-    result = runner.invoke(cli.app, ["autoremove"])
+    result = runner.invoke(cli.app, ["cleanup"])
 
     assert result.exit_code == 0, result.stdout
     assert "2" in result.stdout
@@ -60,12 +57,9 @@ def test_autoremove_cleans_up_orphaned_part_and_gguf_files(isolated_omm_home, mo
     assert not orphan_full.exists()
 
 
-def test_autoremove_cleans_nested_partial_and_resume_metadata(
+def test_cleanup_cleans_nested_partial_and_resume_metadata(
     isolated_omm_home, monkeypatch
 ):
-    _stub_no_new_engines(monkeypatch)
-    monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
-    monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
     nested = cli.MODELS_DIR / "quantized"
     nested.mkdir(parents=True)
     orphan_part = nested / "orphan.gguf.part"
@@ -73,7 +67,7 @@ def test_autoremove_cleans_nested_partial_and_resume_metadata(
     orphan_part.write_bytes(b"partial")
     orphan_meta.write_text("{}")
 
-    result = runner.invoke(cli.app, ["autoremove"])
+    result = runner.invoke(cli.app, ["cleanup"])
 
     assert result.exit_code == 0, result.stdout
     assert not orphan_part.exists()
@@ -81,18 +75,15 @@ def test_autoremove_cleans_nested_partial_and_resume_metadata(
     assert not nested.exists()
 
 
-def test_autoremove_leaves_registered_files_alone(isolated_omm_home, monkeypatch):
+def test_cleanup_leaves_registered_files_alone(isolated_omm_home, monkeypatch):
     from omm import registry
 
-    _stub_no_new_engines(monkeypatch)
-    monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
-    monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
     cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
     kept = cli.MODELS_DIR / "kept.gguf"
     kept.write_bytes(b"data")
     registry.save_registry({"kept.gguf": {"linked": {"lmstudio": False, "ollama": False}}})
 
-    result = runner.invoke(cli.app, ["autoremove"])
+    result = runner.invoke(cli.app, ["cleanup"])
 
     assert result.exit_code == 0, result.stdout
     assert kept.exists()
@@ -114,10 +105,7 @@ def test_autoremove_skips_uninstalled_engines(isolated_omm_home, monkeypatch):
     assert ollama_calls == []
 
 
-def test_autoremove_tolerates_permission_error_removing_incomplete_file(isolated_omm_home, monkeypatch):
-    _stub_no_new_engines(monkeypatch)
-    monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: False)
-    monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
+def test_cleanup_tolerates_permission_error_removing_incomplete_file(isolated_omm_home, monkeypatch):
     cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
     orphan = cli.MODELS_DIR / "orphan.gguf"
     orphan.write_bytes(b"junk")
@@ -131,7 +119,7 @@ def test_autoremove_tolerates_permission_error_removing_incomplete_file(isolated
 
     monkeypatch.setattr(Path, "unlink", _flaky_unlink)
 
-    result = runner.invoke(cli.app, ["autoremove"])
+    result = runner.invoke(cli.app, ["cleanup"])
 
     assert result.exit_code == 0, result.stdout
     assert orphan.exists()

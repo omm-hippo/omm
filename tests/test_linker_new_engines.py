@@ -248,6 +248,90 @@ def test_ollama_manifest_collision_preserves_first_model(
     assert manifest_path.read_bytes() == original
 
 
+def test_unlink_ollama_leaves_manifest_when_ownership_record_is_lost(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A manifest whose ownership record is missing (link-ownership.json
+    reset, or a pre-ownership-registry legacy link) must not be touched
+    when the caller can't prove it's the same content omm is deleting -
+    the safe default stays a no-op, matching prior behavior."""
+    gguf_path = linker.MODELS_DIR / "model.gguf"
+    gguf_path.parent.mkdir(parents=True, exist_ok=True)
+    gguf_path.write_bytes(b"model-bytes")
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    tag = "model"
+    linker.link_ollama(gguf_path, tag, models_dir=models_dir)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / tag / "latest"
+    assert manifest_path.exists()
+
+    # Simulate a lost ownership record (registry reset, or a legacy link
+    # that predates the ownership registry entirely).
+    linker._update_link_ownership(manifest_path, None)
+
+    removed = linker.unlink_ollama(tag, models_dir=models_dir)
+
+    assert removed is False
+    assert manifest_path.exists()
+
+
+def test_unlink_ollama_recovers_orphan_via_matching_content_sha256(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """Same lost-ownership-record scenario, but the caller (omm's own
+    registry entry) knows the exact sha256 of the file it's about to
+    delete. If that matches the manifest's model-layer digest, this is
+    unambiguously omm's own orphaned link and must be cleaned up - this
+    is the exact bug from issue #171: `omm remove` deleted the hub file
+    while the ownership-record-less Ollama manifest and its now-broken
+    blob symlink lived on forever, permanently invisible to `omm list`
+    but still showing up in `omm benchmark all`."""
+    gguf_path = linker.MODELS_DIR / "model.gguf"
+    gguf_path.parent.mkdir(parents=True, exist_ok=True)
+    gguf_path.write_bytes(b"model-bytes")
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    tag = "model"
+    linker.link_ollama(gguf_path, tag, models_dir=models_dir)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / tag / "latest"
+    content_sha256 = linker.sha256_file(gguf_path)
+    linker._update_link_ownership(manifest_path, None)
+
+    removed = linker.unlink_ollama(
+        tag, models_dir=models_dir, expected_content_sha256=content_sha256
+    )
+
+    assert removed is True
+    assert not manifest_path.exists()
+
+
+def test_unlink_ollama_ignores_content_sha256_mismatch(isolated_omm_home, tmp_path, monkeypatch):
+    """A wrong/unrelated sha256 must never be treated as proof of
+    ownership - only an exact match recovers an unrecorded manifest."""
+    gguf_path = linker.MODELS_DIR / "model.gguf"
+    gguf_path.parent.mkdir(parents=True, exist_ok=True)
+    gguf_path.write_bytes(b"model-bytes")
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    tag = "model"
+    linker.link_ollama(gguf_path, tag, models_dir=models_dir)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / tag / "latest"
+    linker._update_link_ownership(manifest_path, None)
+
+    removed = linker.unlink_ollama(
+        tag, models_dir=models_dir, expected_content_sha256="0" * 64
+    )
+
+    assert removed is False
+    assert manifest_path.exists()
+
+
 def test_jan_manifest_collision_preserves_first_model(
     isolated_omm_home, tmp_path, monkeypatch
 ):
@@ -291,13 +375,133 @@ def test_link_ollama_rejects_corrupted_existing_digest_blob(
         linker.link_ollama(gguf_path, "model", models_dir=models_dir)
 
 
-def test_is_anythingllm_installed_reflects_app_dir_existence_on_non_darwin(tmp_path, monkeypatch):
+@pytest.fixture
+def anythingllm_linux_env(tmp_path, monkeypatch):
+    """Point every AnythingLLM Linux probe at tmp_path so the test never
+    sees the real ~/AnythingLLMDesktop or /usr/share/applications."""
     monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
     monkeypatch.setattr(linker, "anythingllm_app_dir", lambda: tmp_path / "anythingllm-desktop")
+    monkeypatch.setattr(linker, "_ANYTHINGLLM_LINUX_INSTALL_DIRS", [tmp_path / "AnythingLLMDesktop"])
+    monkeypatch.setattr(linker, "_DESKTOP_ENTRY_SEARCH_ROOTS", [tmp_path / "applications"])
+    (tmp_path / "applications").mkdir()
+    return tmp_path
+
+
+@pytest.fixture
+def anythingllm_windows_env(tmp_path, monkeypatch):
+    """Point every AnythingLLM Windows probe at tmp_path. Unset the
+    remaining install-location variables so a real AnythingLLM on the
+    machine running the tests can't decide the outcome."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker, "anythingllm_app_dir", lambda: tmp_path / "anythingllm-desktop")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    for variable in ("ProgramFiles", "ProgramFiles(x86)", "ProgramData"):
+        monkeypatch.delenv(variable, raising=False)
+    return tmp_path
+
+
+def _windows_start_menu(root: Path) -> Path:
+    return root / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+
+
+def test_is_anythingllm_installed_false_when_nothing_present_on_linux(anythingllm_linux_env):
     assert linker.is_anythingllm_installed() is False
 
-    (tmp_path / "anythingllm-desktop").mkdir()
+
+def test_is_anythingllm_installed_reflects_app_dir_existence_on_non_darwin(anythingllm_linux_env):
+    """The launched case: the Electron userData dir alone still counts."""
+    (anythingllm_linux_env / "anythingllm-desktop").mkdir()
     assert linker.is_anythingllm_installed() is True
+
+
+def test_is_anythingllm_installed_detects_never_launched_install_on_linux(anythingllm_linux_env):
+    """installer.sh unpacks ~/AnythingLLMDesktop at install time; ~/.config
+    /anythingllm-desktop only appears on first launch."""
+    (anythingllm_linux_env / "AnythingLLMDesktop").mkdir()
+    assert linker.is_anythingllm_installed() is True
+
+
+def test_is_anythingllm_installed_detects_desktop_entry_on_linux(anythingllm_linux_env):
+    (anythingllm_linux_env / "applications" / "anythingllm.desktop").write_text("[Desktop Entry]\n")
+    assert linker.is_anythingllm_installed() is True
+
+
+def test_is_anythingllm_installed_false_when_nothing_present_on_windows(anythingllm_windows_env):
+    assert linker.is_anythingllm_installed() is False
+
+
+def test_is_anythingllm_installed_detects_launched_app_on_windows(anythingllm_windows_env):
+    (anythingllm_windows_env / "anythingllm-desktop").mkdir()
+    assert linker.is_anythingllm_installed() is True
+
+
+@pytest.mark.parametrize(
+    "install_dir_name", ["AnythingLLM", "AnythingLLM Desktop", "anythingllm-desktop"]
+)
+def test_is_anythingllm_installed_detects_never_launched_install_on_windows(
+    anythingllm_windows_env, install_dir_name
+):
+    """Regression for #132: electron-builder installs into
+    %LOCALAPPDATA%\\Programs, but %APPDATA%\\anythingllm-desktop is only
+    created the first time the app is launched - an installed app that was
+    never opened used to read as "not installed"."""
+    program_dir = anythingllm_windows_env / "Local" / "Programs" / install_dir_name
+    program_dir.mkdir(parents=True)
+    (program_dir / "AnythingLLM.exe").write_bytes(b"")
+    assert linker.is_anythingllm_installed() is True
+
+
+def test_is_anythingllm_installed_ignores_empty_program_dir_on_windows(anythingllm_windows_env):
+    """A full disk makes the NSIS installer exit after creating only the
+    target folder (seen live); that husk must not read as installed."""
+    (anythingllm_windows_env / "Local" / "Programs" / "AnythingLLM").mkdir(parents=True)
+    assert linker.is_anythingllm_installed() is False
+
+
+def test_is_anythingllm_installed_detects_install_under_omm_home_apps(anythingllm_windows_env, monkeypatch):
+    apps = anythingllm_windows_env / "omm-home" / "apps"
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: apps)
+    (apps / "AnythingLLM").mkdir(parents=True)
+    (apps / "AnythingLLM" / "AnythingLLM.exe").write_bytes(b"")
+    assert linker.is_anythingllm_installed() is True
+
+
+def test_is_anythingllm_installed_detects_machine_wide_install_on_windows(
+    anythingllm_windows_env, monkeypatch
+):
+    monkeypatch.setenv("ProgramFiles", str(anythingllm_windows_env / "Program Files"))
+    (anythingllm_windows_env / "Program Files" / "AnythingLLM").mkdir(parents=True)
+    (anythingllm_windows_env / "Program Files" / "AnythingLLM" / "AnythingLLM.exe").write_bytes(b"")
+    assert linker.is_anythingllm_installed() is True
+
+
+@pytest.mark.parametrize(
+    "shortcut", ["AnythingLLM.lnk", "AnythingLLM/AnythingLLM Desktop.lnk"]
+)
+def test_is_anythingllm_installed_detects_start_menu_shortcut_on_windows(
+    anythingllm_windows_env, shortcut
+):
+    path = _windows_start_menu(anythingllm_windows_env) / shortcut
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"")
+    assert linker.is_anythingllm_installed() is True
+
+
+def test_is_anythingllm_installed_ignores_unrelated_start_menu_shortcut(anythingllm_windows_env):
+    menu = _windows_start_menu(anythingllm_windows_env)
+    menu.mkdir(parents=True)
+    (menu / "Notepad.lnk").write_bytes(b"")
+    assert linker.is_anythingllm_installed() is False
+
+
+def test_windows_install_artifact_probe_is_windows_only(tmp_path, monkeypatch):
+    """The Windows probe must stay inert on other platforms, the way
+    _app_bundle_installed does for Darwin."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    (tmp_path / "Local" / "Programs" / "AnythingLLM").mkdir(parents=True)
+    assert linker._windows_install_artifact_exists(("AnythingLLM",), "AnythingLLM*.lnk") is False
 
 
 def test_is_anythingllm_installed_reflects_app_bundle_on_darwin(tmp_path, monkeypatch):

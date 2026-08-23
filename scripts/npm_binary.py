@@ -19,6 +19,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ENTRY_SCRIPT = Path(__file__).resolve().with_name("npm_entry.py")
 DISTRIBUTION_NAME = "omm-model"
 EXECUTABLE_NAME = "omm"
 SUBPROCESS_TIMEOUT_SECONDS = 900
@@ -106,6 +107,13 @@ def pyinstaller_command(entry_script: Path, output_dir: Path, work_dir: Path) ->
     ]
 
 
+def build_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    environment["PYTHONHASHSEED"] = "0"
+    environment["SOURCE_DATE_EPOCH"] = "0"
+    return environment
+
+
 def _validate_magic(executable: Path, target: str) -> None:
     if not executable.is_file() or executable.is_symlink():
         raise NpmBinaryError(f"missing regular executable: {executable}")
@@ -155,16 +163,14 @@ def build(output_dir: Path, expected_target: str | None = None) -> Path:
         )
     version = project_version()
     output_dir.mkdir(parents=True, exist_ok=True)
+    if not ENTRY_SCRIPT.is_file():
+        raise NpmBinaryError(f"missing checked-in entry script: {ENTRY_SCRIPT}")
     with tempfile.TemporaryDirectory(prefix="omm-npm-binary-") as temporary:
         work_dir = Path(temporary)
-        entry_script = work_dir / "omm_entry.py"
-        entry_script.write_text(
-            "from omm.cli import main\n\nif __name__ == '__main__':\n    main()\n",
-            encoding="utf-8",
-        )
         subprocess.run(
-            pyinstaller_command(entry_script, output_dir, work_dir),
+            pyinstaller_command(ENTRY_SCRIPT, output_dir, work_dir),
             check=True,
+            env=build_environment(),
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
     executable = output_dir / EXECUTABLE_NAME

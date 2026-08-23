@@ -68,6 +68,23 @@ def _entry(**overrides):
     return entry
 
 
+def test_compatibility_ref_uses_exact_imported_ollama_runtime_name(monkeypatch):
+    monkeypatch.setattr(
+        cli.linker,
+        "resolve_ollama_runtime_name",
+        lambda filename, entry: "qwen3:4b",
+    )
+
+    reference = cli._compatibility_model_ref(
+        "qwen3-4b.gguf",
+        _entry(ollama_name="qwen3-4b"),
+        "ollama",
+    )
+
+    assert reference.key == "qwen3:4b"
+    assert "qwen3-4b" in reference.aliases
+
+
 def test_verify_success_records_and_reports_result(isolated_omm_home, monkeypatch):
     registry.save_registry({"model.gguf": _entry()})
     adapter = _CliAdapter()

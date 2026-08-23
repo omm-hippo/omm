@@ -1,0 +1,356 @@
+name: Build, verify, and publish npm release
+
+"on":
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing signed OMM release version, without the v prefix
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - ".github/workflows/npm-release.yml"
+      - "packaging/npm/**"
+      - "pyproject.toml"
+      - "requirements-npm-binary.txt"
+      - "requirements-windows-portable.txt"
+      - "scripts/npm_binary.py"
+      - "scripts/npm_entry.py"
+      - "scripts/npm_package.py"
+      - "scripts/npm_release.py"
+      - "scripts/windows_portable.py"
+      - "src/**"
+      - "tests/test_npm_binary.py"
+      - "tests/test_npm_package.py"
+      - "tests/test_npm_release.py"
+      - "tests/test_npm_workflow.py"
+      - "LICENSE"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  identity:
+    name: Verify npm release identity
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Resolve the package version
+        id: identity
+        run: echo "version=$(python scripts/npm_package.py version)" >> "$GITHUB_OUTPUT"
+      - name: Require a signed release tag in main history
+        if: github.event_name != 'pull_request'
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+          OMM_VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            release_tag="v${DISPATCH_VERSION}"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+          fi
+          test "$release_tag" = "v${OMM_VERSION}"
+          git -c gpg.ssh.allowedSignersFile=src/omm/trust/allowed_signers verify-tag "$release_tag"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main
+
+  platform:
+    name: Build npm package for ${{ matrix.target }}
+    needs: identity
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x64-gnu
+          - os: ubuntu-22.04-arm
+            target: linux-arm64-gnu
+          - os: macos-26
+            target: darwin-arm64
+          - os: macos-15-intel
+            target: darwin-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install the pinned standalone build graph
+        run: |
+          python -m pip install --disable-pip-version-check --no-input -r requirements-npm-binary.txt
+          python -m pip install --disable-pip-version-check --no-input --no-deps --no-build-isolation .
+      - name: Build and stage the publishable platform package
+        run: |
+          python scripts/npm_binary.py build --expected-target "${{ matrix.target }}" --output-dir dist/npm-binary
+          python scripts/npm_package.py stage-platform \
+            --target "${{ matrix.target }}" \
+            --binary dist/npm-binary/omm \
+            --output-dir dist/npm-stage \
+            --publishable
+          mkdir -p dist/npm-pack
+          npm pack "dist/npm-stage/${{ matrix.target }}" --pack-destination dist/npm-pack --json
+      - name: Store the platform package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package-${{ matrix.target }}
+          path: dist/npm-pack/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Build npm package for win32-x64
+    needs: identity
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          architecture: x64
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install the pinned Windows build graph
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements-windows-portable.txt
+      - name: Build and install the exact source wheel
+        shell: pwsh
+        run: |
+          python -m build --wheel --no-isolation --outdir wheelhouse .
+          if ($LASTEXITCODE -ne 0) { throw "wheel build failed" }
+          $wheels = @(Get-ChildItem -LiteralPath wheelhouse -Filter *.whl)
+          if ($wheels.Count -ne 1) { throw "expected exactly one wheel" }
+          python -m pip install --disable-pip-version-check --no-input --no-deps $wheels[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "wheel install failed" }
+      - name: Build and stage the publishable Windows package
+        shell: pwsh
+        env:
+          OMM_VERSION: ${{ needs.identity.outputs.version }}
+        run: |
+          python scripts/windows_portable.py build `
+            --version "$env:OMM_VERSION" `
+            --output-dir dist/npm-binary
+          if ($LASTEXITCODE -ne 0) { throw "Windows binary build failed" }
+          python scripts/npm_package.py stage-platform `
+            --target win32-x64 `
+            --binary dist/npm-binary/omm.exe `
+            --output-dir dist/npm-stage `
+            --publishable
+          if ($LASTEXITCODE -ne 0) { throw "Windows package staging failed" }
+          New-Item -ItemType Directory -Force -Path dist/npm-pack | Out-Null
+          npm pack dist/npm-stage/win32-x64 --pack-destination dist/npm-pack --json
+          if ($LASTEXITCODE -ne 0) { throw "Windows npm pack failed" }
+      - name: Store the Windows platform package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package-win32-x64
+          path: dist/npm-pack/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  launcher:
+    name: Build npm launcher package
+    needs: identity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Stage the publishable launcher package
+        run: |
+          python scripts/npm_package.py stage-launcher --output-dir dist/npm-stage --publishable
+          mkdir -p dist/npm-pack
+          npm pack dist/npm-stage/omm-launcher --pack-destination dist/npm-pack --json
+      - name: Store the launcher package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package-launcher
+          path: dist/npm-pack/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  bundle:
+    name: Verify the complete npm release bundle
+    needs: [platform, windows, launcher]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: npm-package-*
+          path: dist/npm-pack
+          merge-multiple: true
+      - name: Reuse immutable packages already published to npm
+        if: github.event_name != 'pull_request'
+        run: python scripts/npm_release.py reuse-published --pack-dir dist/npm-pack
+      - name: Verify package identities, files, and checksums
+        run: python scripts/npm_release.py verify-bundle --pack-dir dist/npm-pack --write-checksums
+      - name: Store the complete validated release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-release-packages
+          path: dist/npm-pack/
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke:
+    name: Exercise npm tarballs on ${{ matrix.target }}
+    needs: bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x64-gnu
+          - os: ubuntu-22.04-arm
+            target: linux-arm64-gnu
+          - os: macos-26
+            target: darwin-arm64
+          - os: macos-15-intel
+            target: darwin-x64
+          - os: windows-2025
+            target: win32-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-release-packages
+          path: dist/npm-pack
+      - name: Install, run, check update guidance, and uninstall
+        run: >-
+          python scripts/npm_release.py smoke-tarballs
+          --pack-dir dist/npm-pack
+          --target "${{ matrix.target }}"
+
+  publish:
+    name: Publish the verified npm packages
+    if: >-
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) &&
+      vars.NPM_TRUSTED_PUBLISHING == 'enabled'
+    needs: [identity, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@omm-hippo/omm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: | # zizmor: ignore[adhoc-packages] exact trusted-publishing CLI version
+          npm install --global npm@11.19.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-release-packages
+          path: dist/npm-pack
+      - name: Publish platform packages first and launcher last
+        run: python scripts/npm_release.py publish-bundle --pack-dir dist/npm-pack
+
+  verify-registry:
+    name: Verify public npm path on ${{ matrix.target }}
+    needs: [identity, publish]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x64-gnu
+          - os: ubuntu-22.04-arm
+            target: linux-arm64-gnu
+          - os: macos-26
+            target: darwin-arm64
+          - os: macos-15-intel
+            target: darwin-x64
+          - os: windows-2025
+            target: win32-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: | # zizmor: ignore[adhoc-packages] exact verification CLI version
+          npm install --global npm@11.19.0
+      - name: Install, verify signatures, run, and uninstall from npmjs
+        env:
+          OMM_VERSION: ${{ needs.identity.outputs.version }}
+        run: >-
+          python scripts/npm_release.py smoke-registry
+          --version "${OMM_VERSION}"
+          --target "${{ matrix.target }}"
