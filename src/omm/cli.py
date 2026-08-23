@@ -70,7 +70,7 @@ from omm import (
     version_check,
 )
 from omm import contribute as contribute_mod
-from omm.completion import complete_install_name, complete_remove_filename
+from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
 from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
 from omm.downloader import (
     DownloadCancelled,
@@ -647,6 +647,7 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "engine",
             "import",
             "autoremove",
+            "cleanup",
             "link",
             "update",
             "help",
@@ -1078,13 +1079,38 @@ def setup_cmd() -> None:
 
 @engine_app.command(name="install")
 @global_flags
-def engine_install_cmd() -> None:
-    """Interactively pick local AI runner programs (Ollama, LM Studio, etc.) to install."""
-    selected = onboarding.run_engine_checklist(console)
-    if selected is None:
-        raise typer.Abort()
-    if selected:
-        onboarding.install_selected_engines(console, selected)
+def engine_install_cmd(
+    engine: str = typer.Argument(
+        None,
+        autocompletion=complete_engine_key,
+        help="Engine key to install directly, skipping the checklist "
+        "(ollama, lmstudio, jan, anythingllm, mstystudio, textgenwebui, koboldcpp).",
+    ),
+) -> None:
+    """Install a local AI runner program (Ollama, LM Studio, etc.).
+
+    With no argument, interactively pick from a checklist. With an engine
+    key, install that one runner directly."""
+    if engine is None:
+        selected = onboarding.run_engine_checklist(console)
+        if selected is None:
+            raise typer.Abort()
+        if selected:
+            onboarding.install_selected_engines(console, selected)
+        return
+
+    key = engine.strip().lower()
+    valid_engines = {spec.key for spec in linker.ENGINES}
+    if key not in valid_engines:
+        err_console.print(
+            f"[error]engine must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/error]"
+        )
+        raise typer.Exit(2)
+    if linker.is_engine_installed(key):
+        label = next(spec.label for spec in linker.ENGINES if spec.key == key)
+        console.print(f"[muted]{label} is already installed.[/muted]")
+        return
+    onboarding.install_selected_engines(console, [key])
 
 
 def _refresh_data() -> None:
@@ -2372,7 +2398,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
         else:
             err_console.print(
                 "[error]git or pipx not found. Install them first, or rerun the installer:[/error]\n"
-                "  curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh"
+                "  curl -fsSL https://omm.run/install.sh | sh"
             )
         raise typer.Exit(1)
     except OSError as e:
@@ -6505,7 +6531,7 @@ def relink() -> None:
     link_models(directory=None, engine=None)
 
 
-def _autoremove_incomplete_installs() -> int:
+def _cleanup_incomplete_installs() -> int:
     if not MODELS_DIR.exists():
         return 0
 
@@ -6551,11 +6577,10 @@ def _autoremove_incomplete_installs() -> int:
 @app.command()
 @global_flags
 def autoremove() -> None:
-    """Clean up broken links and leftover partial downloads.
+    """Clean up broken symlinks left in AI runner model directories.
 
     Removes symlinks left behind when a model's source .gguf was deleted
-    without going through `omm uninstall`, plus any orphaned partial or
-    unregistered downloads in the models directory."""
+    without going through `omm uninstall`."""
     removed_by_engine: dict[str, int] = {}
     for spec in linker.ENGINES:
         if linker.is_engine_installed(spec.key):
@@ -6567,17 +6592,29 @@ def autoremove() -> None:
                 custom_removed += 1
     if custom_removed:
         removed_by_engine["custom"] = custom_removed
-    incomplete_removed = _autoremove_incomplete_installs()
 
-    if not any(removed_by_engine.values()) and incomplete_removed == 0:
+    if not any(removed_by_engine.values()):
         console.print("[success]No broken symlinks found.[/success]")
         return
 
     parts = [f"{count} broken {label} link(s)" for label, count in removed_by_engine.items() if count]
-    console.print(
-        f"[success]Removed {', '.join(parts) or '0 broken links'}, "
-        f"{incomplete_removed} incomplete install file(s) cleaned up.[/success]"
-    )
+    console.print(f"[success]Removed {', '.join(parts) or '0 broken links'}.[/success]")
+
+
+@app.command()
+@global_flags
+def cleanup() -> None:
+    """Clean up leftover partial downloads and install cache files.
+
+    Removes orphaned partial or unregistered .gguf downloads left behind
+    in the models directory by interrupted or incomplete installs."""
+    incomplete_removed = _cleanup_incomplete_installs()
+
+    if incomplete_removed == 0:
+        console.print("[success]No leftover install files found.[/success]")
+        return
+
+    console.print(f"[success]Cleaned up {incomplete_removed} incomplete install file(s).[/success]")
 
 
 def _guard_benchmark_models(models: list[str]) -> None:
@@ -8446,6 +8483,7 @@ def contribute(
         finally:
             listener.stop_event.set()
 
+        cleanup()
         autoremove()
 
         after_count = _telemetry_row_count(endpoint) if endpoint else None

@@ -97,6 +97,7 @@ def test_release_workflow_builds_smoke_installs_and_gates_publishing():
     assert "python -m build" in workflow
     assert "python -m twine check dist/*.whl dist/*.tar.gz" in workflow
     assert "scripts/release_artifacts.py check-tag" in workflow
+    assert "scripts/distribution_versions.py" in workflow
     assert "git merge-base --is-ancestor" in workflow
     assert "scripts/release_artifacts.py smoke-install" in workflow
     assert "ubuntu-latest, macos-latest, windows-latest" in workflow
@@ -108,12 +109,13 @@ def test_release_workflow_builds_smoke_installs_and_gates_publishing():
     assert workflow.count("id-token: write") == 2
     assert workflow.count(
         "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
-    ) == 4
+    ) == 5
     assert "needs: [smoke-install, release-tests]" in workflow
     assert "needs: publish-testpypi" in workflow
     assert "needs: verify-testpypi" in workflow
     assert "needs: publish-pypi" in workflow
     assert "needs: verify-pypi-files" in workflow
+    assert "name: Verify PyPI and Homebrew version sync" in workflow
     assert re.search(
         r"(?m)^  sync-homebrew:\n(?:    .*\n)*?    needs: verify-pypi-install$",
         workflow,

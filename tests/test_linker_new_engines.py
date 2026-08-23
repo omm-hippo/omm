@@ -248,6 +248,90 @@ def test_ollama_manifest_collision_preserves_first_model(
     assert manifest_path.read_bytes() == original
 
 
+def test_unlink_ollama_leaves_manifest_when_ownership_record_is_lost(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A manifest whose ownership record is missing (link-ownership.json
+    reset, or a pre-ownership-registry legacy link) must not be touched
+    when the caller can't prove it's the same content omm is deleting -
+    the safe default stays a no-op, matching prior behavior."""
+    gguf_path = linker.MODELS_DIR / "model.gguf"
+    gguf_path.parent.mkdir(parents=True, exist_ok=True)
+    gguf_path.write_bytes(b"model-bytes")
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    tag = "model"
+    linker.link_ollama(gguf_path, tag, models_dir=models_dir)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / tag / "latest"
+    assert manifest_path.exists()
+
+    # Simulate a lost ownership record (registry reset, or a legacy link
+    # that predates the ownership registry entirely).
+    linker._update_link_ownership(manifest_path, None)
+
+    removed = linker.unlink_ollama(tag, models_dir=models_dir)
+
+    assert removed is False
+    assert manifest_path.exists()
+
+
+def test_unlink_ollama_recovers_orphan_via_matching_content_sha256(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """Same lost-ownership-record scenario, but the caller (omm's own
+    registry entry) knows the exact sha256 of the file it's about to
+    delete. If that matches the manifest's model-layer digest, this is
+    unambiguously omm's own orphaned link and must be cleaned up - this
+    is the exact bug from issue #171: `omm remove` deleted the hub file
+    while the ownership-record-less Ollama manifest and its now-broken
+    blob symlink lived on forever, permanently invisible to `omm list`
+    but still showing up in `omm benchmark all`."""
+    gguf_path = linker.MODELS_DIR / "model.gguf"
+    gguf_path.parent.mkdir(parents=True, exist_ok=True)
+    gguf_path.write_bytes(b"model-bytes")
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    tag = "model"
+    linker.link_ollama(gguf_path, tag, models_dir=models_dir)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / tag / "latest"
+    content_sha256 = linker.sha256_file(gguf_path)
+    linker._update_link_ownership(manifest_path, None)
+
+    removed = linker.unlink_ollama(
+        tag, models_dir=models_dir, expected_content_sha256=content_sha256
+    )
+
+    assert removed is True
+    assert not manifest_path.exists()
+
+
+def test_unlink_ollama_ignores_content_sha256_mismatch(isolated_omm_home, tmp_path, monkeypatch):
+    """A wrong/unrelated sha256 must never be treated as proof of
+    ownership - only an exact match recovers an unrecorded manifest."""
+    gguf_path = linker.MODELS_DIR / "model.gguf"
+    gguf_path.parent.mkdir(parents=True, exist_ok=True)
+    gguf_path.write_bytes(b"model-bytes")
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    tag = "model"
+    linker.link_ollama(gguf_path, tag, models_dir=models_dir)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / tag / "latest"
+    linker._update_link_ownership(manifest_path, None)
+
+    removed = linker.unlink_ollama(
+        tag, models_dir=models_dir, expected_content_sha256="0" * 64
+    )
+
+    assert removed is False
+    assert manifest_path.exists()
+
+
 def test_jan_manifest_collision_preserves_first_model(
     isolated_omm_home, tmp_path, monkeypatch
 ):

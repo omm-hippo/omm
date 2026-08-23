@@ -2,6 +2,27 @@
 
 `omm` is an apt/brew-style package manager for local LLMs (GGUF). It installs models into a central hub, links them into seven local AI runners automatically (Ollama, LM Studio, Jan, AnythingLLM, Msty, text-generation-webui, KoboldCpp), and can recommend a model that fits your hardware.
 
+## Table of contents
+
+- [Install](#install)
+  - [Windows](#windows)
+  - [macOS](#macos)
+  - [Linux](#linux)
+  - [Any OS via PyPI or pipx](#any-os-via-pypi-or-pipx)
+  - [Troubleshooting](#troubleshooting)
+  - [Not currently public installation paths](#not-currently-public-installation-paths)
+- [Usage](#usage)
+  - [Setup & discovery](#setup--discovery)
+  - [Install & manage models](#install--manage-models)
+  - [Verify & benchmark](#verify--benchmark)
+  - [Update & configuration](#update--configuration)
+  - [Scripting](#scripting)
+- [Self-hosted benchmark data](#self-hosted-benchmark-data)
+- [Signed recommendation data](#signed-recommendation-data)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Install
 
 Pick your OS and follow one path from top to bottom:
@@ -57,18 +78,18 @@ Download that script and run it with `-Purge` to remove the model hub and settin
 
 Runner note: on Windows x64 the checklist downloads the official AnythingLLM and Msty installers and runs them silently into `OMM_HOME\apps` (no winget package exists for either); on ARM Windows it prints their download page instead.
 
-Detailed walkthrough: <https://www.omm.run/install/windows>
+Detailed walkthrough: <https://omm.run/install/windows>
 
 ### macOS
 
 **1. Open this app.** Open **Terminal** (Applications → Utilities → Terminal), or any terminal emulator you already use. The command runs under `sh`/`zsh`/`bash`.
 
-**2. Requirements.** Python 3.10+ and git must already be present: the installer checks for them and exits with `Python 3.10+ not found` or `git not found. Install git first` if either is missing. Install Python 3.10+ from [python.org](https://www.python.org/downloads/) or Homebrew, and git with the Xcode Command Line Tools (`xcode-select --install`) or Homebrew. `pipx` is bootstrapped with `pip` if missing (Homebrew and other PEP-668 "externally-managed" Pythons are handled with `--break-system-packages`), and `omm` is then installed as an isolated CLI via `pipx`. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
+**2. Requirements.** Python 3.10+ and git. The installer uses Homebrew when either is missing: if Homebrew itself is not installed, it bootstraps Homebrew with Homebrew's official installer first (Homebrew requires a supported macOS and Apple's Xcode Command Line Tools). To require a pre-existing Homebrew installation instead of letting the installer bootstrap it, export `OMM_AUTO_INSTALL_HOMEBREW=0` before running the command. `pipx` is bootstrapped with `pip` if missing (Homebrew and other PEP-668 "externally-managed" Pythons are handled with `--break-system-packages`), and `omm` is then installed as an isolated CLI via `pipx`. The installer also persists pipx's executable directory in `~/.zprofile`, so a newly opened zsh finds `omm` automatically. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
 
 **3. Run the installer.**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
+curl -fsSL https://omm.run/install.sh | sh
 ```
 
 **4. After install.** Open a new shell afterward so your `PATH` picks up `omm`, then run:
@@ -114,23 +135,23 @@ omm --install-completion bash  # or zsh/fish
 Remove a Git-source installation while preserving downloaded models and settings:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.sh | sh
+curl -fsSL https://omm.run/uninstall.sh | sh
 ```
 
 Download that script and run it with `--purge` to remove the model hub and settings too.
 
-Detailed walkthrough: <https://www.omm.run/install/macos>
+Detailed walkthrough: <https://omm.run/install/macos>
 
 ### Linux
 
 **1. Open this app.** Any terminal emulator. The command runs under `sh`/`bash`.
 
-**2. Requirements.** Python 3.10+. On Debian/Ubuntu the installer bootstraps `python3`, `python3-venv`, and `git` via `apt` if they are missing; on distributions without `apt`, install Python 3.10+ and git yourself first or the installer exits with `Python 3.10+ not found` or `git not found. Install git first`. `pipx` is bootstrapped with `pip` if missing (PEP-668 "externally-managed" Pythons are handled with `--break-system-packages`), and `omm` is then installed as an isolated CLI via `pipx`. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
+**2. Requirements.** Python 3.10+. The installer bootstraps `python3`, `python3-venv`/equivalent, and `git` via whichever supported package manager is present — `apt-get`, `dnf`, `yum`, `pacman`, or `apk` — when the current user can install system packages; on an unsupported distribution, install Python 3.10+ and git yourself first or the installer exits with `Python 3.10+ not found` or `git not found. Install git first`. `pipx` is bootstrapped with `pip` if missing (PEP-668 "externally-managed" Pythons are handled with `--break-system-packages`), and `omm` is then installed as an isolated CLI via `pipx`. The optional NVIDIA detector is installed only when `nvidia-smi` indicates an NVIDIA driver.
 
 **3. Run the installer.**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
+curl -fsSL https://omm.run/install.sh | sh
 ```
 
 **4. After install.** Open a new shell afterward so your `PATH` picks up `omm`, then run:
@@ -155,39 +176,56 @@ omm --install-completion bash  # or zsh/fish
 Remove a Git-source installation while preserving downloaded models and settings:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.sh | sh
+curl -fsSL https://omm.run/uninstall.sh | sh
 ```
 
 Download that script and run it with `--purge` to remove the model hub and settings too.
 
 Runner note: omm installs Jan on Linux through Flatpak, so `flatpak` must be present for that entry in the runner checklist.
 
-Detailed walkthrough: <https://www.omm.run/install/linux>
+Detailed walkthrough: <https://omm.run/install/linux>
 
 ### Any OS via PyPI or pipx
 
 Works on macOS, Linux, and Windows:
 
 ```sh
-python -m pip install omm-model
+# macOS / Linux (Python 3.10+ and pip must already be installed)
+python3 -m pip install omm-model
+
+# Windows (Python 3.10+ and pip must already be installed)
+py -m pip install omm-model
 ```
 
 This does not go through the signed-commit verification described below; it
 relies on PyPI's own account security and TLS, the same trust model as
-installing any other PyPI package.
+installing any other PyPI package. It is a package-manager path, not a
+zero-prerequisite installer: install Python and pip first on a clean computer.
 
 For an isolated command-line installation, `pipx` is recommended:
 
 ```sh
-pipx install omm-model
+# If pipx is not installed yet, install it with the same Python first.
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+python3 -m pipx install omm-model
 ```
+
+On Windows, use `py -m pip`, `py -m pipx`, and `py -m pipx ensurepath` instead.
+If the operating system marks Python as externally managed, install pipx from
+the operating system package manager or use the Git-source installer above.
 
 The distribution name is `omm-model`; the installed command and Python import
 remain `omm`. Upgrade and remove it with the same tool that installed it:
 
 ```sh
-python -m pip install --upgrade omm-model
-python -m pip uninstall omm-model
+# macOS / Linux
+python3 -m pip install --upgrade omm-model
+python3 -m pip uninstall omm-model
+
+# Windows
+py -m pip install --upgrade omm-model
+py -m pip uninstall omm-model
 
 # Or, for pipx:
 pipx upgrade omm-model
@@ -206,7 +244,7 @@ Match the message you see, not the step you think you are on.
 | `irm` or `iex` is not recognized | You are in Command Prompt (`cmd.exe`), not PowerShell | Open PowerShell (or switch the Windows Terminal tab to PowerShell) and rerun |
 | `Windows detected. Run the native PowerShell installer instead:` | The `install.sh` one-liner was run under Git Bash/MSYS/Cygwin, which the script refuses | Run the [Windows](#windows) PowerShell command |
 | The download fails, times out, or reports a TLS/SSL error on Windows | The default security protocol negotiated an older TLS version | Run the `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;` pre-line in the same command, before `irm`. Behind a corporate proxy, configure the proxy for PowerShell first |
-| `Python not found. Install Python 3.10+ first` (Windows) or `Python 3.10+ not found` (macOS/Linux) | No runnable Python 3.10+ was found, and the winget/apt bootstrap could not supply one | Install [Python 3.10+](https://www.python.org/downloads/), open a new shell, and rerun |
+| `Python not found. Install Python 3.10+ first` (Windows) or `Python 3.10+ not found` (macOS/Linux) | No runnable Python 3.10+ was found, and the winget/Homebrew/package-manager bootstrap could not supply one | Install [Python 3.10+](https://www.python.org/downloads/), open a new shell, and rerun |
 | `git not found. Install git first (needed to fetch omm from GitHub)` | git is missing and could not be bootstrapped | Install [git](https://git-scm.com/downloads), open a new shell, and rerun |
 | `git 2.34+ is required to verify SSH commit signatures` | Older git cannot check SSH commit signatures, and the installer fails closed rather than trusting an unverified checkout | Upgrade git to 2.34 or newer and rerun |
 | `Signature verification failed - refusing to install untrusted code.` | The fetched commit is not signed by the expected trust anchor | Do not bypass it. Stop and report the failure at <https://github.com/omm-hippo/omm/issues> |
@@ -216,10 +254,17 @@ Match the message you see, not the step you think you are on.
 | `git clone failed.` | The staging clone could not be fetched | Check network/proxy access to `github.com` and rerun |
 | `omm` is not found after a successful install | The new `PATH` entry is not in the shell that ran the installer | Open a new terminal window and try again |
 | winget is unavailable (older Windows) | winget ships with Windows 10 2004+ and Windows 11 only | Install [Python 3.10+](https://www.python.org/downloads/) and [git](https://git-scm.com/downloads) manually first, then rerun the installer |
-| pipx fails with `ensurepip is not available`, or `python3`/`git` are missing on a non-`apt` distribution | The Linux bootstrap only automates Debian/Ubuntu via `apt` | Install `python3` (3.10+), the venv package for it, and `git` with your distribution's package manager, then rerun |
+| Homebrew bootstrap fails or is refused on macOS | `curl`/`/bin/bash` are unavailable, or `OMM_AUTO_INSTALL_HOMEBREW=0` was set without Homebrew already installed | Install [Homebrew](https://brew.sh) yourself, or unset `OMM_AUTO_INSTALL_HOMEBREW`, then rerun |
+| pipx fails with `ensurepip is not available`, or `python3`/`git` are missing on an unsupported Linux distribution | The Linux bootstrap only automates `apt-get`, `dnf`, `yum`, `pacman`, and `apk` | Install `python3` (3.10+), the venv package for it, and `git` with your distribution's package manager, then rerun |
 | Jan cannot be installed from the runner checklist on Linux | omm installs Jan on Linux via Flatpak | Install `flatpak` (and the Flathub remote), then rerun `omm setup` |
 | `Refusing unsafe OMM_HOME`, `Refusing non-absolute OMM_HOME`, or `Refusing OMM_HOME that contains the current directory` | `OMM_HOME` points at `/`, your home directory, a relative path, or the directory you are running from | Set `OMM_HOME` to a dedicated absolute path and rerun from outside it |
 | `Refusing unrecognized custom OMM_HOME (missing .omm-managed)` during uninstall | The uninstaller only removes homes that an omm installer marked as its own | Remove the directory yourself if it really is your model hub |
+
+### Not currently public installation paths
+
+The Windows portable/Winget files are built and tested as release artifacts,
+but a public Winget package is not currently documented or verified. Do not
+use that path as a user installation command yet.
 
 ### Supported platforms
 
@@ -276,13 +321,20 @@ Purge (`-Purge` on PowerShell, `--purge` on sh) removes only known omm-owned pat
 
 ## Usage
 
+### Setup & discovery
+
 ```sh
 omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
 omm scan [--json]  # Print a hardware, runner, and model summary (RAM, VRAM, OS)
 omm recommend [--json]  # Suggest a model that fits this machine, then offer to install it
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
-omm benchmark <name>...  # Local quality + speed smoke evidence for one or more installed models
 omm search <query> [--json] [--skip-unfit] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated models, cached candidates, and HuggingFace
+omm help [command]  # Show help, same as --help
+```
+
+### Install & manage models
+
+```sh
 omm install <name> [--skip-unfit] [--upload/--no-upload] [--force] [--verify-runtime|--no-verify-runtime]  # Download, link, and optionally verify a model
 omm fit <name> [--json]  # Memory card: does this model (installed or not) fit next to what is running right now?
 omm run [name] [--engine NAME]  # Chat with an installed model: Ollama in the terminal, KoboldCpp/text-generation-webui with the model loaded, GUI apps opened
@@ -291,13 +343,36 @@ omm uninstall <name> [--dry-run]  # Uninstall a model and clean up its symlinks/
 omm uninstall all [--yes] [--dry-run]  # Uninstall every model installed via omm
 omm list [--json] [--engine NAME]  # Show models installed via omm and their linked status (alias: ls)
 omm info <name> [--json]  # Show a model's name, version, size, and linked-program run commands
-omm verify <name> [--engine ollama|lmstudio] [--keep-loaded]  # Prove local load + generation works
 omm upgrade <name> [--dry-run]  # Refresh a model against its source if it has changed since install (alias: up)
 omm upgrade [--yes] [--dry-run]  # Check every installed model for updates
 omm link [--engine NAME]  # Re-verify and repair every installed model's LM Studio/Ollama links
 omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
-omm autoremove  # Clean up broken symlinks and orphaned partial downloads
+omm autoremove  # Clean up broken symlinks in AI runner model directories
+omm cleanup  # Clean up orphaned partial/incomplete downloads
+```
+
+`install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `search`/`install` mark models predicted not to run on this machine's hardware in red.
+
+### Verify & benchmark
+
+```sh
+omm verify <name> [--engine ollama|lmstudio] [--keep-loaded]  # Prove local load + generation works
+omm benchmark <name>...  # Local quality + speed smoke evidence for one or more installed models
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
+```
+
+`omm verify` checks more than a link: it asks before loading an unloaded model,
+sends one short deterministic prompt to a server already running on this
+computer, requires a non-empty answer, and releases only a model that OMM
+loaded for the check. It never starts Ollama or LM Studio, deletes the model,
+or stores the generated answer. LM Studio API authentication reads
+`LM_API_TOKEN` from the process environment and never writes it to
+`config.json`. Compatibility status is stored locally in `models.json` and is
+shown by `omm info`.
+
+### Update & configuration
+
+```sh
 omm update  # Update a canonical OMM Git-source install; package installs print their manager command
 omm setting  # Interactive menu for telemetry, upload policy, error reports, version, theme, calibration, and catalog trust
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
@@ -310,10 +385,7 @@ omm setting calibrate <name>  # Locally correct predicted speed with an installe
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
 omm setting catalog-status  # Show signed recommendation data and rollback snapshots
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
-omm help [command]  # Show help, same as --help
 ```
-
-`install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `search`/`install` mark models predicted not to run on this machine's hardware in red.
 
 `omm verify` checks more than a link: it asks before loading an unloaded model,
 sends one short deterministic prompt to a server already running on this
@@ -328,7 +400,14 @@ shown by `omm info`.
 
 All errors, warnings, and confirmation prompts print to stderr; `--json` output (supported on `search`/`list`/`info`/`benchmark`/`tune`/`scan`/`recommend`) is the only thing written to stdout, so it's safe to pipe (e.g. `omm list --json | jq .`). Any command that would otherwise prompt for confirmation fails fast with a non-zero exit code when there's no terminal attached instead of hanging — pass `--yes`/`-y` (works on every command that has a confirmation prompt) or the relevant flag (`install --skip-unfit`, `install --upload`/`--no-upload`) to run it unattended.
 
-Four global flags work either before or after the subcommand name (`omm --json search foo` and `omm search foo --json` are equivalent): `--json` (structured output, where supported — see above), `--yes`/`-y` (skip confirmation prompts), `--quiet`/`-q` (suppresses progress bars and background status/hint lines — e.g. download progress, "Verifying checksum...", scan's "Run: omm link" nudge; errors, warnings, and the result of what you asked for still print), and `--no-color` (disable ANSI colors on omm's own console output and its download progress bar; the `NO_COLOR` environment variable does the same). Passing `--json` or `--yes` to a command that doesn't use them prints a warning to stderr instead of silently doing nothing. Exit codes are consistent across every command: `0` success, `1` failure, `2` usage error (bad flag/argument).
+Four global flags work either before or after the subcommand name (`omm --json search foo` and `omm search foo --json` are equivalent):
+
+- `--json` — structured output, where supported (see above)
+- `--yes` / `-y` — skip confirmation prompts
+- `--quiet` / `-q` — suppress progress bars and background status/hint lines (e.g. download progress, "Verifying checksum...", scan's "Run: omm link" nudge); errors, warnings, and the result of what you asked for still print
+- `--no-color` — disable ANSI colors on omm's own console output and its download progress bar; the `NO_COLOR` environment variable does the same
+
+Passing `--json` or `--yes` to a command that doesn't use them prints a warning to stderr instead of silently doing nothing. Exit codes are consistent across every command: `0` success, `1` failure, `2` usage error (bad flag/argument).
 
 `rm`, `ls`, and `up` are short aliases for `uninstall`, `list`, and `upgrade`.
 

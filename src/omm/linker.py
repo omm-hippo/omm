@@ -1710,11 +1710,37 @@ def _manifest_blob_digests(manifest: dict) -> set[str]:
     return digests
 
 
+def _manifest_model_layer_sha256(manifest: dict) -> str | None:
+    for layer in manifest.get("layers", []):
+        media_type = layer.get("mediaType")
+        digest = layer.get("digest")
+        if isinstance(media_type, str) and media_type.endswith("model") and isinstance(digest, str):
+            return digest.removeprefix("sha256:")
+    return None
+
+
 def unlink_ollama(
     model_name: str,
     models_dir: Path | None = None,
     expected_source: Path | None = None,
-) -> None:
+    expected_content_sha256: str | None = None,
+) -> bool:
+    """Returns whether a manifest was actually removed.
+
+    Ownership is normally proven by the link-ownership registry
+    (`_owned_manifest`). That registry can be silent on a manifest omm
+    genuinely created itself - installed before the registry existed, or
+    a record lost some other way - in which case falling back to "no
+    record, so do nothing" leaves the manifest (and its now-broken blob
+    symlink once the caller deletes the hub source file right after this
+    call returns) orphaned in Ollama forever, with no supported way for
+    the user to remove it again: `omm remove` already forgot the model,
+    and `omm list` no longer shows it. `expected_content_sha256` - the
+    sha256 the omm registry entry itself recorded for this file at
+    install time - gives a second, ownership-registry-independent proof:
+    if the manifest's model layer digest matches it exactly, this is
+    unambiguously the same model content omm is deleting, regardless of
+    whether the ownership record survived."""
     if models_dir is None:
         models_dir = ollama_models_dir()
     model_name = validate_ollama_tag(model_name)
@@ -1723,7 +1749,7 @@ def unlink_ollama(
         manifest_root / model_name / "latest"
     )
     if not manifest_path.parent.resolve().is_relative_to(manifest_root.resolve()):
-        return
+        return False
     # Locked against link_ollama's own manifest_path lock: unlinking used to
     # run unlocked, so a concurrent `omm install`/`omm link` for the same
     # model_name could interleave with this delete - link_ollama's read-back
@@ -1733,9 +1759,16 @@ def unlink_ollama(
     # believing the link succeeded when the manifest is actually gone.
     with locked(_engine_path_lock(manifest_path)):
         if not manifest_path.exists():
-            return
-        if not _owned_manifest(manifest_path, expected_source=expected_source):
-            return
+            return False
+        owned = _owned_manifest(manifest_path, expected_source=expected_source)
+        if not owned and expected_content_sha256 is not None:
+            try:
+                manifest_for_check = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                manifest_for_check = {}
+            owned = _manifest_model_layer_sha256(manifest_for_check) == expected_content_sha256
+        if not owned:
+            return False
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             model_digests = _manifest_blob_digests(manifest)
@@ -1747,7 +1780,7 @@ def unlink_ollama(
         try:
             manifest_path.unlink()
         except OSError:
-            return
+            return False
         _update_link_ownership(manifest_path, None)
         try:
             manifest_path.parent.rmdir()
@@ -1771,6 +1804,7 @@ def unlink_ollama(
             referenced.update(_manifest_blob_digests(data))
     for digest in model_digests - referenced:
         _unlink_owned_link_with_retry(models_dir / "blobs" / digest)
+    return True
 
 
 # --- Autoremove (broken symlink cleanup) ------------------------------
@@ -1798,7 +1832,22 @@ def autoremove_lmstudio() -> int:
 
 def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
     """Delete broken Ollama model-layer blob symlinks and any manifests
-    that reference them. Returns (blobs_removed, manifests_removed)."""
+    that reference them. Returns (blobs_removed, manifests_removed).
+
+    Neither half checks link ownership (see issue #171): a blob that is
+    already a dangling symlink has no data left to lose by removing the
+    dangling pointer itself, and a manifest whose model layer digest
+    matches one of those already-confirmed-dangling blobs can never load
+    regardless of who created it - the content is gone. Requiring an
+    ownership record here (as most other unlink paths correctly do, to
+    avoid touching a link/manifest they can't prove is theirs) only
+    protected records that had already stopped existing: a manifest
+    linked before the ownership registry existed, or one whose record
+    was lost some other way, would sit in `ollama list`/`omm benchmark
+    all` forever with a permanently broken blob and no supported way to
+    remove it - `omm remove` had already forgotten it, and this command
+    (the intended cleanup path for exactly this situation) silently
+    declined to touch it either."""
     if models_dir is None:
         models_dir = ollama_models_dir()
     blobs_dir = models_dir / "blobs"
@@ -1809,8 +1858,12 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
     broken_digests = set()
     for blob in blobs_dir.iterdir():
         if blob.is_symlink() and not blob.exists():
-            if unlink_owned_link(blob):
-                broken_digests.add(blob.name)
+            try:
+                blob.unlink()
+            except OSError:
+                continue
+            _update_link_ownership(blob, None)
+            broken_digests.add(blob.name)
 
     manifests_removed = 0
     if broken_digests and manifests_root.exists():
@@ -1822,7 +1875,7 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
             layer_digests = {
                 layer["digest"].replace(":", "-") for layer in manifest.get("layers", [])
             }
-            if layer_digests & broken_digests and _owned_manifest(manifest_path):
+            if layer_digests & broken_digests:
                 try:
                     manifest_path.unlink()
                 except OSError:
@@ -3342,8 +3395,13 @@ def link_engine(
 def unlink_engine(key: str, filename: str, entry: dict) -> None:
     ollama_tag = entry.get("ollama_name") or sanitize_ollama_tag(filename)
     expected_source = MODELS_DIR / filename
+    expected_sha256 = entry.get("sha256")
+    if not isinstance(expected_sha256, str):
+        expected_sha256 = None
     if key == "ollama":
-        unlink_ollama(ollama_tag, expected_source=expected_source)
+        unlink_ollama(
+            ollama_tag, expected_source=expected_source, expected_content_sha256=expected_sha256
+        )
     elif key == "lmstudio":
         unlink_lmstudio(filename, entry.get("repo_id"))
     elif key == "jan":
@@ -3353,6 +3411,7 @@ def unlink_engine(key: str, filename: str, entry: dict) -> None:
             ollama_tag,
             models_dir=anythingllm_ollama_models_dir(),
             expected_source=expected_source,
+            expected_content_sha256=expected_sha256,
         )
     elif key == "mstystudio":
         unlink_custom_directory(filename, mstystudio_models_dir())
