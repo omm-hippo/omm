@@ -2393,7 +2393,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
             err_console.print(
                 "[error]git or pipx not found. Install them first, or rerun the installer:[/error]\n"
                 "  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; "
-                "irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex"
+                "irm https://omm.run/install.ps1 | iex"
             )
         else:
             err_console.print(
