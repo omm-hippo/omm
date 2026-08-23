@@ -321,18 +321,30 @@ def _physical_speed_ceiling(
     gpu_offload_ratio: float,
     gpu_score: float,
 ) -> float:
-    """Fastest tokens/sec the reported hardware could physically produce."""
-    bandwidth = (
-        PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S
+    """Fastest tokens/sec the reported hardware could physically produce.
+
+    A partially-offloaded model reads its GPU-resident share over the GPU
+    bus and its CPU-resident share over system RAM, sequentially per token -
+    the two legs of the read add in time, not in bandwidth. Blending the two
+    peak bandwidths linearly (rather than adding their per-GB times) would
+    let a mostly-CPU-bound row with a token offload claim borrow the GPU
+    ceiling almost in full, hiding fabricated speeds up to 5x too fast.
+    """
+    offload_ratio = (
+        min(max(gpu_offload_ratio, 0.0), 1.0)
         if _has_gpu_decode_path(
             vram_gb=vram_gb,
             unified_memory=unified_memory,
             gpu_offload_ratio=gpu_offload_ratio,
             gpu_score=gpu_score,
         )
-        else PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S
+        else 0.0
     )
-    return bandwidth / max(weight_gb, MIN_ACTIVE_WEIGHT_GB)
+    seconds_per_gb = (
+        offload_ratio / PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S
+        + (1.0 - offload_ratio) / PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S
+    )
+    return 1.0 / (max(weight_gb, MIN_ACTIVE_WEIGHT_GB) * seconds_per_gb)
 
 
 def _extract_features_and_reason(

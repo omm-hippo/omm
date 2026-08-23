@@ -1480,6 +1480,32 @@ def test_cpu_only_row_is_held_to_the_cpu_memory_bandwidth_ceiling():
     assert cpu_only_audit["rejections"] == {"implausible_speed_for_hardware": 1}
 
 
+def test_partial_gpu_offload_is_held_to_a_blended_ceiling():
+    # 3B active parameters at 4 bits is 1.5 GB read per token. With only 10%
+    # of that claimed on the GPU, decode is still overwhelmingly bound by
+    # system-RAM bandwidth - the honest ceiling sits near 580 tokens/sec, not
+    # the ~2667 tokens/sec a pure-GPU-bandwidth ceiling would allow. A ceiling
+    # that switches to the full GPU figure for any nonzero offload would
+    # wrongly pass this fabricated row.
+    row = _v8_row(1000, gpu_offload_percent=10)
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit([row])
+
+    assert y == []
+    assert audit["rejections"] == {"implausible_speed_for_hardware": 1}
+
+
+def test_partial_gpu_offload_honest_speed_still_passes():
+    # Same 10%-offloaded configuration, but under its blended ceiling: this
+    # must still train on genuinely plausible telemetry.
+    row = _v8_row(500, gpu_offload_percent=10)
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit([row])
+
+    assert y == [500]
+    assert audit["rejections"] == {}
+
+
 def test_statistical_outliers_are_dropped_and_counted_by_direction():
     # 400 tokens/sec on this hardware is under the physical ceiling, so only
     # the distribution of its peers reveals it as fabricated. 0.5 is the
