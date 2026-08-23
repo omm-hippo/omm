@@ -1832,7 +1832,22 @@ def autoremove_lmstudio() -> int:
 
 def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
     """Delete broken Ollama model-layer blob symlinks and any manifests
-    that reference them. Returns (blobs_removed, manifests_removed)."""
+    that reference them. Returns (blobs_removed, manifests_removed).
+
+    Neither half checks link ownership (see issue #171): a blob that is
+    already a dangling symlink has no data left to lose by removing the
+    dangling pointer itself, and a manifest whose model layer digest
+    matches one of those already-confirmed-dangling blobs can never load
+    regardless of who created it - the content is gone. Requiring an
+    ownership record here (as most other unlink paths correctly do, to
+    avoid touching a link/manifest they can't prove is theirs) only
+    protected records that had already stopped existing: a manifest
+    linked before the ownership registry existed, or one whose record
+    was lost some other way, would sit in `ollama list`/`omm benchmark
+    all` forever with a permanently broken blob and no supported way to
+    remove it - `omm remove` had already forgotten it, and this command
+    (the intended cleanup path for exactly this situation) silently
+    declined to touch it either."""
     if models_dir is None:
         models_dir = ollama_models_dir()
     blobs_dir = models_dir / "blobs"
@@ -1843,8 +1858,12 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
     broken_digests = set()
     for blob in blobs_dir.iterdir():
         if blob.is_symlink() and not blob.exists():
-            if unlink_owned_link(blob):
-                broken_digests.add(blob.name)
+            try:
+                blob.unlink()
+            except OSError:
+                continue
+            _update_link_ownership(blob, None)
+            broken_digests.add(blob.name)
 
     manifests_removed = 0
     if broken_digests and manifests_root.exists():
@@ -1856,7 +1875,7 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
             layer_digests = {
                 layer["digest"].replace(":", "-") for layer in manifest.get("layers", [])
             }
-            if layer_digests & broken_digests and _owned_manifest(manifest_path):
+            if layer_digests & broken_digests:
                 try:
                     manifest_path.unlink()
                 except OSError:
