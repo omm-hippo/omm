@@ -647,6 +647,7 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "engine",
             "import",
             "autoremove",
+            "cleanup",
             "link",
             "update",
             "help",
@@ -6488,7 +6489,7 @@ def relink() -> None:
     link_models(directory=None, engine=None)
 
 
-def _autoremove_incomplete_installs() -> int:
+def _cleanup_incomplete_installs() -> int:
     if not MODELS_DIR.exists():
         return 0
 
@@ -6534,11 +6535,10 @@ def _autoremove_incomplete_installs() -> int:
 @app.command()
 @global_flags
 def autoremove() -> None:
-    """Clean up broken links and leftover partial downloads.
+    """Clean up broken symlinks left in AI runner model directories.
 
     Removes symlinks left behind when a model's source .gguf was deleted
-    without going through `omm uninstall`, plus any orphaned partial or
-    unregistered downloads in the models directory."""
+    without going through `omm uninstall`."""
     removed_by_engine: dict[str, int] = {}
     for spec in linker.ENGINES:
         if linker.is_engine_installed(spec.key):
@@ -6550,17 +6550,29 @@ def autoremove() -> None:
                 custom_removed += 1
     if custom_removed:
         removed_by_engine["custom"] = custom_removed
-    incomplete_removed = _autoremove_incomplete_installs()
 
-    if not any(removed_by_engine.values()) and incomplete_removed == 0:
+    if not any(removed_by_engine.values()):
         console.print("[success]No broken symlinks found.[/success]")
         return
 
     parts = [f"{count} broken {label} link(s)" for label, count in removed_by_engine.items() if count]
-    console.print(
-        f"[success]Removed {', '.join(parts) or '0 broken links'}, "
-        f"{incomplete_removed} incomplete install file(s) cleaned up.[/success]"
-    )
+    console.print(f"[success]Removed {', '.join(parts) or '0 broken links'}.[/success]")
+
+
+@app.command()
+@global_flags
+def cleanup() -> None:
+    """Clean up leftover partial downloads and install cache files.
+
+    Removes orphaned partial or unregistered .gguf downloads left behind
+    in the models directory by interrupted or incomplete installs."""
+    incomplete_removed = _cleanup_incomplete_installs()
+
+    if incomplete_removed == 0:
+        console.print("[success]No leftover install files found.[/success]")
+        return
+
+    console.print(f"[success]Cleaned up {incomplete_removed} incomplete install file(s).[/success]")
 
 
 def _guard_benchmark_models(models: list[str]) -> None:
@@ -8426,6 +8438,7 @@ def contribute(
         finally:
             listener.stop_event.set()
 
+        cleanup()
         autoremove()
 
         after_count = _telemetry_row_count(endpoint) if endpoint else None
