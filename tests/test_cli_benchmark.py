@@ -1230,3 +1230,21 @@ def test_engine_selection_notice_stays_silent_for_ollama(monkeypatch):
     cli._print_engine_selection_notice("ollama")
 
     assert printed == []
+
+
+def test_transient_benchmark_failures_come_with_a_next_step():
+    """A bare `(model_load_failed)` told a first-time tester nothing (promo
+    dry run, 2026-08-23); every transient reason a user can hit from a
+    healthy install must map to one actionable line."""
+    from omm import quality
+
+    for reason in (
+        quality.FAILURE_REASON_MODEL_LOAD_FAILED,
+        quality.FAILURE_REASON_OLLAMA_UNAVAILABLE,
+        quality.FAILURE_REASON_CONNECTION_ERROR,
+        quality.FAILURE_REASON_GENERATION_TIMEOUT,
+        quality.FAILURE_REASON_NO_TIMING_METRICS,
+    ):
+        assert reason in cli._TRANSIENT_FAILURE_HINTS, reason
+    assert "omm doctor" in cli._TRANSIENT_FAILURE_HINTS[quality.FAILURE_REASON_MODEL_LOAD_FAILED]
+    assert "omm link --engine ollama" in cli._TRANSIENT_FAILURE_HINTS[quality.FAILURE_REASON_MODEL_LOAD_FAILED]

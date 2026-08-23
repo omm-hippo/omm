@@ -2421,6 +2421,32 @@ def _package_managed_update_guidance(
     )
 
 
+# What to do next for each transient benchmark failure. A bare reason code
+# ("model_load_failed") told a first-time tester nothing - seen in the
+# 2026-08-23 promo dry run, where the fix was simply re-linking the model
+# into Ollama.
+_TRANSIENT_FAILURE_HINTS: dict[str, str] = {
+    quality_mod.FAILURE_REASON_MODEL_LOAD_FAILED: (
+        "The runtime could not find or load this model. Run `omm doctor`, then "
+        "`omm link --engine ollama` (or `omm info <model>` to see which runners it is linked into) and retry."
+    ),
+    quality_mod.FAILURE_REASON_OLLAMA_UNAVAILABLE: (
+        "Ollama is installed but not reachable. Start it (or run `omm doctor`) and retry."
+    ),
+    quality_mod.FAILURE_REASON_CONNECTION_ERROR: (
+        "Could not connect to the runtime's local API. Start it (or run `omm doctor`) and retry."
+    ),
+    quality_mod.FAILURE_REASON_GENERATION_TIMEOUT: (
+        "One generation ran past the time limit - often the first load after a cold start. Retry once; "
+        "if it happens twice, omm records it as performance_unfit."
+    ),
+    quality_mod.FAILURE_REASON_NO_TIMING_METRICS: (
+        "The runtime answered without timing data, so no speed could be measured. Retry; if it persists, "
+        "update the runtime."
+    ),
+}
+
+
 @app.command()
 @global_flags
 def doctor() -> None:
@@ -6771,10 +6797,13 @@ def benchmark_cmd(
                 f"({entry.get('failure_reason', 'unknown')})[/error]"
             )
         for entry in transient:
+            reason = entry.get("failure_reason", "unknown")
             err_console.print(
-                f"[warning]{entry['tag']}: temporary error, not a hardware verdict "
-                f"({entry.get('failure_reason', 'unknown')})[/warning]"
+                f"[warning]{entry['tag']}: temporary error, not a hardware verdict ({reason})[/warning]"
             )
+            hint = _TRANSIENT_FAILURE_HINTS.get(reason)
+            if hint:
+                err_console.print(f"  [muted]{hint}[/muted]")
 
         console.print(f"[success]Saved reproducible local evidence to {output}.[/success]")
         console.print(
