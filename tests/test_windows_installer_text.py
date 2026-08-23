@@ -71,6 +71,21 @@ def test_installers_repair_a_broken_pipx_shared_venv_before_installing():
     assert sh.index("PIPX_SHARED_LIBS") < sh.index("run_pipx install --force")
 
 
+def test_installers_retry_pipx_install_once_after_rebuilding_shared_venv():
+    """The pre-install probe cannot see a shared pip that pipx half-upgrades
+    *during* the install (two pipx copies, one shared dir - reproduced on
+    Windows 11, 2026-08-23). The first failure must wipe the shared venv and
+    retry exactly once instead of giving up."""
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    assert "function Invoke-PipxInstallWithRepair" in ps1
+    assert "if (-not (Invoke-PipxInstallWithRepair))" in ps1
+    assert ps1.count("Invoke-PipxStatus -Arguments $installArguments") >= 3  # first try + retry + later verify paths
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "pipx_install_with_repair() {" in sh
+    assert "if ! pipx_install_with_repair; then" in sh
+    assert 'rm -rf "$shared"' in sh
+
+
 def test_installer_trust_anchor_matches_allowed_signers_file():
     script = (ROOT / "install.ps1").read_text(encoding="utf-8")
     expected = (ROOT / "src" / "omm" / "trust" / "allowed_signers").read_text(

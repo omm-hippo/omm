@@ -468,7 +468,23 @@ report_failed_install() {
         echo "The previous environment was not removed, but its omm command could not be verified after rollback; run 'pipx reinstall omm' or 'pipx reinstall omm-model'." >&2
     fi
 }
-if ! run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"; then
+# pipx can upgrade its shared pip *during* `pipx install` and, with more
+# than one pipx copy pointing at the same shared dir, leave it half-replaced
+# for the very run that needs it. One retry after wiping the shared venv
+# (pipx rebuilds it whole) - see the matching block in install.ps1.
+pipx_install_with_repair() {
+    if run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"; then
+        return 0
+    fi
+    shared=$(run_pipx environment --value PIPX_SHARED_LIBS 2>/dev/null || true)
+    if [ -z "$shared" ] || [ ! -d "$shared" ]; then
+        return 1
+    fi
+    echo "pipx install failed; rebuilding pipx's shared pip and retrying once..."
+    rm -rf "$shared"
+    run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"
+}
+if ! pipx_install_with_repair; then
     rollback_failed_new_install
     report_failed_install "pipx install failed; the legacy environment was not removed."
     exit 1
