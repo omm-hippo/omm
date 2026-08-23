@@ -107,6 +107,8 @@ class BenchmarkEvent(BaseModel):
             raise ValueError("control characters and local paths are not allowed")
         if value.startswith("/") or ":/" in value:
             raise ValueError("local paths are not allowed")
+        if ".." in value.split("/"):
+            raise ValueError("local paths are not allowed")
         return value
 
     @field_validator("model_digest")

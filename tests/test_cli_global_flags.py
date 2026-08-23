@@ -149,15 +149,27 @@ def test_no_color_survives_a_theme_change_in_the_same_invocation(isolated_omm_ho
 
 def test_no_color_survives_the_wizards_theme_step(isolated_omm_home, monkeypatch):
     """Same shape as above for `omm --no-color setup`: the wizard's theme
-    step applies the pick to the console mid-run."""
+    step applies the pick to the console mid-run. In the real CLI this
+    runs inside the invocation's Click context (the same one CliRunner
+    creates for the sibling test above), so `--no-color` is surfaced the
+    same way here: a fake context carrying `obj.no_color = True`."""
     from omm import onboarding
 
     console = Console(force_terminal=True, highlight=False)
-    console.no_color = True
     monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(onboarding.theme, "run_picker", lambda *a, **k: "dark")
 
-    onboarding.run_theme_step(console)
+    try:
+        from typer._click import Context as _Context
+    except ImportError:
+        from click import Context as _Context
+    import click as _click
+
+    class _Opts:
+        no_color = True
+
+    with _Context(_click.Command("omm"), obj=_Opts()):
+        onboarding.run_theme_step(console)
 
     assert console.no_color is True
 

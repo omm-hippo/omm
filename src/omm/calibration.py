@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from omm.atomic import atomic_write_text, locked
 from omm.config import CALIBRATION_PATH
 from omm.hardware import HardwareInfo
 
@@ -68,31 +69,29 @@ def record_calibration(
     if measured_tokens_per_sec <= 0 or predicted_tokens_per_sec <= 0:
         raise ValueError("Calibration speeds must be greater than zero.")
     target = path or CALIBRATION_PATH
-    payload = load_profiles(target)
     key = _profile_key(hardware, engine)
-    previous = payload["profiles"].get(key, {})
-    new_ratio = max(
-        MIN_FACTOR,
-        min(MAX_FACTOR, measured_tokens_per_sec / predicted_tokens_per_sec),
-    )
-    previous_factor = previous.get("factor")
-    previous_samples = previous.get("sample_count", 0)
-    if isinstance(previous_factor, (int, float)) and isinstance(previous_samples, int):
-        sample_count = min(previous_samples, 9)
-        factor = (float(previous_factor) * sample_count + new_ratio) / (sample_count + 1)
-        total_samples = previous_samples + 1
-    else:
-        factor = new_ratio
-        total_samples = 1
-    payload["profiles"][key] = {
-        "factor": round(max(MIN_FACTOR, min(MAX_FACTOR, factor)), 6),
-        "sample_count": total_samples,
-        "last_measured_tokens_per_sec": round(measured_tokens_per_sec, 4),
-        "last_predicted_tokens_per_sec": round(predicted_tokens_per_sec, 4),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(target.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(target)
-    return payload["profiles"][key]["factor"]
+    with locked(target):
+        payload = load_profiles(target)
+        previous = payload["profiles"].get(key, {})
+        new_ratio = max(
+            MIN_FACTOR,
+            min(MAX_FACTOR, measured_tokens_per_sec / predicted_tokens_per_sec),
+        )
+        previous_factor = previous.get("factor")
+        previous_samples = previous.get("sample_count", 0)
+        if isinstance(previous_factor, (int, float)) and isinstance(previous_samples, int):
+            sample_count = min(previous_samples, 9)
+            factor = (float(previous_factor) * sample_count + new_ratio) / (sample_count + 1)
+            total_samples = previous_samples + 1
+        else:
+            factor = new_ratio
+            total_samples = 1
+        payload["profiles"][key] = {
+            "factor": round(max(MIN_FACTOR, min(MAX_FACTOR, factor)), 6),
+            "sample_count": total_samples,
+            "last_measured_tokens_per_sec": round(measured_tokens_per_sec, 4),
+            "last_predicted_tokens_per_sec": round(predicted_tokens_per_sec, 4),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        atomic_write_text(target, json.dumps(payload, indent=2) + "\n")
+        return payload["profiles"][key]["factor"]

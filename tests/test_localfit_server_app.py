@@ -52,6 +52,50 @@ def test_benchmark_event_accepts_v8_chip_score_fields():
     assert event.gpu_tier == 0.0
 
 
+def _minimal_legacy_event(**overrides):
+    payload = {
+        "ram_gb": 16,
+        "unified_memory": False,
+        "model_installed": "small:latest",
+        "engine": "ollama",
+        "benchmark_version": 1,
+        "recorded_at": "2026-07-30T00:00:00+00:00",
+        "tokens_per_sec": 20.0,
+    }
+    payload.update(overrides)
+    return BenchmarkEvent(**payload)
+
+
+@pytest.mark.parametrize("field", ["model_installed", "model_repo_id", "model_filename"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "../../../etc/shadow",
+        "some/../../secret",
+        "..",
+        "a/..",
+    ],
+)
+def test_benchmark_event_rejects_relative_path_traversal(field, value):
+    with pytest.raises(ValueError, match="local paths are not allowed"):
+        _minimal_legacy_event(**{field: value})
+
+
+@pytest.mark.parametrize("field", ["model_installed", "model_repo_id", "model_filename"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "qwen2.5-0.5b-instruct",
+        "user/repo..name",
+        "model..gguf",
+        "small:latest",
+    ],
+)
+def test_benchmark_event_accepts_dotted_but_non_traversal_values(field, value):
+    event = _minimal_legacy_event(**{field: value})
+    assert getattr(event, field) == value
+
+
 def test_benchmark_event_accepts_clean_v9_contribution_metadata():
     event = BenchmarkEvent(
         ram_gb=16,

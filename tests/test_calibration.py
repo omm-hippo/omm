@@ -1,4 +1,5 @@
 import json
+import threading
 
 from omm import calibration
 from omm.hardware import HardwareInfo
@@ -44,3 +45,30 @@ def test_record_calibration_clamps_extreme_ratio(tmp_path):
         path=path,
     )
     assert factor == calibration.MAX_FACTOR
+
+
+def test_record_calibration_concurrent_writers_do_not_lose_updates(tmp_path):
+    path = tmp_path / "calibration.json"
+    errors = []
+
+    def _record():
+        try:
+            calibration.record_calibration(
+                _hardware(),
+                measured_tokens_per_sec=30,
+                predicted_tokens_per_sec=20,
+                path=path,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any thread failure
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_record) for _ in range(10)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    raw = path.read_text()
+    payload = json.loads(raw)
+    assert payload["profiles"]["macos-ram-16-unified-16"]["sample_count"] == 10

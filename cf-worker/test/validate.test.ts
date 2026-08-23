@@ -97,6 +97,24 @@ describe("base schema (v1-v6)", () => {
   it("rejects an out-of-range speed", () => rejected({ ...valid, tokens_per_sec: 5000 }));
 });
 
+describe("path/control-character rejection on model fields", () => {
+  it.each([
+    ["model_installed", "/Users/victim/.ssh/id_rsa"],
+    ["model_installed", "C:/Windows/System32/config"],
+    ["model_installed", "..\\..\\secrets.txt"],
+    ["model_installed", "org/../../../etc/passwd"],
+    ["model_installed", "bad\x00value"],
+    ["model_repo_id", "/etc/passwd"],
+    ["model_repo_id", "org/model\x1b[0m"],
+    ["model_repo_id", "org/../../secret"],
+  ])("rejects a path/control-character %s value", (field, badValue) =>
+    rejected({ ...valid, [field as string]: badValue }),
+  );
+
+  it("still accepts a legitimate model_installed tag", () => ok({ ...valid, model_installed: "llama3.1:8b-instruct-q4_0" }));
+  it("still accepts a legitimate model_repo_id", () => ok({ ...valid, model_repo_id: "meta-llama/Llama-3.1-8B-Instruct-GGUF" }));
+});
+
 const v7Success = {
   ram_gb: 24,
   vram_gb: 6,

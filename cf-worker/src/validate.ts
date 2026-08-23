@@ -36,6 +36,25 @@ function isInt(n: number): boolean {
   return Number.isFinite(n) && n % 1 === 0;
 }
 
+// Mirrors `reject_paths_and_controls` in src/localfit_server/app.py: rejects
+// control characters and values that look like absolute/UNC/relative-
+// traversal filesystem paths. The telemetry RTDB node is publicly readable
+// (`.read: true`), so path-shaped or control-character strings written into
+// model_installed/model_repo_id/model_filename would otherwise leak into
+// public data. Not byte-for-byte identical to the Python validator, just
+// close enough to reject the same class of malicious values.
+function looksLikePathOrControlChars(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  if (value.startsWith("/") || value.startsWith("\\")) return true;
+  if (value.includes("../") || value.includes("..\\")) return true;
+  if (value.split(/[\\/]/).includes("..")) return true;
+  if (/:[\\/]/.test(value)) return true;
+  return false;
+}
+
 // --- per-field validators -----------------------------------------------
 // Applied only when the field is present (RTDB's per-field .validate never
 // fires for a key that was never written - see #133 design notes). Each
@@ -50,8 +69,14 @@ const FIELD_VALIDATORS: Record<string, FieldValidator> = {
   vram_gb: (e) => num(e, "vram_gb") >= 0 && num(e, "vram_gb") <= 512,
   unified_memory: (e) => bool(e, "unified_memory") !== undefined,
   gpu_tflops: (e) => num(e, "gpu_tflops") >= 0 && num(e, "gpu_tflops") <= 1000,
-  model_installed: (e) => str(e, "model_installed").length > 0 && str(e, "model_installed").length <= 512,
-  model_repo_id: (e) => str(e, "model_repo_id").length <= 512,
+  model_installed: (e) => {
+    const v = str(e, "model_installed");
+    return v.length > 0 && v.length <= 512 && !looksLikePathOrControlChars(v);
+  },
+  model_repo_id: (e) => {
+    const v = str(e, "model_repo_id");
+    return v.length <= 512 && !looksLikePathOrControlChars(v);
+  },
   model_provider: (e) => str(e, "model_provider").length > 0 && str(e, "model_provider").length <= 64,
   model_size_bytes: (e) => num(e, "model_size_bytes") > 0 && num(e, "model_size_bytes") <= 1099511627776,
   model_filename: (e) => {
@@ -61,7 +86,8 @@ const FIELD_VALIDATORS: Record<string, FieldValidator> = {
       v.length <= 300 &&
       !v.includes("/") &&
       !v.includes("\\") &&
-      !v.includes(":/")
+      !v.includes(":/") &&
+      !looksLikePathOrControlChars(v)
     );
   },
   model_digest: (e) => /^[0-9a-f]{64}$/.test(str(e, "model_digest")),
