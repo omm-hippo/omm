@@ -2529,7 +2529,16 @@ def _install_ollama(
             )
         try:
             returncode = _stream_subprocess(
-                ["winget", "install", "-e", "--id", "Ollama.Ollama", "--silent"],
+                [
+                    "winget",
+                    "install",
+                    "-e",
+                    "--id",
+                    "Ollama.Ollama",
+                    "--silent",
+                    "--accept-source-agreements",
+                    "--accept-package-agreements",
+                ],
                 on_output,
             )
         except OSError as e:
@@ -2638,7 +2647,16 @@ def _install_via_package_manager(
             return EngineInstallResult(
                 key, "unsupported_platform", f"winget not found - install manually from {manual_url}"
             )
-        args = ["winget", "install", "-e", "--id", winget_id, "--silent"]
+        args = [
+            "winget",
+            "install",
+            "-e",
+            "--id",
+            winget_id,
+            "--silent",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+        ]
     elif system == "Linux" and flatpak_id is not None:
         if shutil.which("flatpak") is None:
             return EngineInstallResult(

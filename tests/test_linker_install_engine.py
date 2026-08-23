@@ -373,7 +373,16 @@ def test_install_via_package_manager_windows_uses_winget(monkeypatch):
     )
 
     assert result.status == "installed"
-    assert calls[0] == ["winget", "install", "-e", "--id", "Jan.Jan", "--silent"]
+    assert calls[0] == [
+        "winget",
+        "install",
+        "-e",
+        "--id",
+        "Jan.Jan",
+        "--silent",
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+    ]
 
 
 def test_install_via_package_manager_linux_uses_flatpak(monkeypatch):
