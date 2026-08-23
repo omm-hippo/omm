@@ -89,7 +89,7 @@ Detailed walkthrough: <https://omm.run/install/windows>
 **3. Run the installer.**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
+curl -fsSL https://omm.run/install.sh | sh
 ```
 
 **4. After install.** Open a new shell afterward so your `PATH` picks up `omm`, then run:
@@ -135,7 +135,7 @@ omm --install-completion bash  # or zsh/fish
 Remove a Git-source installation while preserving downloaded models and settings:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.sh | sh
+curl -fsSL https://omm.run/uninstall.sh | sh
 ```
 
 Download that script and run it with `--purge` to remove the model hub and settings too.
@@ -151,7 +151,7 @@ Detailed walkthrough: <https://omm.run/install/macos>
 **3. Run the installer.**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
+curl -fsSL https://omm.run/install.sh | sh
 ```
 
 **4. After install.** Open a new shell afterward so your `PATH` picks up `omm`, then run:
@@ -176,7 +176,7 @@ omm --install-completion bash  # or zsh/fish
 Remove a Git-source installation while preserving downloaded models and settings:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.sh | sh
+curl -fsSL https://omm.run/uninstall.sh | sh
 ```
 
 Download that script and run it with `--purge` to remove the model hub and settings too.

@@ -2398,7 +2398,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
         else:
             err_console.print(
                 "[error]git or pipx not found. Install them first, or rerun the installer:[/error]\n"
-                "  curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh"
+                "  curl -fsSL https://omm.run/install.sh | sh"
             )
         raise typer.Exit(1)
     except OSError as e:

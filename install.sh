@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Installs omm (Open source Model Manager) as an isolated CLI command via pipx.
-# Usage: curl -fsSL https://raw.githubusercontent.com/omm-hippo/omm/main/install.sh | sh
+# Usage: curl -fsSL https://omm.run/install.sh | sh
 set -eu
 
 REPO_URL="https://github.com/omm-hippo/omm.git"
