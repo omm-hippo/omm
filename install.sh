@@ -522,6 +522,17 @@ if ! "$PY" -m pipx --version >/dev/null 2>&1; then
     fi
 fi
 
+# pipx's shared venv (pip/setuptools) is borrowed by every `pipx install`;
+# a half-upgraded pip in there (seen on Windows as `ImportError: cannot
+# import name 'get_runnable_pip'`) kills every install before omm's code is
+# reached. If its pip can't print a version, drop it - pipx rebuilds it.
+PIPX_SHARED_LIBS=$(run_pipx environment --value PIPX_SHARED_LIBS 2>/dev/null || true)
+if [ -n "$PIPX_SHARED_LIBS" ] && [ -x "$PIPX_SHARED_LIBS/bin/python" ] \
+    && ! "$PIPX_SHARED_LIBS/bin/python" -m pip --version >/dev/null 2>&1; then
+    echo "pipx's shared pip is broken; rebuilding it..."
+    rm -rf "$PIPX_SHARED_LIBS"
+fi
+
 PIPX_LOCAL_VENVS=$(run_pipx environment --value PIPX_LOCAL_VENVS)
 PIPX_BIN_DIR=$(run_pipx environment --value PIPX_BIN_DIR)
 # Keep pipx's normal shell integration for non-macOS shells, then explicitly
@@ -646,7 +657,23 @@ report_failed_install() {
         echo "The previous environment was not removed, but its omm command could not be verified after rollback; run 'pipx reinstall omm' or 'pipx reinstall omm-model'." >&2
     fi
 }
-if ! run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"; then
+# pipx can upgrade its shared pip *during* `pipx install` and, with more
+# than one pipx copy pointing at the same shared dir, leave it half-replaced
+# for the very run that needs it. One retry after wiping the shared venv
+# (pipx rebuilds it whole) - see the matching block in install.ps1.
+pipx_install_with_repair() {
+    if run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"; then
+        return 0
+    fi
+    shared=$(run_pipx environment --value PIPX_SHARED_LIBS 2>/dev/null || true)
+    if [ -z "$shared" ] || [ ! -d "$shared" ]; then
+        return 1
+    fi
+    echo "pipx install failed; rebuilding pipx's shared pip and retrying once..."
+    rm -rf "$shared"
+    run_pipx install --force --editable --python "$PY" "$INSTALL_SPEC"
+}
+if ! pipx_install_with_repair; then
     rollback_failed_new_install
     report_failed_install "pipx install failed; the legacy environment was not removed."
     exit 1

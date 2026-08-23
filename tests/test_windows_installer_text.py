@@ -56,6 +56,36 @@ def test_installer_probes_a_runnable_supported_python_not_just_path_presence():
     assert "$process.Kill()" in script
 
 
+def test_installers_repair_a_broken_pipx_shared_venv_before_installing():
+    """Seen live on a fresh-user run (Windows 11, old pipx present): the
+    shared pip raised `cannot import name 'get_runnable_pip'` and every
+    `pipx install` died at "determining package name". Both installers
+    must probe that venv's pip and rebuild it rather than fail there."""
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    assert "function Repair-PipxSharedLibs" in ps1
+    assert "PIPX_SHARED_LIBS" in ps1
+    assert ps1.index("Repair-PipxSharedLibs\n$PythonExecutable") > ps1.index("function Repair-PipxSharedLibs")
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert 'PIPX_SHARED_LIBS=$(run_pipx environment --value PIPX_SHARED_LIBS' in sh
+    assert 'rm -rf "$PIPX_SHARED_LIBS"' in sh
+    assert sh.index("PIPX_SHARED_LIBS") < sh.index("run_pipx install --force")
+
+
+def test_installers_retry_pipx_install_once_after_rebuilding_shared_venv():
+    """The pre-install probe cannot see a shared pip that pipx half-upgrades
+    *during* the install (two pipx copies, one shared dir - reproduced on
+    Windows 11, 2026-08-23). The first failure must wipe the shared venv and
+    retry exactly once instead of giving up."""
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    assert "function Invoke-PipxInstallWithRepair" in ps1
+    assert "if (-not (Invoke-PipxInstallWithRepair))" in ps1
+    assert ps1.count("Invoke-PipxStatus -Arguments $installArguments") >= 3  # first try + retry + later verify paths
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "pipx_install_with_repair() {" in sh
+    assert "if ! pipx_install_with_repair; then" in sh
+    assert 'rm -rf "$shared"' in sh
+
+
 def test_installer_trust_anchor_matches_allowed_signers_file():
     script = (ROOT / "install.ps1").read_text(encoding="utf-8")
     expected = (ROOT / "src" / "omm" / "trust" / "allowed_signers").read_text(
