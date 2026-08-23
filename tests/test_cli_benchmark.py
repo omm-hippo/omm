@@ -1230,3 +1230,49 @@ def test_engine_selection_notice_stays_silent_for_ollama(monkeypatch):
     cli._print_engine_selection_notice("ollama")
 
     assert printed == []
+
+
+def _capture_benchmark_models(monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    seen = {}
+
+    def fake_collect_evidence(models, *a, **k):
+        seen["models"] = models
+        raise cli.quality_mod.QualityEvaluationError("stop here, we only care about the arg")
+
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
+    return seen
+
+
+def test_benchmark_resolves_registry_filename_to_ollama_tag(isolated_omm_home, monkeypatch):
+    """Promo dry run, 2026-08-23: `omm benchmark qwen2.5-…q4_k_m.gguf` (the
+    name `omm list`/`omm info` print) was sent to Ollama verbatim, which has
+    no model called '*.gguf', and came back as model_load_failed."""
+    registry.save_registry({"small.gguf": {"ollama_name": "small:latest", "linked": {}}})
+    seen = _capture_benchmark_models(monkeypatch)
+
+    runner.invoke(cli.app, ["benchmark", "small.gguf"])
+    assert seen["models"] == ["small:latest"]
+
+    runner.invoke(cli.app, ["benchmark", "small"])  # `.gguf` may be omitted, like `omm info`
+    assert seen["models"] == ["small:latest"]
+
+
+def test_benchmark_still_accepts_a_literal_ollama_tag(isolated_omm_home, monkeypatch):
+    registry.save_registry({"small.gguf": {"ollama_name": "small:latest", "linked": {}}})
+    seen = _capture_benchmark_models(monkeypatch)
+
+    runner.invoke(cli.app, ["benchmark", "other:7b"])
+    assert seen["models"] == ["other:7b"]
+
+
+def test_benchmark_registry_filename_without_ollama_tag_says_to_link(isolated_omm_home, monkeypatch):
+    registry.save_registry({"small.gguf": {"linked": {}}})
+    _capture_benchmark_models(monkeypatch)
+
+    result = runner.invoke(cli.app, ["benchmark", "small.gguf"])
+
+    assert result.exit_code == 1
+    assert "omm link" in result.output

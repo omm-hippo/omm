@@ -230,10 +230,23 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
             f"command={command_path}; module={module_path}",
         )
     )
-    try:
-        resolved_command = command_path.resolve(strict=True)
-    except OSError:
-        resolved_command = None
+    # sys.argv[0] for a pipx launcher on Windows is the extension-less
+    # `...\.local\bin\omm`, which does not exist as a file - the real one is
+    # `omm.exe`. Try the bare path, then `.exe`, then PATH lookup, before
+    # calling the command unresolvable (false WARN seen 2026-08-23).
+    resolved_command = None
+    candidates = [command_path]
+    if platform.system() == "Windows" and command_path.suffix.lower() != ".exe":
+        candidates.append(command_path.with_suffix(".exe"))
+    found = shutil.which(str(command_path)) or shutil.which(command_path.name)
+    if found:
+        candidates.append(Path(found))
+    for candidate in candidates:
+        try:
+            resolved_command = candidate.resolve(strict=True)
+            break
+        except OSError:
+            continue
     command_usable = bool(
         resolved_command
         and resolved_command.is_file()
