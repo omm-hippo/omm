@@ -19,7 +19,29 @@ ACCENT = "accent"
 SUCCESS = "success"
 WARNING = "warning"
 MUTED = "muted"
-COLORS_ENABLED = "NO_COLOR" not in os.environ
+
+# The arrow-key picker (SELECT_STYLE/choice_title, via questionary +
+# prompt_toolkit) never touches a rich `Console`, so it can't pick up
+# `--no-color` the way the static panel above it does (through
+# `Console.no_color` - see theme.apply_theme_to_console). `set_no_color`
+# lets `cli.py`'s `recommend` command thread that same per-invocation
+# flag in here; `_colors_enabled()` is the single place everything below
+# (SELECT_STYLE, _prompt_style) reads color-on/off from, so it reflects
+# both the `NO_COLOR` env var and the CLI flag rather than just the env
+# var.
+_cli_no_color = False
+
+
+def set_no_color(active: bool) -> None:
+    """Call once, before invoking the interactive picker, with the
+    current invocation's `--no-color` CLI flag state."""
+    global _cli_no_color
+    _cli_no_color = active
+
+
+def _colors_enabled() -> bool:
+    return not _cli_no_color and "NO_COLOR" not in os.environ
+
 
 # The arrow-navigable choice list (picker chrome below, plus each row's
 # badge/speed/memory colors in build_rows()/choice_title()) keeps its
@@ -48,7 +70,7 @@ def __getattr__(name: str):
                     ("instruction", f"fg:{_ROW_MUTED}"),
                 ]
             )
-            if COLORS_ENABLED
+            if _colors_enabled()
             else Style([])
         )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -84,7 +106,7 @@ def _clip(value: str, width: int) -> str:
 
 
 def _prompt_style(style: str) -> str:
-    return style if COLORS_ENABLED else ""
+    return style if _colors_enabled() else ""
 
 
 def humanize_model_name(candidate: dict) -> str:

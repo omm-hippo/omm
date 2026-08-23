@@ -272,6 +272,17 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             hub_path = MODELS_DIR / f"{group.sha256[:12]}-{filename}"
         shutil.move(str(preferred.path), str(hub_path))
 
+    # hub_path is fixed for the rest of this call - hash it at most once
+    # (lazily, only if a real duplicate location actually needs the
+    # comparison) rather than re-hashing the same potentially multi-GB file
+    # for every other duplicate location in this group.
+    _hub_path_sha256: list[str] = []
+
+    def hub_path_sha256() -> str:
+        if not _hub_path_sha256:
+            _hub_path_sha256.append(sha256_file(hub_path))
+        return _hub_path_sha256[0]
+
     for loc in group.locations:
         if loc.path.resolve() == hub_path.resolve():
             continue
@@ -286,7 +297,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             try:
                 # `group.sha256` came from the earlier scan, so re-hash the
                 # exact quarantined file at this destructive boundary.
-                if sha256_file(quarantine) != sha256_file(hub_path):
+                if sha256_file(quarantine) != hub_path_sha256():
                     raise linker.LinkError(
                         f"Refusing to replace changed unowned duplicate at {loc.path}."
                     )

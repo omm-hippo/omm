@@ -22,10 +22,32 @@ function json(body: unknown, status: number): Response {
   });
 }
 
+// `n || default` treats an explicitly-configured 0 as falsy and silently
+// replaces it with the default - only NaN (unset or non-numeric env var)
+// should fall back.
+function numberOrDefault(n: number, fallback: number): number {
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function isRequestBody(value: unknown): value is TelemetryRequestBody {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
   return typeof v.event_json === "string" && typeof v.timestamp === "number" && typeof v.nonce === "number";
+}
+
+// FIREBASE_SERVICE_ACCOUNT_JSON is a static deploy-time secret - reparsing it
+// on every request is wasted work, so cache the parsed result keyed on the
+// raw string (cheap to compare, and correct if the secret is ever rotated).
+let cachedServiceAccount: { raw: string; parsed: ServiceAccount } | null = null;
+
+function loadServiceAccount(raw: string): ServiceAccount {
+  if (cachedServiceAccount && cachedServiceAccount.raw === raw) {
+    return cachedServiceAccount.parsed;
+  }
+  const parsed = JSON.parse(raw) as ServiceAccount;
+  if (!parsed.client_email || !parsed.private_key) throw new Error("missing fields");
+  cachedServiceAccount = { raw, parsed };
+  return parsed;
 }
 
 export default {
@@ -46,12 +68,12 @@ export default {
     }
     const { event_json: eventJson, timestamp, nonce } = body;
 
-    const maxSkewMs = Number(env.POW_MAX_SKEW_MS) || 300000;
+    const maxSkewMs = numberOrDefault(Number(env.POW_MAX_SKEW_MS), 300000);
     if (!isTimestampFresh(timestamp, maxSkewMs)) {
       return json({ error: "stale or future timestamp" }, 400);
     }
 
-    const difficulty = Number(env.POW_DIFFICULTY_PREFIX_LENGTH) || 5;
+    const difficulty = numberOrDefault(Number(env.POW_DIFFICULTY_PREFIX_LENGTH), 5);
     const powOk = await verifyProofOfWork(eventJson, timestamp, nonce, difficulty);
     if (!powOk) {
       return json({ error: "proof of work invalid" }, 400);
@@ -74,9 +96,7 @@ export default {
 
     let serviceAccount: ServiceAccount;
     try {
-      const parsed = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_JSON) as ServiceAccount;
-      if (!parsed.client_email || !parsed.private_key) throw new Error("missing fields");
-      serviceAccount = parsed;
+      serviceAccount = loadServiceAccount(env.FIREBASE_SERVICE_ACCOUNT_JSON);
     } catch {
       return json({ error: "server misconfigured" }, 500);
     }

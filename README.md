@@ -43,7 +43,7 @@ Pick your OS and follow one path from top to bottom:
 
 ```powershell
 # This must run before irm: script-internal TLS settings are too late for its first download.
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://omm.run/install.ps1 | iex
 ```
 
 **4. After install.** Open a new PowerShell window so your `PATH` picks up `omm`, then run:
@@ -71,7 +71,7 @@ omm --install-completion powershell
 Remove a Git-source installation while preserving downloaded models and settings:
 
 ```powershell
-irm https://raw.githubusercontent.com/omm-hippo/omm/main/uninstall.ps1 | iex
+irm https://omm.run/uninstall.ps1 | iex
 ```
 
 Download that script and run it with `-Purge` to remove the model hub and settings too.

@@ -90,6 +90,22 @@ def test_narrow_choice_hides_memory_column_without_losing_status():
     assert "MEMORY" not in header
 
 
+def test_set_no_color_disables_prompt_style_regardless_of_env(monkeypatch):
+    """`omm --no-color recommend` must de-color the arrow-key picker too,
+    not just the static panel - `set_no_color` is how cli.py's `recommend`
+    command threads the CLI flag in, since `NO_COLOR` env var alone
+    (the old check) misses it."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    try:
+        assert recommend_ui._prompt_style("bold") == "bold"
+
+        recommend_ui.set_no_color(True)
+        assert recommend_ui._prompt_style("bold") == ""
+        assert recommend_ui.SELECT_STYLE.style_rules == []
+    finally:
+        recommend_ui.set_no_color(False)
+
+
 def test_hardware_panel_uses_theme_roles_not_literal_colors():
     candidate = {
         "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",

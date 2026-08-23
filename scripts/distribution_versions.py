@@ -9,6 +9,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,11 +87,16 @@ def check_versions(
     if VERSION_PATTERN.fullmatch(expected) is None:
         raise DistributionVersionError(f"invalid expected version: {expected!r}")
 
-    observed = {
-        "local": expected,
-        "PyPI": pypi_version(pypi_url),
-        "Homebrew": homebrew_version(homebrew_url),
-    }
+    # PyPI and Homebrew are independent network fetches; run them concurrently
+    # rather than paying both round-trip latencies back to back.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pypi_future = executor.submit(pypi_version, pypi_url)
+        homebrew_future = executor.submit(homebrew_version, homebrew_url)
+        observed = {
+            "local": expected,
+            "PyPI": pypi_future.result(),
+            "Homebrew": homebrew_future.result(),
+        }
     mismatches = {
         channel: version for channel, version in observed.items() if version != expected
     }

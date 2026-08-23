@@ -206,6 +206,7 @@ class LoopbackJsonClient:
     def __init__(self, base_url: str, *, token: str | None = None) -> None:
         self.base_url = require_loopback_base_url(base_url)
         self._headers = {"Authorization": f"Bearer {token}"} if token else {}
+        self._session = None
 
     @staticmethod
     def _response_message(response) -> str:
@@ -269,18 +270,23 @@ class LoopbackJsonClient:
         import requests
 
         try:
-            with requests.Session() as session:
+            if self._session is None:
+                # Reused across every call this adapter makes (health, list,
+                # load, generate, unload can add up to a dozen+ round trips
+                # per verification) so the loopback TCP connection is kept
+                # alive instead of being re-established from scratch each time.
+                self._session = requests.Session()
                 # These endpoints are intentionally local-only. Ignoring proxy
                 # environment variables also prevents an LM Studio token from
                 # being forwarded to a configured HTTP proxy.
-                session.trust_env = False
-                response = session.request(
-                    method,
-                    f"{self.base_url}{path}",
-                    json=payload,
-                    headers=dict(self._headers),
-                    timeout=timeout,
-                )
+                self._session.trust_env = False
+            response = self._session.request(
+                method,
+                f"{self.base_url}{path}",
+                json=payload,
+                headers=dict(self._headers),
+                timeout=timeout,
+            )
         except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as error:
             transport_kind = (
                 "connect_timeout"

@@ -142,15 +142,43 @@ def detect_recommended() -> str | None:
     return None
 
 
+def _cli_no_color_flag_active() -> bool:
+    """Best-effort read of the current invocation's `--no-color` flag
+    (`cli.GlobalOptions.no_color` on Click's `ctx.obj`), without theme.py
+    importing cli.py (which imports theme.py - that would be circular).
+    Mirrors cli.py's own `_get_current_context` fallback: some installs
+    resolve Click's context stack through a bundled `typer._click` fork
+    rather than the standalone `click` package, so both are tried.
+    Returns `False` outside any Click context (e.g. a test calling this
+    module's functions directly) rather than raising."""
+    try:
+        from typer._click.globals import get_current_context
+    except ImportError:
+        from click.globals import get_current_context
+    ctx = get_current_context(silent=True)
+    if ctx is None:
+        return False
+    return bool(getattr(ctx.obj, "no_color", False))
+
+
 def apply_theme_to_console(console: Console, name: str) -> None:
-    """Only ever turns `no_color` *on*, never back off: `--no-color` is a
-    per-invocation override that must outlive any later theme application
-    in the same process (`omm --no-color setting theme --set dark`,
-    `omm --no-color setup`). Switching to a colored preset when colour is
-    already suppressed still registers that preset's styles, so the
-    choice takes effect the next time omm runs without the flag."""
-    if name == "no-color":
-        console.no_color = True
+    """Sets `console.no_color` for the preset being applied, except a real
+    `--no-color` CLI flag for the current invocation always wins.
+
+    Naively setting `no_color = (name == "no-color")` would make a
+    *persisted* `no-color` theme preference just as sticky as the
+    `--no-color` flag itself, which is wrong: switching away from it in
+    the same invocation (`omm setting theme --set dark`, after the root
+    callback loaded a `no-color` preference) must let color back on for
+    the rest of that invocation. Only an actual `--no-color` flag - read
+    from Click's current context, the same `GlobalOptions.no_color` the
+    flag populates in cli.py - is a per-invocation override that must
+    outlive a later theme application (`omm --no-color setting theme
+    --set dark`, `omm --no-color setup`). Switching to a colored preset
+    when colour is suppressed by the flag still registers that preset's
+    styles, so the choice itself takes effect next time omm runs without
+    the flag."""
+    console.no_color = name == "no-color" or _cli_no_color_flag_active()
     console.push_theme(build_rich_theme(name))
 
 
@@ -249,12 +277,18 @@ def run_picker(current: str, *, current_label: str | None = "current", allow_bac
     back = "← Back"
     options = list(THEME_NAMES) + ([back] if allow_back else [])
     state = {"index": options.index(current) if current in options else 0}
+    # render_preview_ansi rebuilds a rich Console+Theme from scratch; with
+    # only THEME_NAMES worth of distinct previews (4), computing each once
+    # and reusing it avoids redoing that work on every arrow-key redraw.
+    preview_cache: dict[str, ANSI] = {}
 
     def _preview_fragments():
         name = options[state["index"]]
         if name not in THEME_NAMES:
             return ANSI("")
-        return ANSI(render_preview_ansi(name))
+        if name not in preview_cache:
+            preview_cache[name] = ANSI(render_preview_ansi(name))
+        return preview_cache[name]
 
     def _list_fragments():
         fragments = []

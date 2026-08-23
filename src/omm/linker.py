@@ -359,6 +359,27 @@ def _update_link_ownership(path: Path, ownership: dict[str, object] | None) -> N
         atomic_write_text(LINK_OWNERSHIP_PATH, json.dumps(records, indent=2) + "\n")
 
 
+def _bulk_clear_link_ownership(paths: Sequence[Path]) -> None:
+    """Remove several ownership records in one locked read-modify-write.
+
+    An autoremove pass can find many broken links at once; clearing each
+    one through `_update_link_ownership` individually would reload and
+    rewrite the *entire* on-disk registry once per removed path (an O(n)
+    full-file read+write for n unrelated removals found in the same pass).
+    This reaches the same end state - every key in `paths` is gone from
+    the registry - with a single lock acquisition, read, and write no
+    matter how many paths are being cleared.
+    """
+    if not paths:
+        return
+    keys = [_link_key(path) for path in paths]
+    with locked(LINK_OWNERSHIP_PATH):
+        records = _load_link_ownership()
+        for key in keys:
+            records.pop(key, None)
+        atomic_write_text(LINK_OWNERSHIP_PATH, json.dumps(records, indent=2) + "\n")
+
+
 def _record_ownership(dst: Path, src: Path | None, kind: str) -> None:
     record = {
         "kind": kind,
@@ -640,16 +661,21 @@ def link_file(
         raise LinkError(f"Could not create directory {dst.parent}: {e}") from e
     if dst.exists() or dst.is_symlink():
         # Already exactly this link (same recorded source, same untouched
-        # symlink/hardlink identity) - skip the delete+recreate and its
+        # symlink/hardlink/copy identity) - skip the delete+recreate and its
         # ownership-registry rewrite. Cheap ownership-record checks only;
         # no full-file read. Otherwise every unchanged model got its
-        # link torn down and rebuilt on every repeat `omm link`/`install`.
+        # link torn down and rebuilt on every repeat `omm link`/`install` -
+        # for a "copy" fallback destination (Windows without Developer Mode,
+        # or a cross-volume custom directory) that meant a full multi-GB
+        # shutil.copy2 every time, even though nothing had changed.
         record = _ownership_record(dst)
         if record and record.get("source") == _link_key(src):
             if record.get("kind") == "symlink" and _owned_symlink(dst, record):
                 return "symlink"
             if record.get("kind") == "hardlink" and _owned_hardlink(dst, record):
                 return "hardlink"
+            if record.get("kind") == "copy" and _owned_copy(dst, record):
+                return "copy"
         if not unlink_owned_link(dst, expected_source=src, record=record):
             if record and record.get("kind") in {"symlink", "hardlink"}:
                 raise LinkError(
@@ -810,9 +836,13 @@ def autoremove_custom_directory(directory: Path) -> int:
     if not directory.exists():
         return 0
     removed = 0
+    # Loaded once and reused for every candidate below instead of having
+    # unlink_owned_link's own ownership check reload and re-parse the whole
+    # on-disk registry per broken symlink found in this directory.
+    ownership = _load_link_ownership()
     for path in directory.iterdir():
         if path.is_symlink() and not path.exists():
-            if unlink_owned_link(path):
+            if unlink_owned_link(path, record=ownership.get(_link_key(path))):
                 removed += 1
     return removed
 
@@ -1818,9 +1848,14 @@ def autoremove_lmstudio() -> int:
         return 0
 
     removed = 0
+    # Loaded once and reused for every candidate below instead of having
+    # unlink_owned_link's own ownership check reload and re-parse the whole
+    # on-disk registry per broken symlink found in this (possibly large,
+    # recursively-walked) tree.
+    ownership = _load_link_ownership()
     for path in list(base.rglob("*")):
         if path.is_symlink() and not path.exists():
-            if unlink_owned_link(path):
+            if unlink_owned_link(path, record=ownership.get(_link_key(path))):
                 removed += 1
                 for parent in (path.parent, path.parent.parent):
                     try:
@@ -1856,13 +1891,18 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
         return (0, 0)
 
     broken_digests = set()
+    # Cleared together in one locked read-modify-write at the end instead of
+    # once per removed blob/manifest - a run that finds many broken links at
+    # once used to reload and rewrite the whole on-disk registry that many
+    # times over for no observable difference in the end state.
+    cleared_paths: list[Path] = []
     for blob in blobs_dir.iterdir():
         if blob.is_symlink() and not blob.exists():
             try:
                 blob.unlink()
             except OSError:
                 continue
-            _update_link_ownership(blob, None)
+            cleared_paths.append(blob)
             broken_digests.add(blob.name)
 
     manifests_removed = 0
@@ -1880,13 +1920,14 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
                     manifest_path.unlink()
                 except OSError:
                     continue
-                _update_link_ownership(manifest_path, None)
+                cleared_paths.append(manifest_path)
                 manifests_removed += 1
                 try:
                     manifest_path.parent.rmdir()
                 except OSError:
                     pass
 
+    _bulk_clear_link_ownership(cleared_paths)
     return (len(broken_digests), manifests_removed)
 
 
@@ -2038,10 +2079,25 @@ def link_jan(gguf_path: Path, model_id: str) -> Path:
 
 
 def unlink_jan(model_id: str, expected_source: Path | None = None) -> None:
+    """See `unlink_ollama`'s docstring for why ownership is not treated as
+    strictly required (issue #171): `_owned_manifest` alone silently no-ops
+    when the link-ownership registry is lost/corrupted or the manifest
+    predates it, orphaning the Jan model.yml forever. `expected_source` -
+    the gguf path omm's own model registry recorded for this model - gives
+    a second, ownership-registry-independent proof: if model.yml's own
+    `model_path` field (read straight off disk, not from the possibly-lost
+    registry) names exactly that source, this is unambiguously the same
+    manifest omm created, regardless of whether the ownership record
+    survived."""
     config_path = _jan_model_yaml_path(model_id)
     if not config_path.parent.resolve().is_relative_to(jan_models_dir().resolve()):
         return
-    if _owned_manifest(config_path, expected_source=expected_source):
+    owned = _owned_manifest(config_path, expected_source=expected_source)
+    if not owned and expected_source is not None and config_path.exists() and not config_path.is_symlink():
+        recorded_path = read_jan_model_path(config_path)
+        if recorded_path is not None and _link_key(Path(recorded_path)) == _link_key(expected_source):
+            owned = True
+    if owned:
         try:
             config_path.unlink()
             _update_link_ownership(config_path, None)
@@ -2079,26 +2135,62 @@ def read_jan_model_path(config_path: Path) -> str | None:
 
 def autoremove_jan() -> int:
     """Delete model.yml manifests whose model_path no longer points at an
-    existing file. Returns the number removed."""
+    existing file. Returns the number removed.
+
+    Ownership is normally proven by the link-ownership registry
+    (`_owned_manifest`), same as elsewhere. But that registry can be silent
+    on a manifest omm genuinely created itself - installed before the
+    registry existed, or a record lost some other way - which used to leave
+    the model.yml (and its dead `model_path`) orphaned in Jan forever, the
+    same bug class fixed for Ollama in issue #171 (`autoremove_ollama`).
+
+    Unlike Ollama's dangling blob symlink - which structurally can only
+    have been created by omm, so the ownership check is safely skipped
+    entirely there - a bare model.yml is exactly the same file Jan itself
+    writes for a model the user imported directly, so a missing
+    `model_path` alone is not proof the content is gone for good (it may
+    simply be on unmounted removable/network media) and is not enough to
+    drop the ownership requirement. `model_path` resolving inside omm's own
+    `MODELS_DIR`, however, is the same kind of structural certainty Ollama's
+    fix relies on: nothing but omm's own downloader ever puts a file there,
+    so a manifest whose `model_path` was inside `MODELS_DIR` and has since
+    disappeared is unambiguously an omm-created manifest whose source omm
+    itself removed - safe to clean up without a surviving ownership record.
+    A record-less broken manifest whose `model_path` points elsewhere is
+    left alone, exactly as before.
+    """
     models_dir = jan_models_dir()
     if not models_dir.exists():
         return 0
     removed = 0
+    # Loaded once and reused for every candidate below instead of having
+    # _owned_manifest reload and re-parse the whole on-disk registry per
+    # model.yml checked in this directory.
+    ownership = _load_link_ownership()
+    models_root = MODELS_DIR.expanduser().resolve(strict=False)
     for config_path in list(models_dir.glob("*/model.yml")):
         if not config_path.parent.resolve().is_relative_to(models_dir.resolve()):
             continue
         model_path = read_jan_model_path(config_path)
-        if model_path and not Path(model_path).exists() and _owned_manifest(config_path):
-            try:
-                config_path.unlink()
-                _update_link_ownership(config_path, None)
-            except OSError:
-                continue
-            removed += 1
-            try:
-                config_path.parent.rmdir()
-            except OSError:
-                pass
+        if not model_path or Path(model_path).exists():
+            continue
+        record = ownership.get(_link_key(config_path))
+        owned = _owned_manifest(config_path, record=record)
+        if not owned:
+            resolved_model_path = Path(model_path).expanduser().resolve(strict=False)
+            owned = resolved_model_path.is_relative_to(models_root)
+        if not owned:
+            continue
+        try:
+            config_path.unlink()
+            _update_link_ownership(config_path, None)
+        except OSError:
+            continue
+        removed += 1
+        try:
+            config_path.parent.rmdir()
+        except OSError:
+            pass
     return removed
 
 

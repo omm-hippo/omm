@@ -7,6 +7,25 @@ from rich.console import Console
 from omm import theme
 
 
+def _fake_cli_context(no_color: bool):
+    """A Click context carrying a `GlobalOptions`-shaped `obj.no_color`,
+    built the same way `apply_theme_to_console`'s own context lookup
+    resolves it (`typer._click`'s fork of Click when present, real Click
+    otherwise - see `theme._cli_no_color_flag_active`'s docstring)."""
+    try:
+        from typer._click import Context as _Context
+    except ImportError:
+        from click import Context as _Context
+    import click as _click
+
+    class _Opts:
+        pass
+
+    opts = _Opts()
+    opts.no_color = no_color
+    return _Context(_click.Command("omm"), obj=opts)
+
+
 def test_theme_names_are_the_four_fixed_presets():
     assert theme.THEME_NAMES == ("light", "dark", "high-contrast", "no-color")
 
@@ -133,14 +152,31 @@ def test_apply_theme_to_console_pushes_theme_for_named_preset():
     assert "hello" in console.file.getvalue()
 
 
-def test_apply_theme_to_console_never_re_enables_color():
-    """`--no-color` is applied once per invocation; a theme applied
-    afterwards (`omm --no-color setting theme --set dark`) must not undo
-    it. See apply_theme_to_console's docstring."""
+def test_apply_theme_to_console_resets_no_color_when_switching_away_from_no_color_theme():
+    """A persisted `no-color` theme preference must not permanently latch
+    `console.no_color`: switching to a colored preset in the same
+    invocation (`omm setting theme --set dark`, after the root callback
+    loaded a `no-color` preference) must let color back on. Only a real
+    `--no-color` CLI flag should survive the switch - see the next test
+    and apply_theme_to_console's docstring."""
     console = Console(file=io.StringIO())
-    console.no_color = True
+    theme.apply_theme_to_console(console, "no-color")
+    assert console.no_color is True
 
     theme.apply_theme_to_console(console, "dark")
+
+    assert console.no_color is False
+
+
+def test_apply_theme_to_console_keeps_no_color_when_cli_flag_is_active():
+    """`--no-color` is applied once per invocation via `ctx.obj.no_color`;
+    a theme applied afterwards (`omm --no-color setting theme --set
+    dark`) must not undo it, unlike a merely-persisted `no-color`
+    preference (previous test)."""
+    console = Console(file=io.StringIO())
+
+    with _fake_cli_context(no_color=True):
+        theme.apply_theme_to_console(console, "dark")
 
     assert console.no_color is True
 

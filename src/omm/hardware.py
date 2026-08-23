@@ -264,7 +264,8 @@ def _is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
-def _mac_cpu_brand() -> str:
+def _mac_sysctl_cpu_brand() -> str | None:
+    """Run `sysctl -n machdep.cpu.brand_string` once, or None on failure."""
     try:
         out = subprocess.run(
             ["sysctl", "-n", "machdep.cpu.brand_string"],
@@ -276,22 +277,17 @@ def _mac_cpu_brand() -> str:
         )
         return out.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return platform.processor() or "Unknown"
+        return None
+
+
+def _mac_cpu_brand() -> str:
+    brand = _mac_sysctl_cpu_brand()
+    return brand if brand is not None else (platform.processor() or "Unknown")
 
 
 def _mac_chip_name() -> str:
-    try:
-        out = subprocess.run(
-            ["sysctl", "-n", "machdep.cpu.brand_string"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=True,
-        )
-        return out.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "Apple Silicon"
+    brand = _mac_sysctl_cpu_brand()
+    return brand if brand is not None else "Apple Silicon"
 
 
 def _linux_cpu_model() -> str | None:
@@ -543,7 +539,11 @@ def _scan_hardware() -> HardwareInfo:
     cpu_logical_cores = int(psutil.cpu_count(logical=True) or 0)
 
     if _is_apple_silicon():
-        cpu = _mac_cpu_brand()
+        # cpu and gpu_name both derive from the same sysctl field on Apple
+        # Silicon; probe it once instead of shelling out twice per scan.
+        brand = _mac_sysctl_cpu_brand()
+        cpu = brand if brand is not None else (platform.processor() or "Unknown")
+        chip_name = brand if brand is not None else "Apple Silicon"
         return HardwareInfo(
             os_name=os_name,
             os_version=os_version,
@@ -551,7 +551,7 @@ def _scan_hardware() -> HardwareInfo:
             ram_total_gb=ram_total_gb,
             ram_available_gb=ram_available_gb,
             unified_memory=True,
-            gpu_name=_mac_chip_name(),
+            gpu_name=chip_name,
             vram_total_gb=ram_total_gb,
             vram_free_gb=ram_available_gb,
             cpu_arch=cpu_arch,

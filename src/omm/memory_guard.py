@@ -139,8 +139,21 @@ def plan_memory_guard(
             ram_need <= available_ram + reclaimable_ram
             and vram_need <= available_vram + reclaimable_vram
         )
-        reclaimable = max(reclaimable_ram, reclaimable_vram)
-        available = max(available_ram, available_vram)
+        if required_ram_gb is not None and required_vram_gb is not None:
+            # Both pools are real constraints here, unlike the RAM-only/
+            # VRAM-only sub-cases below (left on the old `max()` fallback).
+            # Report whichever pool is actually binding - the one with the
+            # larger shortfall against its own requirement - instead of
+            # unconditionally taking the larger, possibly irrelevant pool.
+            if (ram_need - available_ram) >= (vram_need - available_vram):
+                available = available_ram
+                reclaimable = reclaimable_ram
+            else:
+                available = available_vram
+                reclaimable = reclaimable_vram
+        else:
+            reclaimable = max(reclaimable_ram, reclaimable_vram)
+            available = max(available_ram, available_vram)
         reserve = max(
             budget.ram_safety_reserve_gb,
             budget.vram_safety_reserve_gb or 0.0,
@@ -204,6 +217,7 @@ def execute_guard(
 
     unloaded = []
     refreshed = None
+    heuristic_confirmed_safe = False
     for resident in sorted(plan.managed_residents, key=lambda item: item.size_gb, reverse=True):
         if not resident.owned_by_omm:
             continue
@@ -233,19 +247,35 @@ def execute_guard(
                     refreshed,
                 )
         elif sum(item.size_gb for item in unloaded) + plan.available_gb >= plan.required_gb:
+            heuristic_confirmed_safe = True
             break
 
-    if recalculate is not None and refreshed is None:
-        refreshed = recalculate()
-    if refreshed is None or refreshed.decision is not GuardDecision.SAFE:
-        return GuardExecution(
-            False,
-            GuardDecision.BLOCK,
-            tuple(unloaded),
-            (*plan.reasons, "recalculation_not_safe"),
-            refreshed,
-        )
-    return GuardExecution(True, GuardDecision.SAFE, tuple(unloaded), (), refreshed)
+    if recalculate is not None:
+        if refreshed is None:
+            refreshed = recalculate()
+        if refreshed.decision is not GuardDecision.SAFE:
+            return GuardExecution(
+                False,
+                GuardDecision.BLOCK,
+                tuple(unloaded),
+                (*plan.reasons, "recalculation_not_safe"),
+                refreshed,
+            )
+        return GuardExecution(True, GuardDecision.SAFE, tuple(unloaded), (), refreshed)
+
+    # No `recalculate` callback was supplied: the only signal we have is the
+    # heuristic size comparison against the (stale) `plan`. Only report SAFE
+    # when that heuristic actually confirmed enough was freed - otherwise we
+    # unloaded what we could but still don't know it's enough, so block.
+    if heuristic_confirmed_safe:
+        return GuardExecution(True, GuardDecision.SAFE, tuple(unloaded), (), None)
+    return GuardExecution(
+        False,
+        GuardDecision.BLOCK,
+        tuple(unloaded),
+        (*plan.reasons, "unload_insufficient"),
+        None,
+    )
 
 
 def omm_managed_model_ids(registry_data: Mapping[str, object], engine: str) -> set[str]:

@@ -102,7 +102,8 @@ def recommend_runtime_settings(
 ) -> RuntimeProfile:
     model_size = candidate_model_size_gb(candidate)
     required = model_size * MEMORY_OVERHEAD if model_size is not None else None
-    available = available_model_memory_gb(hw)
+    memory_budget = calculate_memory_budget(hw)
+    available = memory_budget.model_budget_gb
     headroom = available - required if required is not None else None
 
     if headroom is not None and headroom >= 8.0:
@@ -112,7 +113,6 @@ def recommend_runtime_settings(
     else:
         context_length, profile_name = 2048, "safe"
 
-    memory_budget = calculate_memory_budget(hw)
     vram = memory_budget.vram_budget_gb or 0.0
     if hw.unified_memory:
         # RAM and VRAM are the same physical pool on unified memory, so

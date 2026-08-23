@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import venv
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from release_artifacts import (
@@ -129,8 +130,8 @@ def verify_repository_files(
             f"repository contains {sorted(remote)}, expected exactly {sorted(expected)}"
         )
 
-    verified_urls: list[str] = []
-    for filename, expected_hash in sorted(expected.items()):
+    def _verify_one(entry: tuple[str, str]) -> str:
+        filename, expected_hash = entry
         item = remote[filename]
         metadata_hash = item.get("digests", {}).get("sha256")
         if metadata_hash != expected_hash:
@@ -146,7 +147,13 @@ def verify_repository_files(
                 digest.update(block)
         if digest.hexdigest() != expected_hash:
             raise ReleaseValidationError(f"downloaded bytes do not match {filename}")
-        verified_urls.append(download_url)
+        return download_url
+
+    # Each archive is an independent full-file download+hash; run them
+    # concurrently instead of paying every download's latency back to back.
+    ordered_items = sorted(expected.items())
+    with ThreadPoolExecutor(max_workers=max(1, len(ordered_items))) as executor:
+        verified_urls = list(executor.map(_verify_one, ordered_items))
     return verified_urls
 
 

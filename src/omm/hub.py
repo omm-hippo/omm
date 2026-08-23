@@ -14,6 +14,7 @@ Accepts these forms for `omm install <model_name>`:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import PurePosixPath
@@ -341,14 +342,23 @@ def resolve_model(model_name: str) -> ResolvedModel:
             # disambiguation needs an explicit "ms:org/repo:file.gguf" prefix.
             return _resolve_repo_ref("huggingface", repo_id, filename)
 
-        matches: list[str] = []
-        for provider in _PROVIDER_MODULES:
+        def _check_provider(provider: str) -> str | None:
             try:
                 candidates, _ = _PROVIDER_MODULES[provider].fetch_repo_files(repo_id)
             except ModelResolutionError:
-                continue
-            if candidates:
-                matches.append(provider)
+                return None
+            return provider if candidates else None
+
+        # Each provider needs its own repo-listing call, and the calls are
+        # independent - fan them out instead of paying a sequential round
+        # trip per provider (same class of fix as search.py's ModelScope
+        # search parallelization).
+        with ThreadPoolExecutor(max_workers=len(_PROVIDER_MODULES)) as executor:
+            matches = [
+                provider
+                for provider in executor.map(_check_provider, _PROVIDER_MODULES)
+                if provider is not None
+            ]
         if len(matches) > 1:
             raise AmbiguousProviderError(repo_id, matches)
         if len(matches) == 1:

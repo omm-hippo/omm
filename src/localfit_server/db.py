@@ -53,6 +53,10 @@ class BenchmarkStore:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._session() as connection:
+            # journal_mode=WAL is persisted in the database file itself, so
+            # setting it once here is enough - every later connection opens
+            # in WAL mode automatically without needing to reissue the pragma.
+            connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript(SCHEMA)
             columns = {
                 row["name"]
@@ -68,7 +72,6 @@ class BenchmarkStore:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
