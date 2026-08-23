@@ -215,11 +215,8 @@ def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
     assert onboarding.COMPATIBLE_PROGRAMS_URL in output
 
 
-def test_install_selected_engines_runs_direct_installer_for_anythingllm_on_windows_x64(monkeypatch):
-    """AnythingLLM's winget package is gone, but Windows x64 now has a
-    direct vendor-installer path (linker._install_windows_direct), so the
-    wizard must hand the key to install_engine instead of linking out.
-    Uses the real has_automated_installer. ARM Windows still links out."""
+def test_install_selected_engines_links_to_manual_anythingllm_install_on_windows(monkeypatch):
+    """The mutable vendor installer is not executed without a pinned digest."""
     console = _console()
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
     monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
@@ -232,13 +229,9 @@ def test_install_selected_engines_runs_direct_installer_for_anythingllm_on_windo
     onboarding.install_selected_engines(console, ["anythingllm"])
 
     output = console.file.getvalue()
-    assert "Installing AnythingLLM" in output
-    assert "isn't auto-installable yet" not in output
+    assert "Installing AnythingLLM" not in output
+    assert "isn't auto-installable yet" in output
 
-    console = _console()
-    monkeypatch.setattr(linker.platform, "machine", lambda: "ARM64")
-    onboarding.install_selected_engines(console, ["anythingllm"])
-    assert "isn't auto-installable yet" in console.file.getvalue()
 
 
 def test_run_wizard_completes_with_no_engines_selected(monkeypatch):

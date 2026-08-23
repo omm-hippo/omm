@@ -586,21 +586,33 @@ $headCommit = (git -C $StagingDir rev-parse HEAD).Trim()
 # "create a merge commit" PRs, where GitHub signs the merge with a key
 # this script doesn't trust and the real signature is one hop down, on the
 # PR branch tip - when the direct check fails.
-$verified = Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir -Quiet
-if (-not $verified) {
+$verifiedCommit = if (Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir -Quiet) { $headCommit } else { $null }
+if ($null -eq $verifiedCommit) {
     $signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $StagingDir
     if ($signedCommit -ne $headCommit) {
-        $verified = Test-CommitSignature -Commit $signedCommit -RepoDir $StagingDir
+        if (Test-CommitSignature -Commit $signedCommit -RepoDir $StagingDir) {
+            $verifiedCommit = $signedCommit
+        }
     } else {
-        $verified = Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir
+        if (Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir) {
+            $verifiedCommit = $headCommit
+        }
     }
 }
-if (-not $verified) {
+if ($null -eq $verifiedCommit) {
     Remove-Item -Recurse -Force $StagingDir
     Write-Error "Signature verification failed - refusing to install untrusted code."
     exit 1
 }
-$SrcDir = Join-Path $SourcesDir $headCommit
+if ($verifiedCommit -ne $headCommit) {
+    git -C $StagingDir checkout --detach --quiet $verifiedCommit
+    if ($LASTEXITCODE -ne 0) {
+        Remove-Item -Recurse -Force $StagingDir
+        Write-Error "Could not check out the verified signed commit."
+        exit 1
+    }
+}
+$SrcDir = Join-Path $SourcesDir $verifiedCommit
 if (Test-Path $SrcDir) {
     Remove-Item -Recurse -Force $StagingDir
 } else {

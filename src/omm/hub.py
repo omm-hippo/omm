@@ -58,6 +58,7 @@ class ResolvedModel:
     filename: str
     repo_id: str | None  # None when installed from a direct URL (no known repo)
     provider: str | None = None  # None when the source provider is unknown
+    expected_sha256: str | None = None
 
 
 @dataclass
@@ -309,7 +310,9 @@ def resolve_model(model_name: str) -> ResolvedModel:
         url = huggingface.download_url(repo_id, filename)
         return ResolvedModel(url=url, filename=filename, repo_id=repo_id, provider="huggingface")
 
-    if model_name.startswith("http://") or model_name.startswith("https://"):
+    if model_name.startswith("http://"):
+        raise ModelResolutionError("direct model URLs must use HTTPS")
+    if model_name.startswith("https://"):
         parsed = urlparse(model_name)
         host = parsed.hostname or ""
         provider = _URL_HOST_PROVIDER.get(host.removeprefix("www."))
@@ -317,7 +320,18 @@ def resolve_model(model_name: str) -> ResolvedModel:
         filename = validate_model_filename(
             query_filename or parsed.path.rsplit("/", 1)[-1]
         )
-        return ResolvedModel(url=model_name, filename=filename, repo_id=None, provider=provider)
+        digest_values = parse_qs(parsed.fragment).get("sha256", [])
+        if len(digest_values) != 1 or re.fullmatch(r"[0-9a-fA-F]{64}", digest_values[0]) is None:
+            raise ModelResolutionError(
+                "direct model URLs require a #sha256=<64-hex-digest> fragment"
+            )
+        return ResolvedModel(
+            url=parsed._replace(fragment="").geturl(),
+            filename=filename,
+            repo_id=None,
+            provider=provider,
+            expected_sha256=digest_values[0].lower(),
+        )
 
     if ":" in model_name:
         prefix, rest = model_name.split(":", 1)
@@ -370,5 +384,6 @@ def resolve_model(model_name: str) -> ResolvedModel:
     raise ModelResolutionError(
         f"Unknown model '{model_name}'. Use a curated name "
         f"({', '.join(CURATED_INDEX)}), an 'org/repo:file.gguf' ref (optionally "
-        "prefixed 'hf:' or 'ms:'), or a direct URL."
+        "prefixed 'hf:' or 'ms:'), or an HTTPS direct URL ending in "
+        "#sha256=<64-hex-digest>."
     )

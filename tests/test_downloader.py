@@ -128,6 +128,24 @@ def test_download_file_refuses_symlinked_partial_path(tmp_path, monkeypatch):
     assert victim.read_bytes() == b"preserve"
 
 
+@pytest.mark.parametrize(
+    ("requested", "final"),
+    [
+        ("http://example.com/model.gguf", "http://example.com/model.gguf"),
+        ("https://example.com/model.gguf", "http://cdn.example.com/model.gguf"),
+    ],
+)
+def test_download_file_rejects_http_and_redirect_downgrade(
+    tmp_path, monkeypatch, requested, final
+):
+    response = _FakeResp(200, [b"untrusted"])
+    response.url = final
+    monkeypatch.setattr(requests, "get", lambda *a, **k: response)
+
+    with pytest.raises(downloader.DownloadError, match="non-HTTPS|HTTPS-to-HTTP"):
+        downloader.download_file(requested, tmp_path / "model.gguf")
+
+
 def test_download_file_raises_cancelled_and_keeps_part_file_when_stop_check_fires(tmp_path, monkeypatch):
     dest = tmp_path / "model.gguf"
     monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)

@@ -31,18 +31,15 @@ reuse link_custom_directory/unlink_custom_directory.
 
 KoboldCpp has no fixed install location (portable binary) and by default
 has no directory it scans for models at all - only `--admindir` (which the
-user must opt into explicitly) does a real directory scan, confirmed by
-reading koboldcpp's source and by running it live with --admindir pointed
-at a symlinked test model and querying its admin API. omm can't detect a
-default install path, so it heuristically looks for the binary in common
-locations and links into a `models` folder next to it; the user still needs
-to launch koboldcpp with --admindir pointed at that folder themselves.
+user must opt into explicitly) does a real directory scan. For safety, omm
+only discovers a manually approved copy placed under `<OMM_HOME>/apps`,
+then links into a `models` folder next to it; common writable directories
+are never searched automatically.
 
-text-generation-webui likewise has no fixed OS install location, so omm
-heuristically looks for its directory by checking for either of two known
-layouts: an old-style git clone (server.py + one_click.py at the root) or
-the portable prebuilt release omm itself installs (server.py under app/,
-no one_click.py at all).
+text-generation-webui likewise has no fixed OS install location. omm only
+checks `<OMM_HOME>/apps` for either of two known layouts: an old-style git
+clone (server.py + one_click.py at the root) or a portable prebuilt release
+(server.py under app/, no one_click.py at all).
 """
 
 from __future__ import annotations
@@ -212,9 +209,8 @@ def _windows_install_artifact_exists(dir_names: Sequence[str], shortcut_glob: st
             program_roots.append(Path(value))
     for root in program_roots:
         for name in dir_names:
-            # An installer that died early (full disk, see
-            # _install_windows_direct) leaves an empty folder behind; only
-            # a folder holding an .exe counts as installed.
+            # A failed or manually cancelled installer can leave an empty
+            # folder behind; only a folder holding an .exe counts as installed.
             try:
                 if any(p.suffix.lower() == ".exe" for p in (root / name).iterdir()):
                     return True
@@ -2241,64 +2237,53 @@ def is_mstystudio_installed() -> bool:
 
 # --- KoboldCpp / text-generation-webui (no fixed install location) --------
 #
-# Neither ships an installer that lands in a standard OS app-data path, so
-# omm can't just check a fixed directory the way it does for the apps
-# above. Both are heuristically located by looking for a marker
-# (the koboldcpp binary itself; text-generation-webui's own source files)
-# in a short list of common places a user would keep them.
-
-# Where omm used to drop runners it installed itself. Still searched so
-# existing installs keep being detected, but new installs go to
-# engine_install_dir() (under OMM_HOME) so a user who moved omm off a full
-# system drive doesn't get multi-GiB runners written back onto it.
-_LEGACY_ENGINE_INSTALL_DIR = Path.home() / "Applications"
-
-_HEURISTIC_SEARCH_ROOTS = [
-    Path.home(),
-    Path.home() / "Downloads",
-    Path.home() / "Documents",
-    Path.home() / "Desktop",
-    _LEGACY_ENGINE_INSTALL_DIR,
-    Path("/Applications"),
-]
+# Neither ships an installer that lands in a standard OS app-data path.
+# Only the OMM-owned engine directory is searched by default. Tests may
+# inject additional roots explicitly, but legacy/common user directories are
+# never automatic execution provenance.
+_HEURISTIC_SEARCH_ROOTS: list[Path] = []
 
 
 def engine_install_dir() -> Path:
-    """<OMM_HOME>/apps - runners omm installs (KoboldCpp, text-generation-
-    webui, and the Windows direct installs) land here, on the same volume
-    as the model hub. Read through `config` at call time so the
-    `isolated_omm_home` fixture and OMM_HOME both apply."""
+    """Explicitly approved manual engine copies live under <OMM_HOME>/apps.
+
+    Read through `config` at call time so the `isolated_omm_home` fixture
+    and OMM_HOME both apply.
+    """
     return config.OMM_HOME / "apps"
-
-
-def engine_tmp_dir() -> Path:
-    """<OMM_HOME>/tmp - installer downloads and the TEMP handed to NSIS
-    installers, so a full system drive can't break an install."""
-    return config.OMM_HOME / "tmp"
 
 
 def _heuristic_search_roots() -> list[Path]:
     return [engine_install_dir(), *_HEURISTIC_SEARCH_ROOTS]
 
 
+def _trusted_discovery_entry(entry: Path, root: Path) -> bool:
+    try:
+        return not entry.is_symlink() and entry.resolve().is_relative_to(root.resolve())
+    except OSError:
+        return False
+
+
 @lru_cache(maxsize=1)
 def find_koboldcpp_binary() -> Path | None:
     for root in _heuristic_search_roots():
+        if root.is_symlink():
+            continue
         try:
             entries = list(root.iterdir())
         except OSError:
             continue
         for entry in entries:
-            if entry.is_file() and entry.name.lower().startswith("koboldcpp"):
+            if _trusted_discovery_entry(entry, root) and entry.is_file() and entry.name.lower().startswith("koboldcpp"):
                 return entry
         for entry in entries:
-            if entry.is_dir() and "koboldcpp" in entry.name.lower():
+            if _trusted_discovery_entry(entry, root) and entry.is_dir() and "koboldcpp" in entry.name.lower():
                 try:
                     sub_entries = list(entry.iterdir())
                 except OSError:
                     continue
                 for sub in sub_entries:
-                    if sub.is_file() and sub.name.lower().startswith("koboldcpp"):
+                    if _trusted_discovery_entry(sub, entry) and sub.is_file() and sub.name.lower().startswith("koboldcpp"):
                         return sub
     return None
 
@@ -2324,12 +2309,18 @@ _TEXTGENWEBUI_NAME_HINT = re.compile(
 @lru_cache(maxsize=1)
 def find_textgenwebui_root() -> Path | None:
     for root in _heuristic_search_roots():
+        if root.is_symlink():
+            continue
         try:
             entries = list(root.iterdir())
         except OSError:
             continue
         for entry in entries:
-            if not (entry.is_dir() and _TEXTGENWEBUI_NAME_HINT.search(entry.name)):
+            if not (
+                _trusted_discovery_entry(entry, root)
+                and entry.is_dir()
+                and _TEXTGENWEBUI_NAME_HINT.search(entry.name)
+            ):
                 continue
             # Old git-clone install: server.py + one_click.py at the root.
             if (entry / "server.py").exists() and (entry / "one_click.py").exists():
@@ -2428,11 +2419,11 @@ def has_automated_installer(key: str) -> bool:
     filesystem or network access) since it's called just to build labels,
     not to attempt anything."""
     if key == "ollama":
-        return True
+        return platform.system() in {"Darwin", "Windows"}
     if key == "lmstudio":
-        return True
+        return platform.system() in {"Darwin", "Windows"}
     if key == "jan":
-        return True
+        return platform.system() in {"Darwin", "Windows", "Linux"}
     if key == "anythingllm":
         # Brew-cask (Darwin) only. No flatpak/Linux path was ever built for
         # this one, and the Windows winget package is gone - see
@@ -2440,15 +2431,15 @@ def has_automated_installer(key: str) -> bool:
         # which made the wizard attempt a winget install that could not
         # possibly succeed and then fall back to a manual URL; reporting it
         # unsupported shows that same guidance up front instead.
-        return platform.system() == "Darwin" or _windows_direct_install_supported()
+        return platform.system() == "Darwin"
     if key == "mstystudio":
         # Brew-cask only - no winget package targets the current app (see
         # _install_mstystudio) and no Linux package manager exists at all.
-        return platform.system() == "Darwin" or _windows_direct_install_supported()
+        return platform.system() == "Darwin"
     if key == "koboldcpp":
-        return (platform.system(), platform.machine()) in _KOBOLDCPP_ASSET_BY_PLATFORM
+        return False
     if key == "textgenwebui":
-        return _textgenwebui_platform_supported(platform.system(), platform.machine())
+        return False
     return False
 
 
@@ -2457,11 +2448,9 @@ def install_engine(
 ) -> EngineInstallResult:
     """Dispatch table mirroring is_engine_installed()'s if/elif style so
     individual branches stay monkeypatchable in tests. Every engine in
-    ENGINES ("ollama", "lmstudio", "jan", "anythingllm", "mstystudio",
-    "koboldcpp", and "textgenwebui") has an automated installer here, though
-    not every platform/arch combo is covered for every engine - see
-    has_automated_installer for which ones are. A key not in ENGINES at all
-    still raises NotImplementedError."""
+    ENGINES has a handler, but handlers without a verified package-manager
+    route fail closed with manual-install guidance. A key not in ENGINES at
+    all still raises NotImplementedError."""
     if key == "ollama":
         return _install_ollama(on_output=on_output)
     if key == "lmstudio":
@@ -2510,111 +2499,21 @@ _LMSTUDIO_DOWNLOAD_URL = "https://lmstudio.ai/download"
 def _install_ollama(
     *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
-    system = platform.system()
-    returncode: int | None = None
-    if system in ("Darwin", "Linux"):
-        try:
-            returncode = _stream_subprocess(
-                ["/bin/sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"],
-                on_output,
-            )
-        except OSError as e:
-            return EngineInstallResult("ollama", "failed", f"Could not start installer: {e}")
-    elif system == "Windows":
-        if shutil.which("winget") is None:
-            return EngineInstallResult(
-                "ollama",
-                "unsupported_platform",
-                f"winget not found - install Ollama manually from {_OLLAMA_DOWNLOAD_URL}",
-            )
-        try:
-            returncode = _stream_subprocess(
-                [
-                    "winget",
-                    "install",
-                    "-e",
-                    "--id",
-                    "Ollama.Ollama",
-                    "--silent",
-                    "--accept-source-agreements",
-                    "--accept-package-agreements",
-                ],
-                on_output,
-            )
-        except OSError as e:
-            return EngineInstallResult("ollama", "failed", f"Could not start installer: {e}")
-    else:
-        return EngineInstallResult(
-            "ollama", "unsupported_platform", f"No automated installer for {system}."
-        )
-
-    if is_ollama_installed():
-        return EngineInstallResult("ollama", "installed", "Ollama installed successfully.")
-    detail = f" (installer exited with code {returncode})" if returncode else ""
-    return EngineInstallResult(
-        "ollama",
-        "failed",
-        f"Installer ran but Ollama still isn't detected{detail}. "
-        f"Install manually from {_OLLAMA_DOWNLOAD_URL}",
+    return _install_via_package_manager(
+        key="ollama", label="Ollama", manual_url=_OLLAMA_DOWNLOAD_URL,
+        is_installed=is_ollama_installed, on_output=on_output,
+        brew_cask="ollama-app", winget_id="Ollama.Ollama",
     )
 
 
 def _install_lmstudio(
     *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
-    """Installs llmster, LM Studio's headless CLI+daemon core - not the
-    GUI app. Same official-script pattern as Ollama's installer; see
-    is_lmstudio_installed()'s CLI check for why that's still a real
-    install."""
-    system = platform.system()
-    returncode: int | None = None
-    if system in ("Darwin", "Linux"):
-        try:
-            returncode = _stream_subprocess(
-                ["/bin/sh", "-c", "curl -fsSL https://lmstudio.ai/install.sh | bash"],
-                on_output,
-            )
-        except OSError as e:
-            return EngineInstallResult("lmstudio", "failed", f"Could not start installer: {e}")
-    elif system == "Windows":
-        powershell = shutil.which("powershell") or shutil.which("pwsh")
-        if powershell is None:
-            return EngineInstallResult(
-                "lmstudio",
-                "unsupported_platform",
-                f"PowerShell not found - install manually from {_LMSTUDIO_DOWNLOAD_URL}",
-            )
-        try:
-            returncode = _stream_subprocess(
-                # Deliberately NOT pinning [Console]::OutputEncoding here, unlike
-                # hardware._powershell_json. Setting it inside a child that
-                # shares the caller's console calls SetConsoleOutputCP and
-                # leaves the *user's terminal* on code page 65001 after omm
-                # exits (measured on Korean Windows: 949 before, 65001 after).
-                # hardware.py can dodge that with CREATE_NO_WINDOW because its
-                # probe is headless; an interactive installer should keep the
-                # console it was given. The only cost is that non-ASCII in the
-                # installer's own progress lines may render as U+FFFD - they
-                # are displayed and never parsed, and _stream_subprocess's
-                # errors="replace" (PR #127) already makes that non-fatal.
-                [powershell, "-NoProfile", "-Command", "irm https://lmstudio.ai/install.ps1 | iex"],
-                on_output,
-            )
-        except OSError as e:
-            return EngineInstallResult("lmstudio", "failed", f"Could not start installer: {e}")
-    else:
-        return EngineInstallResult(
-            "lmstudio", "unsupported_platform", f"No automated installer for {system}."
-        )
-
-    if is_lmstudio_installed():
-        return EngineInstallResult("lmstudio", "installed", "LM Studio installed successfully.")
-    detail = f" (installer exited with code {returncode})" if returncode else ""
-    return EngineInstallResult(
-        "lmstudio",
-        "failed",
-        f"Installer ran but LM Studio still isn't detected{detail}. "
-        f"Install manually from {_LMSTUDIO_DOWNLOAD_URL}",
+    """Install LM Studio through the platform package manager only."""
+    return _install_via_package_manager(
+        key="lmstudio", label="LM Studio", manual_url=_LMSTUDIO_DOWNLOAD_URL,
+        is_installed=is_lmstudio_installed, on_output=on_output,
+        brew_cask="lm-studio", winget_id="ElementLabs.LMStudio",
     )
 
 
@@ -2706,142 +2605,6 @@ def _install_via_package_manager(
     )
 
 
-def _windows_direct_install_supported() -> bool:
-    """The vendor .exe installers below are x64-only."""
-    return platform.system() == "Windows" and platform.machine().upper() in ("AMD64", "X86_64")
-
-
-def free_space_shortfall(path: Path, required_bytes: int, what: str) -> str | None:
-    """None if the volume holding `path` has `required_bytes` (plus the
-    usual safety reserve) free, else a one-line explanation naming the
-    volume, what needs the space, and how much is missing. Installers call
-    this before downloading anything: a full drive otherwise surfaces as an
-    NSIS installer that exits with code 2 after two seconds, or a curl that
-    dies mid-transfer - both far harder to diagnose than this message."""
-    required = required_bytes + disk_safety_reserve(required_bytes)
-    try:
-        free = shutil.disk_usage(disk_usage_path(path)).free
-    except OSError as error:
-        return f"Could not check free space for {path}: {error}"
-    if free >= required:
-        return None
-    volume = path.drive or str(disk_usage_path(path))
-    return (
-        f"{what} needs about {required / 1024**3:.1f} GiB on {volume} but only "
-        f"{free / 1024**3:.1f} GiB is free there"
-    )
-
-
-@dataclass(frozen=True)
-class _WindowsDirectInstaller:
-    """A vendor-hosted NSIS (electron-builder) installer omm downloads and
-    runs silently, for apps that have no winget package. Verified by hand
-    on Windows 11 (2026-08-22): `/currentuser /S /D=<dir>` installs both
-    apps below unattended; without free space on the TEMP volume the same
-    installers exit 2 within seconds having created only an empty folder."""
-    url: str
-    filename: str
-    install_dir_name: str
-    # download + unpacked app, on the OMM_HOME volume
-    required_bytes: int
-    # what the app writes under %APPDATA% on first run/install (C: no
-    # matter where the app itself lives) - 0 when negligible
-    appdata_bytes: int = 0
-    note: str | None = None
-
-
-def _install_windows_direct(
-    *,
-    key: str,
-    label: str,
-    manual_url: str,
-    installer: _WindowsDirectInstaller,
-    is_installed: Callable[[], bool],
-    on_output: Callable[[str], None] | None,
-) -> EngineInstallResult:
-    if not _windows_direct_install_supported():
-        return EngineInstallResult(
-            key, "unsupported_platform", f"No automated installer for this platform - install manually from {manual_url}"
-        )
-
-    def say(line: str) -> None:
-        if on_output is not None:
-            on_output(line)
-
-    tmp_dir = engine_tmp_dir()
-    target_dir = engine_install_dir() / installer.install_dir_name
-    shortfall = free_space_shortfall(engine_install_dir(), installer.required_bytes, f"Installing {label}")
-    if shortfall is None and installer.appdata_bytes:
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            shortfall = free_space_shortfall(
-                Path(appdata), installer.appdata_bytes, f"{label}'s own data folder (%APPDATA%)"
-            )
-    if shortfall is not None:
-        return EngineInstallResult(
-            key,
-            "failed",
-            f"{shortfall}. Free up space (or set OMM_HOME to a roomier drive) and re-run `omm setup`.",
-        )
-
-    download_path = tmp_dir / installer.filename
-    say(f"Downloading {label} installer ({installer.required_bytes / 1024**3:.1f} GiB incl. unpacked app) from {installer.url}")
-    if installer.note:
-        say(installer.note)
-    try:
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        returncode = _stream_subprocess(["curl", "-fsSL", installer.url, "-o", str(download_path)], on_output)
-    except OSError as e:
-        return EngineInstallResult(key, "failed", f"Could not download {label}: {e}")
-    if returncode != 0 or not download_path.exists():
-        download_path.unlink(missing_ok=True)
-        return EngineInstallResult(
-            key, "failed", f"Download failed (curl exited with code {returncode}). Install manually from {manual_url}"
-        )
-
-    # NSIS rules: /S must be upper-case, /D=<dir> must be the LAST argument
-    # and must not be quoted even if the path has spaces - so hand Windows
-    # one pre-built command line instead of an argv list it would re-quote.
-    # TEMP/TMP point at OMM_HOME/tmp so the ~GiB unpack never lands on C:.
-    command = f'"{download_path}" /currentuser /S /D={target_dir}'
-    env = dict(os.environ, TEMP=str(tmp_dir), TMP=str(tmp_dir))
-    say(f"Running the {label} installer silently into {target_dir} ...")
-    try:
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-        returncode = _stream_subprocess(command, on_output, env=env)
-    except OSError as e:
-        return EngineInstallResult(key, "failed", f"Could not start the {label} installer: {e}")
-    finally:
-        download_path.unlink(missing_ok=True)
-
-    if is_installed():
-        return EngineInstallResult(key, "installed", f"{label} installed to {target_dir}.")
-    detail = f" (installer exited with code {returncode})" if returncode else ""
-    return EngineInstallResult(
-        key, "failed", f"Installer ran but {label} still isn't detected{detail}. Install manually from {manual_url}"
-    )
-
-
-_ANYTHINGLLM_WINDOWS_INSTALLER = _WindowsDirectInstaller(
-    url="https://cdn.anythingllm.com/latest/AnythingLLMDesktop.exe",
-    filename="AnythingLLMDesktop.exe",
-    install_dir_name="AnythingLLM",
-    required_bytes=int(2.2 * 1024**3),  # 0.4 GiB download + 1.6 GiB app
-    appdata_bytes=int(5 * 1024**3),  # bundled Ollama + starter model
-    note=(
-        "AnythingLLM's installer also downloads its bundled Ollama and a starter model "
-        "(~5 GiB, kept under %APPDATA% on the Windows drive) - this can take 10+ minutes."
-    ),
-)
-
-_MSTYSTUDIO_WINDOWS_INSTALLER = _WindowsDirectInstaller(
-    url="https://next-assets.msty.studio/app/latest/win/MstyStudio_x64.exe",
-    filename="MstyStudio_x64.exe",
-    install_dir_name="MstyStudio",
-    required_bytes=int(1.2 * 1024**3),  # 0.2 GiB download + 0.9 GiB app
-)
-
-
 def _install_jan(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
     return _install_via_package_manager(
         key="jan",
@@ -2877,15 +2640,6 @@ def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> E
     # installer.sh (sudo AppArmor-profile prompt, no documented silent
     # flag) - same risk class the original design excluded
     # text-generation-webui's git-clone path for.
-    if platform.system() == "Windows":
-        return _install_windows_direct(
-            key="anythingllm",
-            label="AnythingLLM",
-            manual_url="https://docs.anythingllm.com/installation-desktop/overview",
-            installer=_ANYTHINGLLM_WINDOWS_INSTALLER,
-            is_installed=is_anythingllm_installed,
-            on_output=on_output,
-        )
     return _install_via_package_manager(
         key="anythingllm",
         label="AnythingLLM",
@@ -2901,15 +2655,6 @@ def _install_mstystudio(*, on_output: Callable[[str], None] | None = None) -> En
     # (CloudStack.Msty) targets the deprecated pre-rebrand "Msty" app, not
     # current "Msty Studio" - using it would install the wrong software.
     # No Linux package manager exists at all.
-    if platform.system() == "Windows":
-        return _install_windows_direct(
-            key="mstystudio",
-            label="Msty",
-            manual_url="https://msty.ai/products/studio/",
-            installer=_MSTYSTUDIO_WINDOWS_INSTALLER,
-            is_installed=is_mstystudio_installed,
-            on_output=on_output,
-        )
     return _install_via_package_manager(
         key="mstystudio",
         label="Msty",
@@ -2920,75 +2665,11 @@ def _install_mstystudio(*, on_output: Callable[[str], None] | None = None) -> En
     )
 
 
-_KOBOLDCPP_ASSET_BY_PLATFORM: dict[tuple[str, str], str] = {
-    ("Darwin", "arm64"): "koboldcpp-mac-arm64",  # no Intel Mac build exists, confirmed
-    ("Linux", "x86_64"): "koboldcpp-linux-x64",
-    ("Windows", "AMD64"): "koboldcpp.exe",
-}
-
-
 def _install_koboldcpp(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
-    system = platform.system()
-    machine = platform.machine()
-    asset = _KOBOLDCPP_ASSET_BY_PLATFORM.get((system, machine))
-    if asset is None:
-        return EngineInstallResult(
-            "koboldcpp",
-            "unsupported_platform",
-            f"No koboldcpp build for {system}/{machine} - see https://github.com/LostRuins/koboldcpp/releases",
-        )
-
-    dest_dir = engine_install_dir() / "koboldcpp"
-    shortfall = free_space_shortfall(engine_install_dir(), 1024**3, "Installing KoboldCpp")
-    if shortfall is not None:
-        return EngineInstallResult("koboldcpp", "failed", f"{shortfall}. Free up space (or set OMM_HOME to a roomier drive) and retry.")
-    dest_name = "koboldcpp.exe" if system == "Windows" else "koboldcpp"
-    dest_path = dest_dir / dest_name
-    url = f"https://github.com/LostRuins/koboldcpp/releases/latest/download/{asset}"
-
-    returncode: int | None = None
-    try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        returncode = _stream_subprocess(["curl", "-fsSL", url, "-o", str(dest_path)], on_output)
-    except OSError as e:
-        return EngineInstallResult("koboldcpp", "failed", f"Could not download koboldcpp: {e}")
-
-    if returncode != 0:
-        # curl can exit nonzero after already writing a partial file (e.g. a
-        # connection dropped mid-transfer) - that partial file's name still
-        # starts with "koboldcpp", which is is_koboldcpp_installed()'s only
-        # detection signal, so it must be removed before that check ever
-        # runs or a truncated/corrupt binary gets reported as installed and
-        # permanently satisfies detection going forward.
-        dest_path.unlink(missing_ok=True)
-        return EngineInstallResult(
-            "koboldcpp",
-            "failed",
-            f"Download failed (curl exited with code {returncode}). "
-            "Get it manually from https://github.com/LostRuins/koboldcpp/releases",
-        )
-
-    if system != "Windows" and dest_path.exists():
-        try:
-            dest_path.chmod(dest_path.stat().st_mode | 0o111)
-        except OSError:
-            pass
-
-    find_koboldcpp_binary.cache_clear()
-    if is_koboldcpp_installed():
-        return EngineInstallResult("koboldcpp", "installed", "KoboldCpp downloaded successfully.")
-    detail = f" (curl exited with code {returncode})" if returncode else ""
     return EngineInstallResult(
-        "koboldcpp",
-        "failed",
-        f"Download ran but koboldcpp still isn't detected{detail}. "
-        "Get it manually from https://github.com/LostRuins/koboldcpp/releases",
+        "koboldcpp", "unsupported_platform",
+        "Automatic installation is disabled because the upstream latest-download artifact has no pinned SHA-256. Install manually from https://github.com/LostRuins/koboldcpp/releases",
     )
-
-
-_TEXTGENWEBUI_RELEASES_API = (
-    "https://api.github.com/repos/oobabooga/text-generation-webui/releases/latest"
-)
 _TEXTGENWEBUI_RELEASES_URL = "https://github.com/oobabooga/text-generation-webui/releases"
 
 # The real release only ships one narrow ARM build (linux-arm64-cuda13.1) -
@@ -3294,102 +2975,9 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
 def _install_textgenwebui(
     *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
-    import requests
-
-    hw = scan_hardware()
-    platform_tag = _textgenwebui_asset_name(hw)
-    if platform_tag is None:
-        return EngineInstallResult(
-            "textgenwebui",
-            "unsupported_platform",
-            f"No automated installer for {platform.system()}/{platform.machine()} - "
-            f"see {_TEXTGENWEBUI_RELEASES_URL}",
-        )
-
-    try:
-        response = requests.get(_TEXTGENWEBUI_RELEASES_API, timeout=10)
-        response.raise_for_status()
-        assets = response.json().get("assets", [])
-    except (requests.RequestException, ValueError) as e:
-        return EngineInstallResult(
-            "textgenwebui",
-            "failed",
-            f"Could not check for a release: {e}. See {_TEXTGENWEBUI_RELEASES_URL}",
-        )
-
-    match = next(
-        (
-            a
-            for a in assets
-            if platform_tag in a["name"]
-            and a["name"].startswith("textgen-portable-")
-            and "-ik-" not in a["name"]
-        ),
-        None,
-    )
-    if match is None:
-        return EngineInstallResult(
-            "textgenwebui",
-            "failed",
-            f"No release build found for {platform_tag} - see {_TEXTGENWEBUI_RELEASES_URL}",
-        )
-
-    dest_root = engine_install_dir()
-    shortfall = free_space_shortfall(dest_root, 8 * 1024**3, "Installing text-generation-webui")
-    if shortfall is not None:
-        return EngineInstallResult("textgenwebui", "failed", f"{shortfall}. Free up space (or set OMM_HOME to a roomier drive) and retry.")
-    dest_root.mkdir(parents=True, exist_ok=True)
-    archive_path = dest_root / match["name"]
-
-    try:
-        returncode = _stream_subprocess(
-            ["curl", "-fsSL", "-o", str(archive_path), match["browser_download_url"]], on_output
-        )
-    except OSError as e:
-        return EngineInstallResult("textgenwebui", "failed", f"Could not download: {e}")
-
-    if returncode != 0:
-        # As with koboldcpp: curl can exit nonzero after already writing a
-        # partial archive (e.g. a connection dropped mid-transfer). A
-        # truncated archive usually fails to extract anyway, but that's
-        # incidental, not a real safeguard - gate on the returncode
-        # explicitly and never attempt extraction on a known-bad download.
-        archive_path.unlink(missing_ok=True)
-        return EngineInstallResult(
-            "textgenwebui",
-            "failed",
-            f"Download failed (curl exited with code {returncode}). "
-            f"Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
-        )
-
-    if not archive_path.exists():
-        return EngineInstallResult(
-            "textgenwebui",
-            "failed",
-            f"Download did not complete. Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
-        )
-
-    try:
-        _extract_textgenwebui_archive(archive_path, dest_root)
-    except (zipfile.BadZipFile, tarfile.TarError, OSError) as e:
-        return EngineInstallResult(
-            "textgenwebui",
-            "failed",
-            f"Could not extract archive: {e}. Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
-        )
-    finally:
-        archive_path.unlink(missing_ok=True)
-
-    find_textgenwebui_root.cache_clear()
-    if is_textgenwebui_installed():
-        return EngineInstallResult(
-            "textgenwebui", "installed", "text-generation-webui installed successfully."
-        )
     return EngineInstallResult(
-        "textgenwebui",
-        "failed",
-        f"Download and extraction ran but text-generation-webui still isn't detected. "
-        f"Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
+        "textgenwebui", "unsupported_platform",
+        f"Automatic installation is disabled because release artifacts have no pinned SHA-256. Install manually from {_TEXTGENWEBUI_RELEASES_URL}",
     )
 
 

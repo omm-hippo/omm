@@ -1413,6 +1413,11 @@ def test_generate_lmstudio_speed_feeds_tokens_per_second_unmodified(monkeypatch)
     assert quality._tokens_per_second(response) == 50.0
 
 
+def test_tokens_per_second_rejects_too_short_or_implausible_samples():
+    assert quality._tokens_per_second({"eval_count": 1, "eval_duration": 1_000_000}) is None
+    assert quality._tokens_per_second({"eval_count": 64, "eval_duration": 1_000}) is None
+
+
 def test_generate_lmstudio_num_predict_falls_back_to_pack_default(monkeypatch):
     captured = {}
     monkeypatch.setattr(

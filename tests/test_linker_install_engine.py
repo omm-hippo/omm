@@ -54,7 +54,7 @@ def test_install_ollama_linux_reports_failed_when_still_not_detected(monkeypatch
 
     result = linker.install_engine("ollama")
 
-    assert result.status == "failed"
+    assert result.status == "unsupported_platform"
     assert result.key == "ollama"
 
 
@@ -68,8 +68,7 @@ def test_install_ollama_handles_popen_start_failure(monkeypatch):
 
     result = linker.install_engine("ollama")
 
-    assert result.status == "failed"
-    assert "no /bin/sh" in result.message
+    assert result.status == "unsupported_platform"
 
 
 def test_install_ollama_windows_without_winget_is_unsupported(monkeypatch):
@@ -121,7 +120,7 @@ def test_install_ollama_linux_failure_message_includes_manual_link(monkeypatch):
 
     result = linker.install_engine("ollama")
 
-    assert result.status == "failed"
+    assert result.status == "unsupported_platform"
     assert "https://ollama.com/download" in result.message
 
 
@@ -220,14 +219,14 @@ def test_install_lmstudio_linux_reports_failed_when_still_not_detected(monkeypat
 
     result = linker.install_engine("lmstudio")
 
-    assert result.status == "failed"
+    assert result.status == "unsupported_platform"
     assert "lmstudio.ai/download" in result.message
 
 
-def test_install_lmstudio_windows_uses_powershell(monkeypatch):
+def test_install_lmstudio_windows_uses_winget(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
-        linker.shutil, "which", lambda name: "C:\\powershell.exe" if name == "powershell" else None
+        linker.shutil, "which", lambda name: "C:\\winget.exe" if name == "winget" else None
     )
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: True)
     calls = []
@@ -241,8 +240,8 @@ def test_install_lmstudio_windows_uses_powershell(monkeypatch):
     result = linker.install_engine("lmstudio")
 
     assert result.status == "installed"
-    assert calls[0][0] == "C:\\powershell.exe"
-    assert "irm https://lmstudio.ai/install.ps1 | iex" in calls[0]
+    assert calls[0][:3] == ["winget", "install", "-e"]
+    assert "ElementLabs.LMStudio" in calls[0]
 
 
 def test_install_lmstudio_windows_without_powershell_is_unsupported(monkeypatch):
@@ -442,7 +441,7 @@ def test_has_automated_installer_for_anythingllm_windows_x64_only(monkeypatch):
     non-interactive path at all."""
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
     monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
-    assert linker.has_automated_installer("anythingllm") is True
+    assert linker.has_automated_installer("anythingllm") is False
     monkeypatch.setattr(linker.platform, "machine", lambda: "ARM64")
     assert linker.has_automated_installer("anythingllm") is False
     monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
@@ -465,111 +464,6 @@ def test_install_anythingllm_mac_uses_brew_cask(monkeypatch):
 
     assert result.status == "installed"
     assert calls[0] == ["brew", "install", "--cask", "anythingllm"]
-
-
-def _windows_x64(monkeypatch, tmp_path):
-    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
-    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path / "apps")
-    monkeypatch.setattr(linker, "engine_tmp_dir", lambda: tmp_path / "tmp")
-    monkeypatch.setattr(linker, "free_space_shortfall", lambda path, required, what: None)
-
-
-def test_install_anythingllm_windows_downloads_and_runs_nsis_silently(monkeypatch, tmp_path):
-    """Verified live on Windows 11: the vendor installer accepts
-    `/currentuser /S /D=<dir>`; /D= must be last and unquoted, and TEMP
-    must point somewhere with room or the installer exits 2 at once."""
-    _windows_x64(monkeypatch, tmp_path)
-    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
-    installed = {"now": False}
-    monkeypatch.setattr(linker, "is_anythingllm_installed", lambda: installed["now"])
-    calls = []
-
-    def fake_popen(args, **kwargs):
-        calls.append((args, kwargs.get("env")))
-        if isinstance(args, list) and args[0] == "curl":
-            dest = Path(args[args.index("-o") + 1])
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"installer")
-        else:
-            installed["now"] = True
-        return _FakeProc([])
-
-    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
-
-    result = linker.install_engine("anythingllm")
-
-    assert result.status == "installed", result.message
-    curl_args, _ = calls[0]
-    assert curl_args[:2] == ["curl", "-fsSL"] and "cdn.anythingllm.com" in curl_args[2]
-    command, env = calls[1]
-    assert isinstance(command, str)
-    assert command.endswith(f"/currentuser /S /D={tmp_path / 'apps' / 'AnythingLLM'}")
-    assert env["TEMP"] == str(tmp_path / "tmp") and env["TMP"] == str(tmp_path / "tmp")
-    assert not (tmp_path / "tmp" / "AnythingLLMDesktop.exe").exists(), "installer download is cleaned up"
-
-
-def test_install_mstystudio_windows_downloads_and_runs_nsis_silently(monkeypatch, tmp_path):
-    _windows_x64(monkeypatch, tmp_path)
-    monkeypatch.setattr(linker, "is_mstystudio_installed", lambda: True)
-    calls = []
-
-    def fake_popen(args, **kwargs):
-        calls.append(args)
-        if isinstance(args, list) and args[0] == "curl":
-            dest = Path(args[args.index("-o") + 1])
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"installer")
-        return _FakeProc([])
-
-    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
-
-    result = linker.install_engine("mstystudio")
-
-    assert result.status == "installed", result.message
-    assert "next-assets.msty.studio" in calls[0][2]
-    assert calls[1].endswith(f"/D={tmp_path / 'apps' / 'MstyStudio'}")
-
-
-def test_install_windows_direct_refuses_without_free_space_before_downloading(monkeypatch, tmp_path):
-    """The live failure mode: with 0.1 GiB free the NSIS installer exits 2
-    after two seconds leaving an empty folder. Say so up front instead."""
-    _windows_x64(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        linker, "free_space_shortfall",
-        lambda path, required, what: f"{what} needs about 2.5 GiB on D: but only 0.1 GiB is free there",
-    )
-
-    def fail_popen(*args, **kwargs):
-        raise AssertionError("nothing may be downloaded when the disk is full")
-
-    monkeypatch.setattr(linker.subprocess, "Popen", fail_popen)
-
-    result = linker.install_engine("anythingllm")
-
-    assert result.status == "failed"
-    assert "0.1 GiB is free" in result.message
-    assert "OMM_HOME" in result.message
-
-
-def test_install_windows_direct_reports_failed_when_still_not_detected(monkeypatch, tmp_path):
-    _windows_x64(monkeypatch, tmp_path)
-    monkeypatch.setattr(linker, "is_mstystudio_installed", lambda: False)
-
-    def fake_popen(args, **kwargs):
-        if isinstance(args, list) and args[0] == "curl":
-            dest = Path(args[args.index("-o") + 1])
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"installer")
-            return _FakeProc([])
-        return _FakeProc([], returncode=2)
-
-    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
-
-    result = linker.install_engine("mstystudio")
-
-    assert result.status == "failed"
-    assert "code 2" in result.message and "msty.ai" in result.message
 
 
 def test_install_anythingllm_windows_arm_is_unsupported(monkeypatch):
@@ -605,7 +499,7 @@ def test_has_automated_installer_for_mstystudio_windows_x64_only(monkeypatch):
     directly - x64 only. No Linux package manager exists at all."""
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
     monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
-    assert linker.has_automated_installer("mstystudio") is True
+    assert linker.has_automated_installer("mstystudio") is False
     monkeypatch.setattr(linker.platform, "machine", lambda: "ARM64")
     assert linker.has_automated_installer("mstystudio") is False
     monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
@@ -648,45 +542,17 @@ def test_install_mstystudio_linux_is_unsupported(monkeypatch):
     assert result.status == "unsupported_platform"
 
 
-def test_has_automated_installer_true_for_koboldcpp(monkeypatch):
+def test_has_automated_installer_false_for_unverified_koboldcpp(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
-    assert linker.has_automated_installer("koboldcpp") is True
-
-
-def test_has_automated_installer_false_for_koboldcpp_unsupported_platform(monkeypatch):
-    """No koboldcpp build exists for Intel Mac - reuses
-    _KOBOLDCPP_ASSET_BY_PLATFORM directly rather than duplicating the tuple
-    list, so this must return False for any (system, machine) not in it."""
-    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
     assert linker.has_automated_installer("koboldcpp") is False
 
 
-def test_install_koboldcpp_downloads_to_applications_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
-    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path)
+def test_has_automated_installer_false_for_koboldcpp_unsupported_platform(monkeypatch):
+    """No unverified KoboldCpp platform may advertise automation."""
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
-    linker.find_koboldcpp_binary.cache_clear()
-    calls = []
-
-    def fake_popen(args, **kwargs):
-        calls.append(args)
-        # Simulate curl actually creating the file, like the real download would.
-        dest = Path(args[args.index("-o") + 1])
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(b"fake binary")
-        return _FakeProc([])
-
-    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
-
-    result = linker.install_engine("koboldcpp")
-
-    assert result.status == "installed"
-    assert "koboldcpp-mac-arm64" in calls[0][calls[0].index("-o") - 1]
-    assert (tmp_path / "koboldcpp" / "koboldcpp").exists()
-    linker.find_koboldcpp_binary.cache_clear()
+    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
+    assert linker.has_automated_installer("koboldcpp") is False
 
 
 def test_install_koboldcpp_unsupported_arch_is_unsupported_platform(monkeypatch):
@@ -699,57 +565,38 @@ def test_install_koboldcpp_unsupported_arch_is_unsupported_platform(monkeypatch)
     assert "koboldcpp" in result.message.lower()
 
 
-def test_install_koboldcpp_reports_failed_when_still_not_detected(tmp_path, monkeypatch):
-    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
-    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path)
-    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
-    linker.find_koboldcpp_binary.cache_clear()
-    # curl "succeeds" (no exception) but never actually writes the file -
-    # simulates a network failure that curl itself doesn't turn into an OSError.
-    monkeypatch.setattr(linker.subprocess, "Popen", lambda *a, **k: _FakeProc([]))
-
-    result = linker.install_engine("koboldcpp")
-
-    assert result.status == "failed"
-    linker.find_koboldcpp_binary.cache_clear()
-
-
-def test_install_koboldcpp_truncated_download_is_cleaned_up_and_reported_failed(tmp_path, monkeypatch):
-    """Reproduces the reviewer's live-verified bug: curl can write a
-    partial file and still exit nonzero (e.g. a mid-transfer timeout
-    against the real koboldcpp asset). That partial file's name alone
-    satisfies is_koboldcpp_installed()'s detection, so a truncated/corrupt
-    binary must never reach that check - it must be deleted and reported
-    "failed" first."""
-    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
-    monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path)
+def test_has_automated_installer_false_for_unverified_textgenwebui(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
-    linker.find_koboldcpp_binary.cache_clear()
-
-    def fake_stream_subprocess(args, on_output):
-        dest = Path(args[args.index("-o") + 1])
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(b"partial-truncated-bytes")  # far short of a real binary
-        return 18  # curl's real "transfer closed with outstanding read data" code
-
-    monkeypatch.setattr(linker, "_stream_subprocess", fake_stream_subprocess)
-
-    result = linker.install_engine("koboldcpp")
-
-    assert result.status == "failed"
-    assert not (tmp_path / "koboldcpp" / "koboldcpp").exists()
-    linker.find_koboldcpp_binary.cache_clear()
+    assert linker.has_automated_installer("textgenwebui") is False
 
 
-def test_has_automated_installer_true_for_textgenwebui(monkeypatch):
-    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
-    assert linker.has_automated_installer("textgenwebui") is True
-    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
-    assert linker.has_automated_installer("textgenwebui") is True
+@pytest.mark.parametrize(
+    ("engine", "system", "machine"),
+    [
+        ("anythingllm", "Windows", "AMD64"),
+        ("mstystudio", "Windows", "AMD64"),
+        ("koboldcpp", "Darwin", "arm64"),
+        ("textgenwebui", "Linux", "x86_64"),
+    ],
+)
+def test_unverified_engine_installers_fail_closed_without_execution(
+    engine, system, machine, monkeypatch
+):
+    monkeypatch.setattr(linker.platform, "system", lambda: system)
+    monkeypatch.setattr(linker.platform, "machine", lambda: machine)
+    monkeypatch.setattr(
+        linker.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unverified installer must not execute")
+        ),
+    )
+
+    result = linker.install_engine(engine)
+
+    assert result.status == "unsupported_platform"
+    assert "manually" in result.message.lower()
 
 
 def test_has_automated_installer_false_for_textgenwebui_on_arm_linux(monkeypatch):
@@ -1027,6 +874,7 @@ def test_extract_textgenwebui_rejects_empty_archive(tmp_path):
     assert list(dest_dir.iterdir()) == []
 
 
+@pytest.mark.skip(reason="mutable release-asset installer path was removed")
 def test_install_textgenwebui_rejects_malicious_archive_and_cleans_download(
     monkeypatch, tmp_path
 ):
@@ -1074,6 +922,7 @@ def test_install_textgenwebui_rejects_malicious_archive_and_cleans_download(
     assert list(install_dir.iterdir()) == []
 
 
+@pytest.mark.skip(reason="mutable release-asset installer path was removed")
 def test_install_textgenwebui_picks_cpu_variant_with_no_gpu(monkeypatch, tmp_path):
     from omm.hardware import HardwareInfo
 
@@ -1137,6 +986,7 @@ def test_install_textgenwebui_picks_cpu_variant_with_no_gpu(monkeypatch, tmp_pat
     linker.find_textgenwebui_root.cache_clear()
 
 
+@pytest.mark.skip(reason="mutable release-asset installer path was removed")
 def test_install_textgenwebui_picks_cuda_variant_with_nvidia_gpu(monkeypatch, tmp_path):
     from omm.hardware import HardwareInfo
 
@@ -1195,6 +1045,7 @@ def test_install_textgenwebui_picks_cuda_variant_with_nvidia_gpu(monkeypatch, tm
     linker.find_textgenwebui_root.cache_clear()
 
 
+@pytest.mark.skip(reason="mutable release-asset installer path was removed")
 def test_install_textgenwebui_mac_uses_arch_specific_asset(monkeypatch, tmp_path):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(linker.platform, "machine", lambda: "arm64")
@@ -1239,6 +1090,7 @@ def test_install_textgenwebui_mac_uses_arch_specific_asset(monkeypatch, tmp_path
     linker.find_textgenwebui_root.cache_clear()
 
 
+@pytest.mark.skip(reason="mutable release-asset installer path was removed")
 def test_install_textgenwebui_reports_failed_when_asset_not_found(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
     monkeypatch.setattr(linker.platform, "machine", lambda: "x86_64")
@@ -1294,6 +1146,7 @@ def test_install_textgenwebui_arm_windows_is_unsupported_platform_without_networ
     assert "text-generation-webui/releases" in result.message
 
 
+@pytest.mark.skip(reason="mutable release-asset installer path was removed")
 def test_install_textgenwebui_truncated_download_is_cleaned_up_and_reported_failed(monkeypatch, tmp_path):
     """Same class of bug as koboldcpp's (finding 1): curl can write a
     partial archive and still exit nonzero. A truncated archive usually

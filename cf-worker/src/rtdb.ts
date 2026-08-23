@@ -91,17 +91,30 @@ async function getAccessToken(serviceAccount: ServiceAccount): Promise<string> {
   return fetchAccessToken(serviceAccount);
 }
 
-export async function writeTelemetryEvent(
+export async function writeEventOnce(
   serviceAccount: ServiceAccount,
   databaseUrl: string,
+  node: "telemetry" | "error_reports",
+  eventId: string,
   event: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; body: string }> {
   const accessToken = await getAccessToken(serviceAccount);
-  const response = await fetch(`${databaseUrl}/telemetry.json`, {
-    method: "POST",
+  return putEventOnce(accessToken, databaseUrl, node, eventId, event);
+}
+
+export async function putEventOnce(
+  accessToken: string,
+  databaseUrl: string,
+  node: "telemetry" | "error_reports",
+  eventId: string,
+  event: Record<string, unknown>,
+): Promise<{ ok: boolean; status: number; body: string }> {
+  const response = await fetch(`${databaseUrl}/${node}/${eventId}.json`, {
+    method: "PUT",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${accessToken}`,
+      "if-match": "null_etag",
     },
     body: JSON.stringify(event),
   });

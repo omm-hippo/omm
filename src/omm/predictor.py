@@ -191,6 +191,7 @@ def fetch_and_cache_model(
     validate_model_artifact(artifact)
     if bool(manifest_url) != bool(public_key):
         raise ValueError("catalog manifest URL and public key must be configured together")
+    manifest = None
     if manifest_url and public_key:
         manifest_response = requests.get(manifest_url, timeout=15)
         manifest_response.raise_for_status()
@@ -202,10 +203,23 @@ def fetch_and_cache_model(
     # Never preserve a corrupted cache in catalog history.  A failed or
     # malformed prior cache is left untouched, but is not treated as a snapshot.
     if load_cached_model() is not None:
-        catalog.archive_current_artifact(artifact_path=RECOMMEND_MODEL_PATH)
+        catalog.archive_current_artifact(
+            artifact_path=RECOMMEND_MODEL_PATH,
+            require_signed=bool(manifest_url and public_key),
+        )
     RECOMMEND_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     with locked(RECOMMEND_MODEL_PATH):
         atomic_write_text(RECOMMEND_MODEL_PATH, json.dumps(artifact) + "\n")
+        provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
+            RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
+        )
+        if manifest is not None and public_key is not None:
+            atomic_write_text(
+                provenance_path,
+                json.dumps({"manifest": manifest, "public_key": public_key}, sort_keys=True) + "\n",
+            )
+        else:
+            provenance_path.unlink(missing_ok=True)
     return artifact
 
 

@@ -444,7 +444,7 @@ antivirus for omm.
 ## Self-hosted benchmark data
 
 Benchmark results are never uploaded without explicit per-run consent or an
-`always` policy. New installations include the hosted Firebase endpoint as the
+`always` policy. New installations use the hosted proof-of-work gateway as the
 default destination, while existing local-only configurations stay local. To
 run the bundled FastAPI + SQLite collector instead:
 
@@ -461,6 +461,10 @@ Explicitly configure the endpoint and opt in before uploading:
 omm setting telemetry --endpoint http://127.0.0.1:8000/v1/benchmarks
 omm setting upload --enable
 ```
+
+Loopback ingestion needs no token. If the collector listens on a non-loopback
+interface, set the same `LOCALFIT_INGEST_TOKEN` on both the server and the omm
+client; remote ingestion fails closed when it is missing.
 
 Training can consume the authenticated export directly:
 

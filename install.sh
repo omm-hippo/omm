@@ -500,6 +500,7 @@ ensure_pipx_bin_path() {
                 # Escape the two characters that could change the shell
                 # assignment while preserving the literal $PATH expansion.
                 shell_path=$(printf '%s' "$PIPX_BIN_DIR" | sed 's/[\\"]/\\&/g')
+                # shellcheck disable=SC2016  # $PATH must stay literal in the profile entry.
                 if ! printf '\n# Added by omm installer for pipx applications.\nexport PATH="%s:$PATH"\n' \
                     "$shell_path" >> "$zprofile"; then
                     echo "Cannot configure zsh PATH in $zprofile." >&2
@@ -580,23 +581,26 @@ head_commit=$(git -C "$STAGING_DIR" rev-parse HEAD)
 # doesn't trust and the real signature is one hop down, on the PR branch
 # tip - when the direct check fails.
 if verify_commit_signature "$head_commit" "$STAGING_DIR" quiet; then
-    verified=1
+    verified_commit="$head_commit"
 else
     resolved_commit=$(signing_commit "$head_commit" "$STAGING_DIR")
     if [ "$resolved_commit" != "$head_commit" ] && verify_commit_signature "$resolved_commit" "$STAGING_DIR"; then
-        verified=1
+        verified_commit="$resolved_commit"
     elif [ "$resolved_commit" = "$head_commit" ] && verify_commit_signature "$head_commit" "$STAGING_DIR"; then
-        verified=1
+        verified_commit="$head_commit"
     else
-        verified=0
+        verified_commit=""
     fi
 fi
-if [ "$verified" != "1" ]; then
+if [ -z "$verified_commit" ]; then
     rm -rf "$STAGING_DIR"
     echo "Signature verification failed - refusing to install untrusted code." >&2
     exit 1
 fi
-SRC_DIR="$SOURCES_DIR/$head_commit"
+if [ "$verified_commit" != "$head_commit" ]; then
+    git -C "$STAGING_DIR" checkout --detach --quiet "$verified_commit"
+fi
+SRC_DIR="$SOURCES_DIR/$verified_commit"
 if [ -d "$SRC_DIR" ]; then
     rm -rf "$STAGING_DIR"
 else
@@ -611,7 +615,7 @@ fi
 # NVIDIA VRAM detection is dead weight on Mac (no NVIDIA GPUs since 2016) -
 # only pull that extra in on other platforms.
 if command -v nvidia-smi >/dev/null 2>&1; then
-    INSTALL_SPEC="$SRC_DIR[nvidia]"
+    INSTALL_SPEC="${SRC_DIR}[nvidia]"
 else
     INSTALL_SPEC="$SRC_DIR"
 fi

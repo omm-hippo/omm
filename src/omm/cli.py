@@ -196,11 +196,12 @@ _JSON_CAPABLE = {
     "scan",
     "recommend",
     "doctor",
+    "fit",
 }
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
-_YES_CAPABLE = {"install", "import", "uninstall", "upgrade", "contribute", "recommend"}
+_YES_CAPABLE = {"install", "import", "uninstall", "upgrade", "contribute", "recommend", "benchmark"}
 
 
 def _global_opts() -> GlobalOptions:
@@ -619,7 +620,7 @@ def _root(
     # not send queued telemetry before the requested mutation takes effect.
     if ctx.invoked_subcommand != "setting":
         resent = telemetry.flush_pending()
-        if resent:
+        if resent and not (opts.json or opts.quiet):
             err_console.print(
                 f"[muted]Sent {resent} queued telemetry event(s) "
                 "from a previous session.[/muted]"
@@ -628,7 +629,7 @@ def _root(
         # queue deliberately waits for the next `omm contribute`, which is
         # the one place the user is asked about error reports.
         reported = error_report.flush_pending()
-        if reported:
+        if reported and not (opts.json or opts.quiet):
             err_console.print(
                 f"[muted]Sent {reported} queued error report(s) "
                 "from a previous session.[/muted]"
@@ -2230,10 +2231,20 @@ def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedPr
     # Verified against the *currently running* omm's own bundled anchor
     # (the old, already-vetted install) - not tmp_dir's own copy, which an
     # attacker with push access could have edited in the same commit.
-    ok, message = trust.verify_commit(tmp_dir, head.stdout.strip(), trust.current_trust_anchor())
-    if not ok:
+    verified_commit, message = trust.verified_install_commit(
+        tmp_dir, head.stdout.strip(), trust.current_trust_anchor()
+    )
+    if verified_commit is None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
+    if verified_commit != head.stdout.strip():
+        checkout = subprocess.run(
+            ["git", "-C", str(tmp_dir), "checkout", "--detach", "--quiet", verified_commit],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+        )
+        if checkout.returncode != 0:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return checkout
 
     backup_dir = SRC_DIR.with_name(
         f"{SRC_DIR.name}.previous-{os.getpid()}-{time.time_ns()}"
@@ -4048,11 +4059,16 @@ def _install_impl(
                 )
 
     downloaded_now = False
-    expected_sha256 = (
+    expected_sha256 = resolved.expected_sha256 or (
         remote_file_sha256(provider, repo_id, filename)
         if resolved.provider and repo_id
         else None
     )
+    if resolved.provider and repo_id and expected_sha256 is None:
+        raise DownloadError(
+            f"{provider} did not provide a SHA-256 digest for {filename}; "
+            "refusing an unverifiable download."
+        )
     if dest.exists() and not force:
         existing_sha256 = sha256_file(dest)
         if expected_sha256 is not None and existing_sha256 != expected_sha256:
@@ -6138,7 +6154,12 @@ def catalog_status() -> None:
 def catalog_rollback() -> None:
     """Restore the most recent different recommendation snapshot."""
     try:
-        selected = catalog.rollback()
+        current = load_config()
+        selected = catalog.rollback(
+            require_signed=bool(
+                current.get("catalog_manifest_url") and current.get("catalog_public_key")
+            )
+        )
     except (OSError, ValueError) as error:
         err_console.print(f"[error]Catalog rollback failed: {error}[/error]")
         raise typer.Exit(1) from error
@@ -6819,8 +6840,11 @@ def benchmark_cmd(
             "one of them, start it once, then retry `omm benchmark`.[/error]"
         )
         raise typer.Exit(1)
-    _print_engine_selection_notice(engine)
-    engine, started_daemon = _ensure_engine_running(engine, "benchmark")
+    if not json_output:
+        _print_engine_selection_notice(engine)
+    engine, started_daemon = _ensure_engine_running(
+        engine, "benchmark", assume_yes=_global_opts().yes
+    )
     daemon_ref = {"proc": started_daemon}
     lmstudio_models: dict[str, dict] | None = None
     if engine == "lmstudio":
@@ -6830,7 +6854,7 @@ def benchmark_cmd(
             if not models:
                 err_console.print("[error]No models are installed in LM Studio to benchmark.[/error]")
                 raise typer.Exit(1)
-            if not _global_opts().quiet:
+            if not (_global_opts().quiet or json_output):
                 console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
         unknown = [m for m in models if m not in installed]
         if unknown:
@@ -6846,7 +6870,7 @@ def benchmark_cmd(
             if not models:
                 err_console.print("[error]No models are installed in Ollama to benchmark.[/error]")
                 raise typer.Exit(1)
-            if not _global_opts().quiet:
+            if not (_global_opts().quiet or json_output):
                 console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
         _guard_benchmark_models(models)
     if output is None:
@@ -6855,7 +6879,8 @@ def benchmark_cmd(
     # Advisory only: `omm benchmark` records evidence the caller reads and may
     # upload, so a busy machine is worth saying out loud before the run rather
     # than leaving it invisible in a number that looks tight.
-    _background_cpu_load_is_high()
+    if not json_output:
+        _background_cpu_load_is_high()
     try:
         try:
             with Progress(
@@ -6863,7 +6888,7 @@ def benchmark_cmd(
                 TextColumn("[accent]{task.description}[/accent]"),
                 TimeElapsedColumn(),
                 console=console,
-                disable=_global_opts().quiet,
+                disable=_global_opts().quiet or json_output,
             ) as progress:
                 task_id = progress.add_task(
                     f"Benchmarking ({len(models)} model(s))...", total=len(models)
@@ -6877,7 +6902,8 @@ def benchmark_cmd(
                     )
 
                 def _on_daemon_event(message: str) -> None:
-                    progress.console.print(f"[warning]{message}[/warning]")
+                    if not json_output:
+                        progress.console.print(f"[warning]{message}[/warning]")
 
                 report = quality_mod.collect_evidence(
                     models,
@@ -6902,7 +6928,7 @@ def benchmark_cmd(
         performance_unfit = [m for m in report["models"] if m.get("outcome") == "performance_unfit"]
         transient = [m for m in report["models"] if m.get("outcome") == "transient_error"]
 
-        if successes:
+        if successes and not json_output:
             table = _table(title="Localfit reproducible quality evidence")
             table.add_column("Model", style="accent")
             table.add_column("Parameters")
@@ -6923,18 +6949,18 @@ def benchmark_cmd(
                 )
             console.print(table)
 
-        for entry in model_unfit:
+        for entry in model_unfit if not json_output else ():
             err_console.print(
                 f"[warning]{entry['tag']}: doesn't fit this hardware "
                 f"({entry.get('failure_reason', 'unknown')})[/warning]"
             )
-        for entry in performance_unfit:
+        for entry in performance_unfit if not json_output else ():
             err_console.print(
                 f"[error]{entry['tag']}: confirmed twice that generation exceeds the "
                 f"timeout on this hardware - performance_unfit "
                 f"({entry.get('failure_reason', 'unknown')})[/error]"
             )
-        for entry in transient:
+        for entry in transient if not json_output else ():
             reason = entry.get("failure_reason", "unknown")
             err_console.print(
                 f"[warning]{entry['tag']}: temporary error, not a hardware verdict ({reason})[/warning]"
@@ -6943,16 +6969,22 @@ def benchmark_cmd(
             if hint:
                 err_console.print(f"  [muted]{hint}[/muted]")
 
-        console.print(f"[success]Saved reproducible local evidence to {output}.[/success]")
-        console.print(
-            "[muted]No generated text is stored. v8 telemetry includes a CPU/GPU "
-            "generation score (never the model name), plus CPU architecture and "
-            "core counts. aggregate numbers may be shared below. Not a "
-            "leaderboard.[/muted]"
+        if not json_output:
+            console.print(f"[success]Saved reproducible local evidence to {output}.[/success]")
+            console.print(
+                "[muted]No generated text is stored. v8 telemetry includes a CPU/GPU "
+                "generation score (never the model name), plus CPU architecture and "
+                "core counts. aggregate numbers may be shared below. Not a "
+                "leaderboard.[/muted]"
+            )
+        should_upload = (
+            load_config().get("telemetry_send_policy") == "always"
+            if json_output
+            else _resolve_upload_decision(
+                "Send these benchmark results to the server to help train the recommendation model?"
+            )
         )
-        if _resolve_upload_decision(
-            "Send these benchmark results to the server to help train the recommendation model?"
-        ):
+        if should_upload:
             registry_entries = registry.load_registry()
             for model in successes:
                 entry = next(
@@ -6994,14 +7026,15 @@ def benchmark_cmd(
             for entry in model_unfit + performance_unfit + transient:
                 _report_failure_telemetry(entry, report.get("environment", {}))
 
-        console.print(
-            f"[bold]Summary:[/bold] {len(successes)} succeeded, "
-            f"{len(model_unfit)} model_unfit, {len(performance_unfit)} performance_unfit, "
-            f"{len(transient)} transient_error",
-            highlight=False,
-        )
         if json_output:
             console.print_json(data=report)
+        else:
+            console.print(
+                f"[bold]Summary:[/bold] {len(successes)} succeeded, "
+                f"{len(model_unfit)} model_unfit, {len(performance_unfit)} performance_unfit, "
+                f"{len(transient)} transient_error",
+                highlight=False,
+            )
         if not successes:
             raise typer.Exit(1)
     finally:

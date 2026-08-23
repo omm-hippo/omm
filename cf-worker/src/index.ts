@@ -1,6 +1,6 @@
-import { isTimestampFresh, verifyProofOfWork } from "./pow";
-import { validateTelemetryEvent } from "./validate";
-import { writeTelemetryEvent, type ServiceAccount } from "./rtdb";
+import { isTimestampFresh, proofDigest, verifyProofOfWork } from "./pow";
+import { validateErrorReport, validateTelemetryEvent } from "./validate";
+import { writeEventOnce, type ServiceAccount } from "./rtdb";
 
 export interface Env {
   POW_DIFFICULTY_PREFIX_LENGTH: string;
@@ -53,7 +53,12 @@ function loadServiceAccount(raw: string): ServiceAccount {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method !== "POST" || url.pathname !== "/telemetry") {
+    const node = url.pathname === "/telemetry"
+      ? "telemetry"
+      : url.pathname === "/error-report"
+        ? "error_reports"
+        : null;
+    if (request.method !== "POST" || node === null) {
       return json({ error: "not found" }, 404);
     }
 
@@ -89,7 +94,9 @@ export default {
       return json({ error: "event must be a JSON object" }, 400);
     }
 
-    const result = validateTelemetryEvent(event as Record<string, unknown>);
+    const result = node === "telemetry"
+      ? validateTelemetryEvent(event as Record<string, unknown>)
+      : validateErrorReport(event as Record<string, unknown>);
     if (!result.valid) {
       return json({ error: result.reason ?? "invalid event" }, 400);
     }
@@ -102,17 +109,18 @@ export default {
     }
 
     try {
-      const write = await writeTelemetryEvent(serviceAccount, env.RTDB_DATABASE_URL, event as Record<string, unknown>);
+      const eventId = await proofDigest(eventJson, timestamp, nonce);
+      const write = await writeEventOnce(
+        serviceAccount, env.RTDB_DATABASE_URL, node, eventId,
+        event as Record<string, unknown>,
+      );
+      if (write.status === 412) {
+        return json({ error: "proof already used" }, 409);
+      }
       if (!write.ok) {
         return json({ error: "upstream write failed" }, 502);
       }
-      let id: string | undefined;
-      try {
-        id = (JSON.parse(write.body) as { name?: string }).name;
-      } catch {
-        // Non-fatal - the write itself already succeeded.
-      }
-      return json({ ok: true, id }, 200);
+      return json({ ok: true, id: eventId }, 200);
     } catch {
       return json({ error: "upstream write failed" }, 502);
     }

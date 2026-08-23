@@ -88,6 +88,8 @@ FAILURE_REASONS = MODEL_UNFIT_REASONS | TRANSIENT_ERROR_REASONS | PERFORMANCE_UN
 # events record this exact value as timeout_seconds - it must never be
 # shortened to manufacture a timeout.
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 180
+MIN_TIMED_TOKENS = 2
+MAX_PLAUSIBLE_TOKENS_PER_SECOND = 100_000.0
 # If the daemon is found dead partway through a multi-model collect_evidence
 # run, give up after this many consecutive failed restart attempts rather
 # than burning a full DEFAULT_GENERATION_TIMEOUT_SECONDS per remaining
@@ -857,12 +859,14 @@ def _tokens_per_second(response: dict) -> float | None:
     if (
         isinstance(count, int)
         and not isinstance(count, bool)
-        and count > 0
+        and count >= MIN_TIMED_TOKENS
         and isinstance(duration, int)
         and not isinstance(duration, bool)
         and duration > 0
     ):
-        return count / (duration / 1_000_000_000)
+        speed = count / (duration / 1_000_000_000)
+        if math.isfinite(speed) and speed <= MAX_PLAUSIBLE_TOKENS_PER_SECOND:
+            return speed
     return None
 
 

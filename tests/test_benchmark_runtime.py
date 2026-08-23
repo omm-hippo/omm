@@ -85,3 +85,30 @@ def test_start_failure_keeps_original_reason(monkeypatch):
 
     assert benchmark.start_ollama_daemon() is None
     assert "driver initialization failed" in (benchmark.last_daemon_start_error() or "")
+
+
+def test_one_token_or_implausible_timing_is_not_a_speed_measurement(monkeypatch):
+    monkeypatch.setattr(benchmark, "ollama_daemon_reachable", lambda: True)
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    import requests
+
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: Response({"eval_count": 1, "eval_duration": 1_000}),
+    )
+    assert benchmark.benchmark_ollama("model") == 0.0
+
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: Response({"eval_count": 64, "eval_duration": 1_000}),
+    )
+    assert benchmark.benchmark_ollama("model") == 0.0

@@ -244,6 +244,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     )
 
     linked = {spec.key: False for spec in linker.ENGINES}
+    adopted_links: list[str] = []
     bytes_saved = 0
     discovered_ollama_runtime_name = next(
         (
@@ -270,7 +271,24 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
         hub_path = MODELS_DIR / filename
         if hub_path.exists():
             hub_path = MODELS_DIR / f"{group.sha256[:12]}-{filename}"
-        shutil.move(str(preferred.path), str(hub_path))
+        quarantine = preferred.path.with_name(
+            f".{preferred.path.name}.omm-import-{uuid.uuid4().hex}"
+        )
+        preferred.path.replace(quarantine)
+        try:
+            if quarantine.is_symlink() or not quarantine.is_file():
+                raise linker.LinkError(
+                    f"Refusing to import changed or non-regular file at {preferred.path}."
+                )
+            if sha256_file(quarantine) != group.sha256:
+                raise linker.LinkError(
+                    f"Refusing to import file changed after scan at {preferred.path}."
+                )
+            shutil.move(str(quarantine), str(hub_path))
+        except Exception:
+            if quarantine.exists() or quarantine.is_symlink():
+                quarantine.replace(preferred.path)
+            raise
 
     # hub_path is fixed for the rest of this call - hash it at most once
     # (lazily, only if a real duplicate location actually needs the
@@ -297,6 +315,10 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             try:
                 # `group.sha256` came from the earlier scan, so re-hash the
                 # exact quarantined file at this destructive boundary.
+                if quarantine.is_symlink() or not quarantine.is_file():
+                    raise linker.LinkError(
+                        f"Refusing to replace changed or non-regular duplicate at {loc.path}."
+                    )
                 if sha256_file(quarantine) != hub_path_sha256():
                     raise linker.LinkError(
                         f"Refusing to replace changed unowned duplicate at {loc.path}."
@@ -313,6 +335,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
                 quarantine.unlink()
         else:
             linker.link_file(hub_path, loc.path)
+        adopted_links.append(str(loc.path))
         if was_real_file:
             bytes_saved += loc.size_bytes
         if loc.engine in linked:
@@ -348,7 +371,9 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             link_warnings.append(f"{spec.label} link skipped: {e}")
 
     if existing_filename:
-        fields: dict[str, object] = {"linked": linked}
+        custom_links = list(reg[existing_filename].get("custom_links") or [])
+        custom_links.extend(path for path in adopted_links if path not in custom_links)
+        fields: dict[str, object] = {"linked": linked, "custom_links": custom_links}
         if ollama_runtime_name:
             fields["ollama_runtime_name"] = ollama_runtime_name
         registry.upsert_entry(existing_filename, **fields)
@@ -362,6 +387,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             ollama_name=ollama_tag,
             repo_id=None,
             linked=linked,
+            custom_links=adopted_links,
         )
         if ollama_runtime_name:
             fields["ollama_runtime_name"] = ollama_runtime_name

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from omm import linker, registry, scan_import
+from omm import cli, linker, registry, scan_import
 
 
 def _mock_symlinks(monkeypatch) -> set[Path]:
@@ -241,7 +241,7 @@ def test_adopt_group_merges_duplicate_across_engines_and_reports_saved_bytes(iso
     lmstudio_path.write_bytes(payload)
 
     group = scan_import.ModelGroup(
-        sha256="deadbeef",
+        sha256=scan_import.sha256_file(ollama_path),
         locations=[
             scan_import.ExternalGguf("ollama", "llama3:latest", ollama_path, len(payload), "deadbeef"),
             scan_import.ExternalGguf("lmstudio", "model.gguf", lmstudio_path, len(payload), "deadbeef"),
@@ -258,10 +258,55 @@ def test_adopt_group_merges_duplicate_across_engines_and_reports_saved_bytes(iso
     assert result.bytes_saved == len(payload)  # one of the two copies reclaimed
 
     entry = registry.load_registry()["model.gguf"]
-    assert entry["sha256"] == "deadbeef"
+    assert entry["sha256"] == scan_import.sha256_file(hub_path)
     assert entry["linked"] == _all_linked(lmstudio=True, ollama=True)
     assert entry["ollama_name"] == "model"
     assert entry["ollama_runtime_name"] == "llama3:latest"
+
+
+def test_adopt_group_rejects_primary_bytes_changed_after_scan(isolated_omm_home, tmp_path):
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"scanned bytes")
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "lmstudio", "model.gguf", external, external.stat().st_size, digest
+            )
+        ],
+    )
+    external.write_bytes(b"replacement bytes")
+
+    with pytest.raises(linker.LinkError, match="changed after scan"):
+        scan_import.adopt_group(group)
+
+    assert external.read_bytes() == b"replacement bytes"
+    assert not list(tmp_path.glob(".model.gguf.omm-import-*"))
+
+
+def test_adopt_group_rejects_primary_swapped_to_symlink(isolated_omm_home, tmp_path):
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"scanned bytes")
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "lmstudio", "model.gguf", external, external.stat().st_size, digest
+            )
+        ],
+    )
+    target = tmp_path / "attacker-target.gguf"
+    target.write_bytes(b"scanned bytes")
+    external.unlink()
+    external.symlink_to(target)
+
+    with pytest.raises(linker.LinkError, match="non-regular"):
+        scan_import.adopt_group(group)
+
+    assert external.is_symlink()
+    assert target.read_bytes() == b"scanned bytes"
 
 
 def test_adopt_group_links_into_other_installed_engines_beyond_discovery_location(
@@ -277,7 +322,7 @@ def test_adopt_group_links_into_other_installed_engines_beyond_discovery_locatio
     lmstudio_path.write_bytes(payload)
 
     group = scan_import.ModelGroup(
-        sha256="feedface",
+        sha256=scan_import.sha256_file(lmstudio_path),
         locations=[scan_import.ExternalGguf("lmstudio", "model.gguf", lmstudio_path, len(payload), "feedface")],
     )
 
@@ -296,6 +341,29 @@ def test_adopt_group_links_into_other_installed_engines_beyond_discovery_locatio
     entry = registry.load_registry()["model.gguf"]
     assert entry["linked"] == _all_linked(lmstudio=True, ollama=True)
     assert result.link_warnings == []
+
+
+def test_uninstall_removes_the_import_replacement_link(isolated_omm_home, tmp_path):
+    payload = b"import then uninstall"
+    external = tmp_path / "model.gguf"
+    external.write_bytes(payload)
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "lmstudio", "model.gguf", external, len(payload), digest
+            )
+        ],
+    )
+    result = scan_import.adopt_group(group)
+    entry = registry.load_registry()[result.filename]
+    assert str(external) in entry["custom_links"]
+
+    cli._remove_one(result.filename, entry)
+
+    assert not external.exists() and not external.is_symlink()
+    assert result.filename not in registry.load_registry()
 
 
 def test_adopt_group_reuses_existing_hub_copy_for_same_hash(isolated_omm_home, tmp_path):

@@ -22,6 +22,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.progress import (
@@ -61,6 +62,20 @@ class DownloadCancelled(DownloadError):
 
 class InsufficientDiskSpaceError(DownloadError):
     pass
+
+
+def _https_get(url: str, **kwargs):
+    """GET without permitting an HTTPS request to downgrade on redirect."""
+    import requests
+
+    if urlparse(url).scheme.lower() != "https":
+        raise DownloadError(f"Refusing non-HTTPS download URL: {url}")
+    response = requests.get(url, **kwargs)
+    final_url = str(getattr(response, "url", url))
+    if urlparse(final_url).scheme.lower() != "https":
+        response.close()
+        raise DownloadError(f"Refusing HTTPS-to-HTTP download redirect: {final_url}")
+    return response
 
 
 def _replace_with_retry(part_path: Path, dest: Path, attempts: int = 8) -> None:
@@ -277,7 +292,7 @@ def _probe_range_support(url: str) -> tuple[int, bool, str | None]:
     import requests
 
     try:
-        resp = requests.get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=30)
+        resp = _https_get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=30)
     except requests.RequestException:
         return 0, False, None
     strong_etag = _strong_etag(resp.headers)
@@ -315,7 +330,7 @@ def _download_range_worker(
 
     resp = None
     try:
-        resp = requests.get(
+        resp = _https_get(
             url,
             headers={
                 "Range": f"bytes={resume_offset}-{end}",
@@ -556,7 +571,7 @@ def _download_single_stream(
         if resume_pos
         else {}
     )
-    resp = requests.get(url, headers=headers, stream=True, timeout=30)
+    resp = _https_get(url, headers=headers, stream=True, timeout=30)
 
     if resume_pos and resp.status_code == 200:
         resume_pos = 0

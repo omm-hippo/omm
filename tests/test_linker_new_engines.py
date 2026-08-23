@@ -595,6 +595,28 @@ def test_find_koboldcpp_binary_returns_none_when_absent(tmp_path, monkeypatch):
     assert linker.koboldcpp_models_dir() is None
 
 
+def test_engine_discovery_ignores_unapproved_and_symlinked_roots(tmp_path, monkeypatch):
+    managed = tmp_path / "omm-owned"
+    managed.mkdir()
+    unapproved = tmp_path / "Downloads"
+    unapproved.mkdir()
+    (unapproved / "koboldcpp-malicious").write_bytes(b"x")
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: managed)
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [])
+
+    assert linker.find_koboldcpp_binary() is None
+
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    (real_root / "koboldcpp-malicious").write_bytes(b"x")
+    symlinked_root = tmp_path / "symlinked-root"
+    symlinked_root.symlink_to(real_root, target_is_directory=True)
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: symlinked_root)
+    linker.find_koboldcpp_binary.cache_clear()
+
+    assert linker.find_koboldcpp_binary() is None
+
+
 def test_koboldcpp_models_dir_is_sibling_of_binary(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
     binary = tmp_path / "koboldcpp-mac-arm64"

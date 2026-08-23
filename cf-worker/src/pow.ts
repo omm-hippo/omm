@@ -47,3 +47,11 @@ export async function verifyProofOfWork(
   const hash = await sha256Hex(`${eventJson}:${timestamp}:${nonce}`);
   return hash.startsWith("0".repeat(difficultyPrefixLength));
 }
+
+export async function proofDigest(
+  eventJson: string,
+  timestamp: number,
+  nonce: number,
+): Promise<string> {
+  return sha256Hex(`${eventJson}:${timestamp}:${nonce}`);
+}

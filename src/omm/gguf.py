@@ -41,6 +41,30 @@ def _read_exact(f: BinaryIO, size: int) -> bytes:
     return value
 
 
+def _skip_exact(f: BinaryIO, size: int) -> None:
+    """Advance exactly ``size`` bytes without allocating ``size`` bytes."""
+    if size < 0:
+        raise struct.error("cannot skip a negative GGUF metadata size")
+    try:
+        start = f.tell()
+        end = f.seek(0, io.SEEK_END)
+        if end - start < size:
+            f.seek(start)
+            raise struct.error(
+                f"GGUF metadata ended early (wanted to skip {size} bytes, found {end - start})"
+            )
+        f.seek(start + size)
+        return
+    except (AttributeError, OSError, io.UnsupportedOperation):
+        pass
+    remaining = size
+    while remaining:
+        chunk = f.read(min(remaining, 1024 * 1024))
+        if not chunk:
+            raise struct.error(f"GGUF metadata ended early (wanted to skip {size} bytes)")
+        remaining -= len(chunk)
+
+
 def _unpack(f: BinaryIO, fmt: str):
     return struct.unpack(fmt, _read_exact(f, struct.calcsize(fmt)))[0]
 
@@ -70,7 +94,7 @@ def _skip_value(f: BinaryIO, value_type: int) -> None:
         if length > _MAX_ARRAY_ITEMS:
             raise ValueError(f"GGUF metadata array is unreasonably large ({length} items)")
         if elem_type in _SCALAR_FORMATS:
-            _read_exact(f, struct.calcsize(_SCALAR_FORMATS[elem_type]) * length)
+            _skip_exact(f, struct.calcsize(_SCALAR_FORMATS[elem_type]) * length)
             return
         for _ in range(length):
             _skip_value(f, elem_type)

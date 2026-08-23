@@ -11,7 +11,7 @@ from omm.hub import ResolvedModel
 runner = CliRunner()
 
 TELEMETRY_URL = "https://localfit-8ab57-default-rtdb.firebaseio.com/telemetry.json"
-ERROR_REPORT_URL = "https://localfit-8ab57-default-rtdb.firebaseio.com/error_reports.json"
+ERROR_REPORT_URL = config.ERROR_REPORTS_ENDPOINT
 
 
 @pytest.fixture(autouse=True)

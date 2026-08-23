@@ -1,11 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { validateTelemetryEvent } from "../src/validate";
+import { validateErrorReport, validateTelemetryEvent } from "../src/validate";
 
 // Fixtures and expected outcomes are ported 1:1 from
 // scripts/test_firebase_rules.mjs (the emulator-based rules test suite) so
 // this TS port can be checked against the exact same scenarios the original
-// RTDB rules were validated against. Only the telemetry node is covered -
-// error_reports is a separate, out-of-scope write path (see #133/#134).
+// RTDB rules were validated against.
+
+describe("error report validation", () => {
+  const report = {
+    schema_version: 1,
+    error_type: "RuntimeError",
+    error_message: "boom",
+    trigger: "crash",
+    recorded_at: "2026-08-23T00:00:00+00:00",
+    os_name: "Darwin",
+  };
+
+  it("accepts the allow-listed schema", () => {
+    expect(validateErrorReport(report).valid).toBe(true);
+    expect(validateErrorReport({ ...report, error_message: 123 }).valid).toBe(false);
+  });
+
+  it("rejects unknown fields and local paths", () => {
+    expect(validateErrorReport({ ...report, traceback: "secret" }).valid).toBe(false);
+    expect(validateErrorReport({ ...report, catalog_ref: "/Users/alice/model.gguf" }).valid).toBe(false);
+  });
+});
 
 function ok(event: Record<string, unknown>) {
   const result = validateTelemetryEvent(event);

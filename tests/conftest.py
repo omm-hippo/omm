@@ -18,6 +18,13 @@ from omm import (
 
 
 @pytest.fixture(autouse=True)
+def _deterministic_terminal_capabilities(monkeypatch):
+    """Keep ANSI/width tests independent of the shell that launched pytest."""
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_engine_writes(tmp_path, monkeypatch):
     """Safety net for the engines that detect themselves via a fixed,
     real-home-relative directory (Jan/AnythingLLM/Msty) or a heuristic
@@ -37,7 +44,6 @@ def _no_real_engine_writes(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path / "_no_real_heuristic_root"])
     monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path / "_no_real_omm_apps")
-    monkeypatch.setattr(linker, "engine_tmp_dir", lambda: tmp_path / "_no_real_omm_tmp")
     monkeypatch.setattr(linker, "_APP_BUNDLE_SEARCH_ROOTS", [tmp_path / "_no_real_app_bundle_root"])
     linker.find_koboldcpp_binary.cache_clear()
     linker.find_textgenwebui_root.cache_clear()

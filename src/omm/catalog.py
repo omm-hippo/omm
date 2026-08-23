@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
@@ -61,6 +62,8 @@ def verify_signed_artifact(
 def archive_current_artifact(
     artifact_path: Path | None = None,
     history_dir: Path | None = None,
+    *,
+    require_signed: bool = False,
 ) -> Path | None:
     source = artifact_path or RECOMMEND_MODEL_PATH
     destination_dir = history_dir or CATALOG_HISTORY_DIR
@@ -68,11 +71,31 @@ def archive_current_artifact(
         return None
     try:
         content = source.read_bytes()
+        provenance_path = source.with_suffix(source.suffix + ".provenance.json")
+        provenance: dict | None = None
+        if provenance_path.exists():
+            loaded = json.loads(provenance_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                provenance = loaded
+        if require_signed:
+            if provenance is None:
+                return None
+            verify_signed_artifact(
+                content, provenance.get("manifest"), provenance.get("public_key")
+            )
         destination_dir.mkdir(parents=True, exist_ok=True)
-        destination = destination_dir / f"{sha256_bytes(content)}.json"
+        digest = sha256_bytes(content)
+        destination = destination_dir / f"{digest}.json"
         if not destination.exists():
             destination.write_bytes(content)
-    except OSError:
+        if provenance is not None:
+            provenance_destination = destination_dir / f"{digest}.provenance.json"
+            if not provenance_destination.exists():
+                atomic_write_text(
+                    provenance_destination,
+                    json.dumps(provenance, sort_keys=True) + "\n",
+                )
+    except (OSError, ValueError, TypeError):
         return None
     return destination
 
@@ -81,31 +104,58 @@ def snapshots(history_dir: Path | None = None) -> list[Path]:
     root = history_dir or CATALOG_HISTORY_DIR
     if not root.exists():
         return []
-    return sorted(root.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    candidates = [
+        path for path in root.glob("*.json")
+        if re.fullmatch(r"[0-9a-f]{64}\.json", path.name)
+    ]
+    return sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
 
 
 def rollback(
     *,
     artifact_path: Path | None = None,
     history_dir: Path | None = None,
+    require_signed: bool = False,
 ) -> Path:
     destination = artifact_path or RECOMMEND_MODEL_PATH
     current_hash = sha256_bytes(destination.read_bytes()) if destination.exists() else None
-    selected = next(
-        (path for path in snapshots(history_dir) if path.stem != current_hash),
-        None,
-    )
+    selected = None
+    for path in snapshots(history_dir):
+        if path.stem == current_hash:
+            continue
+        if require_signed:
+            provenance_path = path.with_name(f"{path.stem}.provenance.json")
+            try:
+                provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+                verify_signed_artifact(
+                    path.read_bytes(), provenance.get("manifest"), provenance.get("public_key")
+                )
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+        selected = path
+        break
     if selected is None:
         raise FileNotFoundError("no previous catalog snapshot is available")
     snapshot_text = selected.read_text(encoding="utf-8")
     payload = json.loads(snapshot_text)
     if not isinstance(payload, dict):
         raise CatalogVerificationError("catalog snapshot is not a JSON object")
-    archive_current_artifact(destination, history_dir)
+    archive_current_artifact(destination, history_dir, require_signed=require_signed)
     # Same lock + retrying replace predictor.py uses to write this same
     # path: a raw write_bytes()+replace() here would skip the
     # PermissionError retry atomic_write_text already needed for Windows
     # AV/indexing transiently holding the destination open.
     with locked(destination):
         atomic_write_text(destination, snapshot_text)
+        destination_provenance = destination.with_suffix(
+            destination.suffix + ".provenance.json"
+        )
+        selected_provenance = selected.with_name(f"{selected.stem}.provenance.json")
+        if selected_provenance.exists():
+            atomic_write_text(
+                destination_provenance,
+                selected_provenance.read_text(encoding="utf-8"),
+            )
+        else:
+            destination_provenance.unlink(missing_ok=True)
     return selected
