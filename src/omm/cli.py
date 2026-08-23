@@ -3029,7 +3029,23 @@ def _resolve_benchmark_tag(arg: str) -> str:
     """Like `_resolve_ref`, but a numbered ref names a filename from the last
     `omm search`/`omm list`, which `omm benchmark` needs as an Ollama tag."""
     if not arg.isdigit():
-        return arg
+        # A registry filename (what `omm list`/`omm info` show, what users
+        # paste) is not an Ollama tag: passing it through verbatim made
+        # `omm benchmark <name>.gguf` ask Ollama for a model called
+        # "<name>.gguf" and report model_load_failed (promo dry run,
+        # 2026-08-23). Map it the same way a numbered ref is mapped; any
+        # other string is still treated as a literal tag.
+        reg = registry.load_registry()
+        filename, entry = _lookup_entry(arg, reg)
+        if entry is None:
+            return arg
+        if not any(
+            isinstance(entry.get(field), str) and entry[field].strip()
+            for field in ("ollama_runtime_name", "ollama_name")
+        ):
+            err_console.print(f"[error]{filename} has no Ollama tag; link it with `omm link` first.[/error]")
+            raise typer.Exit(1)
+        return linker.resolve_ollama_runtime_name(filename, entry)
     filename = _resolve_ref(arg)
     entry = registry.load_registry().get(filename)
     if not entry or not any(
