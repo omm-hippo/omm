@@ -443,6 +443,18 @@ def test_training_audit_explains_rejections_and_duplicate_collapse():
         "direct_v9_unique_configurations": 0,
         "direct_unique_configurations": 1,
         "duplicates_collapsed": 1,
+        "speed_outliers": {
+            "statistic": "implied_memory_bandwidth_gb_per_s",
+            "fence_multiplier": train_model.SPEED_OUTLIER_FENCE_MULTIPLIER,
+            "minimum_sample_size": train_model.MIN_OUTLIER_SAMPLE_SIZE,
+            "hardware_buckets": 1,
+            "buckets_evaluated": 0,
+            "buckets_pooled_globally": 1,
+            "global_pool_applied": False,
+            "skipped": True,
+            "dropped_configurations": 0,
+            "dropped_rows": 0,
+        },
         "rejections": {
             "invalid_measurement": 1,
             "unparseable_model": 1,
@@ -1397,3 +1409,217 @@ def test_validate_dataset_excludes_performance_unfit_from_rejection_rate():
     assert audit["rejected_rows"] == 10
     assert audit["raw_rows"] == 11
     validate_dataset(audit, min_unique_configurations=1, max_rejection_rate=0.25)
+
+
+# --- Physical/statistical plausibility defenses (issue #134) ----------------
+#
+# database.rules.json can only validate one field at a time, so a row whose
+# fields are individually in range but jointly impossible reaches the trainer
+# intact. These cover the two preprocessing defenses that catch it.
+
+
+def _plausible_fleet(count: int = 8, *, base_speed: float = 18.0, **overrides) -> list[dict]:
+    """`count` honest v8 rows from one machine, distinguished only by thread
+    count so they share a hardware bucket while staying distinct
+    configurations. Speeds fan out slightly so the quartiles are meaningful.
+    """
+    return [
+        _v8_row(base_speed + index, cpu_threads=8 + index, **overrides)
+        for index in range(count)
+    ]
+
+
+def test_plausible_telemetry_passes_both_defenses_untouched():
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(_plausible_fleet())
+
+    assert sorted(y) == [18, 19, 20, 21, 22, 23, 24, 25]
+    assert audit["rejections"] == {}
+    assert audit["valid_rows"] == 8
+    assert audit["speed_outliers"]["dropped_configurations"] == 0
+    assert audit["speed_outliers"]["dropped_rows"] == 0
+    assert audit["speed_outliers"]["buckets_evaluated"] == 1
+    assert audit["speed_outliers"]["skipped"] is False
+
+
+def test_speed_beyond_the_memory_bandwidth_ceiling_is_rejected():
+    # A 70B model at 8 bits reads 70 GB of weights per token, so no
+    # accelerator in existence can decode it at 500 tokens/sec - yet every
+    # individual field here satisfies database.rules.json.
+    large_model = dict(parameter_count_b=70.0, active_parameter_count_b=70.0, quant_bits=8.0)
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(
+        [_v8_row(500, **large_model), _v8_row(30, **large_model)]
+    )
+
+    assert y == [30]
+    assert audit["rejections"] == {"implausible_speed_for_hardware": 1}
+
+
+def test_mixture_of_experts_ceiling_uses_active_parameters_only():
+    # The same 70B row is plausible when only 3B parameters are active per
+    # token: the ceiling must follow the weights actually read, or every
+    # honest MoE measurement would be discarded.
+    _X, y, _audit = train_model.real_rows_to_training_data_with_audit(
+        [_v8_row(500, parameter_count_b=70.0, active_parameter_count_b=3.0, quant_bits=8.0)]
+    )
+
+    assert y == [500]
+
+
+def test_cpu_only_row_is_held_to_the_cpu_memory_bandwidth_ceiling():
+    # Identical measurement, identical model: plausible when the weights are
+    # read over GPU memory, impossible over system RAM.
+    offloaded = _v8_row(600)
+    cpu_only = _v8_row(600, vram_gb=0, gpu_offload_percent=0, gpu_score=0.0, gpu_tflops=0)
+
+    _X, offloaded_y, _audit = train_model.real_rows_to_training_data_with_audit([offloaded])
+    _X, cpu_only_y, cpu_only_audit = train_model.real_rows_to_training_data_with_audit([cpu_only])
+
+    assert offloaded_y == [600]
+    assert cpu_only_y == []
+    assert cpu_only_audit["rejections"] == {"implausible_speed_for_hardware": 1}
+
+
+def test_partial_gpu_offload_is_held_to_a_blended_ceiling():
+    # 3B active parameters at 4 bits is 1.5 GB read per token. With only 10%
+    # of that claimed on the GPU, decode is still overwhelmingly bound by
+    # system-RAM bandwidth - the honest ceiling sits near 580 tokens/sec, not
+    # the ~2667 tokens/sec a pure-GPU-bandwidth ceiling would allow. A ceiling
+    # that switches to the full GPU figure for any nonzero offload would
+    # wrongly pass this fabricated row.
+    row = _v8_row(1000, gpu_offload_percent=10)
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit([row])
+
+    assert y == []
+    assert audit["rejections"] == {"implausible_speed_for_hardware": 1}
+
+
+def test_partial_gpu_offload_honest_speed_still_passes():
+    # Same 10%-offloaded configuration, but under its blended ceiling: this
+    # must still train on genuinely plausible telemetry.
+    row = _v8_row(500, gpu_offload_percent=10)
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit([row])
+
+    assert y == [500]
+    assert audit["rejections"] == {}
+
+
+def test_statistical_outliers_are_dropped_and_counted_by_direction():
+    # 400 tokens/sec on this hardware is under the physical ceiling, so only
+    # the distribution of its peers reveals it as fabricated. 0.5 is the
+    # mirror image: also in range, also impossible in context.
+    rows = _plausible_fleet() + [
+        _v8_row(400, cpu_threads=20),
+        _v8_row(0.5, cpu_threads=21, tokens_per_sec_min=0.4, tokens_per_sec_max=0.6),
+    ]
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert sorted(y) == [18, 19, 20, 21, 22, 23, 24, 25]
+    assert audit["rejections"] == {
+        "statistical_speed_outlier_high": 1,
+        "statistical_speed_outlier_low": 1,
+    }
+    assert audit["valid_rows"] == 8
+    assert audit["rejected_rows"] == 2
+    assert audit["unique_configurations"] == 8
+    assert audit["speed_outliers"]["dropped_configurations"] == 2
+    assert audit["speed_outliers"]["dropped_rows"] == 2
+
+
+def test_outlier_statistic_is_normalized_for_model_size():
+    # A small model is legitimately far faster than a large one on the same
+    # machine. Comparing raw tokens/sec would flag the honest small-model
+    # rows; comparing implied memory bandwidth does not.
+    rows = _plausible_fleet() + [
+        _v8_row(90, cpu_threads=20, active_parameter_count_b=0.5, parameter_count_b=0.5),
+        _v8_row(95, cpu_threads=21, active_parameter_count_b=0.5, parameter_count_b=0.5),
+    ]
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert 90 in y and 95 in y
+    assert audit["rejections"] == {}
+
+
+def test_novel_hardware_identity_is_pooled_against_the_global_distribution():
+    # An attacker cannot escape the check by inventing a machine nobody else
+    # reports: a bucket too small for its own quartiles is judged against the
+    # whole corpus instead of being waved through.
+    rows = _plausible_fleet() + [_v8_row(400, cpu_score=12345.0, gpu_score=54321.0)]
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert 400 not in y
+    assert audit["rejections"] == {"statistical_speed_outlier_high": 1}
+    assert audit["speed_outliers"]["buckets_evaluated"] == 1
+    assert audit["speed_outliers"]["buckets_pooled_globally"] == 1
+
+
+def test_outlier_filtering_is_skipped_below_the_minimum_sample_size():
+    # Sparse telemetry must never be filtered on its own noise - with three
+    # configurations the quartiles mean nothing, and dropping any of them
+    # would deepen the diversity problem rather than defend against anything.
+    rows = _plausible_fleet(3) + [_v8_row(400, cpu_threads=20)]
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert sorted(y) == [18, 19, 20, 400]
+    assert audit["rejections"] == {}
+    assert audit["speed_outliers"]["skipped"] is True
+    assert audit["speed_outliers"]["global_pool_applied"] is False
+
+
+def test_identical_speeds_do_not_produce_a_zero_width_fence():
+    # A degenerate distribution has an IQR of zero; filtering on it would
+    # reject every configuration that is not exactly the median.
+    rows = [_v8_row(20, cpu_threads=8 + index) for index in range(10)]
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert y == [20] * 10
+    assert audit["rejections"] == {}
+
+
+def test_mass_fabrication_trips_the_rejection_rate_gate_instead_of_training():
+    # Why these count as data-quality rejections: a flood of fabricated rows
+    # keeps the published model unchanged rather than retraining on whatever
+    # survived the filter.
+    rows = _plausible_fleet() + [
+        _v8_row(
+            500,
+            cpu_threads=30 + index,
+            parameter_count_b=70.0,
+            active_parameter_count_b=70.0,
+            quant_bits=8.0,
+        )
+        for index in range(20)
+    ]
+
+    _X, _y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert audit["rejections"]["implausible_speed_for_hardware"] == 20
+    with pytest.raises(Exception, match="rejection rate exceeds limit"):
+        validate_dataset(audit, min_unique_configurations=1, max_rejection_rate=0.25)
+
+
+def test_plausibility_summary_reports_every_drop():
+    rows = _plausible_fleet() + [
+        _v8_row(400, cpu_threads=20),
+        _v8_row(
+            500,
+            cpu_threads=21,
+            parameter_count_b=70.0,
+            active_parameter_count_b=70.0,
+            quant_bits=8.0,
+        ),
+    ]
+
+    _X, _y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+    summary = train_model._plausibility_summary(audit)
+
+    assert "dropped 1 row(s) exceeding the physical speed ceiling" in summary
+    assert "1 statistical outlier row(s) (1 high, 0 low)" in summary
+    assert "hardware bucket(s)" in summary

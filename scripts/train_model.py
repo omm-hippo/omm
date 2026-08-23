@@ -227,6 +227,125 @@ INTENTIONALLY_EXCLUDED_REASONS = frozenset({
     "loaded_measurement_excluded",
 })
 
+#: Physical-plausibility bounds (issue #134). database.rules.json can reject
+#: malformed telemetry (wrong types, out-of-range single fields, unknown
+#: keys), but it cannot express a cross-field check, so a well-formed row can
+#: still carry a tokens_per_sec that no machine could have produced for the
+#: model and hardware it also reports. omm is open source, so an attacker can
+#: run the real client with fabricated numbers - App Check/proof-of-work
+#: cannot help. The defense therefore lives here, in the nightly training
+#: preprocessing.
+#:
+#: Single-stream decode is memory-bandwidth bound: every generated token
+#: requires reading the model's active weights once, so
+#:
+#:     tokens_per_sec <= memory_bandwidth_gb_per_s / active_weight_gb
+#:
+#: is a hard physical ceiling (real engines achieve well under peak
+#: bandwidth; this only needs to be an upper bound, not an estimate). The
+#: two constants below are peak bandwidths of the fastest hardware anyone
+#: could plausibly be running omm on, deliberately rounded up so honest
+#: telemetry from hardware newer than this comment still passes.
+#:
+#: NOTE: `cpu_score`/`gpu_score` are NOT performance scores - featurize
+#: .parse_chip_score() returns the chip's model *number* ("RTX 4090" ->
+#: 4090.0, "Apple M2 Pro" -> 2.0), which is not comparable across vendors.
+#: They can therefore only be used categorically (is a GPU present at all),
+#: never as a linear scale for the ceiling.
+PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S = 4000.0
+PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S = 800.0
+#: Weights read per token can be arbitrarily small for tiny models, which
+#: would make the ceiling meaninglessly large; floor it so the check stays
+#: bounded. 0.05 GB is well below any real quantized model.
+MIN_ACTIVE_WEIGHT_GB = 0.05
+
+#: Statistical outlier bounds (issue #134). Applied to the per-configuration
+#: medians AFTER the physical ceiling above, so a fabricated value that is
+#: merely improbable (rather than impossible) is still caught.
+#:
+#: 3.0 is Tukey's "far out" fence rather than the usual 1.5 "outlier" fence:
+#: the telemetry corpus is small, skewed, and deliberately diverse, so the
+#: cost of dropping an honest exotic configuration is much higher than the
+#: cost of letting a mild exaggeration through - the physical ceiling and the
+#: existing per-configuration median collapse already handle the rest.
+SPEED_OUTLIER_FENCE_MULTIPLIER = 3.0
+#: Below this many configurations a quartile estimate is noise, and filtering
+#: on it would delete real hardware diversity rather than defend against
+#: anything. Buckets under the threshold fall back to the global pool; if the
+#: global pool is also under it, outlier filtering is skipped entirely and
+#: reported as skipped.
+MIN_OUTLIER_SAMPLE_SIZE = 8
+
+#: Feature-vector positions by name, so the checks below survive
+#: FEATURE_ORDER's append-only growth.
+_FEATURE_INDEX = {name: index for index, name in enumerate(FEATURE_ORDER)}
+
+
+def _active_weight_gb(
+    active_param_count_b: float | None,
+    param_count_b: float | None,
+    quant_bits: float | None,
+    model_size_gb: float | None,
+) -> float:
+    """Gigabytes of weights read per generated token.
+
+    For a mixture-of-experts model only the active parameters are read, which
+    is why this prefers `active_param_count_b`. Falls back to the total
+    parameter count and finally to the file size, so legacy rows (which parse
+    model metadata out of the model name) still get a bound.
+    """
+    parameters = active_param_count_b or param_count_b
+    if parameters and quant_bits:
+        return max(parameters * quant_bits / 8.0, MIN_ACTIVE_WEIGHT_GB)
+    return max(model_size_gb or 0.0, MIN_ACTIVE_WEIGHT_GB)
+
+
+def _has_gpu_decode_path(
+    *,
+    vram_gb: float | None,
+    unified_memory: bool,
+    gpu_offload_ratio: float,
+    gpu_score: float,
+) -> bool:
+    """Whether the row claims weights are read over GPU-class memory."""
+    if gpu_offload_ratio <= 0.0:
+        return False
+    return bool(unified_memory) or (vram_gb or 0.0) > 0.0 or gpu_score > 0.0
+
+
+def _physical_speed_ceiling(
+    *,
+    weight_gb: float,
+    vram_gb: float | None,
+    unified_memory: bool,
+    gpu_offload_ratio: float,
+    gpu_score: float,
+) -> float:
+    """Fastest tokens/sec the reported hardware could physically produce.
+
+    A partially-offloaded model reads its GPU-resident share over the GPU
+    bus and its CPU-resident share over system RAM, sequentially per token -
+    the two legs of the read add in time, not in bandwidth. Blending the two
+    peak bandwidths linearly (rather than adding their per-GB times) would
+    let a mostly-CPU-bound row with a token offload claim borrow the GPU
+    ceiling almost in full, hiding fabricated speeds up to 5x too fast.
+    """
+    offload_ratio = (
+        min(max(gpu_offload_ratio, 0.0), 1.0)
+        if _has_gpu_decode_path(
+            vram_gb=vram_gb,
+            unified_memory=unified_memory,
+            gpu_offload_ratio=gpu_offload_ratio,
+            gpu_score=gpu_score,
+        )
+        else 0.0
+    )
+    seconds_per_gb = (
+        offload_ratio / PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S
+        + (1.0 - offload_ratio) / PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S
+    )
+    return 1.0 / (max(weight_gb, MIN_ACTIVE_WEIGHT_GB) * seconds_per_gb)
+
 
 def _extract_features_and_reason(
     row: dict, *, require_speed: bool
@@ -454,6 +573,24 @@ def _extract_features_and_reason(
         # regress p90_absolute_percentage_error and block every retrain
         # (2026-08-07 incident). Excluded rather than guessed at.
         return None, None, "no_hardware_identity_pre_v6_schema"
+
+    if require_speed and tokens_per_sec is not None:
+        # Cross-field physical plausibility (issue #134). Every field in this
+        # row can be individually in range and the combination still be
+        # impossible - that is exactly the gap database.rules.json cannot
+        # close. Checked here, before the row is ever grouped or trained on.
+        ceiling = _physical_speed_ceiling(
+            weight_gb=_active_weight_gb(
+                active_param_count_b, param_count_b, quant_bits, model_size_gb
+            ),
+            vram_gb=vram_gb,
+            unified_memory=bool(row.get("unified_memory")),
+            gpu_offload_ratio=gpu_offload_percent / 100.0,
+            gpu_score=gpu_score,
+        )
+        if tokens_per_sec > ceiling:
+            return None, None, "implausible_speed_for_hardware"
+
     features = build_features(
         ram_gb=ram_gb,
         vram_gb=vram_gb,
@@ -557,10 +694,117 @@ def _real_row_to_fit_sample(row: dict) -> tuple[tuple[list[float], bool] | None,
     return (features, True), None
 
 
+def _implied_memory_bandwidth(features: tuple[float, ...], tokens_per_sec: float) -> float:
+    """tokens/sec re-expressed as the GB/s of weight traffic it implies.
+
+    Raw tokens/sec is not comparable across configurations - a 0.5B model is
+    legitimately an order of magnitude faster than a 70B one on identical
+    hardware, so an IQR over raw speeds would just rediscover model size.
+    Multiplying by the weights read per token cancels that out and leaves a
+    hardware property (achieved memory bandwidth) whose distribution outlier
+    detection can actually reason about.
+    """
+    weight_gb = _active_weight_gb(
+        features[_FEATURE_INDEX["active_param_count_b"]],
+        features[_FEATURE_INDEX["param_count_b"]],
+        features[_FEATURE_INDEX["quant_bits"]],
+        features[_FEATURE_INDEX["model_size_gb"]],
+    )
+    return tokens_per_sec * weight_gb
+
+
+def _hardware_bucket(features: tuple[float, ...]) -> tuple[float, ...]:
+    """Hardware identity of a configuration, ignoring the model and tuning.
+
+    Outlier statistics are computed per bucket rather than globally: achieved
+    bandwidth on a discrete GPU and on a laptop CPU differ by two orders of
+    magnitude, and a single global distribution would treat every fast
+    machine as an outlier (the "telemetry diversity crisis" failure mode).
+    """
+    return tuple(
+        features[_FEATURE_INDEX[name]]
+        for name in (
+            "ram_gb", "vram_gb", "unified_memory", "cpu_score", "cpu_tier", "gpu_score", "gpu_tier",
+        )
+    )
+
+
+def _outlier_fences(values: list[float]) -> tuple[float, float] | None:
+    """Tukey fences over `values`, or None when there is too little data."""
+    if len(values) < MIN_OUTLIER_SAMPLE_SIZE:
+        return None
+    quartile_1, _median, quartile_3 = statistics.quantiles(values, n=4, method="inclusive")
+    spread = quartile_3 - quartile_1
+    if spread <= 0:
+        # A degenerate distribution (every configuration reporting the same
+        # bandwidth) has no meaningful fence - filtering on a zero-width IQR
+        # would drop every value that is not exactly the median.
+        return None
+    return (
+        quartile_1 - SPEED_OUTLIER_FENCE_MULTIPLIER * spread,
+        quartile_3 + SPEED_OUTLIER_FENCE_MULTIPLIER * spread,
+    )
+
+
+def _speed_outlier_reasons(
+    medians: dict[tuple[float, ...], float],
+) -> tuple[dict[tuple[float, ...], str], dict]:
+    """Flag configurations whose implied bandwidth is a statistical outlier.
+
+    Returns `(reason_by_configuration, report)`. Configurations in a hardware
+    bucket with fewer than MIN_OUTLIER_SAMPLE_SIZE members are judged against
+    the global pool instead of their own bucket - otherwise fabricating a
+    novel hardware identity would be enough to skip the check entirely. If
+    the global pool is itself too small, nothing is dropped and the report
+    says so, so a young corpus is never gutted by its own noise.
+    """
+    statistics_by_configuration = {
+        features: _implied_memory_bandwidth(features, median)
+        for features, median in medians.items()
+    }
+    buckets: dict[tuple[float, ...], list[tuple[float, ...]]] = {}
+    for features in statistics_by_configuration:
+        buckets.setdefault(_hardware_bucket(features), []).append(features)
+
+    global_fences = _outlier_fences(list(statistics_by_configuration.values()))
+    reasons: dict[tuple[float, ...], str] = {}
+    buckets_evaluated = 0
+    buckets_pooled = 0
+    for members in buckets.values():
+        fences = _outlier_fences([statistics_by_configuration[key] for key in members])
+        if fences is None:
+            fences = global_fences
+            buckets_pooled += 1
+        else:
+            buckets_evaluated += 1
+        if fences is None:
+            continue
+        lower, upper = fences
+        for key in members:
+            value = statistics_by_configuration[key]
+            if value > upper:
+                reasons[key] = "statistical_speed_outlier_high"
+            elif value < lower:
+                reasons[key] = "statistical_speed_outlier_low"
+    report = {
+        "statistic": "implied_memory_bandwidth_gb_per_s",
+        "fence_multiplier": SPEED_OUTLIER_FENCE_MULTIPLIER,
+        "minimum_sample_size": MIN_OUTLIER_SAMPLE_SIZE,
+        "hardware_buckets": len(buckets),
+        "buckets_evaluated": buckets_evaluated,
+        "buckets_pooled_globally": buckets_pooled,
+        "global_pool_applied": global_fences is not None,
+        "skipped": global_fences is None and buckets_evaluated == 0,
+        "dropped_configurations": len(reasons),
+    }
+    return reasons, report
+
+
 def real_rows_to_training_data_with_audit(
     rows: list[dict],
 ) -> tuple[list[list[float]], list[float], dict]:
     groups: dict[tuple[float, ...], list[float]] = {}
+    group_row_counts: dict[tuple[float, ...], int] = {}
     rejections: dict[str, int] = {}
     valid_rows = 0
     samples_used = 0
@@ -595,11 +839,35 @@ def real_rows_to_training_data_with_audit(
         elif benchmark_version == 9:
             direct_v9_groups.add(group_key)
         samples = groups.setdefault(group_key, [])
+        group_row_counts[group_key] = group_row_counts.get(group_key, 0) + 1
         if len(samples) < 50:
             samples.append(tokens_per_sec)
             samples_used += 1
         else:
             samples_capped += 1
+
+    # Statistical outlier pass (issue #134). Deliberately run on the
+    # per-configuration medians rather than on individual rows: the median
+    # collapse above already gives every distinct configuration exactly one
+    # vote, so a burst of fabricated uploads cannot drag the quartiles it is
+    # about to be measured against.
+    outlier_reasons, outlier_report = _speed_outlier_reasons(
+        {features: statistics.median(samples) for features, samples in groups.items()}
+    )
+    outlier_rows_dropped = 0
+    for group_key, reason in outlier_reasons.items():
+        dropped_samples = groups.pop(group_key)
+        dropped_rows = group_row_counts.pop(group_key)
+        rejections[reason] = rejections.get(reason, 0) + dropped_rows
+        valid_rows -= dropped_rows
+        samples_used -= len(dropped_samples)
+        samples_capped -= dropped_rows - len(dropped_samples)
+        outlier_rows_dropped += dropped_rows
+        direct_v6_groups.discard(group_key)
+        direct_v7_groups.discard(group_key)
+        direct_v8_groups.discard(group_key)
+        direct_v9_groups.discard(group_key)
+    outlier_report["dropped_rows"] = outlier_rows_dropped
 
     X = [list(features) for features in groups]
     y = [statistics.median(samples) for samples in groups.values()]
@@ -624,6 +892,15 @@ def real_rows_to_training_data_with_audit(
             direct_v6_groups | direct_v7_groups | direct_v8_groups | direct_v9_groups
         ),
         "duplicates_collapsed": samples_used - len(groups),
+        # Never truncate silently: both defenses report what they removed and
+        # why (issue #134). The per-row physical check appears in
+        # `rejections` under "implausible_speed_for_hardware"; the
+        # statistical pass adds "statistical_speed_outlier_high"/"_low" there
+        # and describes how it decided in `speed_outliers`. Both count as
+        # data-quality rejections, so a large-scale poisoning attempt pushes
+        # the rejection rate past validate_dataset()'s limit and keeps the
+        # published model unchanged instead of retraining on what survived.
+        "speed_outliers": outlier_report,
         "rejections": dict(sorted(rejections.items())),
     }
     return X, y, audit
@@ -862,6 +1139,29 @@ def load_candidates() -> list[dict]:
     ]
 
 
+def _plausibility_summary(audit: dict) -> str:
+    """One-line CI report of what the issue #134 defenses removed and why."""
+    rejections = audit.get("rejections", {})
+    outliers = audit.get("speed_outliers", {})
+    implausible = rejections.get("implausible_speed_for_hardware", 0)
+    high = rejections.get("statistical_speed_outlier_high", 0)
+    low = rejections.get("statistical_speed_outlier_low", 0)
+    detail = (
+        "outlier filtering skipped (too few configurations)"
+        if outliers.get("skipped")
+        else (
+            f"{outliers.get('dropped_configurations', 0)} outlier configuration(s) "
+            f"across {outliers.get('hardware_buckets', 0)} hardware bucket(s), "
+            f"{outliers.get('buckets_pooled_globally', 0)} pooled globally"
+        )
+    )
+    return (
+        f"Plausibility: dropped {implausible} row(s) exceeding the physical speed "
+        f"ceiling and {high + low} statistical outlier row(s) "
+        f"({high} high, {low} low); {detail}."
+    )
+
+
 def main() -> None:
     args = parse_args()
     real_rows = [] if args.offline else fetch_real_rows(args.telemetry_url)
@@ -882,6 +1182,7 @@ def main() -> None:
         f"({telemetry_audit['raw_rows']} raw, {len(real_X)} unique configurations, "
         f"{telemetry_audit['rejected_rows']} rejected)."
     )
+    print(_plausibility_summary(telemetry_audit))
 
     if args.quality_gate:
         if args.baseline is None:
