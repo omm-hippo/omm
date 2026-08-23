@@ -1371,6 +1371,7 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
         try:
             subprocess.Popen(
                 args,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 **kwargs,

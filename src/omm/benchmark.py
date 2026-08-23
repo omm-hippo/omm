@@ -75,6 +75,7 @@ def start_ollama_daemon(timeout: float = _DAEMON_START_TIMEOUT) -> subprocess.Po
             creationflags = 0
         proc = subprocess.Popen(
             [str(executable), "serve"],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=error_log,
             start_new_session=True,
