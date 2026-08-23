@@ -440,6 +440,35 @@ def test_ollama_preserves_unowned_manifest_and_existing_blob(isolated_omm_home, 
     assert manifest.read_text() == "user manifest"
 
 
+def test_link_ollama_recovers_orphan_via_matching_content_sha256(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """Re-linking (e.g. a repeat `omm install`) the same model after its
+    ownership record was lost (registry file corrupted and reset, or a
+    manifest created before the registry existed) must not permanently
+    fail. `unlink_ollama` already has this exact fallback (issue #171);
+    without the symmetric fallback here, install would report success
+    while the stale unrecorded manifest is left in place forever, and
+    `omm uninstall` would then also skip it because `linked.ollama` never
+    turns True."""
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"model-bytes")
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    tag = "model"
+    linker.link_ollama(gguf_path, tag, models_dir=models_dir)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / tag / "latest"
+    linker._update_link_ownership(manifest_path, None)
+
+    linker.link_ollama(gguf_path, tag, models_dir=models_dir)
+
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert linker._manifest_model_layer_sha256(manifest) == linker.sha256_file(gguf_path)
+
+
 def test_link_ollama_skips_rehash_when_already_correctly_linked(isolated_omm_home, tmp_path, monkeypatch):
     """A repeat `omm link` shouldn't re-hash a multi-GB model that's
     already correctly linked and unchanged - only the first call should

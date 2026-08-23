@@ -1434,7 +1434,25 @@ def link_ollama(
         # transient race rather than a real format drift.
         with locked(_engine_path_lock(manifest_path)):
             if manifest_path.exists() or manifest_path.is_symlink():
-                if not _owned_manifest(manifest_path, expected_source=gguf_path):
+                owned = _owned_manifest(manifest_path, expected_source=gguf_path)
+                if not owned:
+                    # Mirrors unlink_ollama's fallback: an omm-written manifest
+                    # whose ownership record was lost (registry file corrupted
+                    # and reset, or created before the registry existed) would
+                    # otherwise permanently fail every re-link of this exact
+                    # model - install reports success but leaves the stale
+                    # manifest in place, and later `omm uninstall` also skips
+                    # it because `linked.ollama` never turns True. If the
+                    # existing manifest's model layer already hashes to the
+                    # same content this call is about to write, it's
+                    # unambiguously safe to replace regardless of the missing
+                    # ownership record.
+                    try:
+                        existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        existing_manifest = {}
+                    owned = _manifest_model_layer_sha256(existing_manifest) == model_sha256
+                if not owned:
                     raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
                 manifest_path.unlink()
                 _update_link_ownership(manifest_path, None)

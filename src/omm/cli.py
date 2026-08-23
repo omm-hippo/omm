@@ -3829,9 +3829,17 @@ def _ensure_engine_running(
                 f"[muted]Ollama isn't available for `omm {action}` - falling back to "
                 "LM Studio instead.[/muted]"
             )
-            engine = "lmstudio"
+    return "lmstudio", _ensure_lmstudio_running(action, assume_yes=assume_yes)
+
+
+def _ensure_lmstudio_running(action: str, *, assume_yes: bool = False):
+    """Preflight LM Studio's local server, prompting to start it if
+    installed-but-stopped. Same contract as `_ensure_ollama_running`: None
+    means it was already reachable, a truthy handle means this call started
+    it (pass to `_stop_engine_daemon("lmstudio", ...)` afterward), and a
+    typer.Exit(1) means it isn't available or the user declined."""
     if linker.lmstudio_daemon_reachable():
-        return "lmstudio", None
+        return None
     prompt = f"LM Studio is installed but its server isn't running. Start it now for `omm {action}`?"
     if not assume_yes and (not _stdin_is_tty() or not _ask_confirm(prompt)):
         err_console.print(
@@ -3842,7 +3850,7 @@ def _ensure_engine_running(
     if not started:
         err_console.print("[error]Could not start LM Studio's local server.[/error]")
         raise typer.Exit(1)
-    return "lmstudio", True
+    return True
 
 
 def _record_install_compatibility(
@@ -5122,7 +5130,12 @@ def verify(
         help="Load the model without asking. For scripting.",
     ),
 ) -> None:
-    """Prove that an installed model can load and return local text."""
+    """Prove that an installed model can load and return local text.
+
+    If the selected engine's daemon isn't running, this starts it (asking
+    first unless --yes) and stops it again afterward, unless --keep-loaded
+    left the model loaded on it.
+    """
     model_name = _resolve_ref(model_name)
     filename, entry = _lookup_entry(model_name, registry.load_registry())
     if entry is None:
@@ -5134,68 +5147,104 @@ def verify(
         err_console.print(f"[error]{error}.[/error]")
         raise typer.Exit(1) from error
 
-    adapter = _compatibility_adapter(selected_engine)
-    model_ref = _compatibility_model_ref(filename, entry, selected_engine)
-    health = adapter.health()
-    visible = None
-    if health.reachable:
-        try:
-            visible = find_runtime_model(adapter.list_models(), model_ref)
-        except RuntimeAdapterError:
-            visible = None
-        if (visible is None or not visible.loaded) and not yes:
-            label = _engine_label(selected_engine)
-            if not _ask_confirm(
-                f"Load {filename} into {label} memory for a short local test?"
-            ):
-                err_console.print("[warning]Verification cancelled; nothing was loaded.[/warning]")
-                raise typer.Exit(0)
-
-    if health.reachable and (visible is None or not visible.loaded):
-        size_bytes = entry.get("size_bytes")
+    daemon_handle = None
+    try:
+        adapter = _compatibility_adapter(selected_engine)
+        model_ref = _compatibility_model_ref(filename, entry, selected_engine)
+        health = adapter.health()
         if (
-            isinstance(size_bytes, bool)
-            or not isinstance(size_bytes, (int, float))
-            or size_bytes <= 0
+            selected_engine == "ollama"
+            and not health.reachable
+            and benchmark.ollama_install_state() == "stopped"
         ):
+            # Installed but not running - offer to start it, same
+            # start/ask/stop-when-done pattern install uses.
             try:
-                size_bytes = _managed_model_path(filename).stat().st_size
-            except (ModelResolutionError, OSError):
-                size_bytes = None
-        if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
-            label = _engine_label(selected_engine)
-            err_console.print(
-                f"[error]Memory Guard could not determine the model size; "
-                f"the {label} load was blocked.[/error]"
-            )
-            raise typer.Exit(1)
-        guard_allowed, _runtime, _preloaded = _guard_engine_load(
-            selected_engine,
-            model_ref.key,
-            float(size_bytes) / (1024**3) * 1.2,
-        )
-        if not guard_allowed:
-            raise typer.Exit(1)
+                daemon_handle = _ensure_ollama_running("verify", assume_yes=yes)
+            except typer.Exit:
+                daemon_handle = None
+            if daemon_handle is not None:
+                console.print("[muted]Started Ollama in the background for this verification.[/muted]")
+                health = adapter.health()
+        elif (
+            selected_engine == "lmstudio"
+            and not health.reachable
+            and linker._lms_cli_path() is not None
+        ):
+            # Same pattern as the Ollama branch above.
+            try:
+                daemon_handle = _ensure_lmstudio_running("verify", assume_yes=yes)
+            except typer.Exit:
+                daemon_handle = None
+            if daemon_handle is not None:
+                console.print(
+                    "[muted]Started LM Studio's local server for this verification.[/muted]"
+                )
+                health = adapter.health()
+        visible = None
+        if health.reachable:
+            try:
+                visible = find_runtime_model(adapter.list_models(), model_ref)
+            except RuntimeAdapterError:
+                visible = None
+            if (visible is None or not visible.loaded) and not yes:
+                label = _engine_label(selected_engine)
+                if not _ask_confirm(
+                    f"Load {filename} into {label} memory for a short local test?"
+                ):
+                    err_console.print("[warning]Verification cancelled; nothing was loaded.[/warning]")
+                    raise typer.Exit(0)
 
-    console.print(f"Verifying {filename} with {_engine_label(selected_engine)}...")
-    result = verify_and_record(
-        filename,
-        adapter,
-        model_ref,
-        keep_loaded=keep_loaded,
-    )
-    if result.status == "passed":
-        detail = "already loaded and preserved" if result.model_was_preloaded else (
-            "left loaded as requested" if result.model_left_loaded else "test load released"
+        if health.reachable and (visible is None or not visible.loaded):
+            size_bytes = entry.get("size_bytes")
+            if (
+                isinstance(size_bytes, bool)
+                or not isinstance(size_bytes, (int, float))
+                or size_bytes <= 0
+            ):
+                try:
+                    size_bytes = _managed_model_path(filename).stat().st_size
+                except (ModelResolutionError, OSError):
+                    size_bytes = None
+            if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+                label = _engine_label(selected_engine)
+                err_console.print(
+                    f"[error]Memory Guard could not determine the model size; "
+                    f"the {label} load was blocked.[/error]"
+                )
+                raise typer.Exit(1)
+            guard_allowed, _runtime, _preloaded = _guard_engine_load(
+                selected_engine,
+                model_ref.key,
+                float(size_bytes) / (1024**3) * 1.2,
+            )
+            if not guard_allowed:
+                raise typer.Exit(1)
+
+        console.print(f"Verifying {filename} with {_engine_label(selected_engine)}...")
+        result = verify_and_record(
+            filename,
+            adapter,
+            model_ref,
+            keep_loaded=keep_loaded,
         )
-        console.print(f"[success]Compatible: local text generation succeeded ({detail}).[/success]")
-        return
-    reason = result.failure_reason or "unknown"
-    err_console.print(
-        f"[error]Compatibility check failed: {_COMPATIBILITY_FAILURE_MESSAGES.get(reason, reason)}.[/error]"
-    )
-    err_console.print("[muted]The downloaded model was kept; no model file was deleted.[/muted]")
-    raise typer.Exit(1)
+        if result.status == "passed":
+            detail = "already loaded and preserved" if result.model_was_preloaded else (
+                "left loaded as requested" if result.model_left_loaded else "test load released"
+            )
+            console.print(f"[success]Compatible: local text generation succeeded ({detail}).[/success]")
+            if result.model_left_loaded:
+                daemon_handle = None
+            return
+        reason = result.failure_reason or "unknown"
+        err_console.print(
+            f"[error]Compatibility check failed: {_COMPATIBILITY_FAILURE_MESSAGES.get(reason, reason)}.[/error]"
+        )
+        err_console.print("[muted]The downloaded model was kept; no model file was deleted.[/muted]")
+        raise typer.Exit(1)
+    finally:
+        if daemon_handle is not None:
+            _stop_engine_daemon(selected_engine, daemon_handle)
 
 
 @app.command()
