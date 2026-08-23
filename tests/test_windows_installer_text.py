@@ -39,7 +39,7 @@ def test_windows_readme_sets_tls_before_downloading_installer():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     command = "[Net.ServicePointManager]::SecurityProtocol"
     assert command in readme
-    assert readme.index(command) < readme.index("irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1")
+    assert readme.index(command) < readme.index("irm https://omm.run/install.ps1")
     assert "SecurityProtocol -bor" not in readme
     assert "SecurityProtocol = [Net.SecurityProtocolType]::Tls12" in readme
 
