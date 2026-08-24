@@ -1133,13 +1133,15 @@ def _refresh_data() -> None:
         try:
             manifest_url = config.get("catalog_manifest_url")
             public_key = config.get("catalog_public_key")
+            previous = predictor.load_cached_model()
             if manifest_url and public_key:
                 artifact = predictor.fetch_and_cache_model(model_url, manifest_url, public_key)
             else:
                 artifact = predictor.fetch_and_cache_model(model_url)
+            style = "success" if artifact != previous else "muted"
             console.print(
-                f"[success]Updated recommend-model.json "
-                f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/success]"
+                f"[{style}]Updated recommend-model.json "
+                f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/{style}]"
             )
         except (requests.RequestException, ValueError) as e:
             err_console.print(f"[error]Failed to fetch trained model from {model_url}: {e}[/error]")
