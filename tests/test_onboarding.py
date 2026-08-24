@@ -3,6 +3,7 @@ import io
 import pytest
 import typer
 from rich.console import Console
+from typer import _completion_shared as typer_completion_shared
 
 from omm import linker, onboarding, theme as theme_mod
 
@@ -328,11 +329,122 @@ def test_run_wizard_runs_theme_step_before_hardware_summary(monkeypatch):
     monkeypatch.setattr(onboarding, "run_theme_step", lambda c: order.append("theme") or "dark")
     monkeypatch.setattr(onboarding, "print_hardware_summary", lambda c: order.append("hardware"))
     monkeypatch.setattr(onboarding, "run_engine_checklist", lambda c: order.append("engines") or [])
+    monkeypatch.setattr(onboarding, "run_completion_step", lambda c: order.append("completion"))
     console = _console()
 
     onboarding.run_wizard(console)
 
-    assert order == ["theme", "hardware", "engines"]
+    assert order == ["theme", "hardware", "engines", "completion"]
+
+
+def test_run_completion_step_skips_prompt_when_not_a_tty(monkeypatch):
+    monkeypatch.setattr(typer_completion_shared, "_get_shell_name", lambda: "zsh")
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: False)
+    console = _console()
+
+    onboarding.run_completion_step(console)
+
+    assert "omm --install-completion" in console.file.getvalue()
+
+
+def test_run_completion_step_skips_prompt_when_shell_undetected(monkeypatch):
+    monkeypatch.setattr(typer_completion_shared, "_get_shell_name", lambda: None)
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
+    console = _console()
+
+    onboarding.run_completion_step(console)
+
+    assert "omm --install-completion" in console.file.getvalue()
+
+
+def test_run_completion_step_installs_on_confirm(monkeypatch):
+    import questionary
+
+    monkeypatch.setattr(typer_completion_shared, "_get_shell_name", lambda: "zsh")
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(onboarding, "_add_escape_to_cancel", lambda q: q)
+    captured = {}
+
+    class _FakeQuestion:
+        def ask(self):
+            return True
+
+    def fake_confirm(message, **kwargs):
+        captured["message"] = message
+        return _FakeQuestion()
+
+    monkeypatch.setattr(questionary, "confirm", fake_confirm)
+
+    def fake_install(*, shell, prog_name):
+        captured["shell"] = shell
+        captured["prog_name"] = prog_name
+        return shell, "/home/user/.zfunc/_omm"
+
+    monkeypatch.setattr(typer_completion_shared, "install", fake_install)
+    console = _console()
+
+    onboarding.run_completion_step(console)
+
+    assert captured["shell"] == "zsh"
+    assert captured["prog_name"] == "omm"
+    assert "zsh" in captured["message"]
+    output = console.file.getvalue()
+    # Rich's automatic highlighting splits the path into its own style span,
+    # so check the surrounding text and the path fragment separately rather
+    # than as one contiguous substring.
+    assert "Tab-completion installed to" in output
+    assert "_omm" in output
+    assert "Restart your shell" in output
+
+
+def test_run_completion_step_declines_does_nothing(monkeypatch):
+    import questionary
+
+    monkeypatch.setattr(typer_completion_shared, "_get_shell_name", lambda: "bash")
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(onboarding, "_add_escape_to_cancel", lambda q: q)
+
+    class _FakeQuestion:
+        def ask(self):
+            return False
+
+    monkeypatch.setattr(questionary, "confirm", lambda *a, **k: _FakeQuestion())
+    install_called = []
+    monkeypatch.setattr(
+        typer_completion_shared, "install", lambda **k: install_called.append(k)
+    )
+    console = _console()
+
+    onboarding.run_completion_step(console)
+
+    assert install_called == []
+    assert console.file.getvalue() == ""
+
+
+def test_run_completion_step_falls_back_to_manual_hint_on_install_failure(monkeypatch):
+    import questionary
+
+    monkeypatch.setattr(typer_completion_shared, "_get_shell_name", lambda: "fish")
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(onboarding, "_add_escape_to_cancel", lambda q: q)
+
+    class _FakeQuestion:
+        def ask(self):
+            return True
+
+    monkeypatch.setattr(questionary, "confirm", lambda *a, **k: _FakeQuestion())
+
+    def fake_install(*, shell, prog_name):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(typer_completion_shared, "install", fake_install)
+    console = _console()
+
+    onboarding.run_completion_step(console)
+
+    output = console.file.getvalue()
+    assert "Couldn't enable tab-completion automatically" in output
+    assert "omm --install-completion" in output
 
 
 def test_run_engine_checklist_requires_tty(monkeypatch):

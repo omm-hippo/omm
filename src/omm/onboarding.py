@@ -272,6 +272,46 @@ def install_selected_engines(console: Console, selected: list[str]) -> None:
         console.print(result.message, style=style, markup=False, highlight=False)
 
 
+def run_completion_step(console: Console) -> None:
+    """Offers to enable shell tab-completion via typer's built-in
+    `--install-completion` machinery - the same engine behind the `omm
+    --install-completion` command already documented in README.md, just
+    surfaced here instead of requiring users to know it exists. Best-effort:
+    any failure must not abort the wizard, since engines are already
+    installed by this point."""
+    from typer import _completion_shared
+
+    shell = _completion_shared._get_shell_name()
+    if shell not in ("bash", "zsh", "fish") or not _stdin_is_tty():
+        console.print(
+            "[muted]Enable tab-completion for install/remove any time: "
+            "`omm --install-completion`.[/muted]\n"
+        )
+        return
+
+    import questionary
+
+    question = _add_escape_to_cancel(
+        questionary.confirm(f"Enable tab-completion for omm in {shell} now?", default=True)
+    )
+    if not question.ask():
+        return
+
+    try:
+        _, path = _completion_shared.install(shell=shell, prog_name="omm")
+    except Exception:
+        console.print(
+            "[warning]Couldn't enable tab-completion automatically.[/warning] "
+            "Run `omm --install-completion` to set it up manually.\n"
+        )
+        return
+
+    console.print(
+        f"[success]Tab-completion installed to {path}.[/success] "
+        "Restart your shell (or open a new terminal) to use it.\n"
+    )
+
+
 def run_wizard(console: Console) -> None:
     print_banner(console)
     run_theme_step(console)
@@ -284,6 +324,7 @@ def run_wizard(console: Console) -> None:
         raise typer.Abort()
     if selected:
         install_selected_engines(console, selected)
+    run_completion_step(console)
     console.print(
         "\n[success]Setup complete.[/success] "
         "Run `omm setting` any time to change telemetry, upload, or update-channel settings.\n"

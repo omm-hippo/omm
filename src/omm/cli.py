@@ -6431,6 +6431,10 @@ def search(
     session_cache.record_results(refs)
     if json_output:
         console.print_json(data=rows)
+    elif refs:
+        console.print(
+            "[muted]Install with: omm install <number>  (e.g. omm install 1)[/muted]"
+        )
 
 
 def _print_install_suggestions(query: str) -> None:
