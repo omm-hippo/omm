@@ -49,6 +49,7 @@ from omm import (
     contribute_state,
     doctor as doctor_mod,
     error_report,
+    errors,
     fit_ui,
     launcher,
     linker,
@@ -2710,6 +2711,28 @@ def _ask_upload_choice(prompt: str) -> str:
     )
 
 
+def _print_not_installed_error(name: str) -> None:
+    """`name` isn't a registry entry - shared by every command that looks
+    one up (info/verify/run/upgrade/remove/link) so the fix text isn't
+    duplicated per command."""
+    errors.print_cli_error(
+        err_console,
+        f"{name} is not installed via omm.",
+        fix="Run `omm list` to see what is installed.",
+    )
+
+
+def _print_no_engine_error(action: str) -> None:
+    """Neither Ollama nor LM Studio is installed/reachable - shared by
+    every `_select_benchmark_engine() is None` check (benchmark,
+    contribute) so the fix text isn't duplicated per command."""
+    errors.print_cli_error(
+        err_console,
+        "Neither Ollama nor LM Studio is installed or available.",
+        fix=f"Install one of them, start it once, then retry `omm {action}`.",
+    )
+
+
 def _ensure_ollama_running(action: str, *, assume_yes: bool = False):
     """Preflight Ollama without confusing missing, stopped, and stale PATH."""
     state = benchmark.ollama_install_state()
@@ -2721,10 +2744,10 @@ def _ensure_ollama_running(action: str, *, assume_yes: bool = False):
             )
         return None
     if state == "missing":
-        err_console.print(
-            "[error]Ollama is not installed or its executable cannot be found. "
-            "Install Ollama from https://ollama.com/download, start it once, "
-            f"then retry `omm {action}`.[/error]"
+        errors.print_cli_error(
+            err_console,
+            "Ollama is not installed or its executable cannot be found.",
+            fix=f"Install Ollama from https://ollama.com/download, start it once, then retry `omm {action}`.",
         )
         raise typer.Exit(1)
 
@@ -3485,7 +3508,11 @@ def _ensure_install_disk_capacity(
             )
 
     if failures:
-        raise InsufficientDiskSpaceError("Not enough disk space: " + "; ".join(failures))
+        raise InsufficientDiskSpaceError(
+            "Not enough disk space: " + "; ".join(failures),
+            fix="Free up disk space on that volume, or retry with `--skip-unfit` "
+            "to skip models that don't fit.",
+        )
 
 
 def _run_memory_guard(
@@ -4092,7 +4119,7 @@ def _install_impl(
                 if skip_unfit:
                     err_console.print(f"[warning]Skipping {error}.[/warning]")
                     return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-                err_console.print(f"[error]{error}.[/error]")
+                errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
                 raise typer.Exit(1) from error
         try:
             if stop_event is not None:
@@ -4107,7 +4134,7 @@ def _install_impl(
             raise InstallInterrupted(filename) from e
         except InsufficientDiskSpaceError as e:
             _cleanup_incomplete_install(filename)
-            err_console.print(f"[error]{e}[/error]")
+            errors.print_cli_error(err_console, str(e), fix=e.fix)
             if skip_unfit:
                 return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
             raise typer.Exit(1) from e
@@ -4127,7 +4154,7 @@ def _install_impl(
         if skip_unfit:
             err_console.print(f"[warning]Skipping {error}.[/warning]")
             return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-        err_console.print(f"[error]{error}.[/error]")
+        errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
         raise typer.Exit(1) from error
 
     if not opts.quiet:
@@ -4148,7 +4175,7 @@ def _install_impl(
         if skip_unfit:
             err_console.print(f"[warning]Skipping {error}[/warning]")
             return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-        err_console.print(f"[error]{error}[/error]")
+        errors.print_cli_error(err_console, str(error), fix=error.fix)
         raise typer.Exit(1) from error
 
     registry.upsert_entry(
@@ -4835,7 +4862,7 @@ def install(
         )
         return
     except ModelResolutionError as e:
-        err_console.print(f"[error]{e}[/error]")
+        errors.print_cli_error(err_console, str(e), fix=e.fix)
         _print_install_suggestions(model_name)
         raise typer.Exit(1) from e
 
@@ -4860,7 +4887,10 @@ def install(
             stop_event=listener.stop_event,
         )
     except DownloadError as error:
-        err_console.print(f"[error]{error}[/error]")
+        errors.print_cli_error(err_console, str(error), fix=error.fix)
+        raise typer.Exit(1) from error
+    except linker.LinkError as error:
+        errors.print_cli_error(err_console, str(error), fix=error.fix)
         raise typer.Exit(1) from error
     except InstallInterrupted as e:
         _cleanup_interrupted_install(e.filename)
@@ -5005,12 +5035,12 @@ def remove(
             if incomplete_install_exists:
                 console.print(f"Would clean up incomplete install of {filename}")
                 raise typer.Exit(0)
-            err_console.print(f"[error]{filename} is not installed via omm. See `omm list`.[/error]")
+            _print_not_installed_error(filename)
             raise typer.Exit(1)
         if _cleanup_incomplete_install(filename):
             console.print(f"[success]Cleaned up incomplete install of {filename}[/success]")
             raise typer.Exit(0)
-        err_console.print(f"[error]{filename} is not installed via omm. See `omm list`.[/error]")
+        _print_not_installed_error(filename)
         raise typer.Exit(1)
 
     if dry_run:
@@ -5154,7 +5184,7 @@ def verify(
     model_name = _resolve_ref(model_name)
     filename, entry = _lookup_entry(model_name, registry.load_registry())
     if entry is None:
-        err_console.print(f"[error]{model_name} is not installed via omm. See `omm list`.[/error]")
+        _print_not_installed_error(model_name)
         raise typer.Exit(1)
     try:
         selected_engine = _select_compatibility_engine(entry, engine)
@@ -5273,7 +5303,7 @@ def info(
     reg = registry.load_registry()
     filename, entry = _lookup_entry(model_name, reg)
     if entry is None:
-        err_console.print(f"[error]{model_name} is not installed via omm. See `omm list`.[/error]")
+        _print_not_installed_error(model_name)
         raise typer.Exit(1)
 
     size_gb = entry.get("size_bytes", 0) / (1024**3)
@@ -5533,7 +5563,7 @@ def run(
     model_name = _resolve_ref(model_name)
     filename, entry = _lookup_entry(model_name, reg)
     if entry is None:
-        err_console.print(f"[error]{model_name} is not installed via omm. See `omm list`.[/error]")
+        _print_not_installed_error(model_name)
         raise typer.Exit(1)
 
     chosen = _pick_run_engine(entry, engine)
@@ -5673,7 +5703,7 @@ def upgrade(
     resolved = _resolve_ref(model_name)
     filename, entry = _lookup_entry(resolved, reg)
     if entry is None:
-        err_console.print(f"[error]{resolved} is not installed via omm. See `omm list`.[/error]")
+        _print_not_installed_error(resolved)
         raise typer.Exit(1)
 
     if dry_run:
@@ -6828,10 +6858,7 @@ def benchmark_cmd(
         raise typer.Exit(1)
     engine = _select_benchmark_engine()
     if engine is None:
-        err_console.print(
-            "[error]Neither Ollama nor LM Studio is installed or available. Install "
-            "one of them, start it once, then retry `omm benchmark`.[/error]"
-        )
+        _print_no_engine_error("benchmark")
         raise typer.Exit(1)
     _print_engine_selection_notice(engine)
     engine, started_daemon = _ensure_engine_running(engine, "benchmark")
@@ -8460,10 +8487,7 @@ def contribute(
     # disk, and compute for a run this machine cannot start.
     engine = _select_benchmark_engine()
     if engine is None:
-        err_console.print(
-            "[error]Neither Ollama nor LM Studio is installed or available. Install "
-            "one of them, start it once, then retry `omm contribute`.[/error]"
-        )
+        _print_no_engine_error("contribute")
         raise typer.Exit(1)
     _print_engine_selection_notice(engine)
     # The consent/warning banner below (inside the try block) is deferred
@@ -8673,6 +8697,15 @@ def main() -> None:
         app()
     except InsufficientDiskSpaceError as e:
         err_console.print(f"[error]{e}[/error]")
+        raise SystemExit(1) from None
+    except PermissionError as e:
+        target = f" ({e.filename})" if e.filename else ""
+        errors.print_cli_error(
+            err_console,
+            f"Permission denied{target}: {e.strerror or e}.",
+            fix="Check that the file or directory is writable by your user, "
+            "and that no other program (or a differently-owned daemon) has it open.",
+        )
         raise SystemExit(1) from None
     except OSError as e:
         if e.errno == errno.ENOSPC:

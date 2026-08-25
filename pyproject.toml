@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "omm-model"
-version = "0.2.172"
+version = "0.2.173"
 description = "Open source Model Manager - a package manager for local LLMs (GGUF)"
 requires-python = ">=3.10"
 license = "MIT"

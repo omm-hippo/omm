@@ -1,3 +1,4 @@
+import errno
 import threading
 from types import SimpleNamespace
 
@@ -407,13 +408,26 @@ def test_the_crash_hook_queues_a_non_enospc_oserror_and_still_reraises_it(
     isolated_omm_home, monkeypatch
 ):
     _enable_endpoint(error_report_send_policy="always")
-    _crash_in(monkeypatch, ["omm", "list"], OSError(13, "Permission denied"))
+    _crash_in(monkeypatch, ["omm", "list"], OSError(errno.ECONNREFUSED, "Connection refused"))
 
     with pytest.raises(OSError):
         cli.main()
 
-    # Python maps errno EACCES onto the PermissionError subclass.
-    assert error_report._load_pending()[0]["error_type"] == "PermissionError"
+    assert error_report._load_pending()[0]["error_type"] == "ConnectionRefusedError"
+
+
+def test_the_crash_hook_does_not_queue_a_permission_error(isolated_omm_home, monkeypatch):
+    # PermissionError (issue #191) gets a clean cause+fix message and a
+    # SystemExit instead of the generic crash-report treatment - it's a
+    # user-actionable condition, not a bug to report.
+    _enable_endpoint(error_report_send_policy="always")
+    _crash_in(monkeypatch, ["omm", "list"], OSError(errno.EACCES, "Permission denied"))
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert error_report._load_pending() == []
 
 
 def test_a_normal_command_exit_is_not_reported_as_a_crash(isolated_omm_home, monkeypatch):
