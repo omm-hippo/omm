@@ -1133,13 +1133,15 @@ def _refresh_data() -> None:
         try:
             manifest_url = config.get("catalog_manifest_url")
             public_key = config.get("catalog_public_key")
+            previous = predictor.load_cached_model()
             if manifest_url and public_key:
                 artifact = predictor.fetch_and_cache_model(model_url, manifest_url, public_key)
             else:
                 artifact = predictor.fetch_and_cache_model(model_url)
+            style = "success" if artifact != previous else "muted"
             console.print(
-                f"[success]Updated recommend-model.json "
-                f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/success]"
+                f"[{style}]Updated recommend-model.json "
+                f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/{style}]"
             )
         except (requests.RequestException, ValueError) as e:
             err_console.print(f"[error]Failed to fetch trained model from {model_url}: {e}[/error]")
@@ -1371,6 +1373,7 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
         try:
             subprocess.Popen(
                 args,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 **kwargs,
@@ -5787,7 +5790,14 @@ def configure_telemetry(
 def configure_upload(
     enable: bool = typer.Option(False, "--enable", help="Always send benchmark results without asking."),
     disable: bool = typer.Option(False, "--disable", help="Never send benchmark results."),
-    ask: bool = typer.Option(False, "--ask", help="Ask every time before sending (default)."),
+    ask: bool = typer.Option(
+        False,
+        "--ask",
+        help=(
+            "Ask before sending (default); `omm install`/`omm benchmark` ask "
+            "each time, `omm contribute` asks once per run."
+        ),
+    ),
 ) -> None:
     """Configure the benchmark-upload send policy; see `omm setting telemetry` for the destination."""
     chosen = [flag for flag in (enable, disable, ask) if flag]
@@ -6428,6 +6438,10 @@ def search(
     session_cache.record_results(refs)
     if json_output:
         console.print_json(data=rows)
+    elif refs:
+        console.print(
+            "[muted]Install with: omm install <number>  (e.g. omm install 1)[/muted]"
+        )
 
 
 def _print_install_suggestions(query: str) -> None:

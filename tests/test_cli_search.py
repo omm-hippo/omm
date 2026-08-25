@@ -62,6 +62,51 @@ def test_search_prints_numbered_refs_and_records_session(monkeypatch):
     assert recorded == [["tinyllama-1.1b-q4"]]
 
 
+def test_search_prints_install_shortcut_hint(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {
+                "name": "tinyllama-1.1b-q4",
+                "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+                "description": "Curated default",
+            },
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
+
+    result = runner.invoke(cli.app, ["search", "tiny"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "omm install <number>" in result.stdout
+    assert "omm install 1" in result.stdout
+
+
+def test_search_json_omits_install_shortcut_hint(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {
+                "name": "tinyllama-1.1b-q4",
+                "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+                "description": "Curated default",
+            },
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
+
+    result = runner.invoke(cli.app, ["--json", "search", "tiny"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "omm install" not in result.stdout
+
+
 def test_search_json_is_parseable_and_has_expected_fields(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
     monkeypatch.setattr(
