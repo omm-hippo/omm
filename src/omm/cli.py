@@ -2551,7 +2551,12 @@ def update() -> None:
 
 def _add_escape_to_cancel(question: questionary.Question) -> questionary.Question:
     """questionary only aborts on Ctrl+C/Ctrl+Q by default; make Escape do
-    the same so `.ask()` returns None instead of requiring Ctrl+C."""
+    the same so `.ask()` returns None instead of requiring Ctrl+C.
+
+    `application.key_bindings` is a `_MergedKeyBindings` (prompt_toolkit
+    merges questionary's bindings with the default ones), which has no
+    `.add` - it must be extended via `merge_key_bindings`, not mutated."""
+    from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
     from prompt_toolkit.keys import Keys
 
     def _abort(event) -> None:
@@ -2560,7 +2565,9 @@ def _add_escape_to_cancel(question: questionary.Question) -> questionary.Questio
     application = getattr(question, "application", None)
     key_bindings = getattr(application, "key_bindings", None)
     if key_bindings is not None:
-        key_bindings.add(Keys.Escape, eager=True)(_abort)
+        escape_binding = KeyBindings()
+        escape_binding.add(Keys.Escape, eager=True)(_abort)
+        application.key_bindings = merge_key_bindings([key_bindings, escape_binding])
     return question
 
 
