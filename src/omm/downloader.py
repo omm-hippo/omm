@@ -52,7 +52,13 @@ _MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
 
 
 class DownloadError(Exception):
-    pass
+    """`fix`, when set, is a copy-pasteable next step for the CLI's
+    cause+fix error format (issue #191) - callers that don't have one
+    just omit it and get the old single-message behavior."""
+
+    def __init__(self, message: str, *, fix: str | None = None):
+        self.fix = fix
+        super().__init__(message)
 
 
 class DownloadCancelled(DownloadError):
@@ -366,7 +372,8 @@ def _download_range_worker(
                 except OSError as e:
                     if e.errno == errno.ENOSPC:
                         raise InsufficientDiskSpaceError(
-                            f"Not enough disk space to download {part_path.name}."
+                            f"Not enough disk space to download {part_path.name}.",
+                            fix="Free up disk space and retry.",
                         ) from e
                     raise
                 written += len(chunk)
@@ -662,7 +669,8 @@ def _download_single_stream(
                     except OSError as e:
                         if e.errno == errno.ENOSPC:
                             raise InsufficientDiskSpaceError(
-                                f"Not enough disk space to download {dest.name}."
+                                f"Not enough disk space to download {dest.name}.",
+                                fix="Free up disk space and retry.",
                             ) from e
                         raise
                     written += len(chunk)

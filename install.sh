@@ -507,6 +507,31 @@ ensure_pipx_bin_path() {
                 fi
             fi
             ;;
+        Linux)
+            # `pipx ensurepath` (via the `userpath` package) can silently no-op
+            # in minimal/container images - it introspects the running shell to
+            # pick a startup file to edit, which is unreliable for non-standard
+            # base images (seen in a Docker VNC/desktop image where it wrote to
+            # none of ~/.bashrc, ~/.profile, ~/.bash_profile). Write the PATH
+            # line ourselves so a fresh shell finds `omm` even when that
+            # detection fails.
+            case "${SHELL:-}" in
+                */zsh) rcfile="$HOME/.zshrc" ;;
+                *) rcfile="$HOME/.bashrc" ;;
+            esac
+            if [ -e "$rcfile" ] && [ ! -f "$rcfile" ]; then
+                echo "Cannot configure PATH: $rcfile is not a regular file." >&2
+                return 1
+            fi
+            if ! grep -Fq "$PIPX_BIN_DIR" "$rcfile" 2>/dev/null; then
+                shell_path=$(printf '%s' "$PIPX_BIN_DIR" | sed 's/[\\"]/\\&/g')
+                if ! printf '\n# Added by omm installer for pipx applications.\nexport PATH="%s:$PATH"\n' \
+                    "$shell_path" >> "$rcfile"; then
+                    echo "Cannot configure PATH in $rcfile." >&2
+                    return 1
+                fi
+            fi
+            ;;
     esac
 }
 

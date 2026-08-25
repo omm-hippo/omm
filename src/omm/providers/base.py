@@ -4,7 +4,13 @@ from __future__ import annotations
 
 
 class ModelResolutionError(Exception):
-    pass
+    """`fix`, when set, is a copy-pasteable next step for the CLI's
+    cause+fix error format (issue #191) - callers that don't have one
+    just omit it and get the old single-message behavior."""
+
+    def __init__(self, message: str, *, fix: str | None = None):
+        self.fix = fix
+        super().__init__(message)
 
 
 class AmbiguousModelError(ModelResolutionError):

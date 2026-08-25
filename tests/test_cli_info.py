@@ -97,6 +97,7 @@ def test_info_errors_for_uninstalled_model(isolated_omm_home):
 
     assert result.exit_code == 1
     assert "is not installed via omm" in result.stderr
+    assert "→ Run `omm list` to see what is installed." in result.stderr
 
 
 def test_info_accepts_numeric_index_from_last_results(isolated_omm_home, monkeypatch):

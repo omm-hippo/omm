@@ -1376,20 +1376,24 @@ def test_install_impl_cleans_up_partial_file_and_skips_on_insufficient_disk_spac
 
 
 def test_install_impl_exits_cleanly_on_insufficient_disk_space_mid_download_without_skip_unfit(
-    isolated_omm_home, monkeypatch
+    isolated_omm_home, monkeypatch, capsys
 ):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
     monkeypatch.setattr(
         cli,
         "download_file",
-        lambda *a, **k: (_ for _ in ()).throw(cli.InsufficientDiskSpaceError("disk full")),
+        lambda *a, **k: (_ for _ in ()).throw(
+            cli.InsufficientDiskSpaceError("disk full", fix="Free up disk space and retry.")
+        ),
     )
 
     with pytest.raises(cli.typer.Exit) as exc_info:
         cli._install_impl(_resolved())
 
     assert exc_info.value.exit_code == 1
+    captured = capsys.readouterr()
+    assert "→ Free up disk space and retry." in captured.err
 
 
 def test_force_redownloads_even_when_already_present(isolated_omm_home, monkeypatch):
