@@ -182,7 +182,7 @@ def test_installers_pin_pipx_to_validated_python_and_use_versioned_staging():
     assert '"$PY" -m pipx "$@"' in sh
     assert '--python "$PY" "$INSTALL_SPEC"' in sh
     assert 'checkout.$$' in sh and '$SOURCES_DIR' in sh
-    assert '.bashrc' not in sh and '.zshrc' not in sh
+    assert '.bashrc' in sh and '.zshrc' in sh
 
 
 def test_uninstallers_exist_and_preserve_models_without_purge():
