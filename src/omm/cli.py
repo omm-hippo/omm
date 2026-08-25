@@ -5790,7 +5790,14 @@ def configure_telemetry(
 def configure_upload(
     enable: bool = typer.Option(False, "--enable", help="Always send benchmark results without asking."),
     disable: bool = typer.Option(False, "--disable", help="Never send benchmark results."),
-    ask: bool = typer.Option(False, "--ask", help="Ask every time before sending (default)."),
+    ask: bool = typer.Option(
+        False,
+        "--ask",
+        help=(
+            "Ask before sending (default); `omm install`/`omm benchmark` ask "
+            "each time, `omm contribute` asks once per run."
+        ),
+    ),
 ) -> None:
     """Configure the benchmark-upload send policy; see `omm setting telemetry` for the destination."""
     chosen = [flag for flag in (enable, disable, ask) if flag]
