@@ -81,6 +81,7 @@ _SPECIAL_VARIANT_WORDS = (
     "nsfw",
     "uncensored",
 )
+_CAUTION_REASON = "Specialized or uncensored variant"
 
 
 @dataclass(frozen=True)
@@ -141,8 +142,8 @@ def _warning(candidate: dict) -> str | None:
     text = _candidate_text(candidate)
     if any(word in text for word in _SPECIAL_VARIANT_WORDS):
         return (
-            "Specialized or uncensored variant. Review its model card and "
-            "behavior before installing."
+            f"{_CAUTION_REASON}. Review its model card and behavior before "
+            "installing."
         )
     return None
 
@@ -231,7 +232,13 @@ def _available_memory(info: object) -> float | None:
     return calculate_memory_budget(info).install_budget_gb
 
 
-def print_screen(console: Console, info: object, candidate_count: int) -> None:
+def print_screen(
+    console: Console,
+    info: object,
+    candidate_count: int,
+    *,
+    show_caution: bool = False,
+) -> None:
     console.print(
         Text(
             f"{candidate_count} compatible model{'s' if candidate_count != 1 else ''} found",
@@ -279,13 +286,23 @@ def print_screen(console: Console, info: object, candidate_count: int) -> None:
         )
     )
     console.print(f"[bold {ACCENT}]Recommended models[/]")
+    if show_caution:
+        caution = Text("   ⚠ CAUTION: ", style=f"bold {WARNING}")
+        caution.append(_CAUTION_REASON, style=WARNING)
+        console.print(caution)
     console.print(choice_header(console.size.width))
 
 
 def _choice_widths(width: int) -> tuple[int, int, int, int]:
+    # questionary adds four cells of picker chrome before every choice. Keep
+    # the choice itself within the remaining width so the final column is not
+    # clipped by prompt_toolkit. At medium widths, preserve the full 15-cell
+    # "General purpose" label by borrowing space from the model column.
+    if width < 61:
+        return max(10, width - 28), 11, 0, 0
     if width < 84:
-        return max(18, width - 35), 11, 0, 13
-    model = max(24, min(40, width - 63))
+        return max(18, width - 43), 11, 0, 15
+    model = max(24, min(40, width - 58))
     return model, 13, 13, 15
 
 
@@ -297,7 +314,8 @@ def choice_header(width: int) -> Text:
     header.append("SPEED".ljust(13), style=f"bold {MUTED}")
     if memory_width:
         header.append("MEMORY".ljust(memory_width), style=f"bold {MUTED}")
-    header.append("BEST FOR".ljust(use_width), style=f"bold {MUTED}")
+    if use_width:
+        header.append("BEST FOR".ljust(use_width), style=f"bold {MUTED}")
     return header
 
 
@@ -315,7 +333,8 @@ def choice_title(row: RecommendationRow, width: int) -> list[tuple[str, str]]:
     ]
     if memory_width:
         parts.append((_prompt_style(f"fg:{_ROW_SIZE}"), memory.ljust(memory_width)))
-    parts.append(("", _clip(row.use_case, use_width).ljust(use_width)))
+    if use_width:
+        parts.append(("", _clip(row.use_case, use_width).ljust(use_width)))
     return parts
 
 
