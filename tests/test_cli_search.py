@@ -333,6 +333,27 @@ def test_search_provider_curated_filters_out_remote_results(monkeypatch):
     assert "mistral-ms" not in result.stdout
 
 
+def test_search_provider_curated_does_not_query_remote_providers(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {"name": "mistral-curated", "repo_id": "org/mistral-curated", "description": "d"},
+        ],
+    )
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("a curated-only search must not query remote providers")
+
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", unexpected)
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", unexpected)
+
+    result = runner.invoke(cli.app, ["search", "mistral", "--provider", "curated"])
+
+    assert result.exit_code == 0, result.stdout
+
+
 def test_search_provider_bogus_value_errors(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
     monkeypatch.setattr(cli.search_mod, "local_candidate_pool", lambda model_url, **kwargs: [])

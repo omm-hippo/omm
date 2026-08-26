@@ -20,8 +20,9 @@ omm contribute --report-errors        # this run only; your saved setting is unc
 
 ## Where they go, and why not the telemetry node
 
-Benchmark telemetry lands in the `/telemetry` node of the project's Firebase
-Realtime Database, which is **publicly readable** - that is how the
+Benchmark telemetry reaches the `/telemetry` node of the project's Firebase
+Realtime Database through a proof-of-work-gated gateway. The node is
+**publicly readable** - that is how the
 recommendation model gets retrained from community data, and it is safe
 precisely because a v8 row is nothing but anonymous numbers
 (`docs/telemetry-v8.md`).
@@ -30,13 +31,17 @@ Error text is a different risk class. Even after scrubbing, an error message
 is free-form text written by some third-party library, and the honest
 assumption is that one of them will eventually put something unfortunate in
 one. So error reports go to a **separate, write-only** node,
-`/error_reports`: clients can append to it, nobody can read it back, and no
-report can be overwritten once written (`database.rules.json`).
+`/error_reports`. Clients submit to the gateway's `/error-report` route,
+which binds proof-of-work to the exact payload, rejects replays, validates
+the field allow-list, and performs a create-only database write. Direct
+Firebase client writes and all reads are denied (`database.rules.json`).
 
-The endpoint is derived from your existing `telemetry_endpoint` by replacing
-the last path segment (`.../telemetry.json` -> `.../error_reports.json`).
-There is no second URL to configure, and no endpoint means error reporting
-is simply unavailable.
+For the hosted telemetry gateway, omm selects its paired `/error-report`
+route. For a self-hosted collector, the endpoint is derived from the existing
+`telemetry_endpoint` by replacing the last path segment (`.../telemetry` ->
+`.../error_reports`). There is no second URL to configure. Legacy direct
+Firebase writes are not attempted, and no supported endpoint means error
+reporting is unavailable.
 
 ## What is sent
 
@@ -52,19 +57,18 @@ is simply unavailable.
 | `cpu_arch` | `x86_64` | Architecture, never the CPU's marketing name. |
 | `cpu_score` / `cpu_tier` | `5600` / `0` | The same anonymous chip scores v8 telemetry sends, from the same parser. |
 | `gpu_score` / `gpu_tier` | `4090` / `0` | Absent entirely on a machine with no detected GPU. |
+| `catalog_ref` | `unsloth/Qwen3-4B-GGUF:Qwen3-4B-Q4_K_M.gguf` | Catalog coordinates - `repo_id:filename`, never a local path. |
+| `engine` | `ollama` | Which runner was in use. |
+| `recorded_at` | `2026-08-19T12:00:00+00:00` | UTC timestamp. |
 
 All of `cpu_arch`, `cpu_score`, `cpu_tier`, `gpu_score`, and `gpu_tier` are
 optional, and are filled in only when the failing command had already
 scanned the hardware for its own purposes (`omm contribute` always has). omm
 never starts a hardware scan just to decorate a report - that scan takes
 seconds, and no one should wait for it after a crash.
-| `catalog_ref` | `unsloth/Qwen3-4B-GGUF:Qwen3-4B-Q4_K_M.gguf` | Catalog coordinates - `repo_id:filename`, never a local path. |
-| `engine` | `ollama` | Which runner was in use. |
-| `recorded_at` | `2026-08-19T12:00:00+00:00` | UTC timestamp. |
 
-The Realtime Database rules reject any field not on that list, so a future
-bug that starts attaching something new fails loudly at the server instead
-of quietly collecting it.
+The gateway rejects any field not on that list, so a future bug that starts
+attaching something new fails at the server instead of quietly collecting it.
 
 ## What is never sent
 

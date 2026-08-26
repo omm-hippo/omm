@@ -3,21 +3,25 @@ name: "Engine link/import check: Jan"
 "on":
   push:
     paths:
+      - "pyproject.toml"
       - "src/omm/linker.py"
       - "src/omm/config.py"
       - "src/omm/atomic.py"
       - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
+      - "src/omm/registry.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
       - ".github/workflows/ci-engine-jan.yml"
   pull_request:
     paths:
+      - "pyproject.toml"
       - "src/omm/linker.py"
       - "src/omm/config.py"
       - "src/omm/atomic.py"
       - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
+      - "src/omm/registry.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
       - ".github/workflows/ci-engine-jan.yml"

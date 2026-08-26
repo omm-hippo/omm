@@ -185,6 +185,19 @@ def test_installers_pin_pipx_to_validated_python_and_use_versioned_staging():
     assert '.bashrc' in sh and '.zshrc' in sh
 
 
+def test_installers_never_reuse_an_existing_commit_directory_without_refreshing_it():
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert 'Move-Item -LiteralPath $SrcDir -Destination $PreviousSrcDir' in ps1
+    assert 'Move-Item -LiteralPath $StagingDir -Destination $SrcDir' in ps1
+    assert 'Remove-Item -Recurse -Force $StagingDir\n} else {' not in ps1
+
+    assert 'mv "$SRC_DIR" "$PREVIOUS_SRC_DIR"' in sh
+    assert 'mv "$STAGING_DIR" "$SRC_DIR"' in sh
+    assert 'if [ -d "$SRC_DIR" ]; then\n    rm -rf "$STAGING_DIR"' not in sh
+
+
 def test_uninstallers_exist_and_preserve_models_without_purge():
     ps1 = (ROOT / "uninstall.ps1").read_text(encoding="utf-8")
     sh = (ROOT / "uninstall.sh").read_text(encoding="utf-8")

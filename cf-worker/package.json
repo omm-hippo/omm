@@ -1,6 +1,7 @@
 {
   "name": "omm-telemetry-gateway",
   "private": true,
+  "type": "module",
   "version": "1.0.0",
   "scripts": {
     "dev": "wrangler dev",
@@ -9,10 +10,10 @@
     "secret:firebase-key": "wrangler secret put FIREBASE_SERVICE_ACCOUNT_JSON"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.5.2",
-    "@cloudflare/workers-types": "^4.20250109.0",
-    "typescript": "^5.7.3",
-    "vitest": "^2.1.8",
-    "wrangler": "^3.99.0"
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260823.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.125.0"
   }
 }

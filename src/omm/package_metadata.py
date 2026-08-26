@@ -88,14 +88,14 @@ def _legacy_distribution_is_ours(distribution: importlib.metadata.Distribution) 
 
     try:
         entry_points = distribution.entry_points
+        return any(
+            entry_point.group == _CONSOLE_ENTRY_POINT_GROUP
+            and entry_point.name == _CONSOLE_ENTRY_POINT_NAME
+            and entry_point.value == _CONSOLE_ENTRY_POINT_VALUE
+            for entry_point in entry_points
+        )
     except Exception:
         return False
-    return any(
-        entry_point.group == _CONSOLE_ENTRY_POINT_GROUP
-        and entry_point.name == _CONSOLE_ENTRY_POINT_NAME
-        and entry_point.value == _CONSOLE_ENTRY_POINT_VALUE
-        for entry_point in entry_points
-    )
 
 
 def find_distribution() -> tuple[str, importlib.metadata.Distribution] | None:
@@ -328,8 +328,13 @@ def _checkout_origin(checkout: Path) -> str | None:
     try:
         stdout, _ = process.communicate(timeout=5)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate()
+        try:
+            process.kill()
+            process.communicate()
+        except OSError:
+            pass
+        return None
+    except OSError:
         return None
     if process.returncode != 0:
         return None

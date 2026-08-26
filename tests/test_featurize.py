@@ -1,8 +1,14 @@
 from omm.featurize import (
     candidate_active_parameter_count_billions,
+    estimate_model_size_gb,
     parse_chip_score,
     resolve_active_parameter_count_billions,
 )
+
+
+def test_estimate_model_size_ignores_boolean_and_non_finite_size_metadata():
+    assert estimate_model_size_gb("unknown", True) is None
+    assert estimate_model_size_gb("unknown", float("inf")) is None
 
 
 def test_historical_gpt_oss_total_is_repaired_to_published_active_count():

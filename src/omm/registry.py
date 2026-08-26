@@ -38,10 +38,20 @@ def upsert_entry(filename: str, **fields: Any) -> None:
     ensure_omm_home()
     with locked(REGISTRY_PATH):
         registry = load_registry()
-        entry = registry.setdefault(filename, {"linked": {}})
+        entry = registry.get(filename)
+        if not isinstance(entry, dict):
+            entry = {"linked": {}}
+            registry[filename] = entry
         entry.update({k: v for k, v in fields.items() if k != "linked"})
         if "linked" in fields:
-            entry["linked"].update(fields["linked"])
+            linked = entry.get("linked")
+            if not isinstance(linked, dict):
+                linked = {}
+                entry["linked"] = linked
+            incoming = fields["linked"]
+            if not isinstance(incoming, dict):
+                raise TypeError("linked registry metadata must be a dictionary")
+            linked.update(incoming)
         _save_registry_unlocked(registry)
 
 

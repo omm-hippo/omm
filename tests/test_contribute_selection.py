@@ -52,6 +52,23 @@ def test_phase_b_alternates_below_and_above_once_phase_a_exhausted(monkeypatch):
     assert queue.next_candidate() is d  # above, cursor 1
 
 
+def test_phase_b_alternation_survives_rebuild_after_mark_seen(monkeypatch):
+    a, b = _candidate("o", "a.gguf"), _candidate("o", "b.gguf")
+    c, d = _candidate("o", "c.gguf"), _candidate("o", "d.gguf")
+    ranked = [(a, 40.0), (b, 20.0), (c, -1.0), (d, -5.0)]
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: ranked)
+
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+    queue.next_candidate()  # phase A: a
+    queue.next_candidate()  # phase A: b
+    assert queue.next_candidate() is b  # Phase B below; above must be next.
+    assert queue._next_side_is_below is False
+
+    queue.mark_seen(contribute.ref(b))
+
+    assert queue._next_side_is_below is False
+
+
 def test_phase_b_falls_through_to_other_side_when_one_side_fully_seen(monkeypatch):
     a, b = _candidate("o", "a.gguf"), _candidate("o", "b.gguf")
     c = _candidate("o", "c.gguf")

@@ -14,6 +14,11 @@ describe("isTimestampFresh", () => {
   it("rejects a non-finite timestamp", () => {
     expect(isTimestampFresh(NaN, 500)).toBe(false);
   });
+  it("rejects fractional timestamps and invalid skew windows", () => {
+    expect(isTimestampFresh(1000.5, 500, 1000)).toBe(false);
+    expect(isTimestampFresh(1000, -1, 1000)).toBe(false);
+    expect(isTimestampFresh(1000, Number.POSITIVE_INFINITY, 1000)).toBe(false);
+  });
 });
 
 describe("verifyProofOfWork", () => {
@@ -37,6 +42,12 @@ describe("verifyProofOfWork", () => {
   it("rejects a negative or non-integer nonce", async () => {
     expect(await verifyProofOfWork('{"a":1}', 1234567890, -1, 1)).toBe(false);
     expect(await verifyProofOfWork('{"a":1}', 1234567890, 1.5, 1)).toBe(false);
+  });
+
+  it("rejects invalid difficulty values without throwing", async () => {
+    expect(await verifyProofOfWork('{"a":1}', 1234567890, 0, -1)).toBe(false);
+    expect(await verifyProofOfWork('{"a":1}', 1234567890, 0, 65)).toBe(false);
+    expect(await verifyProofOfWork('{"a":1}', 1234567890, 0, 1.5)).toBe(false);
   });
 
   it("ties the solution to the exact payload string", async () => {

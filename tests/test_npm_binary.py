@@ -112,6 +112,20 @@ def test_executable_probe_rejects_wrong_format(tmp_path):
         npm_binary.validate_executable(executable, "linux-x64-gnu", "1.2.3")
 
 
+def test_executable_probe_rejects_version_prefix_match(tmp_path, monkeypatch):
+    executable = tmp_path / "omm"
+    executable.write_bytes(bytes.fromhex("7f454c46") + b" executable")
+
+    def fake_run(command, **kwargs):
+        output = "omm 1.2.30" if command[-1] == "--version" else "Example usage:"
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(npm_binary.subprocess, "run", fake_run)
+
+    with pytest.raises(npm_binary.NpmBinaryError, match="wrong version"):
+        npm_binary.validate_executable(executable, "linux-x64-gnu", "1.2.3")
+
+
 def test_executable_probe_reports_captured_failure_output(tmp_path, monkeypatch):
     executable = tmp_path / "omm"
     executable.write_bytes(bytes.fromhex("7f454c46") + b" executable")

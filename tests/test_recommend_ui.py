@@ -47,6 +47,25 @@ def test_build_rows_adds_human_context_and_special_variant_warning():
     assert row.description == "Popular on Hugging Face with 404,795 downloads."
 
 
+def test_build_rows_names_modelscope_download_source_correctly():
+    candidate = {
+        "filename": "Qwen-1B-Q4_K_M.gguf",
+        "provider": "modelscope",
+        "description": "1,000 downloads on ModelScope",
+    }
+
+    [row] = recommend_ui.build_rows([(candidate, 20.0)], ["ms:org/model"])
+
+    assert row.description == "Popular on ModelScope with 1,000 downloads."
+
+
+def test_build_rows_rejects_mismatched_refs_instead_of_silently_truncating():
+    import pytest
+
+    with pytest.raises(ValueError, match="same length"):
+        recommend_ui.build_rows([({"filename": "a.gguf"}, 1.0)], [])
+
+
 def test_recommend_screen_renders_hardware_table_and_selected_detail():
     candidate = {
         "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",

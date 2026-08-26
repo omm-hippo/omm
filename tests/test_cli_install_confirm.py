@@ -73,7 +73,7 @@ def _stub_successful_install(monkeypatch, isolated_omm_home):
 
 
 def test_install_runs_benchmark_and_telemetry_on_yes(isolated_omm_home, monkeypatch):
-    filename = _stub_successful_install(monkeypatch, isolated_omm_home)
+    _stub_successful_install(monkeypatch, isolated_omm_home)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "yes")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
@@ -155,6 +155,7 @@ def test_install_keyboard_interrupt_cleans_up_partial_download(isolated_omm_home
 
     result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
 
+    assert result.exit_code == 130
     assert cleaned == [filename]
 
 

@@ -12,6 +12,7 @@ drives this.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import unicodedata
 import uuid
@@ -100,22 +101,37 @@ def _scan_ollama_format(engine: str, models_dir: Path) -> list[ExternalGguf]:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             continue
+        if not isinstance(manifest, dict):
+            continue
         runtime_name = linker._ollama_runtime_name_from_manifest_path(
             manifest_path, manifests_root
         )
         if runtime_name is None:
             continue
-        for layer in manifest.get("layers", []):
-            if layer.get("mediaType") == _OLLAMA_MODEL_LAYER:
-                digest = layer["digest"].removeprefix("sha256:")
-                tags_by_digest.setdefault(digest, []).append(runtime_name)
+        layers = manifest.get("layers", [])
+        if not isinstance(layers, list):
+            continue
+        for layer in layers:
+            if not isinstance(layer, dict) or layer.get("mediaType") != _OLLAMA_MODEL_LAYER:
+                continue
+            raw_digest = layer.get("digest")
+            if not isinstance(raw_digest, str):
+                continue
+            digest = raw_digest.removeprefix("sha256:")
+            if re.fullmatch(r"[0-9a-fA-F]{64}", digest) is None:
+                continue
+            tags_by_digest.setdefault(digest.lower(), []).append(runtime_name)
 
     found = []
     for digest, tags in tags_by_digest.items():
         blob = blobs_dir / f"sha256-{digest}"
         if not blob.is_file() or blob.is_symlink():
             continue
-        found.append(ExternalGguf(engine, tags[0], blob, blob.stat().st_size, digest))
+        try:
+            size = blob.stat().st_size
+        except OSError:
+            continue
+        found.append(ExternalGguf(engine, tags[0], blob, size, digest))
     return found
 
 
@@ -137,7 +153,14 @@ def _scan_flat_dir(engine: str, base: Path) -> list[ExternalGguf]:
     for path in base.rglob("*.gguf"):
         if not path.is_file() or path.is_symlink():
             continue
-        found.append(ExternalGguf(engine, path.name, path, path.stat().st_size, sha256_file(path)))
+        try:
+            found.append(
+                ExternalGguf(
+                    engine, path.name, path, path.stat().st_size, sha256_file(path)
+                )
+            )
+        except OSError:
+            continue
     return found
 
 
@@ -179,11 +202,18 @@ def scan_jan() -> list[ExternalGguf]:
             model_path = jan_data_dir / model_path
         if not model_path.is_file() or model_path.is_symlink():
             continue
-        found.append(
-            ExternalGguf(
-                "jan", config_path.parent.name, model_path, model_path.stat().st_size, sha256_file(model_path)
+        try:
+            found.append(
+                ExternalGguf(
+                    "jan",
+                    config_path.parent.name,
+                    model_path,
+                    model_path.stat().st_size,
+                    sha256_file(model_path),
+                )
             )
-        )
+        except OSError:
+            continue
     return found
 
 
@@ -192,9 +222,18 @@ def scan_directory(path: Path) -> list[ExternalGguf]:
     for gguf_path in path.rglob("*.gguf"):
         if not gguf_path.is_file() or gguf_path.is_symlink():
             continue
-        found.append(
-            ExternalGguf("import", gguf_path.name, gguf_path, gguf_path.stat().st_size, sha256_file(gguf_path))
-        )
+        try:
+            found.append(
+                ExternalGguf(
+                    "import",
+                    gguf_path.name,
+                    gguf_path,
+                    gguf_path.stat().st_size,
+                    sha256_file(gguf_path),
+                )
+            )
+        except OSError:
+            continue
     return found
 
 
@@ -225,6 +264,8 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     hub-registered copy under this same sha256 - then replace every other
     location for this hash with a symlink to it. Returns bytes reclaimed."""
     ensure_omm_home()
+    if not group.locations:
+        raise ValueError("cannot adopt an empty model group")
     reg = registry.load_registry()
     def managed_path(filename: str) -> Path:
         filename = validate_model_filename(filename)
@@ -237,13 +278,15 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
         (
             fn
             for fn, entry in reg.items()
-            if entry.get("sha256") == group.sha256
+            if isinstance(entry, dict)
+            and entry.get("sha256") == group.sha256
             and _is_safe_registry_filename(fn, managed_path)
         ),
         None,
     )
 
     linked = {spec.key: False for spec in linker.ENGINES}
+    adopted_links: list[str] = []
     bytes_saved = 0
     discovered_ollama_runtime_name = next(
         (
@@ -256,7 +299,9 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
 
     if existing_filename:
         hub_path = managed_path(existing_filename)
-        linked.update(reg[existing_filename].get("linked", {}))
+        existing_linked = reg[existing_filename].get("linked", {})
+        if isinstance(existing_linked, dict):
+            linked.update(existing_linked)
     else:
         preferred = next((loc for loc in group.locations if loc.engine not in _MANIFEST_STYLE_ENGINES), None)
         if preferred is not None:
@@ -268,9 +313,35 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             filename = f"{linker.sanitize_ollama_tag(preferred.display_name)}.gguf"
 
         hub_path = MODELS_DIR / filename
-        if hub_path.exists():
-            hub_path = MODELS_DIR / f"{group.sha256[:12]}-{filename}"
-        shutil.move(str(preferred.path), str(hub_path))
+        if hub_path.exists() or hub_path.is_symlink():
+            suffix = 0
+            while True:
+                discriminator = group.sha256[:12]
+                if suffix:
+                    discriminator = f"{discriminator}-{suffix}"
+                candidate = MODELS_DIR / f"{discriminator}-{filename}"
+                if not candidate.exists() and not candidate.is_symlink():
+                    hub_path = candidate
+                    break
+                suffix += 1
+        quarantine = preferred.path.with_name(
+            f".{preferred.path.name}.omm-import-{uuid.uuid4().hex}"
+        )
+        preferred.path.replace(quarantine)
+        try:
+            if quarantine.is_symlink() or not quarantine.is_file():
+                raise linker.LinkError(
+                    f"Refusing to import changed or non-regular file at {preferred.path}."
+                )
+            if sha256_file(quarantine) != group.sha256:
+                raise linker.LinkError(
+                    f"Refusing to import file changed after scan at {preferred.path}."
+                )
+            shutil.move(str(quarantine), str(hub_path))
+        except Exception:
+            if quarantine.exists() or quarantine.is_symlink():
+                quarantine.replace(preferred.path)
+            raise
 
     # hub_path is fixed for the rest of this call - hash it at most once
     # (lazily, only if a real duplicate location actually needs the
@@ -297,6 +368,10 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             try:
                 # `group.sha256` came from the earlier scan, so re-hash the
                 # exact quarantined file at this destructive boundary.
+                if quarantine.is_symlink() or not quarantine.is_file():
+                    raise linker.LinkError(
+                        f"Refusing to replace changed or non-regular duplicate at {loc.path}."
+                    )
                 if sha256_file(quarantine) != hub_path_sha256():
                     raise linker.LinkError(
                         f"Refusing to replace changed unowned duplicate at {loc.path}."
@@ -313,6 +388,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
                 quarantine.unlink()
         else:
             linker.link_file(hub_path, loc.path)
+        adopted_links.append(str(loc.path))
         if was_real_file:
             bytes_saved += loc.size_bytes
         if loc.engine in linked:
@@ -348,7 +424,14 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             link_warnings.append(f"{spec.label} link skipped: {e}")
 
     if existing_filename:
-        fields: dict[str, object] = {"linked": linked}
+        raw_custom_links = reg[existing_filename].get("custom_links")
+        custom_links = (
+            [path for path in raw_custom_links if isinstance(path, str)]
+            if isinstance(raw_custom_links, list)
+            else []
+        )
+        custom_links.extend(path for path in adopted_links if path not in custom_links)
+        fields: dict[str, object] = {"linked": linked, "custom_links": custom_links}
         if ollama_runtime_name:
             fields["ollama_runtime_name"] = ollama_runtime_name
         registry.upsert_entry(existing_filename, **fields)
@@ -362,6 +445,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             ollama_name=ollama_tag,
             repo_id=None,
             linked=linked,
+            custom_links=adopted_links,
         )
         if ollama_runtime_name:
             fields["ollama_runtime_name"] = ollama_runtime_name

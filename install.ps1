@@ -586,25 +586,52 @@ $headCommit = (git -C $StagingDir rev-parse HEAD).Trim()
 # "create a merge commit" PRs, where GitHub signs the merge with a key
 # this script doesn't trust and the real signature is one hop down, on the
 # PR branch tip - when the direct check fails.
-$verified = Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir -Quiet
-if (-not $verified) {
+$verifiedCommit = if (Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir -Quiet) { $headCommit } else { $null }
+if ($null -eq $verifiedCommit) {
     $signedCommit = Resolve-SigningCommit -Commit $headCommit -RepoDir $StagingDir
     if ($signedCommit -ne $headCommit) {
-        $verified = Test-CommitSignature -Commit $signedCommit -RepoDir $StagingDir
+        if (Test-CommitSignature -Commit $signedCommit -RepoDir $StagingDir) {
+            $verifiedCommit = $signedCommit
+        }
     } else {
-        $verified = Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir
+        if (Test-CommitSignature -Commit $headCommit -RepoDir $StagingDir) {
+            $verifiedCommit = $headCommit
+        }
     }
 }
-if (-not $verified) {
+if ($null -eq $verifiedCommit) {
     Remove-Item -Recurse -Force $StagingDir
     Write-Error "Signature verification failed - refusing to install untrusted code."
     exit 1
 }
-$SrcDir = Join-Path $SourcesDir $headCommit
-if (Test-Path $SrcDir) {
-    Remove-Item -Recurse -Force $StagingDir
-} else {
+if ($verifiedCommit -ne $headCommit) {
+    git -C $StagingDir checkout --detach --quiet $verifiedCommit
+    if ($LASTEXITCODE -ne 0) {
+        Remove-Item -Recurse -Force $StagingDir
+        Write-Error "Could not check out the verified signed commit."
+        exit 1
+    }
+}
+$SrcDir = Join-Path $SourcesDir $verifiedCommit
+$PreviousSrcDir = $null
+if (Test-Path -LiteralPath $SrcDir) {
+    $PreviousSrcDir = Join-Path $SourcesDir ("replaced-" + $verifiedCommit + "-" + [guid]::NewGuid().ToString("N"))
+    try {
+        Move-Item -LiteralPath $SrcDir -Destination $PreviousSrcDir
+    } catch {
+        Remove-Item -LiteralPath $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Error "Could not move the previous source checkout aside: $_"
+        exit 1
+    }
+}
+try {
     Move-Item -LiteralPath $StagingDir -Destination $SrcDir
+} catch {
+    if ($null -ne $PreviousSrcDir -and (Test-Path -LiteralPath $PreviousSrcDir)) {
+        Move-Item -LiteralPath $PreviousSrcDir -Destination $SrcDir -ErrorAction SilentlyContinue
+    }
+    Write-Error "Could not activate the freshly verified source checkout: $_"
+    exit 1
 }
 $versionMatch = Select-String -LiteralPath (Join-Path $SrcDir "pyproject.toml") -Pattern '^version = "([^"]+)"\s*$' | Select-Object -First 1
 if ($null -eq $versionMatch) {

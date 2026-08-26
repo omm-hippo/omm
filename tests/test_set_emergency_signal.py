@@ -77,3 +77,32 @@ def test_main_requires_message_and_id_unless_clearing(tmp_path, monkeypatch):
 
     with pytest.raises(SystemExit):
         set_emergency_signal.main()
+
+
+def test_set_signal_rejects_invalid_version_without_modifying_artifact(tmp_path):
+    artifact_path = tmp_path / "recommend-model.json"
+    _write_artifact(artifact_path)
+    original = artifact_path.read_bytes()
+
+    with pytest.raises(ValueError, match="X.Y.Z"):
+        set_emergency_signal.set_signal(
+            artifact_path,
+            id_="incident",
+            message="Update required",
+            fixed_in_version="next",
+        )
+
+    assert artifact_path.read_bytes() == original
+
+
+def test_set_signal_rejects_non_object_artifact(tmp_path):
+    artifact_path = tmp_path / "recommend-model.json"
+    artifact_path.write_text("[]")
+
+    with pytest.raises(ValueError, match="JSON object"):
+        set_emergency_signal.set_signal(
+            artifact_path,
+            id_="incident",
+            message="Update required",
+            fixed_in_version=None,
+        )

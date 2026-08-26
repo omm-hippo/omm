@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,7 +36,11 @@ def load_profiles(path: Path | None = None) -> dict:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"schema_version": 1, "profiles": {}}
-    if payload.get("schema_version") != 1 or not isinstance(payload.get("profiles"), dict):
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or not isinstance(payload.get("profiles"), dict)
+    ):
         return {"schema_version": 1, "profiles": {}}
     return payload
 
@@ -53,7 +58,11 @@ def calibration_factor(
 ) -> float:
     profile = load_profiles(path)["profiles"].get(_profile_key(hardware, engine), {})
     factor = profile.get("factor", 1.0)
-    if isinstance(factor, bool) or not isinstance(factor, (int, float)):
+    if (
+        isinstance(factor, bool)
+        or not isinstance(factor, (int, float))
+        or not math.isfinite(float(factor))
+    ):
         return 1.0
     return max(MIN_FACTOR, min(MAX_FACTOR, float(factor)))
 
@@ -66,7 +75,16 @@ def record_calibration(
     path: Path | None = None,
     engine: str = "ollama",
 ) -> float:
-    if measured_tokens_per_sec <= 0 or predicted_tokens_per_sec <= 0:
+    if (
+        isinstance(measured_tokens_per_sec, bool)
+        or isinstance(predicted_tokens_per_sec, bool)
+        or not isinstance(measured_tokens_per_sec, (int, float))
+        or not isinstance(predicted_tokens_per_sec, (int, float))
+        or not math.isfinite(float(measured_tokens_per_sec))
+        or not math.isfinite(float(predicted_tokens_per_sec))
+        or measured_tokens_per_sec <= 0
+        or predicted_tokens_per_sec <= 0
+    ):
         raise ValueError("Calibration speeds must be greater than zero.")
     target = path or CALIBRATION_PATH
     key = _profile_key(hardware, engine)
@@ -79,7 +97,14 @@ def record_calibration(
         )
         previous_factor = previous.get("factor")
         previous_samples = previous.get("sample_count", 0)
-        if isinstance(previous_factor, (int, float)) and isinstance(previous_samples, int):
+        if (
+            isinstance(previous_factor, (int, float))
+            and not isinstance(previous_factor, bool)
+            and math.isfinite(float(previous_factor))
+            and isinstance(previous_samples, int)
+            and not isinstance(previous_samples, bool)
+            and previous_samples >= 0
+        ):
             sample_count = min(previous_samples, 9)
             factor = (float(previous_factor) * sample_count + new_ratio) / (sample_count + 1)
             total_samples = previous_samples + 1

@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -30,6 +31,7 @@ function fixture(t, overrides = {}) {
       distribution: "omm-model",
       target: "darwin-arm64",
       binary: "bin/omm",
+      sha256: crypto.createHash("sha256").update("standalone omm").digest("hex"),
     },
     ...overrides,
   };
@@ -98,6 +100,21 @@ test("resolvePlatformPackage rejects version and target mismatches", (t) => {
         resolvePackage: wrongTarget.resolvePackage,
       }),
     /metadata does not match/,
+  );
+});
+
+test("resolvePlatformPackage rejects a binary changed after packaging", (t) => {
+  const installed = fixture(t);
+  fs.writeFileSync(installed.binary, "tampered executable");
+
+  assert.throws(
+    () =>
+      resolvePlatformPackage({
+        platform: "darwin",
+        arch: "arm64",
+        resolvePackage: installed.resolvePackage,
+      }),
+    /checksum is invalid/,
   );
 });
 

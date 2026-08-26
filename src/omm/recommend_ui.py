@@ -165,7 +165,8 @@ def _description(candidate: dict) -> str:
         return "Curated model from OMM's default catalog."
     downloads = re.search(r"([\d,]+)\s+downloads", raw, flags=re.IGNORECASE)
     if downloads:
-        return f"Popular on Hugging Face with {downloads.group(1)} downloads."
+        source = "ModelScope" if candidate.get("provider") == "modelscope" else "Hugging Face"
+        return f"Popular on {source} with {downloads.group(1)} downloads."
     return raw or "A hardware-compatible local language model."
 
 
@@ -173,6 +174,8 @@ def build_rows(
     ranked: list[tuple[dict, float | None]],
     values: list[str],
 ) -> list[RecommendationRow]:
+    if len(ranked) != len(values):
+        raise ValueError("ranked candidates and install refs must have the same length")
     rows = []
     for index, ((candidate, speed), value) in enumerate(zip(ranked, values)):
         warning = _warning(candidate)

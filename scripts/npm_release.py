@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -29,6 +30,7 @@ CHECKSUMS_NAME = "SHA256SUMS"
 REGISTRY = "https://registry.npmjs.org/"
 LIFECYCLE_SCRIPTS = {"preinstall", "install", "postinstall", "prepare"}
 MAX_UNPACKED_PACKAGE_BYTES = 128 * 1024 * 1024
+MAX_TAR_MEMBERS = 1_000
 
 
 class NpmReleaseError(RuntimeError):
@@ -52,14 +54,19 @@ def _sha256(path: Path) -> str:
 
 
 def _integrity(path: Path) -> str:
-    digest = hashlib.sha512(path.read_bytes()).digest()
-    return "sha512-" + base64.b64encode(digest).decode("ascii")
+    digest = hashlib.sha512()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return "sha512-" + base64.b64encode(digest.digest()).decode("ascii")
 
 
 def _tar_files(bundle: tarfile.TarFile) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     unpacked_size = 0
-    for member in bundle.getmembers():
+    for member_index, member in enumerate(bundle.getmembers(), start=1):
+        if member_index > MAX_TAR_MEMBERS:
+            raise NpmReleaseError("npm tarball contains too many members")
         path = PurePosixPath(member.name)
         if path.is_absolute() or ".." in path.parts or not path.parts:
             raise NpmReleaseError(f"unsafe npm tar member: {member.name!r}")
@@ -127,10 +134,17 @@ def inspect_tarball(path: Path) -> PackageInfo:
         expected_files = {f"package/{item}" for item in npm_package.EXPECTED_LAUNCHER_FILES}
         if set(files) != expected_files:
             raise NpmReleaseError("npm launcher tarball has files outside its allowlist")
-        if not files["package/LICENSE"].strip():
-            raise NpmReleaseError("npm launcher has an empty license")
-        if not files["package/bin/omm.js"].startswith(b"#!/usr/bin/env node\n"):
-            raise NpmReleaseError("npm launcher has no Node shebang")
+        if files["package/LICENSE"] != npm_package.canonical_license_bytes():
+            raise NpmReleaseError("npm launcher license does not match the repository")
+        expected_launcher = npm_package.canonical_text_bytes(
+            npm_package.LAUNCHER_SOURCE / "bin" / "omm.js"
+        )
+        if files["package/bin/omm.js"] != expected_launcher:
+            raise NpmReleaseError("npm launcher entry point does not match the source")
+        if files["package/lib/launcher.js"] != npm_package.canonical_text_bytes(
+            npm_package.LAUNCHER_SOURCE / "lib" / "launcher.js"
+        ):
+            raise NpmReleaseError("npm launcher implementation does not match the source")
         if manifest.get("bin") != {"omm": "bin/omm.js"}:
             raise NpmReleaseError("npm launcher exposes an unexpected command")
         if manifest.get("engines") != {"node": ">=22.14.0"}:
@@ -160,8 +174,10 @@ def inspect_tarball(path: Path) -> PackageInfo:
     expected_files = {"package/LICENSE", "package/package.json", binary_name}
     if set(files) != expected_files:
         raise NpmReleaseError(f"npm platform tarball {name!r} has unexpected files")
-    if not files["package/LICENSE"].strip():
-        raise NpmReleaseError(f"npm platform tarball {name!r} has an empty license")
+    if files["package/LICENSE"] != npm_package.canonical_license_bytes():
+        raise NpmReleaseError(
+            f"npm platform tarball {name!r} license does not match the repository"
+        )
     binary = files[binary_name]
     magic = npm_package.MAGIC_PREFIXES[target["os"]]
     if not any(binary.startswith(prefix) for prefix in magic):
@@ -224,6 +240,25 @@ def _native_command(executable: str | Path, *arguments: str) -> list[str]:
     return [executable, *arguments]
 
 
+def _validate_registry_url(registry: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(registry)
+        port = parsed.port
+    except ValueError as error:
+        raise NpmReleaseError(f"invalid npm registry URL: {registry!r}") from error
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or port not in (None, 443)
+    ):
+        raise NpmReleaseError("npm registry URL must be credential-free HTTPS")
+    return registry
+
+
 def _run(
     executable: str | Path,
     *arguments: str,
@@ -265,7 +300,8 @@ def _probe_install(
     if not command.is_file():
         raise NpmReleaseError(f"npm did not expose the OMM command at {command}")
     version_result = _run(command, "--version")
-    if f"omm {version}" not in f"{version_result.stdout}\n{version_result.stderr}":
+    version_lines = f"{version_result.stdout}\n{version_result.stderr}".splitlines()
+    if f"omm {version}" not in {line.strip() for line in version_lines}:
         raise NpmReleaseError("npm-installed OMM reported the wrong version")
     help_result = _run(command, "--help")
     if "Example usage:" not in f"{help_result.stdout}\n{help_result.stderr}":
@@ -287,7 +323,9 @@ def _probe_install(
         npm_package.LAUNCHER_NAME,
         target_package,
     )
-    if command.exists():
+    # Path.exists() follows symlinks, so it misses a dangling launcher left
+    # behind when npm removes the target but not the link itself.
+    if os.path.lexists(command):
         raise NpmReleaseError("npm uninstall left the OMM command exposed")
 
 
@@ -319,6 +357,7 @@ def smoke_tarballs(pack_dir: Path, target_name: str) -> None:
 
 
 def smoke_registry(version: str, target_name: str, registry: str = REGISTRY) -> None:
+    registry = _validate_registry_url(registry)
     target_package = npm_package.targets()[target_name]["package"]
     with tempfile.TemporaryDirectory(prefix="omm-npm-registry-") as temporary:
         root = Path(temporary)
@@ -384,6 +423,7 @@ def _registry_integrity(package: PackageInfo, registry: str) -> str | None:
 def reuse_published_packages(pack_dir: Path, registry: str = REGISTRY) -> None:
     """Replace rebuilt tarballs with immutable bytes already in the registry."""
 
+    registry = _validate_registry_url(registry)
     packages = verify_bundle(pack_dir, write_checksums=True)
     for package in packages:
         published_integrity = _registry_integrity(package, registry)
@@ -428,6 +468,7 @@ def reuse_published_packages(pack_dir: Path, registry: str = REGISTRY) -> None:
 
 
 def publish_bundle(pack_dir: Path, registry: str = REGISTRY) -> None:
+    registry = _validate_registry_url(registry)
     packages = verify_bundle(pack_dir)
     ordered = sorted(packages, key=lambda package: package.target is None)
     for package in ordered:

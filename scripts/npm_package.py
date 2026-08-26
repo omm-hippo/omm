@@ -13,7 +13,7 @@ import hashlib
 import json
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +40,13 @@ MAGIC_PREFIXES = {
     },
     "linux": {bytes.fromhex("7f454c46")},
     "win32": {b"MZ"},
+}
+EXPECTED_TARGETS = {
+    "darwin-arm64",
+    "darwin-x64",
+    "linux-arm64-gnu",
+    "linux-x64-gnu",
+    "win32-x64",
 }
 
 
@@ -103,7 +110,26 @@ def targets(path: Path = TARGETS_FILE) -> dict[str, dict[str, str]]:
                 raise NpmPackageError(f"Linux target {target_name!r} must require glibc")
         elif "libc" in value:
             raise NpmPackageError(f"non-Linux target {target_name!r} cannot declare libc")
+        expected_target = f"{value['os']}-{value['cpu']}"
+        if value["os"] == "linux":
+            expected_target += "-gnu"
+        expected_binary = "bin/omm.exe" if value["os"] == "win32" else "bin/omm"
+        expected_package = f"@omm-hippo/omm-{target_name}"
+        binary_path = PurePosixPath(value["binary"])
+        if (
+            target_name != expected_target
+            or value["package"] != expected_package
+            or value["binary"] != expected_binary
+            or binary_path.is_absolute()
+            or value["binary"] != binary_path.as_posix()
+            or any(part in {"", ".", ".."} for part in binary_path.parts)
+        ):
+            raise NpmPackageError(f"npm target {target_name!r} has an unsafe identity")
         parsed[target_name] = {key: str(item) for key, item in value.items()}
+    if set(parsed) != EXPECTED_TARGETS:
+        raise NpmPackageError(
+            f"npm targets are {sorted(parsed)}, expected {sorted(EXPECTED_TARGETS)}"
+        )
     if len({item["package"] for item in parsed.values()}) != len(parsed):
         raise NpmPackageError("npm target package names must be unique")
     return parsed
@@ -146,7 +172,7 @@ def validate_launcher_source(
         path = source / relative
         if not path.is_file() or path.is_symlink():
             raise NpmPackageError(f"missing regular launcher file: {relative}")
-    if (source / "LICENSE").read_bytes() != LICENSE_FILE.read_bytes():
+    if canonical_license_bytes(source / "LICENSE") != canonical_license_bytes():
         raise NpmPackageError("npm launcher LICENSE must match the repository license")
     if not (source / "bin" / "omm.js").read_text(encoding="utf-8").startswith(
         "#!/usr/bin/env node\n"
@@ -170,6 +196,16 @@ def _copy_text_lf(source: Path, destination: Path) -> None:
     )
 
 
+def canonical_text_bytes(path: Path) -> bytes:
+    """Return deterministic LF bytes across Git's Windows/Unix checkouts."""
+    text = path.read_text(encoding="utf-8")
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
+def canonical_license_bytes(path: Path | None = None) -> bytes:
+    return canonical_text_bytes(path or LICENSE_FILE)
+
+
 def stage_launcher(output_dir: Path, *, publishable: bool = False) -> Path:
     validate_launcher_source()
     destination = output_dir / "omm-launcher"
@@ -183,10 +219,11 @@ def stage_launcher(output_dir: Path, *, publishable: bool = False) -> Path:
         LAUNCHER_SOURCE / "bin" / "omm.js",
         destination / "bin" / "omm.js",
     )
-    shutil.copy2(
-        LAUNCHER_SOURCE / "lib" / "launcher.js", destination / "lib" / "launcher.js"
+    _copy_text_lf(
+        LAUNCHER_SOURCE / "lib" / "launcher.js",
+        destination / "lib" / "launcher.js",
     )
-    shutil.copy2(LICENSE_FILE, destination / "LICENSE")
+    _copy_text_lf(LICENSE_FILE, destination / "LICENSE")
     if publishable:
         manifest = _read_json(destination / "package.json")
         manifest["private"] = False
@@ -246,7 +283,7 @@ def stage_platform_package(
     packaged_binary.parent.mkdir(parents=True)
     shutil.copyfile(binary, packaged_binary)
     packaged_binary.chmod(0o755)
-    shutil.copy2(LICENSE_FILE, destination / "LICENSE")
+    _copy_text_lf(LICENSE_FILE, destination / "LICENSE")
 
     manifest: dict[str, Any] = {
         "name": target["package"],
@@ -285,7 +322,10 @@ def validate_platform_package(
     *,
     publishable: bool = False,
 ) -> None:
-    target = targets()[target_name]
+    target_map = targets()
+    if target_name not in target_map:
+        raise NpmPackageError(f"unsupported npm target: {target_name!r}")
+    target = target_map[target_name]
     version = project_version()
     manifest = _read_json(root / "package.json")
     binary = root / target["binary"]
@@ -300,9 +340,13 @@ def validate_platform_package(
         or manifest.get("private") is not expected_private
         or manifest.get("os") != [target["os"]]
         or manifest.get("cpu") != [target["cpu"]]
+        or manifest.get("files") != [target["binary"], "LICENSE"]
         or manifest.get("publishConfig") != {"access": "public", "provenance": True}
     ):
         raise NpmPackageError("platform package identity is invalid")
+    scripts = manifest.get("scripts", {})
+    if not isinstance(scripts, dict) or LIFECYCLE_SCRIPTS.intersection(scripts):
+        raise NpmPackageError("platform package cannot contain install lifecycle scripts")
     if target.get("libc"):
         if manifest.get("libc") != [target["libc"]]:
             raise NpmPackageError("platform package libc is invalid")
@@ -318,6 +362,14 @@ def validate_platform_package(
         raise NpmPackageError("platform package OMM metadata is invalid")
     if not (root / "LICENSE").read_text(encoding="utf-8").strip():
         raise NpmPackageError("platform package LICENSE is empty")
+    if (root / "LICENSE").read_bytes() != canonical_license_bytes():
+        raise NpmPackageError("platform package LICENSE must match the repository license")
+    if manifest.get("repository") != {
+        "type": "git",
+        "url": "git+https://github.com/omm-hippo/omm.git",
+        "directory": "packaging/npm",
+    }:
+        raise NpmPackageError("platform package repository metadata is invalid")
 
 
 def _parser() -> argparse.ArgumentParser:

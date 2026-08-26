@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
+import socket
+
 import pytest
 
 from omm import (
@@ -15,6 +18,70 @@ from omm import (
     registry,
     scan_import,
 )
+
+
+def _loopback_socket_address(address: object) -> bool:
+    if not isinstance(address, tuple) or not address:
+        # AF_UNIX and non-INET sockets do not leave the machine.
+        return True
+    host = address[0]
+    if not isinstance(host, str):
+        return False
+    if host.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _block_unmocked_external_network(monkeypatch):
+    """Fail any unit test that attempts a real non-loopback connection.
+
+    The suite exercises several remote-provider fallbacks. A missing mock used
+    to turn an ordinary test run into a slow live ModelScope request whose
+    result depended on the developer's network and consumed external service
+    capacity. Local HTTP fixture servers remain available.
+    """
+    original_connect = socket.socket.connect
+    original_connect_ex = socket.socket.connect_ex
+
+    def guarded_connect(sock, address):
+        if not _loopback_socket_address(address):
+            raise AssertionError(f"unit test attempted external network access: {address!r}")
+        return original_connect(sock, address)
+
+    def guarded_connect_ex(sock, address):
+        if not _loopback_socket_address(address):
+            raise AssertionError(f"unit test attempted external network access: {address!r}")
+        return original_connect_ex(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+
+
+@pytest.fixture(autouse=True)
+def _default_remote_provider_probes_to_offline(monkeypatch):
+    """Keep CLI unit tests offline unless a test supplies provider metadata.
+
+    These names are functions imported directly into ``cli.py``, so replacing
+    them here does not hide the provider modules from their own focused tests.
+    Tests that exercise a positive remote-metadata path apply their own
+    monkeypatch afterward and override these conservative defaults.
+    """
+    monkeypatch.setattr(cli, "remote_file_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "remote_gguf_metadata", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "fetch_repo_param_count_b", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "fetch_repo_files", lambda *args, **kwargs: ([], None))
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_terminal_capabilities(monkeypatch):
+    """Keep ANSI/width tests independent of the shell that launched pytest."""
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +104,6 @@ def _no_real_engine_writes(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path / "_no_real_heuristic_root"])
     monkeypatch.setattr(linker, "engine_install_dir", lambda: tmp_path / "_no_real_omm_apps")
-    monkeypatch.setattr(linker, "engine_tmp_dir", lambda: tmp_path / "_no_real_omm_tmp")
     monkeypatch.setattr(linker, "_APP_BUNDLE_SEARCH_ROOTS", [tmp_path / "_no_real_app_bundle_root"])
     linker.find_koboldcpp_binary.cache_clear()
     linker.find_textgenwebui_root.cache_clear()

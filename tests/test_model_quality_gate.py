@@ -86,6 +86,26 @@ def test_validate_artifact_rejects_non_finite_threshold_and_leaf():
         validate_artifact(artifact(math.inf), FEATURES)
 
 
+@pytest.mark.parametrize("feature_order", [["ram", "ram"], ["ram", ""], ["ram", 1]])
+def test_validate_artifact_rejects_ambiguous_feature_contract(feature_order):
+    with pytest.raises(ValueError, match="unique non-empty strings"):
+        validate_artifact(artifact(1.0, feature_order=feature_order), feature_order)
+
+
+def test_validate_artifact_rejects_runtime_incompatible_version_and_candidates():
+    future = artifact(1.0)
+    future["model_version"] = 5
+    with pytest.raises(ValueError, match="1 to 4"):
+        validate_artifact(future, FEATURES)
+
+    invalid_candidate = artifact(1.0)
+    invalid_candidate["candidates"] = [
+        {"repo_id": "org/model", "filename": "model.gguf", "size_bytes": True}
+    ]
+    with pytest.raises(ValueError, match="size_bytes"):
+        validate_artifact(invalid_candidate, FEATURES)
+
+
 def test_evaluation_requires_exact_feature_vector_length():
     with pytest.raises(ValueError, match="expected 2"):
         evaluate_artifact(artifact(1.0), [[0.0]], [1.0])
@@ -294,6 +314,51 @@ def test_evaluate_artifact_prefers_explicit_fit_labels_over_speed_threshold():
 
     assert metrics["fit_balanced_accuracy"] == 1.0
     assert metrics["fit_false_positive_rate"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "fit_examples",
+    [
+        [([0.0], False)],
+        [([0.0, 0.0], 0)],
+        [([math.nan, 0.0], False)],
+        [(None, False)],
+    ],
+)
+def test_evaluate_artifact_validates_explicit_fit_examples(fit_examples):
+    with pytest.raises(ValueError):
+        evaluate_artifact(artifact(1.0), X, Y, fit_examples=fit_examples)
+
+
+def test_evaluate_artifact_rejects_negative_prediction_reached_only_by_fit_examples():
+    model = artifact(
+        0.0,
+        tree={
+            "feature": 0,
+            "threshold": 10.0,
+            "left": {"leaf": True, "value": 1.0},
+            "right": {"leaf": True, "value": -1.0},
+        },
+    )
+
+    with pytest.raises(ValueError, match="non-negative"):
+        evaluate_artifact(model, X, Y, fit_examples=[([20.0, 0.0], False)])
+
+
+@pytest.mark.parametrize(
+    "rejections",
+    [None, {"bad": True}, {"": 1}, {"bad": -1}, {"bad": 1}],
+)
+def test_validate_dataset_rejects_inconsistent_rejection_audit(rejections):
+    audit = {
+        "raw_rows": 2,
+        "rejected_rows": 0,
+        "unique_configurations": 1,
+        "direct_v6_unique_configurations": 1,
+        "rejections": rejections,
+    }
+    with pytest.raises(ValueError, match="rejections"):
+        validate_dataset(audit, min_unique_configurations=1)
 
 
 def test_evaluate_artifact_falls_back_to_legacy_threshold_without_fit_examples():

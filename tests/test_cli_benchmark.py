@@ -109,6 +109,7 @@ def test_benchmark_memory_guard_matches_exact_ollama_runtime_name(monkeypatch):
 
 def test_benchmark_json_before_subcommand(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "running_path_stale")
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
@@ -117,22 +118,13 @@ def test_benchmark_json_before_subcommand(isolated_omm_home, monkeypatch):
     result = runner.invoke(cli.app, ["--json", "benchmark", "small:latest"])
 
     assert result.exit_code == 0, result.stdout
-    # Extract JSON from output (it's at the end)
-    lines = result.stdout.split('\n')
-    # Find the line that starts with '{' which is the start of the JSON
-    json_start = None
-    for i, line in enumerate(lines):
-        if line.strip().startswith('{'):
-            json_start = i
-            break
-    assert json_start is not None, "JSON output not found"
-    json_text = '\n'.join(lines[json_start:])
-    data = json.loads(json_text)
+    data = json.loads(result.stdout)
     assert data == _full_report()
 
 
 def test_benchmark_json_after_subcommand(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "running_path_stale")
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
@@ -141,18 +133,45 @@ def test_benchmark_json_after_subcommand(isolated_omm_home, monkeypatch):
     result = runner.invoke(cli.app, ["benchmark", "small:latest", "--json"])
 
     assert result.exit_code == 0, result.stdout
-    # Extract JSON from output (it's at the end)
-    lines = result.stdout.split('\n')
-    # Find the line that starts with '{' which is the start of the JSON
-    json_start = None
-    for i, line in enumerate(lines):
-        if line.strip().startswith('{'):
-            json_start = i
-            break
-    assert json_start is not None, "JSON output not found"
-    json_text = '\n'.join(lines[json_start:])
-    data = json.loads(json_text)
+    data = json.loads(result.stdout)
     assert data == _full_report()
+
+
+def test_benchmark_json_never_prompts_under_ask_policy(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "running_path_stale")
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
+    monkeypatch.setattr(
+        cli,
+        "_ask_upload_choice",
+        lambda prompt: (_ for _ in ()).throw(AssertionError("JSON mode must not prompt")),
+    )
+
+    result = runner.invoke(cli.app, ["--json", "benchmark", "small:latest"])
+
+    assert result.exit_code == 0, result.stdout
+    assert json.loads(result.stdout) == _full_report()
+
+
+def test_benchmark_global_yes_is_forwarded_to_daemon_start(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    seen = {}
+    monkeypatch.setattr(
+        cli,
+        "_ensure_engine_running",
+        lambda engine, reason, *, assume_yes=False: (
+            seen.update(assume_yes=assume_yes) or (engine, None)
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["--yes", "benchmark", "small:latest"])
+
+    assert result.exit_code == 0, result.stdout
+    assert seen == {"assume_yes": True}
 
 
 def test_benchmark_all_expands_to_every_installed_tag(isolated_omm_home, monkeypatch):
