@@ -2647,6 +2647,18 @@ _HANGUL_JAMO_TO_LATIN = {
     "ㅜ": "n", "ㅡ": "m",
 }
 
+# Set for the duration of _ask_single_key's own event loop. `omm install`/
+# `omm contribute` run a background _EscListener thread that puts stdin into
+# raw mode and reads keys on its own to catch Esc mid-download/mid-benchmark.
+# If a y/n/a prompt opens while that thread is still alive, two independent
+# raw-mode readers race on the same stdin fd - whichever one's select() wins
+# a given keystroke gets it, so presses are randomly swallowed by the
+# listener (which only acts on Escape) instead of reaching the prompt. That's
+# why a key sometimes needed several presses to register. _EscListener checks
+# this flag and skips its own read while a foreground prompt is running, so
+# only the prompt ever consumes stdin.
+_FOREGROUND_PROMPT_ACTIVE = threading.Event()
+
 
 def _build_single_key_bindings(
     choices: list[tuple[str, str, object]],
@@ -2729,9 +2741,12 @@ def _ask_single_key(
         return to_formatted_text(tokens)
 
     merged_style = merge_styles_default([None])
-    return PromptSession(
-        get_prompt_tokens, key_bindings=bindings, style=merged_style
-    ).app.run()
+    session = PromptSession(get_prompt_tokens, key_bindings=bindings, style=merged_style)
+    _FOREGROUND_PROMPT_ACTIVE.set()
+    try:
+        return session.app.run()
+    finally:
+        _FOREGROUND_PROMPT_ACTIVE.clear()
 
 
 def _ask_confirm(message: str, default: bool = False) -> bool:
@@ -8321,6 +8336,9 @@ class _EscListener:
                     # buffer non-blockingly, so there's no fd to select() on
                     # (Windows select() only works on sockets anyway).
                     while not self.stop_event.is_set():
+                        if _FOREGROUND_PROMPT_ACTIVE.is_set():
+                            time.sleep(0.05)
+                            continue
                         for key_press in inp.read_keys():
                             if key_press.key == Keys.Escape:
                                 self.stop_event.set()
@@ -8329,6 +8347,9 @@ class _EscListener:
                     import select
 
                     while not self.stop_event.is_set():
+                        if _FOREGROUND_PROMPT_ACTIVE.is_set():
+                            time.sleep(0.05)
+                            continue
                         ready, _, _ = select.select([inp.fileno()], [], [], 0.1)
                         if not ready:
                             continue

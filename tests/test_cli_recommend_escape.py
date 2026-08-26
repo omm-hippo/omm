@@ -1,11 +1,14 @@
 from unittest.mock import MagicMock
 from types import SimpleNamespace
 
+import prompt_toolkit
+import pytest
 import questionary
 from prompt_toolkit.input import DummyInput
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 
+from omm import cli
 from omm.cli import _add_escape_to_cancel
 
 
@@ -92,3 +95,102 @@ def test_contribute_escape_listener_ignores_escape_when_console_not_focused(monk
     listener._run_windows()
 
     assert sleep_calls["n"] == 3
+
+
+def test_ask_single_key_marks_foreground_prompt_active_during_run(monkeypatch):
+    """_EscListener's background thread must not read stdin while a
+    foreground y/n/a prompt owns it, or the two readers race for the same
+    keystrokes (see _FOREGROUND_PROMPT_ACTIVE's docstring). This checks the
+    prompt side of that contract: the flag is set for the duration of the
+    prompt's own event loop and cleared once it returns."""
+    seen: dict[str, bool] = {}
+
+    class FakeApp:
+        def run(self):
+            seen["active_during_run"] = cli._FOREGROUND_PROMPT_ACTIVE.is_set()
+            return True
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            self.app = FakeApp()
+
+    monkeypatch.setattr(prompt_toolkit, "PromptSession", FakeSession)
+    monkeypatch.setattr(cli, "_require_tty", lambda *_: None)
+    assert not cli._FOREGROUND_PROMPT_ACTIVE.is_set()
+
+    result = cli._ask_single_key(
+        "msg", [("y", "Yes", True)], default_value=False, instruction="(y)"
+    )
+
+    assert result is True
+    assert seen["active_during_run"] is True
+    assert not cli._FOREGROUND_PROMPT_ACTIVE.is_set()
+
+
+def test_ask_single_key_clears_foreground_prompt_flag_on_exception(monkeypatch):
+    class FakeApp:
+        def run(self):
+            raise KeyboardInterrupt
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            self.app = FakeApp()
+
+    monkeypatch.setattr(prompt_toolkit, "PromptSession", FakeSession)
+    monkeypatch.setattr(cli, "_require_tty", lambda *_: None)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli._ask_single_key(
+            "msg", [("y", "Yes", True)], default_value=False, instruction="(y)"
+        )
+
+    assert not cli._FOREGROUND_PROMPT_ACTIVE.is_set()
+
+
+def test_esc_listener_posix_skips_reading_while_foreground_prompt_active(monkeypatch):
+    """Reproduces the race: without the flag check, this loop would call
+    select()/read_keys() concurrently with a foreground prompt's own stdin
+    read, stealing keystrokes meant for y/n/a. With the fix, the listener
+    must not touch select at all while the flag is set."""
+
+    class FakeRawMode:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class FakeInput:
+        def fileno(self):
+            return 0
+
+        def raw_mode(self):
+            return FakeRawMode()
+
+        def read_keys(self):
+            return []
+
+    listener = cli._EscListener()
+    calls = {"select": 0, "sleep": 0}
+
+    def fake_select(rlist, wlist, xlist, timeout):
+        calls["select"] += 1
+        return ([], [], [])
+
+    def fake_sleep(seconds):
+        calls["sleep"] += 1
+        if calls["sleep"] >= 3:
+            listener.stop_event.set()
+
+    monkeypatch.setattr("prompt_toolkit.input.create_input", lambda: FakeInput())
+    monkeypatch.setattr("select.select", fake_select)
+    monkeypatch.setattr(cli.time, "sleep", fake_sleep)
+    monkeypatch.setattr("sys.platform", "darwin")
+    cli._FOREGROUND_PROMPT_ACTIVE.set()
+    try:
+        listener._run_posix()
+    finally:
+        cli._FOREGROUND_PROMPT_ACTIVE.clear()
+
+    assert calls["select"] == 0
+    assert calls["sleep"] == 3
