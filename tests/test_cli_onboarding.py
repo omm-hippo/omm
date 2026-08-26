@@ -7,6 +7,7 @@ runner = CliRunner()
 
 def test_bare_omm_runs_wizard_once_on_fresh_tty_install(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_setup_choice", lambda: "run")
     calls = []
     monkeypatch.setattr(onboarding, "run_wizard", lambda console: calls.append(console))
 
@@ -14,6 +15,36 @@ def test_bare_omm_runs_wizard_once_on_fresh_tty_install(isolated_omm_home, monke
 
     assert result.exit_code == 0, result.stdout
     assert len(calls) == 1
+    assert config.load_config()["onboarding_completed"] is True
+
+
+def test_bare_omm_later_choice_skips_wizard_and_leaves_onboarding_incomplete(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_setup_choice", lambda: "later")
+    calls = []
+    monkeypatch.setattr(onboarding, "run_wizard", lambda console: calls.append(console))
+
+    result = runner.invoke(cli.app, [])
+
+    assert result.exit_code == 0, result.stdout
+    assert calls == []
+    assert config.load_config()["onboarding_completed"] is False
+
+
+def test_bare_omm_skip_choice_marks_completed_without_running_wizard(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_setup_choice", lambda: "skip")
+    calls = []
+    monkeypatch.setattr(onboarding, "run_wizard", lambda console: calls.append(console))
+
+    result = runner.invoke(cli.app, [])
+
+    assert result.exit_code == 0, result.stdout
+    assert calls == []
     assert config.load_config()["onboarding_completed"] is True
 
 
@@ -76,6 +107,7 @@ def test_bare_omm_leaves_onboarding_incomplete_when_wizard_aborted(
     import typer
 
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_setup_choice", lambda: "run")
 
     def _aborting_wizard(console):
         raise typer.Abort()
