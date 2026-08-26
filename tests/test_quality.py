@@ -416,6 +416,61 @@ def test_model_metadata_rejects_already_linked_clip_mmproj(monkeypatch):
         quality._model_metadata("mmproj")
 
 
+def test_model_metadata_cache_reuses_tags_fetch_across_calls(monkeypatch):
+    """Within one collect_evidence batch, /api/tags doesn't change (it's the
+    installed-model list, not loaded state - see #183), so a shared cache
+    dict should let a second tag's lookup skip the fetch entirely."""
+    tags_fetches = []
+
+    def fake_request(method, path, payload=None, timeout=10):
+        if path == "/api/tags":
+            tags_fetches.append(1)
+            return {
+                "models": [
+                    {"name": "a:latest", "digest": "sha256:" + "a" * 64, "size": 100},
+                    {"name": "b:latest", "digest": "sha256:" + "b" * 64, "size": 200},
+                ]
+            }
+        assert path == "/api/show"
+        return {"details": {}, "model_info": {}, "capabilities": []}
+
+    monkeypatch.setattr(quality, "_request_json", fake_request)
+
+    cache: dict = {}
+    first = quality._model_metadata("a", cache=cache)
+    second = quality._model_metadata("b", cache=cache)
+
+    assert len(tags_fetches) == 1
+    assert first["tag"] == "a"
+    assert second["tag"] == "b"
+
+
+def test_model_metadata_cache_not_poisoned_by_failed_fetch(monkeypatch):
+    """A transient /api/tags failure while populating the cache must not
+    stick around and fail every later tag in the batch - the next call
+    should just retry the fetch, same as if no cache were passed at all."""
+    calls = {"n": 0}
+
+    def fake_request(method, path, payload=None, timeout=10):
+        if path == "/api/show":
+            return {"details": {}, "model_info": {}, "capabilities": []}
+        assert path == "/api/tags"
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {}  # missing "models" - triggers the not-a-list branch
+        return {"models": [{"name": "a:latest", "digest": "sha256:" + "a" * 64, "size": 100}]}
+
+    monkeypatch.setattr(quality, "_request_json", fake_request)
+
+    cache: dict = {}
+    with pytest.raises(quality.QualityEvaluationError, match="model list is missing"):
+        quality._model_metadata("a", cache=cache)
+
+    metadata = quality._model_metadata("a", cache=cache)
+    assert metadata["tag"] == "a"
+    assert calls["n"] == 2
+
+
 def test_moe_active_parameter_count_scales_only_routed_expert_tensors():
     model_info = {
         "general.architecture": "gptoss",
@@ -660,7 +715,7 @@ def test_collect_evidence_preserves_sibling_results_after_one_model_fails(monkey
     monkeypatch.setattr(
         quality,
         "_model_metadata",
-        lambda tag: {
+        lambda tag, **_kwargs: {
             "tag": tag, "digest": "sha256:" + "a" * 64, "size_bytes": 900_000_000,
             "format": "gguf", "family": "test", "parameter_size": "7B",
             "quantization_level": "Q4_K_M", "license": None, "license_link": None,
@@ -706,7 +761,7 @@ def test_collect_evidence_classifies_daemon_unreachable_as_transient(monkeypatch
     # (covered separately by test_collect_evidence_gives_up_after_max_daemon_restart_failures).
     monkeypatch.setattr(quality, "ollama_version", lambda: "0.32.1")
 
-    def raising_metadata(tag):
+    def raising_metadata(tag, **_kwargs):
         raise quality.QualityEvaluationError(
             "connection refused by 10.0.0.5", failure_reason=quality.FAILURE_REASON_OLLAMA_UNAVAILABLE
         )
@@ -763,7 +818,7 @@ def test_model_metadata_not_installed_is_classified_as_transient(monkeypatch):
 def test_collect_evidence_classifies_missing_model_file_as_transient_not_unfit(monkeypatch):
     monkeypatch.setattr(quality, "ollama_version", lambda: "0.32.1")
 
-    def raising_metadata(tag):
+    def raising_metadata(tag, **_kwargs):
         raise quality.QualityEvaluationError(
             f"Ollama model '{tag}' is not installed", failure_reason=quality.FAILURE_REASON_MODEL_LOAD_FAILED
         )
@@ -792,7 +847,7 @@ def test_failure_entry_never_leaks_raw_exception_text_paths_or_ips(monkeypatch):
     monkeypatch.setattr(quality, "ollama_version", lambda: "0.32.1")
     secret_message = "C:\\Users\\alice\\secret\\path connection refused by 10.0.0.5"
 
-    def raising_metadata(tag):
+    def raising_metadata(tag, **_kwargs):
         raise quality.QualityEvaluationError(secret_message, failure_reason=quality.FAILURE_REASON_CONNECTION_ERROR)
 
     def raising_evaluate(tag, pack, speed_runs=3):
@@ -823,7 +878,7 @@ def test_failure_entry_never_leaks_raw_exception_text_paths_or_ips(monkeypatch):
 # failures are never retried there.
 
 
-def _ok_metadata(tag):
+def _ok_metadata(tag, **_kwargs):
     return {
         "tag": tag, "digest": "abc123", "size_bytes": 1_000_000,
         "parameter_size": "7B", "quantization_level": "Q4_0",
@@ -909,7 +964,7 @@ def test_default_mode_single_timeout_is_transient_error_never_confirmed(monkeypa
     _patch_confirmation_plumbing(monkeypatch)
     calls = {"n": 0}
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         calls["n"] += 1
         return _timeout_entry(tag)
 
@@ -962,7 +1017,7 @@ def test_confirm_mode_second_attempt_succeeds_reports_real_success(monkeypatch):
     _patch_confirmation_plumbing(monkeypatch)
     calls = {"n": 0}
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         calls["n"] += 1
         return _timeout_entry(tag) if calls["n"] == 1 else _success_entry(tag)
 
@@ -984,7 +1039,7 @@ def test_confirm_mode_two_confirmed_timeouts_is_performance_unfit(monkeypatch):
     _patch_confirmation_plumbing(monkeypatch)
     calls = {"n": 0}
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         calls["n"] += 1
         return _timeout_entry(tag)
 
@@ -1009,7 +1064,7 @@ def test_confirm_mode_explicit_oom_is_model_unfit(monkeypatch, attempt_of_failur
     _patch_confirmation_plumbing(monkeypatch)
     calls = {"n": 0}
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         calls["n"] += 1
         if calls["n"] == 1 and attempt_of_failure == 2:
             return _timeout_entry(tag)
@@ -1033,7 +1088,7 @@ def test_confirm_mode_daemon_down_before_confirmation_is_transient_error(monkeyp
     _patch_confirmation_plumbing(monkeypatch, ollama_version=None)
     calls = {"n": 0}
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         calls["n"] += 1
         return _timeout_entry(tag)
 
@@ -1056,12 +1111,12 @@ def test_confirm_mode_model_gone_before_confirmation_is_transient_error(monkeypa
     calls = {"n": 0}
     secret_message = "C:\\Users\\alice\\secret - model gone, connection refused by 10.0.0.5"
 
-    def missing_metadata(tag):
+    def missing_metadata(tag, **_kwargs):
         raise quality.QualityEvaluationError(secret_message, failure_reason=quality.FAILURE_REASON_MODEL_LOAD_FAILED)
 
     monkeypatch.setattr(quality, "_model_metadata", missing_metadata)
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         calls["n"] += 1
         return _timeout_entry(tag)
 
@@ -1087,7 +1142,7 @@ def test_confirm_mode_second_attempt_waits_for_confirmed_unload_not_a_fixed_slee
     _patch_confirmation_plumbing(monkeypatch)
     events: list = []
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         events.append("attempt")
         return _timeout_entry(tag) if events.count("attempt") == 1 else _success_entry(tag)
 
@@ -1113,7 +1168,7 @@ def test_confirm_mode_second_attempt_not_issued_before_unload_is_confirmed(monke
         order.append("ensure_model_unloaded_done")
         return True
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         order.append("attempt")
         return _timeout_entry(tag) if order.count("attempt") == 1 else _success_entry(tag)
 
@@ -1137,7 +1192,7 @@ def test_confirm_mode_unload_not_confirmed_is_transient_error_and_skips_second_a
     _patch_confirmation_plumbing(monkeypatch, unload_confirmed=False)
     calls = {"n": 0}
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         calls["n"] += 1
         return _timeout_entry(tag)
 
@@ -1161,7 +1216,9 @@ def test_ensure_model_unloaded_is_called_with_the_correct_tag_before_confirmatio
         return True
 
     monkeypatch.setattr(quality, "ensure_model_unloaded", fake_ensure_unloaded)
-    monkeypatch.setattr(quality, "_evaluate_tag_once", lambda tag, hardware, pack, speed_runs: _timeout_entry(tag))
+    monkeypatch.setattr(
+        quality, "_evaluate_tag_once", lambda tag, hardware, pack, speed_runs, **_kwargs: _timeout_entry(tag)
+    )
 
     quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
 
@@ -1183,7 +1240,7 @@ def test_confirm_mode_cleans_up_after_the_confirmation_attempt_regardless_of_out
     calls = {"n": 0}
     unload_calls = []
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         calls["n"] += 1
         return _timeout_entry(tag) if calls["n"] == 1 else second_outcome_fn(tag)
 
@@ -1202,7 +1259,7 @@ def test_confirm_mode_final_cleanup_failure_does_not_change_the_verdict(monkeypa
     _patch_confirmation_plumbing(monkeypatch)
     calls = {"n": 0}
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         calls["n"] += 1
         return _timeout_entry(tag)
 
@@ -1308,7 +1365,7 @@ def test_performance_unfit_entry_has_no_stray_or_speed_fields(monkeypatch):
     in from the underlying attempt dicts."""
     _patch_confirmation_plumbing(monkeypatch)
 
-    def fake_attempt(tag, hardware, pack, speed_runs):
+    def fake_attempt(tag, hardware, pack, speed_runs, **_kwargs):
         return _timeout_entry(tag)
 
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
