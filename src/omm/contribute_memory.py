@@ -128,10 +128,26 @@ def sample_available_memory(
     interval_seconds: float = 0.25,
     sleep: Callable[[float], None] = time.sleep,
 ) -> AvailableMemorySample:
-    if isinstance(sample_count, bool) or not 1 <= sample_count <= 20:
+    if (
+        isinstance(sample_count, bool)
+        or not isinstance(sample_count, int)
+        or not 1 <= sample_count <= 20
+    ):
         raise ValueError("sample_count must be between 1 and 20")
-    if not math.isfinite(interval_seconds) or not 0 <= interval_seconds <= 5:
+    if (
+        isinstance(interval_seconds, bool)
+        or not isinstance(interval_seconds, (int, float))
+        or not math.isfinite(interval_seconds)
+        or not 0 <= interval_seconds <= 5
+    ):
         raise ValueError("interval_seconds must be between 0 and 5")
+    if (
+        isinstance(total_ram_gb, bool)
+        or not isinstance(total_ram_gb, (int, float))
+        or not math.isfinite(total_ram_gb)
+        or total_ram_gb < 0
+    ):
+        raise ValueError("total_ram_gb must be finite and non-negative")
     values = []
     for index in range(sample_count):
         value = float(sample_available_gb())
@@ -216,13 +232,30 @@ def estimate_candidate_memory(
     mmap_weights: bool = True,
 ) -> ContributionMemoryEstimate | None:
     size_bytes = candidate.get("size_bytes")
-    if isinstance(size_bytes, bool) or not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+    if (
+        isinstance(size_bytes, bool)
+        or not isinstance(size_bytes, (int, float))
+        or not math.isfinite(size_bytes)
+        or size_bytes <= 0
+    ):
         return None
-    if not 256 <= context_length <= 131_072:
+    if (
+        isinstance(context_length, bool)
+        or not isinstance(context_length, int)
+        or not 256 <= context_length <= 131_072
+    ):
         raise ValueError("context_length must be between 256 and 131072")
-    if not 1 <= num_batch <= 65_536:
+    if (
+        isinstance(num_batch, bool)
+        or not isinstance(num_batch, int)
+        or not 1 <= num_batch <= 65_536
+    ):
         raise ValueError("num_batch must be between 1 and 65536")
-    if not 0 <= gpu_offload_percent <= 100:
+    if (
+        isinstance(gpu_offload_percent, bool)
+        or not isinstance(gpu_offload_percent, int)
+        or not 0 <= gpu_offload_percent <= 100
+    ):
         raise ValueError("gpu_offload_percent must be between 0 and 100")
 
     weights_gb = float(size_bytes) / GIB

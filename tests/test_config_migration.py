@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from omm import config
 
 
@@ -146,3 +148,16 @@ def test_custom_model_url_is_preserved(isolated_omm_home):
     loaded = config.load_config()
 
     assert loaded["model_url"] == "https://example.com/custom-model.json"
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_storage_counter_is_repaired(isolated_omm_home, invalid):
+    config.CONFIG_PATH.write_text(json.dumps({"storage_saved_bytes": invalid}))
+
+    assert config.load_config()["storage_saved_bytes"] == 0
+
+
+@pytest.mark.parametrize("invalid", [-1, 1.5, True])
+def test_storage_counter_rejects_invalid_deltas(isolated_omm_home, invalid):
+    with pytest.raises(ValueError, match="non-negative integer"):
+        config.add_storage_saved_bytes(invalid)

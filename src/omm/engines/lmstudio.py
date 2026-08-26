@@ -75,7 +75,9 @@ class LMStudioAdapter:
                 (
                     instance.get("id")
                     for instance in instances
-                    if isinstance(instance, dict) and isinstance(instance.get("id"), str)
+                    if isinstance(instance, dict)
+                    and isinstance(instance.get("id"), str)
+                    and instance.get("id")
                 ),
                 None,
             )

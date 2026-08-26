@@ -223,7 +223,9 @@ def test_remove_collision_drops_only_requested_registry_key(
     assert set(registry.load_registry()) == {"Model.gguf"}
 
 
-def test_uninstall_tolerates_permission_error_removing_model_file(isolated_omm_home, monkeypatch):
+def test_uninstall_keeps_registry_when_model_file_cannot_be_removed(
+    isolated_omm_home, monkeypatch
+):
     filename = "a.gguf"
     dest = cli.MODELS_DIR / filename
     dest.write_bytes(b"fake-gguf")
@@ -240,5 +242,8 @@ def test_uninstall_tolerates_permission_error_removing_model_file(isolated_omm_h
 
     result = runner.invoke(cli.app, ["uninstall", filename])
 
-    assert result.exit_code == 0, result.stdout
-    assert filename not in registry.load_registry()
+    assert result.exit_code == 1
+    assert filename in registry.load_registry()
+    assert dest.exists()
+    assert "Could not remove" in result.stderr
+    assert "Removed" not in result.stdout

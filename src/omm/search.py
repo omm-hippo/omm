@@ -105,7 +105,8 @@ def install_ref(candidate: dict) -> str:
     provider = candidate.get("provider") or "huggingface"
     if provider == "huggingface" or not repo_id:
         return repo_id
-    return f"{_PROVIDER_PREFIX[provider]}:{repo_id}"
+    prefix = _PROVIDER_PREFIX.get(provider)
+    return f"{prefix}:{repo_id}" if prefix else repo_id
 
 
 def exact_install_ref(candidate: dict) -> str:
@@ -126,7 +127,8 @@ def exact_install_ref(candidate: dict) -> str:
     provider = candidate.get("provider") or "huggingface"
     if provider == "huggingface":
         return f"{repo_id}:{filename}"
-    return f"{_PROVIDER_PREFIX[provider]}:{repo_id}:{filename}"
+    prefix = _PROVIDER_PREFIX.get(provider)
+    return f"{prefix}:{repo_id}:{filename}" if prefix else install_ref(candidate)
 
 
 _PROVIDER_PREFIX = {"modelscope": "ms"}
@@ -257,6 +259,9 @@ MS_SEARCH_API = "https://modelscope.cn/openapi/v1/models"
 def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list[dict]:
     import requests
 
+    if limit <= 0:
+        return []
+
     try:
         resp = requests.get(
             MS_SEARCH_API,
@@ -286,7 +291,7 @@ def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list
 
     candidates = [
         item
-        for item in gguf_tagged[:15]
+        for item in gguf_tagged[: min(limit, 15)]
         if isinstance(item.get("id"), str)
         and item["id"]
         and not _claims_fake_provenance(item["id"])
@@ -338,23 +343,20 @@ def match_candidates(pool: list[dict], query: str) -> list[dict]:
 
     labels = [_label(c) for c in pool]
     close = difflib.get_close_matches(query, labels, n=10, cutoff=0.4)
-    return [c for c in pool if _label(c) in close]
+    by_label: dict[str, dict] = {}
+    for candidate in pool:
+        by_label.setdefault(_label(candidate), candidate)
+    return [by_label[label] for label in close if label in by_label]
 
 
 def suggest_similar(query: str, pool: list[dict], limit: int = 3) -> list[dict]:
     labels = [_label(c) for c in pool]
     close = difflib.get_close_matches(query, labels, n=limit, cutoff=0.3)
 
-    seen: set[str] = set()
-    suggestions: list[dict] = []
-    for c in pool:
-        label = _label(c)
-        if label in close and label not in seen:
-            seen.add(label)
-            suggestions.append(c)
-        if len(suggestions) >= limit:
-            break
-    return suggestions
+    by_label: dict[str, dict] = {}
+    for candidate in pool:
+        by_label.setdefault(_label(candidate), candidate)
+    return [by_label[label] for label in close if label in by_label]
 
 
 def group_by_family(candidates: list[dict]) -> dict[str, list[dict]]:

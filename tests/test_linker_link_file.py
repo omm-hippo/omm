@@ -572,7 +572,9 @@ def test_link_ollama_raises_link_error_when_blob_write_fails(tmp_path, monkeypat
     models_dir = tmp_path / "ollama"
     monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
     monkeypatch.setattr(
-        Path, "write_bytes", lambda self, data: (_ for _ in ()).throw(OSError("disk full"))
+        linker,
+        "atomic_write_bytes",
+        lambda path, data: (_ for _ in ()).throw(OSError("disk full")),
     )
 
     with pytest.raises(linker.LinkError):
@@ -709,11 +711,13 @@ def test_failed_native_ollama_import_removes_new_blobs_and_manifest(
     source.write_bytes(b"weights")
     models_dir = tmp_path / "ollama"
     blob = models_dir / "blobs" / "sha256-native"
+    unrelated_blob = models_dir / "blobs" / "sha256-concurrent-user-pull"
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
 
     def run_ollama(cmd, **kwargs):
         blob.parent.mkdir(parents=True, exist_ok=True)
         blob.write_bytes(b"partial native copy")
+        unrelated_blob.write_bytes(b"another Ollama operation")
         manifest.parent.mkdir(parents=True, exist_ok=True)
         manifest.write_text('{"layers":[{"digest":"sha256:native"}]}')
         return _FakeResult(returncode=1, stderr="no space left on device")
@@ -728,7 +732,52 @@ def test_failed_native_ollama_import_removes_new_blobs_and_manifest(
         linker._fallback_to_native_create(source, "model", models_dir)
 
     assert not blob.exists()
+    assert unrelated_blob.read_bytes() == b"another Ollama operation"
     assert not manifest.exists()
+
+
+def test_link_ollama_wraps_invalid_gguf_metadata_as_link_error(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    source = tmp_path / "model.gguf"
+    source.write_bytes(b"not gguf")
+    monkeypatch.setattr(
+        linker,
+        "read_gguf_metadata",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("unsupported version")),
+    )
+
+    with pytest.raises(linker.LinkError, match="corrupted or truncated"):
+        linker.link_ollama(source, "model", models_dir=tmp_path / "ollama")
+
+
+@pytest.mark.skipif(linker.platform.system() == "Windows", reason="POSIX permissions")
+def test_link_ollama_repairs_cached_config_blob_permissions(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    first = tmp_path / "first.gguf"
+    first.write_bytes(b"first")
+    linker.link_ollama(first, "first", models_dir=models_dir)
+    first_manifest = json.loads(
+        (
+            models_dir
+            / "manifests"
+            / "registry.ollama.ai"
+            / "library"
+            / "first"
+            / "latest"
+        ).read_text()
+    )
+    config_blob = models_dir / "blobs" / first_manifest["config"]["digest"].replace(":", "-")
+    config_blob.chmod(0o600)
+
+    linker.link_ollama(first, "second", models_dir=models_dir)
+
+    assert config_blob.stat().st_mode & 0o777 == 0o644
 
 
 def test_successful_native_ollama_blob_is_reclaimed_on_unlink(

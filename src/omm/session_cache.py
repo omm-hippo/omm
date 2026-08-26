@@ -13,6 +13,8 @@ import json
 import os
 from pathlib import Path
 
+from filelock import Timeout as FileLockTimeout
+
 from omm import config
 from omm.atomic import atomic_write_text, locked
 
@@ -87,7 +89,7 @@ def _save(data: dict[str, list[str]], path: Path | None = None) -> None:
         return
     try:
         atomic_write_text(path, json.dumps(data))
-    except OSError:
+    except (OSError, FileLockTimeout):
         pass
 
 
@@ -103,7 +105,7 @@ def record_seen(refs: list[str]) -> None:
             merged = list(refs) + [r for r in data["seen"] if r not in refs]
             data["seen"] = merged[:_MAX_SEEN]
             _save(data, path)
-    except OSError:
+    except (OSError, FileLockTimeout):
         pass
 
 
@@ -118,7 +120,7 @@ def record_results(refs: list[str]) -> None:
             merged = list(refs) + [r for r in data["seen"] if r not in refs]
             data["seen"] = merged[:_MAX_SEEN]
             _save(data, path)
-    except OSError:
+    except (OSError, FileLockTimeout):
         pass
 
 

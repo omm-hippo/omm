@@ -301,7 +301,14 @@ def run_completion_step(console: Console) -> None:
     installed by this point."""
     from typer import _completion_shared
 
-    shell = _completion_shared._get_shell_name()
+    try:
+        shell = _completion_shared._get_shell_name()
+    except Exception:
+        # Shell detection is private Typer machinery and may fail on an
+        # unfamiliar shell/environment. Completion is explicitly best-effort;
+        # a detection failure must not turn a successful runner setup into a
+        # failed wizard.
+        shell = None
     if shell not in ("bash", "zsh", "fish") or not _stdin_is_tty():
         console.print(
             "[muted]Enable tab-completion for install/remove any time: "

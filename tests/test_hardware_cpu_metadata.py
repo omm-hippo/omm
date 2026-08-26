@@ -48,6 +48,19 @@ def test_non_macos_os_version_uses_release_without_mac_probe(monkeypatch):
     assert hardware._os_version("Linux") == "6.8.0"
 
 
+def test_macos_cpu_probe_is_bounded_and_fails_soft_on_timeout(monkeypatch):
+    seen = {}
+
+    def timeout(*args, **kwargs):
+        seen.update(kwargs)
+        raise hardware.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(hardware.subprocess, "run", timeout)
+
+    assert hardware._mac_sysctl_cpu_brand() is None
+    assert seen["timeout"] == 3
+
+
 def test_commit_counters_report_both_headroom_and_the_whole_limit():
     info = hardware._windows_commit_info(3_000_000, 5_000_000, 4096)
     assert info.available_gb == 7.62939453125

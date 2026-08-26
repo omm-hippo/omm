@@ -415,6 +415,30 @@ def test_unlink_ollama_batch_keeps_shared_blob_until_last_referrer_removed(
     assert not blob_path.exists()
 
 
+def test_unlink_ollama_batch_holds_the_store_transaction_lock(
+    isolated_omm_home, tmp_path
+):
+    import threading
+
+    models_dir = tmp_path / "ollama"
+    started = threading.Event()
+    finished = threading.Event()
+
+    def run_batch():
+        started.set()
+        linker.unlink_ollama_batch([], models_dir=models_dir)
+        finished.set()
+
+    with linker.locked(linker._models_transaction_lock(models_dir)):
+        thread = threading.Thread(target=run_batch)
+        thread.start()
+        assert started.wait(1)
+        assert finished.wait(0.1) is False
+
+    thread.join(timeout=1)
+    assert finished.is_set()
+
+
 def test_resolve_ollama_runtime_names_batch_matches_single_call_results(
     isolated_omm_home, tmp_path
 ):

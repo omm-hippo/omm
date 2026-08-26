@@ -197,6 +197,30 @@ def test_verify_memory_guard_block_prevents_runtime_load(isolated_omm_home, monk
     assert result.exit_code == 1
 
 
+def test_verify_ignores_non_finite_registry_size_and_falls_back_to_file_stat(
+    isolated_omm_home, monkeypatch
+):
+    registry.save_registry({"model.gguf": _entry(size_bytes=float("inf"))})
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"gguf")
+    adapter = _CliAdapter()
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    guarded = []
+    monkeypatch.setattr(
+        cli,
+        "_guard_ollama_load",
+        lambda tag, required_gb: guarded.append(required_gb)
+        or (True, object(), False),
+    )
+
+    result = runner.invoke(
+        cli.app, ["verify", "model.gguf", "--engine", "ollama", "--yes"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(guarded) == 1
+    assert guarded[0] == 4 / (1024**3) * 1.2
+
+
 class _LmStudioCliAdapter:
     key = "lmstudio"
 

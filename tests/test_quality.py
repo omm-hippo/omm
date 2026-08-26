@@ -448,6 +448,17 @@ def test_model_metadata_uses_exact_gguf_parameter_count(monkeypatch):
     assert metadata["parameter_count_b"] == 0.494032384
 
 
+def test_model_metadata_does_not_store_boolean_size_as_one_byte(monkeypatch):
+    def fake_request(method, path, payload=None, timeout=10):
+        if path == "/api/tags":
+            return {"models": [{"name": "model:latest", "size": True}]}
+        return {"details": {}, "model_info": {}, "capabilities": []}
+
+    monkeypatch.setattr(quality, "_request_json", fake_request)
+
+    assert quality._model_metadata("model")["size_bytes"] is None
+
+
 def test_model_metadata_rejects_already_linked_clip_mmproj(monkeypatch):
     """A model linked before omm refused clip/mmproj links (or linked
     manually via `ollama create`) must fail fast with a clear reason instead
@@ -1801,6 +1812,37 @@ def test_collect_evidence_lmstudio_sets_engine_and_redacts_hardware_names(monkey
     assert "private CPU name" not in json.dumps(report)
     assert "private GPU name" not in json.dumps(report)
     assert unloaded == [("qwen2.5-0.5b-instruct", "lmstudio")]
+
+
+def test_collect_evidence_keeps_lmstudio_results_if_final_version_lookup_fails(
+    monkeypatch
+):
+    monkeypatch.setattr(quality.linker, "lmstudio_daemon_reachable", lambda: True)
+    monkeypatch.setattr(quality.linker, "lmstudio_server_port", lambda: 1234)
+    monkeypatch.setattr(
+        quality,
+        "_evaluate_tag_once",
+        lambda *args, **kwargs: {"tag": args[0], "outcome": "success"},
+    )
+
+    class FailingAdapter:
+        def __init__(self, base_url):
+            pass
+
+        def health(self):
+            raise quality.RuntimeAdapterError("server_unavailable", "stopped")
+
+    monkeypatch.setattr(quality, "LMStudioAdapter", FailingAdapter)
+
+    report = quality.collect_evidence(
+        ["model-key"],
+        _hardware(),
+        engine="lmstudio",
+        lmstudio_models={"model-key": {"architecture": "qwen2"}},
+    )
+
+    assert report["models"] == [{"tag": "model-key", "outcome": "success"}]
+    assert report["environment"]["engine_version"] is None
 
 
 def test_collect_evidence_lmstudio_recovers_from_daemon_crash_mid_batch(monkeypatch):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -171,7 +172,12 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
     ):
         merged["memory_guard_low_memory_seconds"] = 3.0
     saved_bytes = merged.get("storage_saved_bytes")
-    if isinstance(saved_bytes, bool) or not isinstance(saved_bytes, (int, float)) or saved_bytes < 0:
+    if (
+        isinstance(saved_bytes, bool)
+        or not isinstance(saved_bytes, (int, float))
+        or (isinstance(saved_bytes, float) and not math.isfinite(saved_bytes))
+        or saved_bytes < 0
+    ):
         merged["storage_saved_bytes"] = 0
     return merged
 
@@ -226,6 +232,8 @@ def add_storage_saved_bytes(delta: int) -> int:
     started by `_maybe_auto_import` from a concurrent session) can't clobber
     each other's contribution the way a plain `update_config(storage_saved_bytes=...)`
     computed from a value read outside the lock could."""
+    if isinstance(delta, bool) or not isinstance(delta, int) or delta < 0:
+        raise ValueError("storage saved byte delta must be a non-negative integer")
     ensure_omm_home()
     with locked(CONFIG_PATH):
         data: dict[str, Any] = {}
