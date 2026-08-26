@@ -186,6 +186,7 @@ def test_bracket_checkbox_indicators_restore_on_exception():
 
 def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
     console = _console()
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
     monkeypatch.setattr(
         linker,
         "install_engine",
@@ -202,6 +203,7 @@ def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
 
 def test_install_selected_engines_reports_failed_automated_install(monkeypatch):
     console = _console()
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
     monkeypatch.setattr(
         linker,
         "install_engine",
@@ -488,6 +490,7 @@ def test_install_selected_engines_prints_raw_installer_output_without_markup_err
     rich.errors.MarkupError and crash the wizard."""
     console = _console()
     captured = {}
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
 
     def fake_install_engine(key, on_output=None):
         captured["on_output"] = on_output
@@ -513,6 +516,7 @@ def test_install_selected_engines_prints_result_message_without_markup_errors(mo
     message shaped like a markup tag must not be eaten or raise
     rich.errors.MarkupError and crash the wizard."""
     console = _console()
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
 
     monkeypatch.setattr(
         linker,

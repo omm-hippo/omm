@@ -172,7 +172,7 @@ def validate_launcher_source(
         path = source / relative
         if not path.is_file() or path.is_symlink():
             raise NpmPackageError(f"missing regular launcher file: {relative}")
-    if (source / "LICENSE").read_bytes() != LICENSE_FILE.read_bytes():
+    if canonical_license_bytes(source / "LICENSE") != canonical_license_bytes():
         raise NpmPackageError("npm launcher LICENSE must match the repository license")
     if not (source / "bin" / "omm.js").read_text(encoding="utf-8").startswith(
         "#!/usr/bin/env node\n"
@@ -196,6 +196,13 @@ def _copy_text_lf(source: Path, destination: Path) -> None:
     )
 
 
+def canonical_license_bytes(path: Path | None = None) -> bytes:
+    """Return deterministic LF bytes across Git's Windows/Unix checkouts."""
+    path = path or LICENSE_FILE
+    text = path.read_text(encoding="utf-8")
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
 def stage_launcher(output_dir: Path, *, publishable: bool = False) -> Path:
     validate_launcher_source()
     destination = output_dir / "omm-launcher"
@@ -212,7 +219,7 @@ def stage_launcher(output_dir: Path, *, publishable: bool = False) -> Path:
     shutil.copy2(
         LAUNCHER_SOURCE / "lib" / "launcher.js", destination / "lib" / "launcher.js"
     )
-    shutil.copy2(LICENSE_FILE, destination / "LICENSE")
+    _copy_text_lf(LICENSE_FILE, destination / "LICENSE")
     if publishable:
         manifest = _read_json(destination / "package.json")
         manifest["private"] = False
@@ -272,7 +279,7 @@ def stage_platform_package(
     packaged_binary.parent.mkdir(parents=True)
     shutil.copyfile(binary, packaged_binary)
     packaged_binary.chmod(0o755)
-    shutil.copy2(LICENSE_FILE, destination / "LICENSE")
+    _copy_text_lf(LICENSE_FILE, destination / "LICENSE")
 
     manifest: dict[str, Any] = {
         "name": target["package"],
@@ -351,7 +358,7 @@ def validate_platform_package(
         raise NpmPackageError("platform package OMM metadata is invalid")
     if not (root / "LICENSE").read_text(encoding="utf-8").strip():
         raise NpmPackageError("platform package LICENSE is empty")
-    if (root / "LICENSE").read_bytes() != LICENSE_FILE.read_bytes():
+    if (root / "LICENSE").read_bytes() != canonical_license_bytes():
         raise NpmPackageError("platform package LICENSE must match the repository license")
     if manifest.get("repository") != {
         "type": "git",

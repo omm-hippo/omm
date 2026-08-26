@@ -145,6 +145,21 @@ def test_stage_platform_rejects_wrong_format_symlink_and_overwrite(tmp_path):
         npm_package.stage_platform_package("linux-x64-gnu", real, tmp_path / "out")
 
 
+def test_platform_package_normalizes_windows_license_line_endings(tmp_path, monkeypatch):
+    license_file = tmp_path / "LICENSE"
+    license_file.write_bytes(b"line one\r\nline two\r\n")
+    monkeypatch.setattr(npm_package, "LICENSE_FILE", license_file)
+    binary = tmp_path / "omm"
+    binary.write_bytes(next(iter(npm_package.MAGIC_PREFIXES["darwin"])) + b" payload")
+
+    staged = npm_package.stage_platform_package(
+        "darwin-arm64", binary, tmp_path / "stage", publishable=True
+    )
+
+    assert (staged / "LICENSE").read_bytes() == b"line one\nline two\n"
+    npm_package.validate_platform_package(staged, "darwin-arm64", publishable=True)
+
+
 def test_platform_verifier_rejects_unexpected_files(tmp_path):
     binary = tmp_path / "omm"
     binary.write_bytes(bytes.fromhex("7f454c46") + b" OMM")

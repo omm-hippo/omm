@@ -31,6 +31,9 @@ def test_install_engine_raises_for_unimplemented_engine():
 
 def test_install_ollama_mac_streams_output_and_reports_installed(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        linker.shutil, "which", lambda name: "/opt/homebrew/bin/brew" if name == "brew" else None
+    )
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
     monkeypatch.setattr(
         linker.subprocess,
@@ -161,6 +164,9 @@ def test_is_ollama_installed_windows_true_when_only_stale_path_location_found(
 
 def test_install_ollama_mac_failure_message_includes_manual_link(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        linker.shutil, "which", lambda name: "/opt/homebrew/bin/brew" if name == "brew" else None
+    )
     monkeypatch.setattr(linker, "is_ollama_installed", lambda: False)
     monkeypatch.setattr(
         linker.subprocess, "Popen", lambda *a, **k: _FakeProc([], returncode=1)
@@ -172,7 +178,8 @@ def test_install_ollama_mac_failure_message_includes_manual_link(monkeypatch):
     assert "https://ollama.com/download" in result.message
 
 
-def test_has_automated_installer_true_for_ollama():
+def test_has_automated_installer_true_for_ollama(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     assert linker.has_automated_installer("ollama") is True
 
 
@@ -192,12 +199,16 @@ def test_is_lmstudio_installed_detects_headless_cli(monkeypatch, tmp_path):
     assert linker.is_lmstudio_installed() is True
 
 
-def test_has_automated_installer_true_for_lmstudio():
+def test_has_automated_installer_true_for_lmstudio(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     assert linker.has_automated_installer("lmstudio") is True
 
 
 def test_install_lmstudio_mac_linux_streams_output_and_reports_installed(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        linker.shutil, "which", lambda name: "/opt/homebrew/bin/brew" if name == "brew" else None
+    )
     monkeypatch.setattr(linker, "is_lmstudio_installed", lambda: True)
     monkeypatch.setattr(
         linker.subprocess, "Popen", lambda *a, **k: _FakeProc(["Downloading llmster...\n"])

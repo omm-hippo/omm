@@ -134,7 +134,7 @@ def inspect_tarball(path: Path) -> PackageInfo:
         expected_files = {f"package/{item}" for item in npm_package.EXPECTED_LAUNCHER_FILES}
         if set(files) != expected_files:
             raise NpmReleaseError("npm launcher tarball has files outside its allowlist")
-        if files["package/LICENSE"] != npm_package.LICENSE_FILE.read_bytes():
+        if files["package/LICENSE"] != npm_package.canonical_license_bytes():
             raise NpmReleaseError("npm launcher license does not match the repository")
         expected_launcher = (
             npm_package.LAUNCHER_SOURCE / "bin" / "omm.js"
@@ -174,7 +174,7 @@ def inspect_tarball(path: Path) -> PackageInfo:
     expected_files = {"package/LICENSE", "package/package.json", binary_name}
     if set(files) != expected_files:
         raise NpmReleaseError(f"npm platform tarball {name!r} has unexpected files")
-    if files["package/LICENSE"] != npm_package.LICENSE_FILE.read_bytes():
+    if files["package/LICENSE"] != npm_package.canonical_license_bytes():
         raise NpmReleaseError(
             f"npm platform tarball {name!r} license does not match the repository"
         )
