@@ -148,6 +148,17 @@ def test_ask_named_provider_no_ai_uses_same_safe_search_command():
     assert "omm recommend" not in result.stdout
 
 
+def test_ask_anthropic_alias_with_question_mark_routes_when_shell_quotes_it():
+    result = runner.invoke(
+        cli.app,
+        ["ask", "엔트로픽 모델 추천 가능해?", "--no-ai", "--no-color"],
+    )
+
+    assert result.exit_code == 0, (result.stdout, result.stderr)
+    assert "omm search anthropic" in result.stdout
+    assert "omm recommend" not in result.stdout
+
+
 def test_ask_no_ai_uses_deterministic_built_in_guidance(monkeypatch):
     class ForbiddenRuntime:
         def __init__(self):
@@ -279,7 +290,7 @@ def test_ask_json_contract_is_stable_and_machine_readable():
 
 
 def test_ask_help_and_full_command_reference_include_mvp_options():
-    command_help = runner.invoke(cli.app, ["help", "ask", "--no-color"])
+    command_help = runner.invoke(cli.app, ["ask", "--no-color", "--help"])
     all_help = runner.invoke(cli.app, ["help", "--all", "--no-color"])
 
     assert command_help.exit_code == 0, command_help.stdout

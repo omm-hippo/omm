@@ -495,6 +495,11 @@ def sanitize_question(question: str) -> str:
 _WORD_RE = re.compile(r"[0-9a-zA-Z가-힣]+")
 
 _KNOWN_MODEL_TARGETS = (
+    ("anthropic", "anthropic"),
+    ("앤트로픽", "anthropic"),
+    ("엔트로픽", "anthropic"),
+    ("claude", "anthropic"),
+    ("클로드", "anthropic"),
     ("open ai", "openai"),
     ("openai", "openai"),
     ("deep seek", "deepseek"),
