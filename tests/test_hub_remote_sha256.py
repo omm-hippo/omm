@@ -15,15 +15,61 @@ class _FakeResponse:
 
 
 def test_remote_file_sha256_returns_lfs_hash(monkeypatch):
+    digest = "a" * 64
     monkeypatch.setattr(
         requests,
         "post",
         lambda url, json, timeout: _FakeResponse(
-            [{"path": "model.gguf", "lfs": {"sha256": "deadbeef"}}]
+            [
+                {
+                    "path": "model.gguf",
+                    "size": 123,
+                    "lfs": {"oid": digest, "size": 123, "pointerSize": 130},
+                    "xetHash": "d" * 64,
+                }
+            ]
         ),
     )
 
-    assert remote_file_sha256("huggingface", "org/repo", "model.gguf") == "deadbeef"
+    assert remote_file_sha256("huggingface", "org/repo", "model.gguf") == digest
+
+
+def test_remote_file_sha256_accepts_prefixed_lfs_oid(monkeypatch):
+    digest = "b" * 64
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda url, json, timeout: _FakeResponse(
+            [{"path": "model.gguf", "lfs": {"oid": f"sha256:{digest}"}}]
+        ),
+    )
+
+    assert remote_file_sha256("huggingface", "org/repo", "model.gguf") == digest
+
+
+def test_remote_file_sha256_accepts_legacy_sha256_field(monkeypatch):
+    digest = "c" * 64
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda url, json, timeout: _FakeResponse(
+            [{"path": "model.gguf", "lfs": {"sha256": digest}}]
+        ),
+    )
+
+    assert remote_file_sha256("huggingface", "org/repo", "model.gguf") == digest
+
+
+def test_remote_file_sha256_rejects_invalid_lfs_oid(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda url, json, timeout: _FakeResponse(
+            [{"path": "model.gguf", "lfs": {"oid": "not-a-sha256"}}]
+        ),
+    )
+
+    assert remote_file_sha256("huggingface", "org/repo", "model.gguf") is None
 
 
 def test_remote_file_sha256_returns_none_when_not_lfs(monkeypatch):
