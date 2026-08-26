@@ -2,53 +2,83 @@
 
 ## Our Pledge
 
-We as members, contributors, and leaders pledge to make participation in our
-community a harassment-free experience for everyone, regardless of age, body
-size, visible or invisible disability, ethnicity, sex characteristics, gender
-identity and expression, level of experience, education, socio-economic
-status, nationality, personal appearance, race, religion, or sexual identity
-and orientation.
+We are committed to a community that is welcoming, safe, and fair. Everyone
+who participates in good faith should be treated with dignity and respect,
+regardless of identity, background, experience, ability, language, beliefs,
+education, or economic and social circumstances.
 
-## Our Standards
+## Encouraged Behaviors
 
-Examples of behavior that contributes to a positive environment:
+Community members are expected to:
 
-- Demonstrating empathy and kindness toward other people
-- Being respectful of differing opinions, viewpoints, and experiences
-- Giving and gracefully accepting constructive feedback
-- Accepting responsibility and apologizing for mistakes, and learning from them
-- Focusing on what is best for the overall community
+- Engage honestly, patiently, and kindly.
+- Respect different viewpoints, experiences, and communication styles.
+- Give and receive constructive technical feedback without personal attacks.
+- Keep discussions relevant to the project and its community.
+- Take responsibility for mistakes, correct them, and help repair harm.
+- Protect private information and honor clearly stated boundaries.
 
-Examples of unacceptable behavior:
+## Restricted Behaviors
 
-- The use of sexualized language or imagery, and unwelcome sexual attention
-- Trolling, insulting or derogatory comments, and personal or political attacks
-- Public or private harassment
-- Publishing others' private information without explicit permission
-- Other conduct which could reasonably be considered inappropriate in a
-  professional setting
+The following are not acceptable in project spaces:
 
-## Enforcement Responsibilities
-
-Project maintainers are responsible for clarifying and enforcing standards of
-acceptable behavior and will take appropriate and fair corrective action in
-response to any behavior deemed inappropriate, threatening, offensive, or
-harmful.
+- Harassment, threats, intimidation, stalking, or unwanted personal attention.
+- Insults, demeaning language, trolling, or attacks on a person or group.
+- Discrimination, stereotyping, or exclusion based on identity or status.
+- Sexualized language, imagery, or attention where it is not appropriate or
+  welcome.
+- Publishing or seeking another person's private information without clear
+  permission.
+- Deliberately disrupting discussions, reviews, issue tracking, or other
+  community work.
+- Retaliating against someone who raises a concern or participates in a review.
+- Conduct that a reasonable person would consider unsafe or unprofessional in
+  the context of an open-source community.
 
 ## Scope
 
-This Code of Conduct applies within all community spaces (issues, pull
-requests, discussions) and also applies when an individual is officially
-representing the community in public spaces.
+This Code of Conduct applies to issues, pull requests, reviews, discussions,
+and every other project-managed space. It also applies when someone is acting
+as an official representative of the project, including through an official
+account, email address, event, or public statement.
 
-## Enforcement
+## Reporting an Issue
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the maintainers at omm.hippo@gmail.com. All complaints will be
-reviewed and investigated promptly and fairly.
+Report a possible violation privately by emailing the OMM maintainers at
+**omm.hippo@gmail.com** with the subject **[Code of Conduct]**. Include relevant
+links or context and identify any immediate safety or confidentiality concern.
+Do not open a public issue about a Code of Conduct report.
+
+Reports will be handled as confidentially as reasonably possible. A maintainer
+who is directly involved in a report must not lead its review. Reports about
+software vulnerabilities belong under the separate private process in
+[SECURITY.md](SECURITY.md).
+
+## Enforcement Responsibilities
+
+Maintainers are responsible for applying this policy consistently and in good
+faith. They may remove, edit, or reject comments, commits, issues, pull
+requests, or other contributions that violate it, and should explain a
+moderation decision when doing so would not compromise safety or privacy.
+
+## Addressing Harm
+
+The response should reflect the context, severity, history, and impact of the
+behavior. Available actions include:
+
+1. A private correction and request to change the behavior.
+2. A formal warning with clear expectations and consequences.
+3. Temporary limits on participation or contact.
+4. Permanent removal from project-managed spaces for severe or repeated harm.
+
+Where appropriate and safe, maintainers may also ask for an acknowledgement,
+correction, apology, or other concrete step that helps repair the harm.
 
 ## Attribution
 
-This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org),
-version 2.1, available at
-https://www.contributor-covenant.org/version/2/1/code_of_conduct.html.
+This policy is adapted from
+[Contributor Covenant 3.0](https://www.contributor-covenant.org/version/3/0/),
+which is stewarded by the Organization for Ethical Source and licensed under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). See the
+[Contributor Covenant FAQ](https://www.contributor-covenant.org/faq/) for
+additional context.
