@@ -39,6 +39,7 @@ def test_scan_clears_stale_link_record_for_uninstalled_engine(isolated_omm_home,
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key != "jan")
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"fake-gguf")
     cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
 
     result = runner.invoke(cli.app, ["scan"])
@@ -59,6 +60,7 @@ def test_scan_json_includes_stale_links_key(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key != "jan")
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"fake-gguf")
     cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
 
     result = runner.invoke(cli.app, ["scan", "--json"])
@@ -88,6 +90,7 @@ def test_scan_leaves_link_record_untouched_when_engine_still_installed(isolated_
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: True)
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"fake-gguf")
     cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
 
     result = runner.invoke(cli.app, ["scan"])
