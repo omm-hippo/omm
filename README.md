@@ -306,8 +306,10 @@ Match the message you see, not the step you think you are on.
 | `Refusing to replace unrelated pipx environment 'omm'.` | A different tool already owns a pipx environment named `omm` | Remove or rename that environment manually, then rerun |
 | `Refusing to replace an unverified omm-model pipx environment.` | An existing `omm-model` pipx environment could not be confirmed as OMM's | Inspect it with `pipx list`, remove it if it is safe to remove, then rerun |
 | `Could not inspect existing pipx environments; refusing an unsafe migration.` | pipx metadata could not be read | Repair the pipx installation (`python -m pip install --user --upgrade pipx`) and rerun |
+| `Refusing to remove unsafe pipx shared directory` | pipx reported a shared-environment path outside its own `PIPX_HOME/shared` directory, or that path is a symlink/reparse point | Do not delete the reported path. Repair or reinstall pipx, confirm `pipx environment --value PIPX_HOME` and `PIPX_SHARED_LIBS`, then rerun the installer |
 | `git clone failed.` | The staging clone could not be fetched | Check network/proxy access to `github.com` and rerun |
 | `omm` is not found after a successful install | The new `PATH` entry is not in the shell that ran the installer | Open a new terminal window and try again |
+| `Could not remove <model>; the registry entry was kept` | Another program, antivirus scanner, or indexing service still has the model file open | Close local AI runners that use the model and retry `omm uninstall <model>`; OMM keeps the registry entry so the retry remains safe |
 | winget is unavailable (older Windows) | winget ships with Windows 10 2004+ and Windows 11 only | Install [Python 3.10+](https://www.python.org/downloads/) and [git](https://git-scm.com/downloads) manually first, then rerun the installer |
 | Homebrew bootstrap fails or is refused on macOS | `curl`/`/bin/bash` are unavailable, or `OMM_AUTO_INSTALL_HOMEBREW=0` was set without Homebrew already installed | Install [Homebrew](https://brew.sh) yourself, or unset `OMM_AUTO_INSTALL_HOMEBREW`, then rerun |
 | pipx fails with `ensurepip is not available`, or `python3`/`git` are missing on an unsupported Linux distribution | The Linux bootstrap only automates `apt-get`, `dnf`, `yum`, `pacman`, and `apk` | Install `python3` (3.10+), the venv package for it, and `git` with your distribution's package manager, then rerun |
@@ -339,7 +341,10 @@ Both installers clone to a versioned staging directory, verify the signed commit
 `omm update` updates only a canonical OMM Git-source installation. For a
 package-managed installation, it leaves files unchanged and prints the
 matching package-manager upgrade command. The Git-only beta channel is
-likewise unavailable to package-managed installations.
+likewise unavailable to package-managed installations. Git-source updates
+parse the new release's declared dependencies, honor `python_version` markers,
+and refresh the pipx environment when an applicable dependency is missing or
+older than the declared minimum.
 
 ### Package-channel verification
 
@@ -427,6 +432,11 @@ omm cleanup  # Clean up orphaned partial/incomplete downloads
 ```
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `search`/`install` mark models predicted not to run on this machine's hardware in red.
+
+`omm install --skip-unfit` is a scripting-friendly skip, not a successful
+installation: it prints `Skipped` and leaves the model hub unchanged. If an
+uninstall cannot remove the managed model file, OMM exits with status 1 and
+keeps the registry and any still-live links so the same command can be retried.
 
 ### Verify & benchmark
 
