@@ -169,6 +169,30 @@ def _append_pending(event: dict[str, Any]) -> None:
         pass
 
 
+def _remove_sent_snapshot_entries(
+    current: list[dict[str, Any]],
+    snapshot: list[dict[str, Any]],
+    sent_indices: list[int],
+) -> list[dict[str, Any]]:
+    """Remove only sent snapshot rows that still occupy the queue prefix.
+
+    Concurrent appends retain a suffix of the bounded snapshot and append new
+    rows after it. Matching by value (``list.remove``) is unsafe when the cap
+    drops a sent row and the concurrent append contains an identical payload:
+    it removes the new, unsent copy instead. Map snapshot indices through the
+    largest preserved suffix/prefix overlap and delete only those positions.
+    """
+    overlap = min(len(snapshot), len(current))
+    while overlap and current[:overlap] != snapshot[len(snapshot) - overlap :]:
+        overlap -= 1
+    dropped = len(snapshot) - overlap
+    mapped = [index - dropped for index in sent_indices if dropped <= index < len(snapshot)]
+    for index in sorted(mapped, reverse=True):
+        if 0 <= index < len(current):
+            del current[index]
+    return current
+
+
 def _solve_proof_of_work(event_json: str) -> tuple[int, int]:
     """Find (timestamp_ms, nonce) such that
     SHA256(f"{event_json}:{timestamp_ms}:{nonce}") starts with
@@ -317,6 +341,12 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH) -> int:
     """Best-effort resend of previously-failed events. Retries at most
     `max_retries` events per call so a large backlog can't stall an
     unrelated command. Returns how many were resent successfully."""
+    if (
+        isinstance(max_retries, bool)
+        or not isinstance(max_retries, int)
+        or max_retries <= 0
+    ):
+        return 0
     # Re-check consent at send time. This prevents an old queue from bypassing
     # a later `setting upload --disable`, including commands whose root
     # callback runs before the setting subcommand body.
@@ -324,20 +354,35 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH) -> int:
         return 0
     path = _pending_path()
     try:
-        # Serialize the whole bounded retry batch so a concurrent writer
-        # cannot be erased by this read/modify/write cycle.
-        with locked(path, timeout=30):
-            events = _read_pending_unlocked(path)
-            if not events:
+        # Serialize flushers with each other, but do not hold the queue lock
+        # during proof-of-work or HTTP. A send can take longer than the queue
+        # lock timeout; holding it made concurrent _append_pending calls time
+        # out and silently lose newly generated events.
+        flush_lock_path = path.with_name(f"{path.name}.flush")
+        with locked(flush_lock_path, timeout=30):
+            with locked(path, timeout=30):
+                events = _read_pending_unlocked(path)
+            to_retry = events[:max_retries]
+            if not to_retry:
                 return 0
-            to_retry, still_pending = events[:max_retries], events[max_retries:]
             resent = 0
-            for event in to_retry:
+            sent_indices: list[int] = []
+            for index, event in enumerate(to_retry):
                 if _post_event(event):
                     resent += 1
-                else:
-                    still_pending.append(event)
-            atomic_write_text(path, json.dumps(still_pending[-_MAX_PENDING_EVENTS:]))
+                    sent_indices.append(index)
+            if sent_indices:
+                with locked(path, timeout=30):
+                    still_pending = _read_pending_unlocked(path)
+                    still_pending = _remove_sent_snapshot_entries(
+                        still_pending,
+                        events,
+                        sent_indices,
+                    )
+                    atomic_write_text(
+                        path,
+                        json.dumps(still_pending[-_MAX_PENDING_EVENTS:]),
+                    )
             return resent
     except (OSError, FileLockTimeout):
         return 0

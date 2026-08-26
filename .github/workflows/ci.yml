@@ -2,11 +2,18 @@ name: Cross-platform validation
 
 "on":
   push:
+    branches:
+      - "main"
+      - "beta"
   pull_request:
   workflow_dispatch: {}
 
 permissions:
   contents: read
+
+concurrency:
+  group: validation-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   windows-install-script:

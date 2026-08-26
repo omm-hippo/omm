@@ -107,7 +107,16 @@ def archive_current_artifact(
         destination_dir.mkdir(parents=True, exist_ok=True)
         digest = sha256_bytes(content)
         destination = destination_dir / f"{digest}.json"
-        if not destination.exists():
+        # A prior interrupted/manual write can leave a corrupt file under the
+        # content-addressed name. Existence alone is not proof that it still
+        # contains the bytes its filename claims.
+        destination_is_valid = False
+        if destination.exists():
+            try:
+                destination_is_valid = sha256_bytes(destination.read_bytes()) == digest
+            except OSError:
+                destination_is_valid = False
+        if not destination_is_valid:
             atomic_write_bytes(destination, content)
         if provenance is not None:
             provenance_destination = destination_dir / f"{digest}.provenance.json"
@@ -145,40 +154,44 @@ def rollback(
     require_signed: bool = False,
 ) -> Path:
     destination = artifact_path or RECOMMEND_MODEL_PATH
-    current_hash = sha256_bytes(destination.read_bytes()) if destination.exists() else None
-    selected = None
-    snapshot_content = None
-    for path in snapshots(history_dir):
-        if path.stem == current_hash:
-            continue
-        provenance_path = path.with_name(f"{path.stem}.provenance.json")
-        try:
-            candidate_content = path.read_bytes()
-            payload = json.loads(candidate_content)
-            if not isinstance(payload, dict):
-                continue
-            if require_signed:
-                provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
-                verify_signed_artifact(
-                    candidate_content,
-                    provenance.get("manifest"),
-                    provenance.get("public_key"),
-                )
-        except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
-            # A partial/corrupt newest snapshot must not hide an older valid
-            # rollback point.
-            continue
-        selected = path
-        snapshot_content = candidate_content
-        break
-    if selected is None or snapshot_content is None:
-        raise FileNotFoundError("no previous catalog snapshot is available")
-    archive_current_artifact(destination, history_dir, require_signed=require_signed)
-    # Same lock + retrying replace predictor.py uses to write this same
-    # path: a raw write_bytes()+replace() here would skip the
-    # PermissionError retry the atomic writer already provides for Windows
-    # AV/indexing transiently holding the destination open.
     with locked(destination):
+        # Keep the current-hash decision, archive, and replacement in one
+        # transaction relative to predictor.fetch_and_cache_model, which uses
+        # this same lock. Otherwise a concurrent fetch can be archived or
+        # overwritten even though it was not the version rollback inspected.
+        current_hash = sha256_bytes(destination.read_bytes()) if destination.exists() else None
+        selected = None
+        snapshot_content = None
+        for path in snapshots(history_dir):
+            if path.stem == current_hash:
+                continue
+            provenance_path = path.with_name(f"{path.stem}.provenance.json")
+            try:
+                candidate_content = path.read_bytes()
+                if sha256_bytes(candidate_content) != path.stem:
+                    continue
+                payload = json.loads(candidate_content)
+                if not isinstance(payload, dict):
+                    continue
+                if require_signed:
+                    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+                    verify_signed_artifact(
+                        candidate_content,
+                        provenance.get("manifest"),
+                        provenance.get("public_key"),
+                    )
+            except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
+                # A partial/corrupt newest snapshot must not hide an older valid
+                # rollback point.
+                continue
+            selected = path
+            snapshot_content = candidate_content
+            break
+        if selected is None or snapshot_content is None:
+            raise FileNotFoundError("no previous catalog snapshot is available")
+        archive_current_artifact(destination, history_dir, require_signed=require_signed)
+        # The retrying atomic writer also handles Windows AV/indexing briefly
+        # holding the destination open.
         atomic_write_bytes(destination, snapshot_content)
         destination_provenance = destination.with_suffix(
             destination.suffix + ".provenance.json"

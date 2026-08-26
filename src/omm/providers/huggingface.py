@@ -41,7 +41,10 @@ def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
     try:
         payload = resp.json()
         siblings = payload.get("siblings", [])
-        files = [s["rfilename"] for s in siblings if s["rfilename"].endswith(".gguf")]
+        filenames = [s["rfilename"] for s in siblings]
+        if any(not isinstance(filename, str) for filename in filenames):
+            raise TypeError("repository filename is not a string")
+        files = [filename for filename in filenames if filename.lower().endswith(".gguf")]
         param_count_b = _parse_gguf_total_params(payload)
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         raise ModelResolutionError(f"HF API returned an unexpected response for '{repo_id}': {e}") from e

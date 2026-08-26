@@ -64,11 +64,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Sequence
 
+from filelock import Timeout as FileLockTimeout
+
 from omm import config
 from omm.gguf import read_gguf_metadata
 from omm.hardware import HardwareInfo
 from omm.hashutil import sha256_file
-from omm.atomic import atomic_write_text, backup_corrupt_file, locked
+from omm.atomic import atomic_write_bytes, atomic_write_text, backup_corrupt_file, locked
 from omm.config import LINK_OWNERSHIP_PATH, MODELS_DIR
 
 
@@ -1422,7 +1424,7 @@ def _link_ollama_unlocked(
 
     try:
         gguf_meta = read_gguf_metadata(gguf_path, {"general.architecture", "tokenizer.chat_template"})
-    except (struct.error, KeyError) as e:
+    except (OSError, ValueError, struct.error, KeyError) as e:
         raise LinkError(
             f"Could not read GGUF metadata from {gguf_path.name}: corrupted or truncated file ({e})."
         ) from e
@@ -1523,12 +1525,17 @@ def _link_ollama_unlocked(
             elif config_blob.is_symlink():
                 raise LinkError(f"Refusing broken Ollama config blob symlink: {config_blob}.")
             else:
-                config_blob.write_bytes(config_bytes)
+                atomic_write_bytes(config_blob, config_bytes)
                 try:
                     _record_ownership(config_blob, None, "copy")
                 except Exception:
                     config_blob.unlink(missing_ok=True)
                     raise
+            # Config blobs contain no credentials. A systemd Ollama daemon
+            # commonly runs as a different user and must be able to read both
+            # newly-written and previously-cached matching blobs.
+            if platform.system() != "Windows":
+                config_blob.chmod(0o644)
 
         manifest = {
             "schemaVersion": 2,
@@ -1811,25 +1818,36 @@ def _fallback_to_native_create_unlocked(
         before_blobs = None
 
     def transaction_blobs() -> list[Path]:
+        """New blobs referenced by this tag's manifest, never unrelated files.
+
+        The Ollama daemon is not covered by OMM's file lock. A concurrent user
+        pull can therefore add blobs while `ollama create` runs; treating every
+        new filename as ours would record or delete the user's transaction.
+        """
         if before_blobs is None:
             return []
         try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            referenced = _manifest_blob_digests(manifest)
             return [
                 path
                 for path in blobs_dir.iterdir()
-                if path.is_file() and path.name not in before_blobs
+                if path.is_file()
+                and path.name not in before_blobs
+                and path.name in referenced
             ]
-        except OSError:
+        except (OSError, ValueError):
             return []
 
     def cleanup_transaction() -> None:
+        blobs_to_remove = transaction_blobs()
         try:
             with locked(_engine_path_lock(manifest_path)):
                 manifest_path.unlink(missing_ok=True)
                 _update_link_ownership(manifest_path, None)
         except OSError:
             pass
-        for blob in transaction_blobs():
+        for blob in blobs_to_remove:
             try:
                 blob.unlink(missing_ok=True)
             except OSError:
@@ -2096,17 +2114,27 @@ def unlink_ollama_batch(
     if models_dir is None:
         models_dir = ollama_models_dir()
 
+    validated_specs = [
+        (validate_ollama_tag(model_name), expected_source, expected_content_sha256)
+        for model_name, expected_source, expected_content_sha256 in specs
+    ]
     results: dict[str, bool] = {}
-    all_digests: set[str] = set()
-    for model_name, expected_source, expected_content_sha256 in specs:
-        removed, model_digests = _unlink_ollama_manifest_only(
-            model_name, models_dir, expected_source, expected_content_sha256
-        )
-        results[model_name] = removed
-        if removed:
-            all_digests.update(model_digests)
-    _reclaim_ollama_blobs(models_dir, all_digests)
-    return results
+    try:
+        with locked(_models_transaction_lock(models_dir)):
+            all_digests: set[str] = set()
+            for model_name, expected_source, expected_content_sha256 in validated_specs:
+                removed, model_digests = _unlink_ollama_manifest_only(
+                    model_name, models_dir, expected_source, expected_content_sha256
+                )
+                results[model_name] = removed
+                if removed:
+                    all_digests.update(model_digests)
+            _reclaim_ollama_blobs(models_dir, all_digests)
+            return results
+    except (OSError, FileLockTimeout):
+        for model_name, _, _ in validated_specs:
+            results.setdefault(model_name, False)
+        return results
 
 
 # --- Autoremove (broken symlink cleanup) ------------------------------

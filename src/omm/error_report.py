@@ -300,16 +300,40 @@ def _append_pending(report: dict[str, Any]) -> None:
         pass
 
 
+def _remove_sent_snapshot_entries(
+    current: list[dict[str, Any]],
+    snapshot: list[dict[str, Any]],
+    sent_indices: list[int],
+) -> list[dict[str, Any]]:
+    """Remove sent snapshot positions without consuming identical new rows."""
+    overlap = min(len(snapshot), len(current))
+    while overlap and current[:overlap] != snapshot[len(snapshot) - overlap :]:
+        overlap -= 1
+    dropped = len(snapshot) - overlap
+    mapped = [index - dropped for index in sent_indices if dropped <= index < len(snapshot)]
+    for index in sorted(mapped, reverse=True):
+        if 0 <= index < len(current):
+            del current[index]
+    return current
+
+
 def discard_pending() -> int:
     """Drop everything queued and report how many were dropped.
 
     Called when the user opts out: a queue built up under an earlier
     consent must not sit on disk waiting for a policy that will never come.
     """
-    reports = _load_pending()
-    if reports:
-        _save_pending([])
-    return len(reports)
+    path = _pending_path()
+    try:
+        # Count and clear in one critical section. A separate load followed by
+        # save can erase a report appended by another process between them.
+        with locked(path, timeout=30):
+            reports = _read_pending_unlocked(path)
+            if reports:
+                atomic_write_text(path, "[]")
+            return len(reports)
+    except (OSError, FileLockTimeout):
+        return 0
 
 
 def pending_count() -> int:
@@ -551,7 +575,13 @@ def _post_report(report: dict[str, Any], config_data: dict[str, Any] | None = No
 def send_report(report: dict[str, Any], force: bool = False) -> bool:
     """Send one report immediately when policy (or one-run consent) allows."""
     config_data = read_config()
-    if not force and send_policy(config_data) != "always" and not run_consent():
+    policy = send_policy(config_data)
+    # A stored opt-out is authoritative. ``force`` represents one-run consent
+    # for an unset/ask policy; it must not override a deliberate "never".
+    if policy == "never" and policy_is_set(config_data):
+        log_attempt("skipped_opt_out")
+        return False
+    if not force and policy != "always" and not run_consent():
         log_attempt("skipped_opt_out")
         return False
     return _post_report(report, config_data)
@@ -567,6 +597,12 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH, force: bool
     answered the prompt) so a crash is never followed by an immediate
     upload the user never approved.
     """
+    if (
+        isinstance(max_retries, bool)
+        or not isinstance(max_retries, int)
+        or max_retries <= 0
+    ):
+        return 0
     config_data = read_config()
     if not force and send_policy(config_data) != "always":
         return 0
@@ -576,20 +612,34 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH, force: bool
         return 0
     path = _pending_path()
     try:
-        # Serialize the whole bounded batch so a concurrent writer cannot be
-        # erased by this read/modify/write cycle.
-        with locked(path, timeout=30):
-            reports = _read_pending_unlocked(path)
-            if not reports:
+        # Keep multiple flushers serialized without blocking queue writers
+        # across proof-of-work and HTTP. Successful reports are removed from a
+        # fresh snapshot afterwards, preserving reports appended meanwhile.
+        flush_lock_path = path.with_name(f"{path.name}.flush")
+        with locked(flush_lock_path, timeout=30):
+            with locked(path, timeout=30):
+                reports = _read_pending_unlocked(path)
+            to_retry = reports[:max_retries]
+            if not to_retry:
                 return 0
-            to_retry, still_pending = reports[:max_retries], reports[max_retries:]
             sent = 0
-            for report in to_retry:
+            sent_indices: list[int] = []
+            for index, report in enumerate(to_retry):
                 if _post_report(report, config_data):
                     sent += 1
-                else:
-                    still_pending.append(report)
-            atomic_write_text(path, json.dumps(still_pending[-_MAX_PENDING_REPORTS:]))
+                    sent_indices.append(index)
+            if sent_indices:
+                with locked(path, timeout=30):
+                    still_pending = _read_pending_unlocked(path)
+                    still_pending = _remove_sent_snapshot_entries(
+                        still_pending,
+                        reports,
+                        sent_indices,
+                    )
+                    atomic_write_text(
+                        path,
+                        json.dumps(still_pending[-_MAX_PENDING_REPORTS:]),
+                    )
             _record_flush_outcome(attempted=len(to_retry), sent=sent)
             return sent
     except (OSError, FileLockTimeout):

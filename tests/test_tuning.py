@@ -94,3 +94,7 @@ def test_confidence_label_tracks_real_evidence():
 
 def test_boolean_size_is_not_treated_as_one_byte_model():
     assert candidate_model_size_gb({"size_bytes": True, "name": "unknown"}) is None
+
+
+def test_non_finite_size_is_not_treated_as_model_metadata():
+    assert candidate_model_size_gb({"size_bytes": float("inf"), "name": "unknown"}) is None

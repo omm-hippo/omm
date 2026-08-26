@@ -46,6 +46,15 @@ def test_memory_guard_setting_updates_bounded_policy_and_timings(isolated_omm_ho
     assert saved["memory_guard_low_memory_seconds"] == 5
 
 
+def test_memory_guard_setting_accepts_global_flags_after_nested_subcommand(
+    isolated_omm_home
+):
+    result = runner.invoke(cli.app, ["setting", "memory-guard", "--quiet"])
+
+    assert result.exit_code == 0, result.output
+    assert "no such option" not in result.output.lower()
+
+
 def test_invalid_stored_memory_guard_values_fall_back_safely(isolated_omm_home):
     config.CONFIG_PATH.write_text(
         json.dumps(

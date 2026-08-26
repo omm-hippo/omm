@@ -21,6 +21,16 @@ def test_complete_install_name_includes_cached_candidate_names(monkeypatch):
     assert result == ["qwen2.5-7b-instruct-q4"]
 
 
+def test_complete_install_name_ignores_malformed_cached_candidates(monkeypatch):
+    monkeypatch.setattr(
+        completion.predictor,
+        "load_cached_model",
+        lambda: {"candidates": [None, "bad", {}, {"name": "qwen-safe"}]},
+    )
+
+    assert completion.complete_install_name("qwen") == ["qwen-safe"]
+
+
 def test_complete_install_name_filters_by_prefix(monkeypatch):
     monkeypatch.setattr(completion.predictor, "load_cached_model", lambda: None)
 

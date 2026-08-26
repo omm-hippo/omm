@@ -39,12 +39,13 @@ def _load() -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def _save(data: dict) -> None:
+def _save(data: dict) -> bool:
     try:
         path = _cache_path()
         atomic_write_text(path, json.dumps(data))
     except (OSError, TypeError):
-        pass
+        return False
+    return True
 
 
 def _ref_entry(cache: dict, ref: str) -> dict:
@@ -132,18 +133,31 @@ def should_start_check(ref: str = "main", ttl_seconds: int = _TTL_SECONDS) -> bo
     return True
 
 
-def mark_checking(ref: str = "main") -> None:
-    """Called right before spawning the detached child, so concurrent short
-    `omm` invocations don't each spawn their own `git ls-remote` process."""
+def mark_checking(
+    ref: str = "main", ttl_seconds: int = _TTL_SECONDS
+) -> bool:
+    """Atomically claim the right to spawn a detached checker.
+
+    ``should_start_check`` is a lock-free hint. Two CLI processes can both see
+    it as true, so this writer re-checks both freshness markers under the file
+    lock before recording its claim. Only the process receiving ``True`` may
+    spawn a child.
+    """
     try:
         with locked(_cache_path()):
             cache = _load()
             entry = _ref_entry(cache, ref)
+            if _fresh(entry.get("checked_at"), ttl_seconds) or _fresh(
+                entry.get("checking_since"), _CHECK_IN_FLIGHT_TTL_SECONDS
+            ):
+                return False
             entry["checking_since"] = time.time()
             cache[ref] = entry
-            _save(cache)
+            if not _save(cache):
+                return False
     except (OSError, TimeoutError):
-        pass
+        return False
+    return True
 
 
 def record(remote_head: str | None, ref: str = "main") -> None:

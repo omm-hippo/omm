@@ -197,7 +197,10 @@ def remote_file_sha256(provider: str, repo_id: str, filename: str) -> str | None
     return _PROVIDER_MODULES[validate_provider(provider)].remote_file_sha256(repo_id, filename)
 
 
-@lru_cache(maxsize=128)
+# A prefix may be as large as 64 MiB. Keeping 128 of them could retain 8 GiB
+# in a long-running contribute process; a small cache still covers the normal
+# reconsider-the-same-candidate path without competing with model memory.
+@lru_cache(maxsize=4)
 def _remote_gguf_prefix_cached(
     provider: str,
     repo_id: str,

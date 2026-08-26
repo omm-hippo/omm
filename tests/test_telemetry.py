@@ -1,5 +1,6 @@
 import json
 
+import pytest
 import requests
 
 from omm import config, firebase_auth, telemetry
@@ -245,6 +246,49 @@ def test_flush_pending_resends_and_clears_on_success(isolated_omm_home, monkeypa
     assert json.loads((isolated_omm_home / "telemetry_pending.json").read_text()) == []
 
 
+def test_flush_preserves_event_appended_while_send_is_in_progress(
+    isolated_omm_home, monkeypatch
+):
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="always"
+    )
+    pending_path = isolated_omm_home / "telemetry_pending.json"
+    pending_path.write_text(json.dumps([{"model": "old"}]))
+
+    def send_and_append(event):
+        telemetry._append_pending({"model": "new"})
+        return True
+
+    monkeypatch.setattr(telemetry, "_post_event", send_and_append)
+
+    assert telemetry.flush_pending() == 1
+    assert json.loads(pending_path.read_text()) == [{"model": "new"}]
+
+
+def test_full_queue_flush_does_not_remove_identical_new_append(
+    isolated_omm_home, monkeypatch
+):
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="always"
+    )
+    sent = {"model": "same"}
+    events = [sent, *({"model": str(index)} for index in range(999))]
+    pending_path = isolated_omm_home / "telemetry_pending.json"
+    pending_path.write_text(json.dumps(events))
+
+    def send_and_append(event):
+        telemetry._append_pending(dict(sent))
+        return True
+
+    monkeypatch.setattr(telemetry, "_post_event", send_and_append)
+
+    assert telemetry.flush_pending(max_retries=1) == 1
+    pending = json.loads(pending_path.read_text())
+    assert len(pending) == telemetry._MAX_PENDING_EVENTS
+    assert pending[-1] == sent
+    assert pending.count(sent) == 1
+
+
 def test_flush_pending_keeps_events_that_still_fail(isolated_omm_home, monkeypatch):
     config.update_config(
         telemetry_endpoint="https://example.com", telemetry_send_policy="always"
@@ -273,6 +317,21 @@ def test_flush_pending_caps_attempts_per_call(isolated_omm_home, monkeypatch):
     assert len(calls) == 3
     remaining = json.loads((isolated_omm_home / "telemetry_pending.json").read_text())
     assert len(remaining) == 2
+
+
+@pytest.mark.parametrize("max_retries", [0, -1, True, 1.5])
+def test_flush_pending_rejects_invalid_retry_limits(
+    isolated_omm_home, monkeypatch, max_retries
+):
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="always"
+    )
+    pending_path = isolated_omm_home / "telemetry_pending.json"
+    pending_path.write_text(json.dumps([{"model": "private"}]))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: pytest.fail("must not send"))
+
+    assert telemetry.flush_pending(max_retries=max_retries) == 0
+    assert json.loads(pending_path.read_text()) == [{"model": "private"}]
 
 
 def test_flush_pending_never_sends_after_user_opts_out(isolated_omm_home, monkeypatch):
