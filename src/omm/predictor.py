@@ -10,7 +10,7 @@ import json
 import math
 
 from omm import calibration, catalog
-from omm.atomic import atomic_write_text, locked
+from omm.atomic import atomic_write_bytes, atomic_write_text, locked
 from omm.config import RECOMMEND_MODEL_PATH
 from omm.featurize import (
     FEATURE_ORDER,
@@ -32,6 +32,7 @@ class ModelFetchError(Exception):
 
 MODEL_MEMORY_OVERHEAD = 1.2
 SUPPORTED_MODEL_VERSION = 4
+MAX_TREE_DEPTH = 256
 
 # Roughly average human reading speed. rank_candidates() sorts by predicted
 # speed alone, so a smaller model is always ranked above a larger one that's
@@ -92,28 +93,44 @@ def validate_model_artifact(artifact: object) -> dict:
         ):
             raise ValueError("model artifact candidate size_bytes must be a positive finite number")
 
-    def validate_node(node: object) -> None:
-        if not isinstance(node, dict):
-            raise ValueError("tree nodes must be objects")
-        if node.get("leaf") is True:
-            value = node.get("value")
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-                raise ValueError("leaf values must be finite numbers")
-            return
-
-        feature = node.get("feature")
-        threshold = node.get("threshold")
-        if isinstance(feature, bool) or not isinstance(feature, int) or not 0 <= feature < len(FEATURE_ORDER):
-            raise ValueError("tree feature index is out of range")
-        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold):
-            raise ValueError("tree threshold must be a finite number")
-        if "left" not in node or "right" not in node:
-            raise ValueError("tree branch must contain left and right nodes")
-        validate_node(node["left"])
-        validate_node(node["right"])
-
     for tree in trees:
-        validate_node(tree)
+        # Iterative validation prevents a deeply nested untrusted artifact from
+        # crashing with RecursionError before load_model can fall back to cache.
+        stack: list[tuple[object, int]] = [(tree, 1)]
+        while stack:
+            node, depth = stack.pop()
+            if depth > MAX_TREE_DEPTH:
+                raise ValueError("tree exceeds maximum depth")
+            if not isinstance(node, dict):
+                raise ValueError("tree nodes must be objects")
+            if node.get("leaf") is True:
+                value = node.get("value")
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                ):
+                    raise ValueError("leaf values must be finite numbers")
+                continue
+
+            feature = node.get("feature")
+            threshold = node.get("threshold")
+            if (
+                isinstance(feature, bool)
+                or not isinstance(feature, int)
+                or not 0 <= feature < len(FEATURE_ORDER)
+            ):
+                raise ValueError("tree feature index is out of range")
+            if (
+                isinstance(threshold, bool)
+                or not isinstance(threshold, (int, float))
+                or not math.isfinite(threshold)
+            ):
+                raise ValueError("tree threshold must be a finite number")
+            if "left" not in node or "right" not in node:
+                raise ValueError("tree branch must contain left and right nodes")
+            stack.append((node["right"], depth + 1))
+            stack.append((node["left"], depth + 1))
     return artifact
 
 
@@ -249,6 +266,7 @@ def fetch_and_cache_model(
     if bool(manifest_url) != bool(public_key):
         raise ValueError("catalog manifest URL and public key must be configured together")
     manifest = None
+    verified_content: bytes | None = None
     if manifest_url and public_key:
         manifest_response = requests.get(manifest_url, timeout=15)
         manifest_response.raise_for_status()
@@ -257,6 +275,11 @@ def fetch_and_cache_model(
         if not isinstance(raw_content, bytes):
             raw_content = json.dumps(artifact, separators=(",", ":")).encode()
         catalog.verify_signed_artifact(raw_content, manifest, public_key)
+        # The provenance signature is over the exact response bytes. Caching a
+        # re-serialized equivalent JSON object makes that stored provenance
+        # unverifiable and prevents the next refresh from archiving it as a
+        # signed rollback point.
+        verified_content = raw_content
     RECOMMEND_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     with locked(RECOMMEND_MODEL_PATH):
         # Archive and replace under the same cross-process lock. Otherwise two
@@ -266,14 +289,17 @@ def fetch_and_cache_model(
             current = validate_model_artifact(
                 json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8"))
             )
-        except (OSError, json.JSONDecodeError, ValueError):
+        except (OSError, json.JSONDecodeError, RecursionError, ValueError):
             current = None
         if current is not None:
             catalog.archive_current_artifact(
                 artifact_path=RECOMMEND_MODEL_PATH,
                 require_signed=bool(manifest_url and public_key),
             )
-        atomic_write_text(RECOMMEND_MODEL_PATH, json.dumps(artifact) + "\n")
+        if verified_content is not None:
+            atomic_write_bytes(RECOMMEND_MODEL_PATH, verified_content)
+        else:
+            atomic_write_text(RECOMMEND_MODEL_PATH, json.dumps(artifact) + "\n")
         provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
             RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
         )
@@ -292,7 +318,7 @@ def load_cached_model() -> dict | None:
         return None
     try:
         return validate_model_artifact(json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, json.JSONDecodeError, RecursionError, ValueError):
         return None
 
 
@@ -311,7 +337,7 @@ def load_model(
             if manifest_url and public_key:
                 return fetch_and_cache_model(url, manifest_url, public_key)
             return fetch_and_cache_model(url)
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, RecursionError, ValueError):
             pass
     return load_cached_model()
 

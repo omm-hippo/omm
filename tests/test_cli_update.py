@@ -218,7 +218,9 @@ def test_partial_migration_forces_pipx_even_when_source_and_deps_are_current(mon
     ]
 
 
-def test_partial_migration_is_not_reported_as_already_up_to_date(monkeypatch):
+def test_partial_migration_is_not_reported_as_already_up_to_date(
+    isolated_omm_home, monkeypatch
+):
     latest = "latest-commit"
     monkeypatch.setattr(cli, "_src_head_commit", lambda: latest)
     monkeypatch.setattr(cli, "_editable_install_uses_src", lambda *args: False)
@@ -593,6 +595,34 @@ def test_cleanup_removes_only_current_legacy_env_and_accepts_preserved_new_link(
 
     assert result.returncode == 0
     assert calls == [["pipx", "uninstall", "omm"]]
+
+
+def test_legacy_environment_identity_accepts_windows_executable_suffixes(
+    monkeypatch, tmp_path
+):
+    venvs_root = tmp_path / "venvs"
+    legacy_env = venvs_root / "omm"
+    legacy_env.mkdir(parents=True)
+    snapshot = _pipx_snapshot(venvs_root)
+    snapshot["venvs"]["omm"] = {
+        "environment": "omm",
+        "main_package": {
+            "package": "omm",
+            "apps": ["omm.exe", "localfit-server.exe"],
+        },
+    }
+    verification = cli._PipxInstallVerification(
+        local_venvs=venvs_root,
+        bin_dir=tmp_path / "bin",
+        snapshot=snapshot,
+        internal_omm=tmp_path / "internal-omm.exe",
+        exposed_omm=tmp_path / "omm.exe",
+        expected_version="0.2.119",
+    )
+    monkeypatch.setattr(cli.sys, "prefix", str(legacy_env))
+    monkeypatch.setattr(cli.platform, "system", lambda: "Windows")
+
+    assert cli._legacy_pipx_environment_is_current(verification) is True
 
 
 def test_cleanup_repairs_a_missing_link_without_requiring_pipx_expose(monkeypatch, tmp_path):
@@ -1031,17 +1061,17 @@ def test_remote_head_commit_parses_git_ls_remote_output(monkeypatch):
 
 def test_deps_satisfied_true_when_all_declared_deps_importable(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
-        'dependencies = [\n    "click>=8.1",\n    "rich>=13",\n]\n'
+        '[project]\ndependencies = [\n    "click>=8.1",\n    "rich>=13",\n]\n'
     )
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
-    monkeypatch.setattr(importlib.metadata, "version", lambda name: "1.0")
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "99.0")
 
     assert cli._deps_satisfied() is True
 
 
 def test_deps_satisfied_false_when_a_declared_dep_is_missing(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
-        'dependencies = [\n    "click>=8.1",\n    "rich>=13",\n]\n'
+        '[project]\ndependencies = [\n    "click>=8.1",\n    "rich>=13",\n]\n'
     )
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
 
@@ -1051,6 +1081,18 @@ def test_deps_satisfied_false_when_a_declared_dep_is_missing(tmp_path, monkeypat
         return "1.0"
 
     monkeypatch.setattr(importlib.metadata, "version", _version)
+
+    assert cli._deps_satisfied() is False
+
+
+def test_deps_satisfied_false_when_installed_version_is_below_new_minimum(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["click>=8.1"]\n'
+    )
+    monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "8.0.9")
 
     assert cli._deps_satisfied() is False
 

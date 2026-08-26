@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -177,6 +178,26 @@ def test_adapter_contract_preserves_preloaded_model(
     assert adapter.unload(receipt).unloaded is True
     assert state["loaded"] is True
     assert not any(method == "POST" and path == unload_path for method, path, _ in state["calls"])
+
+
+def test_lmstudio_ignores_empty_loaded_instance_ids():
+    adapter = LMStudioAdapter()
+    adapter._client.request = lambda *args, **kwargs: SimpleNamespace(
+        data={
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "local/model",
+                    "loaded_instances": [{"id": ""}],
+                }
+            ]
+        }
+    )
+
+    [model] = adapter.list_models()
+
+    assert model.loaded is False
+    assert model.instance_id is None
 
 
 def test_ollama_probe_disables_thinking_for_bounded_visible_answer(runtime_server):

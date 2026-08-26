@@ -44,7 +44,7 @@ def _load_cache() -> dict[str, Any]:
     try:
         with locked(path, timeout=10):
             loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, FileLockTimeout):
+    except (OSError, UnicodeError, ValueError, FileLockTimeout):
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
@@ -105,6 +105,8 @@ def _sign_up_anonymously() -> dict[str, Any] | None:
         data = resp.json()
     except ValueError:
         return None
+    if not isinstance(data, dict):
+        return None
     return _session_from(data.get("idToken"), data.get("refreshToken"), data.get("expiresIn"))
 
 
@@ -125,6 +127,8 @@ def _refresh(refresh_token: str) -> dict[str, Any] | None:
     try:
         data = resp.json()
     except ValueError:
+        return None
+    if not isinstance(data, dict):
         return None
     # securetoken.googleapis.com replies snake_case, unlike identitytoolkit's
     # camelCase - both are Google's actual wire format, not a typo.

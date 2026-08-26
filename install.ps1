@@ -259,6 +259,34 @@ function Invoke-Pipx {
     Invoke-Python -m pipx @args
 }
 
+function Test-SafePipxSharedLibsPath {
+    param([string]$Path)
+    try {
+        $pipxHome = ([string](Invoke-Pipx environment --value PIPX_HOME)).Trim().TrimEnd('\')
+        if ($LASTEXITCODE -ne 0 -or -not $pipxHome) { return $false }
+        $fullHome = [IO.Path]::GetFullPath($pipxHome).TrimEnd('\')
+        $root = [IO.Path]::GetPathRoot($fullHome).TrimEnd('\')
+        if (-not $fullHome -or $fullHome -eq $root) { return $false }
+        $fullShared = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+        $expected = [IO.Path]::GetFullPath((Join-Path $fullHome "shared")).TrimEnd('\')
+        if (-not $fullShared.Equals($expected, [StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+        if (Test-Path -LiteralPath $fullShared) {
+            if (-not (Test-Path -LiteralPath $fullShared -PathType Container)) {
+                return $false
+            }
+            $item = Get-Item -LiteralPath $fullShared -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return $false
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 $PipxEnvironment = "omm-model"
 $LegacyPipxEnvironment = "omm"
 
@@ -534,6 +562,9 @@ function Repair-PipxSharedLibs {
         $healthy = $false
     }
     if (-not $healthy) {
+        if (-not (Test-SafePipxSharedLibsPath $shared)) {
+            throw "Refusing to remove unsafe pipx shared directory: $shared"
+        }
         Write-Host "pipx's shared pip is broken; rebuilding it..."
         Remove-Item -LiteralPath $shared -Recurse -Force
     }
@@ -702,6 +733,10 @@ function Invoke-PipxInstallWithRepair {
     if (Invoke-PipxStatus -Arguments $installArguments) { return $true }
     $shared = ([string](Invoke-Pipx environment --value PIPX_SHARED_LIBS)).Trim()
     if (-not $shared -or -not (Test-Path -LiteralPath $shared)) { return $false }
+    if (-not (Test-SafePipxSharedLibsPath $shared)) {
+        Write-Warning "Refusing to remove unsafe pipx shared directory: $shared"
+        return $false
+    }
     Write-Host "pipx install failed; rebuilding pipx's shared pip and retrying once..."
     Remove-Item -LiteralPath $shared -Recurse -Force -ErrorAction SilentlyContinue
     return (Invoke-PipxStatus -Arguments $installArguments)

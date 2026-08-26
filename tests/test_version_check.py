@@ -158,12 +158,29 @@ def test_mark_checking_sets_timestamp_without_clobbering_checked_at(isolated_omm
         json.dumps({"main": {"checked_at": checked_at, "remote_head": "old_sha"}})
     )
 
-    version_check.mark_checking()
+    assert version_check.mark_checking() is True
 
     cache = json.loads((isolated_omm_home / "update_check.json").read_text())
     assert cache["main"]["checked_at"] == checked_at
     assert cache["main"]["remote_head"] == "old_sha"
     assert isinstance(cache["main"]["checking_since"], float)
+
+
+def test_mark_checking_allows_only_one_fresh_claim(isolated_omm_home):
+    assert version_check.mark_checking() is True
+    assert version_check.mark_checking() is False
+
+
+def test_mark_checking_returns_false_when_claim_cannot_be_persisted(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        version_check,
+        "atomic_write_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    assert version_check.mark_checking() is False
 
 
 def test_record_keeps_other_channels_untouched(isolated_omm_home):

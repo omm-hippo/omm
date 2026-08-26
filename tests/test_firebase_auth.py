@@ -127,6 +127,22 @@ def test_get_id_token_returns_none_on_malformed_response(isolated_omm_home, monk
     assert firebase_auth.get_id_token() is None
 
 
+def test_get_id_token_returns_none_on_non_object_success_response(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200, ["unexpected"]))
+
+    assert firebase_auth.get_id_token() is None
+
+
+def test_get_id_token_ignores_invalid_utf8_cache(isolated_omm_home, monkeypatch):
+    _cache_file(isolated_omm_home).parent.mkdir(parents=True, exist_ok=True)
+    _cache_file(isolated_omm_home).write_bytes(b"\xff")
+    monkeypatch.setattr(firebase_auth, "_sign_up_anonymously", lambda: None)
+
+    assert firebase_auth.get_id_token() is None
+
+
 def test_save_cache_restricts_acl_to_current_user_on_windows(isolated_omm_home, monkeypatch):
     """POSIX incidentally gets owner-only protection for this refresh-token
     cache from tempfile.mkstemp's 0600 mode; Windows has no equivalent, so

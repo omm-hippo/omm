@@ -1,10 +1,14 @@
 import copy
+import base64
+import hashlib
 import json
 
 import pytest
 import requests
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from omm import predictor
+from omm import catalog, predictor
 from omm.featurize import FEATURE_ORDER
 
 
@@ -50,6 +54,22 @@ def test_validate_model_artifact_rejects_bad_branch_values(change):
     invalid = artifact()
     change(invalid["trees"][0])
     with pytest.raises(ValueError):
+        predictor.validate_model_artifact(invalid)
+
+
+def test_validate_model_artifact_rejects_pathologically_deep_tree_cleanly():
+    node = {"leaf": True, "value": 1.0}
+    for _ in range(predictor.MAX_TREE_DEPTH + 1):
+        node = {
+            "feature": 0,
+            "threshold": 1.0,
+            "left": node,
+            "right": {"leaf": True, "value": 1.0},
+        }
+    invalid = artifact()
+    invalid["trees"] = [node]
+
+    with pytest.raises(ValueError, match="maximum depth"):
         predictor.validate_model_artifact(invalid)
 
 
@@ -104,3 +124,53 @@ def test_validate_model_artifact_rejects_malformed_candidates(candidate):
 def test_required_memory_rejects_boolean_and_infinite_size_metadata():
     assert predictor.estimate_required_memory_gb({"size_bytes": True}) is None
     assert predictor.estimate_required_memory_gb({"size_bytes": float("inf")}) is None
+
+
+def test_signed_fetch_caches_exact_verified_bytes_for_future_archive(monkeypatch, tmp_path):
+    private = Ed25519PrivateKey.generate()
+    public = base64.b64encode(
+        private.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode()
+    cache_path = tmp_path / "recommend-model.json"
+    history = tmp_path / "history"
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+    monkeypatch.setattr(catalog, "CATALOG_HISTORY_DIR", history)
+
+    class Response:
+        def __init__(self, content):
+            self.content = content
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return json.loads(self.content)
+
+    contents = [
+        json.dumps(artifact(), indent=2).encode(),
+        json.dumps({**artifact(), "generated_at": "later"}, indent=4).encode(),
+    ]
+    manifests = [
+        {
+            "schema_version": 1,
+            "artifact_sha256": hashlib.sha256(content).hexdigest(),
+            "signature": base64.b64encode(private.sign(content)).decode(),
+        }
+        for content in contents
+    ]
+    responses = iter(
+        [Response(contents[0]), Response(json.dumps(manifests[0]).encode()),
+         Response(contents[1]), Response(json.dumps(manifests[1]).encode())]
+    )
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: next(responses))
+
+    predictor.fetch_and_cache_model("model", "manifest", public)
+    assert cache_path.read_bytes() == contents[0]
+    predictor.fetch_and_cache_model("model", "manifest", public)
+
+    archived = history / f"{hashlib.sha256(contents[0]).hexdigest()}.json"
+    assert archived.read_bytes() == contents[0]
+    assert cache_path.read_bytes() == contents[1]

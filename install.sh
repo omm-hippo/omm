@@ -311,6 +311,16 @@ run_pipx() {
     "$PY" -m pipx "$@"
 }
 
+pipx_shared_dir_is_safe() {
+    shared_dir="$1"
+    pipx_home=$(run_pipx environment --value PIPX_HOME 2>/dev/null || true)
+    pipx_home=${pipx_home%/}
+    case "$pipx_home" in
+        ""|/) return 1 ;;
+    esac
+    [ "$shared_dir" = "$pipx_home/shared" ] && [ ! -L "$shared_dir" ]
+}
+
 PIPX_ENV="omm-model"
 LEGACY_PIPX_ENV="omm"
 
@@ -555,6 +565,10 @@ fi
 PIPX_SHARED_LIBS=$(run_pipx environment --value PIPX_SHARED_LIBS 2>/dev/null || true)
 if [ -n "$PIPX_SHARED_LIBS" ] && [ -x "$PIPX_SHARED_LIBS/bin/python" ] \
     && ! "$PIPX_SHARED_LIBS/bin/python" -m pip --version >/dev/null 2>&1; then
+    if ! pipx_shared_dir_is_safe "$PIPX_SHARED_LIBS"; then
+        echo "Refusing to remove unsafe pipx shared directory: $PIPX_SHARED_LIBS" >&2
+        exit 1
+    fi
     echo "pipx's shared pip is broken; rebuilding it..."
     rm -rf "$PIPX_SHARED_LIBS"
 fi
@@ -712,6 +726,10 @@ pipx_install_with_repair() {
     fi
     shared=$(run_pipx environment --value PIPX_SHARED_LIBS 2>/dev/null || true)
     if [ -z "$shared" ] || [ ! -d "$shared" ]; then
+        return 1
+    fi
+    if ! pipx_shared_dir_is_safe "$shared"; then
+        echo "Refusing to remove unsafe pipx shared directory: $shared" >&2
         return 1
     fi
     echo "pipx install failed; rebuilding pipx's shared pip and retrying once..."

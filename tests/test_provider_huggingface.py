@@ -69,3 +69,17 @@ def test_download_url_quotes_filename_without_flattening_nested_paths():
         "https://huggingface.co/org/repo/resolve/main/"
         "nested/model%20%231%3F.gguf"
     )
+
+
+def test_fetch_repo_files_accepts_case_insensitive_gguf_suffix(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda url, timeout: _FakeResponse(
+            payload={"siblings": [{"rfilename": "MODEL.GGUF"}, {"rfilename": "README.md"}]}
+        ),
+    )
+
+    files, _ = huggingface.fetch_repo_files("org/repo")
+
+    assert files == ["MODEL.GGUF"]

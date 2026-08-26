@@ -140,6 +140,16 @@ def validate_launcher_source(
     *,
     expected_private: bool = True,
 ) -> None:
+    for relative in (
+        "LICENSE",
+        "package.json",
+        "bin/omm.js",
+        "lib/launcher.js",
+        "targets.json",
+    ):
+        path = source / relative
+        if not path.is_file() or path.is_symlink():
+            raise NpmPackageError(f"missing regular launcher file: {relative}")
     manifest = _read_json(source / "package.json")
     version = project_version()
     target_map = targets(source / "targets.json")
@@ -168,10 +178,6 @@ def validate_launcher_source(
         "git+https://github.com/omm-hippo/omm.git"
     ):
         raise NpmPackageError("npm launcher repository must be the canonical public repo")
-    for relative in ("LICENSE", "bin/omm.js", "lib/launcher.js", "targets.json"):
-        path = source / relative
-        if not path.is_file() or path.is_symlink():
-            raise NpmPackageError(f"missing regular launcher file: {relative}")
     if canonical_license_bytes(source / "LICENSE") != canonical_license_bytes():
         raise NpmPackageError("npm launcher LICENSE must match the repository license")
     if not (source / "bin" / "omm.js").read_text(encoding="utf-8").startswith(
@@ -327,12 +333,18 @@ def validate_platform_package(
         raise NpmPackageError(f"unsupported npm target: {target_name!r}")
     target = target_map[target_name]
     version = project_version()
-    manifest = _read_json(root / "package.json")
     binary = root / target["binary"]
     expected_private = not publishable
     expected_files = {"LICENSE", "package.json", target["binary"]}
     if _file_allowlist(root) != expected_files:
         raise NpmPackageError("platform package contains files outside its allowlist")
+    for relative in ("LICENSE", "package.json"):
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            raise NpmPackageError(
+                f"platform package metadata must be a regular file: {relative}"
+            )
+    manifest = _read_json(root / "package.json")
     _validate_binary(binary, target["os"])
     if (
         manifest.get("name") != target["package"]

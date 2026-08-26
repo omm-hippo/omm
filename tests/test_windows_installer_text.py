@@ -79,9 +79,13 @@ def test_installers_repair_a_broken_pipx_shared_venv_before_installing():
     must probe that venv's pip and rebuild it rather than fail there."""
     ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
     assert "function Repair-PipxSharedLibs" in ps1
+    assert "function Test-SafePipxSharedLibsPath" in ps1
+    assert "Test-SafePipxSharedLibsPath $shared" in ps1
     assert "PIPX_SHARED_LIBS" in ps1
     assert ps1.index("Repair-PipxSharedLibs\n$PythonExecutable") > ps1.index("function Repair-PipxSharedLibs")
     sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "pipx_shared_dir_is_safe()" in sh
+    assert 'pipx_shared_dir_is_safe "$PIPX_SHARED_LIBS"' in sh
     assert 'PIPX_SHARED_LIBS=$(run_pipx environment --value PIPX_SHARED_LIBS' in sh
     assert 'rm -rf "$PIPX_SHARED_LIBS"' in sh
     assert sh.index("PIPX_SHARED_LIBS") < sh.index("run_pipx install --force")
@@ -99,6 +103,7 @@ def test_installers_retry_pipx_install_once_after_rebuilding_shared_venv():
     sh = (ROOT / "install.sh").read_text(encoding="utf-8")
     assert "pipx_install_with_repair() {" in sh
     assert "if ! pipx_install_with_repair; then" in sh
+    assert 'pipx_shared_dir_is_safe "$shared"' in sh
     assert 'rm -rf "$shared"' in sh
 
 
