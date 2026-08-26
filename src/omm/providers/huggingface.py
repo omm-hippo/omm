@@ -5,6 +5,7 @@ git history for prior behavior if something looks unfamiliar."""
 from __future__ import annotations
 
 import math
+import re
 from urllib.parse import quote
 
 from omm.providers.base import ModelResolutionError
@@ -104,7 +105,12 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
         entries = resp.json()
         if not entries:
             return None
-        return entries[0].get("lfs", {}).get("sha256")
+        lfs = entries[0].get("lfs", {})
+        digest = lfs.get("oid") or lfs.get("sha256")
+        if not isinstance(digest, str):
+            return None
+        digest = digest.removeprefix("sha256:").lower()
+        return digest if re.fullmatch(r"[0-9a-f]{64}", digest) else None
     except (ValueError, KeyError, TypeError, AttributeError, IndexError):
         return None
 
