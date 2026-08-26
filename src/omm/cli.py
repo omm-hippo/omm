@@ -49,6 +49,7 @@ from omm import (
     contribute_state,
     doctor as doctor_mod,
     error_report,
+    errors,
     fit_ui,
     launcher,
     linker,
@@ -1134,13 +1135,15 @@ def _refresh_data() -> None:
         try:
             manifest_url = config.get("catalog_manifest_url")
             public_key = config.get("catalog_public_key")
+            previous = predictor.load_cached_model()
             if manifest_url and public_key:
                 artifact = predictor.fetch_and_cache_model(model_url, manifest_url, public_key)
             else:
                 artifact = predictor.fetch_and_cache_model(model_url)
+            style = "success" if artifact != previous else "muted"
             console.print(
-                f"[success]Updated recommend-model.json "
-                f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/success]"
+                f"[{style}]Updated recommend-model.json "
+                f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/{style}]"
             )
         except (requests.RequestException, ValueError) as e:
             err_console.print(f"[error]Failed to fetch trained model from {model_url}: {e}[/error]")
@@ -1318,6 +1321,22 @@ def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch:
 _SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
 
 
+def _ask_setup_choice() -> str:
+    """The first-run setup gate itself, split out so tests can stub it
+    without a real terminal (same shape as _ask_upload_choice). Before this
+    existed, the only way out of a repeatedly auto-triggered wizard was to
+    finish it or hand-edit config.json - Ctrl+C during the wizard
+    deliberately leaves onboarding_completed False (see
+    test_bare_omm_leaves_onboarding_incomplete_when_wizard_aborted) so it
+    would just come back on the next command."""
+    return _ask_single_key(
+        "Run the first-time setup wizard now?",
+        [("y", "Yes", "run"), ("n", "Not now", "later"), ("s", "Skip for good", "skip")],
+        default_value="run",
+        instruction="(y/n/s - s skips setup for good; `omm setup` reruns it any time)",
+    )
+
+
 def _maybe_run_onboarding(ctx: typer.Context) -> None:
     """Runs the first-time setup wizard exactly once, only for a genuinely
     fresh install (see config.load_config()'s migration handling) and only
@@ -1330,6 +1349,15 @@ def _maybe_run_onboarding(ctx: typer.Context) -> None:
     if load_config().get("onboarding_completed", True):
         return
     if not _stdin_is_tty():
+        return
+    choice = _ask_setup_choice()
+    if choice == "skip":
+        config_mod.update_config(onboarding_completed=True)
+        console.print(
+            "[muted]Setup skipped. Run `omm setup` any time to configure omm.[/muted]"
+        )
+        return
+    if choice == "later":
         return
     onboarding.run_wizard(console)
     config_mod.update_config(onboarding_completed=True)
@@ -1372,6 +1400,7 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
         try:
             subprocess.Popen(
                 args,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 **kwargs,
@@ -2558,7 +2587,12 @@ def update() -> None:
 
 def _add_escape_to_cancel(question: questionary.Question) -> questionary.Question:
     """questionary only aborts on Ctrl+C/Ctrl+Q by default; make Escape do
-    the same so `.ask()` returns None instead of requiring Ctrl+C."""
+    the same so `.ask()` returns None instead of requiring Ctrl+C.
+
+    `application.key_bindings` is a `_MergedKeyBindings` (prompt_toolkit
+    merges questionary's bindings with the default ones), which has no
+    `.add` - it must be extended via `merge_key_bindings`, not mutated."""
+    from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
     from prompt_toolkit.keys import Keys
 
     def _abort(event) -> None:
@@ -2567,7 +2601,9 @@ def _add_escape_to_cancel(question: questionary.Question) -> questionary.Questio
     application = getattr(question, "application", None)
     key_bindings = getattr(application, "key_bindings", None)
     if key_bindings is not None:
-        key_bindings.add(Keys.Escape, eager=True)(_abort)
+        escape_binding = KeyBindings()
+        escape_binding.add(Keys.Escape, eager=True)(_abort)
+        application.key_bindings = merge_key_bindings([key_bindings, escape_binding])
     return question
 
 
@@ -2718,6 +2754,28 @@ def _ask_upload_choice(prompt: str) -> str:
     )
 
 
+def _print_not_installed_error(name: str) -> None:
+    """`name` isn't a registry entry - shared by every command that looks
+    one up (info/verify/run/upgrade/remove/link) so the fix text isn't
+    duplicated per command."""
+    errors.print_cli_error(
+        err_console,
+        f"{name} is not installed via omm.",
+        fix="Run `omm list` to see what is installed.",
+    )
+
+
+def _print_no_engine_error(action: str) -> None:
+    """Neither Ollama nor LM Studio is installed/reachable - shared by
+    every `_select_benchmark_engine() is None` check (benchmark,
+    contribute) so the fix text isn't duplicated per command."""
+    errors.print_cli_error(
+        err_console,
+        "Neither Ollama nor LM Studio is installed or available.",
+        fix=f"Install one of them, start it once, then retry `omm {action}`.",
+    )
+
+
 def _ensure_ollama_running(action: str, *, assume_yes: bool = False):
     """Preflight Ollama without confusing missing, stopped, and stale PATH."""
     state = benchmark.ollama_install_state()
@@ -2729,10 +2787,10 @@ def _ensure_ollama_running(action: str, *, assume_yes: bool = False):
             )
         return None
     if state == "missing":
-        err_console.print(
-            "[error]Ollama is not installed or its executable cannot be found. "
-            "Install Ollama from https://ollama.com/download, start it once, "
-            f"then retry `omm {action}`.[/error]"
+        errors.print_cli_error(
+            err_console,
+            "Ollama is not installed or its executable cannot be found.",
+            fix=f"Install Ollama from https://ollama.com/download, start it once, then retry `omm {action}`.",
         )
         raise typer.Exit(1)
 
@@ -3493,7 +3551,11 @@ def _ensure_install_disk_capacity(
             )
 
     if failures:
-        raise InsufficientDiskSpaceError("Not enough disk space: " + "; ".join(failures))
+        raise InsufficientDiskSpaceError(
+            "Not enough disk space: " + "; ".join(failures),
+            fix="Free up disk space on that volume, or retry with `--skip-unfit` "
+            "to skip models that don't fit.",
+        )
 
 
 def _run_memory_guard(
@@ -4105,7 +4167,7 @@ def _install_impl(
                 if skip_unfit:
                     err_console.print(f"[warning]Skipping {error}.[/warning]")
                     return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-                err_console.print(f"[error]{error}.[/error]")
+                errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
                 raise typer.Exit(1) from error
         try:
             if stop_event is not None:
@@ -4120,7 +4182,7 @@ def _install_impl(
             raise InstallInterrupted(filename) from e
         except InsufficientDiskSpaceError as e:
             _cleanup_incomplete_install(filename)
-            err_console.print(f"[error]{e}[/error]")
+            errors.print_cli_error(err_console, str(e), fix=e.fix)
             if skip_unfit:
                 return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
             raise typer.Exit(1) from e
@@ -4140,7 +4202,7 @@ def _install_impl(
         if skip_unfit:
             err_console.print(f"[warning]Skipping {error}.[/warning]")
             return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-        err_console.print(f"[error]{error}.[/error]")
+        errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
         raise typer.Exit(1) from error
 
     if not opts.quiet:
@@ -4161,7 +4223,7 @@ def _install_impl(
         if skip_unfit:
             err_console.print(f"[warning]Skipping {error}[/warning]")
             return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-        err_console.print(f"[error]{error}[/error]")
+        errors.print_cli_error(err_console, str(error), fix=error.fix)
         raise typer.Exit(1) from error
 
     registry.upsert_entry(
@@ -4848,7 +4910,7 @@ def install(
         )
         return
     except ModelResolutionError as e:
-        err_console.print(f"[error]{e}[/error]")
+        errors.print_cli_error(err_console, str(e), fix=e.fix)
         _print_install_suggestions(model_name)
         raise typer.Exit(1) from e
 
@@ -4873,7 +4935,10 @@ def install(
             stop_event=listener.stop_event,
         )
     except DownloadError as error:
-        err_console.print(f"[error]{error}[/error]")
+        errors.print_cli_error(err_console, str(error), fix=error.fix)
+        raise typer.Exit(1) from error
+    except linker.LinkError as error:
+        errors.print_cli_error(err_console, str(error), fix=error.fix)
         raise typer.Exit(1) from error
     except InstallInterrupted as e:
         _cleanup_interrupted_install(e.filename)
@@ -5018,12 +5083,12 @@ def remove(
             if incomplete_install_exists:
                 console.print(f"Would clean up incomplete install of {filename}")
                 raise typer.Exit(0)
-            err_console.print(f"[error]{filename} is not installed via omm. See `omm list`.[/error]")
+            _print_not_installed_error(filename)
             raise typer.Exit(1)
         if _cleanup_incomplete_install(filename):
             console.print(f"[success]Cleaned up incomplete install of {filename}[/success]")
             raise typer.Exit(0)
-        err_console.print(f"[error]{filename} is not installed via omm. See `omm list`.[/error]")
+        _print_not_installed_error(filename)
         raise typer.Exit(1)
 
     if dry_run:
@@ -5167,7 +5232,7 @@ def verify(
     model_name = _resolve_ref(model_name)
     filename, entry = _lookup_entry(model_name, registry.load_registry())
     if entry is None:
-        err_console.print(f"[error]{model_name} is not installed via omm. See `omm list`.[/error]")
+        _print_not_installed_error(model_name)
         raise typer.Exit(1)
     try:
         selected_engine = _select_compatibility_engine(entry, engine)
@@ -5286,7 +5351,7 @@ def info(
     reg = registry.load_registry()
     filename, entry = _lookup_entry(model_name, reg)
     if entry is None:
-        err_console.print(f"[error]{model_name} is not installed via omm. See `omm list`.[/error]")
+        _print_not_installed_error(model_name)
         raise typer.Exit(1)
 
     size_gb = entry.get("size_bytes", 0) / (1024**3)
@@ -5546,7 +5611,7 @@ def run(
     model_name = _resolve_ref(model_name)
     filename, entry = _lookup_entry(model_name, reg)
     if entry is None:
-        err_console.print(f"[error]{model_name} is not installed via omm. See `omm list`.[/error]")
+        _print_not_installed_error(model_name)
         raise typer.Exit(1)
 
     chosen = _pick_run_engine(entry, engine)
@@ -5686,7 +5751,7 @@ def upgrade(
     resolved = _resolve_ref(model_name)
     filename, entry = _lookup_entry(resolved, reg)
     if entry is None:
-        err_console.print(f"[error]{resolved} is not installed via omm. See `omm list`.[/error]")
+        _print_not_installed_error(resolved)
         raise typer.Exit(1)
 
     if dry_run:
@@ -5803,7 +5868,14 @@ def configure_telemetry(
 def configure_upload(
     enable: bool = typer.Option(False, "--enable", help="Always send benchmark results without asking."),
     disable: bool = typer.Option(False, "--disable", help="Never send benchmark results."),
-    ask: bool = typer.Option(False, "--ask", help="Ask every time before sending (default)."),
+    ask: bool = typer.Option(
+        False,
+        "--ask",
+        help=(
+            "Ask before sending (default); `omm install`/`omm benchmark` ask "
+            "each time, `omm contribute` asks once per run."
+        ),
+    ),
 ) -> None:
     """Configure the benchmark-upload send policy; see `omm setting telemetry` for the destination."""
     chosen = [flag for flag in (enable, disable, ask) if flag]
@@ -6449,6 +6521,10 @@ def search(
     session_cache.record_results(refs)
     if json_output:
         console.print_json(data=rows)
+    elif refs:
+        console.print(
+            "[muted]Install with: omm install <number>  (e.g. omm install 1)[/muted]"
+        )
 
 
 def _print_install_suggestions(query: str) -> None:
@@ -6835,10 +6911,7 @@ def benchmark_cmd(
         raise typer.Exit(1)
     engine = _select_benchmark_engine()
     if engine is None:
-        err_console.print(
-            "[error]Neither Ollama nor LM Studio is installed or available. Install "
-            "one of them, start it once, then retry `omm benchmark`.[/error]"
-        )
+        _print_no_engine_error("benchmark")
         raise typer.Exit(1)
     if not json_output:
         _print_engine_selection_notice(engine)
@@ -8479,10 +8552,7 @@ def contribute(
     # disk, and compute for a run this machine cannot start.
     engine = _select_benchmark_engine()
     if engine is None:
-        err_console.print(
-            "[error]Neither Ollama nor LM Studio is installed or available. Install "
-            "one of them, start it once, then retry `omm contribute`.[/error]"
-        )
+        _print_no_engine_error("contribute")
         raise typer.Exit(1)
     _print_engine_selection_notice(engine)
     # The consent/warning banner below (inside the try block) is deferred
@@ -8692,6 +8762,15 @@ def main() -> None:
         app()
     except InsufficientDiskSpaceError as e:
         err_console.print(f"[error]{e}[/error]")
+        raise SystemExit(1) from None
+    except PermissionError as e:
+        target = f" ({e.filename})" if e.filename else ""
+        errors.print_cli_error(
+            err_console,
+            f"Permission denied{target}: {e.strerror or e}.",
+            fix="Check that the file or directory is writable by your user, "
+            "and that no other program (or a differently-owned daemon) has it open.",
+        )
         raise SystemExit(1) from None
     except OSError as e:
         if e.errno == errno.ENOSPC:

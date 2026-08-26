@@ -310,7 +310,13 @@ def is_ollama_installed() -> bool:
 
 
 class LinkError(Exception):
-    pass
+    """`fix`, when set, is a copy-pasteable next step for the CLI's
+    cause+fix error format (issue #191) - callers that don't have one
+    just omit it and get the old single-message behavior."""
+
+    def __init__(self, message: str, *, fix: str | None = None):
+        self.fix = fix
+        super().__init__(message)
 
 
 def _link_key(path: Path) -> str:
@@ -1489,7 +1495,13 @@ def link_ollama(
         # a native-create escape hatch (see verify_compat's docstring); an
         # explicit models_dir has nowhere else to go but a plain LinkError.
         if not verify_compat:
-            raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
+            raise LinkError(
+                f"Could not link {model_name} into Ollama: {e}",
+                fix=(
+                    f"Check that {models_dir} is writable by your user account, "
+                    "or that Ollama isn't running as a different system user."
+                ),
+            ) from e
         _fallback_to_native_create(gguf_path, model_name, models_dir)
         return True
     except OSError as e:

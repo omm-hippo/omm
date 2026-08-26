@@ -378,12 +378,15 @@ def resolve_model(model_name: str) -> ResolvedModel:
         if len(matches) == 1:
             return _resolve_repo_ref(matches[0], repo_id, None)
         raise ModelResolutionError(
-            f"'{repo_id}' was not found on HuggingFace or ModelScope."
+            f"'{repo_id}' was not found on HuggingFace or ModelScope.",
+            fix="Check the spelling, or search with `omm search <query>`.",
         )
 
     raise ModelResolutionError(
-        f"Unknown model '{model_name}'. Use a curated name "
-        f"({', '.join(CURATED_INDEX)}), an 'org/repo:file.gguf' ref (optionally "
-        "prefixed 'hf:' or 'ms:'), or an HTTPS direct URL ending in "
-        "#sha256=<64-hex-digest>."
+        f"Unknown model '{model_name}'.",
+        fix=(
+            f"Use a curated name ({', '.join(CURATED_INDEX)}), an "
+            "'org/repo:file.gguf' ref (optionally prefixed 'hf:' or 'ms:'), "
+            "or an HTTPS direct URL ending in #sha256=<64-hex-digest>."
+        ),
     )

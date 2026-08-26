@@ -117,6 +117,7 @@ def test_engine_preflight_happens_before_expensive_work_consent(isolated_omm_hom
 
     assert result.exit_code == 1, result.stdout
     assert "Neither Ollama nor LM Studio" in result.stderr
+    assert "→ Install one of them, start it once, then retry `omm contribute`." in result.stderr
 
 
 def test_memory_preflight_happens_before_expensive_work_consent(

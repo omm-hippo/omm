@@ -51,6 +51,22 @@ def test_run_uses_ollama_when_linked_and_installed(isolated_omm_home, monkeypatc
     assert "Chat ended." in result.stdout
 
 
+def test_run_reports_missing_ollama_with_fix_command(isolated_omm_home, monkeypatch):
+    registry.save_registry({"model.gguf": _entry()})
+    monkeypatch.setattr(cli.linker, "is_engine_installed", _installed("ollama"))
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "missing")
+
+    result = runner.invoke(cli.app, ["run", "model.gguf"])
+
+    assert result.exit_code == 1
+    assert "Ollama is not installed or its executable cannot be found." in result.stderr
+    stderr_flat = " ".join(result.stderr.split())
+    assert (
+        "→ Install Ollama from https://ollama.com/download, start it once, "
+        "then retry `omm run`." in stderr_flat
+    )
+
+
 def test_run_stops_daemon_it_started(isolated_omm_home, monkeypatch):
     registry.save_registry({"model.gguf": _entry()})
     monkeypatch.setattr(cli.linker, "is_engine_installed", _installed("ollama"))

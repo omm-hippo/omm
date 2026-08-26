@@ -113,6 +113,31 @@ def test_install_esc_interrupt_cleans_up_and_exits_130(isolated_omm_home, monkey
     assert "Cancelled" in result.stderr
 
 
+def test_install_link_error_prints_cause_and_fix_instead_of_traceback(
+    isolated_omm_home, monkeypatch
+):
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    monkeypatch.setattr(
+        cli,
+        "resolve_model",
+        lambda name: ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo"),
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        raise linker.LinkError(
+            f"Could not link {filename} into Ollama: [Errno 13] Permission denied",
+            fix="Check that ~/.ollama is writable by your user.",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+
+    assert result.exit_code == 1
+    assert "Could not link" in result.stderr
+    assert "→ Check that ~/.ollama is writable by your user." in result.stderr
+
+
 def test_install_keyboard_interrupt_cleans_up_partial_download(isolated_omm_home, monkeypatch):
     filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
     monkeypatch.setattr(

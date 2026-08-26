@@ -33,15 +33,31 @@ def test_main_prints_friendly_message_on_insufficient_disk_space_error(monkeypat
     assert "5.0GB" in captured.err
 
 
-def test_main_reraises_non_enospc_oserror_unchanged(monkeypatch):
+def test_main_prints_friendly_message_on_permission_error_and_exits_1(monkeypatch, capsys):
     def _raise_permission_denied():
-        raise OSError(errno.EACCES, "Permission denied")
+        raise OSError(errno.EACCES, "Permission denied", "/some/path")
 
     monkeypatch.setattr(cli, "app", _raise_permission_denied)
 
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "/some/path" in captured.err
+    assert "permission" in captured.err.lower()
+    assert "→" in captured.err
+
+
+def test_main_reraises_non_permission_non_enospc_oserror_unchanged(monkeypatch):
+    def _raise_other_oserror():
+        raise OSError(errno.ECONNREFUSED, "Connection refused")
+
+    monkeypatch.setattr(cli, "app", _raise_other_oserror)
+
     with pytest.raises(OSError) as exc_info:
         cli.main()
-    assert exc_info.value.errno == errno.EACCES
+    assert exc_info.value.errno == errno.ECONNREFUSED
 
 
 def test_main_reraises_other_exceptions_unchanged(monkeypatch):

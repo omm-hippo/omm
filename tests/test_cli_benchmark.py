@@ -395,6 +395,7 @@ def test_benchmark_reports_missing_ollama_as_missing(isolated_omm_home, monkeypa
 
     assert result.exit_code == 1
     assert "Neither Ollama nor LM Studio" in result.stderr
+    assert "→ Install one of them, start it once, then retry `omm benchmark`." in result.stderr
 
 
 def test_select_benchmark_engine_prefers_ollama_when_available(monkeypatch):

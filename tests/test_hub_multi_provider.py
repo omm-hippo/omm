@@ -56,8 +56,17 @@ def test_bare_repo_on_both_providers_raises_ambiguous_provider_error(monkeypatch
 def test_bare_repo_on_neither_provider_raises_model_resolution_error(monkeypatch):
     _stub_fetch_repo_files(monkeypatch, huggingface, {})
     _stub_fetch_repo_files(monkeypatch, modelscope, {})
-    with pytest.raises(ModelResolutionError):
+    with pytest.raises(ModelResolutionError) as exc_info:
         hub.resolve_model("org/nowhere")
+    assert "org/nowhere" in str(exc_info.value)
+    assert exc_info.value.fix is not None
+
+
+def test_unknown_bare_model_name_raises_with_fix_listing_alternatives():
+    with pytest.raises(ModelResolutionError) as exc_info:
+        hub.resolve_model("totally-bogus-name")
+    assert "Unknown model 'totally-bogus-name'" in str(exc_info.value)
+    assert "org/repo:file.gguf" in exc_info.value.fix
 
 
 def test_url_from_known_modelscope_host_is_tagged(monkeypatch):

@@ -170,7 +170,12 @@ def _add_escape_to_cancel(question: questionary.Question) -> questionary.Questio
     """questionary only aborts on Ctrl+C/Ctrl+Q by default; make Escape do
     the same so `.ask()` returns None instead of requiring Ctrl+C. Mirrors
     cli._add_escape_to_cancel - duplicated (not imported) to avoid a
-    circular import (see module docstring)."""
+    circular import (see module docstring).
+
+    `application.key_bindings` is a `_MergedKeyBindings` (prompt_toolkit
+    merges questionary's bindings with the default ones), which has no
+    `.add` - it must be extended via `merge_key_bindings`, not mutated."""
+    from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
     from prompt_toolkit.keys import Keys
 
     def _abort(event) -> None:
@@ -179,7 +184,9 @@ def _add_escape_to_cancel(question: questionary.Question) -> questionary.Questio
     application = getattr(question, "application", None)
     key_bindings = getattr(application, "key_bindings", None)
     if key_bindings is not None:
-        key_bindings.add(Keys.Escape, eager=True)(_abort)
+        escape_binding = KeyBindings()
+        escape_binding.add(Keys.Escape, eager=True)(_abort)
+        application.key_bindings = merge_key_bindings([key_bindings, escape_binding])
     return question
 
 
@@ -272,6 +279,46 @@ def install_selected_engines(console: Console, selected: list[str]) -> None:
         console.print(result.message, style=style, markup=False, highlight=False)
 
 
+def run_completion_step(console: Console) -> None:
+    """Offers to enable shell tab-completion via typer's built-in
+    `--install-completion` machinery - the same engine behind the `omm
+    --install-completion` command already documented in README.md, just
+    surfaced here instead of requiring users to know it exists. Best-effort:
+    any failure must not abort the wizard, since engines are already
+    installed by this point."""
+    from typer import _completion_shared
+
+    shell = _completion_shared._get_shell_name()
+    if shell not in ("bash", "zsh", "fish") or not _stdin_is_tty():
+        console.print(
+            "[muted]Enable tab-completion for install/remove any time: "
+            "`omm --install-completion`.[/muted]\n"
+        )
+        return
+
+    import questionary
+
+    question = _add_escape_to_cancel(
+        questionary.confirm(f"Enable tab-completion for omm in {shell} now?", default=True)
+    )
+    if not question.ask():
+        return
+
+    try:
+        _, path = _completion_shared.install(shell=shell, prog_name="omm")
+    except Exception:
+        console.print(
+            "[warning]Couldn't enable tab-completion automatically.[/warning] "
+            "Run `omm --install-completion` to set it up manually.\n"
+        )
+        return
+
+    console.print(
+        f"[success]Tab-completion installed to {path}.[/success] "
+        "Restart your shell (or open a new terminal) to use it.\n"
+    )
+
+
 def run_wizard(console: Console) -> None:
     print_banner(console)
     run_theme_step(console)
@@ -284,6 +331,7 @@ def run_wizard(console: Console) -> None:
         raise typer.Abort()
     if selected:
         install_selected_engines(console, selected)
+    run_completion_step(console)
     console.print(
         "\n[success]Setup complete.[/success] "
         "Run `omm setting` any time to change telemetry, upload, or update-channel settings.\n"
