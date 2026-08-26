@@ -825,12 +825,12 @@ _ASSISTANT_EFFECT_LABELS = {
         "inspect": "로컬 상태 확인",
         "network": "네트워크 요청",
         "download": "파일 다운로드",
-        "disk-write": "디스크 쓰기",
+        "disk-write": "로컬 파일 생성 또는 수정",
         "delete": "파일 또는 연결 삭제",
-        "upload": "외부 업로드",
-        "runtime-load": "모델 메모리 로드",
+        "upload": "동의한 경우 외부 업로드",
+        "runtime-load": "모델을 메모리에 로드",
         "settings": "설정 변경",
-        "link": "실행 프로그램 연결 변경",
+        "link": "실행 프로그램 연결 생성 또는 변경",
     },
     "en": {
         "inspect": "inspect local state",
@@ -838,7 +838,7 @@ _ASSISTANT_EFFECT_LABELS = {
         "download": "file download",
         "disk-write": "disk write",
         "delete": "delete a file or link",
-        "upload": "external upload",
+        "upload": "external upload after consent",
         "runtime-load": "load a model into memory",
         "settings": "change settings",
         "link": "change runner links",
@@ -847,15 +847,15 @@ _ASSISTANT_EFFECT_LABELS = {
 _ASSISTANT_RISK_LABELS = {
     "ko": {
         "read-only": "읽기 전용",
-        "changes-state": "상태를 변경할 수 있음",
-        "destructive": "삭제 작업 포함",
-        "external-upload": "외부 업로드 가능",
+        "changes-state": "로컬 상태를 변경할 수 있음",
+        "destructive": "파일 또는 연결을 삭제할 수 있음",
+        "external-upload": "명시적 동의 후 외부 업로드 가능",
     },
     "en": {
         "read-only": "read-only",
         "changes-state": "may change local state",
-        "destructive": "includes deletion",
-        "external-upload": "may upload data externally",
+        "destructive": "may delete a file or link",
+        "external-upload": "may upload data externally after explicit consent",
     },
 }
 
@@ -874,19 +874,44 @@ def _assistant_docs_url(command_id: str, locale: str) -> str:
 def _assistant_clarification_summary(locale: str) -> str:
     if locale == "ko":
         return (
-            "질문이 조금 모호합니다. 모델 검색, 설치, 실행, 진단처럼 "
-            "하고 싶은 일을 조금 더 구체적으로 적어 주세요."
+            "아직 하나의 명령으로 안전하게 좁히기 어렵습니다. 아래 가능한 "
+            "방향을 보고 원하는 결과를 한 문장으로 골라 주세요."
         )
     return (
-        "The question is ambiguous. Say a little more about whether you want "
-        "to search, install, run, or diagnose a model."
+        "This is not specific enough to safely select one command yet. "
+        "Choose the outcome you want from the trusted options below."
     )
 
 
 def _assistant_is_greeting(question: str) -> bool:
     """Recognize a greeting without sending purposeless text to a model."""
     compact = re.sub(r"[\s!?.~,]+", "", question).casefold()
-    return compact in {"안녕", "안녕하세요", "하이", "헬로", "hi", "hello", "hey"}
+    return compact in {
+        "안녕",
+        "안녕하세요",
+        "반가워",
+        "반가워요",
+        "하이",
+        "헬로",
+        "hi",
+        "hello",
+        "hey",
+    }
+
+
+def _assistant_is_thanks(question: str) -> bool:
+    """Recognize a short thank-you without waking a local model."""
+    compact = re.sub(r"[\s!?.~,]+", "", question).casefold()
+    return compact in {
+        "감사",
+        "감사합니다",
+        "고마워",
+        "고마워요",
+        "땡큐",
+        "thanks",
+        "thankyou",
+        "thx",
+    }
 
 
 def _assistant_greeting_summary(locale: str) -> str:
@@ -899,6 +924,284 @@ def _assistant_greeting_summary(locale: str) -> str:
         "Hello! Describe what you want to do with OMM. "
         "For example: 'recommend a coding model for my Mac'."
     )
+
+
+def _assistant_thanks_summary(locale: str) -> str:
+    if locale == "ko":
+        return (
+            "천만에요! 다음에도 원하는 결과를 그대로 말해 주세요. "
+            "OMM은 명령을 추천하고 설명하지만 자동으로 실행하지 않습니다."
+        )
+    return (
+        "You're welcome! Describe the outcome you want whenever you need help. "
+        "OMM recommends and explains a command, but does not execute it."
+    )
+
+
+def _assistant_product_summary(locale: str) -> str:
+    if locale == "ko":
+        return (
+            "OMM은 로컬 AI 모델을 찾고, 설치하고, 실행 프로그램에 연결하고, "
+            "실행·검증·관리하도록 돕는 CLI입니다. omm ask는 원하는 일을 "
+            "공식 명령어로 안내할 뿐 그 명령을 대신 실행하지 않습니다."
+        )
+    return (
+        "OMM is a CLI for finding, installing, linking, running, verifying, "
+        "and managing local AI models. omm ask maps your goal to an official "
+        "command but does not execute that command for you."
+    )
+
+
+def _assistant_explicit_command_reference(question: str) -> str | None:
+    """Resolve only explicit requests to explain a maintained ``omm`` command.
+
+    The referenced token must already exist in the trusted catalogue. This is
+    deliberately narrower than general intent routing: pasted failures such as
+    ``omm install ... failed`` must remain eligible for diagnostic guidance.
+    """
+
+    lowered = question.casefold()
+    asks_for_explanation = any(
+        marker in lowered
+        for marker in (
+            "뭐야",
+            "무슨 명령",
+            "설명",
+            "사용법",
+            "어떻게 써",
+            "옵션",
+            "what does",
+            "what is",
+            "explain",
+            "how to use",
+            "usage",
+            "options",
+        )
+    )
+    if not asks_for_explanation:
+        return None
+    match = re.search(r"(?:^|\s)omm\s+([a-z][a-z0-9_-]*)", lowered)
+    if match and match.group(1) in COMMAND_KNOWLEDGE:
+        return match.group(1)
+    return None
+
+
+def _assistant_looks_like_pasted_error(question: str) -> bool:
+    """Detect explicit error output without interpreting arbitrary shell text."""
+
+    lowered = question.casefold()
+    return any(
+        marker in lowered
+        for marker in (
+            "traceback",
+            "exception:",
+            "error:",
+            "fatal:",
+            "command not found",
+            "no such command",
+            "connection refused",
+            "timed out",
+            "failed with",
+            "exit code ",
+            "오류:",
+            "에러:",
+            "실패:",
+        )
+    )
+
+
+def _assistant_default_candidate_ids() -> tuple[str, ...]:
+    """Safe starting points when no user intent matched the catalogue."""
+
+    return ("recommend", "search", "doctor")
+
+
+def _assistant_composite_action_ids(question: str) -> tuple[str, ...]:
+    """Spot explicit multi-action requests that need one next-step choice.
+
+    This is intentionally a small vocabulary of OMM-owned actions. It does
+    not extract or execute any command text from the question.
+    """
+
+    lowered = question.casefold()
+    action_markers = (
+        ("search", ("찾고", "찾은", "검색하고", "검색한", "find and", "search and")),
+        (
+            "install",
+            ("설치하고", "설치한 뒤", "다운로드하고", "install and", "download and"),
+        ),
+        ("run", ("실행하고", "대화하고", "run and", "chat and")),
+        ("doctor", ("진단하고", "오류도", "문제도", "diagnose and")),
+        ("uninstall", ("삭제하고", "제거하고", "delete and", "remove and")),
+    )
+    return tuple(
+        command_id
+        for command_id, markers in action_markers
+        if any(marker in lowered for marker in markers)
+    )
+
+
+def _assistant_merge_candidate_ids(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    merged: list[str] = []
+    for group in groups:
+        for command_id in group:
+            if command_id in COMMAND_KNOWLEDGE and command_id not in merged:
+                merged.append(command_id)
+            if len(merged) == 3:
+                return tuple(merged)
+    return tuple(merged)
+
+
+def _assistant_clarification_candidate_ids(
+    candidate_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Return two or three distinct trusted choices for clarification UI."""
+
+    choices: list[str] = []
+    for command_id in (*candidate_ids, *_assistant_default_candidate_ids()):
+        if command_id in COMMAND_KNOWLEDGE and command_id not in choices:
+            choices.append(command_id)
+        if len(choices) == 3:
+            break
+    return tuple(choices)
+
+
+def _assistant_clarification_question(
+    candidate_ids: tuple[str, ...], locale: str
+) -> str:
+    labels_ko = {
+        "recommend": "내 PC 사양에 맞는 모델을 고르기",
+        "search": "이름·제작자 키워드로 모델을 찾기",
+        "install": "이미 정한 모델을 다운로드하기",
+        "run": "설치된 모델과 대화하기",
+        "verify": "설치된 모델이 실제 생성하는지 검증하기",
+        "doctor": "오류와 연결 상태를 진단하기",
+        "list": "설치된 모델 목록을 보기",
+        "uninstall": "설치된 모델을 삭제하기",
+        "cleanup": "중단된 다운로드 찌꺼기를 정리하기",
+        "contribute": "측정하고 동의 후 추천 데이터에 기여하기",
+        "setup": "초기 설정을 다시 실행하기",
+        "scan": "하드웨어와 로컬 환경을 조사하기",
+        "tune": "모델 실행 설정을 추천받기",
+        "fit": "특정 모델이 현재 메모리에 맞는지 확인하기",
+        "help": "특정 명령의 옵션을 확인하기",
+        "import": "기존 GGUF 파일을 가져오기",
+        "info": "설치 모델의 상세 정보를 보기",
+        "upgrade": "설치 모델을 갱신하기",
+        "link": "실행 프로그램 연결을 만들거나 복구하기",
+        "autoremove": "깨진 연결만 정리하기",
+        "benchmark": "설치 모델의 품질과 속도를 측정하기",
+        "update": "OMM 프로그램 자체를 업데이트하기",
+        "setting": "OMM 설정을 보거나 바꾸기",
+        "engine": "Ollama나 LM Studio를 설치하기",
+        "ask": "자연어로 OMM 명령을 안내받기",
+    }
+    labels_en = {
+        "recommend": "choose a model for this computer",
+        "search": "find a model by name or publisher",
+        "install": "download a model you already chose",
+        "run": "chat with an installed model",
+        "verify": "prove that an installed model generates",
+        "doctor": "diagnose an error or runner connection",
+        "list": "list installed models",
+        "uninstall": "remove an installed model",
+        "cleanup": "remove interrupted-download leftovers",
+        "contribute": "measure and contribute recommendation data after consent",
+        "setup": "run initial setup again",
+        "scan": "inspect hardware and the local environment",
+        "tune": "get recommended runtime settings for a model",
+        "fit": "check whether a specific model fits current memory",
+        "help": "inspect options for a specific command",
+        "import": "adopt existing GGUF files",
+        "info": "show details for an installed model",
+        "upgrade": "refresh installed models",
+        "link": "create or repair runner links",
+        "autoremove": "remove broken links only",
+        "benchmark": "measure installed-model quality and speed",
+        "update": "update the OMM program itself",
+        "setting": "view or change OMM settings",
+        "engine": "install Ollama or LM Studio",
+        "ask": "map natural language to an OMM command",
+    }
+    labels = labels_ko if locale == "ko" else labels_en
+    choices = [labels.get(command_id) for command_id in candidate_ids]
+    choices = [choice for choice in choices if choice]
+    if locale == "ko":
+        if choices:
+            return "원하는 결과가 " + ", ".join(choices) + " 중 어느 쪽인가요?"
+        return "모델을 고르기, 찾기, 또는 오류를 진단하기 중 어느 쪽인가요?"
+    if choices:
+        return "Do you want to " + ", ".join(choices) + "?"
+    return "Do you want to choose a model, find one, or diagnose a problem?"
+
+
+def _assistant_clarification_examples(locale: str) -> tuple[str, ...]:
+    if locale == "ko":
+        return (
+            "내 맥 사양에 맞는 코딩 모델을 추천해줘",
+            "Qwen 모델을 이름으로 찾아줘",
+            "Ollama 연결 오류를 진단하고 싶어",
+        )
+    return (
+        "Recommend a coding model for my Mac",
+        "Find a Qwen model by name",
+        "Diagnose my Ollama connection error",
+    )
+
+
+def _assistant_argument_hints(command_id: str, locale: str) -> tuple[str, ...]:
+    """Explain trusted template placeholders without inventing user values."""
+
+    hints_ko = {
+        "search": ("<TEXT>: 찾을 이름이나 키워드 (예: qwen, llama, coding)",),
+        "install": (
+            "<MODEL>: omm search 또는 omm recommend 결과에서 고른 "
+            "모델 이름이나 번호",
+        ),
+        "run": (
+            "[MODEL]: omm list에 표시되는 설치된 모델 이름; "
+            "생략하면 선택할 수 있음",
+        ),
+        "verify": ("<MODEL>: omm list에 표시되는 설치된 모델 이름",),
+        "uninstall": (
+            "<MODEL|all>: 삭제할 설치 모델 이름; "
+            "all은 모든 모델을 뜻하므로 주의",
+        ),
+        "tune": ("<MODEL>: 설정을 추천받을 모델 이름",),
+        "fit": ("<MODEL>: 현재 메모리에 맞는지 확인할 모델 이름",),
+        "help": (
+            "[COMMAND]: 사용법을 볼 명령 이름 (예: verify); 생략하면 전체 요약",
+        ),
+        "import": ("[PATH]: 가져올 GGUF 파일이나 폴더 경로; 생략하면 탐색",),
+        "info": ("<MODEL>: omm list에 표시되는 설치된 모델 이름",),
+        "upgrade": (
+            "[MODEL|all]: 갱신할 설치 모델 이름; 생략하면 대화형으로 선택",
+        ),
+        "link": ("[DIRECTORY]: 연결을 검사할 선택적 모델 폴더 경로",),
+        "benchmark": ("<MODEL>...: 측정할 설치 모델 이름을 하나 이상 입력",),
+        "setting": ("[SUBCOMMAND]: 바꿀 설정 영역; 자세한 목록은 omm help setting",),
+        "engine": ("[ENGINE]: 설치할 실행 프로그램 이름 (예: ollama, lmstudio)",),
+        "ask": ("<QUESTION>: OMM으로 하고 싶은 일을 적는 자연어 문장",),
+    }
+    hints_en = {
+        "search": ("<TEXT>: a name or keyword to find (for example qwen, llama, coding)",),
+        "install": ("<MODEL>: a model name or number from omm search or omm recommend",),
+        "run": ("[MODEL]: an installed name from omm list; omit it to choose interactively",),
+        "verify": ("<MODEL>: an installed model name shown by omm list",),
+        "uninstall": ("<MODEL|all>: an installed name; all means every model, so use care",),
+        "tune": ("<MODEL>: the model whose runtime settings you want",),
+        "fit": ("<MODEL>: the model to check against current memory",),
+        "help": ("[COMMAND]: a command such as verify; omit it for the overview",),
+        "import": ("[PATH]: a GGUF file or directory; omit it to discover files",),
+        "info": ("<MODEL>: an installed model name shown by omm list",),
+        "upgrade": ("[MODEL|all]: an installed name; omit it to choose interactively",),
+        "link": ("[DIRECTORY]: an optional model directory whose links should be checked",),
+        "benchmark": ("<MODEL>...: one or more installed model names to measure",),
+        "setting": ("[SUBCOMMAND]: the settings area; run omm help setting for the list",),
+        "engine": ("[ENGINE]: a runner name such as ollama or lmstudio",),
+        "ask": ("<QUESTION>: a natural-language description of what you want from OMM",),
+    }
+    return (hints_ko if locale == "ko" else hints_en).get(command_id, ())
 
 
 def _assistant_payload(
@@ -943,56 +1246,107 @@ def _assistant_payload(
     }
 
 
-def _print_assistant_result(payload: dict[str, Any], locale: str) -> None:
+def _print_assistant_result(
+    payload: dict[str, Any],
+    locale: str,
+    *,
+    clarification_candidate_ids: tuple[str, ...] = (),
+) -> None:
     if _global_opts().json:
         typer.echo(json.dumps(payload, ensure_ascii=False))
         return
 
     mode = payload["mode"]
     model = payload["model"]
+    quiet = _global_opts().quiet
     if locale == "ko":
         mode_label = "로컬 AI" if mode == "local-ai" else "내장 안내"
         model_suffix = f" · {escape(str(model))}" if model else ""
-        console.print(f"[muted]모드: {mode_label}{model_suffix}[/muted]")
+        if not quiet:
+            console.print(f"[muted]모드: {mode_label}{model_suffix}[/muted]")
         if payload["needsClarification"]:
-            console.print("[bold]추천 명령어[/bold]")
-            console.print("  아직 선택하지 않음")
             console.print("[bold]설명[/bold]")
             console.print(f"  {escape(payload['summary'])}")
+            choices = _assistant_clarification_candidate_ids(
+                clarification_candidate_ids
+            )
+            console.print("[bold]가능한 방향[/bold]")
+            for command_id in choices:
+                record = COMMAND_KNOWLEDGE[command_id]
+                console.print(
+                    f"  [accent]{escape(render_command(command_id))}[/accent]"
+                    f" — {escape(record.summary_ko)}"
+                )
+            console.print("[bold]확인할 점[/bold]")
+            console.print(
+                "  "
+                + escape(_assistant_clarification_question(choices, locale))
+            )
+            if not quiet:
+                console.print("[bold]질문 예시[/bold]")
+                for example in _assistant_clarification_examples(locale):
+                    console.print(f"  - {escape(example)}")
             return
         console.print("[bold]추천 명령어[/bold]")
         console.print(f"  [accent]{escape(payload['command'])}[/accent]")
         console.print("[bold]설명[/bold]")
         console.print(f"  {escape(payload['summary'])}")
-        console.print("[bold]상태 변경 / 위험[/bold]")
+        argument_hints = _assistant_argument_hints(payload["commandId"], locale)
+        if argument_hints:
+            console.print("[bold]입력할 값[/bold]")
+            for hint in argument_hints:
+                console.print(f"  - {escape(hint)}")
+        console.print("[bold]추천 명령 실행 시 영향[/bold]")
         record = COMMAND_KNOWLEDGE[payload["commandId"]]
         console.print(f"  - {_ASSISTANT_RISK_LABELS['ko'][record.risk.value]}")
         for effect in payload["sideEffects"]:
             console.print(f"  - {_ASSISTANT_EFFECT_LABELS['ko'][effect]}")
-        console.print("[bold]문서[/bold]")
-        console.print(f"  {payload['docsUrl']}")
+        console.print("  - omm ask는 위 명령을 자동으로 실행하지 않음")
+        if not quiet:
+            console.print("[bold]문서[/bold]")
+            console.print(f"  {payload['docsUrl']}")
         return
 
     mode_label = "local AI" if mode == "local-ai" else "built-in guidance"
     model_suffix = f" · {escape(str(model))}" if model else ""
-    console.print(f"[muted]Mode: {mode_label}{model_suffix}[/muted]")
+    if not quiet:
+        console.print(f"[muted]Mode: {mode_label}{model_suffix}[/muted]")
     if payload["needsClarification"]:
-        console.print("[bold]Recommended command[/bold]")
-        console.print("  Not selected yet")
         console.print("[bold]Explanation[/bold]")
         console.print(f"  {escape(payload['summary'])}")
+        choices = _assistant_clarification_candidate_ids(clarification_candidate_ids)
+        console.print("[bold]Possible directions[/bold]")
+        for command_id in choices:
+            record = COMMAND_KNOWLEDGE[command_id]
+            console.print(
+                f"  [accent]{escape(render_command(command_id))}[/accent]"
+                f" — {escape(record.summary_en)}"
+            )
+        console.print("[bold]One question[/bold]")
+        console.print("  " + escape(_assistant_clarification_question(choices, locale)))
+        if not quiet:
+            console.print("[bold]Example questions[/bold]")
+            for example in _assistant_clarification_examples(locale):
+                console.print(f"  - {escape(example)}")
         return
     console.print("[bold]Recommended command[/bold]")
     console.print(f"  [accent]{escape(payload['command'])}[/accent]")
     console.print("[bold]Explanation[/bold]")
     console.print(f"  {escape(payload['summary'])}")
-    console.print("[bold]State changes / risks[/bold]")
+    argument_hints = _assistant_argument_hints(payload["commandId"], locale)
+    if argument_hints:
+        console.print("[bold]Values to provide[/bold]")
+        for hint in argument_hints:
+            console.print(f"  - {escape(hint)}")
+    console.print("[bold]If you run the recommended command[/bold]")
     record = COMMAND_KNOWLEDGE[payload["commandId"]]
     console.print(f"  - {_ASSISTANT_RISK_LABELS['en'][record.risk.value]}")
     for effect in payload["sideEffects"]:
         console.print(f"  - {_ASSISTANT_EFFECT_LABELS['en'][effect]}")
-    console.print("[bold]Documentation[/bold]")
-    console.print(f"  {payload['docsUrl']}")
+    console.print("  - omm ask does not execute the command above")
+    if not quiet:
+        console.print("[bold]Documentation[/bold]")
+        console.print(f"  {payload['docsUrl']}")
 
 
 @app.command(name="ask")
@@ -1009,7 +1363,10 @@ def ask_cmd(
     model: str = typer.Option(
         None,
         "--model",
-        help="Exact installed Ollama model name/tag to use.",
+        help=(
+            "Exact installed Ollama model name/tag to use when local AI is "
+            "needed. It is never downloaded automatically."
+        ),
     ),
     engine: str = typer.Option(
         "ollama",
@@ -1028,8 +1385,17 @@ def ask_cmd(
     command, explanation, side effects, and documentation link from its own
     maintained catalogue, and never executes the recommendation.
 
+    Examples:
+
+      omm ask 내 맥에 맞는 코딩 모델을 추천해줘
+
+      omm ask "Why did omm install fail?"
+
+      omm ask 설치된 모델 목록 --no-ai
+
     Shell characters such as ?, *, [, and ] must be quoted or entered through
-    the interactive prompt so zsh/bash passes them to OMM unchanged.
+    the interactive prompt so zsh/bash passes them to OMM unchanged. Plain
+    multi-word questions do not require quotes.
     """
     if engine.strip().casefold() != "ollama":
         err_console.print(
@@ -1059,6 +1425,9 @@ def ask_cmd(
                 "question looks like it contains a credential; remove it before asking",
             )
         greeting = _assistant_is_greeting(normalized)
+        thanks = _assistant_is_thanks(normalized)
+        explicit_command_id = _assistant_explicit_command_reference(normalized)
+        pasted_error = _assistant_looks_like_pasted_error(normalized)
         fallback = rank_command_candidates(normalized, limit=3)
     except QuestionSafetyError as error:
         # Never echo the rejected input: it may contain the credential this
@@ -1072,21 +1441,39 @@ def ask_cmd(
             "[warning]--model has no effect with --no-ai; using built-in guidance.[/warning]"
         )
 
-    selected_id: str | None = None
+    social = greeting or thanks
+    product_question = fallback.reason == "product_question"
+    selected_id: str | None = explicit_command_id
+    if selected_id is None and pasted_error:
+        # Pasted error text is diagnostic evidence, not permission to execute
+        # whatever command text may appear inside it.
+        selected_id = "doctor"
     selected_model: str | None = None
     mode = "built-in"
-    ai_candidates = fallback.candidates
-    if not fallback.clarify and fallback.confidence >= 0.9:
+    fallback_candidate_ids = tuple(
+        candidate.command_id for candidate in fallback.candidates
+    )
+    composite_ids = _assistant_composite_action_ids(normalized)
+    effective_candidate_ids = _assistant_merge_candidate_ids(
+        composite_ids, fallback_candidate_ids
+    )
+    forced_composite_clarify = (
+        fallback.reason == "conflicting_intents" or len(composite_ids) >= 2
+    )
+    effective_clarify = fallback.clarify or forced_composite_clarify
+    candidate_ids = (
+        () if social or selected_id is not None else effective_candidate_ids
+    )
+    if candidate_ids and not effective_clarify and fallback.confidence >= 0.9:
         # Preserve a very strong trusted routing decision. Small local models
         # add language understanding for close candidates, but must not turn
         # an explicit provider/family request into a different command.
-        ai_candidates = fallback.candidates[:1]
-    candidate_ids = tuple(candidate.command_id for candidate in ai_candidates)
+        candidate_ids = candidate_ids[:1]
 
-    if not no_ai and candidate_ids:
-        catalog_context = build_candidate_context(ai_candidates, locale=locale)
+    if not no_ai and candidate_ids and not forced_composite_clarify:
+        catalog_context = build_candidate_context(candidate_ids, locale=locale)
         allowed_ids = candidate_ids
-        if fallback.clarify:
+        if effective_clarify:
             # Only an actually ambiguous deterministic match gives the model
             # permission to ask for clarification. A small model must not
             # downgrade a strong trusted match into a vague non-answer.
@@ -1127,7 +1514,12 @@ def ask_cmd(
                 "[warning]Local AI returned an invalid selection; using built-in guidance.[/warning]"
             )
 
-    if mode == "built-in" and not fallback.clarify and candidate_ids:
+    if (
+        selected_id is None
+        and mode == "built-in"
+        and not effective_clarify
+        and candidate_ids
+    ):
         selected_id = candidate_ids[0]
 
     payload = _assistant_payload(
@@ -1139,7 +1531,18 @@ def ask_cmd(
     )
     if greeting and payload["needsClarification"]:
         payload["summary"] = _assistant_greeting_summary(locale)
-    _print_assistant_result(payload, locale)
+    elif thanks and payload["needsClarification"]:
+        payload["summary"] = _assistant_thanks_summary(locale)
+    elif product_question and payload["needsClarification"]:
+        payload["summary"] = _assistant_product_summary(locale)
+    clarification_ids = effective_candidate_ids
+    if product_question:
+        clarification_ids = ("help", "recommend", "search")
+    _print_assistant_result(
+        payload,
+        locale,
+        clarification_candidate_ids=clarification_ids,
+    )
 
 
 def _install_spec() -> str:
