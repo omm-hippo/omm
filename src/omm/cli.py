@@ -72,6 +72,16 @@ from omm import (
     version_check,
 )
 from omm import contribute as contribute_mod
+from omm.assistant_knowledge import (
+    COMMAND_KNOWLEDGE,
+    QuestionSafetyError,
+    build_candidate_context,
+    detect_secret,
+    normalize_question,
+    rank_command_candidates,
+    render_command,
+)
+from omm.assistant_runtime import AssistantRuntimeError, OllamaAssistantRuntime
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
 from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
 from omm.downloader import (
@@ -192,6 +202,7 @@ class GlobalOptions:
 # silently ignores the flag - warn instead so a script piping --json from
 # one of them doesn't get plain-text garbage with exit code 0 (see #81).
 _JSON_CAPABLE = {
+    "ask",
     "search",
     "list",
     "info",
@@ -324,6 +335,7 @@ def marks_command_body_ran(func):
 
 
 _ROOT_HELP_TEXT = """Example usage:
+  omm ask "WHAT DO I WANT TO DO?"
   omm search TEXT
   omm install MODEL
   omm list
@@ -591,10 +603,10 @@ def _root(
     opts.yes = opts.yes or yes_flag
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
-    doctor_mode = ctx.invoked_subcommand == "doctor"
+    side_effect_minimal_mode = ctx.invoked_subcommand in {"doctor", "ask"}
     theme = (
         doctor_mod.read_theme_read_only()
-        if doctor_mode
+        if side_effect_minimal_mode
         else load_config().get("theme", "dark")
     )
     theme_mod.apply_theme_to_console(console, theme)
@@ -602,11 +614,13 @@ def _root(
     if opts.no_color:
         console.no_color = True
         err_console.no_color = True
-    # `omm doctor` promises a literal read-only snapshot. The normal root
-    # prelude can create/migrate config, spawn an update checker, offer to
-    # import models, and flush queued network events, so return directly to
-    # the subcommand before any of those hooks are reached.
-    if doctor_mode:
+    # `omm doctor` promises a literal read-only snapshot, while `omm ask`
+    # must not surprise a user with unrelated setup/import/network work before
+    # making its single, explicit loopback AI request. The normal root prelude
+    # can create/migrate config, spawn an update checker, offer to import
+    # models, and flush queued network events, so return directly to these
+    # side-effect-minimal subcommands before any of those hooks are reached.
+    if side_effect_minimal_mode:
         return
     _maybe_start_update_check(ctx)
     if ctx.invoked_subcommand is None:
@@ -641,7 +655,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
+    ("Core", ["ask", "search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
     (
         "Maintenance",
@@ -802,6 +816,311 @@ def help_cmd(
 
     sub_ctx = cmd_obj.make_context(command, [], parent=root_ctx, resilient_parsing=True)
     console.print(cmd_obj.get_help(sub_ctx))
+
+
+_ASSISTANT_CLARIFY_ID = "clarify"
+_ASSISTANT_EFFECT_LABELS = {
+    "ko": {
+        "inspect": "로컬 상태 확인",
+        "network": "네트워크 요청",
+        "download": "파일 다운로드",
+        "disk-write": "디스크 쓰기",
+        "delete": "파일 또는 연결 삭제",
+        "upload": "외부 업로드",
+        "runtime-load": "모델 메모리 로드",
+        "settings": "설정 변경",
+        "link": "실행 프로그램 연결 변경",
+    },
+    "en": {
+        "inspect": "inspect local state",
+        "network": "network request",
+        "download": "file download",
+        "disk-write": "disk write",
+        "delete": "delete a file or link",
+        "upload": "external upload",
+        "runtime-load": "load a model into memory",
+        "settings": "change settings",
+        "link": "change runner links",
+    },
+}
+_ASSISTANT_RISK_LABELS = {
+    "ko": {
+        "read-only": "읽기 전용",
+        "changes-state": "상태를 변경할 수 있음",
+        "destructive": "삭제 작업 포함",
+        "external-upload": "외부 업로드 가능",
+    },
+    "en": {
+        "read-only": "read-only",
+        "changes-state": "may change local state",
+        "destructive": "includes deletion",
+        "external-upload": "may upload data externally",
+    },
+}
+
+
+def _assistant_locale(question: str) -> str:
+    """Use Korean when the question contains Hangul, English otherwise."""
+    return "ko" if re.search(r"[가-힣]", question) else "en"
+
+
+def _assistant_docs_url(command_id: str, locale: str) -> str:
+    path = COMMAND_KNOWLEDGE[command_id].docs_path
+    prefix = "/ko" if locale == "ko" else ""
+    return f"https://omm.run{prefix}{path}"
+
+
+def _assistant_clarification_summary(locale: str) -> str:
+    if locale == "ko":
+        return (
+            "질문이 조금 모호합니다. 모델 검색, 설치, 실행, 진단처럼 "
+            "하고 싶은 일을 조금 더 구체적으로 적어 주세요."
+        )
+    return (
+        "The question is ambiguous. Say a little more about whether you want "
+        "to search, install, run, or diagnose a model."
+    )
+
+
+def _assistant_is_greeting(question: str) -> bool:
+    """Recognize a greeting without sending purposeless text to a model."""
+    compact = re.sub(r"[\s!?.~,]+", "", question).casefold()
+    return compact in {"안녕", "안녕하세요", "하이", "헬로", "hi", "hello", "hey"}
+
+
+def _assistant_greeting_summary(locale: str) -> str:
+    if locale == "ko":
+        return (
+            "안녕하세요! OMM에서 하고 싶은 일을 문장으로 말해 주세요. "
+            "예: '내 맥에 맞는 코딩 모델을 추천해줘'."
+        )
+    return (
+        "Hello! Describe what you want to do with OMM. "
+        "For example: 'recommend a coding model for my Mac'."
+    )
+
+
+def _assistant_payload(
+    *,
+    mode: str,
+    model: str | None,
+    command_id: str | None,
+    locale: str,
+) -> dict[str, Any]:
+    """Build the stable public result from trusted catalogue data only."""
+    if command_id is None:
+        return {
+            "mode": mode,
+            "model": model,
+            "commandId": None,
+            "command": None,
+            "summary": _assistant_clarification_summary(locale),
+            "sideEffects": [],
+            "docsUrl": None,
+            "needsClarification": True,
+        }
+
+    record = COMMAND_KNOWLEDGE[command_id]
+    return {
+        "mode": mode,
+        "model": model,
+        "commandId": command_id,
+        # The model is allowed to choose an ID, never command text. This
+        # maintained template remains the only display source of truth.
+        "command": render_command(command_id),
+        "summary": record.summary_ko if locale == "ko" else record.summary_en,
+        "sideEffects": [effect.value for effect in record.side_effects],
+        "docsUrl": _assistant_docs_url(command_id, locale),
+        "needsClarification": False,
+    }
+
+
+def _print_assistant_result(payload: dict[str, Any], locale: str) -> None:
+    if _global_opts().json:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+        return
+
+    mode = payload["mode"]
+    model = payload["model"]
+    if locale == "ko":
+        mode_label = "로컬 AI" if mode == "local-ai" else "내장 안내"
+        model_suffix = f" · {escape(str(model))}" if model else ""
+        console.print(f"[muted]모드: {mode_label}{model_suffix}[/muted]")
+        if payload["needsClarification"]:
+            console.print("[bold]추천 명령어[/bold]")
+            console.print("  아직 선택하지 않음")
+            console.print("[bold]설명[/bold]")
+            console.print(f"  {escape(payload['summary'])}")
+            return
+        console.print("[bold]추천 명령어[/bold]")
+        console.print(f"  [accent]{escape(payload['command'])}[/accent]")
+        console.print("[bold]설명[/bold]")
+        console.print(f"  {escape(payload['summary'])}")
+        console.print("[bold]상태 변경 / 위험[/bold]")
+        record = COMMAND_KNOWLEDGE[payload["commandId"]]
+        console.print(f"  - {_ASSISTANT_RISK_LABELS['ko'][record.risk.value]}")
+        for effect in payload["sideEffects"]:
+            console.print(f"  - {_ASSISTANT_EFFECT_LABELS['ko'][effect]}")
+        console.print("[bold]문서[/bold]")
+        console.print(f"  {payload['docsUrl']}")
+        return
+
+    mode_label = "local AI" if mode == "local-ai" else "built-in guidance"
+    model_suffix = f" · {escape(str(model))}" if model else ""
+    console.print(f"[muted]Mode: {mode_label}{model_suffix}[/muted]")
+    if payload["needsClarification"]:
+        console.print("[bold]Recommended command[/bold]")
+        console.print("  Not selected yet")
+        console.print("[bold]Explanation[/bold]")
+        console.print(f"  {escape(payload['summary'])}")
+        return
+    console.print("[bold]Recommended command[/bold]")
+    console.print(f"  [accent]{escape(payload['command'])}[/accent]")
+    console.print("[bold]Explanation[/bold]")
+    console.print(f"  {escape(payload['summary'])}")
+    console.print("[bold]State changes / risks[/bold]")
+    record = COMMAND_KNOWLEDGE[payload["commandId"]]
+    console.print(f"  - {_ASSISTANT_RISK_LABELS['en'][record.risk.value]}")
+    for effect in payload["sideEffects"]:
+        console.print(f"  - {_ASSISTANT_EFFECT_LABELS['en'][effect]}")
+    console.print("[bold]Documentation[/bold]")
+    console.print(f"  {payload['docsUrl']}")
+
+
+@app.command(name="ask")
+@global_flags
+def ask_cmd(
+    question: list[str] = typer.Argument(
+        None,
+        help=(
+            "What you want to do with OMM, in Korean or English. "
+            "Quotes are optional."
+        ),
+    ),
+    model: str = typer.Option(
+        None,
+        "--model",
+        help="Exact installed Ollama model name/tag to use.",
+    ),
+    engine: str = typer.Option(
+        "ollama",
+        "--engine",
+        help="Local AI engine. The MVP currently supports only ollama.",
+    ),
+    no_ai: bool = typer.Option(
+        False,
+        "--no-ai",
+        help="Use deterministic built-in guidance without loading a model.",
+    ),
+) -> None:
+    """Map a natural-language question to a trusted OMM command.
+
+    The local model may select only from a short allowlist. OMM renders the
+    command, explanation, side effects, and documentation link from its own
+    maintained catalogue, and never executes the recommendation.
+    """
+    if engine.strip().casefold() != "ollama":
+        err_console.print(
+            f"[error]--engine must be ollama for this MVP (got '{escape(engine)}').[/error]"
+        )
+        raise typer.Exit(2)
+
+    if not question:
+        if not _stdin_is_tty():
+            err_console.print(
+                "[error]QUESTION is required outside an interactive terminal. "
+                "Example: omm ask \"which command lists my models?\"[/error]"
+            )
+            raise typer.Exit(2)
+        question_text = typer.prompt("What would you like to do with OMM?")
+    else:
+        # A variadic positional lets terminal newcomers type a natural
+        # sentence without shell quotes. Click still handles recognized
+        # options separately, so only positional words are joined here.
+        question_text = " ".join(question)
+
+    try:
+        normalized = normalize_question(question_text)
+        if detect_secret(normalized):
+            raise QuestionSafetyError(
+                "secret_detected",
+                "question looks like it contains a credential; remove it before asking",
+            )
+        greeting = _assistant_is_greeting(normalized)
+        fallback = rank_command_candidates(normalized, limit=3)
+    except QuestionSafetyError as error:
+        # Never echo the rejected input: it may contain the credential this
+        # guard exists to keep away from the local model and terminal logs.
+        err_console.print(f"[error]{escape(str(error))}.[/error]")
+        raise typer.Exit(2) from error
+
+    locale = _assistant_locale(normalized)
+    if no_ai and model is not None:
+        err_console.print(
+            "[warning]--model has no effect with --no-ai; using built-in guidance.[/warning]"
+        )
+
+    selected_id: str | None = None
+    selected_model: str | None = None
+    mode = "built-in"
+    candidate_ids = tuple(candidate.command_id for candidate in fallback.candidates)
+
+    if not no_ai and candidate_ids:
+        catalog_context = build_candidate_context(fallback.candidates, locale=locale)
+        allowed_ids = candidate_ids
+        if fallback.clarify:
+            # Only an actually ambiguous deterministic match gives the model
+            # permission to ask for clarification. A small model must not
+            # downgrade a strong trusted match into a vague non-answer.
+            clarify_summary = _assistant_clarification_summary(locale)
+            catalog_context += "\n" + json.dumps(
+                {
+                    "commandId": _ASSISTANT_CLARIFY_ID,
+                    "summary": clarify_summary,
+                    "risk": "read-only",
+                    "effects": [],
+                    "requiredArguments": [],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            allowed_ids = (*candidate_ids, _ASSISTANT_CLARIFY_ID)
+        try:
+            classification = OllamaAssistantRuntime().classify(
+                normalized,
+                allowed_ids,
+                catalog_context,
+                model=model,
+            )
+            if classification.command_id not in allowed_ids:
+                raise ValueError("local AI selected a command outside the allowlist")
+            mode = "local-ai"
+            selected_model = classification.model
+            if classification.command_id != _ASSISTANT_CLARIFY_ID:
+                selected_id = classification.command_id
+        except AssistantRuntimeError as error:
+            safe_message = getattr(error, "safe_message", str(error))
+            err_console.print(
+                "[warning]Local AI was unavailable; using built-in guidance: "
+                f"{escape(safe_message)}.[/warning]"
+            )
+        except (TypeError, ValueError):
+            err_console.print(
+                "[warning]Local AI returned an invalid selection; using built-in guidance.[/warning]"
+            )
+
+    if mode == "built-in" and not fallback.clarify and candidate_ids:
+        selected_id = candidate_ids[0]
+
+    payload = _assistant_payload(
+        mode=mode,
+        model=selected_model,
+        command_id=selected_id,
+        locale=locale,
+    )
+    if greeting and payload["needsClarification"]:
+        payload["summary"] = _assistant_greeting_summary(locale)
+    _print_assistant_result(payload, locale)
 
 
 def _install_spec() -> str:
