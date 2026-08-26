@@ -206,8 +206,12 @@ def _verify_via_path(dest: Path, gguf_path: Path, engine_label: str) -> None:
     look like a false failure."""
     if not dest.exists():
         _fail(f"{engine_label} does not see the linked model - expected a file at {dest}")
-    if dest.resolve() != gguf_path.resolve():
-        _fail(f"{engine_label}'s file at {dest} does not resolve back to our model")
+    try:
+        same_file = dest.samefile(gguf_path)
+    except OSError:
+        same_file = False
+    if not same_file and sha256_file(dest) != sha256_file(gguf_path):
+        _fail(f"{engine_label}'s file at {dest} does not match our model")
     print(f"OK: {engine_label} recognizes the linked model at {dest}")
 
 
