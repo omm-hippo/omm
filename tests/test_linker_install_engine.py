@@ -342,6 +342,30 @@ def test_install_via_package_manager_mac_reinstall_retry_still_fails_reports_man
     assert "docs.anythingllm.com/x" in result.message
 
 
+def test_install_via_package_manager_does_not_reinstall_after_brew_failure(monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/local/bin/brew")
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        return _FakeProc([], returncode=1)
+
+    monkeypatch.setattr(linker.subprocess, "Popen", fake_popen)
+
+    result = linker._install_via_package_manager(
+        key="jan",
+        label="Jan",
+        manual_url="https://jan.ai/download",
+        is_installed=lambda: False,
+        brew_cask="jan",
+    )
+
+    assert calls == [["brew", "install", "--cask", "jan"]]
+    assert result.status == "failed"
+    assert "code 1" in result.message
+
+
 def test_install_via_package_manager_mac_without_brew_is_unsupported(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(linker.shutil, "which", lambda name: None)

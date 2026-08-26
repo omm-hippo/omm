@@ -1,6 +1,5 @@
 import importlib.util
 import subprocess
-import sys
 from pathlib import Path
 
 
@@ -107,3 +106,12 @@ def test_verifier_rejects_unsigned_merge_with_trusted_second_parent(tmp_path):
 
     assert not ok
     assert merge[:7] in message
+
+
+def test_verifier_rejects_symbolic_commit_name_before_git_resolution(tmp_path):
+    verifier = _load_verifier()
+
+    target, error = verifier._resolve_commit(tmp_path, "HEAD")
+
+    assert target is None
+    assert "exact 40- or 64-hex" in error

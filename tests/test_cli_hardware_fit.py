@@ -20,6 +20,7 @@ def test_search_marks_hardware_unfit_candidates_in_red(monkeypatch):
     monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli, "fetch_repo_param_count_b", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         cli.predictor,
         "predict_speed",
@@ -48,6 +49,7 @@ def test_search_skip_unfit_hides_unfit_candidates(monkeypatch):
     monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli, "fetch_repo_param_count_b", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         cli.predictor,
         "predict_speed",
@@ -76,6 +78,7 @@ def test_search_skip_unfit_omits_header_for_all_unfit_family(monkeypatch):
     monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli, "fetch_repo_param_count_b", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         cli.predictor,
         "predict_speed",

@@ -193,3 +193,16 @@ def test_remote_file_sha256_null_data_field_returns_none(monkeypatch):
         requests, "get", lambda *a, **k: _FakeResponse(200, {"Code": 200, "Data": None})
     )
     assert modelscope.remote_file_sha256("org/repo", "model.gguf") is None
+
+
+def test_malformed_file_list_shape_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *a, **k: _FakeResponse(200, {"Data": {"Files": [None]}}),
+    )
+
+    with pytest.raises(ModelResolutionError, match="invalid file list"):
+        modelscope.fetch_repo_files("org/repo")
+    modelscope._list_repo_files.cache_clear()
+    assert modelscope.remote_file_size("org/repo", "model.gguf") is None

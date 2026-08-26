@@ -4,6 +4,7 @@ import base64
 import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -86,3 +87,21 @@ def test_archive_current_artifact_returns_none_on_write_failure(tmp_path, monkey
     )
 
     assert catalog.archive_current_artifact(artifact, history) is None
+
+
+def test_catalog_rollback_skips_corrupt_newest_snapshot(tmp_path):
+    artifact = tmp_path / "recommend.json"
+    history = tmp_path / "history"
+    artifact.write_text('{"version":1}')
+    valid = catalog.archive_current_artifact(artifact, history)
+    assert valid is not None
+    artifact.write_text('{"version":2}')
+
+    corrupt = history / f"{'f' * 64}.json"
+    corrupt.write_text("{truncated")
+    os.utime(corrupt, (valid.stat().st_mtime + 10, valid.stat().st_mtime + 10))
+
+    selected = catalog.rollback(artifact_path=artifact, history_dir=history)
+
+    assert selected == valid
+    assert artifact.read_text() == '{"version":1}'

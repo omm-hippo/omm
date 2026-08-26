@@ -69,7 +69,11 @@ def _candidate_text(candidate: dict) -> str:
 
 def candidate_model_size_gb(candidate: dict) -> float | None:
     size_bytes = candidate.get("size_bytes")
-    if isinstance(size_bytes, (int, float)) and size_bytes > 0:
+    if (
+        isinstance(size_bytes, (int, float))
+        and not isinstance(size_bytes, bool)
+        and size_bytes > 0
+    ):
         return float(size_bytes) / (1024**3)
     text = _candidate_text(candidate)
     parameters = parse_param_count_billions(text)

@@ -10,12 +10,14 @@ allowed-signers file that is meant to constrain it.
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 
 MIN_GIT_VERSION = (2, 34)
+COMMIT_PATTERN = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 
 
 def _run(args: list[str], *, timeout: int = 15) -> subprocess.CompletedProcess[str]:
@@ -47,6 +49,8 @@ def _git_version_ok() -> bool:
 
 
 def _resolve_commit(repo: Path, commit: str) -> tuple[str | None, str | None]:
+    if COMMIT_PATTERN.fullmatch(commit) is None:
+        return None, "candidate commit must be an exact 40- or 64-hex object ID"
     result = _run(
         ["git", "-C", str(repo), "rev-list", "--parents", "-n", "1", commit], timeout=10
     )
@@ -55,6 +59,8 @@ def _resolve_commit(repo: Path, commit: str) -> tuple[str | None, str | None]:
     parts = result.stdout.split()
     if not parts:
         return None, "git did not resolve the candidate commit"
+    if parts[0].casefold() != commit.casefold():
+        return None, "git resolved a different candidate object"
     # This gate validates a PR's exact head SHA, not a GitHub-generated main
     # merge commit. Never peel a parent here: an unsigned malicious merge
     # could otherwise put a trusted signed commit in parent 2 and pass.

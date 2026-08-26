@@ -14,6 +14,7 @@ raises the bar for abuse, it does not eliminate it.
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import subprocess
@@ -42,9 +43,10 @@ def _load_cache() -> dict[str, Any]:
         return {}
     try:
         with locked(path, timeout=10):
-            return json.loads(path.read_text(encoding="utf-8"))
+            loaded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, FileLockTimeout):
         return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def _harden_windows_file_permissions(path: Path) -> None:
@@ -138,6 +140,8 @@ def _session_from(id_token: Any, refresh_token: Any, expires_in: Any) -> dict[st
         expires_in = float(expires_in)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(expires_in) or expires_in <= 0:
+        return None
     return {
         "id_token": id_token,
         "refresh_token": refresh_token,
@@ -154,6 +158,8 @@ def get_id_token() -> str | None:
     id_token = cache.get("id_token")
     if (
         isinstance(expires_at, (int, float))
+        and not isinstance(expires_at, bool)
+        and math.isfinite(expires_at)
         and isinstance(id_token, str)
         and time.time() < expires_at - _EXPIRY_BUFFER_SECONDS
     ):

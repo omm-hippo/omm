@@ -445,6 +445,8 @@ const v9Success = {
 
 describe("v9 schema (contribute-v1)", () => {
   it("accepts a valid success event", () => ok(v9Success));
+  it("rejects success carrying failure-only confirmation fields", () =>
+    rejected({ ...v9Success, confirmation_attempts: 2, timeout_seconds: 180 }));
   it("accepts optional GPU fields represented as JSON null", () =>
     ok({ ...v9Success, vram_gb: null, gpu_tflops: null }));
   it("rejects active parameter count above total", () =>

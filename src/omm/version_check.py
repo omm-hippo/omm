@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 from omm import config
+from omm.atomic import atomic_write_text, locked
 
 _TTL_SECONDS = 30 * 60
 _CHECK_IN_FLIGHT_TTL_SECONDS = 60
@@ -32,23 +33,40 @@ def _load() -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def _save(data: dict) -> None:
     try:
         path = _cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data), encoding="utf-8")
-    except OSError:
+        atomic_write_text(path, json.dumps(data))
+    except (OSError, TypeError):
         pass
 
 
 def _ref_entry(cache: dict, ref: str) -> dict:
     entry = cache.get(ref)
     return entry if isinstance(entry, dict) else {}
+
+
+def _fresh(timestamp: object, ttl_seconds: int | float) -> bool:
+    if (
+        not isinstance(timestamp, (int, float))
+        or isinstance(timestamp, bool)
+        or not isinstance(ttl_seconds, (int, float))
+        or isinstance(ttl_seconds, bool)
+        or ttl_seconds <= 0
+    ):
+        return False
+    age = time.time() - timestamp
+    return 0 <= age < ttl_seconds
+
+
+def _remote_head(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def cached_remote_head(
@@ -66,11 +84,21 @@ def cached_remote_head(
     cache = _load()
     entry = _ref_entry(cache, ref)
     checked_at = entry.get("checked_at")
-    if isinstance(checked_at, (int, float)) and time.time() - checked_at < ttl_seconds:
-        return entry.get("remote_head")
-    latest = fetch(ref)
-    cache[ref] = {"checked_at": time.time(), "remote_head": latest}
-    _save(cache)
+    if _fresh(checked_at, ttl_seconds):
+        return _remote_head(entry.get("remote_head"))
+    try:
+        latest = _remote_head(fetch(ref))
+    except Exception:
+        latest = None
+    # Merge into the latest cache under the writer lock. Another detached
+    # checker may have updated a different channel while this fetch ran.
+    try:
+        with locked(_cache_path()):
+            cache = _load()
+            cache[ref] = {"checked_at": time.time(), "remote_head": latest}
+            _save(cache)
+    except (OSError, TimeoutError):
+        pass
     return latest
 
 
@@ -84,8 +112,8 @@ def cached_remote_head_if_fresh(
     cache = _load()
     entry = _ref_entry(cache, ref)
     checked_at = entry.get("checked_at")
-    if isinstance(checked_at, (int, float)) and time.time() - checked_at < ttl_seconds:
-        return True, entry.get("remote_head")
+    if _fresh(checked_at, ttl_seconds):
+        return True, _remote_head(entry.get("remote_head"))
     return False, None
 
 
@@ -96,13 +124,10 @@ def should_start_check(ref: str = "main", ttl_seconds: int = _TTL_SECONDS) -> bo
     cache = _load()
     entry = _ref_entry(cache, ref)
     checked_at = entry.get("checked_at")
-    if isinstance(checked_at, (int, float)) and time.time() - checked_at < ttl_seconds:
+    if _fresh(checked_at, ttl_seconds):
         return False
     checking_since = entry.get("checking_since")
-    if (
-        isinstance(checking_since, (int, float))
-        and time.time() - checking_since < _CHECK_IN_FLIGHT_TTL_SECONDS
-    ):
+    if _fresh(checking_since, _CHECK_IN_FLIGHT_TTL_SECONDS):
         return False
     return True
 
@@ -110,17 +135,28 @@ def should_start_check(ref: str = "main", ttl_seconds: int = _TTL_SECONDS) -> bo
 def mark_checking(ref: str = "main") -> None:
     """Called right before spawning the detached child, so concurrent short
     `omm` invocations don't each spawn their own `git ls-remote` process."""
-    cache = _load()
-    entry = _ref_entry(cache, ref)
-    entry["checking_since"] = time.time()
-    cache[ref] = entry
-    _save(cache)
+    try:
+        with locked(_cache_path()):
+            cache = _load()
+            entry = _ref_entry(cache, ref)
+            entry["checking_since"] = time.time()
+            cache[ref] = entry
+            _save(cache)
+    except (OSError, TimeoutError):
+        pass
 
 
 def record(remote_head: str | None, ref: str = "main") -> None:
     """Overwrite the cache with a freshly-known remote head (e.g. right
     after `omm update` fetches it live), so the next background check
     doesn't serve a pre-update reading for up to `_TTL_SECONDS`."""
-    cache = _load()
-    cache[ref] = {"checked_at": time.time(), "remote_head": remote_head}
-    _save(cache)
+    try:
+        with locked(_cache_path()):
+            cache = _load()
+            cache[ref] = {
+                "checked_at": time.time(),
+                "remote_head": _remote_head(remote_head),
+            }
+            _save(cache)
+    except (OSError, TimeoutError):
+        pass

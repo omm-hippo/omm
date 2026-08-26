@@ -613,10 +613,25 @@ if ($verifiedCommit -ne $headCommit) {
     }
 }
 $SrcDir = Join-Path $SourcesDir $verifiedCommit
-if (Test-Path $SrcDir) {
-    Remove-Item -Recurse -Force $StagingDir
-} else {
+$PreviousSrcDir = $null
+if (Test-Path -LiteralPath $SrcDir) {
+    $PreviousSrcDir = Join-Path $SourcesDir ("replaced-" + $verifiedCommit + "-" + [guid]::NewGuid().ToString("N"))
+    try {
+        Move-Item -LiteralPath $SrcDir -Destination $PreviousSrcDir
+    } catch {
+        Remove-Item -LiteralPath $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Error "Could not move the previous source checkout aside: $_"
+        exit 1
+    }
+}
+try {
     Move-Item -LiteralPath $StagingDir -Destination $SrcDir
+} catch {
+    if ($null -ne $PreviousSrcDir -and (Test-Path -LiteralPath $PreviousSrcDir)) {
+        Move-Item -LiteralPath $PreviousSrcDir -Destination $SrcDir -ErrorAction SilentlyContinue
+    }
+    Write-Error "Could not activate the freshly verified source checkout: $_"
+    exit 1
 }
 $versionMatch = Select-String -LiteralPath (Join-Path $SrcDir "pyproject.toml") -Pattern '^version = "([^"]+)"\s*$' | Select-Object -First 1
 if ($null -eq $versionMatch) {

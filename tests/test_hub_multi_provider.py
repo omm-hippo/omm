@@ -37,6 +37,18 @@ def test_explicit_hf_prefix_still_works(monkeypatch):
     assert resolved.url == "https://huggingface.co/org/repo/resolve/main/model.gguf"
 
 
+def test_repo_file_listing_deduplicates_case_insensitive_names(monkeypatch):
+    _stub_fetch_repo_files(
+        monkeypatch,
+        huggingface,
+        {"org/repo": ["Model.gguf", "model.gguf"]},
+    )
+
+    resolved = hub.resolve_model("hf:org/repo")
+
+    assert resolved.filename == "Model.gguf"
+
+
 def test_bare_repo_resolves_to_sole_matching_provider(monkeypatch):
     _stub_fetch_repo_files(monkeypatch, huggingface, {})
     _stub_fetch_repo_files(monkeypatch, modelscope, {"org/only-on-ms": ["model.gguf"]})

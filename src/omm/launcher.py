@@ -80,19 +80,28 @@ def find_windows_app_exe(dir_hints: tuple[str, ...], exe_hints: tuple[str, ...])
         except OSError:
             continue
         for entry in entries:
-            if not entry.is_dir() or not entry.name.lower().startswith(dir_hints_l):
+            try:
+                is_matching_dir = entry.is_dir() and entry.name.lower().startswith(
+                    dir_hints_l
+                )
+            except OSError:
+                continue
+            if not is_matching_dir:
                 continue
             try:
                 files = list(entry.iterdir())
             except OSError:
                 continue
             for candidate in files:
-                if (
-                    candidate.is_file()
-                    and candidate.suffix.lower() == ".exe"
-                    and candidate.name.lower().startswith(exe_hints_l)
-                ):
-                    return candidate
+                try:
+                    if (
+                        candidate.is_file()
+                        and candidate.suffix.lower() == ".exe"
+                        and candidate.name.lower().startswith(exe_hints_l)
+                    ):
+                        return candidate
+                except OSError:
+                    continue
     return None
 
 
@@ -188,7 +197,7 @@ def launch_koboldcpp(model_path: Path) -> LaunchResult:
     binary = linker.find_koboldcpp_binary()
     if binary is None:
         return LaunchResult(False, "KoboldCpp binary not found.")
-    if not model_path.exists():
+    if not model_path.is_file():
         return LaunchResult(False, f"Model file is missing: {model_path}")
     try:
         _spawn_detached([str(binary), "--model", str(model_path), "--launch"], cwd=binary.parent)
@@ -219,7 +228,9 @@ def launch_textgenwebui(model_filename: str) -> LaunchResult:
             f"No start script found in {root}. Start text-generation-webui yourself and pick "
             f"{model_filename} from its Model tab.",
         )
-    args = [str(script), "--model", model_filename]
+    # Bind the value with `=` so a legitimate filename beginning with `-`
+    # cannot be reinterpreted as another text-generation-webui option.
+    args = [str(script), f"--model={model_filename}"]
     if platform.system() != "Windows":
         args = ["bash", *args]
     try:

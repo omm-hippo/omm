@@ -443,6 +443,7 @@ function branchV9(e: TelemetryEvent): boolean {
   if (str(e, "engine") !== "ollama") return false;
   if (str(e, "outcome") !== "success") return false;
   if (has(e, "failure_reason")) return false;
+  if (has(e, "confirmation_attempts") || has(e, "timeout_seconds")) return false;
   if (!(num(e, "cpu_physical_cores") <= num(e, "cpu_logical_cores"))) return false;
   if (!(num(e, "active_parameter_count_b") <= num(e, "parameter_count_b"))) return false;
   if (!(str(e, "runtime_profile").length > 0)) return false;

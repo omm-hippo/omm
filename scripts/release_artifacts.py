@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import sys
 import tarfile
@@ -19,7 +20,7 @@ import tempfile
 import venv
 import zipfile
 from email.parser import BytesParser
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,33 +69,83 @@ def _metadata_identity(payload: bytes, source: Path) -> tuple[str, str]:
     return name, version
 
 
+def _safe_archive_path(name: str) -> PurePosixPath:
+    path = PurePosixPath(name)
+    if (
+        path.is_absolute()
+        or "\\" in name
+        or not path.parts
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ReleaseValidationError(f"archive contains unsafe path {name!r}")
+    return path
+
+
 def _wheel_identity(wheel: Path) -> tuple[str, str]:
-    with zipfile.ZipFile(wheel) as archive:
-        metadata_files = [
-            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
-        ]
-        if len(metadata_files) != 1:
-            raise ReleaseValidationError(
-                f"{wheel.name} must contain exactly one .dist-info/METADATA file"
-            )
-        return _metadata_identity(archive.read(metadata_files[0]), wheel)
+    try:
+        with zipfile.ZipFile(wheel) as archive:
+            names = archive.namelist()
+            if len(names) != len(set(names)):
+                raise ReleaseValidationError(f"{wheel.name} contains duplicate paths")
+            for info in archive.infolist():
+                _safe_archive_path(info.filename.rstrip("/"))
+                mode = info.external_attr >> 16
+                file_type = stat.S_IFMT(mode)
+                if (
+                    info.flag_bits & 0x1
+                    or (
+                        info.create_system == 3
+                        and file_type not in {0, stat.S_IFREG, stat.S_IFDIR}
+                    )
+                ):
+                    raise ReleaseValidationError(
+                        f"{wheel.name} contains an unsafe member {info.filename!r}"
+                    )
+            metadata_files = [
+                name for name in names if name.endswith(".dist-info/METADATA")
+            ]
+            if len(metadata_files) != 1:
+                raise ReleaseValidationError(
+                    f"{wheel.name} must contain exactly one .dist-info/METADATA file"
+                )
+            return _metadata_identity(archive.read(metadata_files[0]), wheel)
+    except zipfile.BadZipFile as error:
+        raise ReleaseValidationError(f"cannot read wheel {wheel.name}: {error}") from error
 
 
 def _sdist_identity(sdist: Path) -> tuple[str, str]:
-    with tarfile.open(sdist, "r:gz") as archive:
-        metadata_files = [
-            member
-            for member in archive.getmembers()
-            if member.isfile() and member.name.endswith("/PKG-INFO")
-        ]
-        if len(metadata_files) != 1:
-            raise ReleaseValidationError(
-                f"{sdist.name} must contain exactly one top-level PKG-INFO file"
-            )
-        stream = archive.extractfile(metadata_files[0])
-        if stream is None:
-            raise ReleaseValidationError(f"cannot read metadata from {sdist.name}")
-        return _metadata_identity(stream.read(), sdist)
+    try:
+        with tarfile.open(sdist, "r:gz") as archive:
+            members = archive.getmembers()
+            roots: set[str] = set()
+            for member in members:
+                path = _safe_archive_path(member.name.rstrip("/"))
+                roots.add(path.parts[0])
+                if not (member.isfile() or member.isdir()):
+                    raise ReleaseValidationError(
+                        f"{sdist.name} contains an unsafe member {member.name!r}"
+                    )
+            if len(roots) != 1:
+                raise ReleaseValidationError(
+                    f"{sdist.name} must contain exactly one top-level directory"
+                )
+            metadata_files = [
+                member
+                for member in members
+                if member.isfile()
+                and member.name.count("/") == 1
+                and member.name.endswith("/PKG-INFO")
+            ]
+            if len(metadata_files) != 1:
+                raise ReleaseValidationError(
+                    f"{sdist.name} must contain exactly one top-level PKG-INFO file"
+                )
+            stream = archive.extractfile(metadata_files[0])
+            if stream is None:
+                raise ReleaseValidationError(f"cannot read metadata from {sdist.name}")
+            return _metadata_identity(stream.read(), sdist)
+    except tarfile.TarError as error:
+        raise ReleaseValidationError(f"cannot read sdist {sdist.name}: {error}") from error
 
 
 def distribution_archives(dist_dir: Path) -> tuple[Path, Path]:
@@ -228,6 +279,22 @@ def smoke_install(dist_dir: Path, pyproject: Path = PYPROJECT) -> None:
         command = _venv_executable(environment, "omm")
         command_env = os.environ.copy()
         command_env["OMM_HOME"] = str(root / "omm-home")
+        version_result = subprocess.run(
+            [str(command), "--version"],
+            check=True,
+            env=command_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        expected_version = f"omm {version}"
+        if version_result.stdout.strip() != expected_version:
+            raise ReleaseValidationError(
+                f"installed command reported {version_result.stdout.strip()!r}, "
+                f"expected {expected_version!r}"
+            )
         subprocess.run(
             [str(command), "help"],
             check=True,
@@ -265,7 +332,7 @@ def main() -> int:
             smoke_install(args.dist_dir)
         else:  # pragma: no cover - argparse constrains the command
             raise AssertionError(args.command)
-    except (OSError, ReleaseValidationError, subprocess.CalledProcessError) as error:
+    except (OSError, ReleaseValidationError, subprocess.SubprocessError) as error:
         print(f"release validation failed: {error}", file=sys.stderr)
         return 1
     return 0

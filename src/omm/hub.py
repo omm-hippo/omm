@@ -70,6 +70,11 @@ class QuantVariant:
 
 
 _RAM_OVERHEAD_FACTOR = 1.2  # context/runtime slack on top of raw weight size
+_WINDOWS_RESERVED_NAMES = {
+    "con", "prn", "aux", "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
 
 
 def validate_provider(provider: str) -> str:
@@ -119,6 +124,11 @@ def validate_model_filename(filename: str) -> str:
         path.is_absolute()
         or filename != path.as_posix()
         or any(part in {"", ".", ".."} or ":" in part for part in path.parts)
+        or any(
+            part.endswith((" ", "."))
+            or part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_NAMES
+            for part in path.parts
+        )
         or not filename.lower().endswith(".gguf")
     ):
         raise ModelResolutionError(
@@ -274,9 +284,15 @@ def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> Reso
     candidates, param_count_b = module.fetch_repo_files(repo_id)
     if not candidates:
         raise ModelResolutionError(f"No .gguf files found in {provider} repo '{repo_id}'.")
-    model_candidates = [
-        validate_model_filename(c) for c in candidates if not is_mmproj_filename(c)
-    ]
+    model_candidates: list[str] = []
+    seen_candidates: set[str] = set()
+    for candidate in candidates:
+        validated = validate_model_filename(candidate)
+        identity = validated.casefold()
+        if is_mmproj_filename(validated) or identity in seen_candidates:
+            continue
+        seen_candidates.add(identity)
+        model_candidates.append(validated)
     if not model_candidates:
         raise ModelResolutionError(
             f"{provider} repo '{repo_id}' only contains a multimodal projector "

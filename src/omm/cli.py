@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
@@ -95,7 +95,6 @@ from omm.hardware import (
 )
 from omm.hashutil import sha256_file
 from omm.featurize import (
-    candidate_active_parameter_count_billions,
     resolve_active_parameter_count_billions,
     candidate_parameter_count_billions,
     candidate_quant_bits,
@@ -125,6 +124,9 @@ from omm.hub import (
     validate_repo_id,
 )
 from omm.runtime_compatibility import CompatibilityResult, PROBE_VERSION, verify_and_record
+
+if TYPE_CHECKING:
+    import questionary
 
 
 class PlainHelpFormatter(click.HelpFormatter):
@@ -1097,8 +1099,8 @@ def engine_install_cmd(
         selected = onboarding.run_engine_checklist(console)
         if selected is None:
             raise typer.Abort()
-        if selected:
-            onboarding.install_selected_engines(console, selected)
+        if selected and not onboarding.install_selected_engines(console, selected):
+            raise typer.Exit(1)
         return
 
     key = engine.strip().lower()
@@ -1112,7 +1114,8 @@ def engine_install_cmd(
         label = next(spec.label for spec in linker.ENGINES if spec.key == key)
         console.print(f"[muted]{label} is already installed.[/muted]")
         return
-    onboarding.install_selected_engines(console, [key])
+    if not onboarding.install_selected_engines(console, [key]):
+        raise typer.Exit(1)
 
 
 def _refresh_data() -> None:
@@ -1127,7 +1130,7 @@ def _refresh_data() -> None:
         try:
             fetched = rules_mod.fetch_rules(rules_url)
             console.print(f"[success]Updated rules.json ({len(fetched)} entries) from {rules_url}[/success]")
-        except requests.RequestException as e:
+        except (requests.RequestException, ValueError) as e:
             err_console.print(f"[error]Failed to fetch rules from {rules_url}: {e}[/error]")
 
     model_url = config.get("model_url")
@@ -3005,7 +3008,7 @@ def recommend() -> None:
             _, rules_changed = rules_mod.refresh_rules_with_change_note(rules_url)
             if rules_changed and not _global_opts().quiet and not json_output:
                 console.print("[muted]Fetched updated rules from GitHub.[/muted]")
-        except requests.RequestException:
+        except (requests.RequestException, ValueError):
             pass
 
     has_gpu = info.vram_total_gb is not None
@@ -6417,10 +6420,14 @@ def search(
         raise typer.Exit(2)
     json_output = _global_opts().json
     config = load_config()
-    pool = search_mod.local_candidate_pool(
-        config.get("model_url"),
-        manifest_url=config.get("catalog_manifest_url"),
-        public_key=config.get("catalog_public_key"),
+    pool = (
+        search_mod.local_candidate_pool(
+            config.get("model_url"),
+            manifest_url=config.get("catalog_manifest_url"),
+            public_key=config.get("catalog_public_key"),
+        )
+        if provider in (None, "curated")
+        else []
     )
     _handle_emergency_signal(predictor.load_cached_model())
     local_matches = search_mod.match_candidates(pool, query)
@@ -6428,13 +6435,23 @@ def search(
     local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
     from concurrent.futures import ThreadPoolExecutor
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        hf_future = executor.submit(search_mod.search_huggingface, query)
+    query_huggingface = provider in (None, "huggingface")
+    query_modelscope = provider in (None, "modelscope") and not skip_ms
+    with ThreadPoolExecutor(max_workers=max(1, query_huggingface + query_modelscope)) as executor:
+        hf_future = (
+            executor.submit(search_mod.search_huggingface, query)
+            if query_huggingface
+            else None
+        )
         ms_future = (
-            executor.submit(search_mod.search_modelscope, query) if not skip_ms else None
+            executor.submit(search_mod.search_modelscope, query)
+            if query_modelscope
+            else None
         )
         hf_matches = [
-            c for c in hf_future.result() if c.get("repo_id") not in local_repo_ids
+            c
+            for c in (hf_future.result() if hf_future else [])
+            if c.get("repo_id") not in local_repo_ids
         ]
         ms_matches = [
             c

@@ -7,6 +7,7 @@ update` can overwrite ~/.omm/rules.json with a hosted index later.
 from __future__ import annotations
 
 import json
+import math
 
 from omm.atomic import atomic_write_text, backup_corrupt_file
 from omm.config import RULES_PATH
@@ -33,11 +34,37 @@ DEFAULT_RULES: list[dict] = [
 ]
 
 
+def _validate_rules(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        raise ValueError("rules payload must be a list")
+    validated: list[dict] = []
+    for rule in value:
+        if not isinstance(rule, dict):
+            raise ValueError("every rule must be an object")
+        name = rule.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("every rule requires a non-empty name")
+        for field in ("min_ram_gb", "min_vram_gb"):
+            amount = rule.get(field)
+            if (
+                isinstance(amount, bool)
+                or not isinstance(amount, (int, float))
+                or not math.isfinite(amount)
+                or amount < 0
+            ):
+                raise ValueError(f"every rule requires a finite non-negative {field}")
+        description = rule.get("description")
+        if description is not None and not isinstance(description, str):
+            raise ValueError("rule descriptions must be strings")
+        validated.append(rule)
+    return validated
+
+
 def _read_rules_file() -> list[dict] | None:
     if not RULES_PATH.exists():
         return None
     try:
-        return json.loads(RULES_PATH.read_text(encoding="utf-8"))
+        return _validate_rules(json.loads(RULES_PATH.read_text(encoding="utf-8")))
     except (OSError, ValueError):
         backup_corrupt_file(RULES_PATH)
         return None
@@ -53,7 +80,7 @@ def fetch_rules(url: str) -> list[dict]:
 
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
-    rules = resp.json()
+    rules = _validate_rules(resp.json())
     RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(RULES_PATH, json.dumps(rules, indent=2))
     return rules

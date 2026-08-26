@@ -155,3 +155,13 @@ def test_platform_verifier_rejects_unexpected_files(tmp_path):
 
     with pytest.raises(npm_package.NpmPackageError, match="outside its allowlist"):
         npm_package.validate_platform_package(staged, "linux-x64-gnu")
+
+
+def test_targets_reject_binary_paths_outside_the_package(tmp_path):
+    target_map = npm_package.targets()
+    target_map["linux-x64-gnu"]["binary"] = "../../omm"
+    target_file = tmp_path / "targets.json"
+    target_file.write_text(json.dumps(target_map), encoding="utf-8")
+
+    with pytest.raises(npm_package.NpmPackageError, match="unsafe identity"):
+        npm_package.targets(target_file)

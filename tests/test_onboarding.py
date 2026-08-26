@@ -192,11 +192,26 @@ def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
         lambda key, on_output=None: linker.EngineInstallResult(key, "installed", "ok"),
     )
 
-    onboarding.install_selected_engines(console, ["ollama"])
+    succeeded = onboarding.install_selected_engines(console, ["ollama"])
 
     output = console.file.getvalue()
     assert "Installing Ollama" in output
     assert "ok" in output
+    assert succeeded is True
+
+
+def test_install_selected_engines_reports_failed_automated_install(monkeypatch):
+    console = _console()
+    monkeypatch.setattr(
+        linker,
+        "install_engine",
+        lambda key, on_output=None: linker.EngineInstallResult(key, "failed", "boom"),
+    )
+
+    succeeded = onboarding.install_selected_engines(console, ["ollama"])
+
+    assert succeeded is False
+    assert "boom" in console.file.getvalue()
 
 
 def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
@@ -256,6 +271,19 @@ def test_run_wizard_aborts_when_engine_checklist_is_cancelled(monkeypatch):
     monkeypatch.setattr(onboarding, "run_engine_checklist", lambda c: None)
 
     with pytest.raises(typer.Abort):
+        onboarding.run_wizard(console)
+
+    assert "Setup complete" not in console.file.getvalue()
+
+
+def test_run_wizard_does_not_complete_after_selected_installer_failure(monkeypatch):
+    console = _console()
+    monkeypatch.setattr(onboarding, "run_theme_step", lambda c: "dark")
+    monkeypatch.setattr(onboarding, "print_hardware_summary", lambda c: None)
+    monkeypatch.setattr(onboarding, "run_engine_checklist", lambda c: ["ollama"])
+    monkeypatch.setattr(onboarding, "install_selected_engines", lambda c, selected: False)
+
+    with pytest.raises(typer.Exit):
         onboarding.run_wizard(console)
 
     assert "Setup complete" not in console.file.getvalue()

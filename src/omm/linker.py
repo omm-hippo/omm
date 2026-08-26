@@ -66,7 +66,7 @@ from typing import Callable, Sequence
 
 from omm import config
 from omm.gguf import read_gguf_metadata
-from omm.hardware import HardwareInfo, scan_hardware
+from omm.hardware import HardwareInfo
 from omm.hashutil import sha256_file
 from omm.atomic import atomic_write_text, backup_corrupt_file, locked
 from omm.config import LINK_OWNERSHIP_PATH, MODELS_DIR
@@ -81,7 +81,13 @@ def lmstudio_home_dir() -> Path:
     """
     pointer = Path.home() / ".lmstudio-home-pointer"
     if pointer.exists():
-        return Path(pointer.read_text(encoding="utf-8").strip())
+        try:
+            value = pointer.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            value = ""
+        if value:
+            target = Path(value).expanduser()
+            return target if target.is_absolute() else Path.home() / target
     if (Path.home() / ".cache" / "lm-studio").exists():
         return Path.home() / ".cache" / "lm-studio"
     return Path.home() / ".lmstudio"
@@ -333,6 +339,17 @@ def _engine_path_lock(path: Path) -> Path:
     Pass the return value straight to `locked()`, which appends `.lock`."""
     digest = hashlib.sha256(_link_key(path).encode()).hexdigest()
     return config.OMM_HOME / "locks" / digest
+
+
+def _models_transaction_lock(models_dir: Path) -> Path:
+    """One lock covering manifest publication and orphan-blob reclamation.
+
+    Per-blob and per-manifest locks prevent torn individual writes, but are
+    not enough for the multi-file invariant: an unlink scanning references
+    must not delete a just-created shared blob before another link publishes
+    the manifest that references it.
+    """
+    return _engine_path_lock(models_dir / ".omm-link-transaction")
 
 
 def _load_link_ownership() -> dict[str, dict[str, object]]:
@@ -915,7 +932,9 @@ def _lmstudio_server_status(lms_path: str, timeout: float = 5) -> dict | None:
     if (
         not isinstance(data, dict)
         or not isinstance(data.get("running"), bool)
+        or isinstance(data.get("port"), bool)
         or not isinstance(data.get("port"), int)
+        or not 1 <= data["port"] <= 65_535
     ):
         return None
     return data
@@ -1050,16 +1069,17 @@ def _probe_lmstudio_generate(
     return isinstance(content, str) and len(content.strip()) > 0
 
 
-def _lms_unload(lms_path: str, model_key: str) -> None:
+def _lms_unload(lms_path: str, model_key: str) -> bool:
     """Best-effort isolation cleanup after a probe, mirroring
     quality.unload_model's role for Ollama. Confirmed against a real LM
     Studio instance that unloading a not-currently-loaded identifier exits
     cleanly rather than raising, but this still never propagates a
     failure either way."""
     try:
-        subprocess.run([lms_path, "unload", model_key], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+        result = subprocess.run([lms_path, "unload", model_key], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        return False
+    return result.returncode == 0
 
 
 def verify_lmstudio_load(gguf_path: Path, repo_id: str | None) -> bool | None:
@@ -1085,6 +1105,14 @@ def verify_lmstudio_load(gguf_path: Path, repo_id: str | None) -> bool | None:
         if not _start_lmstudio_server(lms_path):
             return None
         started_by_us = True
+        # The server may select a different port when it starts (for
+        # example because the configured port became occupied after the
+        # earlier stopped-status query). Probe the live status rather than
+        # reusing stale pre-start metadata.
+        status = _lmstudio_server_status(lms_path)
+        if status is None or not status["running"]:
+            _stop_lmstudio_server(lms_path)
+            return None
 
     try:
         return _probe_lmstudio_generate(status["port"], model_key)
@@ -1247,11 +1275,15 @@ def _ollama_link_already_current(manifest_path: Path, gguf_path: Path, blobs_dir
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
+    layers = manifest.get("layers") if isinstance(manifest, dict) else None
+    if not isinstance(layers, list):
+        return False
     digest = next(
         (
             layer.get("digest", "")
-            for layer in manifest.get("layers", [])
-            if layer.get("mediaType") == "application/vnd.ollama.image.model"
+            for layer in layers
+            if isinstance(layer, dict)
+            and layer.get("mediaType") == "application/vnd.ollama.image.model"
         ),
         "",
     )
@@ -1265,6 +1297,33 @@ def _ollama_link_already_current(manifest_path: Path, gguf_path: Path, blobs_dir
 
 
 def link_ollama(
+    gguf_path: Path,
+    model_name: str,
+    models_dir: Path | None = None,
+    verify_compat: bool = True,
+    *,
+    on_copy: CopyReporter | None = None,
+    force: bool = False,
+) -> bool:
+    """Link a GGUF into one Ollama-format store as an atomic transaction."""
+    transaction_models_dir = models_dir if models_dir is not None else ollama_models_dir()
+    try:
+        with locked(_models_transaction_lock(transaction_models_dir)):
+            return _link_ollama_unlocked(
+                gguf_path,
+                model_name,
+                models_dir,
+                verify_compat,
+                on_copy=on_copy,
+                force=force,
+            )
+    except LinkError:
+        raise
+    except OSError as error:
+        raise LinkError(f"Could not lock the Ollama model store: {error}") from error
+
+
+def _link_ollama_unlocked(
     gguf_path: Path,
     model_name: str,
     models_dir: Path | None = None,
@@ -1323,7 +1382,7 @@ def link_ollama(
         # hand-rolled manifest shape - skip straight to the slower-but-
         # correct native path instead of hashing the whole file and writing
         # a manifest that's just going to be thrown away.
-        _fallback_to_native_create(gguf_path, model_name, models_dir)
+        _fallback_to_native_create_under_model_lock(gguf_path, model_name, models_dir)
         return True
 
     if ollama_version is None or _manifest_format_known_good(ollama_version) is True:
@@ -1382,24 +1441,29 @@ def link_ollama(
         config_bytes = json.dumps(config).encode()
         config_sha256 = hashlib.sha256(config_bytes).hexdigest()
         config_blob = blobs_dir / f"sha256-{config_sha256}"
-        if config_blob.exists():
-            try:
-                config_matches = config_blob.read_bytes() == config_bytes
-            except OSError:
-                config_matches = False
-            if not config_matches:
-                raise LinkError(
-                    f"Existing Ollama config blob does not match its digest: {config_blob}."
-                )
-        elif config_blob.is_symlink():
-            raise LinkError(f"Refusing broken Ollama config blob symlink: {config_blob}.")
-        else:
-            config_blob.write_bytes(config_bytes)
-            try:
-                _record_ownership(config_blob, None, "copy")
-            except Exception:
-                config_blob.unlink(missing_ok=True)
-                raise
+        # Config blobs are shared across model names and content-addressed.
+        # Serialize the check/create just like the model blob above; two
+        # concurrent links with the same config used to see "missing" and
+        # interleave non-atomic write_bytes calls.
+        with locked(_engine_path_lock(config_blob)):
+            if config_blob.exists():
+                try:
+                    config_matches = config_blob.read_bytes() == config_bytes
+                except OSError:
+                    config_matches = False
+                if not config_matches:
+                    raise LinkError(
+                        f"Existing Ollama config blob does not match its digest: {config_blob}."
+                    )
+            elif config_blob.is_symlink():
+                raise LinkError(f"Refusing broken Ollama config blob symlink: {config_blob}.")
+            else:
+                config_blob.write_bytes(config_bytes)
+                try:
+                    _record_ownership(config_blob, None, "copy")
+                except Exception:
+                    config_blob.unlink(missing_ok=True)
+                    raise
 
         manifest = {
             "schemaVersion": 2,
@@ -1502,7 +1566,7 @@ def link_ollama(
                     "or that Ollama isn't running as a different system user."
                 ),
             ) from e
-        _fallback_to_native_create(gguf_path, model_name, models_dir)
+        _fallback_to_native_create_under_model_lock(gguf_path, model_name, models_dir)
         return True
     except OSError as e:
         raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
@@ -1552,6 +1616,8 @@ def _manifest_format_known_good(ollama_version: str) -> bool | None:
         cache = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if not isinstance(cache, dict):
+        return None
     if cache.get("ollama_version") != ollama_version:
         return None
     compatible = cache.get("compatible")
@@ -1596,6 +1662,28 @@ def _ollama_accepts_manifest(model_name: str) -> bool | None:
 
 
 def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Path) -> None:
+    """Serialize a directly requested native import with link/unlink work."""
+    try:
+        with locked(_models_transaction_lock(models_dir)):
+            _fallback_to_native_create_under_model_lock(gguf_path, model_name, models_dir)
+    except LinkError:
+        raise
+    except OSError as error:
+        raise LinkError(f"Could not lock the Ollama model store: {error}") from error
+
+
+def _fallback_to_native_create_under_model_lock(
+    gguf_path: Path, model_name: str, models_dir: Path
+) -> None:
+    """Serialize OMM-owned native imports while caller holds the store lock."""
+    transaction_lock = _engine_path_lock(models_dir / ".omm-native-create")
+    with locked(transaction_lock):
+        _fallback_to_native_create_unlocked(gguf_path, model_name, models_dir)
+
+
+def _fallback_to_native_create_unlocked(
+    gguf_path: Path, model_name: str, models_dir: Path
+) -> None:
     """Let the real `ollama` binary write its own manifest/blobs for this
     model when omm's hand-rolled shape has drifted out of sync with what
     this Ollama version expects. Confirmed empirically that `ollama create`
@@ -1643,7 +1731,7 @@ def _fallback_to_native_create(gguf_path: Path, model_name: str, models_dir: Pat
     # Capacity is proven before replacing a currently working omm manifest.
     # A failed preflight must never destroy the user's existing Ollama model.
     if manifest_path.exists() or manifest_path.is_symlink():
-        unlink_ollama(model_name, models_dir=models_dir)
+        _unlink_ollama_unlocked(model_name, models_dir=models_dir)
 
     blobs_dir = models_dir / "blobs"
     try:
@@ -1749,25 +1837,43 @@ def _ensure_ollama_accepts(
     # blob/copy before native import. Otherwise cross-volume installs can
     # briefly consume two extra full model copies and the rejected blob can
     # remain orphaned forever.
-    unlink_ollama(model_name, models_dir=models_dir)
-    _fallback_to_native_create(gguf_path, model_name, models_dir)
+    _unlink_ollama_unlocked(model_name, models_dir=models_dir)
+    _fallback_to_native_create_under_model_lock(gguf_path, model_name, models_dir)
     return True
 
 
 def _manifest_blob_digests(manifest: dict) -> set[str]:
-    digests = {
-        layer.get("digest", "").replace(":", "-")
-        for layer in manifest.get("layers", [])
-        if layer.get("digest")
-    }
-    config_digest = manifest.get("config", {}).get("digest")
-    if config_digest:
-        digests.add(config_digest.replace(":", "-"))
+    if not isinstance(manifest, dict):
+        return set()
+    layers = manifest.get("layers")
+    digests = set()
+    if isinstance(layers, list):
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            digest = layer.get("digest")
+            if isinstance(digest, str) and digest:
+                filename = digest.replace(":", "-")
+                if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", filename):
+                    digests.add(filename)
+    config = manifest.get("config")
+    config_digest = config.get("digest") if isinstance(config, dict) else None
+    if isinstance(config_digest, str) and config_digest:
+        filename = config_digest.replace(":", "-")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", filename):
+            digests.add(filename)
     return digests
 
 
 def _manifest_model_layer_sha256(manifest: dict) -> str | None:
-    for layer in manifest.get("layers", []):
+    if not isinstance(manifest, dict):
+        return None
+    layers = manifest.get("layers")
+    if not isinstance(layers, list):
+        return None
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
         media_type = layer.get("mediaType")
         digest = layer.get("digest")
         if isinstance(media_type, str) and media_type.endswith("model") and isinstance(digest, str):
@@ -1776,6 +1882,26 @@ def _manifest_model_layer_sha256(manifest: dict) -> str | None:
 
 
 def unlink_ollama(
+    model_name: str,
+    models_dir: Path | None = None,
+    expected_source: Path | None = None,
+    expected_content_sha256: str | None = None,
+) -> bool:
+    """Remove an owned Ollama manifest and now-unreferenced owned blobs."""
+    transaction_models_dir = models_dir if models_dir is not None else ollama_models_dir()
+    try:
+        with locked(_models_transaction_lock(transaction_models_dir)):
+            return _unlink_ollama_unlocked(
+                model_name,
+                models_dir=models_dir,
+                expected_source=expected_source,
+                expected_content_sha256=expected_content_sha256,
+            )
+    except OSError:
+        return False
+
+
+def _unlink_ollama_unlocked(
     model_name: str,
     models_dir: Path | None = None,
     expected_source: Path | None = None,
@@ -1938,9 +2064,7 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            layer_digests = {
-                layer["digest"].replace(":", "-") for layer in manifest.get("layers", [])
-            }
+            layer_digests = _manifest_blob_digests(manifest)
             if layer_digests & broken_digests:
                 try:
                     manifest_path.unlink()
@@ -2080,25 +2204,26 @@ def link_jan(gguf_path: Path, model_id: str) -> Path:
         )
         root = jan_models_dir()
         root.mkdir(parents=True, exist_ok=True)
-        if config_path.parent.is_symlink():
-            raise LinkError(
-                f"Refusing Jan symlinked model directory: {config_path.parent}."
-            )
-        if not config_path.parent.resolve().is_relative_to(root.resolve()):
-            raise LinkError("Refusing Jan manifest path outside the models directory.")
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        if config_path.exists() and not _owned_manifest(
-            config_path, expected_source=gguf_path
-        ):
-            raise LinkError(
-                f"Refusing to replace unowned Jan manifest at {config_path}."
-            )
-        atomic_write_text(config_path, content)
-        try:
-            _record_ownership(config_path, gguf_path, "manifest")
-        except Exception:
-            config_path.unlink(missing_ok=True)
-            raise
+        with locked(_engine_path_lock(config_path)):
+            if config_path.parent.is_symlink():
+                raise LinkError(
+                    f"Refusing Jan symlinked model directory: {config_path.parent}."
+                )
+            if not config_path.parent.resolve().is_relative_to(root.resolve()):
+                raise LinkError("Refusing Jan manifest path outside the models directory.")
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            if config_path.exists() and not _owned_manifest(
+                config_path, expected_source=gguf_path
+            ):
+                raise LinkError(
+                    f"Refusing to replace unowned Jan manifest at {config_path}."
+                )
+            atomic_write_text(config_path, content)
+            try:
+                _record_ownership(config_path, gguf_path, "manifest")
+            except Exception:
+                config_path.unlink(missing_ok=True)
+                raise
     except OSError as e:
         raise LinkError(f"Could not write Jan manifest at {config_path}: {e}") from e
     return config_path
@@ -2118,17 +2243,18 @@ def unlink_jan(model_id: str, expected_source: Path | None = None) -> None:
     config_path = _jan_model_yaml_path(model_id)
     if not config_path.parent.resolve().is_relative_to(jan_models_dir().resolve()):
         return
-    owned = _owned_manifest(config_path, expected_source=expected_source)
-    if not owned and expected_source is not None and config_path.exists() and not config_path.is_symlink():
-        recorded_path = read_jan_model_path(config_path)
-        if recorded_path is not None and _link_key(Path(recorded_path)) == _link_key(expected_source):
-            owned = True
-    if owned:
-        try:
-            config_path.unlink()
-            _update_link_ownership(config_path, None)
-        except OSError:
-            return
+    with locked(_engine_path_lock(config_path)):
+        owned = _owned_manifest(config_path, expected_source=expected_source)
+        if not owned and expected_source is not None and config_path.exists() and not config_path.is_symlink():
+            recorded_path = read_jan_model_path(config_path)
+            if recorded_path is not None and _link_key(Path(recorded_path)) == _link_key(expected_source):
+                owned = True
+        if owned:
+            try:
+                config_path.unlink()
+                _update_link_ownership(config_path, None)
+            except OSError:
+                return
     try:
         config_path.parent.rmdir()
     except OSError:
@@ -2601,7 +2727,12 @@ def _install_via_package_manager(
     # /Applications. Cheap when the cask really was already fully
     # installed (skips the same no-op path); only case that matters is
     # this stale-receipt one.
-    if system == "Darwin" and args is not None and args[:3] == ["brew", "install", "--cask"]:
+    if (
+        returncode == 0
+        and system == "Darwin"
+        and args is not None
+        and args[:3] == ["brew", "install", "--cask"]
+    ):
         try:
             returncode = _stream_subprocess(["brew", "reinstall", "--cask", brew_cask], on_output)
         except OSError as e:
@@ -3281,5 +3412,8 @@ def unload_lmstudio_model(model_key: str) -> bool:
     lms_path = _lms_cli_path()
     if lms_path is None:
         return False
-    _lms_unload(lms_path, model_key)
-    return True
+    result = _lms_unload(lms_path, model_key)
+    # Preserve compatibility with older/mocked best-effort unload helpers
+    # that returned None on success while allowing the real helper's new
+    # False result to reach the memory guard.
+    return result is not False

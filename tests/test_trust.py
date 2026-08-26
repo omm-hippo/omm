@@ -292,6 +292,20 @@ def test_verify_update_rejects_key_that_approves_itself(
     assert "trust chain stopped" in message
 
 
+def test_verify_update_rejects_replay_of_older_trusted_commit(
+    repo, signing_key, allowed_signers
+):
+    older = _commit(repo, "older signed release", signing_key=signing_key)
+    (repo / "file.txt").write_text("security fix\n")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    installed = _commit(repo, "newer signed release", signing_key=signing_key)
+
+    ok, message = trust.verify_update(repo, installed, older, allowed_signers)
+
+    assert not ok
+    assert "older than" in message
+
+
 def test_current_trust_anchor_points_at_bundled_file():
     anchor = trust.current_trust_anchor()
 

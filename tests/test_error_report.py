@@ -64,8 +64,13 @@ def test_scrub_paths_replaces_a_linux_home_directory_with_a_tilde():
 def test_scrub_paths_replaces_a_windows_home_directory_with_a_tilde():
     scrubbed = error_report.scrub_paths(r"[WinError 5] C:\Users\Carol Doe\.omm\models\x.gguf")
 
-    assert scrubbed == r"[WinError 5] ~ Doe\.omm\models\x.gguf"
+    assert scrubbed == r"[WinError 5] ~\.omm\models\x.gguf"
     assert "Carol" not in scrubbed
+    assert "Doe" not in scrubbed
+
+
+def test_scrub_paths_replaces_an_exact_windows_home_directory():
+    assert error_report.scrub_paths(r"C:\Users\Carol Doe") == "~"
 
 
 def test_scrub_paths_handles_every_platform_in_one_message():

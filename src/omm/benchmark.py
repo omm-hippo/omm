@@ -14,7 +14,6 @@ import statistics
 import subprocess
 import tempfile
 import time
-from pathlib import Path
 
 from omm.linker import find_ollama_executable  # noqa: F401 - re-exported for callers
 
@@ -128,7 +127,9 @@ def stop_ollama_daemon(proc: subprocess.Popen) -> None:
         try:
             proc.send_signal(signal.CTRL_BREAK_EVENT)
         except (OSError, ValueError):
-            pass
+            # If the console-control event cannot be delivered, do not wait
+            # ten seconds for a process that was never asked to stop.
+            proc.terminate()
     else:
         proc.terminate()
     try:
@@ -158,6 +159,7 @@ def benchmark_ollama(tag: str, options: dict | None = None) -> float | None:
             },
             timeout=120,
         )
+        resp.raise_for_status()
         data = resp.json()
         eval_count = data.get("eval_count")
         eval_duration = data.get("eval_duration")

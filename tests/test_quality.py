@@ -82,6 +82,12 @@ def test_isolated_evaluator_enforces_absolute_deadline_and_terminates_worker(mon
     assert process.terminated is True
 
 
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), 0, True])
+def test_isolated_evaluator_rejects_non_finite_or_non_positive_deadline(timeout):
+    with pytest.raises(ValueError, match="finite positive"):
+        quality.evaluate_model_isolated("model", {}, timeout_seconds=timeout)
+
+
 def test_bundled_quality_pack_is_versioned_bounded_and_attributed():
     pack, digest = quality.load_pack()
 
@@ -189,6 +195,21 @@ def test_collect_evidence_redacts_hardware_names(monkeypatch):
     assert "private GPU name" not in json.dumps(report)
     assert unloaded == ["model:one"]
     assert report["models"][0]["measurement_isolation"]["unloaded_after_run"] is True
+
+
+def test_collect_evidence_validates_engine_tags_and_speed_runs_before_work(monkeypatch):
+    monkeypatch.setattr(
+        quality,
+        "load_pack",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must validate first")),
+    )
+
+    with pytest.raises(quality.QualityEvaluationError, match="engine"):
+        quality.collect_evidence(["model"], _hardware(), engine="unknown")
+    with pytest.raises(quality.QualityEvaluationError, match="tags"):
+        quality.collect_evidence([123], _hardware())
+    with pytest.raises(quality.QualityEvaluationError, match="speed runs"):
+        quality.collect_evidence(["model"], _hardware(), speed_runs=0)
 
 
 def test_collect_evidence_calls_on_model_start_once_per_tag_in_order(monkeypatch):
@@ -1261,7 +1282,7 @@ def test_ensure_model_unloaded_never_polls_indefinitely(monkeypatch):
     result = quality.ensure_model_unloaded("big:latest", max_wait_seconds=3, poll_interval_seconds=1)
 
     assert result is False
-    assert slept == [1, 1, 1]  # exactly bounded, not unbounded
+    assert slept == pytest.approx([1, 1, 1])  # exactly bounded, not unbounded
 
 
 def test_ensure_model_unloaded_treats_unreachable_daemon_as_not_confirmed(monkeypatch):
@@ -1282,6 +1303,19 @@ def test_ensure_model_unloaded_calls_ollamas_own_stop_api_not_a_process_kill(mon
     quality.ensure_model_unloaded("big:latest")
 
     assert calls == ["big:latest"]  # only Ollama's own keep_alive=0 endpoint, never a subprocess signal
+
+
+@pytest.mark.parametrize(
+    ("max_wait", "poll_interval"),
+    [(float("nan"), 1), (1, 0), (1, float("inf")), (True, 1)],
+)
+def test_ensure_model_unloaded_rejects_unbounded_polling_inputs(max_wait, poll_interval):
+    with pytest.raises(ValueError):
+        quality.ensure_model_unloaded(
+            "big:latest",
+            max_wait_seconds=max_wait,
+            poll_interval_seconds=poll_interval,
+        )
 
 
 def test_model_is_loaded_true_when_tag_present_in_api_ps(monkeypatch):
@@ -1462,6 +1496,23 @@ def test_generate_lmstudio_omits_timing_fields_when_stats_missing(monkeypatch):
 
     assert response == {"response": "ok"}
     assert quality._tokens_per_second(response) is None
+
+
+def test_generate_lmstudio_ignores_non_finite_generation_time(monkeypatch):
+    monkeypatch.setattr(
+        quality,
+        "_lmstudio_request_json",
+        lambda *a, **k: {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 10},
+            "stats": {"generation_time": float("inf")},
+        },
+    )
+    pack, _digest = quality.load_pack()
+
+    response = quality._generate_lmstudio("m", "hi", pack["generation"], 64, 1234)
+
+    assert response == {"response": "ok", "eval_count": 10}
 
 
 def test_lmstudio_request_json_classifies_connect_timeout_as_ollama_unavailable(monkeypatch):

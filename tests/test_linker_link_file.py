@@ -40,6 +40,22 @@ def test_ownership_record_stays_case_sensitive_off_windows(monkeypatch):
     assert linker._ownership_record(queried_path) is None
 
 
+def test_manifest_helpers_tolerate_corrupt_json_shapes():
+    malformed = {"layers": [None, "bad", {}, {"digest": 1}], "config": []}
+
+    assert linker._manifest_blob_digests(malformed) == set()
+    assert linker._manifest_model_layer_sha256(malformed) is None
+
+
+def test_manifest_blob_digests_rejects_path_like_digest_names():
+    manifest = {
+        "layers": [{"digest": "../../outside"}],
+        "config": {"digest": "sha256:valid"},
+    }
+
+    assert linker._manifest_blob_digests(manifest) == {"sha256-valid"}
+
+
 def test_link_file_creates_symlink_by_default(isolated_omm_home, tmp_path):
     src = tmp_path / "model.gguf"
     src.write_bytes(b"weights")

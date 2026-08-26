@@ -95,6 +95,16 @@ def test_gguf_reader_skips_large_scalar_arrays_without_allocating_them(tmp_path)
     assert read_gguf_metadata(path, {"wanted"}) == {}
 
 
+def test_gguf_reader_rejects_pathologically_nested_arrays():
+    nested_value = struct.pack("<IQB", 0, 1, 7)
+    for _ in range(65):
+        nested_value = struct.pack("<IQ", 9, 1) + nested_value
+    data = _gguf_bytes([_gguf_scalar("ignored", 9, nested_value)])
+
+    with pytest.raises(ValueError, match="nested too deeply"):
+        read_gguf_metadata_bytes(data, {"wanted"})
+
+
 def test_fixed_contribute_profile_is_independent_of_live_headroom():
     candidate = {"filename": "model-1B-Q4.gguf", "size_bytes": int(0.75 * 1024**3)}
 

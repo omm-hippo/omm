@@ -22,7 +22,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.progress import (
@@ -50,6 +50,7 @@ _err_console = Console(stderr=True, highlight=False)
 
 _RETRY_DELAYS = [1, 1, 3, 5, 10, 10, 10, 10, 10]
 _MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
+_MAX_REDIRECTS = 5
 
 
 class DownloadError(Exception):
@@ -70,18 +71,41 @@ class InsufficientDiskSpaceError(DownloadError):
     pass
 
 
+class _RetryableDownloadError(DownloadError):
+    """A structurally valid response whose body was cut short in transit."""
+
+
 def _https_get(url: str, **kwargs):
     """GET without permitting an HTTPS request to downgrade on redirect."""
     import requests
 
-    if urlparse(url).scheme.lower() != "https":
-        raise DownloadError(f"Refusing non-HTTPS download URL: {url}")
-    response = requests.get(url, **kwargs)
-    final_url = str(getattr(response, "url", url))
-    if urlparse(final_url).scheme.lower() != "https":
+    current_url = url
+    for redirect_count in range(_MAX_REDIRECTS + 1):
+        if urlparse(current_url).scheme.lower() != "https":
+            kind = (
+                "non-HTTPS download URL"
+                if redirect_count == 0
+                else "HTTPS-to-HTTP download redirect"
+            )
+            raise DownloadError(f"Refusing {kind}: {current_url}")
+        response = requests.get(current_url, allow_redirects=False, **kwargs)
+        location = response.headers.get("Location")
+        if response.status_code not in {301, 302, 303, 307, 308} or not location:
+            final_url = str(getattr(response, "url", current_url))
+            if urlparse(final_url).scheme.lower() != "https":
+                response.close()
+                raise DownloadError(f"Refusing HTTPS-to-HTTP download redirect: {final_url}")
+            return response
+        if redirect_count == _MAX_REDIRECTS:
+            response.close()
+            raise DownloadError(f"Download exceeded {_MAX_REDIRECTS} redirects.")
+        next_url = urljoin(str(getattr(response, "url", current_url)), location)
         response.close()
-        raise DownloadError(f"Refusing HTTPS-to-HTTP download redirect: {final_url}")
-    return response
+        if urlparse(next_url).scheme.lower() != "https":
+            raise DownloadError(f"Refusing HTTPS-to-HTTP download redirect: {next_url}")
+        current_url = next_url
+
+    raise DownloadError(f"Download exceeded {_MAX_REDIRECTS} redirects.")
 
 
 def _replace_with_retry(part_path: Path, dest: Path, attempts: int = 8) -> None:
@@ -146,6 +170,30 @@ def _write_sidecar(
             f,
         )
     tmp.replace(sidecar_path)
+
+
+def _valid_parallel_state(state: object, total_size: int) -> bool:
+    """Reject corrupt/tampered range maps before they control file writes."""
+    if not isinstance(state, dict) or state.get("total_size") != total_size:
+        return False
+    ranges = state.get("ranges")
+    if not isinstance(ranges, list) or not 1 <= len(ranges) <= 128:
+        return False
+    expected_start = 0
+    for item in ranges:
+        if not isinstance(item, dict):
+            return False
+        start, end, done = item.get("start"), item.get("end"), item.get("done")
+        if any(
+            not isinstance(value, int) or isinstance(value, bool)
+            for value in (start, end, done)
+        ):
+            return False
+        length = end - start + 1
+        if start != expected_start or length <= 0 or not 0 <= done <= length:
+            return False
+        expected_start = end + 1
+    return expected_start == total_size
 
 
 @dataclass
@@ -328,8 +376,6 @@ def _download_range_worker(
     errors: list[Exception],
     stop_check: Callable[[], bool] | None,
 ) -> None:
-    import requests
-
     start = range_state["start"]
     end = range_state["end"]
     resume_offset = start + range_state["done"]
@@ -405,7 +451,7 @@ def _download_range_worker(
                 if stop_check is not None and stop_check():
                     raise DownloadCancelled("interrupted by user")
         if written != expected_len:
-            raise DownloadError(
+            raise _RetryableDownloadError(
                 f"Range bytes={resume_offset}-{end} returned {written} bytes; "
                 f"expected {expected_len}."
             )
@@ -485,6 +531,7 @@ def _run_range_workers(
 
     _replace_with_retry(part_path, dest)
     sidecar_path.unlink(missing_ok=True)
+    _part_metadata_path(part_path).unlink(missing_ok=True)
 
 
 def _download_parallel(
@@ -501,6 +548,7 @@ def _download_parallel(
     no_color: bool = False,
 ) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
+    _part_metadata_path(part_path).unlink(missing_ok=True)
     with part_path.open("wb") as f:
         f.truncate(total_size)
 
@@ -554,9 +602,8 @@ def _download_single_stream(
     no_color: bool = False,
     allow_clean_restart: bool = True,
 ) -> None:
-    import requests
-
     dest.parent.mkdir(parents=True, exist_ok=True)
+    _sidecar_path(part_path).unlink(missing_ok=True)
     meta_path = _part_metadata_path(part_path)
     resume_pos = part_path.stat().st_size if part_path.exists() else 0
     resume_etag: str | None = None
@@ -593,6 +640,7 @@ def _download_single_stream(
         expected_response_bytes = final_total
     elif resp.status_code == 416:
         if not resume_pos:
+            resp.close()
             raise DownloadError(f"Download failed: HTTP 416 for {url}")
         resp.close()
         part_path.unlink(missing_ok=True)
@@ -607,7 +655,11 @@ def _download_single_stream(
             allow_clean_restart=False,
         )
     elif resp.status_code in (200, 206):
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except BaseException:
+            resp.close()
+            raise
         if resp.status_code == 206:
             match = re.fullmatch(
                 r"bytes (\d+)-(\d+)/(\d+)",
@@ -656,50 +708,56 @@ def _download_single_stream(
             expected_response_bytes = final_total
             mode = "wb"
     else:
+        resp.close()
         raise DownloadError(f"Download failed: HTTP {resp.status_code} for {url}")
 
-    if mode == "wb":
-        with part_path.open("wb"):
-            pass
-    _write_resume_metadata(
-        meta_path,
-        url,
-        resume_etag if mode == "ab" else _strong_etag(resp.headers),
-        final_total,
-    )
+    try:
+        if mode == "wb":
+            with part_path.open("wb"):
+                pass
+        _write_resume_metadata(
+            meta_path,
+            url,
+            resume_etag if mode == "ab" else _strong_etag(resp.headers),
+            final_total,
+        )
+    except BaseException:
+        resp.close()
+        raise
     written = 0
 
-    with _progress(quiet=quiet, no_color=no_color) as progress:
-        task = progress.add_task(
-            "download",
-            total=final_total or None,
-            completed=resume_pos if mode == "ab" else 0,
-            filename=dest.name,
-        )
-        with part_path.open("ab") as f:
-            for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
-                if chunk:
-                    try:
-                        f.write(chunk)
-                    except OSError as e:
-                        if e.errno == errno.ENOSPC:
-                            raise InsufficientDiskSpaceError(
-                                f"Not enough disk space to download {dest.name}.",
-                                fix="Free up disk space and retry.",
-                            ) from e
-                        raise
-                    written += len(chunk)
-                    progress.update(task, advance=len(chunk))
-                if stop_check is not None and stop_check():
-                    raise DownloadCancelled("interrupted by user")
-
-    resp.close()
+    try:
+        with _progress(quiet=quiet, no_color=no_color) as progress:
+            task = progress.add_task(
+                "download",
+                total=final_total or None,
+                completed=resume_pos if mode == "ab" else 0,
+                filename=dest.name,
+            )
+            with part_path.open("ab") as f:
+                for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
+                    if chunk:
+                        try:
+                            f.write(chunk)
+                        except OSError as e:
+                            if e.errno == errno.ENOSPC:
+                                raise InsufficientDiskSpaceError(
+                                    f"Not enough disk space to download {dest.name}.",
+                                    fix="Free up disk space and retry.",
+                                ) from e
+                            raise
+                        written += len(chunk)
+                        progress.update(task, advance=len(chunk))
+                    if stop_check is not None and stop_check():
+                        raise DownloadCancelled("interrupted by user")
+    finally:
+        resp.close()
     if expected_response_bytes is not None and written != expected_response_bytes:
-        raise DownloadError(
+        raise _RetryableDownloadError(
             f"Download returned {written} bytes; expected {expected_response_bytes}."
         )
     if final_total is not None and part_path.stat().st_size != final_total:
-        raise DownloadError(
+        raise _RetryableDownloadError(
             f"Downloaded file is {part_path.stat().st_size} bytes; "
             f"expected {final_total}."
         )
@@ -725,6 +783,7 @@ def _attempt_download(
         total_size, supports_ranges, strong_etag = probed
         if (
             isinstance(state, dict)
+            and _valid_parallel_state(state, total_size)
             and supports_ranges
             and strong_etag is not None
             and state.get("url") == url
@@ -803,9 +862,11 @@ def _is_retryable_network_error(exc: BaseException) -> bool:
         requests.exceptions.Timeout,
         requests.exceptions.ChunkedEncodingError,
     )
-    if isinstance(exc, network_errors):
+    if isinstance(exc, (*network_errors, _RetryableDownloadError)):
         return True
-    return isinstance(exc, DownloadError) and isinstance(exc.__cause__, network_errors)
+    return isinstance(exc, DownloadError) and isinstance(
+        exc.__cause__, (*network_errors, _RetryableDownloadError)
+    )
 
 
 def _sleep_with_stop_check(seconds: float, stop_check: Callable[[], bool] | None) -> None:
@@ -850,8 +911,7 @@ def download_file(
     if part_path.is_symlink():
         raise DownloadError(f"Refusing symlinked partial download path: {part_path}.")
     last_error: Exception | None = None
-    if no_color:
-        _err_console.no_color = True
+    _err_console.no_color = no_color
 
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:

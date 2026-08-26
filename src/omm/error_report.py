@@ -163,7 +163,7 @@ def enabled(config_data: dict[str, Any] | None = None) -> bool:
 # user component) is left alone.
 _POSIX_HOME_RE = re.compile(r"(?<![\w./])/(?:Users|home)/[^/\\\s:'\"]+")
 _WINDOWS_HOME_RE = re.compile(
-    r"(?<![\w\\/])[A-Za-z]:\\Users\\[^\\/\s:'\"]+",
+    r"(?<![\w\\/])[A-Za-z]:\\Users\\[^\\/:\"\r\n]+(?=\\|$)",
     re.IGNORECASE,
 )
 

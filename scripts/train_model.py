@@ -40,6 +40,7 @@ from omm.featurize import (  # noqa: E402
     candidate_parameter_count_billions,
     candidate_quant_bits,
     estimate_model_size_gb,
+    is_mmproj_filename,
     parse_chip_score,
 )
 from omm.atomic import atomic_write_text, locked  # noqa: E402
@@ -129,10 +130,17 @@ def is_firebase_realtime_database_json_url(url: str) -> bool:
     is_firebase_host = hostname.endswith(".firebaseio.com") or hostname.endswith(
         ".firebasedatabase.app"
     )
-    return is_firebase_host and parsed.path.endswith(".json")
+    return parsed.scheme == "https" and is_firebase_host and parsed.path.endswith(".json")
 
 
 def fetch_real_rows(url: str = TELEMETRY_URL) -> list[dict]:
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    if not (
+        parsed.scheme == "https"
+        or (parsed.scheme == "http" and hostname in {"127.0.0.1", "localhost", "::1"})
+    ):
+        raise ValueError("telemetry URL must use HTTPS (HTTP is allowed only for loopback)")
     token = os.environ.get("LOCALFIT_ADMIN_TOKEN")
     # Firebase RTDB JSON endpoints are public-read in this workflow.  Avoid
     # sending a configured admin credential to that third-party URL.
@@ -141,8 +149,13 @@ def fetch_real_rows(url: str = TELEMETRY_URL) -> list[dict]:
         if token and not is_firebase_realtime_database_json_url(url)
         else {}
     )
+    params = (
+        {"orderBy": '"$key"', "limitToLast": MAX_REAL_ROWS}
+        if is_firebase_realtime_database_json_url(url)
+        else {"limit": MAX_REAL_ROWS}
+    )
     try:
-        resp = requests.get(url, headers=headers, timeout=30)
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
         resp.raise_for_status()
         data = resp.json()
     except (requests.RequestException, ValueError) as e:
@@ -174,23 +187,33 @@ def load_telemetry_file(path: Path) -> list[dict]:
                 row = json.loads(line)
             except json.JSONDecodeError as error:
                 raise ValueError(f"{path}:{line_number} is not valid JSON") from error
-            if isinstance(row, dict):
-                rows.append(row)
+            if not isinstance(row, dict):
+                raise ValueError(f"{path}:{line_number} must be a JSON object")
+            rows.append(row)
         return rows
     if isinstance(payload, dict):
         if isinstance(payload.get("benchmarks"), list):
-            return [row for row in payload["benchmarks"] if isinstance(row, dict)]
+            if any(not isinstance(row, dict) for row in payload["benchmarks"]):
+                raise ValueError(f"{path} benchmarks must contain only objects")
+            return payload["benchmarks"]
         # A single benchmark event is distinguished from Firebase's push-ID
-        # mapping by the required measurement field.
-        if "tokens_per_sec" in payload:
+        # mapping by its schema marker. Failure events deliberately have no
+        # tokens_per_sec, so using that field alone silently dropped them.
+        if "benchmark_version" in payload:
             return [payload]
-        return [row for row in payload.values() if isinstance(row, dict)]
+        if any(not isinstance(row, dict) for row in payload.values()):
+            raise ValueError(f"{path} Firebase mapping values must be objects")
+        return list(payload.values())
     if isinstance(payload, list):
-        return [row for row in payload if isinstance(row, dict)]
+        if any(not isinstance(row, dict) for row in payload):
+            raise ValueError(f"{path} benchmark list must contain only objects")
+        return payload
     raise ValueError(f"{path} must contain a JSON object, list, or JSONL records")
 
 
 def _bounded_number(value, minimum: float, maximum: float) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -372,16 +395,28 @@ def _extract_features_and_reason(
     if engine not in ("ollama", "llama.cpp", "lmstudio"):
         return None, None, "unsupported_engine"
     benchmark_version = row.get("benchmark_version")
-    if benchmark_version not in (None, 1, 2, 3, 4, 5, 6, 7, 8, 9):
+    if benchmark_version is not None and (
+        isinstance(benchmark_version, bool)
+        or not isinstance(benchmark_version, int)
+        or benchmark_version not in range(1, 10)
+    ):
         return None, None, "unsupported_schema"
 
-    tokens_per_sec = _bounded_number(row.get("tokens_per_sec"), 0.0, 10_000.0)
-    ram_gb = _bounded_number(row.get("ram_gb"), 1.0, 1024.0)
-    vram_gb = _bounded_number(row.get("vram_gb"), 0.0, 512.0)
-    gpu_tflops = _bounded_number(row.get("gpu_tflops"), 0.0, 1000.0)
     # "direct" = the explicit-metadata schema (v6+), as opposed
     # to the legacy name-parsing fallback used by v1-v5.
     is_direct = benchmark_version in (6, 7, 8, 9)
+    number_parser = _direct_bounded_number if is_direct else _bounded_number
+    tokens_per_sec = number_parser(row.get("tokens_per_sec"), 0.0, 10_000.0)
+    ram_gb = number_parser(row.get("ram_gb"), 1.0, 1024.0)
+    vram_gb = number_parser(row.get("vram_gb"), 0.0, 512.0)
+    gpu_tflops = number_parser(row.get("gpu_tflops"), 0.0, 1000.0)
+    if not isinstance(row.get("unified_memory"), bool):
+        return None, None, "invalid_measurement"
+    if is_direct and (
+        (row.get("vram_gb") is not None and vram_gb is None)
+        or (row.get("gpu_tflops") is not None and gpu_tflops is None)
+    ):
+        return None, None, "invalid_measurement"
     if is_direct:
         required_runtime = (
             "runtime_profile", "context_length", "gpu_offload_percent", "cpu_threads", "num_batch",
@@ -402,6 +437,11 @@ def _extract_features_and_reason(
     if (require_speed and tokens_per_sec is None) or ram_gb is None:
         return None, None, "invalid_measurement"
     if None in (context_length, gpu_offload_percent, cpu_threads, num_batch):
+        return None, None, "invalid_runtime"
+    if is_direct and not all(
+        value.is_integer()
+        for value in (context_length, gpu_offload_percent, cpu_threads, num_batch)
+    ):
         return None, None, "invalid_runtime"
     if require_speed and benchmark_version in (4, 5, 6, 7, 8, 9):
         if is_direct and any(
@@ -529,7 +569,9 @@ def _extract_features_and_reason(
             or len(row["client_version"]) > 100
         ):
             return None, None, "invalid_model_metadata"
-        size_bytes = _bounded_number(row.get("model_size_bytes"), 1.0, 10**15)
+        size_bytes = _direct_bounded_number(row.get("model_size_bytes"), 1.0, 10**15)
+        if row.get("model_size_bytes") is not None and size_bytes is None:
+            return None, None, "invalid_model_metadata"
         model_size_gb = (
             size_bytes / (1024**3)
             if size_bytes is not None
@@ -557,8 +599,14 @@ def _extract_features_and_reason(
         cpu_tier = _direct_bounded_number(row.get("cpu_tier"), 0.0, 10.0)
         if cpu_score is None or cpu_tier is None:
             return None, None, "missing_cpu_metadata"
-        gpu_score = _direct_bounded_number(row.get("gpu_score"), 0.0, 99_999.0) or 0.0
-        gpu_tier = _direct_bounded_number(row.get("gpu_tier"), 0.0, 10.0) or 0.0
+        gpu_score = _direct_bounded_number(row.get("gpu_score"), 0.0, 99_999.0)
+        gpu_tier = _direct_bounded_number(row.get("gpu_tier"), 0.0, 10.0)
+        if row.get("gpu_score") is not None and gpu_score is None:
+            return None, None, "invalid_gpu_metadata"
+        if row.get("gpu_tier") is not None and gpu_tier is None:
+            return None, None, "invalid_gpu_metadata"
+        gpu_score = gpu_score or 0.0
+        gpu_tier = gpu_tier or 0.0
     elif is_direct:
         cpu_model = row.get("cpu_model")
         if not isinstance(cpu_model, str) or not cpu_model.strip():
@@ -841,11 +889,12 @@ def real_rows_to_training_data_with_audit(
             direct_v9_groups.add(group_key)
         samples = groups.setdefault(group_key, [])
         group_row_counts[group_key] = group_row_counts.get(group_key, 0) + 1
-        if len(samples) < 50:
-            samples.append(tokens_per_sec)
-            samples_used += 1
-        else:
-            samples_capped += 1
+        # MAX_REAL_ROWS already caps the complete corpus at 5,000 rows. Keep
+        # every accepted value within that bound: retaining only the first 50
+        # made a configuration's median depend on source ordering and allowed
+        # an early burst to permanently crowd out later measurements.
+        samples.append(tokens_per_sec)
+        samples_used += 1
 
     # Statistical outlier pass (issue #134). Deliberately run on the
     # per-configuration medians rather than on individual rows: the median
@@ -1115,7 +1164,7 @@ def train_artifact(
     )
     model.fit(X, y, sample_weight=sample_weight)
     candidates = load_candidates()
-    return {
+    artifact = {
         "model_version": 4,
         "feature_schema_version": 1,
         "trained_at": datetime.now(timezone.utc).isoformat(),
@@ -1131,6 +1180,8 @@ def train_artifact(
         "trees": [export_node(estimator.tree_, 0) for estimator in model.estimators_],
         "candidates": candidates,
     }
+    validate_artifact(artifact, FEATURE_ORDER)
+    return artifact
 
 
 @functools.lru_cache(maxsize=1)
@@ -1140,14 +1191,38 @@ def load_candidates() -> list[dict]:
     # same static published/candidates.json from disk.
     candidates_path = Path(__file__).resolve().parent.parent / "published" / "candidates.json"
     if candidates_path.exists():
-        return json.loads(candidates_path.read_text(encoding="utf-8"))
-    print("Warning: no published/candidates.json found, falling back to curated index only.")
-    from omm.hub import CURATED_INDEX
+        candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
+    else:
+        print("Warning: no published/candidates.json found, falling back to curated index only.")
+        from omm.hub import CURATED_INDEX
 
-    return [
-        {"name": name, "repo_id": repo_id, "filename": filename, "description": ""}
-        for name, (repo_id, filename) in CURATED_INDEX.items()
-    ]
+        candidates = [
+            {"name": name, "repo_id": repo_id, "filename": filename, "description": ""}
+            for name, (repo_id, filename) in CURATED_INDEX.items()
+        ]
+    if not isinstance(candidates, list):
+        raise ValueError("published candidates must be a list")
+    seen: set[tuple[str, str, str]] = set()
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            raise ValueError(f"candidate {index} must be an object")
+        for field in ("name", "repo_id", "filename"):
+            value = candidate.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"candidate {index} {field} must be a non-empty string")
+        if is_mmproj_filename(candidate["filename"]):
+            raise ValueError(f"candidate {index} is a multimodal projector, not a model")
+        provider = candidate.get("provider") or "huggingface"
+        if provider not in {"huggingface", "modelscope"}:
+            raise ValueError(f"candidate {index} provider is unsupported")
+        description = candidate.get("description")
+        if description is not None and not isinstance(description, str):
+            raise ValueError(f"candidate {index} description must be a string")
+        key = (provider, candidate["repo_id"], candidate["filename"])
+        if key in seen:
+            raise ValueError(f"candidate {index} duplicates an earlier model")
+        seen.add(key)
+    return candidates
 
 
 def _plausibility_summary(audit: dict) -> str:
@@ -1198,6 +1273,15 @@ def main() -> None:
     if args.quality_gate:
         if args.baseline is None:
             raise ValueError("--baseline is required with --quality-gate")
+        # Every quality-gate exit path may republish this file. Validate it
+        # before the data-volume check so a malformed incumbent is never copied
+        # to the public destination merely because telemetry is sparse.
+        try:
+            baseline_text = args.baseline.read_text(encoding="utf-8")
+            baseline = json.loads(baseline_text)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"could not read baseline artifact {args.baseline}: {error}") from error
+        validate_artifact(baseline, FEATURE_ORDER)
         # Validate before constructing a candidate or touching the destination.
         try:
             validate_dataset(
@@ -1208,12 +1292,6 @@ def main() -> None:
         except InsufficientTelemetryError as error:
             # The telemetry corpus hasn't grown enough yet, not a code bug.
             # Republish the baseline unchanged rather than failing CI.
-            try:
-                baseline_text = args.baseline.read_text(encoding="utf-8")
-            except OSError as read_error:
-                raise ValueError(
-                    f"could not read baseline artifact {args.baseline}: {read_error}"
-                ) from read_error
             print(f"Quality gate: {error}. Keeping current model unchanged.")
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with locked(args.output):
@@ -1234,12 +1312,6 @@ def main() -> None:
                     + "\n",
                 )
             return
-        try:
-            baseline_text = args.baseline.read_text(encoding="utf-8")
-            baseline = json.loads(baseline_text)
-        except (OSError, ValueError) as error:
-            raise ValueError(f"could not read baseline artifact {args.baseline}: {error}") from error
-        validate_artifact(baseline, FEATURE_ORDER)
         train_X, train_y, holdout_X, holdout_y = stable_holdout_split(
             real_X, real_y, args.holdout_fraction
         )

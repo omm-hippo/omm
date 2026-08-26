@@ -27,6 +27,7 @@ async function request(path, method, body, { auth = true } = {}) {
     method,
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(5_000),
   });
   let payload = null;
   try {

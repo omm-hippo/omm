@@ -94,6 +94,32 @@ def test_scan_ollama_preserves_nonlibrary_namespace_in_runtime_name(tmp_path, mo
     assert found[0].display_name == "acme/llama3:latest"
 
 
+def test_scan_ollama_skips_malformed_manifest_shapes(tmp_path, monkeypatch):
+    models_dir = tmp_path / "ollama"
+    manifests_root = models_dir / "manifests"
+    manifests_root.mkdir(parents=True)
+    (manifests_root / "list.json").write_text("[]")
+    malformed_dir = manifests_root / "registry.ollama.ai" / "library" / "bad"
+    malformed_dir.mkdir(parents=True)
+    (malformed_dir / "latest").write_text(
+        json.dumps(
+            {
+                "layers": [
+                    None,
+                    {"mediaType": "application/vnd.ollama.image.model"},
+                    {
+                        "mediaType": "application/vnd.ollama.image.model",
+                        "digest": "sha256:not-a-digest",
+                    },
+                ]
+            }
+        )
+    )
+    monkeypatch.setattr(scan_import.linker, "ollama_models_dir", lambda: models_dir)
+
+    assert scan_import.scan_ollama() == []
+
+
 def test_scan_lmstudio_skips_symlinks(tmp_path, monkeypatch):
     models_dir = tmp_path / "lmstudio" / "models"
     real_dir = models_dir / "org" / "repo"
@@ -283,6 +309,34 @@ def test_adopt_group_rejects_primary_bytes_changed_after_scan(isolated_omm_home,
 
     assert external.read_bytes() == b"replacement bytes"
     assert not list(tmp_path.glob(".model.gguf.omm-import-*"))
+
+
+def test_adopt_group_does_not_overwrite_second_level_name_collision(
+    isolated_omm_home, tmp_path
+):
+    payload = b"new model"
+    external = tmp_path / "model.gguf"
+    external.write_bytes(payload)
+    digest = scan_import.sha256_file(external)
+    first_collision = scan_import.MODELS_DIR / "model.gguf"
+    second_collision = scan_import.MODELS_DIR / f"{digest[:12]}-model.gguf"
+    first_collision.write_bytes(b"first existing model")
+    second_collision.write_bytes(b"second existing model")
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "import", "model.gguf", external, len(payload), digest
+            )
+        ],
+    )
+
+    result = scan_import.adopt_group(group)
+
+    assert result.filename == f"{digest[:12]}-1-model.gguf"
+    assert first_collision.read_bytes() == b"first existing model"
+    assert second_collision.read_bytes() == b"second existing model"
+    assert (scan_import.MODELS_DIR / result.filename).read_bytes() == payload
 
 
 def test_adopt_group_rejects_primary_swapped_to_symlink(isolated_omm_home, tmp_path):

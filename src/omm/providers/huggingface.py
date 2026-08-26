@@ -4,6 +4,7 @@ git history for prior behavior if something looks unfamiliar."""
 
 from __future__ import annotations
 
+import math
 from urllib.parse import quote
 
 from omm.providers.base import ModelResolutionError
@@ -47,8 +48,18 @@ def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
 
 
 def _parse_gguf_total_params(payload: dict) -> float | None:
-    total_params = payload.get("gguf", {}).get("total")
-    return total_params / 1e9 if total_params else None
+    gguf = payload.get("gguf", {})
+    if not isinstance(gguf, dict):
+        return None
+    total_params = gguf.get("total")
+    if (
+        isinstance(total_params, (int, float))
+        and not isinstance(total_params, bool)
+        and math.isfinite(total_params)
+        and total_params > 0
+    ):
+        return total_params / 1e9
+    return None
 
 
 def fetch_repo_param_count_b(repo_id: str) -> float | None:
@@ -65,7 +76,7 @@ def fetch_repo_param_count_b(repo_id: str) -> float | None:
         return None
     try:
         return _parse_gguf_total_params(resp.json())
-    except ValueError:
+    except (ValueError, TypeError, AttributeError):
         return None
 
 

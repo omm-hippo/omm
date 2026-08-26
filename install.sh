@@ -626,10 +626,26 @@ if [ "$verified_commit" != "$head_commit" ]; then
     git -C "$STAGING_DIR" checkout --detach --quiet "$verified_commit"
 fi
 SRC_DIR="$SOURCES_DIR/$verified_commit"
-if [ -d "$SRC_DIR" ]; then
-    rm -rf "$STAGING_DIR"
-else
-    mv "$STAGING_DIR" "$SRC_DIR"
+PREVIOUS_SRC_DIR=""
+if [ -e "$SRC_DIR" ] || [ -L "$SRC_DIR" ]; then
+    PREVIOUS_SRC_DIR="$SOURCES_DIR/replaced-$verified_commit-$$"
+    if [ -e "$PREVIOUS_SRC_DIR" ] || [ -L "$PREVIOUS_SRC_DIR" ]; then
+        rm -rf "$STAGING_DIR"
+        echo "Refusing to overwrite an existing source backup: $PREVIOUS_SRC_DIR" >&2
+        exit 1
+    fi
+    if ! mv "$SRC_DIR" "$PREVIOUS_SRC_DIR"; then
+        rm -rf "$STAGING_DIR"
+        echo "Could not move the previous source checkout aside." >&2
+        exit 1
+    fi
+fi
+if ! mv "$STAGING_DIR" "$SRC_DIR"; then
+    if [ -n "$PREVIOUS_SRC_DIR" ]; then
+        mv "$PREVIOUS_SRC_DIR" "$SRC_DIR" 2>/dev/null || true
+    fi
+    echo "Could not activate the freshly verified source checkout." >&2
+    exit 1
 fi
 EXPECTED_VERSION=$(sed -n 's/^version = "\([^"]*\)"[[:space:]]*$/\1/p' "$SRC_DIR/pyproject.toml" | head -n 1)
 if [ -z "$EXPECTED_VERSION" ]; then

@@ -162,6 +162,12 @@ def test_resolve_model_allows_safe_nested_provider_filename():
     assert resolved.filename == "quantized/model.gguf"
 
 
+@pytest.mark.parametrize("filename", ["CON.gguf", "aux/model.gguf", "dir./model.gguf"])
+def test_validate_model_filename_rejects_windows_reserved_components(filename):
+    with pytest.raises(ModelResolutionError, match="safe"):
+        hub.validate_model_filename(filename)
+
+
 @pytest.mark.parametrize(
     "provider", [["huggingface"], {"name": "huggingface"}, "unknown"]
 )

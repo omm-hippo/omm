@@ -11,7 +11,7 @@ from pathlib import Path
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from omm.atomic import atomic_write_text, locked
+from omm.atomic import atomic_write_bytes, atomic_write_text, locked
 from omm.config import CATALOG_HISTORY_DIR, RECOMMEND_MODEL_PATH
 
 
@@ -87,7 +87,7 @@ def archive_current_artifact(
         digest = sha256_bytes(content)
         destination = destination_dir / f"{digest}.json"
         if not destination.exists():
-            destination.write_bytes(content)
+            atomic_write_bytes(destination, content)
         if provenance is not None:
             provenance_destination = destination_dir / f"{digest}.provenance.json"
             if not provenance_destination.exists():
@@ -108,7 +108,13 @@ def snapshots(history_dir: Path | None = None) -> list[Path]:
         path for path in root.glob("*.json")
         if re.fullmatch(r"[0-9a-f]{64}\.json", path.name)
     ]
-    return sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
+    def modified_at(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return float("-inf")
+
+    return sorted(candidates, key=modified_at, reverse=True)
 
 
 def rollback(
@@ -120,33 +126,39 @@ def rollback(
     destination = artifact_path or RECOMMEND_MODEL_PATH
     current_hash = sha256_bytes(destination.read_bytes()) if destination.exists() else None
     selected = None
+    snapshot_content = None
     for path in snapshots(history_dir):
         if path.stem == current_hash:
             continue
-        if require_signed:
-            provenance_path = path.with_name(f"{path.stem}.provenance.json")
-            try:
+        provenance_path = path.with_name(f"{path.stem}.provenance.json")
+        try:
+            candidate_content = path.read_bytes()
+            payload = json.loads(candidate_content)
+            if not isinstance(payload, dict):
+                continue
+            if require_signed:
                 provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
                 verify_signed_artifact(
-                    path.read_bytes(), provenance.get("manifest"), provenance.get("public_key")
+                    candidate_content,
+                    provenance.get("manifest"),
+                    provenance.get("public_key"),
                 )
-            except (OSError, ValueError, TypeError, AttributeError):
-                continue
+        except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
+            # A partial/corrupt newest snapshot must not hide an older valid
+            # rollback point.
+            continue
         selected = path
+        snapshot_content = candidate_content
         break
-    if selected is None:
+    if selected is None or snapshot_content is None:
         raise FileNotFoundError("no previous catalog snapshot is available")
-    snapshot_text = selected.read_text(encoding="utf-8")
-    payload = json.loads(snapshot_text)
-    if not isinstance(payload, dict):
-        raise CatalogVerificationError("catalog snapshot is not a JSON object")
     archive_current_artifact(destination, history_dir, require_signed=require_signed)
     # Same lock + retrying replace predictor.py uses to write this same
     # path: a raw write_bytes()+replace() here would skip the
-    # PermissionError retry atomic_write_text already needed for Windows
+    # PermissionError retry the atomic writer already provides for Windows
     # AV/indexing transiently holding the destination open.
     with locked(destination):
-        atomic_write_text(destination, snapshot_text)
+        atomic_write_bytes(destination, snapshot_content)
         destination_provenance = destination.with_suffix(
             destination.suffix + ".provenance.json"
         )

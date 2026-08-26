@@ -17,6 +17,27 @@ def test_cached_remote_head_calls_fetch_on_cold_cache(isolated_omm_home):
     assert calls == ["main"]
 
 
+def test_non_object_cache_is_treated_as_empty(isolated_omm_home):
+    (isolated_omm_home / "update_check.json").write_text("[]")
+
+    assert version_check.cached_remote_head(lambda ref: "fresh") == "fresh"
+
+
+def test_future_cache_timestamp_is_not_treated_as_fresh(isolated_omm_home):
+    (isolated_omm_home / "update_check.json").write_text(
+        json.dumps(
+            {
+                "main": {
+                    "checked_at": time.time() + 3600,
+                    "remote_head": "future-value",
+                }
+            }
+        )
+    )
+
+    assert version_check.cached_remote_head(lambda ref: "fresh") == "fresh"
+
+
 def test_cached_remote_head_uses_cache_within_ttl(isolated_omm_home):
     (isolated_omm_home / "update_check.json").write_text(
         json.dumps({"main": {"checked_at": time.time(), "remote_head": "cached_sha"}})

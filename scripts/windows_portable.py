@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,8 @@ def project_version(pyproject: Path) -> str:
         project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
     except (KeyError, OSError, tomllib.TOMLDecodeError) as error:
         raise WindowsPortableError(f"cannot read project metadata from {pyproject}") from error
+    if not isinstance(project, dict):
+        raise WindowsPortableError("project metadata must be a table")
     if project.get("name") != DISTRIBUTION_NAME:
         raise WindowsPortableError(
             f"project name is {project.get('name')!r}, expected {DISTRIBUTION_NAME!r}"
@@ -127,7 +130,9 @@ def pyinstaller_command(
 def validate_executable(executable: Path, version: str) -> None:
     if not executable.is_file() or executable.is_symlink():
         raise WindowsPortableError(f"missing regular executable: {executable}")
-    if executable.read_bytes()[:2] != b"MZ":
+    with executable.open("rb") as stream:
+        prefix = stream.read(2)
+    if prefix != b"MZ":
         raise WindowsPortableError(f"{executable.name} is not a Windows executable")
 
     version_result = subprocess.run(
@@ -140,7 +145,7 @@ def validate_executable(executable: Path, version: str) -> None:
         timeout=120,
     )
     version_output = f"{version_result.stdout}\n{version_result.stderr}"
-    if f"omm {version}" not in version_output:
+    if f"omm {version}" not in {line.strip() for line in version_output.splitlines()}:
         raise WindowsPortableError(
             f"portable command did not report the expected version {version}"
         )
@@ -170,6 +175,9 @@ def build_windows_portable(version: str, output_dir: Path) -> Path:
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    executable = output_dir / EXECUTABLE_NAME
+    if executable.exists() or executable.is_symlink():
+        raise WindowsPortableError(f"refusing to overwrite existing executable: {executable}")
     with tempfile.TemporaryDirectory(prefix="omm-windows-portable-") as temporary:
         work_dir = Path(temporary)
         entry_script = work_dir / "omm_entry.py"
@@ -185,7 +193,6 @@ def build_windows_portable(version: str, output_dir: Path) -> Path:
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
 
-    executable = output_dir / EXECUTABLE_NAME
     validate_executable(executable, version)
     return executable
 
@@ -194,7 +201,7 @@ def _zip_info(name: str, mode: int) -> zipfile.ZipInfo:
     info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_DEFLATED
     info.create_system = 3
-    info.external_attr = mode << 16
+    info.external_attr = (stat.S_IFREG | mode) << 16
     return info
 
 
@@ -226,11 +233,14 @@ def package_windows_portable(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     archive = output_dir / f"omm-windows-x64-{version}.zip"
+    checksum = output_dir / f"{archive.name}.sha256"
+    for destination in (archive, checksum):
+        if destination.exists() or destination.is_symlink():
+            raise WindowsPortableError(f"refusing to overwrite existing artifact: {destination}")
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         bundle.writestr(_zip_info(EXECUTABLE_NAME, 0o755), executable_bytes)
         bundle.writestr(_zip_info(LICENSE_NAME, 0o644), license_bytes)
 
-    checksum = output_dir / f"{archive.name}.sha256"
     checksum.write_text(f"{sha256(archive)}  {archive.name}\n", encoding="ascii")
     verify_windows_archive(archive, version)
     return archive, checksum
@@ -253,6 +263,11 @@ def verify_windows_archive(archive: Path, version: str) -> None:
             raise WindowsPortableError(
                 f"archive contains {names!r}, expected exactly {expected!r}"
             )
+        for name in expected:
+            info = bundle.getinfo(name)
+            mode = info.external_attr >> 16
+            if info.is_dir() or (info.create_system == 3 and not stat.S_ISREG(mode)):
+                raise WindowsPortableError(f"archive entry is not a regular file: {name}")
         if bundle.read(EXECUTABLE_NAME)[:2] != b"MZ":
             raise WindowsPortableError("archive executable has no Windows MZ header")
         if not bundle.read(LICENSE_NAME).strip():

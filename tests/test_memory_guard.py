@@ -154,6 +154,35 @@ def test_recalculation_can_release_multiple_owned_models_until_safe():
     assert [resident.model_id for resident in result.unloaded] == ["large", "small"]
 
 
+def test_pool_specific_guard_unloads_the_resident_that_reclaims_binding_pool():
+    hardware = _hardware(
+        unified_memory=False,
+        ram_total_gb=32.0,
+        ram_available_gb=20.0,
+        vram_total_gb=8.0,
+        vram_free_gb=2.0,
+    )
+    residents = (
+        _resident("ram-only", size=10.0, ram_gb=10.0, vram_gb=0.0),
+        _resident("gpu", size=2.0, ram_gb=0.0, vram_gb=2.0),
+    )
+    plan = guard.plan_memory_guard(
+        3.0,
+        hardware,
+        residents,
+        required_ram_gb=1.0,
+        required_vram_gb=3.0,
+    )
+    runtime = _Runtime()
+
+    result = guard.execute_guard(
+        plan, "ask", runtime, consent=lambda _plan: True
+    )
+
+    assert result.allowed is True
+    assert [resident.model_id for resident in result.unloaded] == ["gpu"]
+
+
 @pytest.mark.parametrize(
     ("runtime", "reason"),
     [(_Runtime(unload=False), "unload_failed"), (_Runtime(still_resident=True), "unload_not_confirmed")],
@@ -290,6 +319,7 @@ def test_runtime_watcher_bounds_a_stuck_cancellation_callback():
     finally:
         release.set()
         watcher._thread.join(timeout=1)
+    assert watcher.cancelled is False
 
 
 def test_registry_ownership_is_required_and_model_names_are_not_guessed():

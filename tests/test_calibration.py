@@ -1,5 +1,8 @@
 import json
+import math
 import threading
+
+import pytest
 
 from omm import calibration
 from omm.hardware import HardwareInfo
@@ -45,6 +48,49 @@ def test_record_calibration_clamps_extreme_ratio(tmp_path):
         path=path,
     )
     assert factor == calibration.MAX_FACTOR
+
+
+def test_invalid_profile_shapes_and_nonfinite_values_fall_back_safely(tmp_path):
+    path = tmp_path / "calibration.json"
+    path.write_text("[]")
+    assert calibration.calibration_factor(_hardware(), path) == 1.0
+
+    key = calibration.hardware_bucket(_hardware())
+    path.write_text(
+        json.dumps({"schema_version": 1, "profiles": {key: {"factor": math.nan}}})
+    )
+    assert calibration.calibration_factor(_hardware(), path) == 1.0
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, True])
+def test_record_calibration_rejects_nonfinite_or_boolean_speeds(tmp_path, value):
+    with pytest.raises(ValueError, match="greater than zero"):
+        calibration.record_calibration(
+            _hardware(),
+            measured_tokens_per_sec=value,
+            predicted_tokens_per_sec=1,
+            path=tmp_path / "calibration.json",
+        )
+
+
+def test_corrupt_negative_sample_count_does_not_divide_by_zero(tmp_path):
+    path = tmp_path / "calibration.json"
+    key = calibration.hardware_bucket(_hardware())
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "profiles": {key: {"factor": 2.0, "sample_count": -1}},
+            }
+        )
+    )
+
+    assert calibration.record_calibration(
+        _hardware(),
+        measured_tokens_per_sec=30,
+        predicted_tokens_per_sec=20,
+        path=path,
+    ) == 1.5
 
 
 def test_record_calibration_concurrent_writers_do_not_lose_updates(tmp_path):

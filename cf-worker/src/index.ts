@@ -15,6 +15,9 @@ interface TelemetryRequestBody {
   nonce: number;
 }
 
+const MAX_REQUEST_BYTES = 64 * 1024;
+const MAX_EVENT_JSON_BYTES = 32 * 1024;
+
 function json(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -22,17 +25,61 @@ function json(body: unknown, status: number): Response {
   });
 }
 
-// `n || default` treats an explicitly-configured 0 as falsy and silently
-// replaces it with the default - only NaN (unset or non-numeric env var)
-// should fall back.
-function numberOrDefault(n: number, fallback: number): number {
-  return Number.isFinite(n) ? n : fallback;
+function boundedIntegerOrDefault(
+  raw: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number | null {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    return null;
+  }
+  return value;
 }
 
 function isRequestBody(value: unknown): value is TelemetryRequestBody {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
-  return typeof v.event_json === "string" && typeof v.timestamp === "number" && typeof v.nonce === "number";
+  return (
+    Object.keys(v).length === 3 &&
+    typeof v.event_json === "string" &&
+    typeof v.timestamp === "number" &&
+    Number.isSafeInteger(v.timestamp) &&
+    typeof v.nonce === "number" &&
+    Number.isSafeInteger(v.nonce) &&
+    v.nonce >= 0
+  );
+}
+
+async function readBoundedBody(request: Request): Promise<string | null> {
+  if (request.body === null) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > MAX_REQUEST_BYTES) {
+      try {
+        await reader.cancel();
+      } catch {
+        // The size decision is already final; stream cancellation is cleanup.
+      }
+      return null;
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
 }
 
 // FIREBASE_SERVICE_ACCOUNT_JSON is a static deploy-time secret - reparsing it
@@ -44,10 +91,20 @@ function loadServiceAccount(raw: string): ServiceAccount {
   if (cachedServiceAccount && cachedServiceAccount.raw === raw) {
     return cachedServiceAccount.parsed;
   }
-  const parsed = JSON.parse(raw) as ServiceAccount;
-  if (!parsed.client_email || !parsed.private_key) throw new Error("missing fields");
-  cachedServiceAccount = { raw, parsed };
-  return parsed;
+  const parsed = JSON.parse(raw) as unknown;
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    typeof (parsed as Record<string, unknown>).client_email !== "string" ||
+    !(parsed as Record<string, unknown>).client_email ||
+    typeof (parsed as Record<string, unknown>).private_key !== "string" ||
+    !(parsed as Record<string, unknown>).private_key
+  ) {
+    throw new Error("missing fields");
+  }
+  const serviceAccount = parsed as ServiceAccount;
+  cachedServiceAccount = { raw, parsed: serviceAccount };
+  return serviceAccount;
 }
 
 export default {
@@ -62,9 +119,18 @@ export default {
       return json({ error: "not found" }, 404);
     }
 
+    const declaredLength = Number(request.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) {
+      return json({ error: "request body too large" }, 413);
+    }
+
     let body: unknown;
     try {
-      body = await request.json();
+      const bodyText = await readBoundedBody(request);
+      if (bodyText === null) {
+        return json({ error: "request body too large" }, 413);
+      }
+      body = JSON.parse(bodyText);
     } catch {
       return json({ error: "invalid json body" }, 400);
     }
@@ -72,13 +138,19 @@ export default {
       return json({ error: "expected {event_json, timestamp, nonce}" }, 400);
     }
     const { event_json: eventJson, timestamp, nonce } = body;
+    if (new TextEncoder().encode(eventJson).byteLength > MAX_EVENT_JSON_BYTES) {
+      return json({ error: "event_json too large" }, 413);
+    }
 
-    const maxSkewMs = numberOrDefault(Number(env.POW_MAX_SKEW_MS), 300000);
+    const maxSkewMs = boundedIntegerOrDefault(env.POW_MAX_SKEW_MS, 300000, 0, 86_400_000);
+    const difficulty = boundedIntegerOrDefault(env.POW_DIFFICULTY_PREFIX_LENGTH, 5, 0, 64);
+    if (maxSkewMs === null || difficulty === null) {
+      return json({ error: "server misconfigured" }, 500);
+    }
     if (!isTimestampFresh(timestamp, maxSkewMs)) {
       return json({ error: "stale or future timestamp" }, 400);
     }
 
-    const difficulty = numberOrDefault(Number(env.POW_DIFFICULTY_PREFIX_LENGTH), 5);
     const powOk = await verifyProofOfWork(eventJson, timestamp, nonce, difficulty);
     if (!powOk) {
       return json({ error: "proof of work invalid" }, 400);

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager
-from typing import Callable, Iterator
+from typing import TYPE_CHECKING, Callable, Iterator
 
 import typer
 from rich.console import Console
@@ -24,6 +24,9 @@ from omm import config as config_mod
 from omm import linker
 from omm import theme
 from omm.hardware import calculate_memory_budget, scan_hardware
+
+if TYPE_CHECKING:
+    import questionary
 
 COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"
 
@@ -257,8 +260,15 @@ def run_engine_checklist(console: Console) -> list[str] | None:
         return question.ask()
 
 
-def install_selected_engines(console: Console, selected: list[str]) -> None:
+def install_selected_engines(console: Console, selected: list[str]) -> bool:
+    """Install automatable selections and report whether they succeeded.
+
+    Manual-only selections are guidance, not failed automated attempts. A real
+    installer failure returns False so callers do not print "Setup complete"
+    or exit successfully after the selected runner was not installed.
+    """
     specs_by_key = {spec.key: spec for spec in linker.ENGINES}
+    succeeded = True
     for key in selected:
         spec = specs_by_key[key]
         if not linker.has_automated_installer(key):
@@ -277,6 +287,9 @@ def install_selected_engines(console: Console, selected: list[str]) -> None:
         )
         style = "success" if result.status == "installed" else "error"
         console.print(result.message, style=style, markup=False, highlight=False)
+        if result.status != "installed":
+            succeeded = False
+    return succeeded
 
 
 def run_completion_step(console: Console) -> None:
@@ -330,7 +343,12 @@ def run_wizard(console: Console) -> None:
         # should retry next time instead of being marked done.
         raise typer.Abort()
     if selected:
-        install_selected_engines(console, selected)
+        if not install_selected_engines(console, selected):
+            console.print(
+                "[error]Setup stopped because a selected runner was not installed. "
+                "Fix the installer error above, then run `omm setup` again.[/error]"
+            )
+            raise typer.Exit(1)
     run_completion_step(console)
     console.print(
         "\n[success]Setup complete.[/success] "

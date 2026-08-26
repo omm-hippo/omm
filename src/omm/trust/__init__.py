@@ -77,11 +77,11 @@ def _git_version_ok() -> bool:
             errors="replace",
             timeout=5,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.TimeoutExpired, OSError):
         return False
     # "git version 2.43.0" (sometimes "2.43.0.windows.1" etc.)
     parts = result.stdout.split()
-    if len(parts) < 3:
+    if getattr(result, "returncode", 0) != 0 or len(parts) < 3:
         return False
     try:
         major, minor = (int(p) for p in parts[2].split(".")[:2])
@@ -101,14 +101,17 @@ def _signing_commit(repo_dir: Path, commit: str) -> str:
     the commit to verify; anything else (a direct single-parent commit, or
     an octopus merge) is verified as-is.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo_dir), "rev-list", "--parents", "-n", "1", commit],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "rev-list", "--parents", "-n", "1", commit],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return commit
     if result.returncode != 0:
         return commit
     parts = result.stdout.split()
@@ -137,6 +140,8 @@ def _verify_signature(
         )
     except subprocess.TimeoutExpired:
         return False, f"signature verification of {commit[:7]} timed out"
+    except OSError as error:
+        return False, f"signature verification of {commit[:7]} could not run: {error}"
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         return False, f"commit {commit[:7]} failed signature verification: {detail}"
@@ -183,10 +188,13 @@ def verified_install_commit(
 
 
 def _parents(repo_dir: Path, commit: str) -> list[str]:
-    result = subprocess.run(
-        ["git", "-C", str(repo_dir), "show", "-s", "--format=%P", commit],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "show", "-s", "--format=%P", commit],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
     return result.stdout.split() if result.returncode == 0 else []
 
 
@@ -202,7 +210,7 @@ def _deterministic_merge_tree_matches(repo_dir: Path, commit: str, parents: list
             ["git", "-C", str(repo_dir), "merge-tree", "--write-tree", *parents],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
         )
-    except subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return False
     merged_lines = merged_tree.stdout.splitlines()
     return (
@@ -230,6 +238,28 @@ def _verify_lineage_commit(
     return True, f"merge commit {commit[:7]} deterministically matches signed parent {parents[1][:7]}"
 
 
+def _is_ancestor(repo_dir: Path, ancestor: str, descendant: str) -> bool | None:
+    try:
+        result = subprocess.run(
+            [
+                "git", "-C", str(repo_dir), "merge-base", "--is-ancestor",
+                ancestor, descendant,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    return None
+
+
 def verify_update(
     repo_dir: Path,
     current_commit: str | None,
@@ -238,32 +268,25 @@ def verify_update(
 ) -> tuple[bool, str]:
     """Verify an update while safely following skipped trust rotations.
 
-    An exact target signature authenticates its tree directly. Otherwise,
-    every commit on the first-parent path from the installed commit is
-    verified. Unsigned two-parent merges are accepted only when their second
-    parent is trusted and ``git merge-tree`` reproduces the exact target tree.
+    An exact target signature authenticates its tree directly, except that an
+    already-installed descendant cannot be rolled back to an older signed
+    ancestor. Otherwise, every commit on the first-parent path from the
+    installed commit is verified. Unsigned two-parent merges are accepted
+    only when their second parent is trusted and ``git merge-tree`` reproduces
+    the exact target tree.
     """
     ok, direct_message = verify_commit(repo_dir, target_commit, allowed_signers)
+    if current_commit and target_commit != current_commit:
+        target_is_ancestor = _is_ancestor(repo_dir, target_commit, current_commit)
+        if target_is_ancestor is None:
+            return False, "could not compare target and installed commit ancestry"
+        if target_is_ancestor:
+            return False, "target commit is older than the installed commit"
     if ok or allowed_signers is None:
         return ok, direct_message
     if not current_commit:
         return False, direct_message
-
-    try:
-        ancestor = subprocess.run(
-            [
-                "git", "-C", str(repo_dir), "merge-base", "--is-ancestor",
-                current_commit, target_commit,
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return False, direct_message
-    if ancestor.returncode != 0:
+    if _is_ancestor(repo_dir, current_commit, target_commit) is not True:
         return False, direct_message
 
     try:
@@ -278,7 +301,7 @@ def verify_update(
             errors="replace",
             timeout=15,
         )
-    except subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return False, direct_message
     if lineage.returncode != 0:
         return False, direct_message
@@ -303,13 +326,16 @@ def verify_update(
             )
             if not verified:
                 return False, f"update trust chain stopped at {candidate[:7]}: {message}"
-            changed_anchor = subprocess.run(
-                [
-                    "git", "-C", str(repo_dir), "diff", "--quiet",
-                    previous, candidate, "--", TRUST_ANCHOR_REPO_PATH,
-                ],
-                capture_output=True, timeout=10,
-            )
+            try:
+                changed_anchor = subprocess.run(
+                    [
+                        "git", "-C", str(repo_dir), "diff", "--quiet",
+                        previous, candidate, "--", TRUST_ANCHOR_REPO_PATH,
+                    ],
+                    capture_output=True, timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return False, f"could not inspect trust anchor change at {candidate[:7]}"
             previous = candidate
             if changed_anchor.returncode == 0:
                 continue
@@ -326,6 +352,8 @@ def verify_update(
                 )
             except subprocess.TimeoutExpired:
                 return False, f"reading trust anchor from {candidate[:7]} timed out"
+            except OSError as error:
+                return False, f"reading trust anchor from {candidate[:7]} failed: {error}"
             if anchor_at_commit.returncode != 0 or not anchor_at_commit.stdout.strip():
                 detail = anchor_at_commit.stderr.decode(errors="replace").strip()
                 return False, f"trusted commit {candidate[:7]} has no usable trust anchor: {detail}"

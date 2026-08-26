@@ -121,6 +121,41 @@ def test_scan_survives_psutil_permission_denied(monkeypatch):
     assert info.ram_available_gb == 0.0
 
 
+def test_scan_survives_psutil_specific_errors(monkeypatch):
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hardware.platform, "release", lambda: "6.8")
+    monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(hardware.platform, "processor", lambda: "CPU")
+    monkeypatch.setattr(
+        hardware.psutil,
+        "virtual_memory",
+        lambda: (_ for _ in ()).throw(hardware.psutil.AccessDenied()),
+    )
+    monkeypatch.setattr(
+        hardware.psutil,
+        "cpu_count",
+        lambda logical: (_ for _ in ()).throw(hardware.psutil.AccessDenied()),
+    )
+    monkeypatch.setattr(hardware, "_scan_nvidia_vram", lambda: (None, None, None))
+    monkeypatch.setattr(hardware, "_linux_cpu_model", lambda: "CPU")
+
+    info = hardware.scan_hardware()
+
+    assert info.ram_total_gb == 0.0
+    assert info.cpu_physical_cores == 0
+    assert info.cpu_logical_cores == 0
+
+
+def test_available_ram_fails_closed_on_psutil_error(monkeypatch):
+    monkeypatch.setattr(
+        hardware.psutil,
+        "virtual_memory",
+        lambda: (_ for _ in ()).throw(hardware.psutil.AccessDenied()),
+    )
+
+    assert hardware.available_ram_gb() == 0.0
+
+
 def test_windows_scan_uses_cim_cpu_and_integrated_gpu_name(monkeypatch):
     monkeypatch.setattr(hardware.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hardware.platform, "release", lambda: "11")

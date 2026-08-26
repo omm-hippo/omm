@@ -32,6 +32,7 @@ _SCALAR_FORMATS = {
 _MAX_KV_COUNT = 1_000_000
 _MAX_STRING_BYTES = 64 * 1024**2
 _MAX_ARRAY_ITEMS = 100_000_000
+_MAX_ARRAY_NESTING = 64
 
 
 def _read_exact(f: BinaryIO, size: int) -> bytes:
@@ -86,9 +87,11 @@ def _read_scalar(f: BinaryIO, value_type: int) -> object:
     return bool(value) if value_type == _BOOL else value
 
 
-def _skip_value(f: BinaryIO, value_type: int) -> None:
+def _skip_value(f: BinaryIO, value_type: int, *, depth: int = 0) -> None:
     """Read past a value without materializing it (arrays included)."""
     if value_type == _ARRAY:
+        if depth >= _MAX_ARRAY_NESTING:
+            raise ValueError("GGUF metadata arrays are nested too deeply")
         elem_type = _unpack(f, "<I")
         length = _unpack(f, "<Q")
         if length > _MAX_ARRAY_ITEMS:
@@ -97,7 +100,7 @@ def _skip_value(f: BinaryIO, value_type: int) -> None:
             _skip_exact(f, struct.calcsize(_SCALAR_FORMATS[elem_type]) * length)
             return
         for _ in range(length):
-            _skip_value(f, elem_type)
+            _skip_value(f, elem_type, depth=depth + 1)
         return
     _read_scalar(f, value_type)
 
@@ -110,6 +113,8 @@ def read_gguf_metadata_stream(f: BinaryIO, wanted_keys: set[str]) -> dict[str, o
     ``struct.error`` so its caller can retry with a larger Range.
     """
     found: dict[str, object] = {}
+    if not wanted_keys:
+        return found
     if _read_exact(f, 4) != b"GGUF":
         return found
     version = _unpack(f, "<I")

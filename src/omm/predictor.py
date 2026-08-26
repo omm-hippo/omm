@@ -56,8 +56,27 @@ def validate_model_artifact(artifact: object) -> dict:
     trees = artifact.get("trees")
     if not isinstance(trees, list) or not trees:
         raise ValueError("model artifact must contain a non-empty trees list")
-    if not isinstance(artifact.get("candidates"), list):
+    candidates = artifact.get("candidates")
+    if not isinstance(candidates, list):
         raise ValueError("model artifact candidates must be a list")
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            raise ValueError("model artifact candidates must be objects")
+        for field in ("repo_id", "filename"):
+            value = candidate.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"model artifact candidate {field} must be a non-empty string")
+        provider = candidate.get("provider")
+        if provider is not None and provider not in {"huggingface", "modelscope"}:
+            raise ValueError("model artifact candidate provider is unsupported")
+        size_bytes = candidate.get("size_bytes")
+        if size_bytes is not None and (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, (int, float))
+            or not math.isfinite(size_bytes)
+            or size_bytes <= 0
+        ):
+            raise ValueError("model artifact candidate size_bytes must be a positive finite number")
 
     def validate_node(node: object) -> None:
         if not isinstance(node, dict):
@@ -121,7 +140,12 @@ def available_model_memory_gb(hw: HardwareInfo) -> float:
 def estimate_required_memory_gb(candidate: dict) -> float | None:
     """Estimate model weights plus runtime overhead from verified metadata."""
     size_bytes = candidate.get("size_bytes")
-    if isinstance(size_bytes, (int, float)) and size_bytes > 0:
+    if (
+        isinstance(size_bytes, (int, float))
+        and not isinstance(size_bytes, bool)
+        and math.isfinite(size_bytes)
+        and size_bytes > 0
+    ):
         return float(size_bytes) / (1024**3) * MODEL_MEMORY_OVERHEAD
 
     parameters = candidate_parameter_count_billions(candidate)
@@ -200,15 +224,22 @@ def fetch_and_cache_model(
         if not isinstance(raw_content, bytes):
             raw_content = json.dumps(artifact, separators=(",", ":")).encode()
         catalog.verify_signed_artifact(raw_content, manifest, public_key)
-    # Never preserve a corrupted cache in catalog history.  A failed or
-    # malformed prior cache is left untouched, but is not treated as a snapshot.
-    if load_cached_model() is not None:
-        catalog.archive_current_artifact(
-            artifact_path=RECOMMEND_MODEL_PATH,
-            require_signed=bool(manifest_url and public_key),
-        )
     RECOMMEND_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     with locked(RECOMMEND_MODEL_PATH):
+        # Archive and replace under the same cross-process lock. Otherwise two
+        # simultaneous refreshes can both archive the old file, then overwrite
+        # one another without ever retaining the first fresh artifact.
+        try:
+            current = validate_model_artifact(
+                json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8"))
+            )
+        except (OSError, json.JSONDecodeError, ValueError):
+            current = None
+        if current is not None:
+            catalog.archive_current_artifact(
+                artifact_path=RECOMMEND_MODEL_PATH,
+                require_signed=bool(manifest_url and public_key),
+            )
         atomic_write_text(RECOMMEND_MODEL_PATH, json.dumps(artifact) + "\n")
         provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
             RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
