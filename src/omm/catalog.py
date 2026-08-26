@@ -7,9 +7,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from typing import Any
 
 from omm.atomic import atomic_write_bytes, atomic_write_text, locked
 from omm.config import CATALOG_HISTORY_DIR, RECOMMEND_MODEL_PATH
@@ -19,14 +17,36 @@ class CatalogVerificationError(ValueError):
     pass
 
 
+def _cryptography_types() -> tuple[type[Exception], Any]:
+    """Load the native verification backend only when it is used.
+
+    Homebrew builds Python resources from source. On pre-release macOS
+    versions, a toolchain/dyld incompatibility can make cryptography's Rust
+    extension unloadable even though installation itself succeeded. Catalog
+    verification should still fail closed, but that unrelated native loader
+    error must not make every OMM command (including ``--help``) unimportable.
+    """
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except (ImportError, OSError) as error:
+        raise CatalogVerificationError(
+            "catalog signature verification is unavailable because cryptography "
+            "could not load; reinstall OMM, or on pre-release macOS use "
+            "`pipx install omm-model` instead of Homebrew"
+        ) from error
+    return InvalidSignature, Ed25519PublicKey
+
+
 def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def load_public_key(encoded_key: str) -> Ed25519PublicKey:
+def load_public_key(encoded_key: str) -> Any:
+    _invalid_signature, public_key_type = _cryptography_types()
     try:
         raw_key = base64.b64decode(encoded_key, validate=True)
-        return Ed25519PublicKey.from_public_bytes(raw_key)
+        return public_key_type.from_public_bytes(raw_key)
     except (ValueError, TypeError) as error:
         raise CatalogVerificationError("catalog public key is not valid base64 Ed25519") from error
 
@@ -51,10 +71,11 @@ def verify_signed_artifact(
         signature = base64.b64decode(signature_text, validate=True)
     except (ValueError, TypeError) as error:
         raise CatalogVerificationError("catalog signature is not valid base64") from error
+    invalid_signature, _public_key_type = _cryptography_types()
     public_key = load_public_key(encoded_public_key)
     try:
         public_key.verify(signature, content)
-    except InvalidSignature as error:
+    except invalid_signature as error:
         raise CatalogVerificationError("catalog signature is invalid") from error
     return manifest
 
