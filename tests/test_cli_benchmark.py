@@ -109,7 +109,7 @@ def test_benchmark_memory_guard_matches_exact_ollama_runtime_name(monkeypatch):
 
 def test_benchmark_json_before_subcommand(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama"))
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "running_path_stale")
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
@@ -124,7 +124,7 @@ def test_benchmark_json_before_subcommand(isolated_omm_home, monkeypatch):
 
 def test_benchmark_json_after_subcommand(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama"))
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "running_path_stale")
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
@@ -139,7 +139,7 @@ def test_benchmark_json_after_subcommand(isolated_omm_home, monkeypatch):
 
 def test_benchmark_json_never_prompts_under_ask_policy(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama"))
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "running_path_stale")
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
     monkeypatch.setattr(

@@ -2783,7 +2783,9 @@ def _ensure_ollama_running(action: str, *, assume_yes: bool = False):
     """Preflight Ollama without confusing missing, stopped, and stale PATH."""
     state = benchmark.ollama_install_state()
     if state in {"running", "running_path_stale"}:
-        if state == "running_path_stale":
+        if state == "running_path_stale" and not (
+            _global_opts().quiet or _global_opts().json
+        ):
             console.print(
                 "[muted]Ollama API is running; the current terminal PATH has not "
                 "picked up the Ollama command yet.[/muted]"
