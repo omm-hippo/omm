@@ -112,7 +112,9 @@ def test_launcher_tarball_matches_crlf_windows_checkout(tmp_path, monkeypatch):
     shutil.copytree(npm_package.LAUNCHER_SOURCE, windows_source)
     for relative in ("bin/omm.js", "lib/launcher.js"):
         path = windows_source / relative
-        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        path.write_bytes(
+            npm_package.canonical_text_bytes(path).replace(b"\n", b"\r\n")
+        )
     monkeypatch.setattr(npm_package, "LAUNCHER_SOURCE", windows_source)
 
     npm_release.inspect_tarball(next(pack.glob("*.tgz")))
