@@ -47,6 +47,7 @@ def test_stage_launcher_has_an_exact_allowlist_and_stays_private(tmp_path):
     launcher = (staged / "bin" / "omm.js").read_bytes()
     assert launcher.startswith(b"#!/usr/bin/env node\n")
     assert b"\r\n" not in launcher
+    assert b"\r\n" not in (staged / "lib" / "launcher.js").read_bytes()
     manifest = json.loads((staged / "package.json").read_text(encoding="utf-8"))
     assert manifest["private"] is True
     assert npm_package._file_allowlist(staged) == npm_package.EXPECTED_LAUNCHER_FILES
@@ -62,6 +63,7 @@ def test_copy_text_lf_normalizes_windows_line_endings(tmp_path):
     npm_package._copy_text_lf(source, destination)
 
     assert destination.read_bytes() == b"#!/usr/bin/env node\nconsole.log('omm');\n"
+    assert npm_package.canonical_text_bytes(source) == destination.read_bytes()
 
 
 def test_publishable_launcher_is_staged_without_weakening_source_guard(tmp_path):

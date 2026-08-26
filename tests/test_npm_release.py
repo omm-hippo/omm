@@ -102,6 +102,22 @@ def test_launcher_tarball_must_match_reviewed_source(tmp_path):
         npm_release.inspect_tarball(next(pack.glob("*.tgz")))
 
 
+def test_launcher_tarball_matches_crlf_windows_checkout(tmp_path, monkeypatch):
+    stage = npm_package.stage_launcher(tmp_path / "stage", publishable=True)
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    _pack(stage, pack)
+
+    windows_source = tmp_path / "windows-source"
+    shutil.copytree(npm_package.LAUNCHER_SOURCE, windows_source)
+    for relative in ("bin/omm.js", "lib/launcher.js"):
+        path = windows_source / relative
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    monkeypatch.setattr(npm_package, "LAUNCHER_SOURCE", windows_source)
+
+    npm_release.inspect_tarball(next(pack.glob("*.tgz")))
+
+
 def test_tarball_rejects_path_traversal(tmp_path):
     archive = tmp_path / "bad.tgz"
     source = tmp_path / "payload"

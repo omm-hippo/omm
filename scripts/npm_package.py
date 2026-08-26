@@ -196,11 +196,14 @@ def _copy_text_lf(source: Path, destination: Path) -> None:
     )
 
 
-def canonical_license_bytes(path: Path | None = None) -> bytes:
+def canonical_text_bytes(path: Path) -> bytes:
     """Return deterministic LF bytes across Git's Windows/Unix checkouts."""
-    path = path or LICENSE_FILE
     text = path.read_text(encoding="utf-8")
     return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
+def canonical_license_bytes(path: Path | None = None) -> bytes:
+    return canonical_text_bytes(path or LICENSE_FILE)
 
 
 def stage_launcher(output_dir: Path, *, publishable: bool = False) -> Path:
@@ -216,8 +219,9 @@ def stage_launcher(output_dir: Path, *, publishable: bool = False) -> Path:
         LAUNCHER_SOURCE / "bin" / "omm.js",
         destination / "bin" / "omm.js",
     )
-    shutil.copy2(
-        LAUNCHER_SOURCE / "lib" / "launcher.js", destination / "lib" / "launcher.js"
+    _copy_text_lf(
+        LAUNCHER_SOURCE / "lib" / "launcher.js",
+        destination / "lib" / "launcher.js",
     )
     _copy_text_lf(LICENSE_FILE, destination / "LICENSE")
     if publishable:

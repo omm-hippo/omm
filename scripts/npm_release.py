@@ -136,14 +136,14 @@ def inspect_tarball(path: Path) -> PackageInfo:
             raise NpmReleaseError("npm launcher tarball has files outside its allowlist")
         if files["package/LICENSE"] != npm_package.canonical_license_bytes():
             raise NpmReleaseError("npm launcher license does not match the repository")
-        expected_launcher = (
+        expected_launcher = npm_package.canonical_text_bytes(
             npm_package.LAUNCHER_SOURCE / "bin" / "omm.js"
-        ).read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+        )
         if files["package/bin/omm.js"] != expected_launcher:
             raise NpmReleaseError("npm launcher entry point does not match the source")
-        if files["package/lib/launcher.js"] != (
+        if files["package/lib/launcher.js"] != npm_package.canonical_text_bytes(
             npm_package.LAUNCHER_SOURCE / "lib" / "launcher.js"
-        ).read_bytes():
+        ):
             raise NpmReleaseError("npm launcher implementation does not match the source")
         if manifest.get("bin") != {"omm": "bin/omm.js"}:
             raise NpmReleaseError("npm launcher exposes an unexpected command")
