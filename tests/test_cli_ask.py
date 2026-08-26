@@ -148,6 +148,17 @@ def test_ask_named_provider_no_ai_uses_same_safe_search_command():
     assert "omm recommend" not in result.stdout
 
 
+def test_ask_anthropic_alias_with_question_mark_routes_when_shell_quotes_it():
+    result = runner.invoke(
+        cli.app,
+        ["ask", "엔트로픽 모델 추천 가능해?", "--no-ai", "--no-color"],
+    )
+
+    assert result.exit_code == 0, (result.stdout, result.stderr)
+    assert "omm search anthropic" in result.stdout
+    assert "omm recommend" not in result.stdout
+
+
 def test_ask_no_ai_uses_deterministic_built_in_guidance(monkeypatch):
     class ForbiddenRuntime:
         def __init__(self):
@@ -213,8 +224,14 @@ def test_ask_ambiguous_question_requests_clarification_without_calling_runtime(
     result = runner.invoke(cli.app, ["ask", "도와줘", "--no-color"])
 
     assert result.exit_code == 0, result.stdout
-    assert "아직 선택하지 않음" in result.stdout
-    assert "조금 더 구체적으로" in " ".join(result.stdout.split())
+    output = " ".join(result.stdout.split())
+    assert "하나의 명령으로 안전하게 좁히기 어렵습니다" in output
+    assert "가능한 방향" in result.stdout
+    assert "omm recommend" in result.stdout
+    assert "omm search <TEXT>" in result.stdout
+    assert "omm doctor" in result.stdout
+    assert "어느 쪽인가요?" in output
+    assert "내 맥 사양에 맞는 코딩 모델" in output
 
 
 def test_ask_greeting_returns_a_friendly_example_without_loading_ai(monkeypatch):
@@ -229,6 +246,213 @@ def test_ask_greeting_returns_a_friendly_example_without_loading_ai(monkeypatch)
     assert result.exit_code == 0, result.stdout
     assert "안녕하세요!" in result.stdout
     assert "내 맥에 맞는 코딩 모델" in " ".join(result.stdout.split())
+
+
+@pytest.mark.parametrize("question", ["고마워", "감사합니다!", "thanks"])
+def test_ask_thanks_is_local_and_never_loads_a_model(monkeypatch, question):
+    class ForbiddenRuntime:
+        def __init__(self):
+            raise AssertionError("a thank-you must not load a local model")
+
+    monkeypatch.setattr(cli, "OllamaAssistantRuntime", ForbiddenRuntime)
+
+    result = runner.invoke(cli.app, ["ask", question, "--no-color"])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "자동으로 실행하지 않습니다" in result.stdout
+        or "does not execute" in result.stdout
+    )
+
+
+def test_ask_explicit_command_explanation_uses_that_trusted_record(monkeypatch):
+    class ForbiddenRuntime:
+        def __init__(self):
+            raise AssertionError("an explicit command reference needs no model")
+
+    monkeypatch.setattr(cli, "OllamaAssistantRuntime", ForbiddenRuntime)
+
+    result = runner.invoke(cli.app, ["ask", "omm verify가 뭐야?", "--no-color"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "omm verify <MODEL>" in result.stdout
+    assert "omm help" not in result.stdout
+    assert "<MODEL>: omm list" in " ".join(result.stdout.split())
+    assert "자동으로 실행하지 않음" in result.stdout
+
+
+def test_ask_product_question_explains_scope_and_offers_real_starting_points(
+    monkeypatch,
+):
+    class ForbiddenRuntime:
+        def __init__(self):
+            raise AssertionError("a product overview needs no model")
+
+    monkeypatch.setattr(cli, "OllamaAssistantRuntime", ForbiddenRuntime)
+
+    result = runner.invoke(cli.app, ["ask", "OMM은 뭐하는 도구야?", "--no-color"])
+
+    assert result.exit_code == 0, result.stdout
+    output = " ".join(result.stdout.split())
+    assert "로컬 AI 모델을 찾고" in output
+    assert "대신 실행하지 않습니다" in output
+    assert "omm help [COMMAND]" in output
+    assert "omm recommend" in output
+    assert "omm search <TEXT>" in output
+
+
+def test_ask_pasted_error_routes_to_read_only_diagnosis_without_loading_ai(monkeypatch):
+    class ForbiddenRuntime:
+        def __init__(self):
+            raise AssertionError("an explicit pasted error needs no model")
+
+    monkeypatch.setattr(cli, "OllamaAssistantRuntime", ForbiddenRuntime)
+
+    result = runner.invoke(
+        cli.app,
+        ["ask", "오류: connection refused while running omm install", "--no-color"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "omm doctor" in result.stdout
+    assert "읽기 전용" in result.stdout
+    assert "omm install <MODEL>" not in result.stdout
+
+
+def test_ask_composite_no_ai_shows_the_two_next_steps_instead_of_guessing():
+    result = runner.invoke(
+        cli.app,
+        ["ask", "모델을 찾고 설치하고 싶어", "--no-ai", "--no-color"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "가능한 방향" in result.stdout
+    assert "omm search <TEXT>" in result.stdout
+    assert "omm install <MODEL>" in result.stdout
+    assert "추천 명령어" not in result.stdout
+
+
+def test_ask_composite_local_ai_always_clarifies_without_loading_model(monkeypatch):
+    class ForbiddenRuntime:
+        def __init__(self):
+            raise AssertionError("a conflicting multi-action request must clarify")
+
+    monkeypatch.setattr(cli, "OllamaAssistantRuntime", ForbiddenRuntime)
+
+    result = runner.invoke(
+        cli.app,
+        ["ask", "모델을 찾고 설치하고 싶어", "--no-color"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "모드: 내장 안내" in result.stdout
+    assert "omm search <TEXT>" in result.stdout
+    assert "omm install <MODEL>" in result.stdout
+
+
+def test_ask_known_search_target_is_filled_but_arbitrary_text_is_not():
+    known = runner.invoke(
+        cli.app,
+        ["ask", "Qwen 모델을 찾아줘", "--no-ai", "--no-color"],
+    )
+    arbitrary = runner.invoke(
+        cli.app,
+        ["ask", "acme;rm 모델을 찾고 싶어", "--no-ai", "--no-color"],
+    )
+
+    assert known.exit_code == 0, known.stdout
+    assert "omm search qwen" in known.stdout
+    assert arbitrary.exit_code == 0, arbitrary.stdout
+    assert "omm search <TEXT>" in arbitrary.stdout
+    assert "omm search acme" not in arbitrary.stdout
+
+
+def test_ask_placeholder_and_risk_copy_describes_the_recommended_command_only():
+    result = runner.invoke(
+        cli.app,
+        ["ask", "모델 삭제", "--no-ai", "--no-color"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    output = " ".join(result.stdout.split())
+    assert "<MODEL|all>" in output
+    assert "all은 모든 모델" in output
+    assert "추천 명령 실행 시 영향" in output
+    assert "파일 또는 연결을 삭제할 수 있음" in output
+    assert "omm ask는 위 명령을 자동으로 실행하지 않음" in output
+
+
+def test_ask_quiet_keeps_result_but_suppresses_mode_docs_and_examples():
+    result = runner.invoke(
+        cli.app,
+        ["ask", "설치된 모델 목록", "--no-ai", "--quiet", "--no-color"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "omm list" in result.stdout
+    assert "모드:" not in result.stdout
+    assert "문서" not in result.stdout
+    assert "https://omm.run" not in result.stdout
+
+
+def test_ask_quiet_clarification_keeps_choices_but_suppresses_example_block():
+    result = runner.invoke(
+        cli.app,
+        ["ask", "도와줘", "--no-ai", "--quiet", "--no-color"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "가능한 방향" in result.stdout
+    assert "omm recommend" in result.stdout
+    assert "질문 예시" not in result.stdout
+    assert "모드:" not in result.stdout
+
+
+def test_ask_strong_route_matches_between_ai_and_no_ai_modes(monkeypatch):
+    calls = []
+
+    class FirstAllowedRuntime:
+        def classify(
+            self, question, allowed_command_ids, catalog_context, *, model=None
+        ):
+            calls.append(tuple(allowed_command_ids))
+            return AssistantClassification(
+                allowed_command_ids[0], "trusted singleton", model or "small"
+            )
+
+    monkeypatch.setattr(cli, "OllamaAssistantRuntime", FirstAllowedRuntime)
+    question = ["ask", "OpenAI", "모델", "추천해줘", "--no-color"]
+
+    ai_result = runner.invoke(cli.app, question)
+    no_ai_result = runner.invoke(cli.app, [*question, "--no-ai"])
+
+    assert ai_result.exit_code == 0, ai_result.stdout
+    assert no_ai_result.exit_code == 0, no_ai_result.stdout
+    assert calls == [("search",)]
+    assert "omm search openai" in ai_result.stdout
+    assert "omm search openai" in no_ai_result.stdout
+    assert "omm recommend" not in ai_result.stdout
+    assert "omm recommend" not in no_ai_result.stdout
+
+
+@pytest.mark.parametrize("failure", ["timeout", "invalid"])
+def test_ask_ai_failure_recovers_to_same_trusted_no_ai_result(monkeypatch, failure):
+    class BrokenRuntime:
+        def classify(self, *args, **kwargs):
+            if failure == "timeout":
+                raise AssistantRuntimeError("runtime_timeout", "local timeout")
+            return AssistantClassification("install", "outside allowlist", "bad")
+
+    monkeypatch.setattr(cli, "OllamaAssistantRuntime", BrokenRuntime)
+    args = ["ask", "설치된 모델 목록을 보여줘", "--no-color"]
+
+    ai_result = runner.invoke(cli.app, args)
+    no_ai_result = runner.invoke(cli.app, [*args, "--no-ai"])
+
+    assert ai_result.exit_code == 0, ai_result.stdout
+    assert no_ai_result.exit_code == 0, no_ai_result.stdout
+    assert "omm list" in ai_result.stdout
+    assert "omm list" in no_ai_result.stdout
 
 
 @pytest.mark.parametrize(
@@ -278,8 +502,58 @@ def test_ask_json_contract_is_stable_and_machine_readable():
     }
 
 
+def test_ask_ambiguous_json_keeps_the_original_contract_without_prose_noise():
+    result = runner.invoke(
+        cli.app,
+        ["ask", "도와줘", "--no-ai", "--json"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert list(payload) == [
+        "mode",
+        "model",
+        "commandId",
+        "command",
+        "summary",
+        "sideEffects",
+        "docsUrl",
+        "needsClarification",
+    ]
+    assert payload["commandId"] is None
+    assert payload["command"] is None
+    assert payload["needsClarification"] is True
+    assert result.stdout.count("\n") == 1
+    assert "모드:" not in result.stdout
+
+
+def test_ask_no_ai_model_option_warns_and_never_constructs_runtime(monkeypatch):
+    class ForbiddenRuntime:
+        def __init__(self):
+            raise AssertionError("--no-ai must not construct a runtime")
+
+    monkeypatch.setattr(cli, "OllamaAssistantRuntime", ForbiddenRuntime)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "ask",
+            "설치된 모델 목록",
+            "--no-ai",
+            "--model",
+            "qwen:local",
+            "--no-color",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "omm list" in result.stdout
+    assert "--model has no effect with --no-ai" in result.stderr
+    assert "qwen:local" not in result.stdout
+
+
 def test_ask_help_and_full_command_reference_include_mvp_options():
-    command_help = runner.invoke(cli.app, ["help", "ask", "--no-color"])
+    command_help = runner.invoke(cli.app, ["ask", "--no-color", "--help"])
     all_help = runner.invoke(cli.app, ["help", "--all", "--no-color"])
 
     assert command_help.exit_code == 0, command_help.stdout
@@ -287,6 +561,13 @@ def test_ask_help_and_full_command_reference_include_mvp_options():
     assert "--model" in command_help.stdout
     assert "--engine" in command_help.stdout
     assert "--no-ai" in command_help.stdout
+    assert "Plain multi-word questions do not require quotes" in " ".join(
+        command_help.stdout.split()
+    )
+    assert "never executes the recommendation" in " ".join(
+        command_help.stdout.split()
+    )
+    assert "shell characters" in command_help.stdout.lower()
     assert all_help.exit_code == 0, all_help.stdout
     assert "omm ask" in all_help.stdout
 

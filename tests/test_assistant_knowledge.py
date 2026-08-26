@@ -36,6 +36,9 @@ def _top(question: str) -> str | None:
         ("내 맥 성능에 맞고 코딩을 하기 좋은 AI", "recommend"),
         ("\u00a0내 맥에 맞는 AI\u00a0 추천", "recommend"),
         ("open ai 모델 추천해줘", "search"),
+        ("openai model recommendation", "search"),
+        ("엔트로픽 모델 추천 가능해?", "search"),
+        ("Claude 모델을 찾아줘", "search"),
         ("qwen 모델 추천해줘", "search"),
         ("qwen 모델을 설치하고 싶어", "install"),
         ("설치된 qwen이 실제로 답을 생성하는지 확인하고 싶어", "verify"),
@@ -54,6 +57,7 @@ def _top(question: str) -> str | None:
         ("clean partial downloads", "cleanup"),
         ("upload telemetry to improve recommendations", "contribute"),
         ("troubleshoot my OMM installation", "doctor"),
+        ("깨진 심볼릭 링크 제거", "autoremove"),
     ],
 )
 def test_deterministic_fallback_routes_common_korean_and_english_intents(question, expected):
@@ -191,9 +195,25 @@ def test_security_terms_without_values_are_not_false_positive_secrets():
     ("question", "expected"),
     [
         ("open ai 모델 추천해줘", "openai"),
+        ("엔트로픽 모델 추천 가능해?", "anthropic"),
+        ("Claude 모델 찾아줘", "anthropic"),
         ("Qwen 모델을 찾아줘", "qwen"),
+        ("qwen을 설치할래", "qwen"),
+        ("라마를 찾아줘", "llama"),
+        ("클로드의 로컬 대안을 찾아줘", "anthropic"),
         ("Deep Seek model", "deepseek"),
+        ("엑사원 모델", "exaone"),
+        ("Mixtral model", "mixtral"),
+        ("스타코더 모델", "starcoder"),
+        ("Code Gemma for coding", "codegemma"),
+        ("Codestral 찾아줘", "codestral"),
+        ("Command R model", "command-r"),
+        ("Falcon 모델", "falcon"),
+        ("SOLAR model", "solar"),
+        ("Phi 모델", "phi"),
+        ("GPT OSS 모델", "gpt-oss"),
         ("그냥 모델 추천해줘", None),
+        ("rm rf를 모델명으로 검색해줘", None),
     ],
 )
 def test_known_model_target_extraction_is_allowlisted(question, expected):

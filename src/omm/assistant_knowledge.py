@@ -364,7 +364,13 @@ _RECORDS = (
         (_I, _X),
         RiskLevel.DESTRUCTIVE,
         (),
-        ("깨진 링크 정리", "죽은 심볼릭 링크", "고아 링크 제거", "남은 링크 삭제"),
+        (
+            "깨진 링크 정리",
+            "깨진 심볼릭 링크",
+            "죽은 심볼릭 링크",
+            "고아 링크 제거",
+            "남은 링크 삭제",
+        ),
         ("remove broken links", "dead symlink cleanup", "remove orphan links", "stale link cleanup"),
     ),
     _record(
@@ -495,8 +501,15 @@ def sanitize_question(question: str) -> str:
 _WORD_RE = re.compile(r"[0-9a-zA-Z가-힣]+")
 
 _KNOWN_MODEL_TARGETS = (
+    ("anthropic", "anthropic"),
+    ("앤트로픽", "anthropic"),
+    ("엔트로픽", "anthropic"),
+    ("claude", "anthropic"),
+    ("클로드", "anthropic"),
     ("open ai", "openai"),
     ("openai", "openai"),
+    ("오픈 ai", "openai"),
+    ("오픈에이아이", "openai"),
     ("deep seek", "deepseek"),
     ("deepseek", "deepseek"),
     ("tiny llama", "tinyllama"),
@@ -504,17 +517,81 @@ _KNOWN_MODEL_TARGETS = (
     ("code llama", "codellama"),
     ("codellama", "codellama"),
     ("qwen", "qwen"),
+    ("큐웬", "qwen"),
     ("llama", "llama"),
+    ("라마", "llama"),
+    ("code gemma", "codegemma"),
+    ("codegemma", "codegemma"),
     ("gemma", "gemma"),
+    ("젬마", "gemma"),
     ("mistral", "mistral"),
+    ("미스트랄", "mistral"),
     ("exaone", "exaone"),
-    ("gpt", "gpt"),
+    ("엑사원", "exaone"),
+    ("mixtral", "mixtral"),
+    ("믹스트랄", "mixtral"),
+    ("star coder", "starcoder"),
+    ("starcoder", "starcoder"),
+    ("스타코더", "starcoder"),
+    ("codestral", "codestral"),
+    ("코드스트랄", "codestral"),
+    ("command r", "command-r"),
+    ("커맨드 r", "command-r"),
+    ("falcon", "falcon"),
+    ("팔콘", "falcon"),
+    ("solar", "solar"),
+    ("솔라", "solar"),
+    ("yi", "yi"),
     ("phi", "phi"),
+    ("파이", "phi"),
+    ("gpt oss", "gpt-oss"),
+    ("gpt-oss", "gpt-oss"),
+    ("gpt", "gpt"),
+)
+
+
+# Deliberately small typo map.  These are common command-intent typos, not a
+# general spell checker: broad fuzzy matching made short terminal questions
+# route to destructive commands too easily.  Exact token substitutions keep
+# the work bounded and deterministic.
+_TOKEN_CORRECTIONS = MappingProxyType(
+    {
+        "모댈": "모델",
+        "모델를": "모델을",
+        "추쳔": "추천",
+        "설지": "설치",
+        "삭재": "삭제",
+        "검섹": "검색",
+        "업대이트": "업데이트",
+        "벤치마크크": "벤치마크",
+        "serach": "search",
+        "seach": "search",
+        "instal": "install",
+        "donwload": "download",
+        "dowload": "download",
+        "recomend": "recommend",
+        "recommed": "recommend",
+        "unistall": "uninstall",
+        "verfy": "verify",
+    }
+)
+_TEXT_CORRECTIONS = MappingProxyType(
+    {
+        "모댈": "모델",
+        "추쳔": "추천",
+        "설지": "설치",
+        "삭재": "삭제",
+        "검섹": "검색",
+    }
 )
 
 
 def _search_form(text: str) -> str:
-    return " ".join(_WORD_RE.findall(unicodedata.normalize("NFKC", text).casefold()))
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    for typo, correction in _TEXT_CORRECTIONS.items():
+        normalized = normalized.replace(typo, correction)
+    tokens = _WORD_RE.findall(normalized)
+    return " ".join(_TOKEN_CORRECTIONS.get(token, token) for token in tokens)
 
 
 def extract_known_model_target(question: str) -> str | None:
@@ -524,11 +601,547 @@ def extract_known_model_target(question: str) -> str | None:
     displayed command without trusting arbitrary user or model text.
     """
 
-    searchable = f" {_search_form(question)} "
+    searchable = _search_form(question)
     for alias, canonical in _KNOWN_MODEL_TARGETS:
-        if f" {alias} " in searchable:
+        normalized_alias = _search_form(alias)
+        if re.search(
+            rf"(?:^| ){re.escape(normalized_alias)}"
+            rf"(?:은|는|이|가|을|를|의|로|으로|도)?(?: |$)",
+            searchable,
+        ):
             return canonical
     return None
+
+
+def _compact(text: str) -> str:
+    return text.replace(" ", "")
+
+
+def _has_phrase(question: str, phrase: str) -> bool:
+    """Match a maintained marker across natural Korean spacing variants.
+
+    English one-word markers keep token boundaries (so ``run`` does not match
+    ``runtime``).  Hangul and multi-word markers additionally use a compact
+    form, which covers inputs such as ``모델목록`` and ``다운 로드`` without
+    accepting arbitrary fuzzy text.
+    """
+
+    needle = _search_form(phrase)
+    if not needle:
+        return False
+    if " " in needle:
+        if needle in question:
+            return True
+        # Compact matching is for Korean spacing variation only. Applying it
+        # to English made `show models` spuriously match `show model size`.
+        return bool(re.search(r"[가-힣]", needle)) and _compact(needle) in _compact(question)
+    if re.fullmatch(r"[a-z0-9]+", needle):
+        return re.search(rf"(?:^| ){re.escape(needle)}(?: |$)", question) is not None
+    return needle in question or needle in _compact(question)
+
+
+def _has_any(question: str, phrases: Iterable[str]) -> bool:
+    return any(_has_phrase(question, phrase) for phrase in phrases)
+
+
+_EXPLICIT_MARKERS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "search": (
+            "검색해",
+            "검색하고",
+            "검색할",
+            "찾아줘",
+            "찾고 싶",
+            "찾을래",
+            "찾아서",
+            "search",
+            "find",
+            "look for",
+        ),
+        "install": (
+            "설치해",
+            "설치하고",
+            "설치할",
+            "깔아줘",
+            "깔고 싶",
+            "받아줘",
+            "받고 싶",
+            "받아도 돼",
+            "내려받",
+            "다운로드",
+            "install",
+            "download",
+        ),
+        "run": (
+            "대화하고",
+            "대화 시작",
+            "채팅하고",
+            "채팅 시작",
+            "말 걸",
+            "모델 켜",
+            "말해보",
+            "써보고",
+            "실행해줘",
+            "실행하고 싶",
+            "chat with",
+            "talk to",
+            "start chat",
+            "run model",
+            "run the model",
+        ),
+        "verify": (
+            "진짜 답",
+            "실제로 답",
+            "답하는지 테스트",
+            "생성되는지",
+            "생성 확인",
+            "작동하는지 확인",
+            "모델 검증",
+            "응답이 나오",
+            "답이 나오",
+            "작동 시험",
+            "verify",
+            "actually generate",
+            "generation test",
+            "check model works",
+        ),
+        "doctor": (
+            "오류 진단",
+            "에러 진단",
+            "문제 진단",
+            "왜 안",
+            "안 됨",
+            "안돼",
+            "안 돼",
+            "연결 안",
+            "고장",
+            "먹통",
+            "연결 실패",
+            "troubleshoot",
+            "diagnose",
+            "why does",
+            "why is",
+            "broken",
+            "fail",
+            "error",
+        ),
+        "list": (
+            "목록",
+            "뭐 있어",
+            "뭐가 설치",
+            "보유 모델",
+            "받아 둔 ai",
+            "설치한 거 보여",
+            "list models",
+            "show models",
+            "show installed",
+            "what is installed",
+            "what models do i have",
+        ),
+        "uninstall": (
+            "삭제해",
+            "삭제하고",
+            "삭제할",
+            "제거해",
+            "제거하고",
+            "지워줘",
+            "지우고",
+            "없애줘",
+            "없애고",
+            "uninstall",
+            "delete model",
+            "delete qwen",
+            "delete it",
+            "remove model",
+            "erase model",
+        ),
+        "cleanup": (
+            "다운로드 찌꺼기",
+            "다운로드하다 만",
+            "부분 다운로드",
+            "불완전한 다운로드",
+            "설치 캐시",
+            "임시 다운로드",
+            "다운받다 멈",
+            "멈춘 다운로드",
+            "partial download",
+            "incomplete download",
+            "download leftovers",
+            "install cache",
+        ),
+        "contribute": (
+            "추천 데이터에 기여",
+            "데이터 기여",
+            "데이터를 기여",
+            "기여하고",
+            "기여해",
+            "추천 정확도 개선에 참여",
+            "프로젝트에 참여",
+            "측정값 보내",
+            "벤치마크 기여",
+            "텔레메트리 업로드",
+            "contribute data",
+            "contribute benchmark",
+            "upload telemetry",
+            "improve recommendation data",
+        ),
+        "setup": (
+            "초기 설정",
+            "처음 설정",
+            "설정 마법사",
+            "온보딩",
+            "셋업",
+            "initial setup",
+            "first time setup",
+            "setup wizard",
+            "onboarding",
+        ),
+        "scan": (
+            "컴퓨터 스펙",
+            "pc 스펙",
+            "맥 스펙",
+            "컴퓨터 사양",
+            "하드웨어 확인",
+            "하드웨어 사양",
+            "gpu 뭐",
+            "그래픽카드 뭐",
+            "ram 얼마",
+            "시스템 정보",
+            "램과 gpu",
+            "ram and gpu",
+            "hardware specs",
+            "system specs",
+            "scan hardware",
+        ),
+        "tune": (
+            "컨텍스트 길이",
+            "gpu 오프로딩",
+            "스레드 추천",
+            "배치 크기",
+            "실행 설정 추천",
+            "튜닝",
+            "파라미터 최적화",
+            "실행 최적화",
+            "context length",
+            "gpu offload",
+            "thread count",
+            "batch size",
+            "tune model",
+        ),
+        "fit": (
+            "램에서 돌아",
+            "메모리에서 돌아",
+            "내 사양에서 돌아",
+            "실행 가능해",
+            "돌릴 수",
+            "올릴 수",
+            "구동 가능",
+            "감당할 수",
+            "메모리에 맞",
+            "does it fit",
+            "will it fit",
+            "can my pc run",
+            "can my mac run",
+            "fit in ram",
+            "fit in memory",
+        ),
+        "help": (
+            "사용법 알려",
+            "사용법 보여",
+            "도움말",
+            "옵션 알려",
+            "명령 설명",
+            "command help",
+            "show usage",
+            "show options",
+            "how do i use",
+            "how to use omm",
+        ),
+        "import": (
+            "gguf 가져",
+            "gguf를 가져",
+            "gguf 가져오",
+            "gguf 옮",
+            "기존 모델 가져",
+            "외부 모델 등록",
+            "gguf 등록",
+            "다른 앱 모델",
+            "import gguf",
+            "import existing",
+            "adopt model",
+            "register external",
+        ),
+        "info": (
+            "모델 용량",
+            "모델 크기",
+            "모델 버전",
+            "모델 상세",
+            "이 모델 정보",
+            "파일 크기",
+            "용량 얼마",
+            "정보 알려",
+            "몇 기가",
+            "model size",
+            "model version",
+            "model details",
+            "model information",
+            "information for this model",
+        ),
+        "upgrade": (
+            "모델 업데이트",
+            "모델 업그레이드",
+            "모델 최신 버전",
+            "모델 소스 새로고침",
+            "업그레이드",
+            "모델 갱신",
+            "qwen 갱신",
+            "update model",
+            "upgrade model",
+            "upgrade",
+            "refresh model",
+            "latest model version",
+        ),
+        "link": (
+            "링크 복구",
+            "링크 만들",
+            "모델 연결 복구",
+            "실행 프로그램 연결 만들",
+            "연결 다시",
+            "연결 고쳐",
+            "심볼릭 링크",
+            "link models",
+            "repair links",
+            "create symlink",
+            "missing runner link",
+        ),
+        "autoremove": (
+            "깨진 링크",
+            "깨진 심볼릭 링크",
+            "죽은 링크",
+            "죽은 심볼릭 링크",
+            "고아 링크",
+            "남은 링크 삭제",
+            "원본 없는 연결",
+            "원본 없는 링크",
+            "broken links",
+            "dead symlink",
+            "orphan links",
+            "stale links",
+        ),
+        "benchmark": (
+            "속도 재",
+            "속도 측정",
+            "성능 측정",
+            "토큰 속도",
+            "초당 토큰",
+            "속도 얼마",
+            "벤치마크",
+            "benchmark",
+            "measure speed",
+            "tokens per second",
+            "performance test",
+        ),
+        "update": (
+            "omm 업데이트",
+            "omm 업그레이드",
+            "omm 최신",
+            "프로그램 업데이트",
+            "omm 새 버전",
+            "update omm",
+            "upgrade omm",
+            "latest omm",
+            "update the program",
+        ),
+        "setting": (
+            "텔레메트리 끄",
+            "텔레메트리 켜",
+            "업로드 정책",
+            "테마 바꾸",
+            "다크 테마",
+            "라이트 테마",
+            "메모리 보호",
+            "채널 바꾸",
+            "omm 설정",
+            "telemetry off",
+            "disable telemetry",
+            "upload policy",
+            "change theme",
+            "memory guard",
+            "version channel",
+        ),
+        "engine": (
+            "ollama 설치",
+            "lm studio 설치",
+            "러너 설치",
+            "엔진 설치",
+            "엔진 깔",
+            "install ollama",
+            "install lm studio",
+            "install runner",
+            "install a local runner",
+            "install engine",
+            "koboldcpp 설치",
+            "jan 설치",
+            "textgenwebui 설치",
+            "anythingllm 설치",
+            "msty studio 설치",
+            "install koboldcpp",
+            "install jan",
+        ),
+        "ask": (
+            "자연어로 물어",
+            "ai에게 질문",
+            "omm 도우미",
+            "ask 사용",
+            "말로 명령",
+            "문장으로 명령",
+            "뭘 쓸지 알려",
+            "ask ai",
+            "omm assistant",
+            "natural language help",
+        ),
+    }
+)
+
+
+_DISCOVERY_MARKERS = (
+    "추천",
+    "찾",
+    "검색",
+    "뭐가 좋",
+    "어떤 게 좋",
+    "recommend",
+    "recommendation",
+    "suggest",
+    "find",
+    "search",
+    "best",
+    "which one",
+)
+_RECOMMEND_MARKERS = (
+    "추천",
+    "뭐 깔",
+    "무엇을 깔",
+    "어떤 모델",
+    "뭐가 좋",
+    "골라줘",
+    "골라 줘",
+    "알맞은 모델",
+    "recommend",
+    "suggest",
+    "which model",
+    "best model",
+)
+_HARDWARE_MARKERS = (
+    "내 맥",
+    "내맥",
+    "my mac",
+    "내 컴퓨터",
+    "내컴퓨터",
+    "my computer",
+    "내 pc",
+    "my pc",
+    "사양",
+    "성능에 맞",
+    "스펙",
+    "hardware",
+    "windows",
+    "윈도우",
+    "linux",
+    "리눅스",
+)
+_USE_CASE_MARKERS = (
+    "코딩",
+    "개발",
+    "번역",
+    "요약",
+    "글쓰기",
+    "수학",
+    "추론",
+    "coding",
+    "programming",
+    "translation",
+    "summarization",
+    "writing",
+    "math",
+    "reasoning",
+)
+_SPECIFIC_MODEL_MARKERS = (
+    "이 모델",
+    "해당 모델",
+    "this model",
+    "that model",
+    "7b",
+    "8b",
+    "13b",
+    "14b",
+    "32b",
+    "70b",
+)
+_QUESTION_EXPLANATION_MARKERS = (
+    "뭐야",
+    "무슨 뜻",
+    "설명해",
+    "사용법",
+    "옵션",
+    "what is",
+    "what does",
+    "explain",
+    "usage",
+    "options",
+)
+_SMALLTALK_EXACT = frozenset(
+    {
+        "안녕",
+        "안녕하세요",
+        "하이",
+        "헬로",
+        "고마워",
+        "고맙습니다",
+        "감사",
+        "감사합니다",
+        "hi",
+        "hello",
+        "hey",
+        "thanks",
+        "thank you",
+    }
+)
+_PRODUCT_QUESTION_MARKERS = (
+    "omm이 뭐",
+    "omm은 뭐",
+    "omm 뭐하는",
+    "omm 기능",
+    "what is omm",
+    "what does omm do",
+    "what can omm do",
+)
+
+
+def _explicit_marker_hits(question: str) -> dict[str, tuple[str, ...]]:
+    hits: dict[str, tuple[str, ...]] = {}
+    for command_id, markers in _EXPLICIT_MARKERS.items():
+        matched = tuple(marker for marker in markers if _has_phrase(question, marker))
+        if matched:
+            hits[command_id] = matched
+    return hits
+
+
+def _mentioned_command_explanation(question: str) -> bool:
+    if not _has_any(question, _QUESTION_EXPLANATION_MARKERS):
+        return False
+    if _has_phrase(question, "omm help"):
+        return True
+    for command_id in COMMAND_IDS:
+        # Korean particles commonly attach to the ASCII command name
+        # (``install이 뭐야``).  Keep the suffix allowlist narrow so a command
+        # ID embedded in an unrelated word is not treated as documentation.
+        if re.search(
+            rf"(?:^| ){re.escape(command_id)}(?:가|이|은|는|을|를)?(?: |$)",
+            question,
+        ):
+            return True
+    return False
 
 
 def _intent_score(question: str, intent: str) -> float:
@@ -539,7 +1152,7 @@ def _intent_score(question: str, intent: str) -> float:
     intent_tokens = needle.split()
     if needle == question:
         return 12.0
-    if needle in question:
+    if _has_phrase(question, needle):
         # Longer phrases encode much more intent than generic single words.
         return 3.0 + min(len(needle), 30) / 6.0 + max(0, len(intent_tokens) - 1)
     if all(token in question_tokens for token in intent_tokens):
@@ -557,18 +1170,115 @@ def rank_command_candidates(question: str, *, limit: int = 3) -> FallbackResult:
         raise ValueError(f"limit must be between 1 and {MAX_CANDIDATES}")
     normalized = sanitize_question(question)
     search_question = _search_form(normalized)
+    if search_question in _SMALLTALK_EXACT:
+        return FallbackResult(
+            normalized_question=normalized,
+            candidates=(),
+            confidence=0.0,
+            clarify=True,
+            reason="smalltalk",
+        )
+    if _has_any(search_question, _PRODUCT_QUESTION_MARKERS):
+        return FallbackResult(
+            normalized_question=normalized,
+            candidates=(),
+            confidence=0.0,
+            clarify=True,
+            reason="product_question",
+        )
+
     named_target = extract_known_model_target(normalized)
     named_target_request = named_target is not None and any(
-        marker in search_question
-        for marker in (
-            "추천",
-            "찾",
-            "검색",
-            "recommend",
-            "find",
-            "search",
-        )
+        _has_phrase(search_question, marker) for marker in _DISCOVERY_MARKERS
     )
+    explicit_hits = _explicit_marker_hits(search_question)
+
+    # Resolve phrases where a broad action word is part of a more specific
+    # operation.  E.g. "install Ollama" installs a runner, while "install
+    # Qwen in Ollama" installs a model; "benchmark contribution" is the
+    # consented contribution flow, not a one-off benchmark.
+    explicit_ids = set(explicit_hits)
+    if _has_phrase(search_question, "omm") and _has_any(
+        search_question,
+        ("업데이트", "업그레이드", "최신", "새 버전", "update", "upgrade", "latest"),
+    ):
+        explicit_ids.add("update")
+        explicit_hits.setdefault("update", ("omm-self-update",))
+    if "engine" in explicit_ids and "install" in explicit_ids and named_target is None:
+        explicit_ids.discard("install")
+    if "ask" in explicit_ids and "search" in explicit_ids and _has_any(
+        search_question, ("명령", "command")
+    ):
+        explicit_ids.discard("search")
+    if "contribute" in explicit_ids and "benchmark" in explicit_ids:
+        explicit_ids.discard("benchmark")
+    if "cleanup" in explicit_ids:
+        explicit_ids.discard("uninstall")
+        explicit_ids.discard("install")
+    if "autoremove" in explicit_ids:
+        explicit_ids.discard("link")
+        explicit_ids.discard("uninstall")
+    if "autoremove" in explicit_ids or "link" in explicit_ids:
+        explicit_ids.discard("doctor")
+    if "benchmark" in explicit_ids:
+        explicit_ids.discard("verify")
+    if "update" in explicit_ids and _has_phrase(search_question, "omm"):
+        explicit_ids.discard("upgrade")
+    elif "upgrade" in explicit_ids:
+        explicit_ids.discard("info")
+        explicit_ids.discard("update")
+
+    rule_scores: dict[str, tuple[float, list[str]]] = {}
+
+    def add_rule(command_id: str, score: float, marker: str) -> None:
+        current_score, markers = rule_scores.get(command_id, (0.0, []))
+        rule_scores[command_id] = (max(current_score, score), [*markers, marker])
+
+    for command_id in explicit_ids:
+        markers = explicit_hits[command_id]
+        add_rule(
+            command_id,
+            24.0 + min(4.0, max(len(_search_form(marker)) for marker in markers) / 8.0),
+            f"explicit:{markers[0]}",
+        )
+
+    help_explanation = _mentioned_command_explanation(search_question)
+    if help_explanation:
+        add_rule("help", 38.0, "command-explanation")
+
+    has_recommend_request = _has_any(search_question, _RECOMMEND_MARKERS)
+    has_hardware_context = _has_any(search_question, _HARDWARE_MARKERS)
+    has_use_case = _has_any(search_question, _USE_CASE_MARKERS)
+    has_model_context = _has_any(search_question, ("모델", "ai", "llm", "model"))
+    has_specific_model = named_target is not None or _has_any(
+        search_question, _SPECIFIC_MODEL_MARKERS
+    )
+
+    if named_target_request or (
+        named_target is not None and has_use_case and "install" not in explicit_ids
+    ):
+        # A family/provider is a catalogue-search constraint. `recommend`
+        # evaluates hardware but cannot accept "qwen"/"anthropic" arguments.
+        add_rule("search", 36.0, f"named-target:{named_target}")
+    if (
+        has_recommend_request
+        and named_target is None
+        and (has_model_context or has_hardware_context or has_use_case)
+        and "contribute" not in explicit_ids
+    ):
+        score = 35.0 if has_hardware_context else 31.0
+        if has_use_case:
+            score += 1.0
+        add_rule("recommend", score, "model-recommendation")
+
+    fit_language = _has_any(search_question, _EXPLICIT_MARKERS["fit"])
+    if fit_language and has_specific_model:
+        add_rule("fit", 37.0, "specific-model-fit")
+    if fit_language and has_recommend_request and has_hardware_context and not has_specific_model:
+        # "Which model fits my Mac?" asks OMM to choose a model. `fit`
+        # requires one already-selected model argument.
+        add_rule("recommend", 39.0, "which-model-fits-hardware")
+
     ranked: list[tuple[float, str, tuple[str, ...]]] = []
     for record in _RECORDS:
         matches: list[tuple[float, str]] = []
@@ -576,11 +1286,10 @@ def rank_command_candidates(question: str, *, limit: int = 3) -> FallbackResult:
             score = _intent_score(search_question, intent)
             if score > 0:
                 matches.append((score, intent))
-        if record.command_id == "search" and named_target_request:
-            # A named family/provider cannot be expressed through the
-            # hardware-only `omm recommend` command. Route it to search even
-            # when the user naturally says "recommend an OpenAI model".
-            matches.append((11.0, f"named-target:{named_target}"))
+        rule = rule_scores.get(record.command_id)
+        if rule is not None:
+            rule_score, rule_markers = rule
+            matches.extend((rule_score, marker) for marker in rule_markers)
         if not matches:
             continue
         matches.sort(key=lambda item: (-item[0], item[1]))
@@ -603,7 +1312,37 @@ def rank_command_candidates(question: str, *, limit: int = 3) -> FallbackResult:
     second_score = ranked[1][0] if len(ranked) > 1 else 0.0
     margin = max(0.0, top_score - second_score)
     top_confidence = min(0.99, 0.35 + top_score / 20.0 + margin / 25.0)
-    ambiguous = top_score < 3.5 or (second_score >= top_score * 0.88 and margin < 1.5)
+    conflict_ids = {
+        command_id
+        for command_id in explicit_ids
+        if command_id
+        in {
+            "search",
+            "install",
+            "run",
+            "verify",
+            "uninstall",
+            "cleanup",
+            "contribute",
+            "setup",
+            "scan",
+            "tune",
+            "fit",
+            "import",
+            "info",
+            "upgrade",
+            "link",
+            "autoremove",
+            "benchmark",
+            "update",
+            "setting",
+            "engine",
+        }
+    }
+    forced_conflict = len(conflict_ids) > 1 and not help_explanation
+    ambiguous = forced_conflict or top_score < 3.5 or (
+        second_score >= top_score * 0.88 and margin < 1.5
+    )
     candidates = tuple(
         CommandCandidate(
             command_id=command_id,
@@ -618,7 +1357,9 @@ def rank_command_candidates(question: str, *, limit: int = 3) -> FallbackResult:
         candidates=candidates,
         confidence=round(top_confidence, 3),
         clarify=ambiguous,
-        reason="ambiguous" if ambiguous else "matched",
+        reason=("conflicting_intents" if forced_conflict else "ambiguous")
+        if ambiguous
+        else "matched",
     )
 
 
