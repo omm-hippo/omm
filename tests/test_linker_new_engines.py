@@ -332,6 +332,171 @@ def test_unlink_ollama_ignores_content_sha256_mismatch(isolated_omm_home, tmp_pa
     assert manifest_path.exists()
 
 
+def test_unlink_ollama_batch_removes_each_model(isolated_omm_home, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    gguf_a = tmp_path / "a.gguf"
+    gguf_a.write_bytes(b"model-a")
+    gguf_b = tmp_path / "b.gguf"
+    gguf_b.write_bytes(b"model-b")
+    linker.link_ollama(gguf_a, "model-a", models_dir=models_dir)
+    linker.link_ollama(gguf_b, "model-b", models_dir=models_dir)
+    manifest_a = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model-a" / "latest"
+    manifest_b = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model-b" / "latest"
+    assert manifest_a.exists() and manifest_b.exists()
+
+    results = linker.unlink_ollama_batch(
+        [("model-a", gguf_a, None), ("model-b", gguf_b, None)], models_dir=models_dir
+    )
+
+    assert results == {"model-a": True, "model-b": True}
+    assert not manifest_a.exists()
+    assert not manifest_b.exists()
+    assert not (models_dir / "blobs" / f"sha256-{linker.sha256_file(gguf_a)}").exists()
+    assert not (models_dir / "blobs" / f"sha256-{linker.sha256_file(gguf_b)}").exists()
+
+
+def test_unlink_ollama_batch_scans_manifest_tree_once(isolated_omm_home, tmp_path, monkeypatch):
+    """The final orphaned-blob reclaim rescan must run once per batch call,
+    not once per model removed - that per-model rescan was issue #181."""
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    names = []
+    for i in range(4):
+        gguf = tmp_path / f"m{i}.gguf"
+        gguf.write_bytes(f"model-{i}".encode())
+        linker.link_ollama(gguf, f"model-{i}", models_dir=models_dir)
+        names.append((f"model-{i}", gguf, None))
+
+    reclaim_calls = []
+    original_reclaim = linker._reclaim_ollama_blobs
+
+    def spy_reclaim(target_models_dir, digests):
+        reclaim_calls.append(digests)
+        return original_reclaim(target_models_dir, digests)
+
+    monkeypatch.setattr(linker, "_reclaim_ollama_blobs", spy_reclaim)
+
+    results = linker.unlink_ollama_batch(names, models_dir=models_dir)
+
+    assert all(results.values())
+    assert len(reclaim_calls) == 1
+
+
+def test_unlink_ollama_batch_keeps_shared_blob_until_last_referrer_removed(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """Two manifests pointing at the same content-addressed blob: removing
+    both in one batch call must still only free the blob once nothing
+    references it - the batched rescan must not free it early just because
+    it ran after only one of the two manifests was deleted."""
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    gguf_a = tmp_path / "a.gguf"
+    gguf_a.write_bytes(b"shared-bytes")
+    gguf_b = tmp_path / "b.gguf"
+    gguf_b.write_bytes(b"shared-bytes")
+    linker.link_ollama(gguf_a, "model-a", models_dir=models_dir)
+    linker.link_ollama(gguf_b, "model-b", models_dir=models_dir)
+    blob_path = models_dir / "blobs" / f"sha256-{linker.sha256_file(gguf_a)}"
+    assert blob_path.exists()
+
+    results = linker.unlink_ollama_batch(
+        [("model-a", gguf_a, None), ("model-b", gguf_b, None)], models_dir=models_dir
+    )
+
+    assert results == {"model-a": True, "model-b": True}
+    assert not blob_path.exists()
+
+
+def test_resolve_ollama_runtime_names_batch_matches_single_call_results(
+    isolated_omm_home, tmp_path
+):
+    digest_a = "a" * 64
+    digest_b = "b" * 64
+
+    def write_manifest(name, tag, digest):
+        path = tmp_path / "manifests" / "registry.ollama.ai" / "library" / name / tag
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "layers": [
+                        {
+                            "mediaType": "application/vnd.ollama.image.model",
+                            "digest": f"sha256:{digest}",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_manifest("qwen3", "4b", digest_a)
+    write_manifest("llama3", "latest", digest_b)
+    entries = [
+        ("qwen3-4b.gguf", {"ollama_name": "qwen3-4b", "sha256": digest_a}),
+        ("llama3.gguf", {"ollama_name": "llama3", "sha256": digest_b}),
+        ("explicit.gguf", {"ollama_runtime_name": "already:known"}),
+    ]
+
+    batch_result = linker.resolve_ollama_runtime_names_batch(entries, models_dir=tmp_path)
+
+    for filename, entry in entries:
+        assert batch_result[filename] == linker.resolve_ollama_runtime_name(
+            filename, entry, models_dir=tmp_path
+        )
+    assert batch_result["qwen3-4b.gguf"] == "qwen3:4b"
+    assert batch_result["llama3.gguf"] == "llama3:latest"
+    assert batch_result["explicit.gguf"] == "already:known"
+
+
+def test_resolve_ollama_runtime_names_batch_scans_manifest_tree_once(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    digest = "c" * 64
+    manifest_path = (
+        tmp_path / "manifests" / "registry.ollama.ai" / "library" / "qwen3" / "4b"
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "layers": [
+                    {
+                        "mediaType": "application/vnd.ollama.image.model",
+                        "digest": f"sha256:{digest}",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    entries = [
+        (f"model-{i}.gguf", {"ollama_name": f"model-{i}", "sha256": digest}) for i in range(5)
+    ]
+
+    call_count = 0
+    original_index = linker._ollama_manifest_digest_index
+
+    def spy_index(models_dir):
+        nonlocal call_count
+        call_count += 1
+        return original_index(models_dir)
+
+    monkeypatch.setattr(linker, "_ollama_manifest_digest_index", spy_index)
+
+    linker.resolve_ollama_runtime_names_batch(entries, models_dir=tmp_path)
+
+    assert call_count == 1
+
+
 def test_jan_manifest_collision_preserves_first_model(
     isolated_omm_home, tmp_path, monkeypatch
 ):

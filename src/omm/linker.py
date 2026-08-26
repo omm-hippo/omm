@@ -1174,6 +1174,52 @@ def _ollama_runtime_name_from_manifest_path(
     return f"{model_name}:{tag}" if model_name else None
 
 
+def _ollama_manifest_digest_index(models_dir: Path) -> dict[str, tuple[str, ...]]:
+    """Walk the Ollama manifest tree once, bucketing runtime names by the
+    sha256 hex digest of their model-layer blob.
+
+    Shared by `_ollama_runtime_names_for_digest` (one digest) and
+    `resolve_ollama_runtime_names_batch` (many entries at once) so resolving
+    N models never re-walks the whole manifest tree N times (see issue
+    #181's O(models) full-rescan cost).
+    """
+    manifests_root = models_dir / "manifests"
+    if not manifests_root.is_dir():
+        return {}
+
+    index: dict[str, set[str]] = {}
+    for manifest_path in manifests_root.rglob("*"):
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        layers = manifest.get("layers") if isinstance(manifest, dict) else None
+        if not isinstance(layers, list):
+            continue
+        digest_hexes: set[str] = set()
+        for layer in layers:
+            if not (
+                isinstance(layer, dict)
+                and layer.get("mediaType") == "application/vnd.ollama.image.model"
+            ):
+                continue
+            digest = str(layer.get("digest", "")).casefold()
+            if digest.startswith("sha256:"):
+                digest_hexes.add(digest.removeprefix("sha256:"))
+        if not digest_hexes:
+            continue
+        runtime_name = _ollama_runtime_name_from_manifest_path(
+            manifest_path, manifests_root
+        )
+        if not runtime_name:
+            continue
+        for digest_hex in digest_hexes:
+            index.setdefault(digest_hex, set()).add(runtime_name)
+    return {digest_hex: tuple(sorted(names)) for digest_hex, names in index.items()}
+
+
 def _ollama_runtime_names_for_digest(
     model_sha256: object, *, models_dir: Path | None = None
 ) -> tuple[str, ...]:
@@ -1187,33 +1233,35 @@ def _ollama_runtime_names_for_digest(
         return ()
     if models_dir is None:
         models_dir = ollama_models_dir()
-    manifests_root = models_dir / "manifests"
-    if not manifests_root.is_dir():
-        return ()
+    return _ollama_manifest_digest_index(models_dir).get(digest_hex, ())
 
-    expected_digest = f"sha256:{digest_hex}"
-    names: set[str] = set()
-    for manifest_path in manifests_root.rglob("*"):
-        if not manifest_path.is_file():
-            continue
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        layers = manifest.get("layers") if isinstance(manifest, dict) else None
-        if not isinstance(layers, list) or not any(
-            isinstance(layer, dict)
-            and layer.get("mediaType") == "application/vnd.ollama.image.model"
-            and str(layer.get("digest", "")).casefold() == expected_digest
-            for layer in layers
-        ):
-            continue
-        runtime_name = _ollama_runtime_name_from_manifest_path(
-            manifest_path, manifests_root
-        )
-        if runtime_name:
-            names.add(runtime_name)
-    return tuple(sorted(names))
+
+def _resolve_ollama_runtime_name_impl(
+    filename: str,
+    entry: dict,
+    get_candidates: Callable[[object], tuple[str, ...]],
+) -> str:
+    explicit = entry.get("ollama_runtime_name")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    link_name = entry.get("ollama_name")
+    if not isinstance(link_name, str) or not link_name.strip():
+        link_name = sanitize_ollama_tag(filename)
+    else:
+        link_name = link_name.strip()
+
+    candidates = get_candidates(entry.get("sha256"))
+    matching_link_name = tuple(
+        candidate
+        for candidate in candidates
+        if sanitize_ollama_tag(candidate) == link_name.casefold()
+    )
+    if len(matching_link_name) == 1:
+        return matching_link_name[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    return link_name
 
 
 def resolve_ollama_runtime_name(
@@ -1227,29 +1275,46 @@ def resolve_ollama_runtime_name(
     registry's GGUF SHA-256 against Ollama manifests; the digest avoids an
     unsafe hyphen-to-colon heuristic.
     """
-    explicit = entry.get("ollama_runtime_name")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-
-    link_name = entry.get("ollama_name")
-    if not isinstance(link_name, str) or not link_name.strip():
-        link_name = sanitize_ollama_tag(filename)
-    else:
-        link_name = link_name.strip()
-
-    candidates = _ollama_runtime_names_for_digest(
-        entry.get("sha256"), models_dir=models_dir
+    return _resolve_ollama_runtime_name_impl(
+        filename,
+        entry,
+        lambda sha256: _ollama_runtime_names_for_digest(sha256, models_dir=models_dir),
     )
-    matching_link_name = tuple(
-        candidate
-        for candidate in candidates
-        if sanitize_ollama_tag(candidate) == link_name.casefold()
-    )
-    if len(matching_link_name) == 1:
-        return matching_link_name[0]
-    if len(candidates) == 1:
-        return candidates[0]
-    return link_name
+
+
+def resolve_ollama_runtime_names_batch(
+    entries: Sequence[tuple[str, dict]], *, models_dir: Path | None = None
+) -> dict[str, str]:
+    """Batch form of `resolve_ollama_runtime_name` for callers resolving many
+    registry entries at once (e.g. `omm benchmark all`'s memory-guard
+    pre-check). Walks the Ollama manifest tree at most once instead of once
+    per entry that lacks a cached `ollama_runtime_name` (see issue #181).
+    """
+    if models_dir is None:
+        models_dir = ollama_models_dir()
+    entries = list(entries)
+
+    def _has_explicit(entry: dict) -> bool:
+        value = entry.get("ollama_runtime_name")
+        return isinstance(value, str) and bool(value.strip())
+
+    needs_scan = any(not _has_explicit(entry) for _filename, entry in entries)
+    digest_index = _ollama_manifest_digest_index(models_dir) if needs_scan else {}
+
+    def get_candidates(model_sha256: object) -> tuple[str, ...]:
+        if not isinstance(model_sha256, str):
+            return ()
+        digest_hex = model_sha256.strip().casefold()
+        if digest_hex.startswith("sha256:"):
+            digest_hex = digest_hex.removeprefix("sha256:")
+        if re.fullmatch(r"[0-9a-f]{64}", digest_hex) is None:
+            return ()
+        return digest_index.get(digest_hex, ())
+
+    return {
+        filename: _resolve_ollama_runtime_name_impl(filename, entry, get_candidates)
+        for filename, entry in entries
+    }
 
 
 def _guess_param_size(filename: str) -> str:
@@ -1881,6 +1946,85 @@ def _manifest_model_layer_sha256(manifest: dict) -> str | None:
     return None
 
 
+def _unlink_ollama_manifest_only(
+    model_name: str,
+    models_dir: Path,
+    expected_source: Path | None,
+    expected_content_sha256: str | None,
+) -> tuple[bool, set[str]]:
+    """Delete one Ollama manifest (ownership-checked) without reclaiming any
+    now-orphaned blob. Returns (removed, this manifest's model_digests) so a
+    batch caller can reclaim blobs once across every manifest it deletes,
+    instead of once per manifest (see `unlink_ollama_batch`)."""
+    model_name = validate_ollama_tag(model_name)
+    manifest_root = models_dir / "manifests" / "registry.ollama.ai" / "library"
+    manifest_path = manifest_root / model_name / "latest"
+    if not manifest_path.parent.resolve().is_relative_to(manifest_root.resolve()):
+        return False, set()
+    # Locked against link_ollama's own manifest_path lock: unlinking used to
+    # run unlocked, so a concurrent `omm install`/`omm link` for the same
+    # model_name could interleave with this delete - link_ollama's read-back
+    # write finishes, records ownership, and returns success, while this
+    # unlink (racing it unlocked) deletes that just-written manifest and
+    # clears its ownership record right after, leaving the installer
+    # believing the link succeeded when the manifest is actually gone.
+    with locked(_engine_path_lock(manifest_path)):
+        if not manifest_path.exists():
+            return False, set()
+        owned = _owned_manifest(manifest_path, expected_source=expected_source)
+        if not owned and expected_content_sha256 is not None:
+            try:
+                manifest_for_check = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                manifest_for_check = {}
+            owned = _manifest_model_layer_sha256(manifest_for_check) == expected_content_sha256
+        if not owned:
+            return False, set()
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            model_digests = _manifest_blob_digests(manifest)
+        except (OSError, ValueError):
+            model_digests = set()
+        # Blobs are content-addressed and can be shared by a user manifest or
+        # another omm model. Only remove an omm-owned blob after no remaining
+        # manifest references its content digest.
+        try:
+            manifest_path.unlink()
+        except OSError:
+            return False, set()
+        _update_link_ownership(manifest_path, None)
+        try:
+            manifest_path.parent.rmdir()
+        except OSError:
+            pass
+    return True, model_digests
+
+
+def _reclaim_ollama_blobs(models_dir: Path, model_digests: set[str]) -> None:
+    """Free any of `model_digests` that no remaining manifest references.
+
+    An omm-owned link/copy can be reclaimed once no remaining manifest
+    references its content digest. This matters on Windows: deleting the
+    hub filename alone does not free an NTFS hard link, and a loaded model
+    may retain a handle until Ollama confirms it has unloaded.
+    """
+    if not model_digests:
+        return
+    manifests_root = models_dir / "manifests"
+    referenced = set()
+    if manifests_root.exists():
+        for other in manifests_root.rglob("*"):
+            if not other.is_file():
+                continue
+            try:
+                data = json.loads(other.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            referenced.update(_manifest_blob_digests(data))
+    for digest in model_digests - referenced:
+        _unlink_owned_link_with_retry(models_dir / "blobs" / digest)
+
+
 def unlink_ollama(
     model_name: str,
     models_dir: Path | None = None,
@@ -1925,68 +2069,44 @@ def _unlink_ollama_unlocked(
     whether the ownership record survived."""
     if models_dir is None:
         models_dir = ollama_models_dir()
-    model_name = validate_ollama_tag(model_name)
-    manifest_root = models_dir / "manifests" / "registry.ollama.ai" / "library"
-    manifest_path = (
-        manifest_root / model_name / "latest"
+    removed, model_digests = _unlink_ollama_manifest_only(
+        model_name, models_dir, expected_source, expected_content_sha256
     )
-    if not manifest_path.parent.resolve().is_relative_to(manifest_root.resolve()):
+    if not removed:
         return False
-    # Locked against link_ollama's own manifest_path lock: unlinking used to
-    # run unlocked, so a concurrent `omm install`/`omm link` for the same
-    # model_name could interleave with this delete - link_ollama's read-back
-    # write finishes, records ownership, and returns success, while this
-    # unlink (racing it unlocked) deletes that just-written manifest and
-    # clears its ownership record right after, leaving the installer
-    # believing the link succeeded when the manifest is actually gone.
-    with locked(_engine_path_lock(manifest_path)):
-        if not manifest_path.exists():
-            return False
-        owned = _owned_manifest(manifest_path, expected_source=expected_source)
-        if not owned and expected_content_sha256 is not None:
-            try:
-                manifest_for_check = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                manifest_for_check = {}
-            owned = _manifest_model_layer_sha256(manifest_for_check) == expected_content_sha256
-        if not owned:
-            return False
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            model_digests = _manifest_blob_digests(manifest)
-        except (OSError, ValueError):
-            model_digests = set()
-        # Blobs are content-addressed and can be shared by a user manifest or
-        # another omm model. Only remove an omm-owned blob after no remaining
-        # manifest references its content digest.
-        try:
-            manifest_path.unlink()
-        except OSError:
-            return False
-        _update_link_ownership(manifest_path, None)
-        try:
-            manifest_path.parent.rmdir()
-        except OSError:
-            pass
-
-    # An omm-owned link/copy can be reclaimed once no remaining manifest
-    # references its content digest. This matters on Windows: deleting the
-    # hub filename alone does not free an NTFS hard link, and a loaded model
-    # may retain a handle until Ollama confirms it has unloaded.
-    manifests_root = models_dir / "manifests"
-    referenced = set()
-    if manifests_root.exists():
-        for other in manifests_root.rglob("*"):
-            if not other.is_file():
-                continue
-            try:
-                data = json.loads(other.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            referenced.update(_manifest_blob_digests(data))
-    for digest in model_digests - referenced:
-        _unlink_owned_link_with_retry(models_dir / "blobs" / digest)
+    _reclaim_ollama_blobs(models_dir, model_digests)
     return True
+
+
+def unlink_ollama_batch(
+    specs: Sequence[tuple[str, Path | None, str | None]],
+    models_dir: Path | None = None,
+) -> dict[str, bool]:
+    """Batch form of `unlink_ollama` for callers removing many models in one
+    pass (e.g. `omm uninstall all`). Each manifest is still deleted and
+    ownership-checked individually (and under its own lock), but the
+    expensive blob-reclaim rescan of the whole manifest tree runs once at
+    the end instead of once per model (see issue #181).
+
+    `specs` is a sequence of ``(model_name, expected_source,
+    expected_content_sha256)`` tuples, matching `unlink_ollama`'s per-model
+    arguments. Returns a dict keyed by model_name (the last spec wins if a
+    name repeats).
+    """
+    if models_dir is None:
+        models_dir = ollama_models_dir()
+
+    results: dict[str, bool] = {}
+    all_digests: set[str] = set()
+    for model_name, expected_source, expected_content_sha256 in specs:
+        removed, model_digests = _unlink_ollama_manifest_only(
+            model_name, models_dir, expected_source, expected_content_sha256
+        )
+        results[model_name] = removed
+        if removed:
+            all_digests.update(model_digests)
+    _reclaim_ollama_blobs(models_dir, all_digests)
+    return results
 
 
 # --- Autoremove (broken symlink cleanup) ------------------------------
@@ -3251,27 +3371,43 @@ def link_engine(
     return "\n".join(messages) or None
 
 
-def unlink_engine(key: str, filename: str, entry: dict) -> None:
+def unlink_engine(
+    key: str,
+    filename: str,
+    entry: dict,
+    *,
+    defer_ollama_unlink: Callable[[Path, str, Path | None, str | None], None] | None = None,
+) -> None:
+    """`defer_ollama_unlink`, if given, is called instead of `unlink_ollama`
+    for the "ollama"/"anythingllm" keys - a caller removing many models at
+    once (e.g. `omm uninstall all`) passes `_PendingOllamaUnlinks.add` here
+    so the expensive orphaned-blob rescan runs once per models_dir at the
+    end instead of once per model (see issue #181)."""
     ollama_tag = entry.get("ollama_name") or sanitize_ollama_tag(filename)
     expected_source = MODELS_DIR / filename
     expected_sha256 = entry.get("sha256")
     if not isinstance(expected_sha256, str):
         expected_sha256 = None
+
+    def _unlink_ollama(target_models_dir: Path) -> None:
+        if defer_ollama_unlink is not None:
+            defer_ollama_unlink(target_models_dir, ollama_tag, expected_source, expected_sha256)
+        else:
+            unlink_ollama(
+                ollama_tag,
+                models_dir=target_models_dir,
+                expected_source=expected_source,
+                expected_content_sha256=expected_sha256,
+            )
+
     if key == "ollama":
-        unlink_ollama(
-            ollama_tag, expected_source=expected_source, expected_content_sha256=expected_sha256
-        )
+        _unlink_ollama(ollama_models_dir())
     elif key == "lmstudio":
         unlink_lmstudio(filename, entry.get("repo_id"))
     elif key == "jan":
         unlink_jan(ollama_tag, expected_source=expected_source)
     elif key == "anythingllm":
-        unlink_ollama(
-            ollama_tag,
-            models_dir=anythingllm_ollama_models_dir(),
-            expected_source=expected_source,
-            expected_content_sha256=expected_sha256,
-        )
+        _unlink_ollama(anythingllm_ollama_models_dir())
     elif key == "mstystudio":
         unlink_custom_directory(filename, mstystudio_models_dir())
     elif key == "textgenwebui":

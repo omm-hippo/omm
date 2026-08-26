@@ -408,7 +408,7 @@ console = Console(safe_box=platform.system() == "Windows", highlight=False)
 err_console = Console(stderr=True, safe_box=platform.system() == "Windows", highlight=False)
 
 REPO_URL = "git+https://github.com/omm-hippo/omm.git"
-COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"
+COMPATIBLE_PROGRAMS_URL = "https://omm.run/#runners"
 
 
 def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bool]:
@@ -5007,7 +5007,39 @@ def _unlink_with_retry(path: Path, *, attempts: int = 8) -> None:
             time.sleep(min(0.1 * (2**attempt), 1.0))
 
 
-def _remove_one(filename: str, entry: dict) -> None:
+class _PendingOllamaUnlinks:
+    """Collects `unlink_ollama` calls made while removing several models in
+    one command (`omm uninstall all`) so the expensive final orphaned-blob
+    rescan of the manifest tree runs once per models_dir at the end instead
+    of once per model (see issue #181)."""
+
+    def __init__(self) -> None:
+        self._specs: dict[Path, list[tuple[str, Path | None, str | None]]] = {}
+
+    def add(
+        self,
+        models_dir: Path,
+        model_name: str,
+        expected_source: Path | None,
+        expected_content_sha256: str | None,
+    ) -> None:
+        self._specs.setdefault(models_dir, []).append(
+            (model_name, expected_source, expected_content_sha256)
+        )
+
+    def flush(self) -> None:
+        for models_dir, specs in self._specs.items():
+            linker.unlink_ollama_batch(specs, models_dir=models_dir)
+        self._specs.clear()
+
+
+def _remove_one(
+    filename: str,
+    entry: dict,
+    *,
+    ollama_tag: str | None = None,
+    pending_ollama_unlinks: "_PendingOllamaUnlinks | None" = None,
+) -> None:
     try:
         dest = _managed_model_path(filename)
     except ModelResolutionError as error:
@@ -5018,13 +5050,23 @@ def _remove_one(filename: str, entry: dict) -> None:
         registry.remove_entry(filename)
         return
     linked = entry.get("linked", {})
-    ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
+    if ollama_tag is None:
+        ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
     if linked.get("ollama") and benchmark.ollama_daemon_reachable():
         quality_mod.ensure_model_unloaded(ollama_tag, max_wait_seconds=10)
     for spec in linker.ENGINES:
         if linked.get(spec.key):
             try:
-                linker.unlink_engine(spec.key, filename, entry)
+                linker.unlink_engine(
+                    spec.key,
+                    filename,
+                    entry,
+                    defer_ollama_unlink=(
+                        pending_ollama_unlinks.add
+                        if pending_ollama_unlinks is not None
+                        else None
+                    ),
+                )
             except linker.LinkError as error:
                 err_console.print(
                     f"[warning]{filename}: {spec.label} cleanup skipped: {error}[/warning]"
@@ -5070,8 +5112,21 @@ def remove(
         if not _global_opts().yes and not _ask_confirm(f"Uninstall all {len(reg)} model(s)?"):
             err_console.print("[warning]Cancelled.[/warning]")
             raise typer.Exit(0)
-        for name, entry in list(reg.items()):
-            _remove_one(name, entry)
+        reg_items = list(reg.items())
+        # Resolved once for every entry instead of once per removal below,
+        # and their Ollama-manifest deletions batched through
+        # pending_ollama_unlinks - both would otherwise re-walk the whole
+        # Ollama manifest tree per model removed (see issue #181).
+        resolved_ollama_tags = linker.resolve_ollama_runtime_names_batch(reg_items)
+        pending_ollama_unlinks = _PendingOllamaUnlinks()
+        for name, entry in reg_items:
+            _remove_one(
+                name,
+                entry,
+                ollama_tag=resolved_ollama_tags.get(name),
+                pending_ollama_unlinks=pending_ollama_unlinks,
+            )
+        pending_ollama_unlinks.flush()
         return
 
     filename = _resolve_ref(filename)
@@ -5146,11 +5201,24 @@ def _compatibility_model_ref(filename: str, entry: dict, engine: str) -> Runtime
         )
         return RuntimeModelRef(tag, aliases)
     repo_id = entry.get("repo_id")
-    key = repo_id if isinstance(repo_id, str) and "/" in repo_id else f"local/{Path(filename).stem}"
+    # LM Studio's real modelKey (lowercase, publisher folder stripped, and
+    # any quant suffix shared with the GGUF's own quant stripped too - see
+    # linker._lmstudio_model_key's docstring) is never the repo_id/filename
+    # guess below. resolve_lmstudio_model() gets it right by matching the
+    # on-disk path against `lms ls --json`, same as the install-time
+    # benchmark path already does; only fall back to guessing when `lms`
+    # itself is unavailable or the model isn't visible yet.
+    resolved = linker.resolve_lmstudio_model(repo_id, filename)
+    model_key = resolved.get("model_key") if resolved else None
+    key = model_key or (
+        repo_id if isinstance(repo_id, str) and "/" in repo_id else f"local/{Path(filename).stem}"
+    )
     aliases = tuple(
-        value
-        for value in (repo_id, filename, Path(filename).stem)
-        if isinstance(value, str) and value
+        dict.fromkeys(
+            value
+            for value in (repo_id, filename, Path(filename).stem)
+            if isinstance(value, str) and value and value != key
+        )
     )
     return RuntimeModelRef(key, aliases)
 
@@ -6825,16 +6893,22 @@ def _guard_benchmark_models(models: list[str]) -> None:
     # memory-guard pre-check yet (tracked as a known gap, see Task 3's
     # report; `omm contribute` does have one via `_guard_engine_load`).
     entries = registry.load_registry()
+    ollama_entries = [
+        (filename, value)
+        for filename, value in entries.items()
+        if isinstance(filename, str) and isinstance(value, dict)
+    ]
+    # Resolved once for every entry up front instead of once per (tag, entry)
+    # pair below - each resolution can otherwise walk the whole Ollama
+    # manifest tree (see issue #181), so `len(models) * len(entries)` calls
+    # here used to mean that many full rescans.
+    runtime_names = linker.resolve_ollama_runtime_names_batch(ollama_entries)
     for tag in models:
         entry = next(
             (
                 value
-                for filename, value in entries.items()
-                if isinstance(filename, str)
-                if isinstance(value, dict)
-                and memory_guard_mod._same_ollama_id(
-                    linker.resolve_ollama_runtime_name(filename, value), tag
-                )
+                for filename, value in ollama_entries
+                if memory_guard_mod._same_ollama_id(runtime_names[filename], tag)
             ),
             None,
         )

@@ -500,10 +500,27 @@ def _lmstudio_model_metadata(tag: str, lmstudio_model: dict | None) -> dict:
     }
 
 
-def _model_metadata(tag: str, *, engine: str = "ollama", lmstudio_model: dict | None = None) -> dict:
+def _model_metadata(
+    tag: str, *, engine: str = "ollama", lmstudio_model: dict | None = None, cache: dict | None = None
+) -> dict:
+    """`cache`, if given, is a dict this function may stash the parsed
+    `/api/tags` response into (key "tags") and reuse on later calls that
+    share the same dict - one caller's shortcut for "don't refetch the
+    installed-model list per tag within a single collect_evidence batch."
+    Safe because `/api/tags` reflects installed models, not loaded state
+    (that's /api/ps); nothing this module does to a model mid-batch
+    (loading/unloading it for benchmarking) changes what's installed.
+    Never cached on failure, so a transient fetch error doesn't poison
+    every later tag in the batch - the next call just retries the fetch.
+    """
     if engine == "lmstudio":
         return _lmstudio_model_metadata(tag, lmstudio_model)
-    tags = _request_json("GET", "/api/tags", timeout=10).get("models")
+    if cache is not None and cache.get("tags") is not None:
+        tags = cache["tags"]
+    else:
+        tags = _request_json("GET", "/api/tags", timeout=10).get("models")
+        if cache is not None and isinstance(tags, list):
+            cache["tags"] = tags
     if not isinstance(tags, list):
         raise QualityEvaluationError(
             "Ollama model list is missing", failure_reason=FAILURE_REASON_UNKNOWN
@@ -1195,6 +1212,7 @@ def _evaluate_tag_once(
     engine: str = "ollama",
     lmstudio_port: int | None = None,
     lmstudio_model: dict | None = None,
+    cache: dict | None = None,
 ) -> dict:
     """One full attempt for one tag: evaluate, then always unload.
 
@@ -1219,7 +1237,7 @@ def _evaluate_tag_once(
         if engine == "lmstudio":
             metadata = _model_metadata(tag, engine="lmstudio", lmstudio_model=lmstudio_model)
         else:
-            metadata = _model_metadata(tag)
+            metadata = _model_metadata(tag, cache=cache)
         profile = tuning.recommend_runtime_settings(hardware, metadata)
         options = profile.ollama_options
         try:
@@ -1268,6 +1286,8 @@ def _confirm_generation_timeout(
     hardware: HardwareInfo,
     pack: dict,
     speed_runs: int,
+    *,
+    cache: dict | None = None,
 ) -> dict:
     """At most one confirmation attempt after a first generation_timeout.
 
@@ -1335,7 +1355,7 @@ def _confirm_generation_timeout(
     # 9. Confirmation attempt, same model/runtime, exactly once. A cold
     # start here is fine by design (see docstring) - _evaluate_tag_once
     # unloads again in its own `finally` regardless of outcome.
-    second = _evaluate_tag_once(tag, hardware, pack, speed_runs)
+    second = _evaluate_tag_once(tag, hardware, pack, speed_runs, cache=cache)
     outcome = second.get("outcome")
     if outcome == "transient_error" and second.get("failure_reason") == FAILURE_REASON_GENERATION_TIMEOUT:
         # 10. Confirmed twice under a healthy daemon: a reproducible
@@ -1411,6 +1431,11 @@ def collect_evidence(
     consecutive_daemon_failures = 0
     lmstudio_port = linker.lmstudio_server_port() if engine == "lmstudio" else None
     engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
+    # Ollama's /api/tags reflects installed models, not loaded state (that's
+    # /api/ps) - nothing this loop does to a tag (benchmark it, unload it,
+    # even restart a crashed daemon) changes what's installed, so one fetch
+    # can serve every tag in the batch. See _model_metadata's docstring.
+    metadata_cache: dict = {}
     cursor = 0
     while cursor < total:
         tag = tags[cursor]
@@ -1461,7 +1486,7 @@ def collect_evidence(
                 lmstudio_model=(lmstudio_models or {}).get(tag),
             )
         else:
-            entry = _evaluate_tag_once(tag, hardware, pack, speed_runs)
+            entry = _evaluate_tag_once(tag, hardware, pack, speed_runs, cache=metadata_cache)
         if (
             confirm_performance_timeout
             and engine == "ollama"
@@ -1471,7 +1496,7 @@ def collect_evidence(
             # Never uploaded on its own: the confirmation flow replaces this
             # first-attempt dict with the single final verdict below, so
             # exactly one event ever reaches the caller for this tag.
-            entry = _confirm_generation_timeout(tag, hardware, pack, speed_runs)
+            entry = _confirm_generation_timeout(tag, hardware, pack, speed_runs, cache=metadata_cache)
         models.append(entry)
     if engine == "lmstudio":
         engine_version = (
