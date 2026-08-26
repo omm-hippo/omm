@@ -2161,6 +2161,29 @@ def _declared_dependencies() -> list[str] | None:
     return [spec.strip() for spec in dependencies]
 
 
+def _dependency_spec_applies(spec: str) -> bool | None:
+    """Whether this dependency applies to the running interpreter.
+
+    ``None`` means the marker is outside the deliberately small supported
+    subset, so callers fail safe and refresh the pipx environment.
+    """
+    _, separator, marker = spec.partition(";")
+    if not separator or not marker.strip():
+        return True
+    marker_match = re.fullmatch(
+        r"python_version\s*(<=|>=|==|!=|<|>)\s*['\"](\d+(?:\.\d+)*)['\"]",
+        marker.strip(),
+    )
+    if marker_match is None:
+        return None
+    current = ".".join(str(value) for value in sys.version_info[:2])
+    return _compare_dotted_versions(
+        current,
+        marker_match.group(1),
+        marker_match.group(2),
+    )
+
+
 def _dependency_spec_satisfied(spec: str, installed_version: str) -> bool:
     """Conservatively evaluate the dependency forms used by this project.
 
@@ -2170,21 +2193,12 @@ def _dependency_spec_satisfied(spec: str, installed_version: str) -> bool:
     any future/unknown PEP 508 form returns ``False`` and triggers a safe pipx
     refresh instead of incorrectly declaring an old environment current.
     """
-    requirement, _, marker = spec.partition(";")
-    marker = marker.strip()
-    if marker:
-        marker_match = re.fullmatch(
-            r"python_version\s*(<=|>=|==|!=|<|>)\s*['\"](\d+(?:\.\d+)*)['\"]",
-            marker,
-        )
-        if marker_match is None:
-            return False
-        current = ".".join(str(value) for value in sys.version_info[:2])
-        applies = _compare_dotted_versions(current, marker_match.group(1), marker_match.group(2))
-        if applies is None:
-            return False
-        if not applies:
-            return True
+    requirement, _, _ = spec.partition(";")
+    applies = _dependency_spec_applies(spec)
+    if applies is None:
+        return False
+    if not applies:
+        return True
 
     match = re.fullmatch(
         r"\s*([A-Za-z0-9_.-]+)(?:\[[^\]]+\])?\s*(.*)\s*", requirement
@@ -2246,6 +2260,11 @@ def _deps_satisfied() -> bool:
     if dependencies is None:
         return False
     for spec in dependencies:
+        applies = _dependency_spec_applies(spec)
+        if applies is None:
+            return False
+        if not applies:
+            continue
         name_match = re.match(r"\s*([A-Za-z0-9_.-]+)", spec)
         if name_match is None:
             return False
