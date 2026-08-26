@@ -85,6 +85,27 @@ def test_compatibility_ref_uses_exact_imported_ollama_runtime_name(monkeypatch):
     assert "qwen3-4b" in reference.aliases
 
 
+def test_compatibility_ref_uses_resolved_lmstudio_model_key(monkeypatch):
+    # LM Studio's real modelKey (lowercase, publisher stripped, quant suffix
+    # stripped - see linker._lmstudio_model_key's docstring) never equals the
+    # naive repo_id/filename guess. Only linker.resolve_lmstudio_model's
+    # path-matched result is a modelKey LM Studio's API will actually accept.
+    monkeypatch.setattr(
+        cli.linker,
+        "resolve_lmstudio_model",
+        lambda repo_id, filename: {"model_key": "qwen2.5-0.5b-instruct"},
+    )
+
+    reference = cli._compatibility_model_ref(
+        "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        _entry(repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF"),
+        "lmstudio",
+    )
+
+    assert reference.key == "qwen2.5-0.5b-instruct"
+    assert "Qwen/Qwen2.5-0.5B-Instruct-GGUF" in reference.aliases
+
+
 def test_verify_success_records_and_reports_result(isolated_omm_home, monkeypatch):
     registry.save_registry({"model.gguf": _entry()})
     adapter = _CliAdapter()

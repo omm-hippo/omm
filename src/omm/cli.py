@@ -5125,11 +5125,24 @@ def _compatibility_model_ref(filename: str, entry: dict, engine: str) -> Runtime
         )
         return RuntimeModelRef(tag, aliases)
     repo_id = entry.get("repo_id")
-    key = repo_id if isinstance(repo_id, str) and "/" in repo_id else f"local/{Path(filename).stem}"
+    # LM Studio's real modelKey (lowercase, publisher folder stripped, and
+    # any quant suffix shared with the GGUF's own quant stripped too - see
+    # linker._lmstudio_model_key's docstring) is never the repo_id/filename
+    # guess below. resolve_lmstudio_model() gets it right by matching the
+    # on-disk path against `lms ls --json`, same as the install-time
+    # benchmark path already does; only fall back to guessing when `lms`
+    # itself is unavailable or the model isn't visible yet.
+    resolved = linker.resolve_lmstudio_model(repo_id, filename)
+    model_key = resolved.get("model_key") if resolved else None
+    key = model_key or (
+        repo_id if isinstance(repo_id, str) and "/" in repo_id else f"local/{Path(filename).stem}"
+    )
     aliases = tuple(
-        value
-        for value in (repo_id, filename, Path(filename).stem)
-        if isinstance(value, str) and value
+        dict.fromkeys(
+            value
+            for value in (repo_id, filename, Path(filename).stem)
+            if isinstance(value, str) and value and value != key
+        )
     )
     return RuntimeModelRef(key, aliases)
 
