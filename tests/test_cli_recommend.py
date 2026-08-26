@@ -49,7 +49,7 @@ def test_recommend_builds_choice_values_via_exact_install_ref(monkeypatch, isola
     captured_choices = []
     captured_options = {}
 
-    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(cli, "load_config", lambda: {})
     monkeypatch.setattr(
         cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
@@ -315,3 +315,158 @@ def test_recommend_selecting_installed_candidate_does_not_reinstall(
     assert result.exit_code == 0, result.stdout
     assert "already installed via OMM" in result.output
     assert "omm run installed.gguf" in result.output
+
+
+def _two_candidates():
+    small = {
+        "name": "small/repo",
+        "repo_id": "small/repo",
+        "filename": "small.gguf",
+        "provider": "modelscope",
+        "description": "test",
+        "size_bytes": int(1 * 1024**3),
+    }
+    big = {
+        "name": "big/repo",
+        "repo_id": "big/repo",
+        "filename": "big.gguf",
+        "provider": "modelscope",
+        "description": "test",
+        "size_bytes": int(8 * 1024**3),
+    }
+    return small, big
+
+
+def test_recommend_json_defaults_to_balanced_profile_and_filters_by_it(
+    monkeypatch, isolated_omm_home
+):
+    small, big = _two_candidates()
+    artifact = {"candidates": [small, big]}
+
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _hardware())
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor,
+        "rank_candidates",
+        lambda artifact, hw: [(small, 20.0), (big, 14.0)],
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+
+    result = runner.invoke(cli.app, ["recommend", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    rows = json.loads(result.stdout)
+    # 16GB * 0.45 (balanced) = 7.2GB - the ~9.6GB big candidate is excluded.
+    assert [row["ref"] for row in rows] == ["ms:small/repo:small.gguf"]
+    assert rows[0]["profile"] == "balanced"
+
+
+def test_recommend_json_dedicated_profile_keeps_the_larger_candidate(
+    monkeypatch, isolated_omm_home
+):
+    small, big = _two_candidates()
+    artifact = {"candidates": [small, big]}
+
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _hardware())
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor,
+        "rank_candidates",
+        lambda artifact, hw: [(small, 20.0), (big, 14.0)],
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+
+    result = runner.invoke(cli.app, ["recommend", "--json", "--profile", "dedicated"])
+
+    assert result.exit_code == 0, result.stdout
+    rows = json.loads(result.stdout)
+    refs = [row["ref"] for row in rows]
+    assert refs[0] == "ms:big/repo:big.gguf"
+    assert rows[0]["profile"] == "dedicated"
+
+
+def test_recommend_rejects_unknown_profile(monkeypatch, isolated_omm_home):
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _hardware())
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+
+    result = runner.invoke(cli.app, ["recommend", "--profile", "yolo"])
+
+    assert result.exit_code == 1
+    assert "--profile must be one of" in result.output
+
+
+def test_recommend_prompts_for_profile_on_a_tty(monkeypatch, isolated_omm_home):
+    candidate = {
+        "name": "org/repo",
+        "repo_id": "org/repo",
+        "filename": "model.gguf",
+        "provider": "modelscope",
+        "description": "test",
+    }
+    artifact = {"candidates": [candidate]}
+
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _hardware())
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor, "rank_candidates", lambda artifact, hw: [(candidate, 42.0)]
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+    # questionary.select() itself probes the console on construction - stub
+    # it out too, not just _ask_select, or this crashes on Windows CI where
+    # there's no real console behind the spoofed _stdin_is_tty.
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: object())
+
+    asked_profile_prompt = []
+
+    def fake_ask_select(select_obj):
+        # First call is the profile prompt; second is the model picker,
+        # cancelled here so the test doesn't have to drive install().
+        if not asked_profile_prompt:
+            asked_profile_prompt.append("minimal")
+            return "minimal"
+        return None
+
+    monkeypatch.setattr(cli, "_ask_select", fake_ask_select)
+
+    seen_profiles = []
+    real_filter_by_profile = cli.predictor.filter_by_profile
+
+    def spy_filter_by_profile(usable, hw, profile):
+        seen_profiles.append(profile)
+        return real_filter_by_profile(usable, hw, profile)
+
+    monkeypatch.setattr(cli.predictor, "filter_by_profile", spy_filter_by_profile)
+
+    result = runner.invoke(cli.app, ["recommend"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Cancelled" in result.output
+    assert seen_profiles == ["minimal"]
+
+
+def test_recommend_cancel_at_profile_prompt_exits_cleanly(monkeypatch, isolated_omm_home):
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _hardware())
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "_ask_select", lambda select_obj: None)
+
+    def fail(*a, **k):
+        raise AssertionError("must not fetch recommendations after cancelling the prompt")
+
+    monkeypatch.setattr(cli, "_load_recommendation_with_change_note", fail)
+
+    result = runner.invoke(cli.app, ["recommend"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Cancelled" in result.output

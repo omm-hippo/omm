@@ -286,7 +286,24 @@ def test_launch_textgenwebui_uses_platform_start_script(monkeypatch, tmp_path):
     result = launcher.launch_textgenwebui("m.gguf")
 
     assert result.ok
-    assert spawned == [(["bash", str(tmp_path / "start_linux.sh"), "--model", "m.gguf"], tmp_path)]
+    assert spawned == [(["bash", str(tmp_path / "start_linux.sh"), "--model=m.gguf"], tmp_path)]
+
+
+def test_launch_textgenwebui_binds_option_like_filename_as_model(monkeypatch, tmp_path):
+    (tmp_path / "start_linux.sh").touch()
+    monkeypatch.setattr(
+        launcher.linker, "find_textgenwebui_root", _cached(lambda: tmp_path)
+    )
+    monkeypatch.setattr(launcher.platform, "system", lambda: "Linux")
+    spawned = []
+    monkeypatch.setattr(
+        launcher, "_spawn_detached", lambda args, cwd=None: spawned.append(args)
+    )
+
+    result = launcher.launch_textgenwebui("--listen")
+
+    assert result.ok is True
+    assert spawned == [["bash", str(tmp_path / "start_linux.sh"), "--model=--listen"]]
 
 
 def test_find_windows_app_exe_matches_case_insensitively(monkeypatch, tmp_path):

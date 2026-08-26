@@ -67,3 +67,12 @@ def test_check_versions_accepts_exact_match(monkeypatch):
         pypi_url="https://pypi.test/json",
         homebrew_url="https://brew.test/omm.rb",
     ) == {"local": "1.2.3", "PyPI": "1.2.3", "Homebrew": "1.2.3"}
+
+
+def test_fetch_rejects_insecure_or_credentialed_release_url():
+    for url in ("http://example.test/release", "https://user:secret@example.test/release"):
+        with pytest.raises(
+            distribution_versions.DistributionVersionError,
+            match="credential-free HTTPS",
+        ):
+            distribution_versions._fetch(url)

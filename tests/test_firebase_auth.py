@@ -56,6 +56,20 @@ def test_get_id_token_reuses_unexpired_cache_without_network_call(isolated_omm_h
     assert calls == []
 
 
+def test_get_id_token_ignores_non_object_cache(isolated_omm_home, monkeypatch):
+    _cache_file(isolated_omm_home).parent.mkdir(parents=True, exist_ok=True)
+    _cache_file(isolated_omm_home).write_text("[]")
+    monkeypatch.setattr(firebase_auth, "_sign_up_anonymously", lambda: None)
+
+    assert firebase_auth.get_id_token() is None
+
+
+def test_session_rejects_non_finite_or_non_positive_expiry():
+    assert firebase_auth._session_from("id", "refresh", float("nan")) is None
+    assert firebase_auth._session_from("id", "refresh", float("inf")) is None
+    assert firebase_auth._session_from("id", "refresh", 0) is None
+
+
 def test_get_id_token_refreshes_when_cached_token_near_expiry(isolated_omm_home, monkeypatch):
     _cache_file(isolated_omm_home).parent.mkdir(parents=True, exist_ok=True)
     _cache_file(isolated_omm_home).write_text(

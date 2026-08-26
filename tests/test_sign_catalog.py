@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from scripts import sign_catalog
 from omm import catalog
 
@@ -41,3 +43,26 @@ def test_sign_catalog_rejects_verification_with_the_wrong_key(tmp_path):
     except catalog.CatalogVerificationError:
         raised = True
     assert raised
+
+
+def test_generate_keys_refuses_to_overwrite_existing_private_key(tmp_path):
+    private = tmp_path / "signing.key"
+    public = tmp_path / "signing.pub"
+    private.write_text("preserve")
+
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        sign_catalog.generate_keys(private, public)
+
+    assert private.read_text() == "preserve"
+    assert not public.exists()
+
+
+def test_sign_catalog_rejects_non_object_json(tmp_path):
+    private = tmp_path / "signing.key"
+    public = tmp_path / "signing.pub"
+    sign_catalog.generate_keys(private, public)
+    artifact = tmp_path / "recommend-model.json"
+    artifact.write_text("[]")
+
+    with pytest.raises(ValueError, match="JSON object"):
+        sign_catalog.sign(artifact, private, tmp_path / "manifest.json")

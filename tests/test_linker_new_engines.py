@@ -760,6 +760,28 @@ def test_find_koboldcpp_binary_returns_none_when_absent(tmp_path, monkeypatch):
     assert linker.koboldcpp_models_dir() is None
 
 
+def test_engine_discovery_ignores_unapproved_and_symlinked_roots(tmp_path, monkeypatch):
+    managed = tmp_path / "omm-owned"
+    managed.mkdir()
+    unapproved = tmp_path / "Downloads"
+    unapproved.mkdir()
+    (unapproved / "koboldcpp-malicious").write_bytes(b"x")
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: managed)
+    monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [])
+
+    assert linker.find_koboldcpp_binary() is None
+
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    (real_root / "koboldcpp-malicious").write_bytes(b"x")
+    symlinked_root = tmp_path / "symlinked-root"
+    symlinked_root.symlink_to(real_root, target_is_directory=True)
+    monkeypatch.setattr(linker, "engine_install_dir", lambda: symlinked_root)
+    linker.find_koboldcpp_binary.cache_clear()
+
+    assert linker.find_koboldcpp_binary() is None
+
+
 def test_koboldcpp_models_dir_is_sibling_of_binary(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "_HEURISTIC_SEARCH_ROOTS", [tmp_path])
     binary = tmp_path / "koboldcpp-mac-arm64"
@@ -972,6 +994,18 @@ def test_lmstudio_server_status_returns_none_on_bad_json(monkeypatch):
     assert linker._lmstudio_server_status("lms") is None
 
 
+@pytest.mark.parametrize("port", [True, 0, 65536])
+def test_lmstudio_server_status_rejects_invalid_ports(monkeypatch, port):
+    monkeypatch.setattr(
+        linker.subprocess,
+        "run",
+        lambda cmd, **kw: _FakeResult(
+            stdout=json.dumps({"running": True, "port": port})
+        ),
+    )
+    assert linker._lmstudio_server_status("lms") is None
+
+
 def test_lmstudio_server_status_returns_none_on_timeout(monkeypatch):
     def _raise(cmd, **kw):
         raise linker.subprocess.TimeoutExpired(cmd, kw.get("timeout", 5))
@@ -1171,12 +1205,23 @@ def test_verify_lmstudio_load_leaves_already_running_server_alone(tmp_path, monk
 
 def test_verify_lmstudio_load_starts_and_stops_server_when_not_running(tmp_path, monkeypatch):
     monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
-    monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: {"running": False, "port": 1234})
+    statuses = iter(
+        [
+            {"running": False, "port": 1234},
+            {"running": True, "port": 5678},
+        ]
+    )
+    monkeypatch.setattr(linker, "_lmstudio_server_status", lambda lms_path: next(statuses))
     monkeypatch.setattr(linker, "_lmstudio_model_key", lambda *a, **k: "widget")
     monkeypatch.setattr(linker, "_start_lmstudio_server", lambda lms_path: True)
     stopped = {"called": False}
     monkeypatch.setattr(linker, "_stop_lmstudio_server", lambda lms_path: stopped.__setitem__("called", True))
-    monkeypatch.setattr(linker, "_probe_lmstudio_generate", lambda port, model_key, **k: True)
+    probed = {"port": None}
+    monkeypatch.setattr(
+        linker,
+        "_probe_lmstudio_generate",
+        lambda port, model_key, **k: probed.__setitem__("port", port) or True,
+    )
     unloaded = {"model_key": None}
     monkeypatch.setattr(linker, "_lms_unload", lambda lms_path, model_key: unloaded.__setitem__("model_key", model_key))
 
@@ -1184,6 +1229,7 @@ def test_verify_lmstudio_load_starts_and_stops_server_when_not_running(tmp_path,
     assert result is True
     assert stopped["called"] is True
     assert unloaded["model_key"] == "widget"
+    assert probed["port"] == 5678
 
 
 def test_verify_lmstudio_load_none_when_server_start_fails(tmp_path, monkeypatch):
@@ -1415,4 +1461,11 @@ def test_unload_lmstudio_model_returns_true_when_successful(monkeypatch):
 
 def test_unload_lmstudio_model_returns_false_when_lms_missing(monkeypatch):
     monkeypatch.setattr(linker, "_lms_cli_path", lambda: None)
+    assert linker.unload_lmstudio_model("test-model") is False
+
+
+def test_unload_lmstudio_model_reports_cli_failure(monkeypatch):
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(linker, "_lms_unload", lambda *args: False)
+
     assert linker.unload_lmstudio_model("test-model") is False

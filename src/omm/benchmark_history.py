@@ -68,9 +68,13 @@ def _load() -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"entries": {}, "failures": {}}
+    if not isinstance(data, dict):
+        return {"entries": {}, "failures": {}}
+    entries = data.get("entries")
+    failures = data.get("failures")
     return {
-        "entries": dict(data.get("entries", {})),
-        "failures": dict(data.get("failures", {})),
+        "entries": dict(entries) if isinstance(entries, dict) else {},
+        "failures": dict(failures) if isinstance(failures, dict) else {},
     }
 
 

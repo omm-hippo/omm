@@ -7,13 +7,13 @@ quality.py's _generate_with_runtime when engine="lmstudio" is selected.
 from __future__ import annotations
 
 import platform
+import math
 import shutil
 import signal
 import statistics
 import subprocess
 import tempfile
 import time
-from pathlib import Path
 
 from omm.linker import find_ollama_executable  # noqa: F401 - re-exported for callers
 
@@ -22,6 +22,8 @@ _BENCHMARK_PROMPT = "Explain what an operating system is."
 # Matches quality._speed_probe's measured num_predict, so speed numbers from
 # this simple probe and the full `omm benchmark` speed probe stay comparable.
 _NUM_PREDICT = 64
+_MIN_TIMED_TOKENS = 2
+_MAX_PLAUSIBLE_TOKENS_PER_SECOND = 100_000.0
 _DAEMON_START_TIMEOUT = 15.0
 _last_daemon_start_error: str | None = None
 
@@ -125,7 +127,9 @@ def stop_ollama_daemon(proc: subprocess.Popen) -> None:
         try:
             proc.send_signal(signal.CTRL_BREAK_EVENT)
         except (OSError, ValueError):
-            pass
+            # If the console-control event cannot be delivered, do not wait
+            # ten seconds for a process that was never asked to stop.
+            proc.terminate()
     else:
         proc.terminate()
     try:
@@ -155,12 +159,23 @@ def benchmark_ollama(tag: str, options: dict | None = None) -> float | None:
             },
             timeout=120,
         )
+        resp.raise_for_status()
         data = resp.json()
         eval_count = data.get("eval_count")
         eval_duration = data.get("eval_duration")
-        if not eval_count or not eval_duration:
+        if (
+            not isinstance(eval_count, int)
+            or isinstance(eval_count, bool)
+            or eval_count < _MIN_TIMED_TOKENS
+            or not isinstance(eval_duration, int)
+            or isinstance(eval_duration, bool)
+            or eval_duration <= 0
+        ):
             return 0.0
-        return eval_count / (eval_duration / 1e9)
+        speed = eval_count / (eval_duration / 1e9)
+        if not math.isfinite(speed) or speed > _MAX_PLAUSIBLE_TOKENS_PER_SECOND:
+            return 0.0
+        return speed
     except (requests.RequestException, ValueError):
         return 0.0
 

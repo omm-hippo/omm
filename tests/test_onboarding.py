@@ -186,17 +186,34 @@ def test_bracket_checkbox_indicators_restore_on_exception():
 
 def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
     console = _console()
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
     monkeypatch.setattr(
         linker,
         "install_engine",
         lambda key, on_output=None: linker.EngineInstallResult(key, "installed", "ok"),
     )
 
-    onboarding.install_selected_engines(console, ["ollama"])
+    succeeded = onboarding.install_selected_engines(console, ["ollama"])
 
     output = console.file.getvalue()
     assert "Installing Ollama" in output
     assert "ok" in output
+    assert succeeded is True
+
+
+def test_install_selected_engines_reports_failed_automated_install(monkeypatch):
+    console = _console()
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
+    monkeypatch.setattr(
+        linker,
+        "install_engine",
+        lambda key, on_output=None: linker.EngineInstallResult(key, "failed", "boom"),
+    )
+
+    succeeded = onboarding.install_selected_engines(console, ["ollama"])
+
+    assert succeeded is False
+    assert "boom" in console.file.getvalue()
 
 
 def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
@@ -216,11 +233,8 @@ def test_install_selected_engines_links_out_for_unautomated_engine(monkeypatch):
     assert onboarding.COMPATIBLE_PROGRAMS_URL in output
 
 
-def test_install_selected_engines_runs_direct_installer_for_anythingllm_on_windows_x64(monkeypatch):
-    """AnythingLLM's winget package is gone, but Windows x64 now has a
-    direct vendor-installer path (linker._install_windows_direct), so the
-    wizard must hand the key to install_engine instead of linking out.
-    Uses the real has_automated_installer. ARM Windows still links out."""
+def test_install_selected_engines_links_to_manual_anythingllm_install_on_windows(monkeypatch):
+    """The mutable vendor installer is not executed without a pinned digest."""
     console = _console()
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
     monkeypatch.setattr(linker.platform, "machine", lambda: "AMD64")
@@ -233,13 +247,9 @@ def test_install_selected_engines_runs_direct_installer_for_anythingllm_on_windo
     onboarding.install_selected_engines(console, ["anythingllm"])
 
     output = console.file.getvalue()
-    assert "Installing AnythingLLM" in output
-    assert "isn't auto-installable yet" not in output
+    assert "Installing AnythingLLM" not in output
+    assert "isn't auto-installable yet" in output
 
-    console = _console()
-    monkeypatch.setattr(linker.platform, "machine", lambda: "ARM64")
-    onboarding.install_selected_engines(console, ["anythingllm"])
-    assert "isn't auto-installable yet" in console.file.getvalue()
 
 
 def test_run_wizard_completes_with_no_engines_selected(monkeypatch):
@@ -263,6 +273,19 @@ def test_run_wizard_aborts_when_engine_checklist_is_cancelled(monkeypatch):
     monkeypatch.setattr(onboarding, "run_engine_checklist", lambda c: None)
 
     with pytest.raises(typer.Abort):
+        onboarding.run_wizard(console)
+
+    assert "Setup complete" not in console.file.getvalue()
+
+
+def test_run_wizard_does_not_complete_after_selected_installer_failure(monkeypatch):
+    console = _console()
+    monkeypatch.setattr(onboarding, "run_theme_step", lambda c: "dark")
+    monkeypatch.setattr(onboarding, "print_hardware_summary", lambda c: None)
+    monkeypatch.setattr(onboarding, "run_engine_checklist", lambda c: ["ollama"])
+    monkeypatch.setattr(onboarding, "install_selected_engines", lambda c, selected: False)
+
+    with pytest.raises(typer.Exit):
         onboarding.run_wizard(console)
 
     assert "Setup complete" not in console.file.getvalue()
@@ -467,6 +490,7 @@ def test_install_selected_engines_prints_raw_installer_output_without_markup_err
     rich.errors.MarkupError and crash the wizard."""
     console = _console()
     captured = {}
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
 
     def fake_install_engine(key, on_output=None):
         captured["on_output"] = on_output
@@ -492,6 +516,7 @@ def test_install_selected_engines_prints_result_message_without_markup_errors(mo
     message shaped like a markup tag must not be eaten or raise
     rich.errors.MarkupError and crash the wizard."""
     console = _console()
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
 
     monkeypatch.setattr(
         linker,

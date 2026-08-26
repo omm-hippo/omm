@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import re
@@ -65,7 +66,13 @@ def available_ram_gb() -> float:
     interval. On Windows, ``scan_hardware`` can take several seconds and miss
     short but meaningful pressure events.
     """
-    return psutil.virtual_memory().available / (1024**3)
+    try:
+        return psutil.virtual_memory().available / (1024**3)
+    except (OSError, psutil.Error):
+        # The pressure watcher treats zero as immediate pressure and fails
+        # closed. Propagating AccessDenied from its daemon thread would stop
+        # monitoring silently while the owned model load continued.
+        return 0.0
 
 
 def sample_cpu_utilization_percent(
@@ -88,7 +95,12 @@ def sample_cpu_utilization_percent(
     """
     if isinstance(samples, bool) or not isinstance(samples, int) or not 1 <= samples <= 10:
         raise ValueError("samples must be an integer from 1 to 10")
-    if not 0 < interval_seconds <= 5:
+    if (
+        isinstance(interval_seconds, bool)
+        or not isinstance(interval_seconds, (int, float))
+        or not math.isfinite(float(interval_seconds))
+        or not 0 < interval_seconds <= 5
+    ):
         raise ValueError("interval_seconds must be greater than 0 and at most 5")
     readings = []
     for _ in range(samples):
@@ -96,7 +108,11 @@ def sample_cpu_utilization_percent(
             value = psutil.cpu_percent(interval=interval_seconds)
         except (psutil.Error, OSError, ValueError):
             return None
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
             return None
         readings.append(max(0.0, min(100.0, float(value))))
     return statistics.median(readings)
@@ -293,12 +309,13 @@ def _mac_chip_name() -> str:
 def _linux_cpu_model() -> str | None:
     """Return Linux CPU brand; platform.processor() is often only ``x86_64``."""
     try:
-        for line in open("/proc/cpuinfo", encoding="utf-8", errors="replace"):
-            key, separator, value = line.partition(":")
-            if separator and key.strip().lower() in {"model name", "hardware"}:
-                model = value.strip()
-                if model:
-                    return model
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as cpuinfo:
+            for line in cpuinfo:
+                key, separator, value = line.partition(":")
+                if separator and key.strip().lower() in {"model name", "hardware"}:
+                    model = value.strip()
+                    if model:
+                        return model
     except OSError:
         pass
     return None
@@ -521,7 +538,7 @@ def _scan_hardware() -> HardwareInfo:
         vm = psutil.virtual_memory()
         ram_total_gb = vm.total / (1024**3)
         ram_available_gb = vm.available / (1024**3)
-    except OSError:
+    except (OSError, psutil.Error):
         # A hardened sandbox/container can deny reads of the memory info
         # psutil relies on (e.g. /proc/meminfo). Fall back to the same 0.0
         # the memory guard already treats as "assume the worst and block"
@@ -535,8 +552,12 @@ def _scan_hardware() -> HardwareInfo:
     os_version = _os_version(raw_os_name)
 
     cpu_arch = platform.machine() or "unknown"
-    cpu_physical_cores = int(psutil.cpu_count(logical=False) or 0)
-    cpu_logical_cores = int(psutil.cpu_count(logical=True) or 0)
+    try:
+        cpu_physical_cores = int(psutil.cpu_count(logical=False) or 0)
+        cpu_logical_cores = int(psutil.cpu_count(logical=True) or 0)
+    except (OSError, psutil.Error, TypeError, ValueError):
+        cpu_physical_cores = 0
+        cpu_logical_cores = 0
 
     if _is_apple_silicon():
         # cpu and gpu_name both derive from the same sysctl field on Apple

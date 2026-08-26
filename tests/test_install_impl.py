@@ -340,6 +340,7 @@ def test_install_impl_telemetry_includes_model_provider(isolated_omm_home, monke
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
     _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda *args: "deadbeef")
     monkeypatch.setattr(
         cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
     )
@@ -352,6 +353,21 @@ def test_install_impl_telemetry_includes_model_provider(isolated_omm_home, monke
     cli._install_impl(_resolved(provider="modelscope"), auto_upload=True)
 
     assert captured["model_provider"] == "modelscope"
+
+
+def test_install_impl_rejects_provider_download_without_digest(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "download_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unverifiable download must not start")
+        ),
+    )
+
+    with pytest.raises(cli.DownloadError, match="did not provide a SHA-256"):
+        cli._install_impl(_resolved(provider="modelscope"))
 
 
 def test_install_impl_telemetry_defaults_provider_to_huggingface(isolated_omm_home, monkeypatch):

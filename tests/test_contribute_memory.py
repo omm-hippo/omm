@@ -75,6 +75,36 @@ def test_gguf_reader_returns_typed_scalars_and_rejects_short_prefix():
         read_gguf_metadata_bytes(data[:-1], {"feature.enabled"})
 
 
+def test_gguf_reader_skips_large_scalar_arrays_without_allocating_them(tmp_path):
+    key = b"ignored.array"
+    header = (
+        b"GGUF"
+        + struct.pack("<IQQ", 3, 0, 1)
+        + struct.pack("<Q", len(key))
+        + key
+        + struct.pack("<IIQ", 9, 4, 100_000_000)
+    )
+    path = tmp_path / "sparse.gguf"
+    with path.open("wb") as stream:
+        stream.write(header)
+        stream.seek(400_000_000 - 1, 1)
+        stream.write(b"\0")
+
+    from omm.gguf import read_gguf_metadata
+
+    assert read_gguf_metadata(path, {"wanted"}) == {}
+
+
+def test_gguf_reader_rejects_pathologically_nested_arrays():
+    nested_value = struct.pack("<IQB", 0, 1, 7)
+    for _ in range(65):
+        nested_value = struct.pack("<IQ", 9, 1) + nested_value
+    data = _gguf_bytes([_gguf_scalar("ignored", 9, nested_value)])
+
+    with pytest.raises(ValueError, match="nested too deeply"):
+        read_gguf_metadata_bytes(data, {"wanted"})
+
+
 def test_fixed_contribute_profile_is_independent_of_live_headroom():
     candidate = {"filename": "model-1B-Q4.gguf", "size_bytes": int(0.75 * 1024**3)}
 

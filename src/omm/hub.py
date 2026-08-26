@@ -58,6 +58,7 @@ class ResolvedModel:
     filename: str
     repo_id: str | None  # None when installed from a direct URL (no known repo)
     provider: str | None = None  # None when the source provider is unknown
+    expected_sha256: str | None = None
 
 
 @dataclass
@@ -69,6 +70,11 @@ class QuantVariant:
 
 
 _RAM_OVERHEAD_FACTOR = 1.2  # context/runtime slack on top of raw weight size
+_WINDOWS_RESERVED_NAMES = {
+    "con", "prn", "aux", "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
 
 
 def validate_provider(provider: str) -> str:
@@ -118,6 +124,11 @@ def validate_model_filename(filename: str) -> str:
         path.is_absolute()
         or filename != path.as_posix()
         or any(part in {"", ".", ".."} or ":" in part for part in path.parts)
+        or any(
+            part.endswith((" ", "."))
+            or part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_NAMES
+            for part in path.parts
+        )
         or not filename.lower().endswith(".gguf")
     ):
         raise ModelResolutionError(
@@ -273,9 +284,15 @@ def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> Reso
     candidates, param_count_b = module.fetch_repo_files(repo_id)
     if not candidates:
         raise ModelResolutionError(f"No .gguf files found in {provider} repo '{repo_id}'.")
-    model_candidates = [
-        validate_model_filename(c) for c in candidates if not is_mmproj_filename(c)
-    ]
+    model_candidates: list[str] = []
+    seen_candidates: set[str] = set()
+    for candidate in candidates:
+        validated = validate_model_filename(candidate)
+        identity = validated.casefold()
+        if is_mmproj_filename(validated) or identity in seen_candidates:
+            continue
+        seen_candidates.add(identity)
+        model_candidates.append(validated)
     if not model_candidates:
         raise ModelResolutionError(
             f"{provider} repo '{repo_id}' only contains a multimodal projector "
@@ -309,7 +326,9 @@ def resolve_model(model_name: str) -> ResolvedModel:
         url = huggingface.download_url(repo_id, filename)
         return ResolvedModel(url=url, filename=filename, repo_id=repo_id, provider="huggingface")
 
-    if model_name.startswith("http://") or model_name.startswith("https://"):
+    if model_name.startswith("http://"):
+        raise ModelResolutionError("direct model URLs must use HTTPS")
+    if model_name.startswith("https://"):
         parsed = urlparse(model_name)
         host = parsed.hostname or ""
         provider = _URL_HOST_PROVIDER.get(host.removeprefix("www."))
@@ -317,7 +336,18 @@ def resolve_model(model_name: str) -> ResolvedModel:
         filename = validate_model_filename(
             query_filename or parsed.path.rsplit("/", 1)[-1]
         )
-        return ResolvedModel(url=model_name, filename=filename, repo_id=None, provider=provider)
+        digest_values = parse_qs(parsed.fragment).get("sha256", [])
+        if len(digest_values) != 1 or re.fullmatch(r"[0-9a-fA-F]{64}", digest_values[0]) is None:
+            raise ModelResolutionError(
+                "direct model URLs require a #sha256=<64-hex-digest> fragment"
+            )
+        return ResolvedModel(
+            url=parsed._replace(fragment="").geturl(),
+            filename=filename,
+            repo_id=None,
+            provider=provider,
+            expected_sha256=digest_values[0].lower(),
+        )
 
     if ":" in model_name:
         prefix, rest = model_name.split(":", 1)
@@ -373,6 +403,6 @@ def resolve_model(model_name: str) -> ResolvedModel:
         fix=(
             f"Use a curated name ({', '.join(CURATED_INDEX)}), an "
             "'org/repo:file.gguf' ref (optionally prefixed 'hf:' or 'ms:'), "
-            "or a direct URL."
+            "or an HTTPS direct URL ending in #sha256=<64-hex-digest>."
         ),
     )

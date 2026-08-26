@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -30,6 +31,7 @@ OMM_ARCHIVE_PATTERN = re.compile(
     r"omm[_-]model[-_]([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz"
 )
 FETCH_TIMEOUT_SECONDS = 30
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
 class DistributionVersionError(RuntimeError):
@@ -37,10 +39,27 @@ class DistributionVersionError(RuntimeError):
 
 
 def _fetch(url: str) -> bytes:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError as error:
+        raise DistributionVersionError(f"invalid release URL {url!r}") from error
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or port not in (None, 443)
+    ):
+        raise DistributionVersionError("release URLs must be credential-free HTTPS")
     request = urllib.request.Request(url, headers={"User-Agent": "omm-release-check"})
     try:
         with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
-            return response.read()
+            content = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(content) > MAX_RESPONSE_BYTES:
+                raise DistributionVersionError(f"response from {url} is too large")
+            return content
     except (OSError, urllib.error.URLError) as error:
         raise DistributionVersionError(f"could not fetch {url}: {error}") from error
 

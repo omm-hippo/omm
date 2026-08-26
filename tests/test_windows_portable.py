@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import stat
 import sys
 import zipfile
 from pathlib import Path
@@ -119,6 +120,36 @@ def test_executable_probe_checks_version_and_help(tmp_path, monkeypatch):
         [str(executable), "--version"],
         [str(executable), "--help"],
     ]
+
+
+def test_executable_probe_rejects_version_prefix_match(tmp_path, monkeypatch):
+    executable = tmp_path / "omm.exe"
+    executable.write_bytes(b"MZ executable")
+
+    def fake_run(command, **kwargs):
+        output = "omm 1.2.30" if command[-1] == "--version" else "Example usage:"
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(windows_portable.subprocess, "run", fake_run)
+
+    with pytest.raises(windows_portable.WindowsPortableError, match="expected version"):
+        windows_portable.validate_executable(executable, "1.2.3")
+
+
+def test_archive_verifier_rejects_symlink_entries(tmp_path):
+    archive = tmp_path / "omm-windows-x64-1.2.3.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        linked = zipfile.ZipInfo("omm.exe")
+        linked.create_system = 3
+        linked.external_attr = (stat.S_IFLNK | 0o777) << 16
+        bundle.writestr(linked, b"MZ-target")
+        license_info = zipfile.ZipInfo("LICENSE.txt")
+        license_info.create_system = 3
+        license_info.external_attr = (stat.S_IFREG | 0o644) << 16
+        bundle.writestr(license_info, b"MIT")
+
+    with pytest.raises(windows_portable.WindowsPortableError, match="regular file"):
+        windows_portable.verify_windows_archive(archive, "1.2.3")
 
 
 def test_windows_portable_workflow_is_pinned_and_release_gated():

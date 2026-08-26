@@ -57,14 +57,15 @@ def test_firebase_rules_make_the_host_load_reading_optional_and_bounded():
     ) in event[".validate"]
 
 
-def test_firebase_rules_keep_error_reports_unreadable_and_append_only():
+def test_firebase_rules_keep_error_reports_unreadable_and_gateway_only():
     """The whole reason error reports live outside /telemetry: that node is
     publicly readable, and error text must never be."""
     node = _rules()["error_reports"]
 
     assert node[".read"] is False
+    assert node[".write"] is False
     assert ".read" not in node["$report"]
-    assert node["$report"][".write"] == "!data.exists()"
+    assert ".write" not in node["$report"]
 
 
 def test_firebase_rules_bound_the_shape_and_size_of_an_error_report():

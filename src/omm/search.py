@@ -10,6 +10,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 from omm import hub, predictor
+from omm.featurize import is_mmproj_filename
 from omm.providers import modelscope
 
 HF_SEARCH_API = "https://huggingface.co/api/models"
@@ -69,11 +70,18 @@ def pick_gguf_file(siblings: list[dict]) -> str | None:
     guess - so any name we print for the user to copy-paste needs a concrete
     filename attached or it just fails with "specify one".
     """
-    gguf_files = [
-        s["rfilename"]
-        for s in siblings
-        if s["rfilename"].lower().endswith(".gguf") and not _SHARD_RE.search(s["rfilename"])
-    ]
+    gguf_files = []
+    for sibling in siblings:
+        if not isinstance(sibling, dict):
+            continue
+        filename = sibling.get("rfilename")
+        if (
+            isinstance(filename, str)
+            and filename.lower().endswith(".gguf")
+            and not _SHARD_RE.search(filename)
+            and not is_mmproj_filename(filename)
+        ):
+            gguf_files.append(filename)
     if not gguf_files:
         return None
     preferred = [f for f in gguf_files if _PREFERRED_QUANT_RE.search(f)]
@@ -218,9 +226,13 @@ def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> lis
         return []
 
     results = []
+    if not isinstance(payload, list):
+        return []
     for item in payload:
+        if not isinstance(item, dict):
+            continue
         repo_id = item.get("id") or item.get("modelId")
-        if not repo_id:
+        if not isinstance(repo_id, str) or not repo_id:
             continue
         if _claims_fake_provenance(repo_id):
             continue
@@ -258,33 +270,52 @@ def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list
 
     if not isinstance(payload, dict):
         return []
-    models = (payload.get("data") or {}).get("models", [])
-    gguf_tagged = [m for m in models if "library:gguf" in m.get("tags", [])]
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return []
+    models = data.get("models", [])
+    if not isinstance(models, list):
+        return []
+    gguf_tagged = [
+        model
+        for model in models
+        if isinstance(model, dict)
+        and isinstance(model.get("tags"), list)
+        and "library:gguf" in model["tags"]
+    ]
 
     candidates = [
         item
         for item in gguf_tagged[:15]
-        if item.get("id") and not _claims_fake_provenance(item["id"])
+        if isinstance(item.get("id"), str)
+        and item["id"]
+        and not _claims_fake_provenance(item["id"])
     ]
     if not candidates:
         return []
 
     def _resolve(item: dict) -> dict | None:
-        repo_id = item["id"]
         try:
+            repo_id = item["id"]
             files, _ = modelscope.fetch_repo_files(repo_id, timeout=timeout)
-        except Exception:  # noqa: BLE001 - a single bad repo shouldn't kill the search
+            filename = pick_gguf_file([{"rfilename": f} for f in files])
+            if filename is None:
+                return None
+            downloads = item.get("downloads", 0)
+            downloads_text = (
+                f"{downloads:,}"
+                if isinstance(downloads, (int, float)) and not isinstance(downloads, bool)
+                else "0"
+            )
+            return {
+                "name": repo_id,
+                "repo_id": repo_id,
+                "filename": filename,
+                "description": f"{downloads_text} downloads on ModelScope",
+                "provider": "modelscope",
+            }
+        except Exception:  # noqa: BLE001 - a single malformed repo shouldn't kill the search
             return None
-        filename = pick_gguf_file([{"rfilename": f} for f in files])
-        if filename is None:
-            return None
-        return {
-            "name": repo_id,
-            "repo_id": repo_id,
-            "filename": filename,
-            "description": f"{item.get('downloads', 0):,} downloads on ModelScope",
-            "provider": "modelscope",
-        }
 
     # Each repo needs its own file-listing call - ModelScope's list API has
     # no HF-style full=true that inlines siblings - but the calls are

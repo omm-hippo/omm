@@ -107,7 +107,7 @@ def test_git_version_ok_accepts_current_git():
     assert trust._git_version_ok() is True
 
 
-def test_verify_commit_uses_merge_commit_second_parent(repo, signing_key, allowed_signers):
+def test_verified_install_commit_selects_signed_second_parent(repo, signing_key, allowed_signers):
     """Mirrors GitHub's "create a merge commit" strategy: the merge commit
     itself is unsigned (GitHub signs it with its own key in practice), but
     the PR branch tip it wraps carries the contributor's signature."""
@@ -121,9 +121,9 @@ def test_verify_commit_uses_merge_commit_second_parent(repo, signing_key, allowe
     _run(["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "merge feature", "feature"], cwd=repo)
     merge_commit = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
 
-    ok, message = trust.verify_commit(repo, merge_commit, allowed_signers)
+    selected, message = trust.verified_install_commit(repo, merge_commit, allowed_signers)
 
-    assert ok, message
+    assert selected == feature_commit, message
     assert feature_commit[:7] in message
 
 
@@ -181,9 +181,9 @@ def test_verify_commit_rejects_nested_update_branch_merge(repo, signing_key, all
     candidate = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
 
     assert trust._signing_commit(repo, candidate) == nested_merge
-    ok, message = trust.verify_commit(repo, candidate, allowed_signers)
+    selected, message = trust.verified_install_commit(repo, candidate, allowed_signers)
 
-    assert not ok
+    assert selected is None
     assert nested_merge[:7] in message
     assert "failed signature verification" in message
 
@@ -219,6 +219,28 @@ def test_verify_commit_passes_when_merge_commit_itself_is_signed(
 
     assert ok, message
     assert merge_commit[:7] in message
+
+
+def test_verify_update_rejects_signed_parent_with_tampered_merge_result(
+    repo, signing_key, allowed_signers
+):
+    base = _commit(repo, "base")
+    default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
+    _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
+    (repo / "feature.txt").write_text("reviewed\n")
+    _run(["git", "add", "feature.txt"], cwd=repo)
+    _commit(repo, "signed feature", signing_key=signing_key)
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    _run(["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "merge", "feature"], cwd=repo)
+    (repo / "malicious.txt").write_text("not present in either parent\n")
+    _run(["git", "add", "malicious.txt"], cwd=repo)
+    _run(["git", "commit", "-q", "--amend", "--no-gpg-sign", "--no-edit"], cwd=repo)
+    target = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+
+    ok, message = trust.verify_update(repo, base, target, allowed_signers)
+
+    assert not ok
+    assert "unauthenticated merge-result tree" in message
 
 
 def test_verify_update_follows_skipped_trust_rotation(
@@ -268,6 +290,20 @@ def test_verify_update_rejects_key_that_approves_itself(
     assert not ok
     assert transition[:7] in message
     assert "trust chain stopped" in message
+
+
+def test_verify_update_rejects_replay_of_older_trusted_commit(
+    repo, signing_key, allowed_signers
+):
+    older = _commit(repo, "older signed release", signing_key=signing_key)
+    (repo / "file.txt").write_text("security fix\n")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    installed = _commit(repo, "newer signed release", signing_key=signing_key)
+
+    ok, message = trust.verify_update(repo, installed, older, allowed_signers)
+
+    assert not ok
+    assert "older than" in message
 
 
 def test_current_trust_anchor_points_at_bundled_file():

@@ -1,10 +1,14 @@
 """Tests for the localfit_server package."""
 
 import sys
+import sqlite3
 
 import pytest
+from fastapi import HTTPException, Request
 
 from localfit_server.app import BenchmarkEvent
+from localfit_server.db import BenchmarkStore
+from localfit_server import app as server_app
 from localfit_server import __main__ as server_main
 
 
@@ -15,6 +19,41 @@ def test_server_missing_extra_names_the_published_distribution(monkeypatch):
         server_main.main()
 
     assert "pip install 'omm-model[server]'" in str(exc_info.value)
+
+
+def test_store_deduplicates_exact_events_but_surfaces_other_integrity_errors(tmp_path):
+    store = BenchmarkStore(tmp_path / "localfit.db")
+    event = {
+        "recorded_at": "2026-08-26T00:00:00+00:00",
+        "engine": "ollama",
+        "benchmark_version": 1,
+        "ram_gb": 16,
+        "unified_memory": False,
+        "model_installed": "model",
+        "tokens_per_sec": 10,
+    }
+
+    first = store.insert(event)
+    duplicate = store.insert(event)
+
+    assert first.created is True
+    assert duplicate == type(duplicate)(first.id, False)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.insert({"engine": "ollama"})
+
+
+def test_remote_ingestion_requires_the_dedicated_token(monkeypatch):
+    request = Request({"type": "http", "client": ("203.0.113.10", 1234), "headers": []})
+    monkeypatch.delenv("LOCALFIT_INGEST_TOKEN", raising=False)
+    with pytest.raises(HTTPException) as missing:
+        server_app.require_ingest(request, None)
+    assert missing.value.status_code == 503
+
+    monkeypatch.setenv("LOCALFIT_INGEST_TOKEN", "secret")
+    with pytest.raises(HTTPException) as wrong:
+        server_app.require_ingest(request, "Bearer wrong")
+    assert wrong.value.status_code == 401
+    server_app.require_ingest(request, "Bearer secret")
 
 
 def test_benchmark_event_accepts_v8_chip_score_fields():

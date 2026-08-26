@@ -188,6 +188,75 @@ def test_tune_uses_live_budget_for_installed_model(monkeypatch):
     assert "Context length" in result.stdout
 
 
+def test_tune_prompts_quant_picker_for_ambiguous_repo(monkeypatch):
+    import questionary
+
+    from omm.hub import AmbiguousModelError, ResolvedModel
+
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.registry, "load_registry", lambda: {})
+
+    repo_id = "TheBloke/Llama-2-7B-GGUF"
+    chosen_filename = "llama-2-7b.Q4_K_M.gguf"
+    candidates = ["llama-2-7b.Q2_K.gguf", chosen_filename, "llama-2-7b.Q8_0.gguf"]
+
+    calls = []
+
+    def fake_resolve(name):
+        calls.append(name)
+        if name == repo_id:
+            raise AmbiguousModelError(repo_id, candidates)
+        return ResolvedModel(
+            url="https://example.com/x.gguf", filename=chosen_filename, repo_id=repo_id, provider="huggingface"
+        )
+
+    monkeypatch.setattr(cli, "resolve_model", fake_resolve)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: chosen_filename)
+
+    result = runner.invoke(cli.app, ["tune", repo_id])
+
+    assert result.exit_code == 0, result.stdout
+    assert calls == [repo_id, f"huggingface:{repo_id}:{chosen_filename}"]
+    assert "Context length" in result.stdout
+
+
+def test_tune_prompts_provider_picker_for_multi_provider_repo(monkeypatch):
+    """Same dead end the quant picker fixed, one step earlier: a bare
+    `org/repo` that both hubs carry has to ask, not exit 1."""
+    import questionary
+
+    from omm.hub import AmbiguousProviderError, ResolvedModel
+
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.registry, "load_registry", lambda: {})
+
+    repo_id = "Qwen/Qwen3-8B-GGUF"
+    filename = "Qwen3-8B-Q4_K_M.gguf"
+    calls = []
+
+    def fake_resolve(name):
+        calls.append(name)
+        if name == repo_id:
+            raise AmbiguousProviderError(repo_id, ["huggingface", "modelscope"])
+        return ResolvedModel(
+            url="https://example.com/x.gguf",
+            filename=filename,
+            repo_id=repo_id,
+            provider="modelscope",
+        )
+
+    monkeypatch.setattr(cli, "resolve_model", fake_resolve)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: "modelscope")
+
+    result = runner.invoke(cli.app, ["tune", repo_id])
+
+    assert result.exit_code == 0, result.stdout
+    assert calls == [repo_id, f"modelscope:{repo_id}"]
+    assert "Context length" in result.stdout
+
+
 def test_tune_json_output(monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     monkeypatch.setattr(

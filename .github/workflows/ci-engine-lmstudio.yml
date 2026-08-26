@@ -3,21 +3,25 @@ name: "Engine link/import check: LM Studio"
 "on":
   push:
     paths:
+      - "pyproject.toml"
       - "src/omm/linker.py"
       - "src/omm/config.py"
       - "src/omm/atomic.py"
       - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
+      - "src/omm/registry.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
       - ".github/workflows/ci-engine-lmstudio.yml"
   pull_request:
     paths:
+      - "pyproject.toml"
       - "src/omm/linker.py"
       - "src/omm/config.py"
       - "src/omm/atomic.py"
       - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
+      - "src/omm/registry.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
       - ".github/workflows/ci-engine-lmstudio.yml"
@@ -28,7 +32,7 @@ permissions:
 
 jobs:
   verify:
-    name: Real llmster/lms install + omm link/import + recognition (ubuntu-latest)
+    name: LM Studio layout fixture + omm link/import contract (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,7 +43,7 @@ jobs:
           cache: pip
       - name: Install omm
         run: python -m pip install -e .
-      - name: Install, link, import, and verify LM Studio (llmster) recognizes both directions
-        # _install_lmstudio installs llmster - LM Studio's headless
-        # CLI+daemon core, not the GUI app - so this needs no display.
-        run: python scripts/verify_engine_link.py lmstudio
+      - name: Link, import, and verify the LM Studio model-layout contract
+        # Linux automated installation is unsupported; use an inert nested
+        # model-layout fixture. This does not claim lms/daemon verification.
+        run: python scripts/verify_engine_link.py lmstudio --filesystem-fixture

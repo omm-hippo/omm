@@ -123,6 +123,11 @@ class ContributionQueue:
         self._rebuild()
 
     def _rebuild(self) -> None:
+        # Re-ranking happens after nearly every completed/deferred candidate.
+        # Preserve Phase B's turn across that rebuild; resetting it here makes
+        # a caller that marks every result seen repeatedly choose the below
+        # side and defeats the documented below/above alternation.
+        next_side_is_below = getattr(self, "_next_side_is_below", True)
         ranked = predictor.rank_candidates(self.artifact, self.hw)
         viable = [(c, s) for c, s in ranked if s > 0]
         unviable = [(c, s) for c, s in ranked if s <= 0]
@@ -135,6 +140,7 @@ class ContributionQueue:
         self._above_pool = _prefer_huggingface(unviable)
         self._below_cursor = 0
         self._above_cursor = 0
+        self._next_side_is_below = next_side_is_below
 
     def mark_seen(self, seen_ref: str) -> None:
         self._deferred_refs.discard(seen_ref)

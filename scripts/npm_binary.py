@@ -143,12 +143,15 @@ def _run_probe(executable: Path, flag: str) -> subprocess.CompletedProcess[str]:
             f"standalone command failed ({error.returncode}): {' '.join(command)}\n"
             f"stdout:\n{stdout}\nstderr:\n{stderr}"
         ) from error
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise NpmBinaryError(f"standalone command could not run: {error}") from error
 
 
 def validate_executable(executable: Path, target: str, version: str) -> None:
     _validate_magic(executable, target)
     version_result = _run_probe(executable, "--version")
-    if f"omm {version}" not in f"{version_result.stdout}\n{version_result.stderr}":
+    version_lines = f"{version_result.stdout}\n{version_result.stderr}".splitlines()
+    if f"omm {version}" not in {line.strip() for line in version_lines}:
         raise NpmBinaryError("standalone command reported the wrong version")
     help_result = _run_probe(executable, "--help")
     if "Example usage:" not in f"{help_result.stdout}\n{help_result.stderr}":
@@ -163,6 +166,9 @@ def build(output_dir: Path, expected_target: str | None = None) -> Path:
         )
     version = project_version()
     output_dir.mkdir(parents=True, exist_ok=True)
+    executable = output_dir / EXECUTABLE_NAME
+    if executable.exists() or executable.is_symlink():
+        raise NpmBinaryError(f"refusing to overwrite existing executable: {executable}")
     if not ENTRY_SCRIPT.is_file():
         raise NpmBinaryError(f"missing checked-in entry script: {ENTRY_SCRIPT}")
     with tempfile.TemporaryDirectory(prefix="omm-npm-binary-") as temporary:
@@ -173,7 +179,6 @@ def build(output_dir: Path, expected_target: str | None = None) -> Path:
             env=build_environment(),
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
-    executable = output_dir / EXECUTABLE_NAME
     executable.chmod(0o755)
     validate_executable(executable, target, version)
     return executable
@@ -192,12 +197,16 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.command == "target":
-        print(current_target())
-    elif args.command == "version":
-        print(project_version())
-    elif args.command == "build":
-        build(args.output_dir, args.expected_target)
+    try:
+        if args.command == "target":
+            print(current_target())
+        elif args.command == "version":
+            print(project_version())
+        elif args.command == "build":
+            build(args.output_dir, args.expected_target)
+    except (NpmBinaryError, OSError, subprocess.SubprocessError) as error:
+        print(f"npm binary validation failed: {error}", file=sys.stderr)
+        return 1
     return 0
 
 

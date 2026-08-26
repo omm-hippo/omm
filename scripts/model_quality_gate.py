@@ -51,17 +51,43 @@ def validate_artifact(artifact: dict, expected_feature_order: list[str]) -> None
     if not isinstance(artifact, dict):
         raise ValueError("artifact must be an object")
     version = artifact.get("model_version")
-    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-        raise ValueError("model_version must be an integer >= 1")
+    if isinstance(version, bool) or not isinstance(version, int) or not 1 <= version <= 4:
+        raise ValueError("model_version must be an integer from 1 to 4")
     if artifact.get("feature_order") != expected_feature_order:
         raise ValueError("artifact feature_order does not match the expected order")
     if not isinstance(expected_feature_order, list) or not expected_feature_order:
         raise ValueError("expected_feature_order must be a non-empty list")
+    if (
+        any(not isinstance(name, str) or not name for name in expected_feature_order)
+        or len(set(expected_feature_order)) != len(expected_feature_order)
+    ):
+        raise ValueError("expected_feature_order must contain unique non-empty strings")
     trees = artifact.get("trees")
     if not isinstance(trees, list) or not trees:
         raise ValueError("artifact must contain non-empty trees")
     for index, tree in enumerate(trees):
         _validate_node(tree, len(expected_feature_order), f"trees[{index}]")
+    candidates = artifact.get("candidates")
+    if candidates is not None:
+        if not isinstance(candidates, list):
+            raise ValueError("artifact candidates must be a list")
+        for index, candidate in enumerate(candidates):
+            if not isinstance(candidate, dict):
+                raise ValueError(f"candidates[{index}] must be an object")
+            for field in ("repo_id", "filename"):
+                value = candidate.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"candidates[{index}].{field} must be a non-empty string"
+                    )
+            provider = candidate.get("provider")
+            if provider is not None and provider not in {"huggingface", "modelscope"}:
+                raise ValueError(f"candidates[{index}].provider is unsupported")
+            size_bytes = candidate.get("size_bytes")
+            if size_bytes is not None:
+                size = _finite_number(size_bytes, f"candidates[{index}].size_bytes")
+                if size <= 0:
+                    raise ValueError(f"candidates[{index}].size_bytes must be positive")
 
 
 def _validate_examples(
@@ -83,6 +109,20 @@ def _validate_examples(
         actual_value = _finite_number(actual, f"y[{row_index}]")
         if actual_value < 0:
             raise ValueError(f"y[{row_index}] must be non-negative")
+
+
+def _validate_fit_examples(
+    examples: list[tuple[list[float], bool]], *, feature_count: int
+) -> None:
+    if not isinstance(examples, list):
+        raise ValueError("fit_examples must be a list")
+    for row_index, example in enumerate(examples):
+        if not isinstance(example, (list, tuple)) or len(example) != 2:
+            raise ValueError(f"fit_examples[{row_index}] must contain features and a label")
+        features, label = example
+        if not isinstance(label, bool):
+            raise ValueError(f"fit_examples[{row_index}] label must be boolean")
+        _validate_examples([features], [0.0], feature_count=feature_count)
 
 
 def _percentile_90(values: list[float]) -> float:
@@ -250,13 +290,17 @@ def evaluate_artifact(
     }
     fit_labels = fit_predictions = None
     if fit_examples:
+        _validate_fit_examples(fit_examples, feature_count=len(feature_order))
         fit_labels = [bool(is_fit) for _features, is_fit in fit_examples]
-        fit_predictions = [
-            _finite_number(
-                predict_ensemble(artifact["trees"], features), "fit_examples prediction"
+        fit_predictions = []
+        for index, (features, _is_fit) in enumerate(fit_examples):
+            prediction = _finite_number(
+                predict_ensemble(artifact["trees"], features),
+                f"fit_examples prediction[{index}]",
             )
-            for features, _is_fit in fit_examples
-        ]
+            if prediction < 0:
+                raise ValueError(f"fit_examples prediction[{index}] must be non-negative")
+            fit_predictions.append(prediction)
     metrics.update(
         _selection_and_fit_metrics(
             feature_order, X, y, predictions, fit_labels=fit_labels, fit_predictions=fit_predictions
@@ -471,13 +515,26 @@ def validate_dataset(
     if direct_unique < min_unique_configurations:
         raise InsufficientTelemetryError("dataset has too few unique direct-v6 configurations")
 
-    rejections = audit.get("rejections")
+    has_rejection_breakdown = "rejections" in audit
+    rejections = audit.get("rejections", {})
+    if not isinstance(rejections, dict):
+        raise ValueError("audit.rejections must be an object")
+    for reason, count in rejections.items():
+        if (
+            not isinstance(reason, str)
+            or not reason
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+        ):
+            raise ValueError("audit.rejections must map non-empty strings to non-negative integers")
+    if has_rejection_breakdown and sum(rejections.values()) != rejected_rows:
+        raise ValueError("audit.rejections must sum to audit.rejected_rows")
     excluded = 0
-    if isinstance(rejections, dict):
-        excluded = sum(
-            count for reason, count in rejections.items()
-            if reason in _INTENTIONALLY_EXCLUDED_REASONS and isinstance(count, int) and count > 0
-        )
+    excluded = sum(
+        count for reason, count in rejections.items()
+        if reason in _INTENTIONALLY_EXCLUDED_REASONS and count > 0
+    )
     effective_raw = max(0, raw_rows - excluded)
     effective_rejected = max(0, rejected_rows - excluded)
     rejection_rate = 0.0 if effective_raw == 0 else effective_rejected / effective_raw

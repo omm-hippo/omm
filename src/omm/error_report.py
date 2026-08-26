@@ -3,9 +3,10 @@
 `omm contribute` runs unattended on machines the maintainers cannot see, so
 a failure that only ever reaches the local console is effectively invisible.
 This module collects a deliberately small, scrubbed description of such a
-failure and - only with explicit consent - posts it to a *separate*,
-write-only Realtime Database channel (`/error_reports`), never the
-publicly-readable `/telemetry` node that benchmark rows use.
+failure and - only with explicit consent - posts it through a proof-of-work
+gateway to a *separate*, write-only Realtime Database channel
+(`/error_reports`), never the publicly-readable `/telemetry` node that
+benchmark rows use. Direct Firebase client writes are deliberately disabled.
 
 The structure mirrors `omm.telemetry` on purpose (pending queue, atomic
 locked writes, an attempt log, `flush_pending` on a later invocation) so
@@ -15,9 +16,9 @@ deliberate:
 * the send policy is its own config field, `error_report_send_policy`, and
   an unset policy means **never** - this feature is opt-in, while telemetry
   defaults to asking;
-* the endpoint is derived from `telemetry_endpoint` rather than configured
-  separately, so there is no second URL to keep in sync (and no endpoint
-  means the feature is simply off);
+* the hosted gateway has a paired `/error-report` route; self-hosted
+  destinations are derived from `telemetry_endpoint` rather than configured
+  separately, so there is no second URL to keep in sync;
 * the payload is an allow-list of fields (see `docs/error-reports.md`).
   Tracebacks, absolute paths, usernames, environment variables, the command
   line, and generated model text are never part of it.
@@ -120,9 +121,9 @@ def policy_is_set(config_data: dict[str, Any] | None = None) -> bool:
 def endpoint(config_data: dict[str, Any] | None = None) -> str | None:
     """Derive the error-report endpoint from `telemetry_endpoint`.
 
-    Only the last path segment is rewritten (`telemetry.json` ->
-    `error_reports.json`), so the two channels always live on the same
-    host and no second URL can drift out of sync. A telemetry endpoint
+    For self-hosted collectors, only the last path segment is rewritten
+    (`telemetry` -> `error_reports`), so the two channels always live on the
+    same host and no second URL can drift out of sync. A telemetry endpoint
     that does not end in that segment yields `None` rather than a guessed
     path - posting error data to an address nobody configured is worse
     than not reporting at all. `TELEMETRY_GATEWAY_ENDPOINT` is a special
@@ -132,13 +133,16 @@ def endpoint(config_data: dict[str, Any] | None = None) -> str | None:
     if not isinstance(value, str) or not secure_endpoint(value):
         return None
     if value == config.TELEMETRY_GATEWAY_ENDPOINT:
-        # The gateway only speaks the PoW-wrapped telemetry protocol, not
-        # raw Firebase writes - error_reports must keep going straight to
-        # Firebase, so it can't be derived by rewriting this URL's path.
+        # The gateway exposes a distinct PoW-wrapped error-report route.
         return config.ERROR_REPORTS_ENDPOINT
     try:
         parsed = urlparse(value)
     except ValueError:
+        return None
+    hostname = (parsed.hostname or "").lower()
+    if hostname.endswith(".firebaseio.com") or hostname.endswith(
+        ".firebasedatabase.app"
+    ):
         return None
     head, separator, last = parsed.path.rpartition("/")
     replacement = _TELEMETRY_SEGMENTS.get(last)
@@ -159,7 +163,7 @@ def enabled(config_data: dict[str, Any] | None = None) -> bool:
 # user component) is left alone.
 _POSIX_HOME_RE = re.compile(r"(?<![\w./])/(?:Users|home)/[^/\\\s:'\"]+")
 _WINDOWS_HOME_RE = re.compile(
-    r"(?<![\w\\/])[A-Za-z]:\\Users\\[^\\/\s:'\"]+",
+    r"(?<![\w\\/])[A-Za-z]:\\Users\\[^\\/:\"\r\n]+(?=\\|$)",
     re.IGNORECASE,
 )
 
@@ -456,20 +460,31 @@ def _post_report(report: dict[str, Any], config_data: dict[str, Any] | None = No
         log_attempt("skipped_no_endpoint")
         return False
 
-    params = {}
-    if "firebaseio.com" in target:
-        from omm import firebase_auth
-
-        id_token = firebase_auth.get_id_token()
-        # The error_reports node accepts unauthenticated writes, so a missing
-        # token is not fatal here (unlike telemetry). Attach one when we have
-        # it and carry on when we don't.
-        if id_token is not None:
-            params["auth"] = id_token
+    try:
+        target_host = (urlparse(target).hostname or "").lower()
+    except ValueError:
+        log_attempt("skipped_no_endpoint")
+        return False
+    if target_host.endswith(".firebaseio.com") or target_host.endswith(
+        ".firebasedatabase.app"
+    ):
+        log_attempt("skipped_legacy_endpoint")
+        return False
 
     wire = {key: value for key, value in report.items() if value is not None}
     try:
-        resp = requests.post(target, params=params, json=wire, timeout=5)
+        if target == config.ERROR_REPORTS_ENDPOINT:
+            from omm.telemetry import _solve_proof_of_work
+
+            event_json = json.dumps(wire, sort_keys=True, separators=(",", ":"))
+            timestamp_ms, nonce = _solve_proof_of_work(event_json)
+            resp = requests.post(
+                target,
+                json={"event_json": event_json, "timestamp": timestamp_ms, "nonce": nonce},
+                timeout=10,
+            )
+        else:
+            resp = requests.post(target, json=wire, timeout=5)
     except requests.RequestException as e:
         log_attempt("send_failed_network", str(e)[:300])
         return False

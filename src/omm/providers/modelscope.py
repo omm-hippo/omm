@@ -55,7 +55,23 @@ def _list_repo_files(repo_id: str, timeout: float = 15) -> list[dict]:
     except requests.RequestException as e:
         raise ModelResolutionError(f"Could not reach ModelScope for '{repo_id}': {e}") from e
 
-    return (payload.get("Data") or {}).get("Files", [])
+    if not isinstance(payload, dict):
+        raise ModelResolutionError(
+            f"ModelScope API returned an unexpected response for '{repo_id}'."
+        )
+    data = payload.get("Data")
+    if data is None:
+        return []
+    if not isinstance(data, dict):
+        raise ModelResolutionError(
+            f"ModelScope API returned invalid Data for '{repo_id}'."
+        )
+    files = data.get("Files", [])
+    if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
+        raise ModelResolutionError(
+            f"ModelScope API returned an invalid file list for '{repo_id}'."
+        )
+    return files
 
 
 def fetch_repo_files(repo_id: str, timeout: float = 15) -> tuple[list[str], float | None]:
@@ -95,7 +111,11 @@ def remote_file_size(repo_id: str, filename: str) -> int | None:
     for f in files:
         if f.get("Path") == filename:
             size = f.get("Size")
-            return int(size) if size else None
+            try:
+                parsed_size = int(size)
+            except (TypeError, ValueError):
+                return None
+            return parsed_size if parsed_size > 0 else None
     return None
 
 
@@ -113,5 +133,5 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
     for f in files:
         if f.get("Path") == filename:
             sha = f.get("Sha256")
-            return sha.lower() if sha else None
+            return sha.lower() if isinstance(sha, str) and sha else None
     return None

@@ -3,21 +3,25 @@ name: "Engine link/import check: text-generation-webui"
 "on":
   push:
     paths:
+      - "pyproject.toml"
       - "src/omm/linker.py"
       - "src/omm/config.py"
       - "src/omm/atomic.py"
       - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
+      - "src/omm/registry.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
       - ".github/workflows/ci-engine-textgenwebui.yml"
   pull_request:
     paths:
+      - "pyproject.toml"
       - "src/omm/linker.py"
       - "src/omm/config.py"
       - "src/omm/atomic.py"
       - "src/omm/hardware.py"
       - "src/omm/scan_import.py"
+      - "src/omm/registry.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
       - ".github/workflows/ci-engine-textgenwebui.yml"
@@ -28,7 +32,7 @@ permissions:
 
 jobs:
   verify:
-    name: Real portable release + omm link/import + filesystem recognition (ubuntu-latest)
+    name: text-generation-webui layout fixture + omm link/import contract (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,8 +43,11 @@ jobs:
           cache: pip
       - name: Install omm
         run: python -m pip install -e .
-      - name: Install, link, import, and verify text-generation-webui's models dir in both directions
+      - name: Link, import, and verify text-generation-webui's models-dir contract
         # No daemon needed: recognition here means the file lands under
         # user_data/models exactly as a real launch would find it. See
         # verify_engine_link.py's _verify_via_path.
-        run: python scripts/verify_engine_link.py textgenwebui
+        # Mutable upstream release assets have no pinned SHA-256, so product
+        # code intentionally has no automated installer. This inert layout
+        # fixture verifies discovery/link/import only, not the real runtime.
+        run: python scripts/verify_engine_link.py textgenwebui --filesystem-fixture

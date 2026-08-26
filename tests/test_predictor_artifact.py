@@ -82,3 +82,25 @@ def test_load_cached_model_returns_none_for_invalid_json_or_schema(monkeypatch, 
 
     cache_path.write_text(json.dumps({"candidates": []}))
     assert predictor.load_cached_model() is None
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "not-an-object",
+        {"repo_id": "org/model", "filename": ""},
+        {"repo_id": "org/model", "filename": "model.gguf", "provider": "unknown"},
+        {"repo_id": "org/model", "filename": "model.gguf", "size_bytes": True},
+    ],
+)
+def test_validate_model_artifact_rejects_malformed_candidates(candidate):
+    invalid = artifact()
+    invalid["candidates"] = [candidate]
+
+    with pytest.raises(ValueError):
+        predictor.validate_model_artifact(invalid)
+
+
+def test_required_memory_rejects_boolean_and_infinite_size_metadata():
+    assert predictor.estimate_required_memory_gb({"size_bytes": True}) is None
+    assert predictor.estimate_required_memory_gb({"size_bytes": float("inf")}) is None

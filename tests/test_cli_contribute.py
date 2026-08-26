@@ -184,6 +184,8 @@ def test_declines_starting_ollama_daemon_when_prompted(isolated_omm_home, monkey
     config.update_config(onboarding_completed=True)
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
     monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama.exe"))
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: None)
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: False)
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
 
     def fake_confirm(message, **k):

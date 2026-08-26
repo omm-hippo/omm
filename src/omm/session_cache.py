@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 from omm import config
+from omm.atomic import atomic_write_text, locked
 
 _MAX_SEEN = 50
 
@@ -60,27 +61,32 @@ def _session_path() -> Path | None:
     return config.OMM_HOME / "session" / f"{digest}.json"
 
 
-def _load() -> dict[str, list[str]]:
-    path = _session_path()
+def _string_list(value: object) -> list[str]:
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def _load(path: Path | None = None) -> dict[str, list[str]]:
+    path = path or _session_path()
     if path is None or not path.exists():
         return {"seen": [], "last_results": []}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"seen": [], "last_results": []}
+    if not isinstance(data, dict):
+        return {"seen": [], "last_results": []}
     return {
-        "seen": list(data.get("seen", [])),
-        "last_results": list(data.get("last_results", [])),
+        "seen": _string_list(data.get("seen")),
+        "last_results": _string_list(data.get("last_results")),
     }
 
 
-def _save(data: dict[str, list[str]]) -> None:
-    path = _session_path()
+def _save(data: dict[str, list[str]], path: Path | None = None) -> None:
+    path = path or _session_path()
     if path is None:
         return
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data), encoding="utf-8")
+        atomic_write_text(path, json.dumps(data))
     except OSError:
         pass
 
@@ -88,18 +94,32 @@ def _save(data: dict[str, list[str]]) -> None:
 def record_seen(refs: list[str]) -> None:
     if not refs:
         return
-    data = _load()
-    merged = list(refs) + [r for r in data["seen"] if r not in refs]
-    data["seen"] = merged[:_MAX_SEEN]
-    _save(data)
+    path = _session_path()
+    if path is None:
+        return
+    try:
+        with locked(path):
+            data = _load(path)
+            merged = list(refs) + [r for r in data["seen"] if r not in refs]
+            data["seen"] = merged[:_MAX_SEEN]
+            _save(data, path)
+    except OSError:
+        pass
 
 
 def record_results(refs: list[str]) -> None:
-    data = _load()
-    data["last_results"] = list(refs)
-    merged = list(refs) + [r for r in data["seen"] if r not in refs]
-    data["seen"] = merged[:_MAX_SEEN]
-    _save(data)
+    path = _session_path()
+    if path is None:
+        return
+    try:
+        with locked(path):
+            data = _load(path)
+            data["last_results"] = list(refs)
+            merged = list(refs) + [r for r in data["seen"] if r not in refs]
+            data["seen"] = merged[:_MAX_SEEN]
+            _save(data, path)
+    except OSError:
+        pass
 
 
 def load_seen() -> list[str]:

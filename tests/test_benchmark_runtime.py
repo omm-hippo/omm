@@ -75,6 +75,33 @@ def test_stop_ollama_daemon_windows_sends_ctrl_break_event(monkeypatch):
     assert calls == [("send_signal", "CTRL_BREAK")]
 
 
+def test_stop_ollama_daemon_windows_falls_back_when_ctrl_break_fails(monkeypatch):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        benchmark,
+        "signal",
+        __import__("types").SimpleNamespace(CTRL_BREAK_EVENT="CTRL_BREAK"),
+    )
+    calls = []
+
+    class _FakeProc:
+        def poll(self):
+            return None
+
+        def send_signal(self, sig):
+            raise OSError("no console")
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self, timeout=None):
+            return 0
+
+    benchmark.stop_ollama_daemon(_FakeProc())
+
+    assert calls == ["terminate"]
+
+
 def test_start_failure_keeps_original_reason(monkeypatch):
     monkeypatch.setattr(benchmark, "find_ollama_executable", lambda: Path("ollama"))
     monkeypatch.setattr(
@@ -85,3 +112,50 @@ def test_start_failure_keeps_original_reason(monkeypatch):
 
     assert benchmark.start_ollama_daemon() is None
     assert "driver initialization failed" in (benchmark.last_daemon_start_error() or "")
+
+
+def test_one_token_or_implausible_timing_is_not_a_speed_measurement(monkeypatch):
+    monkeypatch.setattr(benchmark, "ollama_daemon_reachable", lambda: True)
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+        def raise_for_status(self):
+            return None
+
+    import requests
+
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: Response({"eval_count": 1, "eval_duration": 1_000}),
+    )
+    assert benchmark.benchmark_ollama("model") == 0.0
+
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: Response({"eval_count": 64, "eval_duration": 1_000}),
+    )
+    assert benchmark.benchmark_ollama("model") == 0.0
+
+
+def test_http_error_body_is_never_accepted_as_a_speed_measurement(monkeypatch):
+    import requests
+
+    monkeypatch.setattr(benchmark, "ollama_daemon_reachable", lambda: True)
+
+    class Response:
+        def raise_for_status(self):
+            raise requests.HTTPError("500")
+
+        def json(self):
+            return {"eval_count": 64, "eval_duration": 1_000_000_000}
+
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: Response())
+
+    assert benchmark.benchmark_ollama("model") == 0.0

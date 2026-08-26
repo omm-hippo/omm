@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import re
+import stat
+import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -69,6 +73,61 @@ def test_release_bundle_rejects_unexpected_files(tmp_path):
 
     with pytest.raises(release_artifacts.ReleaseValidationError):
         release_artifacts.write_checksums(tmp_path)
+
+
+def test_sdist_identity_rejects_nested_pkg_info(tmp_path):
+    sdist = tmp_path / "example-1.0.tar.gz"
+    payload = b"Name: example\nVersion: 1.0\n\n"
+    with tarfile.open(sdist, "w:gz") as archive:
+        member = tarfile.TarInfo("example-1.0/nested/PKG-INFO")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+
+    with pytest.raises(release_artifacts.ReleaseValidationError, match="top-level"):
+        release_artifacts._sdist_identity(sdist)
+
+
+def test_wheel_identity_accepts_standard_permission_only_mode(tmp_path):
+    wheel = tmp_path / "example-1.0-py3-none-any.whl"
+    metadata = zipfile.ZipInfo("example-1.0.dist-info/METADATA")
+    metadata.create_system = 3
+    metadata.external_attr = 0o644 << 16
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(metadata, b"Name: example\nVersion: 1.0\n\n")
+
+    assert release_artifacts._wheel_identity(wheel) == ("example", "1.0")
+
+
+def test_wheel_identity_rejects_a_symlink_member(tmp_path):
+    wheel = tmp_path / "example-1.0-py3-none-any.whl"
+    metadata = zipfile.ZipInfo("example-1.0.dist-info/METADATA")
+    metadata.create_system = 3
+    metadata.external_attr = 0o644 << 16
+    linked = zipfile.ZipInfo("example/link")
+    linked.create_system = 3
+    linked.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(metadata, b"Name: example\nVersion: 1.0\n\n")
+        archive.writestr(linked, b"../../outside")
+
+    with pytest.raises(release_artifacts.ReleaseValidationError, match="unsafe member"):
+        release_artifacts._wheel_identity(wheel)
+
+
+def test_sdist_identity_rejects_links(tmp_path):
+    sdist = tmp_path / "example-1.0.tar.gz"
+    payload = b"Name: example\nVersion: 1.0\n\n"
+    with tarfile.open(sdist, "w:gz") as archive:
+        metadata = tarfile.TarInfo("example-1.0/PKG-INFO")
+        metadata.size = len(payload)
+        archive.addfile(metadata, io.BytesIO(payload))
+        linked = tarfile.TarInfo("example-1.0/link")
+        linked.type = tarfile.SYMTYPE
+        linked.linkname = "../../outside"
+        archive.addfile(linked)
+
+    with pytest.raises(release_artifacts.ReleaseValidationError, match="unsafe member"):
+        release_artifacts._sdist_identity(sdist)
 
 
 def test_checksum_manifest_rejects_unexpected_entries(tmp_path):

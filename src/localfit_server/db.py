@@ -124,17 +124,24 @@ class BenchmarkStore:
         values.append(event_json)
         placeholders = ", ".join("?" for _ in values)
         with self._session() as connection:
-            cursor = connection.execute(
-                f"INSERT OR IGNORE INTO benchmarks ({', '.join(fields)}, event_json) "
-                f"VALUES ({placeholders})",
-                values,
-            )
-            if cursor.rowcount == 1:
-                return InsertResult(int(cursor.lastrowid), True)
-            row = connection.execute(
-                "SELECT id FROM benchmarks WHERE event_hash = ?", (event_hash,)
-            ).fetchone()
-            return InsertResult(int(row["id"]), False)
+            try:
+                cursor = connection.execute(
+                    f"INSERT INTO benchmarks ({', '.join(fields)}, event_json) "
+                    f"VALUES ({placeholders})",
+                    values,
+                )
+            except sqlite3.IntegrityError:
+                # Exact retries are the only integrity conflict this method
+                # handles. `INSERT OR IGNORE` also swallowed unrelated NOT NULL
+                # and schema errors, then crashed later when no duplicate row
+                # existed, hiding the actual persistence failure.
+                row = connection.execute(
+                    "SELECT id FROM benchmarks WHERE event_hash = ?", (event_hash,)
+                ).fetchone()
+                if row is None:
+                    raise
+                return InsertResult(int(row["id"]), False)
+            return InsertResult(int(cursor.lastrowid), True)
 
     def count(self) -> int:
         with self._session() as connection:

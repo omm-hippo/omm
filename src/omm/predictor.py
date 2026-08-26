@@ -41,6 +41,20 @@ SUPPORTED_MODEL_VERSION = 4
 # re-sorted by size so the recommend list actually uses the available budget.
 MIN_USABLE_TOKENS_PER_SECOND = 5.0
 
+# How much of total RAM `recommend` is allowed to fill, keyed by how much
+# headroom the user wants left over for other work while the model runs.
+# Deliberately separate from calculate_memory_budget()'s install budget:
+# that answers "does this technically fit", this answers "how much of the
+# machine should recommend claim" - a model can fit and still peg the
+# machine for anything else running alongside it.
+RECOMMEND_PROFILES = ("dedicated", "balanced", "minimal")
+_PROFILE_RAM_RATIOS = {
+    "dedicated": 0.80,
+    "balanced": 0.45,
+    "minimal": 0.20,
+}
+DEFAULT_RECOMMEND_PROFILE = "balanced"
+
 
 def validate_model_artifact(artifact: object) -> dict:
     """Validate an untrusted JSON model before it reaches the predictor."""
@@ -56,8 +70,27 @@ def validate_model_artifact(artifact: object) -> dict:
     trees = artifact.get("trees")
     if not isinstance(trees, list) or not trees:
         raise ValueError("model artifact must contain a non-empty trees list")
-    if not isinstance(artifact.get("candidates"), list):
+    candidates = artifact.get("candidates")
+    if not isinstance(candidates, list):
         raise ValueError("model artifact candidates must be a list")
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            raise ValueError("model artifact candidates must be objects")
+        for field in ("repo_id", "filename"):
+            value = candidate.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"model artifact candidate {field} must be a non-empty string")
+        provider = candidate.get("provider")
+        if provider is not None and provider not in {"huggingface", "modelscope"}:
+            raise ValueError("model artifact candidate provider is unsupported")
+        size_bytes = candidate.get("size_bytes")
+        if size_bytes is not None and (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, (int, float))
+            or not math.isfinite(size_bytes)
+            or size_bytes <= 0
+        ):
+            raise ValueError("model artifact candidate size_bytes must be a positive finite number")
 
     def validate_node(node: object) -> None:
         if not isinstance(node, dict):
@@ -121,7 +154,12 @@ def available_model_memory_gb(hw: HardwareInfo) -> float:
 def estimate_required_memory_gb(candidate: dict) -> float | None:
     """Estimate model weights plus runtime overhead from verified metadata."""
     size_bytes = candidate.get("size_bytes")
-    if isinstance(size_bytes, (int, float)) and size_bytes > 0:
+    if (
+        isinstance(size_bytes, (int, float))
+        and not isinstance(size_bytes, bool)
+        and math.isfinite(size_bytes)
+        and size_bytes > 0
+    ):
         return float(size_bytes) / (1024**3) * MODEL_MEMORY_OVERHEAD
 
     parameters = candidate_parameter_count_billions(candidate)
@@ -136,6 +174,25 @@ def candidate_fits_memory(hw: HardwareInfo, candidate: dict) -> bool | None:
     if required is None:
         return None
     return required <= available_model_memory_gb(hw)
+
+
+def profile_memory_cap_gb(hw: HardwareInfo, profile: str) -> float:
+    """RAM ceiling `recommend` enforces for the given multitasking profile."""
+    return hw.ram_total_gb * _PROFILE_RAM_RATIOS[profile]
+
+
+def filter_by_profile(
+    usable: list[tuple[dict, float]], hw: HardwareInfo, profile: str
+) -> list[tuple[dict, float]]:
+    """Narrow an already speed-filtered candidate list to those that fit
+    inside the profile's RAM ceiling. Candidates with no memory estimate
+    are kept - there's nothing to filter them on."""
+    cap = profile_memory_cap_gb(hw, profile)
+    return [
+        (candidate, speed)
+        for candidate, speed in usable
+        if (required := estimate_required_memory_gb(candidate)) is None or required <= cap
+    ]
 
 
 def build_prediction_features(
@@ -191,6 +248,7 @@ def fetch_and_cache_model(
     validate_model_artifact(artifact)
     if bool(manifest_url) != bool(public_key):
         raise ValueError("catalog manifest URL and public key must be configured together")
+    manifest = None
     if manifest_url and public_key:
         manifest_response = requests.get(manifest_url, timeout=15)
         manifest_response.raise_for_status()
@@ -199,13 +257,33 @@ def fetch_and_cache_model(
         if not isinstance(raw_content, bytes):
             raw_content = json.dumps(artifact, separators=(",", ":")).encode()
         catalog.verify_signed_artifact(raw_content, manifest, public_key)
-    # Never preserve a corrupted cache in catalog history.  A failed or
-    # malformed prior cache is left untouched, but is not treated as a snapshot.
-    if load_cached_model() is not None:
-        catalog.archive_current_artifact(artifact_path=RECOMMEND_MODEL_PATH)
     RECOMMEND_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     with locked(RECOMMEND_MODEL_PATH):
+        # Archive and replace under the same cross-process lock. Otherwise two
+        # simultaneous refreshes can both archive the old file, then overwrite
+        # one another without ever retaining the first fresh artifact.
+        try:
+            current = validate_model_artifact(
+                json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8"))
+            )
+        except (OSError, json.JSONDecodeError, ValueError):
+            current = None
+        if current is not None:
+            catalog.archive_current_artifact(
+                artifact_path=RECOMMEND_MODEL_PATH,
+                require_signed=bool(manifest_url and public_key),
+            )
         atomic_write_text(RECOMMEND_MODEL_PATH, json.dumps(artifact) + "\n")
+        provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
+            RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
+        )
+        if manifest is not None and public_key is not None:
+            atomic_write_text(
+                provenance_path,
+                json.dumps({"manifest": manifest, "public_key": public_key}, sort_keys=True) + "\n",
+            )
+        else:
+            provenance_path.unlink(missing_ok=True)
     return artifact
 
 
