@@ -57,6 +57,7 @@ from omm import (
     onboarding,
     package_metadata,
     predictor,
+    recommend_status,
     quality as quality_mod,
     recommend_ui,
     registry,
@@ -2884,11 +2885,12 @@ def _select_recommended_model(
     info: object,
     ranked: list[tuple[dict, float | None]],
     refs: list[str],
+    installations: list[recommend_status.InstallationStatus],
 ) -> str | None:
     import questionary
 
     recommend_ui.set_no_color(_global_opts().no_color)
-    rows = recommend_ui.build_rows(ranked, refs)
+    rows = recommend_ui.build_rows(ranked, refs, installations)
     recommend_ui.print_screen(console, info, len(rows))
     choices = [
         questionary.Choice(
@@ -2913,8 +2915,12 @@ def _select_recommended_model(
     return selected
 
 
-def _print_recommend_json(ranked: list[tuple[dict, float | None]], refs: list[str]) -> None:
-    rows = recommend_ui.build_rows(ranked, refs)
+def _print_recommend_json(
+    ranked: list[tuple[dict, float | None]],
+    refs: list[str],
+    installations: list[recommend_status.InstallationStatus],
+) -> None:
+    rows = recommend_ui.build_rows(ranked, refs, installations)
     console.print_json(
         data=[
             {
@@ -2926,10 +2932,63 @@ def _print_recommend_json(ranked: list[tuple[dict, float | None]], refs: list[st
                 "use_case": row.use_case,
                 "description": row.description,
                 "warning": row.warning,
+                "installed": row.installation.installed,
+                "managed_by_omm": row.installation.managed_by_omm,
+                "installed_engines": list(row.installation.engines),
+                "installation_match": row.installation.match_kind,
             }
             for index, row in enumerate(rows)
         ]
     )
+
+
+def _first_uninstalled_ref(
+    refs: list[str], installations: list[recommend_status.InstallationStatus]
+) -> str | None:
+    return next(
+        (
+            ref
+            for ref, installation in zip(refs, installations)
+            if not installation.installed
+        ),
+        None,
+    )
+
+
+def _finish_recommendation(
+    selected: str,
+    ranked: list[tuple[dict, float | None]],
+    refs: list[str],
+    installations: list[recommend_status.InstallationStatus],
+) -> None:
+    index = refs.index(selected)
+    installation = installations[index]
+    if not installation.installed:
+        install(selected)
+        return
+
+    display_name = recommend_ui.humanize_model_name(ranked[index][0])
+    if installation.managed_by_omm:
+        message = (
+            "has the same model and parameter size as an OMM-installed model"
+            if installation.match_kind == "model_identity"
+            else "is already installed via OMM"
+        )
+        console.print(f"[success]{display_name} {message}.[/success]")
+        if installation.managed_filename:
+            console.print(
+                f"Run it now: [accent]omm run {installation.managed_filename}[/accent]"
+            )
+        return
+
+    labels = [_engine_label(engine) for engine in installation.engines]
+    location = f" in {', '.join(labels)}" if labels else ""
+    qualifier = (
+        "the same model and parameter size as an installed model"
+        if installation.match_kind == "model_identity"
+        else "already installed"
+    )
+    console.print(f"[success]{display_name} is {qualifier}{location}.[/success]")
 
 
 @app.command()
@@ -2940,8 +2999,9 @@ def recommend() -> None:
     Ranked by a model trained on real install telemetry, falling back to
     the static rules when that trained model can't be fetched.
 
-    --json prints the ranked candidates and installs nothing. --yes skips
-    the interactive picker and installs the top-ranked candidate."""
+    --json prints the ranked candidates and their local installation state,
+    and installs nothing. --yes skips the interactive picker and installs
+    the highest-ranked candidate that is not already installed."""
     import requests
 
     info = scan_hardware()
@@ -2972,18 +3032,24 @@ def recommend() -> None:
             raise typer.Exit(1)
 
         refs = [search_mod.exact_install_ref(c) for c, speed in viable]
+        installations = recommend_status.detect_installation_statuses(
+            [candidate for candidate, _speed in viable]
+        )
         session_cache.record_seen(refs)
         if json_output:
-            _print_recommend_json(viable, refs)
+            _print_recommend_json(viable, refs, installations)
             return
         if auto_yes:
-            selected = refs[0]
+            selected = _first_uninstalled_ref(refs, installations)
+            if selected is None:
+                console.print("[success]All recommended models are already installed.[/success]")
+                return
         else:
-            selected = _select_recommended_model(info, viable, refs)
+            selected = _select_recommended_model(info, viable, refs, installations)
             if selected is None:
                 err_console.print("[warning]Cancelled.[/warning]")
                 raise typer.Exit(0)
-        install(selected)
+        _finish_recommendation(selected, viable, refs, installations)
         return
 
     if not _global_opts().quiet and not json_output:
@@ -3009,19 +3075,23 @@ def recommend() -> None:
 
     ranked_rules = [(rule, None) for rule in matches]
     refs = [rule["name"] for rule in matches]
+    installations = recommend_status.detect_installation_statuses(matches)
     session_cache.record_seen(refs)
     if json_output:
-        _print_recommend_json(ranked_rules, refs)
+        _print_recommend_json(ranked_rules, refs, installations)
         return
     if auto_yes:
-        selected = refs[0]
+        selected = _first_uninstalled_ref(refs, installations)
+        if selected is None:
+            console.print("[success]All recommended models are already installed.[/success]")
+            return
     else:
-        selected = _select_recommended_model(info, ranked_rules, refs)
+        selected = _select_recommended_model(info, ranked_rules, refs, installations)
         if selected is None:
             err_console.print("[warning]Cancelled.[/warning]")
             raise typer.Exit(0)
 
-    install(selected)
+    _finish_recommendation(selected, ranked_rules, refs, installations)
 
 
 def _print_runtime_profile(profile: tuning.RuntimeProfile) -> None:
