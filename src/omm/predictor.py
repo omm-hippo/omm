@@ -41,6 +41,20 @@ SUPPORTED_MODEL_VERSION = 4
 # re-sorted by size so the recommend list actually uses the available budget.
 MIN_USABLE_TOKENS_PER_SECOND = 5.0
 
+# How much of total RAM `recommend` is allowed to fill, keyed by how much
+# headroom the user wants left over for other work while the model runs.
+# Deliberately separate from calculate_memory_budget()'s install budget:
+# that answers "does this technically fit", this answers "how much of the
+# machine should recommend claim" - a model can fit and still peg the
+# machine for anything else running alongside it.
+RECOMMEND_PROFILES = ("dedicated", "balanced", "minimal")
+_PROFILE_RAM_RATIOS = {
+    "dedicated": 0.80,
+    "balanced": 0.45,
+    "minimal": 0.20,
+}
+DEFAULT_RECOMMEND_PROFILE = "balanced"
+
 
 def validate_model_artifact(artifact: object) -> dict:
     """Validate an untrusted JSON model before it reaches the predictor."""
@@ -160,6 +174,25 @@ def candidate_fits_memory(hw: HardwareInfo, candidate: dict) -> bool | None:
     if required is None:
         return None
     return required <= available_model_memory_gb(hw)
+
+
+def profile_memory_cap_gb(hw: HardwareInfo, profile: str) -> float:
+    """RAM ceiling `recommend` enforces for the given multitasking profile."""
+    return hw.ram_total_gb * _PROFILE_RAM_RATIOS[profile]
+
+
+def filter_by_profile(
+    usable: list[tuple[dict, float]], hw: HardwareInfo, profile: str
+) -> list[tuple[dict, float]]:
+    """Narrow an already speed-filtered candidate list to those that fit
+    inside the profile's RAM ceiling. Candidates with no memory estimate
+    are kept - there's nothing to filter them on."""
+    cap = profile_memory_cap_gb(hw, profile)
+    return [
+        (candidate, speed)
+        for candidate, speed in usable
+        if (required := estimate_required_memory_gb(candidate)) is None or required <= cap
+    ]
 
 
 def build_prediction_features(

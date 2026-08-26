@@ -2935,6 +2935,7 @@ def _print_recommend_json(
     ranked: list[tuple[dict, float | None]],
     refs: list[str],
     installations: list[recommend_status.InstallationStatus],
+    profile: str,
 ) -> None:
     rows = recommend_ui.build_rows(ranked, refs, installations)
     console.print_json(
@@ -2952,6 +2953,7 @@ def _print_recommend_json(
                 "managed_by_omm": row.installation.managed_by_omm,
                 "installed_engines": list(row.installation.engines),
                 "installation_match": row.installation.match_kind,
+                "profile": profile,
             }
             for index, row in enumerate(rows)
         ]
@@ -3007,9 +3009,40 @@ def _finish_recommendation(
     console.print(f"[success]{display_name} is {qualifier}{location}.[/success]")
 
 
+_PROFILE_LABELS = {
+    "dedicated": "Dedicated - largest model that fits, other work will be slow",
+    "balanced": "Balanced - leaves room to use the computer while chatting",
+    "minimal": "Minimal footprint - prioritize multitasking over model size",
+}
+
+
+def _ask_recommend_profile() -> str | None:
+    import questionary
+
+    choices = [
+        questionary.Choice(title=_PROFILE_LABELS[p], value=p) for p in predictor.RECOMMEND_PROFILES
+    ]
+    return _ask_select(
+        questionary.select(
+            "How should this computer be shared with the LLM?",
+            choices=choices,
+            qmark="◆",
+            pointer="❯",
+            instruction="(↑↓ move · Enter select · Esc cancel)",
+        )
+    )
+
+
 @app.command()
 @global_flags
-def recommend() -> None:
+def recommend(
+    profile: str = typer.Option(
+        None,
+        "--profile",
+        help="How much of the machine to claim: dedicated, balanced, or minimal. "
+        "Prompted for interactively when omitted; defaults to balanced under --yes/--json.",
+    ),
+) -> None:
     """Suggest a model to install for this hardware.
 
     Ranked by a model trained on real install telemetry, falling back to
@@ -3025,6 +3058,21 @@ def recommend() -> None:
     json_output = _global_opts().json
     auto_yes = _global_opts().yes
 
+    if profile is not None:
+        profile = profile.casefold()
+        if profile not in predictor.RECOMMEND_PROFILES:
+            err_console.print(
+                f"[error]--profile must be one of: {', '.join(predictor.RECOMMEND_PROFILES)}.[/error]"
+            )
+            raise typer.Exit(1)
+    elif not json_output and not auto_yes and _stdin_is_tty():
+        profile = _ask_recommend_profile()
+        if profile is None:
+            err_console.print("[warning]Cancelled.[/warning]")
+            raise typer.Exit(0)
+    else:
+        profile = predictor.DEFAULT_RECOMMEND_PROFILE
+
     artifact, changed = _load_recommendation_with_change_note(config)
     if changed and not _global_opts().quiet and not json_output:
         console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
@@ -3033,7 +3081,21 @@ def recommend() -> None:
         usable = [
             (c, speed) for c, speed in ranked if speed >= predictor.MIN_USABLE_TOKENS_PER_SECOND
         ]
-        if usable:
+        within_profile = predictor.filter_by_profile(usable, info, profile)
+        if within_profile:
+            within_profile.sort(
+                key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
+                reverse=True,
+            )
+            viable = within_profile[:10]
+        elif usable:
+            # Nothing in the usable set clears the profile's RAM ceiling -
+            # relax the profile rather than show nothing.
+            if not _global_opts().quiet and not json_output:
+                console.print(
+                    f"[muted]No model both meets the speed floor and fits the '{profile}' "
+                    "profile - showing the best fit anyway.[/muted]"
+                )
             usable.sort(
                 key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
                 reverse=True,
@@ -3053,7 +3115,7 @@ def recommend() -> None:
         )
         session_cache.record_seen(refs)
         if json_output:
-            _print_recommend_json(viable, refs, installations)
+            _print_recommend_json(viable, refs, installations, profile)
             return
         if auto_yes:
             selected = _first_uninstalled_ref(refs, installations)
@@ -3080,7 +3142,10 @@ def recommend() -> None:
             pass
 
     has_gpu = info.vram_total_gb is not None
-    available_gb = calculate_memory_budget(info).install_budget_gb
+    available_gb = min(
+        calculate_memory_budget(info).install_budget_gb,
+        predictor.profile_memory_cap_gb(info, profile),
+    )
 
     rule_list = rules_mod.load_rules()
     matches = rules_mod.matching_rules(rule_list, available_gb, has_gpu=has_gpu)
@@ -3094,7 +3159,7 @@ def recommend() -> None:
     installations = recommend_status.detect_installation_statuses(matches)
     session_cache.record_seen(refs)
     if json_output:
-        _print_recommend_json(ranked_rules, refs, installations)
+        _print_recommend_json(ranked_rules, refs, installations, profile)
         return
     if auto_yes:
         selected = _first_uninstalled_ref(refs, installations)

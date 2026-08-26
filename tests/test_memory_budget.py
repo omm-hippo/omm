@@ -71,3 +71,33 @@ def test_model_fit_uses_installed_total_not_current_available_memory():
 
     assert predictor.available_model_memory_gb(hardware) == pytest.approx(19.2)
     assert predictor.candidate_fits_memory(hardware, candidate) is True
+
+
+def test_profile_memory_cap_scales_with_total_ram():
+    hardware = _hardware(ram_total_gb=8)
+
+    assert predictor.profile_memory_cap_gb(hardware, "dedicated") == pytest.approx(6.4)
+    assert predictor.profile_memory_cap_gb(hardware, "balanced") == pytest.approx(3.6)
+    assert predictor.profile_memory_cap_gb(hardware, "minimal") == pytest.approx(1.6)
+
+
+def test_filter_by_profile_drops_candidates_over_the_ram_ceiling():
+    hardware = _hardware(ram_total_gb=8)
+    small = {"name": "small", "size_bytes": int(1 * 1024**3)}
+    big = {"name": "big", "size_bytes": int(5 * 1024**3)}
+    usable = [(small, 20.0), (big, 14.0)]
+
+    balanced = predictor.filter_by_profile(usable, hardware, "balanced")
+    assert [c["name"] for c, _ in balanced] == ["small"]
+
+    dedicated = predictor.filter_by_profile(usable, hardware, "dedicated")
+    assert [c["name"] for c, _ in dedicated] == ["small", "big"]
+
+
+def test_filter_by_profile_keeps_candidates_with_no_memory_estimate():
+    hardware = _hardware(ram_total_gb=8)
+    unknown = {"name": "unknown"}
+
+    result = predictor.filter_by_profile([(unknown, 10.0)], hardware, "minimal")
+
+    assert result == [(unknown, 10.0)]
