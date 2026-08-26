@@ -3146,13 +3146,7 @@ def tune(
         }
     else:
         try:
-            resolved = resolve_model(model_name)
-        except AmbiguousModelError as e:
-            chosen = _pick_quant_variant(e)
-            if chosen is None:
-                err_console.print("[warning]Cancelled.[/warning]")
-                raise typer.Exit(0) from e
-            resolved = resolve_model(f"{e.provider}:{e.repo_id}:{chosen}")
+            resolved = _resolve_model_interactive(model_name)
         except ModelResolutionError as error:
             err_console.print(f"[error]{error}[/error]")
             raise typer.Exit(1) from error
@@ -3274,6 +3268,50 @@ def _predicted_fastest_filenames(
             predicted_speed[variant.filename] = speed
 
     return best_filenames_by_tier(variants, predicted_speed)
+
+
+def _resolve_model_interactive(model_name: str) -> ResolvedModel:
+    """`resolve_model()`, but the two "which one did you mean?" outcomes walk
+    the user through a picker instead of dead-ending on an error message: a
+    bare `org/repo` that exists on both HuggingFace and ModelScope asks which
+    provider, and a repo holding several quants asks which file. `omm search`
+    prints (and caches, for numbered refs) exactly those bare `org/repo`
+    names, so every command that takes a model name has to be able to finish
+    the job from one - not just `omm install`.
+
+    Escaping a picker exits 0 with "Cancelled.". Every other
+    ModelResolutionError propagates: only the caller knows what its own
+    failure text and suggestions should be.
+    """
+    import questionary
+
+    # Two rounds at most: picking a provider can surface a quant choice, but
+    # a quant choice is fully qualified, so nothing can still be ambiguous
+    # afterwards. Anything beyond that is a picker failing to converge, and
+    # the final call below lets its error surface instead of looping.
+    for _ in range(2):
+        try:
+            return resolve_model(model_name)
+        except AmbiguousProviderError as e:
+            choices = [
+                questionary.Choice(title=provider, value=provider) for provider in e.providers
+            ]
+            chosen_provider = _ask_select(
+                questionary.select(
+                    f"'{e.repo_id}' found on multiple providers, pick one:", choices=choices
+                )
+            )
+            if chosen_provider is None:
+                err_console.print("[warning]Cancelled.[/warning]")
+                raise typer.Exit(0) from e
+            model_name = f"{chosen_provider}:{e.repo_id}"
+        except AmbiguousModelError as e:
+            chosen = _pick_quant_variant(e)
+            if chosen is None:
+                err_console.print("[warning]Cancelled.[/warning]")
+                raise typer.Exit(0) from e
+            model_name = f"{e.provider}:{e.repo_id}:{chosen}"
+    return resolve_model(model_name)
 
 
 def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
@@ -4951,45 +4989,12 @@ def install(
     ),
 ) -> None:
     """Download a model into the central hub and link it into installed engines."""
-    import questionary
-
     if not isinstance(verify_runtime, (bool, type(None))):
         verify_runtime = None
 
     model_name = _resolve_ref(model_name)
     try:
-        resolved = resolve_model(model_name)
-    except AmbiguousModelError as e:
-        chosen = _pick_quant_variant(e)
-        if chosen is None:
-            err_console.print("[warning]Cancelled.[/warning]")
-            raise typer.Exit(0)
-        install(
-            f"{e.provider}:{e.repo_id}:{chosen}",
-            skip_unfit=skip_unfit,
-            upload=upload,
-            force=force,
-            verify_runtime=verify_runtime,
-        )
-        return
-    except AmbiguousProviderError as e:
-        choices = [
-            questionary.Choice(title=provider, value=provider) for provider in e.providers
-        ]
-        chosen_provider = _ask_select(
-            questionary.select(f"'{e.repo_id}' found on multiple providers, pick one:", choices=choices)
-        )
-        if chosen_provider is None:
-            err_console.print("[warning]Cancelled.[/warning]")
-            raise typer.Exit(0)
-        install(
-            f"{chosen_provider}:{e.repo_id}",
-            skip_unfit=skip_unfit,
-            upload=upload,
-            force=force,
-            verify_runtime=verify_runtime,
-        )
-        return
+        resolved = _resolve_model_interactive(model_name)
     except ModelResolutionError as e:
         errors.print_cli_error(err_console, str(e), fix=e.fix)
         _print_install_suggestions(model_name)
@@ -5824,13 +5829,7 @@ def fit(
         label, size_bytes = filename, int(entry["size_bytes"])
     else:
         try:
-            resolved = resolve_model(model_name)
-        except AmbiguousModelError as e:
-            chosen = _pick_quant_variant(e)
-            if chosen is None:
-                err_console.print("[warning]Cancelled.[/warning]")
-                raise typer.Exit(0) from e
-            resolved = resolve_model(f"{e.provider}:{e.repo_id}:{chosen}")
+            resolved = _resolve_model_interactive(model_name)
         except ModelResolutionError as error:
             err_console.print(f"[error]{error}[/error]")
             raise typer.Exit(1) from error
