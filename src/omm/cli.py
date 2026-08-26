@@ -3061,7 +3061,13 @@ def tune(
     else:
         try:
             resolved = resolve_model(model_name)
-        except (AmbiguousModelError, ModelResolutionError) as error:
+        except AmbiguousModelError as e:
+            chosen = _pick_quant_variant(e)
+            if chosen is None:
+                err_console.print("[warning]Cancelled.[/warning]")
+                raise typer.Exit(0) from e
+            resolved = resolve_model(f"{e.provider}:{e.repo_id}:{chosen}")
+        except ModelResolutionError as error:
             err_console.print(f"[error]{error}[/error]")
             raise typer.Exit(1) from error
         candidate = {
@@ -5728,6 +5734,12 @@ def fit(
     else:
         try:
             resolved = resolve_model(model_name)
+        except AmbiguousModelError as e:
+            chosen = _pick_quant_variant(e)
+            if chosen is None:
+                err_console.print("[warning]Cancelled.[/warning]")
+                raise typer.Exit(0) from e
+            resolved = resolve_model(f"{e.provider}:{e.repo_id}:{chosen}")
         except ModelResolutionError as error:
             err_console.print(f"[error]{error}[/error]")
             raise typer.Exit(1) from error

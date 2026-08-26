@@ -119,6 +119,39 @@ def test_fit_command_resolves_uninstalled_models_via_remote_size(isolated_omm_ho
     assert "4.07 GB MODEL" in result.stdout
 
 
+def test_fit_command_prompts_quant_picker_for_ambiguous_repo(isolated_omm_home, monkeypatch):
+    import questionary
+
+    from omm.hub import AmbiguousModelError, ResolvedModel
+
+    monkeypatch.setattr(cli, "scan_hardware", _hw)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo, filename: 4_368_439_584)
+
+    repo_id = "TheBloke/Llama-2-7B-GGUF"
+    chosen_filename = "llama-2-7b.Q4_K_M.gguf"
+    candidates = ["llama-2-7b.Q2_K.gguf", chosen_filename, "llama-2-7b.Q8_0.gguf"]
+
+    calls = []
+
+    def fake_resolve(name):
+        calls.append(name)
+        if name == repo_id:
+            raise AmbiguousModelError(repo_id, candidates)
+        return ResolvedModel(
+            url="https://example.com/x.gguf", filename=chosen_filename, repo_id=repo_id, provider="huggingface"
+        )
+
+    monkeypatch.setattr(cli, "resolve_model", fake_resolve)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: chosen_filename)
+
+    result = runner.invoke(cli.app, ["fit", repo_id])
+
+    assert result.exit_code == 0, result.stdout
+    assert calls == [repo_id, f"huggingface:{repo_id}:{chosen_filename}"]
+    assert chosen_filename in result.stdout
+
+
 def test_info_shows_the_card_for_installed_models(isolated_omm_home, monkeypatch):
     registry.save_registry({"model.gguf": {"size_bytes": 4 * 1024**3, "linked": {}, "sha256": "abc"}})
     monkeypatch.setattr(cli, "scan_hardware", _hw)
