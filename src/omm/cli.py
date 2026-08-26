@@ -1002,7 +1002,8 @@ def ask_cmd(
         None,
         help=(
             "What you want to do with OMM, in Korean or English. "
-            "Quotes are optional."
+            "Quotes are optional for plain words; quote questions containing "
+            "shell characters such as ?, *, [, or ]."
         ),
     ),
     model: str = typer.Option(
@@ -1026,6 +1027,9 @@ def ask_cmd(
     The local model may select only from a short allowlist. OMM renders the
     command, explanation, side effects, and documentation link from its own
     maintained catalogue, and never executes the recommendation.
+
+    Shell characters such as ?, *, [, and ] must be quoted or entered through
+    the interactive prompt so zsh/bash passes them to OMM unchanged.
     """
     if engine.strip().casefold() != "ollama":
         err_console.print(

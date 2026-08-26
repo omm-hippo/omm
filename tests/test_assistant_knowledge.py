@@ -36,6 +36,8 @@ def _top(question: str) -> str | None:
         ("내 맥 성능에 맞고 코딩을 하기 좋은 AI", "recommend"),
         ("\u00a0내 맥에 맞는 AI\u00a0 추천", "recommend"),
         ("open ai 모델 추천해줘", "search"),
+        ("엔트로픽 모델 추천 가능해?", "search"),
+        ("Claude 모델을 찾아줘", "search"),
         ("qwen 모델 추천해줘", "search"),
         ("qwen 모델을 설치하고 싶어", "install"),
         ("설치된 qwen이 실제로 답을 생성하는지 확인하고 싶어", "verify"),
@@ -191,6 +193,8 @@ def test_security_terms_without_values_are_not_false_positive_secrets():
     ("question", "expected"),
     [
         ("open ai 모델 추천해줘", "openai"),
+        ("엔트로픽 모델 추천 가능해?", "anthropic"),
+        ("Claude 모델 찾아줘", "anthropic"),
         ("Qwen 모델을 찾아줘", "qwen"),
         ("Deep Seek model", "deepseek"),
         ("그냥 모델 추천해줘", None),
