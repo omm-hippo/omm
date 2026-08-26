@@ -405,7 +405,7 @@ console = Console(safe_box=platform.system() == "Windows", highlight=False)
 err_console = Console(stderr=True, safe_box=platform.system() == "Windows", highlight=False)
 
 REPO_URL = "git+https://github.com/omm-hippo/omm.git"
-COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"
+COMPATIBLE_PROGRAMS_URL = "https://omm.run/#runners"
 
 
 def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bool]:

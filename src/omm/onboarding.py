@@ -25,7 +25,7 @@ from omm import linker
 from omm import theme
 from omm.hardware import calculate_memory_budget, scan_hardware
 
-COMPATIBLE_PROGRAMS_URL = "https://github.com/omm-hippo/omm/wiki/Compatible-Programs"
+COMPATIBLE_PROGRAMS_URL = "https://omm.run/#runners"
 
 _ASCII_ART = r"""
  ██████╗ ███╗   ███╗███╗   ███╗
