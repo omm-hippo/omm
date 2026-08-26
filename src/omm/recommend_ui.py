@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from omm import predictor
+from omm import linker, predictor, recommend_status
 from omm.hardware import HardwareInfo, calculate_memory_budget
 
 ACCENT = "accent"
@@ -95,6 +95,7 @@ class RecommendationRow:
     use_case: str
     description: str
     warning: str | None
+    installation: recommend_status.InstallationStatus
 
 
 def _clip(value: str, width: int) -> str:
@@ -173,14 +174,23 @@ def _description(candidate: dict) -> str:
 def build_rows(
     ranked: list[tuple[dict, float | None]],
     values: list[str],
+    installations: list[recommend_status.InstallationStatus] | None = None,
 ) -> list[RecommendationRow]:
     if len(ranked) != len(values):
         raise ValueError("ranked candidates and install refs must have the same length")
+    if installations is None:
+        installations = [recommend_status.NOT_INSTALLED] * len(ranked)
+    if len(installations) != len(ranked):
+        raise ValueError("installation status count must match recommendation count")
     rows = []
-    for index, ((candidate, speed), value) in enumerate(zip(ranked, values)):
+    for index, ((candidate, speed), value, installation) in enumerate(
+        zip(ranked, values, installations)
+    ):
         warning = _warning(candidate)
         curated = str(candidate.get("description") or "").lower() == "curated default"
-        if index == 0 and not warning:
+        if installation.installed:
+            badge, badge_style = "INSTALLED", f"fg:{_ROW_SUCCESS} bold"
+        elif index == 0 and not warning:
             badge, badge_style = "BEST FIT", f"fg:{_ROW_SUCCESS} bold"
         elif warning:
             badge, badge_style = "⚠ CAUTION", f"fg:{_ROW_WARNING} bold"
@@ -202,6 +212,7 @@ def build_rows(
                 use_case=_use_case(candidate),
                 description=_description(candidate),
                 warning=warning,
+                installation=installation,
             )
         )
     return rows
@@ -310,7 +321,39 @@ def choice_title(row: RecommendationRow, width: int) -> list[tuple[str, str]]:
 
 def print_detail(console: Console, info: object, row: RecommendationRow) -> None:
     status = Text()
-    if row.warning:
+    if row.installation.installed:
+        status.append("✓  ", style=f"bold {SUCCESS}")
+        if row.installation.managed_by_omm:
+            if row.installation.match_kind == "model_identity":
+                status.append(
+                    "Same model and parameter size already installed via OMM",
+                    style=SUCCESS,
+                )
+            else:
+                status.append("Already installed via OMM", style=SUCCESS)
+        else:
+            labels = [
+                next(
+                    (spec.label for spec in linker.ENGINES if spec.key == engine),
+                    engine,
+                )
+                for engine in row.installation.engines
+            ]
+            if row.installation.match_kind == "model_identity":
+                status.append(
+                    "Same model and parameter size already installed"
+                    + (f" in {', '.join(labels)}" if labels else ""),
+                    style=SUCCESS,
+                )
+            else:
+                status.append(
+                    "Already installed" + (f" in {', '.join(labels)}" if labels else ""),
+                    style=SUCCESS,
+                )
+        if row.warning:
+            status.append("\n⚠  ", style=f"bold {WARNING}")
+            status.append(row.warning, style=WARNING)
+    elif row.warning:
         status.append("⚠  ", style=f"bold {WARNING}")
         status.append(row.warning, style=WARNING)
     else:
@@ -354,3 +397,7 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
     console.print(
         "[muted]Predicted speed is an estimate; actual performance can vary by runtime settings.[/muted]"
     )
+    if row.installation.match_kind == "model_identity":
+        console.print(
+            "[muted]The local runtime may use a different quantization or package of this model.[/muted]"
+        )

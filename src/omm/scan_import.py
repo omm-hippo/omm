@@ -44,6 +44,21 @@ class ExternalGguf:
     sha256: str
 
 
+@dataclass(frozen=True)
+class ExternalModelIdentity:
+    """Lightweight installed-model identity for read-only UI checks.
+
+    Unlike :class:`ExternalGguf`, this deliberately carries no digest.  A
+    recommendation screen only needs exact local identifiers; hashing every
+    multi-gigabyte GGUF merely to paint an ``INSTALLED`` badge would make the
+    command unacceptably slow.
+    """
+
+    engine: str
+    display_name: str
+    path: Path
+
+
 @dataclass
 class ModelGroup:
     sha256: str
@@ -249,6 +264,64 @@ def find_external_models(extra_path: Path | None = None) -> list[ExternalGguf]:
     )
     if extra_path is not None:
         found.extend(scan_directory(extra_path))
+    return found
+
+
+def _scan_flat_dir_identities(engine: str, base: Path) -> list[ExternalModelIdentity]:
+    if not base.exists():
+        return []
+    return [
+        ExternalModelIdentity(engine, path.name, path)
+        for path in base.rglob("*.gguf")
+        if path.is_file() and not path.is_symlink()
+    ]
+
+
+def _scan_jan_identities() -> list[ExternalModelIdentity]:
+    models_dir = linker.jan_models_dir()
+    if not models_dir.exists():
+        return []
+    jan_data_dir = linker.jan_app_dir() / "data"
+    found = []
+    for config_path in models_dir.glob("*/model.yml"):
+        model_path_str = linker.read_jan_model_path(config_path)
+        if not model_path_str:
+            continue
+        model_path = Path(model_path_str)
+        if not model_path.is_absolute():
+            model_path = jan_data_dir / model_path
+        if model_path.is_file() and not model_path.is_symlink():
+            found.append(
+                ExternalModelIdentity("jan", config_path.parent.name, model_path)
+            )
+    return found
+
+
+def find_external_model_identities() -> list[ExternalModelIdentity]:
+    """Return exact runtime/file identifiers without hashing model bytes.
+
+    This is the inexpensive counterpart to :func:`find_external_models` for
+    commands such as ``omm recommend`` that only need to distinguish an
+    already-installed model from a new one.  Import/deduplication continues
+    to use the digest-bearing scan above.
+    """
+
+    manifest_models = scan_ollama() + scan_anythingllm()
+    found = [
+        ExternalModelIdentity(item.engine, item.display_name, item.path)
+        for item in manifest_models
+    ]
+    found.extend(_scan_flat_dir_identities("lmstudio", linker.lmstudio_models_dir()))
+    found.extend(_scan_jan_identities())
+    found.extend(
+        _scan_flat_dir_identities("mstystudio", linker.mstystudio_models_dir())
+    )
+    textgen_dir = linker.textgenwebui_models_dir()
+    if textgen_dir is not None:
+        found.extend(_scan_flat_dir_identities("textgenwebui", textgen_dir))
+    kobold_dir = linker.koboldcpp_models_dir()
+    if kobold_dir is not None:
+        found.extend(_scan_flat_dir_identities("koboldcpp", kobold_dir))
     return found
 
 

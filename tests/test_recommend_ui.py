@@ -4,7 +4,7 @@ from io import StringIO
 
 from rich.console import Console
 
-from omm import recommend_ui, theme as theme_mod
+from omm import recommend_status, recommend_ui, theme as theme_mod
 from omm.hardware import HardwareInfo
 
 
@@ -107,6 +107,69 @@ def test_narrow_choice_hides_memory_column_without_losing_status():
     assert "BEST FIT" in title
     assert "~32 tok/s" in title
     assert "MEMORY" not in header
+
+
+def test_installed_candidate_has_installed_badge_and_real_source_detail():
+    candidate = {
+        "filename": "gpt-oss-20b-Q4_K_M.gguf",
+        "repo_id": "unsloth/gpt-oss-20b-GGUF",
+        "description": "test",
+    }
+    installation = recommend_status.InstallationStatus(
+        True, True, ("ollama", "lmstudio"), candidate["filename"]
+    )
+    [row] = recommend_ui.build_rows(
+        [(candidate, 30.0)],
+        ["unsloth/gpt-oss-20b-GGUF:gpt-oss-20b-Q4_K_M.gguf"],
+        [installation],
+    )
+    output = StringIO()
+    console = Console(
+        file=output,
+        width=100,
+        color_system=None,
+        force_terminal=False,
+        theme=theme_mod.build_rich_theme("dark"),
+    )
+
+    recommend_ui.print_detail(console, _hardware(), row)
+
+    assert row.badge == "INSTALLED"
+    assert "Already installed via OMM" in output.getvalue()
+
+
+def test_model_identity_match_discloses_possible_package_difference():
+    candidate = {
+        "filename": "Qwen3.5-9B-Q4_K_M.gguf",
+        "repo_id": "unsloth/Qwen3.5-9B-GGUF",
+        "description": "test",
+    }
+    installation = recommend_status.InstallationStatus(
+        True,
+        True,
+        ("ollama",),
+        "qwen3.5-9b.gguf",
+        "model_identity",
+    )
+    [row] = recommend_ui.build_rows(
+        [(candidate, 14.0)],
+        ["unsloth/Qwen3.5-9B-GGUF:Qwen3.5-9B-Q4_K_M.gguf"],
+        [installation],
+    )
+    output = StringIO()
+    console = Console(
+        file=output,
+        width=100,
+        color_system=None,
+        force_terminal=False,
+        theme=theme_mod.build_rich_theme("dark"),
+    )
+
+    recommend_ui.print_detail(console, _hardware(), row)
+
+    rendered = output.getvalue()
+    assert "Same model and parameter size already installed via OMM" in rendered
+    assert "different quantization or package" in rendered
 
 
 def test_set_no_color_disables_prompt_style_regardless_of_env(monkeypatch):
