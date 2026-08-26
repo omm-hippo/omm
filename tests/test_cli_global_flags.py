@@ -62,6 +62,8 @@ def test_no_color_flag_disables_ansi_codes(isolated_omm_home, monkeypatch):
     )
     from omm import registry
 
+    (isolated_omm_home / "models").mkdir(parents=True, exist_ok=True)
+    (isolated_omm_home / "models" / "model.gguf").write_bytes(b"")
     registry.save_registry({"model.gguf": {"size_bytes": 1024**3, "linked": {"ollama": True}}})
 
     # Rich's Console.no_color only strips color SGR codes, not every

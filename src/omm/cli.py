@@ -5984,6 +5984,24 @@ def upgrade(
         console.print(f"[success]{filename} updated to {_entry_version(fresh_entry)}.[/success]")
 
 
+def _prune_missing_models(reg: dict) -> dict:
+    """Drop registry entries whose model file no longer exists on disk
+    (e.g. deleted by hand outside omm) and persist the removal, so `list`
+    reflects the real model folder instead of stale registry state."""
+    present = {}
+    for filename, entry in reg.items():
+        try:
+            path = _managed_model_path(filename)
+        except ModelResolutionError:
+            registry.remove_entry(filename)
+            continue
+        if path.exists():
+            present[filename] = entry
+        else:
+            registry.remove_entry(filename)
+    return present
+
+
 @app.command(name="list")
 @global_flags
 def list_models(
@@ -5996,7 +6014,7 @@ def list_models(
     Alias: ls"""
     _validate_engine(engine)
     json_output = _global_opts().json
-    reg = registry.load_registry()
+    reg = _prune_missing_models(registry.load_registry())
     had_any_models = bool(reg)
     if engine is not None:
         reg = {
