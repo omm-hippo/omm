@@ -421,6 +421,10 @@ def test_recommend_prompts_for_profile_on_a_tty(monkeypatch, isolated_omm_home):
         cli.predictor, "rank_candidates", lambda artifact, hw: [(candidate, 42.0)]
     )
     monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+    # questionary.select() itself probes the console on construction - stub
+    # it out too, not just _ask_select, or this crashes on Windows CI where
+    # there's no real console behind the spoofed _stdin_is_tty.
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: object())
 
     asked_profile_prompt = []
 
@@ -454,6 +458,7 @@ def test_recommend_cancel_at_profile_prompt_exits_cleanly(monkeypatch, isolated_
     monkeypatch.setattr(cli, "scan_hardware", lambda: _hardware())
     monkeypatch.setattr(cli, "load_config", lambda: {})
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: object())
     monkeypatch.setattr(cli, "_ask_select", lambda select_obj: None)
 
     def fail(*a, **k):
