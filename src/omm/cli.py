@@ -953,7 +953,7 @@ def scan() -> None:
     installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
     reg = registry.load_registry()
     cleaned = _reconcile_stale_link_records(reg, installed)
-    external = scan_import.find_external_models()
+    external = scan_import.find_external_model_identities()
     hub_storage_gb = _hub_storage_bytes(reg) / (1024**3)
     storage_saved_gb = load_config().get("storage_saved_bytes", 0) / (1024**3)
 

@@ -24,7 +24,7 @@ def _hardware() -> HardwareInfo:
 
 def test_scan_displays_live_safe_budget(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: False)
 
     result = runner.invoke(cli.app, ["scan"])
@@ -37,7 +37,7 @@ def test_scan_displays_live_safe_budget(isolated_omm_home, monkeypatch):
 
 def test_scan_clears_stale_link_record_for_uninstalled_engine(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key != "jan")
     cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
 
@@ -57,7 +57,7 @@ def test_scan_json_includes_stale_links_key(isolated_omm_home, monkeypatch):
     import json
 
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key != "jan")
     cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
 
@@ -73,7 +73,7 @@ def test_scan_quiet_suppresses_hints_but_keeps_the_tables(isolated_omm_home, mon
     # style hints but keep the actual hardware/runner/model tables, which
     # are the result the user asked for, not decorative filler (see #80).
     monkeypatch.setattr(cli, "scan_hardware", lambda: _hardware())
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key != "jan")
     cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
 
@@ -86,7 +86,7 @@ def test_scan_quiet_suppresses_hints_but_keeps_the_tables(isolated_omm_home, mon
 
 def test_scan_leaves_link_record_untouched_when_engine_still_installed(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: True)
     cli.registry.upsert_entry("model.gguf", linked={"jan": True, "ollama": True})
 
@@ -100,7 +100,7 @@ def test_scan_leaves_link_record_untouched_when_engine_still_installed(isolated_
 
 def test_scan_repeats_link_nag_for_unblocked_engine(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key == "ollama")
     (cli.MODELS_DIR / "model.gguf").write_bytes(b"fake-gguf")
     cli.registry.upsert_entry("model.gguf", linked={"ollama": False})
@@ -117,7 +117,7 @@ def test_scan_stops_nagging_once_link_is_recorded_as_blocked(isolated_omm_home, 
     telling the user to re-run `omm link` - that retry can't succeed until
     they resolve the conflict by hand."""
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key == "ollama")
     (cli.MODELS_DIR / "model.gguf").write_bytes(b"fake-gguf")
     cli.registry.upsert_entry(
@@ -132,7 +132,7 @@ def test_scan_stops_nagging_once_link_is_recorded_as_blocked(isolated_omm_home, 
 
 def test_scan_runner_table_shows_only_installed_engines(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key == "ollama")
 
     result = runner.invoke(cli.app, ["scan"])
@@ -145,7 +145,7 @@ def test_scan_runner_table_shows_only_installed_engines(isolated_omm_home, monke
 
 def test_scan_runner_table_notes_missing_engine_count_with_link(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key == "ollama")
 
     result = runner.invoke(cli.app, ["scan"])
@@ -158,7 +158,7 @@ def test_scan_runner_table_notes_missing_engine_count_with_link(isolated_omm_hom
 
 def test_scan_runner_table_omits_note_when_all_engines_installed(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: True)
 
     result = runner.invoke(cli.app, ["scan"])
