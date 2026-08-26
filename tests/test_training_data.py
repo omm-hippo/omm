@@ -180,6 +180,31 @@ def test_v6_rejects_missing_or_invalid_direct_metadata_without_name_fallback():
     assert reason == "missing_runtime_metadata"
 
 
+@pytest.mark.parametrize(
+    ("changes", "expected_reason"),
+    [
+        ({"tokens_per_sec": True}, "invalid_measurement"),
+        ({"ram_gb": True}, "invalid_measurement"),
+        ({"unified_memory": "false"}, "invalid_measurement"),
+        ({"context_length": 4096.5}, "invalid_runtime"),
+        ({"cpu_threads": 8.5}, "invalid_runtime"),
+        ({"model_size_bytes": "4294967296"}, "invalid_model_metadata"),
+    ],
+)
+def test_direct_schema_rejects_coerced_boolean_string_and_fractional_metadata(
+    changes, expected_reason
+):
+    row = _v6_row(20)
+    row.update(changes)
+    if changes.get("tokens_per_sec") is True:
+        row["tokens_per_sec_min"] = 0
+        row["tokens_per_sec_max"] = 2
+
+    _sample, reason = train_model._real_row_to_sample(row)
+
+    assert reason == expected_reason
+
+
 def _v8_row(speed: float, **overrides) -> dict:
     defaults = dict(
         benchmark_version=8,
@@ -541,12 +566,36 @@ def test_load_telemetry_file_accepts_self_hosted_export(tmp_path):
     assert [row["tokens_per_sec"] for row in rows] == [10, 20]
 
 
+def test_load_telemetry_file_accepts_single_failure_event_without_speed(tmp_path):
+    path = tmp_path / "failure.json"
+    event = _v7_model_unfit_row()
+    path.write_text(json.dumps(event))
+
+    assert train_model.load_telemetry_file(path) == [event]
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ('{"benchmark_version": 6}\n42\n', ":2 must be a JSON object"),
+        ('[{"benchmark_version": 6}, null]', "benchmark list must contain only objects"),
+        ('{"push-a": {"benchmark_version": 6}, "push-b": null}', "mapping values must be objects"),
+    ],
+)
+def test_load_telemetry_file_rejects_non_object_rows(tmp_path, content, message):
+    path = tmp_path / "bad-rows.json"
+    path.write_text(content)
+
+    with pytest.raises(ValueError, match=message):
+        train_model.load_telemetry_file(path)
+
+
 def test_fetch_real_rows_accepts_authenticated_self_hosted_export(monkeypatch):
     captured = {}
     monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")
 
-    def fake_get(url, headers, timeout):
-        captured.update(url=url, headers=headers, timeout=timeout)
+    def fake_get(url, headers, params, timeout):
+        captured.update(url=url, headers=headers, params=params, timeout=timeout)
         return _Response({"count": 1, "benchmarks": [_row(22, engine="llama.cpp")]})
 
     monkeypatch.setattr(train_model.requests, "get", fake_get)
@@ -555,14 +604,15 @@ def test_fetch_real_rows_accepts_authenticated_self_hosted_export(monkeypatch):
 
     assert rows[0]["engine"] == "llama.cpp"
     assert captured["headers"] == {"Authorization": "Bearer secret"}
+    assert captured["params"] == {"limit": train_model.MAX_REAL_ROWS}
 
 
 def test_fetch_real_rows_omits_authorization_for_firebase_with_token(monkeypatch):
     captured = {}
     monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")
 
-    def fake_get(url, headers, timeout):
-        captured.update(url=url, headers=headers, timeout=timeout)
+    def fake_get(url, headers, params, timeout):
+        captured.update(url=url, headers=headers, params=params, timeout=timeout)
         return _Response([_row(22)])
 
     monkeypatch.setattr(train_model.requests, "get", fake_get)
@@ -570,14 +620,15 @@ def test_fetch_real_rows_omits_authorization_for_firebase_with_token(monkeypatch
     train_model.fetch_real_rows("https://project.firebaseio.com/benchmarks.json")
 
     assert "Authorization" not in captured["headers"]
+    assert captured["params"]["limitToLast"] == train_model.MAX_REAL_ROWS
 
 
 def test_fetch_real_rows_omits_authorization_when_token_is_unset(monkeypatch):
     captured = {}
     monkeypatch.delenv("LOCALFIT_ADMIN_TOKEN", raising=False)
 
-    def fake_get(url, headers, timeout):
-        captured.update(url=url, headers=headers, timeout=timeout)
+    def fake_get(url, headers, params, timeout):
+        captured.update(url=url, headers=headers, params=params, timeout=timeout)
         return _Response([_row(22)])
 
     monkeypatch.setattr(train_model.requests, "get", fake_get)
@@ -585,6 +636,17 @@ def test_fetch_real_rows_omits_authorization_when_token_is_unset(monkeypatch):
     train_model.fetch_real_rows("https://project.firebaseio.com/benchmarks.json")
 
     assert "Authorization" not in captured["headers"]
+
+
+def test_fetch_real_rows_rejects_insecure_remote_url_before_sending_token(monkeypatch):
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")
+    calls = []
+    monkeypatch.setattr(train_model.requests, "get", lambda *a, **k: calls.append((a, k)))
+
+    with pytest.raises(ValueError, match="HTTPS"):
+        train_model.fetch_real_rows("http://collector.example/v1/benchmarks/export")
+
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -673,6 +735,16 @@ def test_training_data_with_synthetic_prior_weights_real_rows(monkeypatch):
     assert X == synthetic + real
     assert y == [0.0, 10.0, 20.0]
     assert weights == [1.0, 8.0, 8.0]
+
+
+def test_configuration_median_uses_all_bounded_rows_not_only_first_fifty():
+    rows = [_v6_row(1) for _ in range(50)] + [_v6_row(100) for _ in range(51)]
+
+    _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
+
+    assert y == [100]
+    assert audit["samples_used"] == 101
+    assert audit["samples_capped"] == 0
 
 
 @pytest.mark.parametrize("weight", [0.0, -1.0, float("inf"), float("nan")])
@@ -875,7 +947,15 @@ def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchang
 def test_quality_gate_insufficient_data_republishes_baseline_unchanged(tmp_path, monkeypatch):
     output = tmp_path / "model.json"
     baseline = tmp_path / "baseline.json"
-    baseline.write_text("incumbent-output")
+    baseline.write_text(
+        json.dumps(
+            {
+                "model_version": 4,
+                "feature_order": train_model.FEATURE_ORDER,
+                "trees": [{"leaf": True, "value": 1.0}],
+            }
+        )
+    )
     quality_report = tmp_path / "quality-report.json"
     monkeypatch.setattr(train_model, "fetch_real_rows", lambda _url: [])
     monkeypatch.setattr(
@@ -898,7 +978,7 @@ def test_quality_gate_insufficient_data_republishes_baseline_unchanged(tmp_path,
 
     train_model.main()  # must not raise: too little telemetry is not a bug
 
-    assert output.read_text() == "incumbent-output"
+    assert output.read_text() == baseline.read_text()
     report = json.loads(quality_report.read_text())
     assert report["passed"] is False
     assert report["skipped"] is True
@@ -930,6 +1010,52 @@ def test_quality_gate_insufficient_data_still_requires_readable_baseline(tmp_pat
         train_model.main()
 
     assert not output.exists()
+
+
+def test_quality_gate_insufficient_data_refuses_malformed_baseline(tmp_path, monkeypatch):
+    output = tmp_path / "model.json"
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text('{"model_version": 4, "trees": []}')
+    monkeypatch.setattr(train_model, "fetch_real_rows", lambda _url: [])
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[], offline=False, telemetry_url="https://collector.example/export",
+            output=output, baseline=baseline, quality_gate=True,
+            minimum_real_configurations=100, maximum_rejection_rate=0.25,
+            holdout_fraction=0.2, quality_report=None, minimum_fit_negative_examples=5,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="feature_order"):
+        train_model.main()
+
+    assert not output.exists()
+
+
+def test_load_candidates_rejects_malformed_or_duplicate_publication(tmp_path, monkeypatch):
+    scripts_dir = tmp_path / "scripts"
+    published_dir = tmp_path / "published"
+    scripts_dir.mkdir()
+    published_dir.mkdir()
+    monkeypatch.setattr(train_model, "__file__", str(scripts_dir / "train_model.py"))
+    candidates_path = published_dir / "candidates.json"
+    candidates_path.write_text(
+        json.dumps(
+            [
+                {"name": "a", "repo_id": "org/a", "filename": "a.gguf"},
+                {"name": "a2", "repo_id": "org/a", "filename": "a.gguf"},
+            ]
+        )
+    )
+    train_model.load_candidates.cache_clear()
+
+    try:
+        with pytest.raises(ValueError, match="duplicates"):
+            train_model.load_candidates()
+    finally:
+        train_model.load_candidates.cache_clear()
 
 
 def test_offline_training_exports_v4_with_64_trees(tmp_path, monkeypatch):

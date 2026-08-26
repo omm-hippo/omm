@@ -52,7 +52,8 @@ def _powershell_exe():
 
 def _raw_stdout(command: str) -> bytes:
     """Run PowerShell the way hardware.py does, but return undecoded bytes."""
-    return subprocess.run(  # noqa: subprocess-encoding: bytes mode on purpose - this test is about what the bytes are
+    # Bytes mode is intentional: this test inspects the undecoded payload.
+    return subprocess.run(
         [_powershell_exe(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
         capture_output=True,
         timeout=30,

@@ -148,3 +148,35 @@ def test_corrupted_cache_file_is_treated_as_empty(isolated_omm_home, monkeypatch
         f.write_text("{not valid json")
 
     assert session_cache.load_seen() == []
+
+
+def test_invalid_cache_shapes_are_treated_as_empty(isolated_omm_home, monkeypatch):
+    _fake_tty(monkeypatch)
+    path = session_cache._session_path()
+    assert path is not None
+    path.parent.mkdir(parents=True)
+
+    path.write_text("[]")
+    assert session_cache.load_seen() == []
+
+    path.write_text('{"seen": "abc", "last_results": ["ok", 1]}')
+    assert session_cache.load_seen() == []
+    assert session_cache.load_last_results() == ["ok"]
+
+
+def test_concurrent_session_updates_do_not_lose_seen_refs(
+    isolated_omm_home, monkeypatch
+):
+    import threading
+
+    _fake_tty(monkeypatch)
+    threads = [
+        threading.Thread(target=session_cache.record_seen, args=([f"model-{i}"],))
+        for i in range(20)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert set(session_cache.load_seen()) == {f"model-{i}" for i in range(20)}

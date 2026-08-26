@@ -8,6 +8,14 @@ def test_loaded_refs_empty_when_no_file(isolated_omm_home):
     assert benchmark_history.loaded_refs() == set()
 
 
+def test_invalid_history_shapes_are_treated_as_empty(isolated_omm_home):
+    path = isolated_omm_home / "benchmark_history.json"
+    for payload in ([], {"entries": [], "failures": "bad"}):
+        path.write_text(json.dumps(payload))
+        assert benchmark_history.loaded_refs() == set()
+        assert benchmark_history.failure_cooldowns() == {}
+
+
 def test_has_been_benchmarked_false_for_unknown_ref(isolated_omm_home):
     assert benchmark_history.has_been_benchmarked("org/repo:model.gguf") is False
 

@@ -42,6 +42,18 @@ def _gguf_architecture_prefix(architecture="llama"):
     )
 
 
+def test_direct_urls_require_https_and_a_sha256_fragment():
+    digest = "a" * 64
+    resolved = resolve_model(f"https://example.com/model.gguf#sha256={digest}")
+    assert resolved.url == "https://example.com/model.gguf"
+    assert resolved.expected_sha256 == digest
+
+    with pytest.raises(ModelResolutionError, match="must use HTTPS"):
+        resolve_model(f"http://example.com/model.gguf#sha256={digest}")
+    with pytest.raises(ModelResolutionError, match="require a #sha256"):
+        resolve_model("https://example.com/model.gguf")
+
+
 def test_remote_gguf_metadata_uses_bounded_range_request(monkeypatch):
     import requests
 
@@ -148,6 +160,12 @@ def test_resolve_model_allows_safe_nested_provider_filename():
     resolved = resolve_model("hf:org/repo:quantized/model.gguf")
 
     assert resolved.filename == "quantized/model.gguf"
+
+
+@pytest.mark.parametrize("filename", ["CON.gguf", "aux/model.gguf", "dir./model.gguf"])
+def test_validate_model_filename_rejects_windows_reserved_components(filename):
+    with pytest.raises(ModelResolutionError, match="safe"):
+        hub.validate_model_filename(filename)
 
 
 @pytest.mark.parametrize(

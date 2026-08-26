@@ -277,7 +277,12 @@ def estimate_model_size_gb(text: str, size_bytes: int | float | None = None) -> 
     files contain metadata and tensors that are not captured by the simple
     ``parameters * bits`` calculation.
     """
-    if isinstance(size_bytes, (int, float)) and size_bytes > 0:
+    if (
+        isinstance(size_bytes, (int, float))
+        and not isinstance(size_bytes, bool)
+        and math.isfinite(size_bytes)
+        and size_bytes > 0
+    ):
         return float(size_bytes) / (1024**3)
 
     param_count_b = parse_param_count_billions(text)

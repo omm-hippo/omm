@@ -443,6 +443,7 @@ function branchV9(e: TelemetryEvent): boolean {
   if (str(e, "engine") !== "ollama") return false;
   if (str(e, "outcome") !== "success") return false;
   if (has(e, "failure_reason")) return false;
+  if (has(e, "confirmation_attempts") || has(e, "timeout_seconds")) return false;
   if (!(num(e, "cpu_physical_cores") <= num(e, "cpu_logical_cores"))) return false;
   if (!(num(e, "active_parameter_count_b") <= num(e, "parameter_count_b"))) return false;
   if (!(str(e, "runtime_profile").length > 0)) return false;
@@ -509,4 +510,43 @@ export function validateTelemetryEvent(event: TelemetryEvent): { valid: boolean;
     return { valid: true };
   }
   return { valid: false, reason: "no benchmark_version branch matched" };
+}
+
+const ERROR_REPORT_FIELDS = new Set([
+  "schema_version", "error_type", "error_message", "trigger", "recorded_at",
+  "os_name", "os_version", "client_version", "subcommand", "catalog_ref",
+  "engine", "cpu_arch", "cpu_score", "cpu_tier", "gpu_score", "gpu_tier",
+]);
+
+export function validateErrorReport(event: TelemetryEvent): { valid: boolean; reason?: string } {
+  for (const key of Object.keys(event)) {
+    if (!ERROR_REPORT_FIELDS.has(key)) return { valid: false, reason: `unknown field: ${key}` };
+  }
+  if (!hasAll(event, ["schema_version", "error_type", "error_message", "trigger", "recorded_at", "os_name"])) {
+    return { valid: false, reason: "missing required error-report field" };
+  }
+  if (num(event, "schema_version") !== 1) return { valid: false, reason: "unsupported schema_version" };
+  if (!(str(event, "error_type").length > 0 && str(event, "error_type").length <= 200)) return { valid: false, reason: "invalid error_type" };
+  if (typeof event.error_message !== "string" || event.error_message.length > 2000) return { valid: false, reason: "invalid error_message" };
+  if (!["install_quality_eval", "daemon_restart_giveup", "crash"].includes(str(event, "trigger"))) return { valid: false, reason: "invalid trigger" };
+  if (!(str(event, "recorded_at").length >= 20 && str(event, "recorded_at").length <= 50)) return { valid: false, reason: "invalid recorded_at" };
+  const stringLimits: Record<string, number> = {
+    os_name: 128, os_version: 128, client_version: 100, subcommand: 64,
+    catalog_ref: 620, engine: 32, cpu_arch: 64,
+  };
+  for (const [key, limit] of Object.entries(stringLimits)) {
+    if (has(event, key)) {
+      const value = str(event, key);
+      if (!value || value.length > limit || looksLikePathOrControlChars(value)) {
+        return { valid: false, reason: `invalid ${key}` };
+      }
+    }
+  }
+  for (const key of ["cpu_score", "gpu_score"]) {
+    if (has(event, key) && !(num(event, key) >= 0 && num(event, key) <= 99999)) return { valid: false, reason: `invalid ${key}` };
+  }
+  for (const key of ["cpu_tier", "gpu_tier"]) {
+    if (has(event, key) && !(num(event, key) >= 0 && num(event, key) <= 10)) return { valid: false, reason: `invalid ${key}` };
+  }
+  return { valid: true };
 }

@@ -66,10 +66,10 @@
           ".validate": "!newData.exists() || (newData.isString() && (newData.val() == 'out_of_memory' || newData.val() == 'model_load_failed' || newData.val() == 'unsupported_runtime' || newData.val() == 'generation_timeout' || newData.val() == 'ollama_unavailable' || newData.val() == 'connection_error' || newData.val() == 'no_timing_metrics' || newData.val() == 'unknown' || newData.val() == 'confirmed_generation_timeout'))"
         },
         "confirmation_attempts": {
-          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() == 2)"
+          ".validate": "!newData.exists() || (newData.parent().child('benchmark_version').val() != 9 && newData.isNumber() && newData.val() == 2)"
         },
         "timeout_seconds": {
-          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > 0 && newData.val() <= 3600)"
+          ".validate": "!newData.exists() || (newData.parent().child('benchmark_version').val() != 9 && newData.isNumber() && newData.val() > 0 && newData.val() <= 3600)"
         },
         "recorded_at": {
           ".validate": "newData.isString() && newData.val().length >= 20 && newData.val().length <= 50"
@@ -195,8 +195,8 @@
     },
     "error_reports": {
       ".read": false,
+      ".write": false,
       "$report": {
-        ".write": "!data.exists()",
         ".validate": "newData.hasChildren(['schema_version', 'error_type', 'error_message', 'trigger', 'recorded_at', 'os_name'])",
         "schema_version": {
           ".validate": "newData.isNumber() && newData.val() == 1"

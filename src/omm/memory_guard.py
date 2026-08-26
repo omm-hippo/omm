@@ -8,9 +8,12 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Protocol, Sequence
 
 from omm.hardware import HardwareInfo, calculate_memory_budget
+
+if TYPE_CHECKING:
+    from omm.engines.base import RuntimeModelRef
 
 
 class GuardDecision(Enum):
@@ -41,8 +44,14 @@ class ResidentModel:
             ("ram_gb", self.ram_gb),
             ("vram_gb", self.vram_gb),
         ):
-            if value is not None and (not math.isfinite(value) or value < 0):
-                raise ValueError(f"{name} must be a finite non-negative number")
+            if value is not None:
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or value < 0
+                ):
+                    raise ValueError(f"{name} must be a finite non-negative number")
 
 
 @dataclass(frozen=True)
@@ -218,7 +227,52 @@ def execute_guard(
     unloaded = []
     refreshed = None
     heuristic_confirmed_safe = False
-    for resident in sorted(plan.managed_residents, key=lambda item: item.size_gb, reverse=True):
+
+    def reclaim_priority(resident: ResidentModel) -> float:
+        # When RAM and VRAM are separate constraints, prioritize residents
+        # that actually reclaim the currently short pool. Sorting solely by
+        # total size could unload a large RAM-only model before the small
+        # GPU resident that is the reason this plan needs reclamation.
+        if plan.available_vram_gb is None:
+            return resident.size_gb
+        score = 0.0
+        if plan.required_ram_gb is not None:
+            shortfall = max(
+                0.0, plan.required_ram_gb - (plan.available_ram_gb or 0.0)
+            )
+            score += min(shortfall, resident.ram_gb or 0.0)
+        if plan.required_vram_gb is not None:
+            shortfall = max(
+                0.0, plan.required_vram_gb - (plan.available_vram_gb or 0.0)
+            )
+            score += min(shortfall, resident.vram_gb or 0.0)
+        return score
+
+    def heuristic_is_safe() -> bool:
+        if plan.available_vram_gb is not None and (
+            plan.required_ram_gb is not None or plan.required_vram_gb is not None
+        ):
+            ram_reclaimed = sum(item.ram_gb or 0.0 for item in unloaded)
+            vram_reclaimed = sum(item.vram_gb or 0.0 for item in unloaded)
+            ram_safe = (
+                plan.required_ram_gb is None
+                or (plan.available_ram_gb or 0.0) + ram_reclaimed
+                >= plan.required_ram_gb
+            )
+            vram_safe = (
+                plan.required_vram_gb is None
+                or (plan.available_vram_gb or 0.0) + vram_reclaimed
+                >= plan.required_vram_gb
+            )
+            return ram_safe and vram_safe
+        return (
+            sum(item.size_gb for item in unloaded) + plan.available_gb
+            >= plan.required_gb
+        )
+
+    for resident in sorted(
+        plan.managed_residents, key=reclaim_priority, reverse=True
+    ):
         if not resident.owned_by_omm:
             continue
         if not runtime.unload(resident):
@@ -246,7 +300,7 @@ def execute_guard(
                     (),
                     refreshed,
                 )
-        elif sum(item.size_gb for item in unloaded) + plan.available_gb >= plan.required_gb:
+        elif heuristic_is_safe():
             heuristic_confirmed_safe = True
             break
 
@@ -520,7 +574,11 @@ class SustainedPressureMonitor:
         captured_at: float | None = None,
     ) -> PressureAction:
         available = _finite_non_negative(available_gb, "available_gb")
-        now = time.monotonic() if captured_at is None else float(captured_at)
+        now = (
+            time.monotonic()
+            if captured_at is None
+            else _finite_non_negative(captured_at, "captured_at")
+        )
         if available >= self.threshold_gb:
             self._consecutive = 0
             self._first_low_at = None
@@ -572,6 +630,7 @@ class RuntimePressureWatcher:
         self.cancellation_timed_out = False
         self.samples_gb: list[float] = []
         self._samples_lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -586,7 +645,7 @@ class RuntimePressureWatcher:
             available = float(self.sample_available_gb())
             if not math.isfinite(available) or available < 0:
                 return None
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except Exception:
             return None
         with self._samples_lock:
             self.samples_gb.append(available)
@@ -623,11 +682,18 @@ class RuntimePressureWatcher:
                 operation_owned_by_omm=self.operation_owned_by_omm,
             )
             if action is PressureAction.CANCEL_OWNED_OPERATION:
-                self.pressure_triggered = True
+                with self._state_lock:
+                    self.pressure_triggered = True
                 try:
-                    self.cancelled = bool(self.cancel_owned_operation())
+                    cancelled = bool(self.cancel_owned_operation())
                 except Exception:
-                    self.cancelled = False
+                    cancelled = False
+                # __exit__ may have timed out while a slow cancellation
+                # callback was still running. Do not let that abandoned
+                # daemon thread later overwrite the timeout result.
+                with self._state_lock:
+                    if not self.cancellation_timed_out:
+                        self.cancelled = cancelled
                 return
             if self._stop.wait(self.poll_seconds):
                 return
@@ -637,6 +703,7 @@ class RuntimePressureWatcher:
         if self._thread is not None:
             self._thread.join(timeout=self.cancel_wait_seconds)
             if self._thread.is_alive():
-                self.cancellation_timed_out = True
-                self.cancelled = False
+                with self._state_lock:
+                    self.cancellation_timed_out = True
+                    self.cancelled = False
         self.sample_now()

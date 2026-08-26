@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import errno
 import hashlib
+import json
+import os
 from pathlib import Path
 
 import pytest
@@ -49,6 +51,32 @@ def test_catalog_rollback_restores_previous_different_snapshot(tmp_path):
     assert artifact.read_text() == '{"version":1}'
 
 
+def test_signed_rollback_requires_and_restores_signature_provenance(tmp_path):
+    private, public = _keys()
+    artifact = tmp_path / "recommend.json"
+    history = tmp_path / "history"
+    content = b'{"version":1}'
+    artifact.write_bytes(content)
+    manifest = {
+        "schema_version": 1,
+        "artifact_sha256": hashlib.sha256(content).hexdigest(),
+        "signature": base64.b64encode(private.sign(content)).decode(),
+    }
+    provenance = artifact.with_suffix(".json.provenance.json")
+    provenance.write_text(json.dumps({"manifest": manifest, "public_key": public}))
+    assert catalog.archive_current_artifact(artifact, history, require_signed=True)
+    artifact.write_text('{"version":2}')
+    provenance.unlink()
+
+    selected = catalog.rollback(
+        artifact_path=artifact, history_dir=history, require_signed=True
+    )
+
+    assert selected.read_bytes() == content
+    restored = json.loads(provenance.read_text())
+    assert catalog.verify_signed_artifact(content, restored["manifest"], restored["public_key"])
+
+
 def test_archive_current_artifact_returns_none_on_write_failure(tmp_path, monkeypatch):
     artifact = tmp_path / "recommend.json"
     artifact.write_text('{"version":1}')
@@ -59,3 +87,21 @@ def test_archive_current_artifact_returns_none_on_write_failure(tmp_path, monkey
     )
 
     assert catalog.archive_current_artifact(artifact, history) is None
+
+
+def test_catalog_rollback_skips_corrupt_newest_snapshot(tmp_path):
+    artifact = tmp_path / "recommend.json"
+    history = tmp_path / "history"
+    artifact.write_text('{"version":1}')
+    valid = catalog.archive_current_artifact(artifact, history)
+    assert valid is not None
+    artifact.write_text('{"version":2}')
+
+    corrupt = history / f"{'f' * 64}.json"
+    corrupt.write_text("{truncated")
+    os.utime(corrupt, (valid.stat().st_mtime + 10, valid.stat().st_mtime + 10))
+
+    selected = catalog.rollback(artifact_path=artifact, history_dir=history)
+
+    assert selected == valid
+    assert artifact.read_text() == '{"version":1}'

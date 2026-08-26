@@ -40,16 +40,11 @@ LEGACY_FIREBASE_ENDPOINT = (
 # token. `_post_event` detects this URL and POSTs {event_json, timestamp,
 # nonce} to it instead of writing to Firebase directly - see omm.telemetry.
 TELEMETRY_GATEWAY_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/telemetry"
-# error_report.endpoint() normally derives the error-report URL from
-# telemetry_endpoint by rewriting its last path segment - but that trick
-# assumes both channels live on the same host, which stopped being true the
-# moment telemetry_endpoint started pointing at the gateway instead of
-# Firebase directly (omm-hippo/omm#133 is telemetry-only; error_reports
-# still writes straight to Firebase with a client auth token, unaffected).
-# error_report.endpoint() special-cases TELEMETRY_GATEWAY_ENDPOINT to this
-# constant instead of rewriting it, so the default error-report destination
-# is unchanged from before the migration.
-ERROR_REPORTS_ENDPOINT = "https://localfit-8ab57-default-rtdb.firebaseio.com/error_reports.json"
+# The hosted gateway validates the same payload-bound proof-of-work envelope
+# for error reports, enforces their separate field allow-list, and writes to
+# RTDB with create-only semantics. Direct Firebase client writes are denied.
+# Self-hosted collectors still use the path derived by error_report.endpoint().
+ERROR_REPORTS_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/error-report"
 # Public client identifier for the `localfit-8ab57` Firebase project - not a
 # secret. Firebase Web API keys are safe to ship in client code (they only
 # identify the project to Google's Identity Toolkit; actual access is

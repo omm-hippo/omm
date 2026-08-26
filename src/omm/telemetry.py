@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -238,7 +239,11 @@ def _post_event(event: dict[str, Any]) -> bool:
         return True
 
     try:
-        resp = requests.post(endpoint, json=wire_event, timeout=5)
+        headers = {}
+        ingest_token = os.getenv("LOCALFIT_INGEST_TOKEN")
+        if ingest_token:
+            headers["authorization"] = f"Bearer {ingest_token}"
+        resp = requests.post(endpoint, json=wire_event, headers=headers, timeout=5)
     except requests.RequestException as e:
         detail = str(e)[:_MAX_FAILURE_DETAIL_LENGTH]
         log_attempt("send_failed_network", detail)

@@ -33,6 +33,26 @@ SUBPROCESS_TIMEOUT_SECONDS = 300
 REPOSITORY_URL = "https://github.com/omm-hippo/omm"
 INDEX_INSTALL_ATTEMPTS = 18
 INDEX_INSTALL_DELAY_SECONDS = 10.0
+MAX_PROVENANCE_BYTES = 16 * 1024 * 1024
+MAX_RELEASE_JSON_BYTES = 4 * 1024 * 1024
+
+
+def _validate_https_url(url: str, label: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError as error:
+        raise ReleaseValidationError(f"invalid {label} URL: {url!r}") from error
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or port not in (None, 443)
+    ):
+        raise ReleaseValidationError(f"{label} URL must be credential-free HTTPS")
+    return url
 
 
 def _sha256(path: Path) -> str:
@@ -70,12 +90,23 @@ def fetch_release_json(
     attempts: int = 12,
     delay_seconds: float = 10,
 ) -> dict:
+    if attempts < 1 or delay_seconds < 0:
+        raise ValueError("attempts must be positive and delay_seconds cannot be negative")
+    _validate_https_url(repository_url, "repository")
     url = release_json_url(repository_url, name, version)
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(url, timeout=30) as response:
-                return json.load(response)
+                raw_payload = response.read(MAX_RELEASE_JSON_BYTES + 1)
+                if len(raw_payload) > MAX_RELEASE_JSON_BYTES:
+                    raise ReleaseValidationError("release metadata exceeds the size limit")
+                payload = json.loads(raw_payload)
+                if not isinstance(payload, dict):
+                    raise ReleaseValidationError("release metadata must contain a JSON object")
+                return payload
+        except (UnicodeError, ValueError) as error:
+            raise ReleaseValidationError(f"release metadata is invalid at {url}") from error
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
             last_error = error
             if attempt + 1 < attempts:
@@ -91,11 +122,17 @@ def fetch_url_bytes(
     attempts: int = 12,
     delay_seconds: float = 10,
 ) -> bytes:
+    if attempts < 1 or delay_seconds < 0:
+        raise ValueError("attempts must be positive and delay_seconds cannot be negative")
+    _validate_https_url(url, "repository content")
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(url, timeout=30) as response:
-                return response.read()
+                content = response.read(MAX_PROVENANCE_BYTES + 1)
+                if len(content) > MAX_PROVENANCE_BYTES:
+                    raise ReleaseValidationError("repository content exceeds the size limit")
+                return content
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
             last_error = error
             if attempt + 1 < attempts:
@@ -116,7 +153,8 @@ def verify_repository_files(
     name, version = project_identity(pyproject)
     validate_checksums(dist_dir)
     archives = distribution_archives(dist_dir)
-    expected = {path.name: _sha256(path) for path in archives}
+    _validate_https_url(repository_url, "repository")
+    expected = {path.name: (_sha256(path), path.stat().st_size) for path in archives}
     payload = fetch_release_json(
         repository_url,
         name,
@@ -124,28 +162,44 @@ def verify_repository_files(
         attempts=attempts,
         delay_seconds=delay_seconds,
     )
-    remote = {item.get("filename"): item for item in payload.get("urls", [])}
+    remote_items = payload.get("urls") if isinstance(payload, dict) else None
+    if not isinstance(remote_items, list):
+        raise ReleaseValidationError("repository metadata has no valid urls list")
+    remote: dict[str, dict] = {}
+    for item in remote_items:
+        if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
+            raise ReleaseValidationError("repository metadata contains an invalid file entry")
+        filename = item["filename"]
+        if filename in remote:
+            raise ReleaseValidationError(f"repository metadata repeats {filename}")
+        remote[filename] = item
     if set(remote) != set(expected):
         raise ReleaseValidationError(
             f"repository contains {sorted(remote)}, expected exactly {sorted(expected)}"
         )
 
-    def _verify_one(entry: tuple[str, str]) -> str:
-        filename, expected_hash = entry
+    def _verify_one(entry: tuple[str, tuple[str, int]]) -> str:
+        filename, (expected_hash, expected_size) = entry
         item = remote[filename]
-        metadata_hash = item.get("digests", {}).get("sha256")
+        digests = item.get("digests")
+        metadata_hash = digests.get("sha256") if isinstance(digests, dict) else None
         if metadata_hash != expected_hash:
             raise ReleaseValidationError(
                 f"repository SHA-256 for {filename} is {metadata_hash}, expected {expected_hash}"
             )
         download_url = item.get("url")
-        if not isinstance(download_url, str) or not download_url.startswith("https://"):
+        if not isinstance(download_url, str):
             raise ReleaseValidationError(f"repository returned an invalid URL for {filename}")
+        _validate_https_url(download_url, "repository download")
         digest = hashlib.sha256()
+        downloaded_size = 0
         with urllib.request.urlopen(download_url, timeout=60) as response:
             for block in iter(lambda: response.read(1024 * 1024), b""):
+                downloaded_size += len(block)
+                if downloaded_size > expected_size:
+                    raise ReleaseValidationError(f"downloaded file is larger than {filename}")
                 digest.update(block)
-        if digest.hexdigest() != expected_hash:
+        if downloaded_size != expected_size or digest.hexdigest() != expected_hash:
             raise ReleaseValidationError(f"downloaded bytes do not match {filename}")
         return download_url
 
@@ -200,6 +254,7 @@ def _run_index_install_with_retry(
 def smoke_index_install(
     index_url: str, dist_dir: Path, pyproject: Path = PYPROJECT
 ) -> None:
+    _validate_https_url(index_url, "package index")
     name, version = project_identity(pyproject)
     validate_checksums(dist_dir)
     wheel, _ = distribution_archives(dist_dir)
@@ -314,6 +369,7 @@ def verify_attestations(
 
 
 def pipx_smoke(index_url: str, pyproject: Path = PYPROJECT) -> None:
+    _validate_https_url(index_url, "package index")
     name, version = project_identity(pyproject)
     with tempfile.TemporaryDirectory(prefix="omm-pipx-smoke-") as temporary:
         root = Path(temporary)
@@ -412,7 +468,7 @@ def main() -> int:
             pipx_smoke(args.index_url)
         else:  # pragma: no cover - argparse constrains the command
             raise AssertionError(args.command)
-    except (OSError, ReleaseValidationError, subprocess.CalledProcessError) as error:
+    except (OSError, ReleaseValidationError, subprocess.SubprocessError) as error:
         print(f"PyPI release verification failed: {error}", file=sys.stderr)
         return 1
     return 0

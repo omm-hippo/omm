@@ -47,6 +47,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -56,7 +57,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # once and out of order relative to stderr, when the process exits. Real-time,
 # correctly ordered logs are the only way to diagnose a run that fails
 # intermittently, since a failed run can't be reproduced after the fact.
-sys.stdout.reconfigure(line_buffering=True)
+_reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
+if callable(_reconfigure_stdout):
+    _reconfigure_stdout(line_buffering=True)
 
 from omm import linker, registry, scan_import  # noqa: E402
 from omm.hashutil import sha256_file  # noqa: E402
@@ -175,7 +178,13 @@ def verify_lmstudio(gguf_path: Path, ollama_tag: str) -> None:
             models = json.loads(result.stdout)
         except json.JSONDecodeError as e:
             _fail(f"`lms ls --json` did not return JSON: {e}\n{result.stdout}")
-        paths = [m.get("path") or m.get("modelKey") or "" for m in models]
+        if not isinstance(models, list):
+            _fail(f"`lms ls --json` returned {type(models).__name__}, expected a list")
+        paths = [
+            m.get("path") or m.get("modelKey") or ""
+            for m in models
+            if isinstance(m, dict)
+        ]
         if any(gguf_path.name in p or str(gguf_path) in p for p in paths):
             print(f"OK: lms recognizes {gguf_path.name!r} (after {attempt + 1} `lms ls` call(s))")
             return
@@ -197,8 +206,12 @@ def _verify_via_path(dest: Path, gguf_path: Path, engine_label: str) -> None:
     look like a false failure."""
     if not dest.exists():
         _fail(f"{engine_label} does not see the linked model - expected a file at {dest}")
-    if dest.resolve() != gguf_path.resolve():
-        _fail(f"{engine_label}'s file at {dest} does not resolve back to our model")
+    try:
+        same_file = dest.samefile(gguf_path)
+    except OSError:
+        same_file = False
+    if not same_file and sha256_file(dest) != sha256_file(gguf_path):
+        _fail(f"{engine_label}'s file at {dest} does not match our model")
     print(f"OK: {engine_label} recognizes the linked model at {dest}")
 
 
@@ -231,12 +244,19 @@ def _verify_ollama_format_manifest(models_dir: Path, ollama_tag: str, gguf_path:
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / ollama_tag / "latest"
     if not manifest_path.is_file():
         _fail(f"{engine_label} manifest not found at {manifest_path}")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        _fail(f"{engine_label} manifest could not be read: {error}")
+    if not isinstance(manifest, dict):
+        _fail(f"{engine_label} manifest is not a JSON object")
     expected_sha = sha256_file(gguf_path)
     digests = [
         layer["digest"].removeprefix("sha256:")
         for layer in manifest.get("layers", [])
-        if layer.get("mediaType") == _OLLAMA_MODEL_LAYER
+        if isinstance(layer, dict)
+        and isinstance(layer.get("digest"), str)
+        and layer.get("mediaType") == _OLLAMA_MODEL_LAYER
     ]
     if expected_sha not in digests:
         _fail(f"{engine_label} manifest layer digest(s) {digests} do not include our model {expected_sha}")
@@ -246,6 +266,14 @@ def _verify_ollama_format_manifest(models_dir: Path, ollama_tag: str, gguf_path:
     print(f"OK: {engine_label} manifest+blob recognize the linked model ({ollama_tag})")
 
 
+def _verify_flat_engine(
+    models_dir: Path | None, gguf_path: Path, engine_label: str
+) -> None:
+    if models_dir is None:
+        _fail(f"{engine_label} models directory could not be resolved")
+    _verify_via_path(models_dir / gguf_path.name, gguf_path, engine_label)
+
+
 ENGINE_VERIFIERS = {
     "ollama": verify_ollama,
     "lmstudio": verify_lmstudio,
@@ -253,14 +281,14 @@ ENGINE_VERIFIERS = {
     "anythingllm": lambda gguf_path, tag: _verify_ollama_format_manifest(
         linker.anythingllm_ollama_models_dir(), tag, gguf_path, "anythingllm"
     ),
-    "mstystudio": lambda gguf_path, _tag: _verify_via_path(
-        linker.mstystudio_models_dir() / gguf_path.name, gguf_path, "mstystudio"
+    "mstystudio": lambda gguf_path, _tag: _verify_flat_engine(
+        linker.mstystudio_models_dir(), gguf_path, "mstystudio"
     ),
-    "koboldcpp": lambda gguf_path, _tag: _verify_via_path(
-        linker.koboldcpp_models_dir() / gguf_path.name, gguf_path, "koboldcpp"
+    "koboldcpp": lambda gguf_path, _tag: _verify_flat_engine(
+        linker.koboldcpp_models_dir(), gguf_path, "koboldcpp"
     ),
-    "textgenwebui": lambda gguf_path, _tag: _verify_via_path(
-        linker.textgenwebui_models_dir() / gguf_path.name, gguf_path, "textgenwebui"
+    "textgenwebui": lambda gguf_path, _tag: _verify_flat_engine(
+        linker.textgenwebui_models_dir(), gguf_path, "textgenwebui"
     ),
 }
 
@@ -293,9 +321,7 @@ def _plant_ollama_format(models_dir: Path, gguf_src: Path) -> tuple[Path, list[P
     never touched, which is the whole premise of the import direction."""
     digest = sha256_file(gguf_src)
     blobs_dir = models_dir / "blobs"
-    blobs_dir.mkdir(parents=True, exist_ok=True)
     model_blob = blobs_dir / f"sha256-{digest}"
-    shutil.copyfile(gguf_src, model_blob)
 
     config_bytes = json.dumps(
         {
@@ -311,11 +337,20 @@ def _plant_ollama_format(models_dir: Path, gguf_src: Path) -> tuple[Path, list[P
     ).encode()
     config_digest = hashlib.sha256(config_bytes).hexdigest()
     config_blob = blobs_dir / f"sha256-{config_digest}"
-    config_blob.write_bytes(config_bytes)
-
     manifest_dir = models_dir / "manifests" / "registry.ollama.ai" / "library" / IMPORT_OLLAMA_TAG
-    manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / "latest"
+    for label, path in (
+        ("blob", model_blob),
+        ("config", config_blob),
+        ("manifest", manifest_path),
+    ):
+        if path.exists() or path.is_symlink():
+            _fail(f"refusing to replace existing import fixture {label}: {path}")
+
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(gguf_src, model_blob)
+    config_blob.write_bytes(config_bytes)
     manifest_path.write_text(
         json.dumps(
             {
@@ -354,6 +389,8 @@ def _plant_flat_file(models_dir: Path | None, gguf_src: Path, engine: str) -> tu
         _fail(f"{engine}: models dir resolved to None after install - cannot plant an import fixture")
     models_dir.mkdir(parents=True, exist_ok=True)
     dest = models_dir / f"{IMPORT_MODEL_STEM}.gguf"
+    if dest.exists() or dest.is_symlink():
+        _fail(f"refusing to replace existing import fixture: {dest}")
     shutil.copyfile(gguf_src, dest)
     return dest, [dest]
 
@@ -364,10 +401,12 @@ def _plant_lmstudio(gguf_src: Path) -> tuple[Path, list[Path]]:
     linker._lmstudio_publisher_repo)."""
     publisher_dir = linker.lmstudio_models_dir() / "omm-ci"
     repo_dir = publisher_dir / IMPORT_MODEL_STEM
+    if repo_dir.exists() or repo_dir.is_symlink():
+        _fail(f"refusing to replace existing import fixture directory: {repo_dir}")
     repo_dir.mkdir(parents=True, exist_ok=True)
     dest = repo_dir / f"{IMPORT_MODEL_STEM}.gguf"
     shutil.copyfile(gguf_src, dest)
-    return dest, [publisher_dir]
+    return dest, [repo_dir]
 
 
 def _plant_jan(gguf_src: Path) -> tuple[Path, list[Path]]:
@@ -375,6 +414,8 @@ def _plant_jan(gguf_src: Path) -> tuple[Path, list[Path]]:
     real GGUF - so the fixture is that pair, with the GGUF inside Jan's own
     model folder the way Jan's local-file import leaves it."""
     model_dir = linker.jan_models_dir() / IMPORT_MODEL_STEM
+    if model_dir.exists() or model_dir.is_symlink():
+        _fail(f"refusing to replace existing import fixture directory: {model_dir}")
     model_dir.mkdir(parents=True, exist_ok=True)
     # Named after the fixture rather than Jan's generic "model.gguf" so the
     # hub filename adopt_group derives from it stays unmistakably ours.
@@ -416,6 +457,94 @@ ENGINE_SCANS = {
     "textgenwebui": scan_import.scan_textgenwebui,
     "koboldcpp": scan_import.scan_koboldcpp,
 }
+
+
+def _install_filesystem_fixture(engine: str) -> list[Path]:
+    """Create only the discovery layout needed by engines with no safe installer.
+
+    KoboldCpp and text-generation-webui intentionally have no automated
+    installer because their mutable release artifacts are not checksum
+    pinned. CI still exercises their filesystem link/import contracts with
+    inert local fixtures; it must not silently download and execute them.
+    """
+    root = linker.engine_install_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    if engine == "ollama":
+        models_dir = root / "ollama-models-ci-fixture"
+        if models_dir.exists() or models_dir.is_symlink():
+            _fail(f"refusing to replace existing CI fixture path: {models_dir}")
+        models_dir.mkdir()
+        os.environ["OLLAMA_MODELS"] = str(models_dir)
+        return [models_dir]
+    if engine == "lmstudio":
+        models_dir = root / "lmstudio-models-ci-fixture"
+        if models_dir.exists() or models_dir.is_symlink():
+            _fail(f"refusing to replace existing CI fixture path: {models_dir}")
+        models_dir.mkdir()
+        os.environ["OMM_LMSTUDIO_MODELS_DIR"] = str(models_dir)
+        return [models_dir]
+    if engine == "koboldcpp":
+        binary = root / "koboldcpp-ci-fixture"
+        if binary.exists() or binary.is_symlink():
+            _fail(f"refusing to replace existing CI fixture path: {binary}")
+        binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o755)
+        linker.find_koboldcpp_binary.cache_clear()
+        return [binary.parent / "models", binary]
+    if engine == "textgenwebui":
+        app_root = root / "text-generation-webui-ci-fixture"
+        if app_root.exists() or app_root.is_symlink():
+            _fail(f"refusing to replace existing CI fixture path: {app_root}")
+        (app_root / "app").mkdir(parents=True, exist_ok=True)
+        (app_root / "app" / "server.py").write_text("# inert CI fixture\n", encoding="utf-8")
+        linker.find_textgenwebui_root.cache_clear()
+        return [app_root]
+    _fail(f"filesystem fixtures are unsupported for {engine}")
+
+
+def _cleanup_link_leg(engine: str, gguf_path: Path, ollama_tag: str) -> None:
+    """Remove every link-leg artifact even when verification exits early."""
+    if engine == "ollama":
+        linker.unlink_ollama(ollama_tag, expected_source=gguf_path)
+    elif engine == "anythingllm":
+        linker.unlink_ollama(
+            ollama_tag,
+            models_dir=linker.anythingllm_ollama_models_dir(),
+            expected_source=gguf_path,
+        )
+    elif engine == "jan":
+        linker.unlink_jan(ollama_tag, expected_source=gguf_path)
+    elif engine == "lmstudio":
+        destination = (
+            linker.lmstudio_models_dir()
+            / "omm-ci"
+            / "test-model"
+            / gguf_path.name
+        )
+        linker.unlink_owned_link(destination, expected_source=gguf_path)
+        for parent in (destination.parent, destination.parent.parent):
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+    else:
+        models_dir = {
+            "mstystudio": linker.mstystudio_models_dir,
+            "koboldcpp": linker.koboldcpp_models_dir,
+            "textgenwebui": linker.textgenwebui_models_dir,
+        }[engine]()
+        if models_dir is not None:
+            linker.unlink_owned_link(models_dir / gguf_path.name, expected_source=gguf_path)
+
+
+def _verify_lmstudio_layout(gguf_path: Path) -> None:
+    destination = (
+        linker.lmstudio_models_dir()
+        / "omm-ci"
+        / "test-model"
+        / gguf_path.name
+    )
+    _verify_via_path(destination, gguf_path, "lmstudio")
 
 
 def _remove(path: Path) -> None:
@@ -462,7 +591,16 @@ def verify_import(engine: str, tmp_dir: Path) -> None:
         # minus the questionary prompts - and scoped to just our own group, so
         # an unrelated model the runner image happens to ship never gets moved.
         group = scan_import.group_by_hash(matches)[0]
-        result = scan_import.adopt_group(group)
+        # adopt_group normally mirrors an imported model into every engine
+        # installed on the machine. This verifier is intentionally scoped to
+        # one engine; allowing host discovery here can mutate unrelated real
+        # Ollama/LM Studio installations on a developer machine or runner.
+        original_is_engine_installed = linker.is_engine_installed
+        linker.is_engine_installed = lambda key: key == engine
+        try:
+            result = scan_import.adopt_group(group)
+        finally:
+            linker.is_engine_installed = original_is_engine_installed
         adopted_filename = result.filename
         for warning in result.link_warnings:
             print(f"warning during adopt: {warning}")
@@ -507,17 +645,34 @@ def verify_import(engine: str, tmp_dir: Path) -> None:
     finally:
         # Ordered engine-side first: the link leg's own state (and, for
         # Ollama, `ollama list`) must not be left seeing this fixture.
+        if adopted_filename is not None:
+            hub_path = scan_import.MODELS_DIR / adopted_filename
+            try:
+                linker.unlink_owned_link(planted, expected_source=hub_path)
+            except OSError as error:
+                print(f"cleanup: could not unlink adopted fixture {planted}: {error}")
         for path in cleanup_paths:
             _remove(path)
         if adopted_filename is not None:
-            _remove(scan_import.MODELS_DIR / adopted_filename)
+            _remove(hub_path)
             try:
                 registry.remove_entry(adopted_filename)
             except OSError as e:
                 print(f"cleanup: could not drop registry entry {adopted_filename!r}: {e}")
 
 
-def _ensure_ollama_ready() -> None:
+def _stop_owned_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _ensure_ollama_ready() -> Callable[[], None]:
     """`ollama` needs its daemon up before `ollama list`/`show` (or
     link_engine's own compat probe) mean anything. The Linux installer
     normally starts this via systemd on its own - poll first, and only
@@ -527,30 +682,42 @@ def _ensure_ollama_ready() -> None:
 
     for _ in range(5):
         if _run(["ollama", "list"]).returncode == 0:
-            return
+            return lambda: None
         time.sleep(1)
-    subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen(
+        ["ollama", "serve"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
     for _ in range(30):
         if _run(["ollama", "list"]).returncode == 0:
-            return
+            return lambda: _stop_owned_process(process)
+        if process.poll() is not None:
+            break
         time.sleep(1)
+    _stop_owned_process(process)
     _fail("ollama daemon never became ready (`ollama list` kept failing)")
 
 
-def _ensure_lmstudio_ready() -> None:
+def _ensure_lmstudio_ready() -> Callable[[], None]:
     """Same idea as `_ensure_ollama_ready` for llmster/`lms`."""
     import time
 
     lms_path = _lms_path()
     for _ in range(3):
         if _run([lms_path, "ls", "--json"]).returncode == 0:
-            return
+            return lambda: None
         time.sleep(1)
-    subprocess.Popen([lms_path, "server", "start", "--no-gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    started = _run([lms_path, "server", "start", "--no-gui"])
+    if started.returncode != 0:
+        _fail(f"`lms server start --no-gui` failed: {started.stderr}")
     for _ in range(20):
         if _run([lms_path, "ls", "--json"]).returncode == 0:
-            return
+            return lambda: _run([lms_path, "server", "stop"])
         time.sleep(1)
+    _run([lms_path, "server", "stop"])
     _fail("lms CLI never became ready")
 
 
@@ -580,80 +747,114 @@ def _ensure_ollama_dir_writable() -> None:
     )
     if not models_dir.exists() or os.access(models_dir, os.W_OK):
         return
-    result = subprocess.run(
-        ["sudo", "chmod", "-R", "a+rwX", str(models_dir)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "chmod", "-R", "a+rwX", str(models_dir)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        _fail(f"could not make the CI Ollama store writable: {error}")
     print(
-        f"sudo chmod -R a+rwX {models_dir}: returncode={result.returncode} "
+        f"sudo -n chmod -R a+rwX {models_dir}: returncode={result.returncode} "
         f"stderr={result.stderr.strip()!r}"
     )
+    if result.returncode != 0 or not os.access(models_dir, os.W_OK):
+        _fail(f"Ollama models directory is still not writable: {models_dir}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("engine", choices=sorted(ENGINE_VERIFIERS))
+    parser.add_argument(
+        "--filesystem-fixture",
+        action="store_true",
+        help="use an inert filesystem-layout fixture for CI contract checks",
+    )
     args = parser.parse_args()
 
-    if not linker.is_engine_installed(args.engine):
-        print(f"{args.engine} not detected yet - installing...")
-        result = linker.install_engine(args.engine, on_output=print)
-        if result.status != "installed":
-            _fail(f"install_engine({args.engine!r}) did not succeed: status={result.status}, {result.message}")
+    fixture_paths: list[Path] = []
+    ready_cleanup: Callable[[], None] = lambda: None
+    if args.filesystem_fixture:
+        if args.engine not in {"ollama", "lmstudio", "koboldcpp", "textgenwebui"}:
+            _fail("--filesystem-fixture is unsupported for this engine")
+        fixture_paths = _install_filesystem_fixture(args.engine)
 
-    ENSURE_READY.get(args.engine, lambda: None)()
-    if args.engine == "ollama":
-        _ensure_ollama_dir_writable()
+    try:
+        if not args.filesystem_fixture and not linker.is_engine_installed(args.engine):
+            print(f"{args.engine} not detected yet - installing...")
+            result = linker.install_engine(args.engine, on_output=print)
+            if result.status != "installed":
+                _fail(f"install_engine({args.engine!r}) did not succeed: status={result.status}, {result.message}")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        if platform.system() != "Windows":
-            # tempfile.mkdtemp() defaults to mode 0700 (owner only). Ollama's
-            # blob is a symlink back to this directory, not a copy - under a
-            # systemd-managed install the daemon (its own dedicated user)
-            # needs to traverse into here to stat/read the real file, same
-            # underlying issue as the manifest permission fix above.
-            os.chmod(tmp, 0o755)
-        gguf_path = Path(tmp) / "omm-ci-test-model.gguf"
-        build_minimal_gguf(gguf_path)
-        ollama_tag = "omm-ci-test"
+        ready = None if args.filesystem_fixture else ENSURE_READY.get(args.engine)
+        if ready is not None:
+            ready_cleanup = ready()
+        if args.engine == "ollama":
+            _ensure_ollama_dir_writable()
 
+        with tempfile.TemporaryDirectory() as tmp:
+            if platform.system() != "Windows":
+                # A systemd Ollama daemon may run as a dedicated user and
+                # needs to traverse the temporary directory for the symlink.
+                os.chmod(tmp, 0o755)
+            gguf_path = Path(tmp) / "omm-ci-test-model.gguf"
+            build_minimal_gguf(gguf_path)
+            ollama_tag = "omm-ci-test"
+            linked = False
+
+            try:
+                if args.engine == "ollama":
+                    # This minimal GGUF has no tensors, so it can test the
+                    # manifest path but cannot survive native Ollama import.
+                    linker.link_ollama(
+                        gguf_path,
+                        ollama_tag,
+                        force=False,
+                        verify_compat=False,
+                    )
+                    warning = None
+                else:
+                    warning = linker.link_engine(
+                        args.engine,
+                        gguf_path,
+                        repo_id="omm-ci/test-model",
+                        ollama_tag=ollama_tag,
+                        force=False,
+                    )
+                linked = True
+                if warning:
+                    print(f"warning during link: {warning}")
+
+                if args.filesystem_fixture and args.engine == "ollama":
+                    _verify_ollama_format_manifest(
+                        linker.ollama_models_dir(), ollama_tag, gguf_path, "ollama"
+                    )
+                elif args.filesystem_fixture and args.engine == "lmstudio":
+                    _verify_lmstudio_layout(gguf_path)
+                else:
+                    ENGINE_VERIFIERS[args.engine](gguf_path, ollama_tag)
+
+                # Import leg last: it plants and removes a distinct unmanaged
+                # model in the same engine store.
+                verify_import(args.engine, Path(tmp))
+            except linker.LinkError as e:
+                _fail(f"linking {args.engine!r} raised: {e}")
+            finally:
+                if linked:
+                    _cleanup_link_leg(args.engine, gguf_path, ollama_tag)
+    finally:
         try:
-            if args.engine == "ollama":
-                # link_engine() always runs with verify_compat=True for
-                # real Ollama, which - if this Ollama version rejects
-                # omm's hand-rolled manifest - falls back to native
-                # `ollama create`. That path runs llama-quantize's real
-                # model validation, which our placeholder GGUF (a header
-                # and one KV pair, no tensor data at all) can never pass;
-                # a real run of this workflow hit exactly that (Ollama's
-                # acceptance of the hand-rolled format isn't guaranteed
-                # stable across its own releases). That compat/fallback
-                # machinery is what issue #91 already covers - what #94
-                # actually asks is "does omm's linked file get
-                # recognized," so this calls link_ollama() directly with
-                # verify_compat=False rather than trying to also make a
-                # placeholder file survive llama-quantize.
-                linker.link_ollama(gguf_path, ollama_tag, force=True, verify_compat=False)
-                warning = None
-            else:
-                warning = linker.link_engine(
-                    args.engine, gguf_path, repo_id="omm-ci/test-model", ollama_tag=ollama_tag, force=True
-                )
-        except linker.LinkError as e:
-            _fail(f"linking {args.engine!r} raised: {e}")
-        if warning:
-            print(f"warning during link: {warning}")
-
-        ENGINE_VERIFIERS[args.engine](gguf_path, ollama_tag)
-
-        # Import leg last: it plants (and then removes) a second, unmanaged
-        # model in the same engine, so running it first could leave the link
-        # leg's own assertions looking at a directory/manifest store this
-        # script had just been mutating.
-        verify_import(args.engine, Path(tmp))
+            ready_cleanup()
+        except (OSError, subprocess.SubprocessError) as error:
+            print(f"cleanup: could not stop the verifier-started runtime: {error}")
+        for path in fixture_paths:
+            _remove(path)
+        linker.find_koboldcpp_binary.cache_clear()
+        linker.find_textgenwebui_root.cache_clear()
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 import errno
 import io
 import json
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -128,6 +127,41 @@ def test_download_file_refuses_symlinked_partial_path(tmp_path, monkeypatch):
     assert victim.read_bytes() == b"preserve"
 
 
+@pytest.mark.parametrize(
+    ("requested", "final"),
+    [
+        ("http://example.com/model.gguf", "http://example.com/model.gguf"),
+        ("https://example.com/model.gguf", "http://cdn.example.com/model.gguf"),
+    ],
+)
+def test_download_file_rejects_http_and_redirect_downgrade(
+    tmp_path, monkeypatch, requested, final
+):
+    response = _FakeResp(200, [b"untrusted"])
+    response.url = final
+    monkeypatch.setattr(requests, "get", lambda *a, **k: response)
+
+    with pytest.raises(downloader.DownloadError, match="non-HTTPS|HTTPS-to-HTTP"):
+        downloader.download_file(requested, tmp_path / "model.gguf")
+
+
+def test_https_redirect_downgrade_is_rejected_before_following(tmp_path, monkeypatch):
+    calls = []
+
+    def redirect_once(url, **kwargs):
+        calls.append(url)
+        response = _FakeResp(302, [], headers={"Location": "http://cdn.example/model.gguf"})
+        response.url = url
+        return response
+
+    monkeypatch.setattr(requests, "get", redirect_once)
+
+    with pytest.raises(downloader.DownloadError, match="HTTPS-to-HTTP"):
+        downloader.download_file("https://example.com/model.gguf", tmp_path / "model.gguf")
+
+    assert calls == ["https://example.com/model.gguf"]
+
+
 def test_download_file_raises_cancelled_and_keeps_part_file_when_stop_check_fires(tmp_path, monkeypatch):
     dest = tmp_path / "model.gguf"
     monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
@@ -173,6 +207,37 @@ def test_plan_ranges_sums_to_total_with_no_gaps_or_overlap():
 
 def test_plan_ranges_single_thread_covers_whole_file():
     assert downloader._plan_ranges(500, 1) == [(0, 499)]
+
+
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        [{"start": 0, "end": 9, "done": -1}],
+        [{"start": 0, "end": 9, "done": 11}],
+        [
+            {"start": 0, "end": 5, "done": 6},
+            {"start": 5, "end": 9, "done": 5},
+        ],
+        [{"start": 1, "end": 9, "done": 0}],
+        "not-a-list",
+    ],
+)
+def test_parallel_resume_state_rejects_invalid_range_maps(ranges):
+    state = {"total_size": 10, "ranges": ranges}
+
+    assert downloader._valid_parallel_state(state, 10) is False
+
+
+def test_parallel_resume_state_accepts_exact_contiguous_coverage():
+    state = {
+        "total_size": 10,
+        "ranges": [
+            {"start": 0, "end": 4, "done": 5},
+            {"start": 5, "end": 9, "done": 2},
+        ],
+    }
+
+    assert downloader._valid_parallel_state(state, 10) is True
 
 
 def test_choose_thread_count_below_min_parallel_total_returns_one():
@@ -299,7 +364,7 @@ class _FakeRangeServer:
         self.payload = payload
         self.requests: list[str] = []
 
-    def __call__(self, url, headers=None, stream=True, timeout=30):
+    def __call__(self, url, headers=None, stream=True, timeout=30, **kwargs):
         range_header = (headers or {}).get("Range", "")
         self.requests.append(range_header)
         if range_header == "bytes=0-0":
@@ -350,7 +415,7 @@ def test_parallel_download_rejects_wrong_worker_range_and_restarts_cleanly(
     payload = bytes(range(40))
     calls = []
 
-    def fake_get(url, headers=None, stream=True, timeout=30):
+    def fake_get(url, headers=None, stream=True, timeout=30, **kwargs):
         range_header = (headers or {}).get("Range", "")
         calls.append(range_header)
         if range_header == "bytes=0-0":
@@ -401,7 +466,7 @@ def test_parallel_download_requires_one_strong_etag_for_every_worker(
     payload = bytes(range(40))
     calls = []
 
-    def fake_get(url, headers=None, stream=True, timeout=30):
+    def fake_get(url, headers=None, stream=True, timeout=30, **kwargs):
         range_header = (headers or {}).get("Range", "")
         calls.append((range_header, (headers or {}).get("If-Range")))
         if range_header == "bytes=0-0":
@@ -463,7 +528,7 @@ def test_download_file_falls_back_to_single_stream_when_range_unsupported(tmp_pa
     monkeypatch.setattr(downloader, "_MIN_PARALLEL_TOTAL", 1)
     payload = b"a small file that ignores range requests"
 
-    def fake_get(url, headers=None, stream=True, timeout=30):
+    def fake_get(url, headers=None, stream=True, timeout=30, **kwargs):
         # server ignores Range entirely, always returns the full body as 200
         return _FakeResp(200, [payload], headers={"Content-Length": str(len(payload))})
 
@@ -485,7 +550,7 @@ def test_download_file_resumes_existing_part_file_via_single_stream(tmp_path, mo
     )
     calls = []
 
-    def fake_get(url, headers=None, stream=True, timeout=30):
+    def fake_get(url, headers=None, stream=True, timeout=30, **kwargs):
         calls.append(
             (
                 (headers or {}).get("Range"),
@@ -515,7 +580,7 @@ def test_download_file_discards_legacy_partial_without_validator(
     part.write_bytes(b"old-prefix")
     calls = []
 
-    def fake_get(url, headers=None, stream=True, timeout=30):
+    def fake_get(url, headers=None, stream=True, timeout=30, **kwargs):
         calls.append(headers or {})
         return _FakeResp(200, [b"fresh"], headers={"Content-Length": "5"})
 
@@ -634,7 +699,9 @@ def test_download_file_restarts_when_206_range_does_not_match_request(
     assert dest.read_bytes() == b"fresh"
 
 
-def test_download_file_rejects_short_resumed_body(tmp_path, monkeypatch):
+def test_download_file_retries_short_resumed_body_from_last_written_byte(
+    tmp_path, monkeypatch
+):
     dest = tmp_path / "model.gguf"
     part = dest.with_suffix(dest.suffix + ".part")
     part.write_bytes(b"hello")
@@ -642,20 +709,31 @@ def test_download_file_rejects_short_resumed_body(tmp_path, monkeypatch):
     downloader._write_resume_metadata(
         downloader._part_metadata_path(part), url, '"v1"', 10
     )
-    monkeypatch.setattr(
-        requests,
-        "get",
-        lambda *a, **k: _FakeResp(
+    monkeypatch.setattr(downloader.time, "sleep", lambda seconds: None)
+    requested_ranges = []
+
+    def short_once_then_finish(url, headers=None, **kwargs):
+        requested_range = (headers or {}).get("Range")
+        requested_ranges.append(requested_range)
+        if requested_range == "bytes=5-":
+            return _FakeResp(
+                206,
+                [b"wor"],
+                headers={"Content-Range": "bytes 5-9/10", "ETag": '"v1"'},
+            )
+        assert requested_range == "bytes=8-"
+        return _FakeResp(
             206,
-            [b"wor"],
-            headers={"Content-Range": "bytes 5-9/10", "ETag": '"v1"'},
-        ),
-    )
+            [b"ld"],
+            headers={"Content-Range": "bytes 8-9/10", "ETag": '"v1"'},
+        )
 
-    with pytest.raises(downloader.DownloadError, match="returned 3 bytes"):
-        downloader.download_file(url, dest)
+    monkeypatch.setattr(requests, "get", short_once_then_finish)
 
-    assert not dest.exists()
+    downloader.download_file(url, dest)
+
+    assert dest.read_bytes() == b"helloworld"
+    assert requested_ranges == ["bytes=5-", "bytes=8-"]
 
 
 def test_download_file_rejects_partial_206_for_clean_request(
@@ -777,7 +855,7 @@ def test_download_file_parallel_path_honors_stop_check(tmp_path, monkeypatch):
     monkeypatch.setattr(downloader, "_MIN_PARALLEL_TOTAL", 1)
     payload = b"x" * 30
 
-    def fake_get(url, headers=None, stream=True, timeout=30):
+    def fake_get(url, headers=None, stream=True, timeout=30, **kwargs):
         range_header = (headers or {}).get("Range", "")
         if range_header == "bytes=0-0":
             return _FakeResp(206, [payload[:1]], headers={"Content-Range": f"bytes 0-0/{len(payload)}"})
@@ -843,7 +921,7 @@ def test_download_file_resumes_parallel_download_after_network_drop_without_rest
     dropped_once = {"done": False}
     etag = '"model-v1"'
 
-    def flaky_server(url, headers=None, stream=True, timeout=30):
+    def flaky_server(url, headers=None, stream=True, timeout=30, **kwargs):
         range_header = (headers or {}).get("Range", "")
         range_headers_seen.append(range_header)
         if range_header == "bytes=0-0":
@@ -922,7 +1000,7 @@ def test_download_parallel_resume_only_refetches_unfinished_ranges(tmp_path, mon
         lambda url: (len(payload), True, etag),
     )
 
-    def fake_get(url, headers=None, stream=True, timeout=30):
+    def fake_get(url, headers=None, stream=True, timeout=30, **kwargs):
         range_header = (headers or {}).get("Range", "")
         requested_ranges.append(range_header)
         # Only the unfinished range (bytes 14-19) should ever be requested.
@@ -953,7 +1031,7 @@ def test_download_parallel_falls_back_cleanly_on_non_network_download_error(tmp_
     dest = tmp_path / "model.gguf"
     calls = {"n": 0}
 
-    def bad_range_server(url, headers=None, stream=True, timeout=30):
+    def bad_range_server(url, headers=None, stream=True, timeout=30, **kwargs):
         calls["n"] += 1
         range_header = (headers or {}).get("Range", "")
         if range_header == "bytes=0-0":

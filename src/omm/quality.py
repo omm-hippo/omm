@@ -24,6 +24,9 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Callable
 
+from filelock import Timeout as FileLockTimeout
+
+from omm.atomic import atomic_write_text, locked
 from omm.hardware import HardwareInfo
 from omm import benchmark, linker, tuning
 from omm.engines.base import LoopbackJsonClient, RuntimeAdapterError
@@ -88,6 +91,8 @@ FAILURE_REASONS = MODEL_UNFIT_REASONS | TRANSIENT_ERROR_REASONS | PERFORMANCE_UN
 # events record this exact value as timeout_seconds - it must never be
 # shortened to manufacture a timeout.
 DEFAULT_GENERATION_TIMEOUT_SECONDS = 180
+MIN_TIMED_TOKENS = 2
+MAX_PLAUSIBLE_TOKENS_PER_SECOND = 100_000.0
 # If the daemon is found dead partway through a multi-model collect_evidence
 # run, give up after this many consecutive failed restart attempts rather
 # than burning a full DEFAULT_GENERATION_TIMEOUT_SECONDS per remaining
@@ -708,10 +713,27 @@ def ensure_model_unloaded(
     can't be queried), this returns False so the caller can refuse to start
     a second, possibly-overlapping generation request.
     """
+    if (
+        isinstance(max_wait_seconds, bool)
+        or not isinstance(max_wait_seconds, (int, float))
+        or not math.isfinite(max_wait_seconds)
+        or max_wait_seconds < 0
+    ):
+        raise ValueError("max_wait_seconds must be a finite non-negative number")
+    if (
+        isinstance(poll_interval_seconds, bool)
+        or not isinstance(poll_interval_seconds, (int, float))
+        or not math.isfinite(poll_interval_seconds)
+        or poll_interval_seconds <= 0
+    ):
+        raise ValueError("poll_interval_seconds must be a finite positive number")
+
     unload_model(tag)
+    started = time.monotonic()
     elapsed = 0.0
     while True:
         loaded = _model_is_loaded(tag)
+        elapsed = max(elapsed, time.monotonic() - started)
         if loaded is False:
             return True
         if loaded is None:
@@ -721,8 +743,9 @@ def ensure_model_unloaded(
             return False
         if elapsed >= max_wait_seconds:
             return False
-        time.sleep(poll_interval_seconds)
-        elapsed += poll_interval_seconds
+        sleep_seconds = min(poll_interval_seconds, max_wait_seconds - elapsed)
+        time.sleep(sleep_seconds)
+        elapsed = max(elapsed + sleep_seconds, time.monotonic() - started)
 
 
 def _generate(tag: str, prompt: str, generation: dict, num_predict: int | None = None,
@@ -862,6 +885,7 @@ def _generate_lmstudio(
     if (
         isinstance(generation_time, (int, float))
         and not isinstance(generation_time, bool)
+        and math.isfinite(generation_time)
         and generation_time > 0
     ):
         result["eval_duration"] = int(generation_time * 1_000_000_000)
@@ -874,12 +898,14 @@ def _tokens_per_second(response: dict) -> float | None:
     if (
         isinstance(count, int)
         and not isinstance(count, bool)
-        and count > 0
+        and count >= MIN_TIMED_TOKENS
         and isinstance(duration, int)
         and not isinstance(duration, bool)
         and duration > 0
     ):
-        return count / (duration / 1_000_000_000)
+        speed = count / (duration / 1_000_000_000)
+        if math.isfinite(speed) and speed <= MAX_PLAUSIBLE_TOKENS_PER_SECOND:
+            return speed
     return None
 
 
@@ -1054,8 +1080,13 @@ def evaluate_model_isolated(
     terminate the entire evaluator deterministically on Esc, Ctrl+C
     teardown, or deadline expiry.
     """
-    if timeout_seconds <= 0:
-        raise ValueError("timeout_seconds must be positive")
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError("timeout_seconds must be a finite positive number")
     context = multiprocessing.get_context("spawn")
     receive_conn, send_conn = context.Pipe(duplex=False)
     process = context.Process(
@@ -1236,6 +1267,10 @@ def _evaluate_tag_once(
     finally:
         unloaded = unload_model(tag) if engine == "ollama" else unload_model(tag, engine=engine)
     if failure is not None or result is None:
+        failure = failure or QualityEvaluationError(
+            "Model evaluation returned no result",
+            failure_reason=FAILURE_REASON_UNKNOWN,
+        )
         return _build_failure_entry(tag, failure, metadata, profile, unloaded)
     result["outcome"] = "success"
     result["measurement_isolation"] = {
@@ -1375,14 +1410,21 @@ def collect_evidence(
     no LM Studio equivalent yet. A generation_timeout on the LM Studio path
     is reported as a plain transient_error, same as confirm mode disabled.
     """
+    if engine not in {"ollama", "lmstudio"}:
+        raise QualityEvaluationError("engine must be 'ollama' or 'lmstudio'")
     if not tags:
         raise QualityEvaluationError("at least one model tag is required")
     if len(tags) > 20:
         raise QualityEvaluationError("at most 20 models may be evaluated at once")
-    if len(set(tags)) != len(tags) or any(not tag or len(tag) > 256 for tag in tags):
+    if (
+        any(not isinstance(tag, str) for tag in tags)
+        or len(set(tags)) != len(tags)
+        or any(not tag or len(tag) > 256 for tag in tags)
+    ):
         raise QualityEvaluationError("model tags must be unique non-empty strings")
     if engine == "lmstudio" and not lmstudio_models:
         raise QualityEvaluationError("lmstudio_models is required when engine='lmstudio'")
+    _bounded_int(speed_runs, 1, 10, "speed runs")
     pack, pack_sha256 = load_pack(pack_path)
     models = []
     total = len(tags)
@@ -1494,14 +1536,10 @@ def collect_evidence(
 
 def write_evidence(report: dict, path: Path) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        # ensure_ascii=False means this really does emit non-ASCII bytes, so
-        # the locale default (cp949 on Korean Windows) would raise
-        # UnicodeEncodeError on any character outside it rather than mojibake.
-        temporary.write_text(
-            json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
-        temporary.replace(path)
-    except OSError as e:
+        # Use a unique temporary plus a cross-process lock. A fixed `.tmp`
+        # name lets concurrent benchmark commands overwrite/remove each
+        # other's scratch file before replace.
+        with locked(path):
+            atomic_write_text(path, json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+    except (OSError, FileLockTimeout) as e:
         raise QualityEvaluationError(f"Could not write evidence to {path}: {e}") from e

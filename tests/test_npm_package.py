@@ -47,6 +47,7 @@ def test_stage_launcher_has_an_exact_allowlist_and_stays_private(tmp_path):
     launcher = (staged / "bin" / "omm.js").read_bytes()
     assert launcher.startswith(b"#!/usr/bin/env node\n")
     assert b"\r\n" not in launcher
+    assert b"\r\n" not in (staged / "lib" / "launcher.js").read_bytes()
     manifest = json.loads((staged / "package.json").read_text(encoding="utf-8"))
     assert manifest["private"] is True
     assert npm_package._file_allowlist(staged) == npm_package.EXPECTED_LAUNCHER_FILES
@@ -62,6 +63,7 @@ def test_copy_text_lf_normalizes_windows_line_endings(tmp_path):
     npm_package._copy_text_lf(source, destination)
 
     assert destination.read_bytes() == b"#!/usr/bin/env node\nconsole.log('omm');\n"
+    assert npm_package.canonical_text_bytes(source) == destination.read_bytes()
 
 
 def test_publishable_launcher_is_staged_without_weakening_source_guard(tmp_path):
@@ -145,6 +147,21 @@ def test_stage_platform_rejects_wrong_format_symlink_and_overwrite(tmp_path):
         npm_package.stage_platform_package("linux-x64-gnu", real, tmp_path / "out")
 
 
+def test_platform_package_normalizes_windows_license_line_endings(tmp_path, monkeypatch):
+    license_file = tmp_path / "LICENSE"
+    license_file.write_bytes(b"line one\r\nline two\r\n")
+    monkeypatch.setattr(npm_package, "LICENSE_FILE", license_file)
+    binary = tmp_path / "omm"
+    binary.write_bytes(next(iter(npm_package.MAGIC_PREFIXES["darwin"])) + b" payload")
+
+    staged = npm_package.stage_platform_package(
+        "darwin-arm64", binary, tmp_path / "stage", publishable=True
+    )
+
+    assert (staged / "LICENSE").read_bytes() == b"line one\nline two\n"
+    npm_package.validate_platform_package(staged, "darwin-arm64", publishable=True)
+
+
 def test_platform_verifier_rejects_unexpected_files(tmp_path):
     binary = tmp_path / "omm"
     binary.write_bytes(bytes.fromhex("7f454c46") + b" OMM")
@@ -155,3 +172,13 @@ def test_platform_verifier_rejects_unexpected_files(tmp_path):
 
     with pytest.raises(npm_package.NpmPackageError, match="outside its allowlist"):
         npm_package.validate_platform_package(staged, "linux-x64-gnu")
+
+
+def test_targets_reject_binary_paths_outside_the_package(tmp_path):
+    target_map = npm_package.targets()
+    target_map["linux-x64-gnu"]["binary"] = "../../omm"
+    target_file = tmp_path / "targets.json"
+    target_file.write_text(json.dumps(target_map), encoding="utf-8")
+
+    with pytest.raises(npm_package.NpmPackageError, match="unsafe identity"):
+        npm_package.targets(target_file)

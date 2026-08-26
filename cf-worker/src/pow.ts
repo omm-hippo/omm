@@ -18,7 +18,14 @@ export function isTimestampFresh(
   maxSkewMs: number,
   now: number = Date.now(),
 ): boolean {
-  if (!Number.isFinite(timestamp)) return false;
+  if (
+    !Number.isSafeInteger(timestamp) ||
+    !Number.isFinite(maxSkewMs) ||
+    maxSkewMs < 0 ||
+    !Number.isFinite(now)
+  ) {
+    return false;
+  }
   return Math.abs(now - timestamp) <= maxSkewMs;
 }
 
@@ -43,7 +50,24 @@ export async function verifyProofOfWork(
   nonce: number,
   difficultyPrefixLength: number,
 ): Promise<boolean> {
-  if (!Number.isInteger(nonce) || nonce < 0) return false;
+  if (
+    !Number.isSafeInteger(timestamp) ||
+    !Number.isSafeInteger(nonce) ||
+    nonce < 0 ||
+    !Number.isSafeInteger(difficultyPrefixLength) ||
+    difficultyPrefixLength < 0 ||
+    difficultyPrefixLength > 64
+  ) {
+    return false;
+  }
   const hash = await sha256Hex(`${eventJson}:${timestamp}:${nonce}`);
   return hash.startsWith("0".repeat(difficultyPrefixLength));
+}
+
+export async function proofDigest(
+  eventJson: string,
+  timestamp: number,
+  nonce: number,
+): Promise<string> {
+  return sha256Hex(`${eventJson}:${timestamp}:${nonce}`);
 }

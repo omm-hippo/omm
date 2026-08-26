@@ -99,6 +99,24 @@ def test_search_huggingface_returns_empty_list_on_request_error(monkeypatch):
     assert search_mod.search_huggingface("qwen") == []
 
 
+def test_search_huggingface_ignores_malformed_payload_entries(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp([None, "bad", {}]))
+
+    assert search_mod.search_huggingface("qwen") == []
+
+
+def test_pick_gguf_file_ignores_malformed_entries_and_mmproj():
+    assert search_mod.pick_gguf_file(
+        [
+            None,
+            {},
+            {"rfilename": 7},
+            {"rfilename": "model-mmproj-Q4_K_M.gguf"},
+            {"rfilename": "model-Q4_K_M.gguf"},
+        ]
+    ) == "model-Q4_K_M.gguf"
+
+
 def test_search_huggingface_filters_out_fake_provenance_repos(monkeypatch):
     class _Resp:
         def raise_for_status(self):
@@ -395,6 +413,24 @@ def test_search_modelscope_returns_empty_list_on_malformed_top_level_response(mo
     # to crash with AttributeError instead of degrading gracefully.
     payload = {"success": True, "data": None}
     monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(payload))
+
+    assert search_mod.search_modelscope("query") == []
+
+
+def test_search_modelscope_returns_empty_for_malformed_nested_payload(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp({"data": []}))
+
+    assert search_mod.search_modelscope("query") == []
+
+
+def test_search_modelscope_ignores_non_string_repo_ids(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *a, **k: _Resp(
+            {"data": {"models": [{"id": 123, "tags": ["library:gguf"]}]}}
+        ),
+    )
 
     assert search_mod.search_modelscope("query") == []
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from omm.hardware import HardwareInfo
-from omm.tuning import confidence_label, recommend_runtime_settings
+from omm.tuning import candidate_model_size_gb, confidence_label, recommend_runtime_settings
 
 
 def _hardware(**overrides) -> HardwareInfo:
@@ -90,3 +90,7 @@ def test_confidence_label_tracks_real_evidence():
     assert confidence_label(3) == "experimental"
     assert confidence_label(50) == "growing"
     assert confidence_label(500) == "community measured"
+
+
+def test_boolean_size_is_not_treated_as_one_byte_model():
+    assert candidate_model_size_gb({"size_bytes": True, "name": "unknown"}) is None

@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from localfit_server.db import BenchmarkStore
@@ -469,13 +469,34 @@ app = FastAPI(
 )
 
 
+def require_ingest(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> None:
+    host = request.client.host if request.client is not None else ""
+    if host in {"127.0.0.1", "::1", "localhost", "testclient"}:
+        return
+    expected = os.getenv("LOCALFIT_INGEST_TOKEN")
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LOCALFIT_INGEST_TOKEN is required for remote ingestion",
+        )
+    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
+
+
 @app.get("/healthz")
 def health() -> dict[str, str]:
     get_store().count()
     return {"status": "ok", "storage": "sqlite"}
 
 
-@app.post("/v1/benchmarks", status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/v1/benchmarks",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_ingest)],
+)
 def create_benchmark(event: BenchmarkEvent) -> dict[str, int | str]:
     # Preserve the wire contract: absent optional v7+ failure fields stay
     # absent in event_json rather than becoming explicit nulls.

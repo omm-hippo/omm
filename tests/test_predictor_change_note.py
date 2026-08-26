@@ -11,7 +11,13 @@ def _artifact(name="a"):
         "model_version": 4,
         "feature_order": FEATURE_ORDER,
         "trees": [{"leaf": True, "value": 1.0}],
-        "candidates": [{"name": name}],
+        "candidates": [
+            {
+                "name": name,
+                "repo_id": "org/model",
+                "filename": "model.gguf",
+            }
+        ],
     }
 
 

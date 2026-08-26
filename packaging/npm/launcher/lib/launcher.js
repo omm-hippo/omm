@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 const launcherManifest = require("../package.json");
@@ -53,6 +54,22 @@ function exactArray(value, expected) {
   return Array.isArray(value) && value.length === 1 && value[0] === expected;
 }
 
+function sha256File(filePath) {
+  const digest = crypto.createHash("sha256");
+  const descriptor = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    for (;;) {
+      const bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      digest.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return digest.digest("hex");
+}
+
 function resolvePlatformPackage(options = {}) {
   const target = selectTarget(options.platform, options.arch, options.report);
   const resolvePackage = options.resolvePackage || require.resolve;
@@ -77,7 +94,9 @@ function resolvePlatformPackage(options = {}) {
     !metadata ||
     metadata.distribution !== "omm-model" ||
     metadata.target !== target.key ||
-    metadata.binary !== target.binary
+    metadata.binary !== target.binary ||
+    typeof metadata.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(metadata.sha256)
   ) {
     throw new LauncherError(
       `The installed ${target.package} metadata does not match @omm-hippo/omm ${launcherManifest.version}.`,
@@ -96,6 +115,9 @@ function resolvePlatformPackage(options = {}) {
   const relative = path.relative(root, binary);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new LauncherError(`The ${target.package} executable escapes its package root.`);
+  }
+  if (sha256File(binary) !== metadata.sha256) {
+    throw new LauncherError(`The ${target.package} executable checksum is invalid.`);
   }
   return { root, binary, manifest, target };
 }
@@ -133,4 +155,5 @@ module.exports = {
   run,
   runtimeLibc,
   selectTarget,
+  sha256File,
 };

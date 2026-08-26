@@ -47,6 +47,28 @@ def test_integrity_provenance_url_quotes_distribution_identity():
     )
 
 
+@pytest.mark.parametrize(
+    "url",
+    ["http://pypi.example/simple", "https://user:secret@pypi.example/simple"],
+)
+def test_release_urls_must_be_credential_free_https(url):
+    with pytest.raises(pypi_release.ReleaseValidationError, match="credential-free HTTPS"):
+        pypi_release._validate_https_url(url, "package index")
+
+
+def test_fetch_release_json_rejects_non_object_payload(monkeypatch):
+    monkeypatch.setattr(
+        pypi_release.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _Response(b"[]"),
+    )
+
+    with pytest.raises(pypi_release.ReleaseValidationError, match="JSON object"):
+        pypi_release.fetch_release_json(
+            "https://pypi.example", "omm-model", "1.2.3", attempts=1
+        )
+
+
 def test_repository_verification_checks_metadata_and_downloaded_bytes(tmp_path, monkeypatch):
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
@@ -109,6 +131,40 @@ def test_repository_verification_rejects_an_extra_remote_file(tmp_path, monkeypa
                 {"filename": "unexpected.exe"},
             ]
         },
+    )
+
+    with pytest.raises(pypi_release.ReleaseValidationError):
+        pypi_release.verify_repository_files(
+            "https://pypi.org", dist_dir, pyproject, attempts=1
+        )
+
+
+@pytest.mark.parametrize(
+    "urls",
+    [
+        None,
+        [None],
+        [{"url": "https://files.example/no-name"}],
+        [
+            {"filename": "example-1.0.tar.gz"},
+            {"filename": "example-1.0.tar.gz"},
+        ],
+    ],
+)
+def test_repository_verification_rejects_malformed_or_duplicate_file_metadata(
+    tmp_path, monkeypatch, urls
+):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "example"\nversion = "1.0"\n', encoding="utf-8")
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "example-1.0-py3-none-any.whl").write_bytes(b"wheel")
+    (dist_dir / "example-1.0.tar.gz").write_bytes(b"sdist")
+    sys.modules["release_artifacts"].write_checksums(dist_dir)
+    monkeypatch.setattr(
+        pypi_release,
+        "fetch_release_json",
+        lambda *_args, **_kwargs: {"urls": urls},
     )
 
     with pytest.raises(pypi_release.ReleaseValidationError):

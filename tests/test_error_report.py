@@ -6,7 +6,7 @@ import requests
 from omm import config, error_report
 
 TELEMETRY_URL = "https://localfit-8ab57-default-rtdb.firebaseio.com/telemetry.json"
-ERROR_REPORT_URL = "https://localfit-8ab57-default-rtdb.firebaseio.com/error_reports.json"
+ERROR_REPORT_URL = config.ERROR_REPORTS_ENDPOINT
 
 
 class _FakeResp:
@@ -64,8 +64,13 @@ def test_scrub_paths_replaces_a_linux_home_directory_with_a_tilde():
 def test_scrub_paths_replaces_a_windows_home_directory_with_a_tilde():
     scrubbed = error_report.scrub_paths(r"[WinError 5] C:\Users\Carol Doe\.omm\models\x.gguf")
 
-    assert scrubbed == r"[WinError 5] ~ Doe\.omm\models\x.gguf"
+    assert scrubbed == r"[WinError 5] ~\.omm\models\x.gguf"
     assert "Carol" not in scrubbed
+    assert "Doe" not in scrubbed
+
+
+def test_scrub_paths_replaces_an_exact_windows_home_directory():
+    assert error_report.scrub_paths(r"C:\Users\Carol Doe") == "~"
 
 
 def test_scrub_paths_handles_every_platform_in_one_message():
@@ -81,8 +86,8 @@ def test_scrub_paths_leaves_paths_without_a_user_component_alone():
     assert error_report.scrub_paths("") == ""
 
 
-def test_endpoint_derives_the_error_report_url_from_the_telemetry_url():
-    assert error_report.endpoint({"telemetry_endpoint": TELEMETRY_URL}) == ERROR_REPORT_URL
+def test_endpoint_rejects_legacy_direct_firebase_destination():
+    assert error_report.endpoint({"telemetry_endpoint": TELEMETRY_URL}) is None
 
 
 def test_endpoint_keeps_the_host_and_only_rewrites_the_last_segment():
@@ -102,6 +107,24 @@ def test_endpoint_is_none_when_the_telemetry_path_is_not_recognized():
 
 def test_endpoint_is_none_for_an_insecure_telemetry_endpoint():
     assert error_report.endpoint({"telemetry_endpoint": "http://example.com/telemetry.json"}) is None
+
+
+@pytest.mark.parametrize(
+    "telemetry_endpoint",
+    [
+        "https://project.firebaseio.com/telemetry.json",
+        "https://project-default-rtdb.firebasedatabase.app/telemetry.json",
+    ],
+)
+def test_legacy_firebase_error_reports_never_attempt_direct_writes(
+    telemetry_endpoint, monkeypatch
+):
+    monkeypatch.setattr(requests, "post", _unexpected_post)
+
+    assert error_report._post_report(
+        error_report.build_report(RuntimeError("boom"), trigger="crash"),
+        {"telemetry_endpoint": telemetry_endpoint},
+    ) is False
 
 
 def test_unset_policy_queues_nothing_at_all(isolated_omm_home):
@@ -260,6 +283,8 @@ def test_flush_sends_queued_reports_to_the_derived_endpoint(isolated_omm_home, m
 
     assert sent == 1
     assert calls[0][0] == ERROR_REPORT_URL
+    body = calls[0][1]["json"]
+    assert set(body) == {"event_json", "timestamp", "nonce"}
     assert error_report.pending_count() == 0
 
 
