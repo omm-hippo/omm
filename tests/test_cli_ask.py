@@ -112,6 +112,42 @@ def test_ask_no_ai_routes_mac_recommendation_with_nonbreaking_spaces():
     assert "아직 선택하지 않음" not in result.stdout
 
 
+def test_ask_named_provider_recommendation_routes_to_safe_search_command(monkeypatch):
+    calls = []
+
+    class FirstAllowedRuntime:
+        def classify(
+            self, question, allowed_command_ids, catalog_context, *, model=None
+        ):
+            calls.append(tuple(allowed_command_ids))
+            return AssistantClassification(
+                allowed_command_ids[0], "trusted id only", model or "small-local"
+            )
+
+    monkeypatch.setattr(cli, "OllamaAssistantRuntime", FirstAllowedRuntime)
+
+    result = runner.invoke(
+        cli.app,
+        ["ask", "open", "ai", "모델", "추천해줘", "--no-color"],
+    )
+
+    assert result.exit_code == 0, (result.stdout, result.stderr)
+    assert calls == [("search",)]
+    assert "omm search openai" in result.stdout
+    assert "omm recommend" not in result.stdout
+
+
+def test_ask_named_provider_no_ai_uses_same_safe_search_command():
+    result = runner.invoke(
+        cli.app,
+        ["ask", "open", "ai", "모델", "추천해줘", "--no-ai", "--no-color"],
+    )
+
+    assert result.exit_code == 0, (result.stdout, result.stderr)
+    assert "omm search openai" in result.stdout
+    assert "omm recommend" not in result.stdout
+
+
 def test_ask_no_ai_uses_deterministic_built_in_guidance(monkeypatch):
     class ForbiddenRuntime:
         def __init__(self):
