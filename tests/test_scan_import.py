@@ -457,6 +457,47 @@ def test_adopt_group_reuses_existing_hub_copy_for_same_hash(isolated_omm_home, t
     assert entry["ollama_runtime_name"] == "existing:latest"
 
 
+def test_adopt_group_reimports_when_registry_entry_is_a_ghost(isolated_omm_home, tmp_path):
+    """Registry can carry a stale entry whose hub file was deleted by hand
+    (e.g. outside omm). adopt_group must not trust that entry as a live
+    hub copy - it should re-adopt the external file under the same name
+    instead of crashing on the missing hub path."""
+    payload = b"ghost registry entry, no file on disk"
+    digest = "57c2c1df43dba26f42f0b0e6811258b35c9dc6e714b5dc7d09d64f80bd315c1a"
+    registry.upsert_entry(
+        "ghost.gguf",
+        sha256=digest,
+        version=digest[:7],
+        source="https://example.com/ghost.gguf",
+        size_bytes=len(payload),
+        installed_at="2026-01-01T00:00:00+00:00",
+        ollama_name="ghost",
+        repo_id="org/repo",
+        linked={"lmstudio": True, "ollama": False},
+    )
+    assert not (scan_import.MODELS_DIR / "ghost.gguf").exists()
+
+    external_dir = tmp_path / "lmstudio"
+    external_dir.mkdir()
+    external_path = external_dir / "ghost.gguf"
+    external_path.write_bytes(payload)
+
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[scan_import.ExternalGguf("lmstudio", "ghost.gguf", external_path, len(payload), digest)],
+    )
+
+    result = scan_import.adopt_group(group)
+
+    assert result.filename == "ghost.gguf"
+    hub_file = scan_import.MODELS_DIR / "ghost.gguf"
+    assert hub_file.read_bytes() == payload
+    assert external_path.samefile(hub_file)
+
+    entry = registry.load_registry()["ghost.gguf"]
+    assert entry["source"] == "imported"
+
+
 def test_adopt_group_preserves_duplicate_changed_after_scan(isolated_omm_home, tmp_path):
     hub_file = scan_import.MODELS_DIR / "existing.gguf"
     hub_file.write_bytes(b"trusted hub bytes")

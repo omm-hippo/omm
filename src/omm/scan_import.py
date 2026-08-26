@@ -354,6 +354,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             if isinstance(entry, dict)
             and entry.get("sha256") == group.sha256
             and _is_safe_registry_filename(fn, managed_path)
+            and managed_path(fn).exists()
         ),
         None,
     )
