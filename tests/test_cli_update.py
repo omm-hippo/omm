@@ -1,6 +1,7 @@
 import importlib.metadata
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1099,6 +1100,49 @@ def test_deps_satisfied_false_when_installed_version_is_below_new_minimum(
 
 def test_deps_satisfied_false_when_pyproject_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
+
+    assert cli._deps_satisfied() is False
+
+
+def test_deps_satisfied_ignores_dep_whose_marker_excludes_current_python(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        "dependencies = [\n"
+        '    "click>=8.1",\n'
+        '    "tomli>=2.0; python_version < \'3.11\'",\n'
+        "]\n"
+    )
+    monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
+    monkeypatch.setattr(sys, "version_info", (3, 14, 0))
+
+    def _version(name):
+        if name == "tomli":
+            raise importlib.metadata.PackageNotFoundError(name)
+        return "8.1"
+
+    monkeypatch.setattr(importlib.metadata, "version", _version)
+
+    assert cli._deps_satisfied() is True
+
+
+def test_deps_satisfied_still_checks_dep_whose_marker_includes_current_python(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        "dependencies = [\n"
+        '    "tomli>=2.0; python_version < \'3.11\'",\n'
+        "]\n"
+    )
+    monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
+    monkeypatch.setattr(sys, "version_info", (3, 10, 0))
+
+    def _version(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _version)
 
     assert cli._deps_satisfied() is False
 
