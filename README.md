@@ -1,16 +1,42 @@
 # omm — Open source Model Manager
 
-`omm` is an apt/brew-style package manager for local LLMs (GGUF). It installs models into a central hub, links them into seven local AI runners automatically (Ollama, LM Studio, Jan, AnythingLLM, Msty, text-generation-webui, KoboldCpp), and can recommend a model that fits your hardware.
+[![Cross-platform validation](https://github.com/omm-hippo/omm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/omm-hippo/omm/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/omm-model)](https://pypi.org/project/omm-model/)
+[![Python](https://img.shields.io/pypi/pyversions/omm-model)](https://pypi.org/project/omm-model/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+`omm` is an apt/brew-style package manager for local GGUF models. It keeps one
+model hub, exposes models to supported local AI runners, checks whether a model
+fits the current hardware, and can verify real local generation before you rely
+on it.
+
+> [!NOTE]
+> The `main` branch documents the current development version. For the latest
+> published build, use the [GitHub Releases](https://github.com/omm-hippo/omm/releases)
+> page or the version shown by your package manager.
+
+## What omm does
+
+- Installs GGUF models into a central, configurable model hub.
+- Links or imports models across Ollama, LM Studio, Jan, AnythingLLM, Msty,
+  text-generation-webui, and KoboldCpp without silently duplicating large files.
+- Ranks models against live RAM, VRAM, operating-system, and runner state.
+- Verifies load and generation through local Ollama or LM Studio APIs.
+- Keeps telemetry, benchmark uploads, and error reports opt-in.
 
 ## Table of contents
 
+- [What omm does](#what-omm-does)
 - [Install](#install)
   - [Windows](#windows)
   - [macOS](#macos)
   - [Linux](#linux)
   - [Any OS via PyPI or pipx](#any-os-via-pypi-or-pipx)
+  - [npm](#npm)
   - [Troubleshooting](#troubleshooting)
-  - [Not currently public installation paths](#not-currently-public-installation-paths)
+  - [Windows portable and Winget status](#windows-portable-and-winget-status)
+  - [Supported platforms](#supported-platforms)
+  - [Local AI runners](#local-ai-runners)
 - [Usage](#usage)
   - [Setup & discovery](#setup--discovery)
   - [Install & manage models](#install--manage-models)
@@ -21,6 +47,7 @@
 - [Signed recommendation data](#signed-recommendation-data)
 - [Development](#development)
 - [Contributing](#contributing)
+- [Security](#security)
 - [License](#license)
 
 ## Install
@@ -31,6 +58,7 @@ Pick your OS and follow one path from top to bottom:
 - [macOS](#macos) — Terminal one-liner, or the Homebrew Tap
 - [Linux](#linux) — shell one-liner
 - [Any OS via PyPI or pipx](#any-os-via-pypi-or-pipx) — `pip` / `pipx`, no signature verification
+- [npm](#npm) — standalone native command distributed through npm
 - [Troubleshooting](#troubleshooting) — what you see, why, and how to fix it
 
 ### Windows
@@ -234,6 +262,33 @@ pipx uninstall omm-model
 
 Both commands preserve downloaded models and settings under `OMM_HOME`.
 
+### npm
+
+The public npm launcher installs a platform-specific standalone `omm` binary,
+so Python is not required for this path. It requires Node.js 22.14 or newer:
+
+```sh
+npm install --global @omm-hippo/omm
+omm --version
+```
+
+Published npm binaries cover macOS on Apple Silicon and Intel, glibc-based
+Linux on ARM64 and x86_64, and Windows x64. Other operating-system,
+architecture, and libc combinations should use the Python-based installer or
+PyPI path instead.
+
+Upgrade or remove the npm installation with:
+
+```sh
+npm update --global @omm-hippo/omm
+npm uninstall --global @omm-hippo/omm
+```
+
+The npm launcher verifies the selected native package name, version, platform
+metadata, and binary containment before executing it. Release CI separately
+checks package integrity and registry signatures. Removal preserves models and
+settings under `OMM_HOME`.
+
 ### Troubleshooting
 
 Match the message you see, not the step you think you are on.
@@ -260,30 +315,38 @@ Match the message you see, not the step you think you are on.
 | `Refusing unsafe OMM_HOME`, `Refusing non-absolute OMM_HOME`, or `Refusing OMM_HOME that contains the current directory` | `OMM_HOME` points at `/`, your home directory, a relative path, or the directory you are running from | Set `OMM_HOME` to a dedicated absolute path and rerun from outside it |
 | `Refusing unrecognized custom OMM_HOME (missing .omm-managed)` during uninstall | The uninstaller only removes homes that an omm installer marked as its own | Remove the directory yourself if it really is your model hub |
 
-### Not currently public installation paths
+### Windows portable and Winget status
 
-The Windows portable/Winget files are built and tested as release artifacts,
-but a public Winget package is not currently documented or verified. Do not
-use that path as a user installation command yet.
+The Windows x64 portable ZIP and checksum are published as CI-verified GitHub
+Release assets. The community Winget submission is not yet merged, so there is
+no supported `winget install` command to document at this time.
 
 ### Supported platforms
 
-`omm` is tested in CI on Windows, macOS, and Linux with Python 3.10+. Windows 10 22H2/11 is the supported Windows baseline because that matches Ollama's native Windows requirements. Hardware scan, install, linking, benchmark, update, and contribution flows are cross-platform; Ollama remains the only benchmark engine.
+`omm` is tested in CI on Windows, macOS, and Linux. Python-based installation
+paths require Python 3.10 or newer; the npm path requires Node.js 22.14 or
+newer and one of the published native targets listed above. Windows 10
+22H2/11 is the supported Windows baseline because that matches Ollama's native
+Windows requirements. Hardware scan, install, linking, benchmark, update, and
+contribution flows are cross-platform. Benchmarking selects an available
+local Ollama or LM Studio runtime; runner- and model-specific capabilities can
+still differ.
 
 ### Updates and verification
 
 Both installers clone to a versioned staging directory, verify the signed commit against a bootstrap trust anchor, and only then switch pipx to it. Do not replace this with an unverified `git clone` plus `pipx install` if commit authenticity matters.
 
-`omm update` updates only a canonical OMM Git-source installation. For a PyPI or
-pipx installation it leaves files unchanged and prints the matching package
-manager upgrade command. The Git-only beta channel is likewise unavailable to
-package-managed installations.
+`omm update` updates only a canonical OMM Git-source installation. For a
+package-managed installation, it leaves files unchanged and prints the
+matching package-manager upgrade command. The Git-only beta channel is
+likewise unavailable to package-managed installations.
 
 ### Package-channel verification
 
 | Installation path | Highest verified level | Remaining limitation |
 |---|---|---|
-| PyPI / pipx | Simulator-verified on GitHub-hosted Windows, macOS, and Ubuntu runners using the public package | A real upgrade from the first public release remains a separate user-path check |
+| PyPI / pipx | Simulator-verified on GitHub-hosted Windows, macOS, and Ubuntu runners using the public package | **Physical-device-verified: Not verified**; a real upgrade from the first public release is also unverified |
+| npm | Simulator-verified by building, installing, running, checking update guidance, and uninstalling all five published native targets | **Physical-device-verified: Not verified** |
 | Homebrew Tap | Physical-device-verified on an Apple Silicon Mac for public Tap install, `omm --version`, `brew test`, upgrade guidance, and uninstall | Intel Mac installation is not yet physical-device-verified |
 
 Additional package-manager commands are added here only after their public
@@ -298,8 +361,8 @@ The first bare `omm` run on a fresh install (or `omm setup` any time after) show
 | Ollama | macOS, Linux, Windows | — |
 | LM Studio | macOS, Linux, Windows (headless `lms` CLI) | — |
 | Jan | macOS (Homebrew), Windows (winget), Linux (Flatpak) | wherever that package manager isn't installed |
-| AnythingLLM | macOS (Homebrew) | Windows, Linux |
-| Msty | macOS (Homebrew) | Windows, Linux |
+| AnythingLLM | macOS (Homebrew), Windows x64 (official installer) | Linux, Windows ARM |
+| Msty | macOS (Homebrew), Windows x64 (official installer) | Linux, Windows ARM |
 | KoboldCpp | macOS (Apple Silicon), Linux (x86_64), Windows | Intel Mac, other architectures |
 | text-generation-webui | macOS (any arch), Linux/Windows (x86_64) | ARM Linux/Windows |
 
@@ -325,10 +388,12 @@ Purge (`-Purge` on PowerShell, `--purge` on sh) removes only known omm-owned pat
 
 ```sh
 omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
+omm engine install [ENGINE]  # Install one supported local runner, or choose interactively
 omm scan [--json]  # Print a hardware, runner, and model summary (RAM, VRAM, OS)
+omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
-omm search <query> [--json] [--skip-unfit] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated models, cached candidates, and HuggingFace
+omm search <query> [--json] [--skip-unfit] [--skip-ms] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated, Hugging Face, and ModelScope sources
 omm help [command]  # Show help, same as --help
 ```
 
@@ -346,16 +411,16 @@ the command exits without downloading.
 
 ```sh
 omm install <name> [--skip-unfit] [--upload/--no-upload] [--force] [--verify-runtime|--no-verify-runtime]  # Download, link, and optionally verify a model
-omm fit <name> [--json]  # Memory card: does this model (installed or not) fit next to what is running right now?
+omm fit <name>  # Memory card: does this model (installed or not) fit next to what is running right now?
 omm run [name] [--engine NAME]  # Chat with an installed model: Ollama in the terminal, KoboldCpp/text-generation-webui with the model loaded, GUI apps opened
-omm import [directory] [--yes]  # Adopt GGUF files already sitting in Ollama/LM Studio (or a given directory) into the hub
+omm import [directory] [--yes]  # Adopt GGUF files found across supported runners (and an optional directory) into the hub
 omm uninstall <name> [--dry-run]  # Uninstall a model and clean up its symlinks/manifests (alias: rm)
 omm uninstall all [--yes] [--dry-run]  # Uninstall every model installed via omm
 omm list [--json] [--engine NAME]  # Show models installed via omm and their linked status (alias: ls)
 omm info <name> [--json]  # Show a model's name, version, size, and linked-program run commands
 omm upgrade <name> [--dry-run]  # Refresh a model against its source if it has changed since install (alias: up)
 omm upgrade [--yes] [--dry-run]  # Check every installed model for updates
-omm link [--engine NAME]  # Re-verify and repair every installed model's LM Studio/Ollama links
+omm link [--engine NAME]  # Re-verify and repair installed-model links across supported runners
 omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
 omm autoremove  # Clean up broken symlinks in AI runner model directories
 omm cleanup  # Clean up orphaned partial/incomplete downloads
@@ -366,16 +431,18 @@ omm cleanup  # Clean up orphaned partial/incomplete downloads
 ### Verify & benchmark
 
 ```sh
-omm verify <name> [--engine ollama|lmstudio] [--keep-loaded]  # Prove local load + generation works
-omm benchmark <name>...  # Local quality + speed smoke evidence for one or more installed models
+omm verify <name> [--engine ollama|lmstudio] [--yes] [--keep-loaded]  # Prove local load + generation works
+omm benchmark <name>... [--output PATH]  # Local quality + speed evidence for selected installed models
+omm benchmark all [--output PATH]  # Benchmark every installed model in the selected runtime
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
 ```
 
-`omm verify` checks more than a link: it asks before loading an unloaded model,
-sends one short deterministic prompt to a server already running on this
-computer, requires a non-empty answer, and releases only a model that OMM
-loaded for the check. It never starts Ollama or LM Studio, deletes the model,
-or stores the generated answer. LM Studio API authentication reads
+`omm verify` checks more than a link: it asks before starting a stopped local
+runtime or loading an unloaded model, sends one short deterministic prompt,
+requires a non-empty answer, and stops or unloads only what OMM started for
+the check. It never deletes the model or stores the generated answer. Use
+`--yes` for unattended confirmation and `--keep-loaded` to preserve a model
+OMM loaded for the check. LM Studio API authentication reads
 `LM_API_TOKEN` from the process environment and never writes it to
 `config.json`. Compatibility status is stored locally in `models.json` and is
 shown by `omm info`.
@@ -389,7 +456,7 @@ omm setting version [--stable|--beta]  # Show or switch the update channel `omm 
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
 omm setting upload --enable|--disable|--ask  # Configure the benchmark-upload send policy
 omm setting error-reports --enable|--disable|--ask  # Configure the opt-in crash/error-report send policy
-omm setting memory-guard --policy ask|block|observe  # Protect Ollama loads from live memory pressure
+omm setting memory-guard --policy ask|block|observe  # Protect local runtime loads from live memory pressure
 omm setting theme [--set NAME]  # Show or change omm's output color theme
 omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
@@ -397,33 +464,45 @@ omm setting catalog-status  # Show signed recommendation data and rollback snaps
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
 ```
 
-`omm verify` checks more than a link: it asks before loading an unloaded model,
-sends one short deterministic prompt to a server already running on this
-computer, requires a non-empty answer, and releases only a model that OMM
-loaded for the check. It never starts Ollama or LM Studio, deletes the model,
-or stores the generated answer. LM Studio API authentication reads
-`LM_API_TOKEN` from the process environment and never writes it to
-`config.json`. Compatibility status is stored locally in `models.json` and is
-shown by `omm info`.
-
 ### Scripting
 
-All errors, warnings, and confirmation prompts print to stderr; `--json` output (supported on `search`/`list`/`info`/`benchmark`/`tune`/`scan`/`recommend`) is the only thing written to stdout, so it's safe to pipe (e.g. `omm list --json | jq .`). Any command that would otherwise prompt for confirmation fails fast with a non-zero exit code when there's no terminal attached instead of hanging — pass `--yes`/`-y` (works on every command that has a confirmation prompt) or the relevant flag (`install --skip-unfit`, `install --upload`/`--no-upload`) to run it unattended.
+All errors, warnings, and confirmation prompts print to stderr. For `search`,
+`list`, `info`, `tune`, `scan`, `doctor`, and `recommend`, `--json` makes
+stdout a single structured document that is safe to pipe (for example,
+`omm list --json | jq .`). `benchmark --json` appends its JSON report after
+the human-readable evidence summary, so treat the saved `--output` file as
+the machine-readable artifact instead of piping the complete stdout stream.
 
-Four global flags work either before or after the subcommand name (`omm --json search foo` and `omm search foo --json` are equivalent):
+For commands that document `--yes`/`-y`, pass it to skip their confirmation
+prompts, or use the command-specific flag (`install --skip-unfit`, `install
+--upload`/`--no-upload`). Benchmark upload consent remains governed by
+`omm setting upload`; for non-interactive benchmarks, start the selected local
+runtime before invoking the command.
+
+These common flags are available on most top-level commands. Where supported,
+they may be accepted before or after the subcommand name (`omm --json search
+foo` and `omm search foo --json` are equivalent). Use `omm COMMAND --help` for
+the exact flags and placement of a specific command:
 
 - `--json` — structured output, where supported (see above)
 - `--yes` / `-y` — skip confirmation prompts
 - `--quiet` / `-q` — suppress progress bars and background status/hint lines (e.g. download progress, "Verifying checksum...", scan's "Run: omm link" nudge); errors, warnings, and the result of what you asked for still print
 - `--no-color` — disable ANSI colors on omm's own console output and its download progress bar; the `NO_COLOR` environment variable does the same
 
-Passing `--json` or `--yes` to a command that doesn't use them prints a warning to stderr instead of silently doing nothing. Exit codes are consistent across every command: `0` success, `1` failure, `2` usage error (bad flag/argument).
+Commands using the shared flag wrapper warn when `--json` or `--yes` has no
+effect. Exit codes are consistent across commands: `0` success, `1` failure,
+and `2` usage error (bad flag or argument).
 
 `rm`, `ls`, and `up` are short aliases for `uninstall`, `list`, and `upgrade`.
 
 Set `OMM_HOME` to store everything (models, config, catalog history) under a different directory instead of `~/.omm` — useful when `$HOME`'s filesystem doesn't have room for GGUF models, e.g. `OMM_HOME=/mnt/data/omm omm contribute --yes`.
 
-`omm contribute` refuses to start unless every model volume has at least 10 GiB free. Before each download it also budgets the central GGUF, a worst-case full Ollama import copy, any required Windows cross-volume copies, and safety headroom. Each model evaluation prints a heartbeat every 30 seconds and is terminated after an absolute 10-minute deadline instead of hanging an unattended session indefinitely.
+`omm contribute` performs a 10 GiB startup free-space preflight. Before each
+download it separately budgets the central GGUF, a worst-case full runner copy,
+any required Windows cross-volume copies, and safety headroom. Each model
+evaluation prints a heartbeat every 30 seconds and is terminated after an
+absolute 10-minute deadline instead of hanging an unattended session
+indefinitely.
 
 Localfit does not assume all installed memory belongs to the model. A live
 scan subtracts memory currently used by other applications, keeps at least
@@ -432,9 +511,10 @@ caps. Recommendation fit and `omm tune` use this safe budget, so rerunning a
 command adapts after memory-heavy applications are opened or closed.
 
 `omm benchmark` runs a versioned eight-item bilingual arithmetic smoke pack
-against models already installed in Ollama. It stores parsed answers,
+against models already installed in the selected Ollama or LM Studio runtime.
+It stores parsed answers,
 correctness, pinned model metadata, and fixed-length timings under
-`~/.omm/evaluations/`; it stores no generated text. Opt-in telemetry sends a locally
+`OMM_HOME/evaluations/` (default `~/.omm/evaluations/`); it stores no generated text. Opt-in telemetry sends a locally
 computed CPU chip score (and GPU chip score, when a GPU is present) plus
 architecture and core counts — never the raw CPU/GPU model name — so speed
 predictions can distinguish otherwise identical Linux `x86_64` machines.
@@ -530,9 +610,14 @@ restores the most recent different snapshot.
 ## Development
 
 ```sh
-pip install -e ".[dev]"
-pytest
+python -m venv .venv
+source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]" -r requirements-train.txt
+python -m pytest -q
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for platform-specific setup, scoped
+checks, signed-head requirements, and pull-request conventions.
 
 ## Contributing
 
@@ -541,7 +626,16 @@ testing, and PR conventions, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for
 community expectations. Report security issues per [SECURITY.md](SECURITY.md)
 rather than as a public issue.
 
+## Security
+
+Do not open a public issue for a suspected vulnerability. Follow the private
+reporting instructions and supported-version policy in
+[SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT — see [LICENSE](LICENSE). Third-party dependency licenses are listed in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The omm source code is available under the [MIT License](LICENSE). Third-party
+dependency notices are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Models and local runner
+applications installed or linked by omm keep their own upstream licenses and
+terms; the project MIT license does not replace them.
