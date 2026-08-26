@@ -1,88 +1,159 @@
 # Contributing to omm
 
-Thanks for taking the time to contribute. This guide covers how to get set up,
-what to check before opening a PR, and how the project is organized.
+Thank you for helping improve omm. Contributions can include bug reports,
+documentation, tests, runner compatibility work, packaging, and focused code
+changes.
 
-## Getting started
+By participating, you agree to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md). Report suspected vulnerabilities
+privately as described in [SECURITY.md](SECURITY.md), not in a public issue or
+pull request.
+
+## Development setup
+
+The package supports Python 3.10 or newer. Python 3.11 matches the core CI
+environment.
 
 ```sh
 git clone https://github.com/omm-hippo/omm.git
-cd Omm
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+cd omm
+python -m venv .venv
 ```
 
-Run the test suite:
+Activate the environment on macOS or Linux:
 
 ```sh
-pytest -q
+source .venv/bin/activate
 ```
 
-Verify the CLI entry point works:
+Or in Windows PowerShell:
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+Install the development and training-test dependencies used by CI:
 
 ```sh
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]" -r requirements-train.txt
+```
+
+Run the core checks:
+
+```sh
+python -m pytest -q
 omm --help
+```
+
+Use a temporary `OMM_HOME` for manual development checks so local models and
+settings are not mixed with test state:
+
+```sh
+export OMM_HOME="$(mktemp -d)"  # macOS/Linux example
 ```
 
 ## Project layout
 
-- `src/omm/` — the `omm` CLI package (installer, search, hardware detection,
-  linking into LM Studio/Ollama/etc.)
-- `src/localfit_server/` — the optional telemetry/benchmark collection server
-- `scripts/` — training, migration, and maintenance scripts
-- `tests/` — pytest suite; mirrors the structure of `src/`
+- `src/omm/` — CLI, hardware detection, model management, runner integration,
+  and trust logic
+- `src/localfit_server/` — optional benchmark/telemetry collector
+- `tests/` — Python pytest suite
+- `cf-worker/` — hosted telemetry gateway and Firebase-facing Worker
+- `packaging/npm/` — npm launcher and native-package definitions
+- `scripts/` — release, training, validation, and maintenance tooling
+- `published/` — generated recommendation artifacts, signed manifests, and
+  candidate catalog
+- `.github/workflows/` — CI, package, release, and training automation
 - `docs/` — design notes and validation evidence
-- `published/` — the currently published recommendation model artifact
 
-## Before opening a pull request
+## Checks for the area you changed
 
-1. **Add or update tests** for any behavior change. This repo treats test
-   coverage as part of the change, not an afterthought.
-2. **Run the full suite locally**: `pytest -q`. CI also runs on Ubuntu,
-   Windows, and macOS, plus a Docker build and a bare-install check (no dev
-   extras) — a change that only works in your local venv may still fail CI.
-   CI rejects a PR unless its exact head commit (including a fork PR) is
-   SSH-signed by a key in the protected base branch's
-   `src/omm/trust/allowed_signers`. External contributors do **not** need to
-   own a maintainer key: a maintainer supplies the final trusted, signed
-   endorsement/tip before merging. The gate fetches that commit as Git data
-   only; it does not execute or import PR code. Direct pushes to `main` must
-   remain disabled in branch protection. Require the `Trusted PR head /
-   Trusted PR head` status from `.github/workflows/trusted-head.yml` before
-   merge. Do not use GitHub's **Update branch** after that signature is made:
-   it creates a nested merge and invalidates the signed tip. Rebase first, or
-   have a maintainer add a new allowed-signer SSH-signed non-merge tip
-   afterward.
-3. **Don't touch `published/localfit-recommend-model.json` by hand.** That artifact is
-   produced by the training pipeline (`scripts/train_model.py`) and gated by
-   the quality checks described in the README; hand edits will be
-   overwritten or rejected.
-4. **Keep changes scoped.** Prefer a focused PR over a large one that mixes
-   unrelated fixes, refactors, and features — it's easier to review and to
-   revert if something breaks.
-5. **Match existing style.** No enforced formatter/linter is currently wired
-   into CI, so follow the conventions already present in the file you're
-   editing.
+Core CI always runs Python 3.11 on Windows, macOS, and Ubuntu, a bare runtime
+install, installer/uninstaller checks, a Linux container build, and Firebase
+rules tests. Path-scoped workflows may also run runner integration checks,
+npm packaging, Python/npm release builds, and the Windows portable build.
+
+Run the checks relevant to your change before opening a pull request:
+
+```sh
+# Python behavior
+python -m pytest -q
+
+# Cloudflare Worker (run from the repository root)
+cd cf-worker
+npm ci
+npm test
+npx tsc -p tsconfig.json
+cd ..
+
+# npm launcher and package contract
+npm --prefix packaging/npm/launcher test
+python scripts/npm_package.py validate
+```
+
+Documentation-only changes do not prove runtime behavior. In the pull request,
+state exactly what you ran and separate these levels when they apply:
+
+- **Implemented** — the code or documentation exists
+- **Unit-verified** — focused automated tests passed
+- **Simulator-verified** — a user path ran in a simulator or emulator
+- **Physical-device-verified** — a user path ran on real hardware
+- **Not verified / 미검증** — name the unexercised path and reason
+
+## Pull request workflow
+
+1. Branch from the latest `main` and keep the change focused.
+2. Add or update tests for behavior changes.
+3. Do not hand-edit generated recommendation files such as
+   `published/localfit-recommend-model.json`; use the owning script or workflow.
+4. Run the relevant checks above and record the results in the PR description.
+5. Explain user-visible behavior, compatibility impact, and remaining
+   verification boundaries.
+6. Respond to review without mixing unrelated cleanup into the same PR.
+
+## Trusted pull-request head
+
+Branch protection validates the exact PR head commit using the verifier and
+SSH allowed-signers file from the protected base branch. Direct pushes to
+`main` remain disabled.
+
+External contributors do not need a maintainer signing key. After review, a
+maintainer supplies the final trusted SSH-signed tip before merge. Once that
+tip is signed, do not use GitHub's **Update branch** button or add another
+commit: either action changes the exact head and requires a new trusted
+signature.
+
+Maintainers can verify the current tip locally with:
+
+```sh
+git -c gpg.format=ssh \
+  -c gpg.ssh.allowedSignersFile=src/omm/trust/allowed_signers \
+  verify-commit HEAD
+```
+
+The required GitHub check is `Trusted PR head / Trusted PR head` from
+`.github/workflows/trusted-head.yml`. Do not bypass or weaken it to merge a
+change.
 
 ## Commit messages
 
-Keep the subject line short and focused on *why* the change was made, not a
-restatement of the diff. Conventional prefixes (`feat:`, `fix:`, `docs:`,
-`refactor:`, `test:`) are used throughout the history and are appreciated but
-not strictly required.
+Use a short subject that explains why the change exists. Conventional prefixes
+such as `feat:`, `fix:`, `docs:`, `refactor:`, and `test:` are encouraged but
+not required.
 
-## Reporting bugs / requesting features
+## Bugs and feature requests
 
-Open a GitHub issue using the provided templates. For bugs, include your OS,
-Python version, `omm` version (`omm --version` or the version line from bare
-`omm`), and the exact command that failed.
+Use the GitHub issue templates. A useful bug report includes:
 
-## Security issues
-
-Please do not open a public issue for a suspected security vulnerability.
-See [SECURITY.md](SECURITY.md) for how to report it privately.
+- operating system and architecture
+- Python or Node.js version, depending on the installation path
+- `omm --version` output and installation method
+- affected local runner and version, if applicable
+- exact command, expected behavior, actual behavior, and redacted logs
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the
-project's [MIT License](LICENSE).
+Contributions are accepted under the project's [MIT License](LICENSE).
+Downloaded models and third-party runner applications retain their own
+licenses and terms.
