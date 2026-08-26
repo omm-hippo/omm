@@ -77,6 +77,7 @@ from omm.assistant_knowledge import (
     QuestionSafetyError,
     build_candidate_context,
     detect_secret,
+    extract_known_model_target,
     normalize_question,
     rank_command_candidates,
     render_command,
@@ -906,6 +907,7 @@ def _assistant_payload(
     model: str | None,
     command_id: str | None,
     locale: str,
+    question: str | None = None,
 ) -> dict[str, Any]:
     """Build the stable public result from trusted catalogue data only."""
     if command_id is None:
@@ -921,13 +923,19 @@ def _assistant_payload(
         }
 
     record = COMMAND_KNOWLEDGE[command_id]
+    command = render_command(command_id)
+    if command_id == "search" and question:
+        target = extract_known_model_target(question)
+        if target:
+            command = f"omm search {target}"
+
     return {
         "mode": mode,
         "model": model,
         "commandId": command_id,
         # The model is allowed to choose an ID, never command text. This
         # maintained template remains the only display source of truth.
-        "command": render_command(command_id),
+        "command": command,
         "summary": record.summary_ko if locale == "ko" else record.summary_en,
         "sideEffects": [effect.value for effect in record.side_effects],
         "docsUrl": _assistant_docs_url(command_id, locale),
@@ -1063,10 +1071,16 @@ def ask_cmd(
     selected_id: str | None = None
     selected_model: str | None = None
     mode = "built-in"
-    candidate_ids = tuple(candidate.command_id for candidate in fallback.candidates)
+    ai_candidates = fallback.candidates
+    if not fallback.clarify and fallback.confidence >= 0.9:
+        # Preserve a very strong trusted routing decision. Small local models
+        # add language understanding for close candidates, but must not turn
+        # an explicit provider/family request into a different command.
+        ai_candidates = fallback.candidates[:1]
+    candidate_ids = tuple(candidate.command_id for candidate in ai_candidates)
 
     if not no_ai and candidate_ids:
-        catalog_context = build_candidate_context(fallback.candidates, locale=locale)
+        catalog_context = build_candidate_context(ai_candidates, locale=locale)
         allowed_ids = candidate_ids
         if fallback.clarify:
             # Only an actually ambiguous deterministic match gives the model
@@ -1117,6 +1131,7 @@ def ask_cmd(
         model=selected_model,
         command_id=selected_id,
         locale=locale,
+        question=normalized,
     )
     if greeting and payload["needsClarification"]:
         payload["summary"] = _assistant_greeting_summary(locale)

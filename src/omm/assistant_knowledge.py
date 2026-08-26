@@ -494,9 +494,41 @@ def sanitize_question(question: str) -> str:
 
 _WORD_RE = re.compile(r"[0-9a-zA-Z가-힣]+")
 
+_KNOWN_MODEL_TARGETS = (
+    ("open ai", "openai"),
+    ("openai", "openai"),
+    ("deep seek", "deepseek"),
+    ("deepseek", "deepseek"),
+    ("tiny llama", "tinyllama"),
+    ("tinyllama", "tinyllama"),
+    ("code llama", "codellama"),
+    ("codellama", "codellama"),
+    ("qwen", "qwen"),
+    ("llama", "llama"),
+    ("gemma", "gemma"),
+    ("mistral", "mistral"),
+    ("exaone", "exaone"),
+    ("gpt", "gpt"),
+    ("phi", "phi"),
+)
+
 
 def _search_form(text: str) -> str:
     return " ".join(_WORD_RE.findall(unicodedata.normalize("NFKC", text).casefold()))
+
+
+def extract_known_model_target(question: str) -> str | None:
+    """Return a safe canonical search term for a named model/provider.
+
+    Only maintained aliases are returned, so callers may put this value in a
+    displayed command without trusting arbitrary user or model text.
+    """
+
+    searchable = f" {_search_form(question)} "
+    for alias, canonical in _KNOWN_MODEL_TARGETS:
+        if f" {alias} " in searchable:
+            return canonical
+    return None
 
 
 def _intent_score(question: str, intent: str) -> float:
@@ -525,6 +557,18 @@ def rank_command_candidates(question: str, *, limit: int = 3) -> FallbackResult:
         raise ValueError(f"limit must be between 1 and {MAX_CANDIDATES}")
     normalized = sanitize_question(question)
     search_question = _search_form(normalized)
+    named_target = extract_known_model_target(normalized)
+    named_target_request = named_target is not None and any(
+        marker in search_question
+        for marker in (
+            "추천",
+            "찾",
+            "검색",
+            "recommend",
+            "find",
+            "search",
+        )
+    )
     ranked: list[tuple[float, str, tuple[str, ...]]] = []
     for record in _RECORDS:
         matches: list[tuple[float, str]] = []
@@ -532,6 +576,11 @@ def rank_command_candidates(question: str, *, limit: int = 3) -> FallbackResult:
             score = _intent_score(search_question, intent)
             if score > 0:
                 matches.append((score, intent))
+        if record.command_id == "search" and named_target_request:
+            # A named family/provider cannot be expressed through the
+            # hardware-only `omm recommend` command. Route it to search even
+            # when the user naturally says "recommend an OpenAI model".
+            matches.append((11.0, f"named-target:{named_target}"))
         if not matches:
             continue
         matches.sort(key=lambda item: (-item[0], item[1]))
@@ -639,6 +688,7 @@ __all__ = [
     "SideEffect",
     "build_candidate_context",
     "detect_secret",
+    "extract_known_model_target",
     "normalize_question",
     "rank_command_candidates",
     "render_command",

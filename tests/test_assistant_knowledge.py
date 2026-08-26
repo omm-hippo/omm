@@ -14,6 +14,7 @@ from omm.assistant_knowledge import (
     SideEffect,
     build_candidate_context,
     detect_secret,
+    extract_known_model_target,
     normalize_question,
     rank_command_candidates,
     render_command,
@@ -34,6 +35,8 @@ def _top(question: str) -> str | None:
         ("내 컴퓨터 사양에 맞는 모델을 추천해줘", "recommend"),
         ("내 맥 성능에 맞고 코딩을 하기 좋은 AI", "recommend"),
         ("\u00a0내 맥에 맞는 AI\u00a0 추천", "recommend"),
+        ("open ai 모델 추천해줘", "search"),
+        ("qwen 모델 추천해줘", "search"),
         ("qwen 모델을 설치하고 싶어", "install"),
         ("설치된 qwen이 실제로 답을 생성하는지 확인하고 싶어", "verify"),
         ("설치된 모델 목록을 보여줘", "list"),
@@ -182,3 +185,16 @@ def test_security_terms_without_values_are_not_false_positive_secrets():
 
     assert not detect_secret(question)
     assert sanitize_question(question) == question
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("open ai 모델 추천해줘", "openai"),
+        ("Qwen 모델을 찾아줘", "qwen"),
+        ("Deep Seek model", "deepseek"),
+        ("그냥 모델 추천해줘", None),
+    ],
+)
+def test_known_model_target_extraction_is_allowlisted(question, expected):
+    assert extract_known_model_target(question) == expected
