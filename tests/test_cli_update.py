@@ -1,6 +1,7 @@
 import importlib.metadata
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1057,6 +1058,52 @@ def test_deps_satisfied_false_when_a_declared_dep_is_missing(tmp_path, monkeypat
 
 def test_deps_satisfied_false_when_pyproject_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
+
+    assert cli._deps_satisfied() is False
+
+
+def test_deps_satisfied_ignores_dep_whose_marker_excludes_current_python(
+    tmp_path, monkeypatch
+):
+    """tomli>=2.0; python_version < '3.11' must not be checked on 3.11+,
+    where it was never meant to be installed - otherwise `omm update`
+    always thinks a dependency is missing and always falls back to a full
+    pipx reinstall, regardless of Python version. See issue: `omm update`
+    got permanently slow after tomli's marker was added to pyproject.toml."""
+    (tmp_path / "pyproject.toml").write_text(
+        "dependencies = [\n"
+        '    "click>=8.1",\n'
+        '    "tomli>=2.0; python_version < \'3.11\'",\n'
+        "]\n"
+    )
+    monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
+    monkeypatch.setattr(sys, "version_info", (3, 14, 0))
+
+    def _version(name):
+        if name == "tomli":
+            raise importlib.metadata.PackageNotFoundError(name)
+        return "1.0"
+
+    monkeypatch.setattr(importlib.metadata, "version", _version)
+
+    assert cli._deps_satisfied() is True
+
+
+def test_deps_satisfied_still_checks_dep_whose_marker_includes_current_python(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "pyproject.toml").write_text(
+        "dependencies = [\n"
+        '    "tomli>=2.0; python_version < \'3.11\'",\n'
+        "]\n"
+    )
+    monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
+    monkeypatch.setattr(sys, "version_info", (3, 10, 0))
+
+    def _version(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _version)
 
     assert cli._deps_satisfied() is False
 

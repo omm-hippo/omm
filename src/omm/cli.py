@@ -2125,9 +2125,43 @@ def _run_pipx_install(args: list[str], progress: Progress, task_id) -> subproces
     return subprocess.CompletedProcess(args, returncode, stdout=output, stderr=output)
 
 
+def _dependency_marker_applies(marker: str) -> bool:
+    """Evaluates a `python_version <op> "X.Y"` environment marker against the
+    running interpreter (the only marker kind currently used in
+    pyproject.toml, e.g. tomli's `python_version < '3.11'` guard). Any other
+    marker shape is treated as applying, so an unrecognized marker still gets
+    checked rather than silently skipped - see _declared_dependency_names."""
+    match = re.fullmatch(
+        r"python_version\s*(<=|>=|==|!=|<|>)\s*['\"]([^'\"]+)['\"]", marker.strip()
+    )
+    if not match:
+        return True
+    op, value = match.groups()
+    try:
+        target = tuple(int(part) for part in value.split("."))
+    except ValueError:
+        return True
+    current = sys.version_info[: len(target)]
+    comparisons = {
+        "<": current < target,
+        "<=": current <= target,
+        ">": current > target,
+        ">=": current >= target,
+        "==": current == target,
+        "!=": current != target,
+    }
+    return comparisons[op]
+
+
 def _declared_dependency_names() -> list[str] | None:
     """Package names from the freshly-pulled SRC_DIR/pyproject.toml's
-    [project] dependencies, or None if the file can't be read/parsed."""
+    [project] dependencies, or None if the file can't be read/parsed.
+
+    Skips a dependency whose environment marker doesn't apply to the running
+    interpreter (e.g. tomli's `python_version < '3.11'`) - otherwise
+    _deps_satisfied() reports it "missing" on interpreters where it was
+    never meant to be installed, forcing a full pipx reinstall on every
+    `omm update`."""
     try:
         text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
     except OSError:
@@ -2137,7 +2171,10 @@ def _declared_dependency_names() -> list[str] | None:
         return None
     names = []
     for spec in re.findall(r'"([^"]+)"', match.group(1)):
-        name = re.split(r"[<>=!~;\s\[]", spec, maxsplit=1)[0]
+        requirement, _, marker = spec.partition(";")
+        if marker and not _dependency_marker_applies(marker):
+            continue
+        name = re.split(r"[<>=!~\s\[]", requirement.strip(), maxsplit=1)[0]
         if name:
             names.append(name)
     return names
