@@ -119,6 +119,7 @@ class ContributionQueue:
         self._phase_c_above_queue: list[dict] = []
         self._phase_c_below_fetched = False
         self._phase_c_above_fetched = False
+        self._next_side_is_below = True
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -134,7 +135,6 @@ class ContributionQueue:
         self._above_pool = _prefer_huggingface(unviable)
         self._below_cursor = 0
         self._above_cursor = 0
-        self._next_side_is_below = True
 
     def mark_seen(self, seen_ref: str) -> None:
         self._deferred_refs.discard(seen_ref)
