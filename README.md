@@ -326,11 +326,21 @@ Purge (`-Purge` on PowerShell, `--purge` on sh) removes only known omm-owned pat
 ```sh
 omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
 omm scan [--json]  # Print a hardware, runner, and model summary (RAM, VRAM, OS)
-omm recommend [--json]  # Suggest a model that fits this machine, then offer to install it
+omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm search <query> [--json] [--skip-unfit] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated models, cached candidates, and HuggingFace
 omm help [command]  # Show help, same as --help
 ```
+
+`omm recommend` keeps compatible models visible when they are already present,
+marks whether OMM or another supported local runner owns them, and never
+reinstalls a selected installed model. In JSON output, `installed`,
+`managed_by_omm`, `installed_engines`, and `installation_match` expose the same
+state. `installation_match` distinguishes an exact artifact from the same
+model-and-parameter-size identity in a manifest-based runner, whose local
+quantization may differ. With `--yes`, the highest-ranked model that is not
+installed is selected; if every displayed recommendation is already present,
+the command exits without downloading.
 
 ### Install & manage models
 

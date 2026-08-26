@@ -5,12 +5,22 @@ from __future__ import annotations
 import json
 
 import questionary
+import pytest
 from typer.testing import CliRunner
 
 from omm import cli
 from omm.hardware import HardwareInfo
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _default_to_uninstalled_candidates(monkeypatch):
+    monkeypatch.setattr(
+        cli.recommend_status,
+        "detect_installation_statuses",
+        lambda candidates: [cli.recommend_status.NOT_INSTALLED] * len(candidates),
+    )
 
 
 def _hardware() -> HardwareInfo:
@@ -137,6 +147,10 @@ def test_recommend_json_lists_candidates_without_installing(monkeypatch, isolate
     assert row["ref"] == "ms:org/repo:model.gguf"
     assert row["name"] == cli.recommend_ui.humanize_model_name(candidate)
     assert row["predicted_tokens_per_second"] == 42.0
+    assert row["installed"] is False
+    assert row["managed_by_omm"] is False
+    assert row["installed_engines"] == []
+    assert row["installation_match"] is None
 
 
 def test_recommend_yes_installs_top_candidate_without_prompting(monkeypatch, isolated_omm_home):
@@ -171,3 +185,133 @@ def test_recommend_yes_installs_top_candidate_without_prompting(monkeypatch, iso
 
     assert result.exit_code == 0, result.stdout
     assert installed == ["ms:org/repo:model.gguf"]
+
+
+def test_recommend_yes_skips_installed_top_candidate(monkeypatch, isolated_omm_home):
+    installed_candidate = {
+        "repo_id": "org/installed",
+        "filename": "installed.gguf",
+        "description": "test",
+    }
+    new_candidate = {
+        "repo_id": "org/new",
+        "filename": "new.gguf",
+        "description": "test",
+    }
+    artifact = {"candidates": [installed_candidate, new_candidate]}
+
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor,
+        "rank_candidates",
+        lambda artifact, hw: [(installed_candidate, 50.0), (new_candidate, 40.0)],
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+    monkeypatch.setattr(
+        cli.recommend_status,
+        "detect_installation_statuses",
+        lambda candidates: [
+            cli.recommend_status.InstallationStatus(
+                True, True, ("ollama",), "installed.gguf"
+            ),
+            cli.recommend_status.NOT_INSTALLED,
+        ],
+    )
+
+    installed = []
+    monkeypatch.setattr(cli, "install", lambda ref: installed.append(ref))
+
+    result = runner.invoke(cli.app, ["recommend", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert installed == ["org/new:new.gguf"]
+
+
+def test_recommend_yes_stops_when_every_candidate_is_installed(
+    monkeypatch, isolated_omm_home
+):
+    candidate = {
+        "repo_id": "org/installed",
+        "filename": "installed.gguf",
+        "description": "test",
+    }
+    artifact = {"candidates": [candidate]}
+
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor, "rank_candidates", lambda artifact, hw: [(candidate, 50.0)]
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+    monkeypatch.setattr(
+        cli.recommend_status,
+        "detect_installation_statuses",
+        lambda candidates: [
+            cli.recommend_status.InstallationStatus(
+                True, True, ("ollama",), "installed.gguf"
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        cli,
+        "install",
+        lambda ref: (_ for _ in ()).throw(AssertionError("must not reinstall")),
+    )
+
+    result = runner.invoke(cli.app, ["recommend", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "All recommended models are already installed" in result.output
+
+
+def test_recommend_selecting_installed_candidate_does_not_reinstall(
+    monkeypatch, isolated_omm_home
+):
+    candidate = {
+        "repo_id": "org/installed",
+        "filename": "installed.gguf",
+        "description": "test",
+    }
+    artifact = {"candidates": [candidate]}
+
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor, "rank_candidates", lambda artifact, hw: [(candidate, 50.0)]
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+    monkeypatch.setattr(
+        cli.recommend_status,
+        "detect_installation_statuses",
+        lambda candidates: [
+            cli.recommend_status.InstallationStatus(
+                True, True, ("ollama",), "installed.gguf"
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        cli,
+        "_select_recommended_model",
+        lambda info, ranked, refs, installations: refs[0],
+    )
+    monkeypatch.setattr(
+        cli,
+        "install",
+        lambda ref: (_ for _ in ()).throw(AssertionError("must not reinstall")),
+    )
+
+    result = runner.invoke(cli.app, ["recommend"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "already installed via OMM" in result.output
+    assert "omm run installed.gguf" in result.output
