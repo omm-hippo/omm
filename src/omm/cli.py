@@ -1320,6 +1320,22 @@ def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch:
 _SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
 
 
+def _ask_setup_choice() -> str:
+    """The first-run setup gate itself, split out so tests can stub it
+    without a real terminal (same shape as _ask_upload_choice). Before this
+    existed, the only way out of a repeatedly auto-triggered wizard was to
+    finish it or hand-edit config.json - Ctrl+C during the wizard
+    deliberately leaves onboarding_completed False (see
+    test_bare_omm_leaves_onboarding_incomplete_when_wizard_aborted) so it
+    would just come back on the next command."""
+    return _ask_single_key(
+        "Run the first-time setup wizard now?",
+        [("y", "Yes", "run"), ("n", "Not now", "later"), ("s", "Skip for good", "skip")],
+        default_value="run",
+        instruction="(y/n/s - s skips setup for good; `omm setup` reruns it any time)",
+    )
+
+
 def _maybe_run_onboarding(ctx: typer.Context) -> None:
     """Runs the first-time setup wizard exactly once, only for a genuinely
     fresh install (see config.load_config()'s migration handling) and only
@@ -1332,6 +1348,15 @@ def _maybe_run_onboarding(ctx: typer.Context) -> None:
     if load_config().get("onboarding_completed", True):
         return
     if not _stdin_is_tty():
+        return
+    choice = _ask_setup_choice()
+    if choice == "skip":
+        config_mod.update_config(onboarding_completed=True)
+        console.print(
+            "[muted]Setup skipped. Run `omm setup` any time to configure omm.[/muted]"
+        )
+        return
+    if choice == "later":
         return
     onboarding.run_wizard(console)
     config_mod.update_config(onboarding_completed=True)
