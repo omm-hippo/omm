@@ -43,6 +43,15 @@ from rich.theme import Theme
 #   accent   accent     #FFB000      muted    ink-3
 #   value    ink-0      #F4F4F4
 ROLES = ("error", "warning", "success", "accent", "muted", "value", "heading", "label", "rule")
+
+# `label` and `rule` share the exact same Style in every preset (see
+# _BASE_STYLES below) - they're split for call-site semantics (table
+# column vs. box-drawing line), not because they ever look different.
+# The theme preview shows them as one merged line instead of two
+# identical-looking ones; `rule` is skipped here and `label`'s own
+# entry gets the combined display name.
+_PREVIEW_DISPLAY_NAMES = {"label": "label/rule"}
+_PREVIEW_SKIP_ROLES = {"rule"}
 THEME_NAMES = ("light", "dark", "high-contrast", "no-color")
 
 _BASE_STYLES: dict[str, dict[str, Style]] = {
@@ -201,7 +210,10 @@ def print_theme_preview(console: Console, name: str) -> None:
     )
     preview.print(f"[bold]{name}[/bold]")
     for role in ROLES:
-        preview.print(f"  [{role}]{role}[/{role}]")
+        if role in _PREVIEW_SKIP_ROLES:
+            continue
+        text = _PREVIEW_DISPLAY_NAMES.get(role, role)
+        preview.print(f"  [{role}]{text}[/{role}]")
 
 
 def render_preview_ansi(name: str, *, width: int = 40) -> str:
@@ -223,7 +235,10 @@ def render_preview_ansi(name: str, *, width: int = 40) -> str:
         width=width,
     )
     for role in ROLES:
-        live.print(f"[{role}]{role}[/{role}]")
+        if role in _PREVIEW_SKIP_ROLES:
+            continue
+        text = _PREVIEW_DISPLAY_NAMES.get(role, role)
+        live.print(f"[{role}]{text}[/{role}]")
     return buf.getvalue()
 
 
