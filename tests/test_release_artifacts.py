@@ -130,6 +130,62 @@ def test_sdist_identity_rejects_links(tmp_path):
         release_artifacts._sdist_identity(sdist)
 
 
+def test_sdist_identity_rejects_duplicate_members(tmp_path):
+    sdist = tmp_path / "example-1.0.tar.gz"
+    payload = b"Name: example\nVersion: 1.0\n\n"
+    with tarfile.open(sdist, "w:gz") as archive:
+        metadata = tarfile.TarInfo("example-1.0/PKG-INFO")
+        metadata.size = len(payload)
+        archive.addfile(metadata, io.BytesIO(payload))
+        first = tarfile.TarInfo("example-1.0/module.py")
+        first.size = 1
+        archive.addfile(first, io.BytesIO(b"a"))
+        duplicate = tarfile.TarInfo("example-1.0/module.py")
+        duplicate.size = 1
+        archive.addfile(duplicate, io.BytesIO(b"b"))
+
+    with pytest.raises(release_artifacts.ReleaseValidationError, match="duplicate path"):
+        release_artifacts._sdist_identity(sdist)
+
+
+def test_archives_reject_paths_that_collide_after_normalization(tmp_path):
+    payload = b"Name: example\nVersion: 1.0\n\n"
+    wheel = tmp_path / "example-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("example-1.0.dist-info/METADATA", payload)
+        archive.writestr("example/module.py", b"a")
+        archive.writestr("example//module.py", b"b")
+    with pytest.raises(release_artifacts.ReleaseValidationError, match="unsafe path"):
+        release_artifacts._wheel_identity(wheel)
+
+    sdist = tmp_path / "example-1.0.tar.gz"
+    with tarfile.open(sdist, "w:gz") as archive:
+        metadata = tarfile.TarInfo("example-1.0/PKG-INFO")
+        metadata.size = len(payload)
+        archive.addfile(metadata, io.BytesIO(payload))
+        for name, content in (
+            ("example-1.0/module.py", b"a"),
+            ("example-1.0//module.py", b"b"),
+        ):
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+    with pytest.raises(release_artifacts.ReleaseValidationError, match="unsafe path"):
+        release_artifacts._sdist_identity(sdist)
+
+
+def test_wheel_identity_rejects_oversized_metadata(tmp_path):
+    wheel = tmp_path / "example-1.0-py3-none-any.whl"
+    metadata = zipfile.ZipInfo("example-1.0.dist-info/METADATA")
+    metadata.create_system = 3
+    metadata.external_attr = 0o644 << 16
+    with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(metadata, b"x" * (release_artifacts.MAX_METADATA_BYTES + 1))
+
+    with pytest.raises(release_artifacts.ReleaseValidationError, match="size limit"):
+        release_artifacts._wheel_identity(wheel)
+
+
 def test_checksum_manifest_rejects_unexpected_entries(tmp_path):
     wheel = tmp_path / "example-1.0-py3-none-any.whl"
     sdist = tmp_path / "example-1.0.tar.gz"

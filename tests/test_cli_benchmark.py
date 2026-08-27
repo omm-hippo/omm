@@ -708,6 +708,55 @@ def test_benchmark_starts_and_stops_daemon_when_confirmed(isolated_omm_home, mon
     assert stopped == [started]
 
 
+def test_benchmark_stops_started_daemon_when_all_expands_to_no_models(
+    isolated_omm_home, monkeypatch
+):
+    started = object()
+    stopped = []
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(
+        cli,
+        "_ensure_engine_running",
+        lambda engine, action, assume_yes=False: (engine, started),
+    )
+    monkeypatch.setattr(cli.quality_mod, "list_benchmarkable_tags", lambda: [])
+    monkeypatch.setattr(
+        cli, "_stop_engine_daemon", lambda engine, handle: stopped.append((engine, handle))
+    )
+
+    result = runner.invoke(cli.app, ["benchmark", "all", "--yes"])
+
+    assert result.exit_code == 1
+    assert stopped == [("ollama", started)]
+
+
+def test_benchmark_stops_started_daemon_when_installed_model_listing_raises(
+    isolated_omm_home, monkeypatch
+):
+    started = object()
+    stopped = []
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(
+        cli,
+        "_ensure_engine_running",
+        lambda engine, action, assume_yes=False: (engine, started),
+    )
+    monkeypatch.setattr(
+        cli.quality_mod,
+        "list_benchmarkable_tags",
+        lambda: (_ for _ in ()).throw(RuntimeError("runtime listing failed")),
+    )
+    monkeypatch.setattr(
+        cli, "_stop_engine_daemon", lambda engine, handle: stopped.append((engine, handle))
+    )
+
+    result = runner.invoke(cli.app, ["benchmark", "all", "--yes"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RuntimeError)
+    assert stopped == [("ollama", started)]
+
+
 # --- --confirm-performance-timeout wiring and performance_unfit upload ----
 
 

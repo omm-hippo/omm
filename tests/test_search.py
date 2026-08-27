@@ -299,6 +299,12 @@ def test_exact_install_ref_falls_back_to_install_ref_when_filename_missing():
     assert search_mod.exact_install_ref(candidate) == "org/repo"
 
 
+def test_install_ref_does_not_crash_on_unknown_cached_provider():
+    candidate = {"repo_id": "org/repo", "provider": "future-provider"}
+
+    assert search_mod.install_ref(candidate) == "org/repo"
+
+
 def test_match_candidates_prefers_substring_match():
     pool = [
         {"name": "mistral-7b-instruct-q4", "repo_id": "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"},
@@ -316,6 +322,19 @@ def test_match_candidates_falls_back_to_fuzzy_match_on_typo():
     result = search_mod.match_candidates(pool, "mistrall")
 
     assert result == pool
+
+
+def test_fuzzy_matches_follow_similarity_order_not_pool_order(monkeypatch):
+    pool = [{"name": "less-close"}, {"name": "closest"}]
+    monkeypatch.setattr(
+        search_mod.difflib,
+        "get_close_matches",
+        lambda *args, **kwargs: ["closest", "less-close"],
+    )
+
+    result = search_mod.match_candidates(pool, "query")
+
+    assert [candidate["name"] for candidate in result] == ["closest", "less-close"]
 
 
 def test_suggest_similar_limits_and_orders_by_closeness():
@@ -492,6 +511,31 @@ def test_search_modelscope_fans_out_per_repo_fetches_and_preserves_order(monkeyp
     results = search_mod.search_modelscope("model")
 
     assert [c["repo_id"] for c in results] == [m["id"] for m in models]
+
+
+def test_search_modelscope_honors_limit_before_per_repo_fetches(monkeypatch):
+    models = [
+        {"id": f"org/model-{i}-GGUF", "downloads": i, "tags": ["library:gguf"]}
+        for i in range(4)
+    ]
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *args, **kwargs: _Resp({"data": {"models": models}}),
+    )
+    fetched = []
+    monkeypatch.setattr(
+        search_mod.modelscope,
+        "fetch_repo_files",
+        lambda repo_id, **kwargs: fetched.append(repo_id)
+        or (["model-Q4_K_M.gguf"], None),
+    )
+
+    results = search_mod.search_modelscope("model", limit=2)
+
+    assert len(results) == 2
+    assert len(fetched) == 2
+    assert set(fetched) == {models[0]["id"], models[1]["id"]}
 
 
 def test_search_huggingface_results_are_tagged_huggingface(monkeypatch):

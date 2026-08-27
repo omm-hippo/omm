@@ -592,7 +592,13 @@ def _model_metadata(
     metadata = {
         "tag": tag,
         "digest": listed.get("digest") if isinstance(listed.get("digest"), str) else None,
-        "size_bytes": size_bytes if isinstance(size_bytes, int) and size_bytes > 0 else None,
+        "size_bytes": (
+            size_bytes
+            if isinstance(size_bytes, int)
+            and not isinstance(size_bytes, bool)
+            and size_bytes > 0
+            else None
+        ),
         "format": details.get("format"),
         "family": details.get("family"),
         "parameter_size": details.get("parameter_size"),
@@ -1499,11 +1505,17 @@ def collect_evidence(
             entry = _confirm_generation_timeout(tag, hardware, pack, speed_runs, cache=metadata_cache)
         models.append(entry)
     if engine == "lmstudio":
-        engine_version = (
-            LMStudioAdapter(base_url=f"http://127.0.0.1:{lmstudio_port}").health().version
-            if lmstudio_port is not None
-            else None
-        )
+        try:
+            engine_version = (
+                LMStudioAdapter(base_url=f"http://127.0.0.1:{lmstudio_port}").health().version
+                if lmstudio_port is not None
+                else None
+            )
+        except RuntimeAdapterError:
+            # Results already collected remain valid even if the daemon exits
+            # before this optional final version lookup. Match ollama_version's
+            # best-effort behavior instead of discarding the whole report.
+            engine_version = None
     else:
         engine_version = ollama_version()
     return {

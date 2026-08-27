@@ -181,6 +181,15 @@ def test_one_run_consent_cannot_override_an_explicit_never(isolated_omm_home):
     assert error_report.pending_count() == 0
 
 
+def test_forced_send_cannot_override_an_explicit_never(
+    isolated_omm_home, monkeypatch
+):
+    _write_config(error_report_send_policy="never")
+    monkeypatch.setattr(requests, "post", _unexpected_post)
+
+    assert error_report.send_report({"trigger": "crash"}, force=True) is False
+
+
 def test_declining_the_prompt_stops_queueing_for_the_rest_of_the_run(isolated_omm_home):
     _write_config(error_report_send_policy="ask")
     error_report.set_run_consent(False)
@@ -288,6 +297,45 @@ def test_flush_sends_queued_reports_to_the_derived_endpoint(isolated_omm_home, m
     assert error_report.pending_count() == 0
 
 
+def test_flush_preserves_report_appended_while_send_is_in_progress(
+    isolated_omm_home, monkeypatch
+):
+    _write_config(error_report_send_policy="always")
+    error_report.queue_report(RuntimeError("old"), trigger="crash")
+
+    def send_and_append(report, config_data=None):
+        error_report._append_pending({"trigger": "crash", "error_message": "new"})
+        return True
+
+    monkeypatch.setattr(error_report, "_post_report", send_and_append)
+
+    assert error_report.flush_pending() == 1
+    pending = error_report._load_pending()
+    assert pending == [{"trigger": "crash", "error_message": "new"}]
+
+
+def test_full_report_queue_flush_does_not_remove_identical_new_append(
+    isolated_omm_home, monkeypatch
+):
+    _write_config(error_report_send_policy="always")
+    sent = {"trigger": "crash", "error_message": "same"}
+    reports = [sent, *({"trigger": "crash", "error_message": str(i)} for i in range(199))]
+    pending_path = isolated_omm_home / "error_reports_pending.json"
+    pending_path.write_text(json.dumps(reports))
+
+    def send_and_append(report, config_data=None):
+        error_report._append_pending(dict(sent))
+        return True
+
+    monkeypatch.setattr(error_report, "_post_report", send_and_append)
+
+    assert error_report.flush_pending(max_retries=1) == 1
+    pending = error_report._load_pending()
+    assert len(pending) == error_report._MAX_PENDING_REPORTS
+    assert pending[-1] == sent
+    assert pending.count(sent) == 1
+
+
 def test_flush_keeps_a_failed_report_queued_for_a_later_run(isolated_omm_home, monkeypatch):
     _write_config(error_report_send_policy="always")
     error_report.queue_report(RuntimeError("boom"), trigger="crash")
@@ -360,6 +408,18 @@ def test_flush_refuses_to_send_even_when_forced_after_an_explicit_opt_out(
     monkeypatch.setattr(requests, "post", _unexpected_post)
 
     assert error_report.flush_pending(force=True) == 0
+
+
+@pytest.mark.parametrize("max_retries", [0, -1, True, 1.5])
+def test_flush_rejects_invalid_retry_limits_without_sending(
+    isolated_omm_home, monkeypatch, max_retries
+):
+    _write_config(error_report_send_policy="always")
+    error_report.queue_report(RuntimeError("boom"), trigger="crash")
+    monkeypatch.setattr(requests, "post", _unexpected_post)
+
+    assert error_report.flush_pending(max_retries=max_retries) == 0
+    assert error_report.pending_count() == 1
 
 
 def test_discarding_the_queue_reports_how_many_were_dropped(isolated_omm_home):

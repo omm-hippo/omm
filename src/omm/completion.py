@@ -12,7 +12,13 @@ def complete_install_name(incomplete: str) -> list[str]:
 
     artifact = predictor.load_cached_model()
     if artifact:
-        names.update(c.get("name") for c in artifact.get("candidates", []) if c.get("name"))
+        candidates = artifact.get("candidates", [])
+        if isinstance(candidates, list):
+            names.update(
+                candidate.get("name")
+                for candidate in candidates
+                if isinstance(candidate, dict) and candidate.get("name")
+            )
 
     names.update(session_cache.load_seen())
 

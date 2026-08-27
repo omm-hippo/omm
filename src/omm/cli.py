@@ -928,6 +928,15 @@ def _missing_engines_note(installed: dict[str, bool]) -> str | None:
     return f"+ {missing} program(s) not installed — see the compatibility list: {COMPATIBLE_PROGRAMS_URL}"
 
 
+def _positive_finite_number(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _hub_storage_bytes(reg: dict[str, Any]) -> int:
     """Total on-disk size of every omm-hub-managed model. Prefers each
     entry's stored `size_bytes` and falls back to a live stat() when it's
@@ -936,7 +945,7 @@ def _hub_storage_bytes(reg: dict[str, Any]) -> int:
     total = 0
     for filename, entry in reg.items():
         size_bytes = entry.get("size_bytes")
-        if isinstance(size_bytes, bool) or not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+        if not _positive_finite_number(size_bytes):
             try:
                 size_bytes = _managed_model_path(filename).stat().st_size
             except (ModelResolutionError, OSError):
@@ -1386,8 +1395,7 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
 
             ctx.call_on_close(print_notice_unless_suppressed)
         return
-    if version_check.should_start_check(branch):
-        version_check.mark_checking(branch)
+    if version_check.should_start_check(branch) and version_check.mark_checking(branch) is not False:
         args = [sys.executable, "-m", "omm.cli", "_bg-version-check"]
         # `start_new_session` (setsid) is POSIX-only - CPython's Windows
         # _execute_child ignores it entirely, so the child stays in the
@@ -1952,11 +1960,13 @@ def _legacy_pipx_environment_is_current(verification: _PipxInstallVerification) 
     if metadata is None:
         return False
     main_package = metadata.get("main_package")
+    apps = _pipx_app_names(main_package.get("apps")) if isinstance(main_package, dict) else None
     if (
         metadata.get("environment") not in (None, _PIPX_LEGACY_ENV)
         or not isinstance(main_package, dict)
         or main_package.get("package") != _PIPX_LEGACY_ENV
-        or "omm" not in main_package.get("apps", [])
+        or apps is None
+        or "omm" not in apps
     ):
         return False
     try:
@@ -2126,59 +2136,112 @@ def _run_pipx_install(args: list[str], progress: Progress, task_id) -> subproces
     return subprocess.CompletedProcess(args, returncode, stdout=output, stderr=output)
 
 
-def _dependency_marker_applies(marker: str) -> bool:
-    """Evaluates a `python_version <op> "X.Y"` environment marker against the
-    running interpreter (the only marker kind currently used in
-    pyproject.toml, e.g. tomli's `python_version < '3.11'` guard). Any other
-    marker shape is treated as applying, so an unrecognized marker still gets
-    checked rather than silently skipped - see _declared_dependency_names."""
-    match = re.fullmatch(
-        r"python_version\s*(<=|>=|==|!=|<|>)\s*['\"]([^'\"]+)['\"]", marker.strip()
+def _declared_dependencies() -> list[str] | None:
+    """Dependency specifications from the freshly-pulled ``pyproject.toml``.
+
+    Parse TOML instead of scraping the first bracketed ``dependencies`` text:
+    comments, single-quoted values, or another table containing the same word
+    must not make the updater inspect the wrong package set.
+    """
+    try:
+        try:
+            import tomllib
+        except ImportError:  # Python 3.10
+            import tomli as tomllib
+        with (SRC_DIR / "pyproject.toml").open("rb") as handle:
+            document = tomllib.load(handle)
+    except (OSError, TypeError, ValueError):
+        return None
+    project = document.get("project") if isinstance(document, dict) else None
+    dependencies = project.get("dependencies") if isinstance(project, dict) else None
+    if not isinstance(dependencies, list) or not all(
+        isinstance(spec, str) and spec.strip() for spec in dependencies
+    ):
+        return None
+    return [spec.strip() for spec in dependencies]
+
+
+def _dependency_spec_applies(spec: str) -> bool | None:
+    """Whether this dependency applies to the running interpreter.
+
+    ``None`` means the marker is outside the deliberately small supported
+    subset, so callers fail safe and refresh the pipx environment.
+    """
+    _, separator, marker = spec.partition(";")
+    if not separator or not marker.strip():
+        return True
+    marker_match = re.fullmatch(
+        r"python_version\s*(<=|>=|==|!=|<|>)\s*['\"](\d+(?:\.\d+)*)['\"]",
+        marker.strip(),
     )
-    if not match:
-        return True
-    op, value = match.groups()
-    try:
-        target = tuple(int(part) for part in value.split("."))
-    except ValueError:
-        return True
-    current = sys.version_info[: len(target)]
-    comparisons = {
-        "<": current < target,
-        "<=": current <= target,
-        ">": current > target,
-        ">=": current >= target,
-        "==": current == target,
-        "!=": current != target,
-    }
-    return comparisons[op]
-
-
-def _declared_dependency_names() -> list[str] | None:
-    """Package names from the freshly-pulled SRC_DIR/pyproject.toml's
-    [project] dependencies, or None if the file can't be read/parsed.
-
-    Skips a dependency whose environment marker doesn't apply to the running
-    interpreter (e.g. tomli's `python_version < '3.11'`) - otherwise
-    _deps_satisfied() reports it "missing" on interpreters where it was
-    never meant to be installed, forcing a full pipx reinstall on every
-    `omm update`."""
-    try:
-        text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
-    except OSError:
+    if marker_match is None:
         return None
-    match = re.search(r"dependencies\s*=\s*\[(.*?)\]", text, re.DOTALL)
-    if not match:
+    current = ".".join(str(value) for value in sys.version_info[:2])
+    return _compare_dotted_versions(
+        current,
+        marker_match.group(1),
+        marker_match.group(2),
+    )
+
+
+def _dependency_spec_satisfied(spec: str, installed_version: str) -> bool:
+    """Conservatively evaluate the dependency forms used by this project.
+
+    OMM intentionally does not add a runtime dependency merely to decide
+    whether its updater needs to reinstall runtime dependencies.  The current
+    project uses dotted numeric lower bounds and one ``python_version`` marker;
+    any future/unknown PEP 508 form returns ``False`` and triggers a safe pipx
+    refresh instead of incorrectly declaring an old environment current.
+    """
+    requirement, _, _ = spec.partition(";")
+    applies = _dependency_spec_applies(spec)
+    if applies is None:
+        return False
+    if not applies:
+        return True
+
+    match = re.fullmatch(
+        r"\s*([A-Za-z0-9_.-]+)(?:\[[^\]]+\])?\s*(.*)\s*", requirement
+    )
+    if match is None:
+        return False
+    constraints = match.group(2).strip()
+    if not constraints:
+        return True
+    for constraint in constraints.split(","):
+        constraint_match = re.fullmatch(
+            r"\s*(<=|>=|==|!=|<|>)\s*(\d+(?:\.\d+)*)\s*", constraint
+        )
+        if constraint_match is None:
+            return False
+        satisfied = _compare_dotted_versions(
+            installed_version, constraint_match.group(1), constraint_match.group(2)
+        )
+        if satisfied is not True:
+            return False
+    return True
+
+
+def _compare_dotted_versions(installed: str, operator: str, required: str) -> bool | None:
+    def parts(value: str) -> tuple[int, ...] | None:
+        if re.fullmatch(r"\d+(?:\.\d+)*", value.strip()) is None:
+            return None
+        return tuple(int(part) for part in value.strip().split("."))
+
+    left, right = parts(installed), parts(required)
+    if left is None or right is None:
         return None
-    names = []
-    for spec in re.findall(r'"([^"]+)"', match.group(1)):
-        requirement, _, marker = spec.partition(";")
-        if marker and not _dependency_marker_applies(marker):
-            continue
-        name = re.split(r"[<>=!~\s\[]", requirement.strip(), maxsplit=1)[0]
-        if name:
-            names.append(name)
-    return names
+    width = max(len(left), len(right))
+    left += (0,) * (width - len(left))
+    right += (0,) * (width - len(right))
+    return {
+        "<": left < right,
+        "<=": left <= right,
+        "==": left == right,
+        "!=": left != right,
+        ">=": left >= right,
+        ">": left > right,
+    }.get(operator)
 
 
 def _deps_satisfied() -> bool:
@@ -2193,13 +2256,24 @@ def _deps_satisfied() -> bool:
     `omm update` would silently skip installing it."""
     import importlib.metadata
 
-    names = _declared_dependency_names()
-    if names is None:
+    dependencies = _declared_dependencies()
+    if dependencies is None:
         return False
-    for name in names:
+    for spec in dependencies:
+        applies = _dependency_spec_applies(spec)
+        if applies is None:
+            return False
+        if not applies:
+            continue
+        name_match = re.match(r"\s*([A-Za-z0-9_.-]+)", spec)
+        if name_match is None:
+            return False
+        name = name_match.group(1)
         try:
-            importlib.metadata.version(name)
+            installed_version = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
+            return False
+        if not _dependency_spec_satisfied(spec, installed_version):
             return False
     return True
 
@@ -4238,16 +4312,12 @@ def _verify_lmstudio_after_install(
             return None, True, False
         if enforce_memory_guard:
             size_bytes = entry.get("size_bytes")
-            if (
-                isinstance(size_bytes, bool)
-                or not isinstance(size_bytes, (int, float))
-                or size_bytes <= 0
-            ):
+            if not _positive_finite_number(size_bytes):
                 try:
                     size_bytes = _managed_model_path(filename).stat().st_size
                 except (ModelResolutionError, OSError):
                     size_bytes = None
-            if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+            if not _positive_finite_number(size_bytes):
                 err_console.print(
                     "[error]Memory Guard could not determine the model size; "
                     "the LM Studio load was blocked.[/error]"
@@ -5164,6 +5234,15 @@ def install(
     finally:
         listener.stop_event.set()
 
+    if outcome.skipped_unfit:
+        console.print(
+            f"[muted]Skipped {outcome.filename}: predicted not to run on this hardware.[/muted]"
+        )
+        return
+    if outcome.skipped_low_disk:
+        # _install_impl already printed the exact volume/capacity reason.
+        return
+
     console.print(f"[success]Ω Installed {outcome.filename}[/success]")
     if outcome.linked.get("ollama"):
         console.print(f"  Ollama: [success]ollama run {outcome.ollama_tag}[/success]")
@@ -5199,16 +5278,17 @@ def _cleanup_incomplete_install(filename: str) -> bool:
     return cleaned
 
 
-def _unlink_with_retry(path: Path, *, attempts: int = 8) -> None:
-    """Bounded Windows handle-release retry; never loops indefinitely."""
+def _unlink_with_retry(path: Path, *, attempts: int = 8) -> bool:
+    """Bounded Windows handle-release retry; return whether the path is gone."""
     for attempt in range(attempts):
         try:
             path.unlink(missing_ok=True)
-            return
+            return True
         except OSError:
             if attempt == attempts - 1:
-                return
+                return not path.exists()
             time.sleep(min(0.1 * (2**attempt), 1.0))
+    return not path.exists()
 
 
 class _PendingOllamaUnlinks:
@@ -5243,7 +5323,7 @@ def _remove_one(
     *,
     ollama_tag: str | None = None,
     pending_ollama_unlinks: "_PendingOllamaUnlinks | None" = None,
-) -> None:
+) -> bool:
     try:
         dest = _managed_model_path(filename)
     except ModelResolutionError as error:
@@ -5252,8 +5332,9 @@ def _remove_one(
             f"the filesystem ({error}).[/warning]"
         )
         registry.remove_entry(filename)
-        return
+        return True
     linked = entry.get("linked", {})
+    cleared_links: dict[str, bool] = {}
     if ollama_tag is None:
         ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
     if linked.get("ollama") and benchmark.ollama_daemon_reachable():
@@ -5271,6 +5352,7 @@ def _remove_one(
                         else None
                     ),
                 )
+                cleared_links[spec.key] = False
             except linker.LinkError as error:
                 err_console.print(
                     f"[warning]{filename}: {spec.label} cleanup skipped: {error}[/warning]"
@@ -5278,18 +5360,33 @@ def _remove_one(
     # `omm link <directory>` records the exact destination.  It may be a
     # Windows hard link, so use the ownership-aware remover rather than ever
     # unlinking an arbitrary regular file at that path.
+    remaining_custom_links: list[str] = []
     for destination in entry.get("custom_links", []):
         if isinstance(destination, str):
-            linker.unlink_owned_link(Path(destination), expected_source=dest)
+            if not linker.unlink_owned_link(Path(destination), expected_source=dest):
+                remaining_custom_links.append(destination)
 
-    _unlink_with_retry(dest)
+    removed_model = _unlink_with_retry(dest)
     part = dest.with_suffix(dest.suffix + ".part")
     _unlink_with_retry(part)
     _unlink_with_retry(_sidecar_path(part))
     _unlink_with_retry(part.with_name(f"{part.name}.meta"))
 
+    if not removed_model:
+        registry.upsert_entry(
+            filename,
+            linked=cleared_links,
+            custom_links=remaining_custom_links,
+        )
+        err_console.print(
+            f"[error]Could not remove {filename}; the registry entry was kept so "
+            "you can close the program holding the file and retry.[/error]"
+        )
+        return False
+
     registry.remove_entry(filename)
     console.print(f"[success]Removed {filename}[/success]")
+    return True
 
 
 @app.command(name="uninstall")
@@ -5323,14 +5420,22 @@ def remove(
         # Ollama manifest tree per model removed (see issue #181).
         resolved_ollama_tags = linker.resolve_ollama_runtime_names_batch(reg_items)
         pending_ollama_unlinks = _PendingOllamaUnlinks()
+        failed: list[str] = []
         for name, entry in reg_items:
-            _remove_one(
+            if not _remove_one(
                 name,
                 entry,
                 ollama_tag=resolved_ollama_tags.get(name),
                 pending_ollama_unlinks=pending_ollama_unlinks,
-            )
+            ):
+                failed.append(name)
         pending_ollama_unlinks.flush()
+        if failed:
+            err_console.print(
+                f"[error]{len(failed)} model(s) could not be removed; retry after closing "
+                "programs using them.[/error]"
+            )
+            raise typer.Exit(1)
         return
 
     filename = _resolve_ref(filename)
@@ -5358,7 +5463,8 @@ def remove(
     if dry_run:
         console.print(f"Would uninstall: {filename}")
         raise typer.Exit(0)
-    _remove_one(filename, entry)
+    if not _remove_one(filename, entry):
+        raise typer.Exit(1)
 
 
 def _lookup_entry(filename: str, reg: dict) -> tuple[str, dict] | tuple[None, None]:
@@ -5567,16 +5673,12 @@ def verify(
 
         if health.reachable and (visible is None or not visible.loaded):
             size_bytes = entry.get("size_bytes")
-            if (
-                isinstance(size_bytes, bool)
-                or not isinstance(size_bytes, (int, float))
-                or size_bytes <= 0
-            ):
+            if not _positive_finite_number(size_bytes):
                 try:
                     size_bytes = _managed_model_path(filename).stat().st_size
                 except (ModelResolutionError, OSError):
                     size_bytes = None
-            if not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+            if not _positive_finite_number(size_bytes):
                 label = _engine_label(selected_engine)
                 err_console.print(
                     f"[error]Memory Guard could not determine the model size; "
@@ -5631,7 +5733,9 @@ def info(
         _print_not_installed_error(model_name)
         raise typer.Exit(1)
 
-    size_gb = entry.get("size_bytes", 0) / (1024**3)
+    stored_size = entry.get("size_bytes")
+    size_bytes = stored_size if _positive_finite_number(stored_size) else 0
+    size_gb = size_bytes / (1024**3)
     linked = entry.get("linked", {})
 
     ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
@@ -5643,7 +5747,7 @@ def info(
                 "repo_id": entry.get("repo_id"),
                 "provider": entry.get("provider") or ("huggingface" if entry.get("repo_id") else None),
                 "version": _entry_version(entry),
-                "size_bytes": entry.get("size_bytes", 0),
+                "size_bytes": size_bytes,
                 "installed_at": entry.get("installed_at", "unknown"),
                 "linked": {spec.key: bool(linked.get(spec.key)) for spec in linker.ENGINES},
                 "ollama_run_command": f"ollama run {ollama_tag}" if linked.get("ollama") else None,
@@ -5687,8 +5791,7 @@ def info(
             )
 
     console.print(table)
-    size_bytes = entry.get("size_bytes", 0)
-    if isinstance(size_bytes, (int, float)) and size_bytes > 0:
+    if size_bytes > 0:
         console.print()
         console.print(_fit_card(filename, int(size_bytes)))
     note = _missing_engines_note(installed)
@@ -5782,6 +5885,22 @@ def _update_one(filename: str, entry: dict) -> str:
         ):
             tmp.unlink(missing_ok=True)
             return "up_to_date"
+    try:
+        _ensure_install_disk_capacity(
+            dest,
+            tmp.stat().st_size,
+            include_download=False,
+            only_engine=None,
+        )
+    except (InsufficientDiskSpaceError, OSError) as error:
+        err_console.print(
+            f"[error]{filename}: update cannot be linked safely: {error}. "
+            "The installed file was preserved.[/error]"
+        )
+        tmp.unlink(missing_ok=True)
+        _cleanup_download_parts(tmp)
+        return "skipped"
+
     try:
         tmp.replace(dest)
     except OSError as e:
@@ -5948,7 +6067,7 @@ def fit(
     model_name = _resolve_ref(model_name)
     reg = registry.load_registry()
     filename, entry = _lookup_entry(model_name, reg)
-    if entry is not None and isinstance(entry.get("size_bytes"), (int, float)) and entry["size_bytes"] > 0:
+    if entry is not None and _positive_finite_number(entry.get("size_bytes")):
         label, size_bytes = filename, int(entry["size_bytes"])
     else:
         try:
@@ -6252,6 +6371,7 @@ def configure_error_reports(
 
 
 @setting_app.command(name="memory-guard")
+@global_flags
 def configure_memory_guard(
     policy: str = typer.Option(
         None,
@@ -7135,7 +7255,7 @@ def _guard_benchmark_models(models: list[str]) -> None:
             None,
         )
         size_bytes = entry.get("size_bytes") if isinstance(entry, dict) else None
-        if not isinstance(size_bytes, (int, float)) or isinstance(size_bytes, bool) or size_bytes <= 0:
+        if not _positive_finite_number(size_bytes):
             continue
         required_gb = float(size_bytes) / (1024**3) * 1.2
         allowed, _runtime, _preloaded = _guard_ollama_load(tag, required_gb)
@@ -7234,13 +7354,24 @@ def benchmark_cmd(
         engine, "benchmark", assume_yes=_global_opts().yes
     )
     daemon_ref = {"proc": started_daemon}
+
+    def stop_started_daemon() -> None:
+        if daemon_ref["proc"] is not None:
+            _stop_engine_daemon(engine, daemon_ref["proc"])
+            daemon_ref["proc"] = None
+
     lmstudio_models: dict[str, dict] | None = None
     if engine == "lmstudio":
-        installed = _lmstudio_installed_models()
+        try:
+            installed = _lmstudio_installed_models()
+        except BaseException:
+            stop_started_daemon()
+            raise
         if models == ["all"]:
             models = sorted(installed)
             if not models:
                 err_console.print("[error]No models are installed in LM Studio to benchmark.[/error]")
+                stop_started_daemon()
                 raise typer.Exit(1)
             if not (_global_opts().quiet or json_output):
                 console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
@@ -7250,17 +7381,27 @@ def benchmark_cmd(
                 "[error]Not installed in LM Studio: " + ", ".join(unknown)
                 + ". Use the modelKey shown by `lms ls`.[/error]"
             )
+            stop_started_daemon()
             raise typer.Exit(1)
         lmstudio_models = installed
     else:
         if models == ["all"]:
-            models = quality_mod.list_benchmarkable_tags()
+            try:
+                models = quality_mod.list_benchmarkable_tags()
+            except BaseException:
+                stop_started_daemon()
+                raise
             if not models:
                 err_console.print("[error]No models are installed in Ollama to benchmark.[/error]")
+                stop_started_daemon()
                 raise typer.Exit(1)
             if not (_global_opts().quiet or json_output):
                 console.print(f"[muted]Expanding 'all' to {len(models)} model(s): {', '.join(models)}[/muted]")
-        _guard_benchmark_models(models)
+        try:
+            _guard_benchmark_models(models)
+        except BaseException:
+            stop_started_daemon()
+            raise
     if output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output = config_mod.EVALUATIONS_DIR / f"quality-{stamp}.json"
@@ -7426,8 +7567,7 @@ def benchmark_cmd(
         if not successes:
             raise typer.Exit(1)
     finally:
-        if daemon_ref["proc"] is not None:
-            _stop_engine_daemon(engine, daemon_ref["proc"])
+        stop_started_daemon()
 
 
 def _telemetry_send_failure_text() -> str:
@@ -8085,7 +8225,7 @@ def _contribute_candidate_memory_plan(
     current_hw = hw if hw is not None else scan_hardware()
     sized_candidate = dict(candidate)
     size_bytes = sized_candidate.get("size_bytes")
-    if isinstance(size_bytes, bool) or not isinstance(size_bytes, (int, float)) or size_bytes <= 0:
+    if not _positive_finite_number(size_bytes):
         size_bytes = None
 
     provider = candidate.get("provider") or "huggingface"

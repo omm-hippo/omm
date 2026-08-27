@@ -13,6 +13,7 @@ finishes the file over one connection rather than re-planning ranges.
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import re
 import threading
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urljoin, urlparse
 
+from filelock import Timeout as FileLockTimeout
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.progress import (
     DownloadColumn,
@@ -39,7 +41,8 @@ from rich.style import StyleType
 from rich.table import Column
 from rich.text import Text
 
-from omm.atomic import atomic_write_text
+from omm import config
+from omm.atomic import atomic_write_text, locked
 
 _CHUNK_SIZE = 1024 * 1024
 _DEFAULT_THREADS = 4
@@ -139,6 +142,13 @@ def _sidecar_path(part_path: Path) -> Path:
     final size before any bytes arrive, so its file size alone can't tell
     a resume how much of each thread's range actually landed."""
     return part_path.with_name(part_path.name + ".ranges.json")
+
+
+def _download_lock_path(dest: Path) -> Path:
+    """A lock proxy outside the model directory, keyed by absolute target."""
+    key = str(dest.expanduser().absolute())
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    return config.OMM_HOME / "locks" / f"download-{digest}"
 
 
 def _read_sidecar(sidecar_path: Path) -> dict | None:
@@ -913,23 +923,39 @@ def download_file(
     last_error: Exception | None = None
     _err_console.no_color = no_color
 
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
-        try:
-            _attempt_download(url, dest, part_path, stop_check, quiet=quiet, no_color=no_color)
-            return
-        except DownloadCancelled:
-            raise
-        except Exception as e:
-            if not _is_retryable_network_error(e):
-                raise
-            last_error = e
-            if attempt == _MAX_ATTEMPTS:
-                break
-            delay = _RETRY_DELAYS[attempt - 1]
-            _err_console.print(
-                f"[yellow]네트워크 오류, {delay}초 후 재시도 ({attempt + 1}/{_MAX_ATTEMPTS})...[/yellow]"
-            )
-            _sleep_with_stop_check(delay, stop_check)
+    try:
+        # Two installs of the same target otherwise share and concurrently
+        # truncate/write the same .part and sidecar files. Fail immediately so
+        # the existing owner can finish or leave a validated resume behind.
+        with locked(_download_lock_path(dest), timeout=0):
+            for attempt in range(1, _MAX_ATTEMPTS + 1):
+                try:
+                    _attempt_download(
+                        url,
+                        dest,
+                        part_path,
+                        stop_check,
+                        quiet=quiet,
+                        no_color=no_color,
+                    )
+                    return
+                except DownloadCancelled:
+                    raise
+                except Exception as e:
+                    if not _is_retryable_network_error(e):
+                        raise
+                    last_error = e
+                    if attempt == _MAX_ATTEMPTS:
+                        break
+                    delay = _RETRY_DELAYS[attempt - 1]
+                    _err_console.print(
+                        f"[yellow]네트워크 오류, {delay}초 후 재시도 ({attempt + 1}/{_MAX_ATTEMPTS})...[/yellow]"
+                    )
+                    _sleep_with_stop_check(delay, stop_check)
+    except FileLockTimeout as error:
+        raise DownloadError(
+            f"Another download is already writing {dest}. Wait for it to finish and retry."
+        ) from error
 
     raise DownloadError(
         f"네트워크 연결 실패: {_MAX_ATTEMPTS}번 시도 후 포기 ({last_error})"

@@ -130,6 +130,31 @@ def test_checkout_origin_uses_a_bounded_exact_origin_query(monkeypatch, tmp_path
     assert calls[1] == ("communicate", 5)
 
 
+def test_checkout_origin_reaps_child_when_pipe_read_fails(monkeypatch, tmp_path):
+    class _Process:
+        returncode = None
+
+        def __init__(self):
+            self.killed = False
+            self.calls = 0
+
+        def communicate(self, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("pipe failed")
+            return "", ""
+
+        def kill(self):
+            self.killed = True
+
+    process = _Process()
+    monkeypatch.setattr(package_metadata, "_ORIGIN_POPEN", lambda *args, **kwargs: process)
+
+    assert package_metadata._checkout_origin(tmp_path) is None
+    assert process.killed is True
+    assert process.calls == 2
+
+
 @pytest.mark.parametrize(
     "origin",
     [

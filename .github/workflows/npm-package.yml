@@ -3,6 +3,9 @@ name: Validate npm package design
 "on":
   workflow_dispatch: {}
   push:
+    branches:
+      - "main"
+      - "beta"
     paths:
       - ".github/workflows/npm-package.yml"
       - "packaging/npm/**"

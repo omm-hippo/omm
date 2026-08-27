@@ -380,6 +380,19 @@ def test_run_completion_step_skips_prompt_when_shell_undetected(monkeypatch):
     assert "omm --install-completion" in console.file.getvalue()
 
 
+def test_run_completion_step_treats_shell_detection_failure_as_best_effort(monkeypatch):
+    monkeypatch.setattr(
+        typer_completion_shared,
+        "_get_shell_name",
+        lambda: (_ for _ in ()).throw(RuntimeError("unknown shell environment")),
+    )
+    console = _console()
+
+    onboarding.run_completion_step(console)
+
+    assert "omm --install-completion" in console.file.getvalue()
+
+
 def test_run_completion_step_installs_on_confirm(monkeypatch):
     import questionary
 

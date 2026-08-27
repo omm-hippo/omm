@@ -33,6 +33,7 @@ the next session or the next `refetch`.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Callable
 
 from omm import predictor
@@ -115,8 +116,8 @@ class ContributionQueue:
         self._deferred_refs: set[str] = set()
         self._boundary_below: dict | None = None
         self._boundary_above: dict | None = None
-        self._phase_c_below_queue: list[dict] = []
-        self._phase_c_above_queue: list[dict] = []
+        self._phase_c_below_queue: deque[dict] = deque()
+        self._phase_c_above_queue: deque[dict] = deque()
         self._phase_c_below_fetched = False
         self._phase_c_above_fetched = False
         self._next_side_is_below = True
@@ -131,11 +132,11 @@ class ContributionQueue:
         ranked = predictor.rank_candidates(self.artifact, self.hw)
         viable = [(c, s) for c, s in ranked if s > 0]
         unviable = [(c, s) for c, s in ranked if s <= 0]
-        self._phase_a_queue = [
+        self._phase_a_queue = deque(
             c
             for c, s in _prefer_huggingface(viable)
             if not matches_history(c, self.history_refs) and ref(c) not in self._blocked_refs
-        ]
+        )
         self._below_pool = _prefer_huggingface(list(reversed(viable)))
         self._above_pool = _prefer_huggingface(unviable)
         self._below_cursor = 0
@@ -177,7 +178,7 @@ class ContributionQueue:
         fetch_siblings: Callable[[dict], list[dict]] | None = None,
     ) -> dict | None:
         while self._phase_a_queue:
-            candidate = self._phase_a_queue.pop(0)
+            candidate = self._phase_a_queue.popleft()
             if (
                 not matches_history(candidate, self.history_refs)
                 and ref(candidate) not in self._blocked_refs
@@ -213,7 +214,11 @@ class ContributionQueue:
             if changed:
                 self.artifact = new_artifact
                 self._rebuild()
-                return self.next_candidate(refetch, fetch_siblings)
+                # One top-level selection call performs at most one refetch.
+                # A source that reports ``changed`` for metadata-only changes
+                # but still has no unseen candidate must not recurse/refetch
+                # until the stack overflows (or hammer the catalog endpoint).
+                return self.next_candidate(None, fetch_siblings)
 
         return self._next_phase_c_candidate(fetch_siblings)
 
@@ -234,16 +239,16 @@ class ContributionQueue:
                     setattr(
                         self,
                         queue_attr,
-                        [
+                        deque(
                             c
                             for c in siblings
                             if not matches_history(c, self.history_refs)
                             and ref(c) not in self._blocked_refs
-                        ],
+                        ),
                     )
             queue = getattr(self, queue_attr)
             while queue:
-                candidate = queue.pop(0)
+                candidate = queue.popleft()
                 if (
                     not matches_history(candidate, self.history_refs)
                     and ref(candidate) not in self._blocked_refs

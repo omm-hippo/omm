@@ -290,9 +290,10 @@ def _mac_sysctl_cpu_brand() -> str | None:
             encoding="utf-8",
             errors="replace",
             check=True,
+            timeout=3,
         )
         return out.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (OSError, subprocess.SubprocessError):
         return None
 
 

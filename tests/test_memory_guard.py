@@ -343,6 +343,36 @@ def test_registry_ownership_prefers_exact_ollama_runtime_name():
     assert guard.omm_managed_model_ids(registry_data, "ollama") == {"qwen3:4b"}
 
 
+def test_ollama_runtime_sanitizes_invalid_memory_counters(monkeypatch):
+    from omm import quality
+
+    registry_data = {
+        "owned.gguf": {
+            "linked": {"ollama": True},
+            "ollama_runtime_name": "owned:latest",
+        }
+    }
+    monkeypatch.setattr(
+        quality,
+        "_request_json",
+        lambda *args, **kwargs: {
+            "models": [
+                {
+                    "name": "owned:latest",
+                    "size": float("inf"),
+                    "size_vram": -1,
+                }
+            ]
+        },
+    )
+
+    [resident] = guard.OllamaManagedRuntime(registry_data).list_residents()
+
+    assert resident.size_gb == 0.0
+    assert resident.ram_gb == 0.0
+    assert resident.vram_gb is None
+
+
 class _FakeLmStudioAdapter:
     def __init__(self, models):
         self._models = models
@@ -393,6 +423,27 @@ def test_lmstudio_runtime_marks_registry_linked_models_owned_with_file_size():
     assert owned.receipt_id == "instance-1"
     assert unmanaged.owned_by_omm is False
     assert unmanaged.size_gb == 0.0
+
+
+def test_lmstudio_runtime_sanitizes_non_finite_registry_size():
+    from omm.engines.base import RuntimeModel
+
+    runtime = guard.LMStudioManagedRuntime(
+        {
+            "model.gguf": {
+                "linked": {"lmstudio": True},
+                "repo_id": "acme/widget",
+                "size_bytes": float("inf"),
+            }
+        }
+    )
+    runtime._adapter = lambda: _FakeLmStudioAdapter(
+        [RuntimeModel("acme/widget", "Widget", True, "instance-1")]
+    )
+
+    [resident] = runtime.list_residents()
+
+    assert resident.size_gb == 0.0
 
 
 def test_lmstudio_runtime_unload_forces_release_of_an_owned_resident():

@@ -335,6 +335,11 @@ def _checkout_origin(checkout: Path) -> str | None:
             pass
         return None
     except OSError:
+        try:
+            process.kill()
+            process.communicate()
+        except OSError:
+            pass
         return None
     if process.returncode != 0:
         return None

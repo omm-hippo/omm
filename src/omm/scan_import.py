@@ -35,6 +35,11 @@ _OLLAMA_MODEL_LAYER = "application/vnd.ollama.image.model"
 _MANIFEST_STYLE_ENGINES = {"ollama", "anythingllm"}
 
 
+def _iter_gguf_files(base: Path):
+    """Yield GGUF paths without making extension matching OS-dependent."""
+    return (path for path in base.rglob("*") if path.suffix.casefold() == ".gguf")
+
+
 @dataclass
 class ExternalGguf:
     engine: str  # one of linker.ENGINES' keys, or "import"
@@ -165,7 +170,7 @@ def _scan_flat_dir(engine: str, base: Path) -> list[ExternalGguf]:
     if not base.exists():
         return []
     found = []
-    for path in base.rglob("*.gguf"):
+    for path in _iter_gguf_files(base):
         if not path.is_file() or path.is_symlink():
             continue
         try:
@@ -234,7 +239,7 @@ def scan_jan() -> list[ExternalGguf]:
 
 def scan_directory(path: Path) -> list[ExternalGguf]:
     found = []
-    for gguf_path in path.rglob("*.gguf"):
+    for gguf_path in _iter_gguf_files(path):
         if not gguf_path.is_file() or gguf_path.is_symlink():
             continue
         try:
@@ -272,7 +277,7 @@ def _scan_flat_dir_identities(engine: str, base: Path) -> list[ExternalModelIden
         return []
     return [
         ExternalModelIdentity(engine, path.name, path)
-        for path in base.rglob("*.gguf")
+        for path in _iter_gguf_files(base)
         if path.is_file() and not path.is_symlink()
     ]
 
@@ -450,7 +455,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
                     raise linker.LinkError(
                         f"Refusing to replace changed unowned duplicate at {loc.path}."
                     )
-                linker.link_file(hub_path, loc.path)
+                link_kind = linker.link_file(hub_path, loc.path)
             except Exception:
                 # link_file leaves no destination on its own failure paths.
                 # Restore the original atomically rather than leaving a model
@@ -461,9 +466,9 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             else:
                 quarantine.unlink()
         else:
-            linker.link_file(hub_path, loc.path)
+            link_kind = linker.link_file(hub_path, loc.path)
         adopted_links.append(str(loc.path))
-        if was_real_file:
+        if was_real_file and link_kind != "copy":
             bytes_saved += loc.size_bytes
         if loc.engine in linked:
             linked[loc.engine] = True

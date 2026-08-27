@@ -250,6 +250,36 @@ def test_upgrade_repo_hash_mismatch_preserves_installed_file(
     assert not (cli.MODELS_DIR / "model.gguf.update").exists()
 
 
+def test_upgrade_preserves_installed_file_when_link_volume_has_no_capacity(
+    isolated_omm_home, monkeypatch
+):
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"known-good")
+    registry.save_registry({"model.gguf": _entry(sha256="old-hash")})
+    expected = hashlib.sha256(b"new-content").hexdigest()
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda *args: expected)
+    monkeypatch.setattr(
+        cli,
+        "download_file",
+        lambda url, path, **kwargs: Path(path).write_bytes(b"new-content"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_ensure_install_disk_capacity",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            cli.InsufficientDiskSpaceError("copy volume is full")
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0, result.output
+    assert "installed file was preserved" in " ".join(result.stderr.split())
+    assert dest.read_bytes() == b"known-good"
+    assert not (cli.MODELS_DIR / "model.gguf.update").exists()
+
+
 def test_upgrade_repairs_tampered_local_file_even_when_registry_matches_remote(
     isolated_omm_home, monkeypatch
 ):

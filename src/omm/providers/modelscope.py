@@ -10,6 +10,7 @@ downloader.py's _probe_range_support for the corresponding fix."""
 from __future__ import annotations
 
 from functools import lru_cache
+import re
 from urllib.parse import quote_plus
 
 from omm.providers.base import ModelResolutionError
@@ -133,5 +134,8 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
     for f in files:
         if f.get("Path") == filename:
             sha = f.get("Sha256")
-            return sha.lower() if isinstance(sha, str) and sha else None
+            if not isinstance(sha, str):
+                return None
+            digest = sha.removeprefix("sha256:").lower()
+            return digest if re.fullmatch(r"[0-9a-f]{64}", digest) else None
     return None

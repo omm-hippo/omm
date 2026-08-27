@@ -2,6 +2,9 @@ name: "Engine link/import check: Msty"
 
 "on":
   push:
+    branches:
+      - "main"
+      - "beta"
     paths:
       - "pyproject.toml"
       - "src/omm/linker.py"
@@ -29,6 +32,10 @@ name: "Engine link/import check: Msty"
 
 permissions:
   contents: read
+
+concurrency:
+  group: validation-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   verify:
