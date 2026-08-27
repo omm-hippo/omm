@@ -40,6 +40,7 @@ jobs:
         run: python scripts/fetch_candidates.py
 
       - name: Train and quality-gate candidate model
+        id: train
         env:
           LOCALFIT_TELEMETRY_EXPORT_URL: ${{ secrets.LOCALFIT_TELEMETRY_EXPORT_URL }}
           LOCALFIT_ADMIN_TOKEN: ${{ secrets.LOCALFIT_ADMIN_TOKEN }}
@@ -51,9 +52,17 @@ jobs:
             --baseline "$RUNNER_TEMP/localfit-incumbent.json" \
             --output "$RUNNER_TEMP/localfit-candidate.json" \
             --quality-report "$RUNNER_TEMP/localfit-quality-report.json"
+          python scripts/retrain_decision.py \
+            --quality-report "$RUNNER_TEMP/localfit-quality-report.json" \
+            --candidate "$RUNNER_TEMP/localfit-candidate.json" \
+            --incumbent "$RUNNER_TEMP/localfit-incumbent.json" \
+            --github-output "$GITHUB_OUTPUT"
           cp "$RUNNER_TEMP/localfit-candidate.json" published/localfit-recommend-model.json
 
       - name: Sign published catalog
+        if: >-
+          steps.train.outputs.quality_gate_status == 'passed' &&
+          steps.train.outputs.model_changed == 'true'
         env:
           LOCALFIT_CATALOG_SIGNING_KEY: ${{ secrets.LOCALFIT_CATALOG_SIGNING_KEY }}
         run: |
@@ -68,7 +77,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
           LOCALFIT_RETRAIN_SSH_KEY: ${{ secrets.LOCALFIT_RETRAIN_SSH_KEY }}
+          QUALITY_GATE_STATUS: ${{ steps.train.outputs.quality_gate_status }}
+          MODEL_CHANGED: ${{ steps.train.outputs.model_changed }}
+          COMMIT_MESSAGE: ${{ steps.train.outputs.commit_message }}
+          PR_TITLE: ${{ steps.train.outputs.pr_title }}
+          PR_BODY: ${{ steps.train.outputs.pr_body }}
         run: |
+          if [ "$QUALITY_GATE_STATUS" != "passed" ] && [ "$MODEL_CHANGED" != "false" ]; then
+            echo "Quality gate reported $QUALITY_GATE_STATUS but changed the published model." >&2
+            exit 1
+          fi
+
           git config user.name "omm-retrain-bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add published/localfit-recommend-model.json published/candidates.json
@@ -88,13 +107,13 @@ jobs:
 
           branch="retrain/$(date -u +%Y%m%d-%H%M%S)"
           git checkout -b "$branch"
-          git commit -m "chore: retrain recommendation model"
+          git commit -m "$COMMIT_MESSAGE"
 
           # Branch protection blocks direct pushes to main (no bypass, even for
           # admins), so land the update through a normal PR instead.
           git push origin "$branch"
           pr_url=$(gh pr create \
-            --title "chore: nightly recommendation model retrain" \
-            --body "Automated nightly retrain. Candidate passed the quality gate against the current published baseline; see the workflow run for the full quality report." \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
             --base main --head "$branch")
           gh pr merge "$pr_url" --auto --merge
