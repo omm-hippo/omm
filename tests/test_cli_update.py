@@ -810,7 +810,7 @@ def test_update_fast_path_falls_back_to_pipx_when_deps_changed(monkeypatch):
     monkeypatch.setattr(
         cli,
         "_run_pipx_install_with_progress",
-        lambda args: pipx_calls.append(args) or subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+        lambda args, **kwargs: pipx_calls.append(args) or subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
     )
     monkeypatch.setattr(cli, "_verify_pipx_installation", lambda: (object(), None))
     refresh_calls = []
@@ -819,7 +819,41 @@ def test_update_fast_path_falls_back_to_pipx_when_deps_changed(monkeypatch):
     result = runner.invoke(cli.app, ["update"])
 
     assert result.exit_code == 0, result.stdout
-    assert pipx_calls == [["pipx", "install", "--force", "--editable", cli._install_spec()]]
+    assert pipx_calls == [
+        ["pipx", "runpip", "omm-model", "install", "--editable", cli._install_spec()]
+    ]
+    assert refresh_calls == [1]
+
+
+def test_update_falls_back_to_full_reinstall_when_runpip_fails(monkeypatch):
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_git_update_src",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: False)
+    pipx_calls = []
+
+    def fake_pipx_install(args, **kwargs):
+        pipx_calls.append(args)
+        failed = args[1] == "runpip"
+        return subprocess.CompletedProcess(args, 1 if failed else 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli, "_run_pipx_install_with_progress", fake_pipx_install)
+    monkeypatch.setattr(cli, "_verify_pipx_installation", lambda: (object(), None))
+    refresh_calls = []
+    monkeypatch.setattr(cli, "_refresh_data", lambda: refresh_calls.append(1))
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 0, result.stdout
+    assert pipx_calls == [
+        ["pipx", "runpip", "omm-model", "install", "--editable", cli._install_spec()],
+        ["pipx", "install", "--force", "--editable", cli._install_spec()],
+    ]
     assert refresh_calls == [1]
 
 

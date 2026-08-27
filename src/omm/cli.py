@@ -2285,10 +2285,12 @@ def _deps_satisfied() -> bool:
     return True
 
 
-def _run_pipx_install_with_progress(args: list[str]) -> subprocess.CompletedProcess:
+def _run_pipx_install_with_progress(
+    args: list[str], *, label: str = "Reinstalling omm via pipx..."
+) -> subprocess.CompletedProcess:
     with Progress(
         SpinnerColumn(),
-        TextColumn("[accent]Reinstalling omm via pipx...[/accent]"),
+        TextColumn(f"[accent]{label}[/accent]"),
         BarColumn(),
         TaskProgressColumn(),
         TimeElapsedColumn(),
@@ -2544,7 +2546,7 @@ def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.Comp
         result = _git_update_src(branch, same_branch=same_branch)
         if result.returncode == 0:
             dependencies_satisfied = _deps_satisfied()
-            if legacy_distribution or not dependencies_satisfied or not editable_install:
+            if legacy_distribution or not editable_install:
                 # With the renamed distribution, pipx derives a new
                 # `omm-model` environment from this spec. `--force` lets the
                 # successfully-created environment take over the shared
@@ -2556,6 +2558,35 @@ def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.Comp
                 result = _verified_pipx_install_result(result)
                 if legacy_state is not None:
                     result = _finalize_legacy_pipx_migration(result, legacy_state)
+            elif not dependencies_satisfied:
+                # A newly declared dependency (common on a branch switch,
+                # since beta always picks up new deps before main) doesn't
+                # need the whole venv rebuilt - `pipx runpip` runs pip inside
+                # the *existing* omm-model venv pipx already tracks, so it
+                # only fetches what's actually missing/outdated instead of
+                # every already-satisfied package. Skips
+                # `_verified_pipx_install_result`'s exact-version check: that
+                # check exists to catch a `pipx install --force` silently
+                # landing the wrong environment, and compares against pipx's
+                # own dist-info snapshot, which (like any editable install)
+                # stays frozen at whatever it was on the last full install -
+                # applying it here would flag this deliberately lighter path
+                # as broken on every single use.
+                result = _run_pipx_install_with_progress(
+                    [
+                        _PIPX_COMMAND, "runpip", package_metadata.DISTRIBUTION_NAME,
+                        "install", "--editable", _install_spec(),
+                    ],
+                    label="Installing new dependencies...",
+                )
+                if result.returncode != 0:
+                    # Fall back to the full rebuild this branch was trying to
+                    # avoid - e.g. an older pipx without `runpip`, or a venv
+                    # too broken for a partial install to repair.
+                    result = _run_pipx_install_with_progress(
+                        [_PIPX_COMMAND, "install", "--force", "--editable", _install_spec()]
+                    )
+                    result = _verified_pipx_install_result(result)
         return result
     except FileNotFoundError:
         if platform.system() == "Windows":
