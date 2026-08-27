@@ -3648,7 +3648,12 @@ def _select_recommended_model(
 
     recommend_ui.set_no_color(_global_opts().no_color)
     rows = recommend_ui.build_rows(ranked, refs, installations)
-    recommend_ui.print_screen(console, info, len(rows))
+    recommend_ui.print_screen(
+        console,
+        info,
+        len(rows),
+        show_caution=any(row.warning for row in rows),
+    )
     choices = [
         questionary.Choice(
             title=recommend_ui.choice_title(row, console.size.width),
