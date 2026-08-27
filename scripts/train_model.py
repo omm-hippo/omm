@@ -19,6 +19,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 import sys
 from datetime import datetime, timezone
@@ -120,6 +121,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--quality-report", type=Path, help="Optional JSON quality-gate report.")
+    parser.add_argument(
+        "--plausibility-report",
+        type=Path,
+        help="Write a redacted policy-calibration JSON report for the loaded telemetry.",
+    )
+    parser.add_argument(
+        "--plausibility-report-only",
+        action="store_true",
+        help="Write --plausibility-report and exit without training a model.",
+    )
     return parser.parse_args()
 
 
@@ -293,6 +304,12 @@ MIN_ACTIVE_WEIGHT_GB = 0.05
 #: cost of letting a mild exaggeration through - the physical ceiling and the
 #: existing per-configuration median collapse already handle the rest.
 SPEED_OUTLIER_FENCE_MULTIPLIER = 3.0
+LOW_SIDE_OUTLIER_FENCE_MULTIPLIER = 3.0
+# Low measurements cannot make a model look faster than it is, and real
+# quantization kernels/MoE architectures can be much slower than peers on the
+# same hardware. Keep detecting them for audit purposes, but do not delete
+# them from training. High-side outliers remain fail-closed.
+LOW_SIDE_OUTLIER_POLICY = "report_only"
 #: Below this many configurations a quartile estimate is noise, and filtering
 #: on it would delete real hardware diversity rather than defend against
 #: anything. Buckets under the threshold fall back to the global pool; if the
@@ -300,9 +317,69 @@ SPEED_OUTLIER_FENCE_MULTIPLIER = 3.0
 #: reported as skipped.
 MIN_OUTLIER_SAMPLE_SIZE = 8
 
+_DECIMAL_PARAMETER_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(\d+)[._](\d+)[Bb](?=[-_.]|$)", re.IGNORECASE
+)
+
 #: Feature-vector positions by name, so the checks below survive
 #: FEATURE_ORDER's append-only growth.
 _FEATURE_INDEX = {name: index for index, name in enumerate(FEATURE_ORDER)}
+
+
+def _repair_legacy_decimal_parameter_counts(
+    row: dict,
+    parameter_count_b: float,
+    active_parameter_count_b: float,
+    quant_bits: float,
+    model_size_gb: float,
+) -> tuple[float, float, bool]:
+    """Repair a narrow historical Ollama metadata corruption.
+
+    Ollama 0.32.15 sometimes reported an imported ``0_5B``/``1_8B`` GGUF as
+    ``5B``/``8B``. Older OMM clients trusted that display label even though
+    the filename and file size retained the decimal. Only repair the exact
+    dropped-decimal shape, and require the observed file size to be materially
+    closer to the filename-derived count. This keeps measured GGUF metadata
+    authoritative for every other model.
+    """
+    sources = (
+        str(row.get("model_installed") or ""),
+        str(row.get("model_repo_id") or "").rsplit("/", 1)[-1],
+    )
+    hinted = None
+    dropped_decimal_value = None
+    for source in sources:
+        matches = list(_DECIMAL_PARAMETER_TOKEN_RE.finditer(source))
+        if not matches:
+            continue
+        match = matches[-1]
+        hinted = float(f"{match.group(1)}.{match.group(2)}")
+        dropped_decimal_value = float(match.group(2))
+        break
+    if (
+        hinted is None
+        or dropped_decimal_value is None
+        or not math.isclose(parameter_count_b, dropped_decimal_value, rel_tol=0.0, abs_tol=1e-9)
+        or hinted <= 0
+        or hinted >= parameter_count_b
+    ):
+        return parameter_count_b, active_parameter_count_b, False
+
+    expected_hinted_gb = hinted * quant_bits / 8.0
+    expected_reported_gb = parameter_count_b * quant_bits / 8.0
+    if expected_hinted_gb <= 0 or model_size_gb <= 0:
+        return parameter_count_b, active_parameter_count_b, False
+    hinted_error = abs(math.log(model_size_gb / expected_hinted_gb))
+    reported_error = abs(math.log(model_size_gb / expected_reported_gb))
+    if hinted_error + math.log(1.5) >= reported_error:
+        return parameter_count_b, active_parameter_count_b, False
+
+    repaired_active = (
+        hinted
+        if math.isclose(active_parameter_count_b, parameter_count_b, rel_tol=0.0, abs_tol=1e-9)
+        else min(active_parameter_count_b, hinted)
+    )
+    return hinted, repaired_active, True
 
 
 def _active_weight_gb(
@@ -577,6 +654,15 @@ def _extract_features_and_reason(
             if size_bytes is not None
             else param_count_b * quant_bits / 8.0 * 1.1
         )
+        param_count_b, active_param_count_b, _repaired = (
+            _repair_legacy_decimal_parameter_counts(
+                row,
+                param_count_b,
+                active_param_count_b,
+                quant_bits,
+                model_size_gb,
+            )
+        )
     else:
         installed_name = str(row.get("model_installed") or "")
         repo_name = str(row.get("model_repo_id") or "").rsplit("/", 1)[-1]
@@ -790,7 +876,7 @@ def _outlier_fences(values: list[float]) -> tuple[float, float] | None:
         # would drop every value that is not exactly the median.
         return None
     return (
-        quartile_1 - SPEED_OUTLIER_FENCE_MULTIPLIER * spread,
+        quartile_1 - LOW_SIDE_OUTLIER_FENCE_MULTIPLIER * spread,
         quartile_3 + SPEED_OUTLIER_FENCE_MULTIPLIER * spread,
     )
 
@@ -838,13 +924,20 @@ def _speed_outlier_reasons(
     report = {
         "statistic": "implied_memory_bandwidth_gb_per_s",
         "fence_multiplier": SPEED_OUTLIER_FENCE_MULTIPLIER,
+        "low_fence_multiplier": LOW_SIDE_OUTLIER_FENCE_MULTIPLIER,
         "minimum_sample_size": MIN_OUTLIER_SAMPLE_SIZE,
+        "low_side_policy": LOW_SIDE_OUTLIER_POLICY,
         "hardware_buckets": len(buckets),
         "buckets_evaluated": buckets_evaluated,
         "buckets_pooled_globally": buckets_pooled,
         "global_pool_applied": global_fences is not None,
         "skipped": global_fences is None and buckets_evaluated == 0,
-        "dropped_configurations": len(reasons),
+        "flagged_high_configurations": sum(
+            reason == "statistical_speed_outlier_high" for reason in reasons.values()
+        ),
+        "flagged_low_configurations": sum(
+            reason == "statistical_speed_outlier_low" for reason in reasons.values()
+        ),
     }
     return reasons, report
 
@@ -905,7 +998,12 @@ def real_rows_to_training_data_with_audit(
         {features: statistics.median(samples) for features, samples in groups.items()}
     )
     outlier_rows_dropped = 0
+    low_rows_reported = 0
+    dropped_configurations = 0
     for group_key, reason in outlier_reasons.items():
+        if reason == "statistical_speed_outlier_low" and LOW_SIDE_OUTLIER_POLICY == "report_only":
+            low_rows_reported += group_row_counts[group_key]
+            continue
         dropped_samples = groups.pop(group_key)
         dropped_rows = group_row_counts.pop(group_key)
         rejections[reason] = rejections.get(reason, 0) + dropped_rows
@@ -913,11 +1011,14 @@ def real_rows_to_training_data_with_audit(
         samples_used -= len(dropped_samples)
         samples_capped -= dropped_rows - len(dropped_samples)
         outlier_rows_dropped += dropped_rows
+        dropped_configurations += 1
         direct_v6_groups.discard(group_key)
         direct_v7_groups.discard(group_key)
         direct_v8_groups.discard(group_key)
         direct_v9_groups.discard(group_key)
     outlier_report["dropped_rows"] = outlier_rows_dropped
+    outlier_report["dropped_configurations"] = dropped_configurations
+    outlier_report["reported_low_rows"] = low_rows_reported
 
     X = [list(features) for features in groups]
     y = [statistics.median(samples) for samples in groups.values()]
@@ -945,11 +1046,11 @@ def real_rows_to_training_data_with_audit(
         # Never truncate silently: both defenses report what they removed and
         # why (issue #134). The per-row physical check appears in
         # `rejections` under "implausible_speed_for_hardware"; the
-        # statistical pass adds "statistical_speed_outlier_high"/"_low" there
-        # and describes how it decided in `speed_outliers`. Both count as
-        # data-quality rejections, so a large-scale poisoning attempt pushes
-        # the rejection rate past validate_dataset()'s limit and keeps the
-        # published model unchanged instead of retraining on what survived.
+        # statistical pass rejects high-side outliers and reports low-side
+        # observations without deleting them. A large high-side poisoning
+        # attempt therefore still pushes the rejection rate past
+        # validate_dataset()'s limit, while honest slow quant/kernel paths do
+        # not erase model and hardware diversity.
         "speed_outliers": outlier_report,
         "rejections": dict(sorted(rejections.items())),
     }
@@ -1231,7 +1332,7 @@ def _plausibility_summary(audit: dict) -> str:
     outliers = audit.get("speed_outliers", {})
     implausible = rejections.get("implausible_speed_for_hardware", 0)
     high = rejections.get("statistical_speed_outlier_high", 0)
-    low = rejections.get("statistical_speed_outlier_low", 0)
+    low = outliers.get("reported_low_rows", 0)
     detail = (
         "outlier filtering skipped (too few configurations)"
         if outliers.get("skipped")
@@ -1243,13 +1344,265 @@ def _plausibility_summary(audit: dict) -> str:
     )
     return (
         f"Plausibility: dropped {implausible} row(s) exceeding the physical speed "
-        f"ceiling and {high + low} statistical outlier row(s) "
-        f"({high} high, {low} low); {detail}."
+        f"ceiling and {high} high-side statistical outlier row(s); "
+        f"reported {low} low-side row(s) without dropping them; {detail}."
     )
+
+
+def _configuration_dimensions(
+    features: tuple[float, ...], row: dict
+) -> dict[str, str]:
+    parameter_count = features[_FEATURE_INDEX["param_count_b"]]
+    active_count = features[_FEATURE_INDEX["active_param_count_b"]]
+    if parameter_count < 1:
+        size_bin = "lt_1b"
+    elif parameter_count < 3:
+        size_bin = "1_to_3b"
+    elif parameter_count < 10:
+        size_bin = "3_to_10b"
+    elif parameter_count < 30:
+        size_bin = "10_to_30b"
+    else:
+        size_bin = "30b_plus"
+    return {
+        "benchmark_version": f"v{row.get('benchmark_version', 'legacy')}",
+        "engine": str(row.get("engine") or "ollama"),
+        "hardware_tier": (
+            f"cpu_{features[_FEATURE_INDEX['cpu_tier']]:g}__"
+            f"gpu_{features[_FEATURE_INDEX['gpu_tier']]:g}"
+        ),
+        "model_family": (
+            "moe" if active_count < parameter_count * 0.8 else "dense"
+        ),
+        "model_size_bin": size_bin,
+    }
+
+
+def _redacted_outlier_inventory(rows: list[dict]) -> tuple[list[dict], dict]:
+    """Return safe per-configuration evidence and diversity retention.
+
+    Event IDs, model names, repository names, endpoints, client versions and
+    timestamps are deliberately absent. The stable ID hashes only the rounded
+    feature vector under a public domain-separation label; it cannot be used to
+    recover a Firebase push ID because that ID never enters the hash.
+    """
+    groups: dict[tuple[float, ...], list[float]] = {}
+    row_counts: dict[tuple[float, ...], int] = {}
+    metadata: dict[tuple[float, ...], dict] = {}
+    for row in rows:
+        sample, _reason = _real_row_to_sample(row)
+        if sample is None:
+            continue
+        features, speed = sample
+        key = tuple(round(value, 3) for value in features)
+        groups.setdefault(key, []).append(speed)
+        row_counts[key] = row_counts.get(key, 0) + 1
+        metadata.setdefault(key, row)
+
+    medians = {key: statistics.median(values) for key, values in groups.items()}
+    reasons, _report = _speed_outlier_reasons(medians)
+    implied = {
+        key: _implied_memory_bandwidth(key, median) for key, median in medians.items()
+    }
+    buckets: dict[tuple[float, ...], list[tuple[float, ...]]] = {}
+    for key in groups:
+        buckets.setdefault(_hardware_bucket(key), []).append(key)
+    global_fences = _outlier_fences(list(implied.values()))
+    bounds: dict[tuple[float, ...], tuple[str, float, float]] = {}
+    for members in buckets.values():
+        fences = _outlier_fences([implied[key] for key in members])
+        scope = "hardware_bucket"
+        if fences is None:
+            fences = global_fences
+            scope = "global_pool"
+        if fences is None:
+            continue
+        lower, upper = fences
+        for key in members:
+            bounds[key] = (scope, lower, upper)
+
+    dropped = {
+        key
+        for key, reason in reasons.items()
+        if reason == "statistical_speed_outlier_high"
+        or LOW_SIDE_OUTLIER_POLICY == "remove"
+    }
+    dimensions: dict[str, dict[str, dict[str, int | float]]] = {}
+    for key, row in metadata.items():
+        for dimension, value in _configuration_dimensions(key, row).items():
+            counts = dimensions.setdefault(dimension, {}).setdefault(
+                value, {"before": 0, "after": 0}
+            )
+            counts["before"] += 1
+            if key not in dropped:
+                counts["after"] += 1
+    for values in dimensions.values():
+        for counts in values.values():
+            before = int(counts["before"])
+            counts["retained_fraction"] = (
+                round(int(counts["after"]) / before, 6) if before else 1.0
+            )
+
+    evidence = []
+    for key, reason in sorted(
+        reasons.items(), key=lambda item: (item[1], implied[item[0]])
+    ):
+        row = metadata[key]
+        scope, lower, upper = bounds[key]
+        canonical = json.dumps(
+            {
+                "domain": "omm-telemetry-plausibility-config-v1",
+                "features": key,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        parameter_count = key[_FEATURE_INDEX["param_count_b"]]
+        active_count = key[_FEATURE_INDEX["active_param_count_b"]]
+        evidence.append(
+            {
+                "configuration_hash": hashlib.sha256(canonical.encode()).hexdigest()[:16],
+                "direction": "high" if reason.endswith("_high") else "low",
+                "decision": "drop" if key in dropped else "report_only",
+                "row_count": row_counts[key],
+                **_configuration_dimensions(key, row),
+                "parameter_count_b": parameter_count,
+                "active_parameter_count_b": active_count,
+                "quant_bits": key[_FEATURE_INDEX["quant_bits"]],
+                "gpu_offload_percent": round(
+                    key[_FEATURE_INDEX["gpu_offload_ratio"]] * 100.0, 3
+                ),
+                "reported_tokens_per_second": round(medians[key], 6),
+                "implied_memory_bandwidth_gb_per_s": round(implied[key], 6),
+                "fence_scope": scope,
+                "lower_fence_gb_per_s": round(lower, 6),
+                "upper_fence_gb_per_s": round(upper, 6),
+                "review_classification": "manual_review_required",
+            }
+        )
+    return evidence, dimensions
+
+
+def build_plausibility_calibration_report(rows: list[dict]) -> dict:
+    """Evaluate the issue #216 policy matrix without retaining raw telemetry."""
+    global PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S
+    global PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S
+    global SPEED_OUTLIER_FENCE_MULTIPLIER
+    global LOW_SIDE_OUTLIER_FENCE_MULTIPLIER
+    global MIN_OUTLIER_SAMPLE_SIZE
+    global LOW_SIDE_OUTLIER_POLICY
+
+    original = (
+        PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S,
+        PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S,
+        SPEED_OUTLIER_FENCE_MULTIPLIER,
+        LOW_SIDE_OUTLIER_FENCE_MULTIPLIER,
+        MIN_OUTLIER_SAMPLE_SIZE,
+        LOW_SIDE_OUTLIER_POLICY,
+    )
+    matrix = []
+    try:
+        for gpu_bandwidth, cpu_bandwidth in (
+            (4000.0, 800.0),
+            (3000.0, 600.0),
+            (2000.0, 400.0),
+        ):
+            PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S = gpu_bandwidth
+            PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S = cpu_bandwidth
+            for fence in (1.5, 2.0, 3.0):
+                SPEED_OUTLIER_FENCE_MULTIPLIER = fence
+                for minimum in (8, 12, 16):
+                    MIN_OUTLIER_SAMPLE_SIZE = minimum
+                    for low_policy in ("remove", "relaxed", "report_only"):
+                        LOW_SIDE_OUTLIER_POLICY = (
+                            "report_only" if low_policy == "report_only" else "remove"
+                        )
+                        LOW_SIDE_OUTLIER_FENCE_MULTIPLIER = (
+                            fence * 2.0 if low_policy == "relaxed" else fence
+                        )
+                        _X, _y, audit = real_rows_to_training_data_with_audit(rows)
+                        outliers = audit["speed_outliers"]
+                        rejections = audit["rejections"]
+                        matrix.append(
+                            {
+                                "gpu_bandwidth_gb_per_s": gpu_bandwidth,
+                                "cpu_bandwidth_gb_per_s": cpu_bandwidth,
+                                "fence_multiplier": fence,
+                                "minimum_sample_size": minimum,
+                                "low_side_policy": low_policy,
+                                "raw_rows": audit["raw_rows"],
+                                "valid_rows": audit["valid_rows"],
+                                "rejected_rows": audit["rejected_rows"],
+                                "unique_configurations": audit["unique_configurations"],
+                                "physical_rejected_rows": rejections.get(
+                                    "implausible_speed_for_hardware", 0
+                                ),
+                                "high_rejected_rows": rejections.get(
+                                    "statistical_speed_outlier_high", 0
+                                ),
+                                "low_rejected_rows": rejections.get(
+                                    "statistical_speed_outlier_low", 0
+                                ),
+                                "low_reported_rows": outliers.get("reported_low_rows", 0),
+                                "flagged_high_configurations": outliers[
+                                    "flagged_high_configurations"
+                                ],
+                                "flagged_low_configurations": outliers[
+                                    "flagged_low_configurations"
+                                ],
+                                "hardware_buckets": outliers["hardware_buckets"],
+                                "buckets_evaluated": outliers["buckets_evaluated"],
+                                "buckets_pooled_globally": outliers[
+                                    "buckets_pooled_globally"
+                                ],
+                            }
+                        )
+    finally:
+        (
+            PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S,
+            PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S,
+            SPEED_OUTLIER_FENCE_MULTIPLIER,
+            LOW_SIDE_OUTLIER_FENCE_MULTIPLIER,
+            MIN_OUTLIER_SAMPLE_SIZE,
+            LOW_SIDE_OUTLIER_POLICY,
+        ) = original
+
+    _X, _y, selected_audit = real_rows_to_training_data_with_audit(rows)
+    evidence, diversity = _redacted_outlier_inventory(rows)
+    snapshot_digest = hashlib.sha256(
+        json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "snapshot_sha256": snapshot_digest,
+        "privacy": {
+            "contains_raw_telemetry": False,
+            "contains_event_ids": False,
+            "contains_model_or_repository_names": False,
+            "contains_endpoints_or_tokens": False,
+        },
+        "selected_policy": {
+            "gpu_bandwidth_gb_per_s": PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S,
+            "cpu_bandwidth_gb_per_s": PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S,
+            "fence_multiplier": SPEED_OUTLIER_FENCE_MULTIPLIER,
+            "low_fence_multiplier": LOW_SIDE_OUTLIER_FENCE_MULTIPLIER,
+            "minimum_sample_size": MIN_OUTLIER_SAMPLE_SIZE,
+            "low_side_policy": LOW_SIDE_OUTLIER_POLICY,
+            "audit": selected_audit,
+        },
+        "matrix": matrix,
+        "diversity_retention": diversity,
+        "flagged_configurations": evidence,
+    }
 
 
 def main() -> None:
     args = parse_args()
+    plausibility_report = getattr(args, "plausibility_report", None)
+    plausibility_report_only = getattr(args, "plausibility_report_only", False)
+    if plausibility_report_only and plausibility_report is None:
+        raise ValueError("--plausibility-report-only requires --plausibility-report")
     real_rows = [] if args.offline else fetch_real_rows(args.telemetry_url)
     input_sources = [] if args.offline else [
         "firebase_legacy"
@@ -1262,6 +1615,19 @@ def main() -> None:
         input_sources.append("local_file")
         print(f"Loaded {len(file_rows)} local telemetry row(s) from {telemetry_path}.")
     real_rows = real_rows[-MAX_REAL_ROWS:]
+    if plausibility_report is not None:
+        calibration_report = build_plausibility_calibration_report(real_rows)
+        plausibility_report.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            plausibility_report,
+            json.dumps(calibration_report, indent=2, sort_keys=True) + "\n",
+        )
+        print(
+            f"Wrote redacted plausibility report to {plausibility_report} "
+            f"({len(calibration_report['matrix'])} policy combinations)."
+        )
+        if plausibility_report_only:
+            return
     real_X, real_y, telemetry_audit = real_rows_to_training_data_with_audit(real_rows)
     print(
         f"Fetched {telemetry_audit['valid_rows']} valid telemetry rows "

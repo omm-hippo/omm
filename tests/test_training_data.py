@@ -471,14 +471,19 @@ def test_training_audit_explains_rejections_and_duplicate_collapse():
         "speed_outliers": {
             "statistic": "implied_memory_bandwidth_gb_per_s",
             "fence_multiplier": train_model.SPEED_OUTLIER_FENCE_MULTIPLIER,
+            "low_fence_multiplier": train_model.LOW_SIDE_OUTLIER_FENCE_MULTIPLIER,
             "minimum_sample_size": train_model.MIN_OUTLIER_SAMPLE_SIZE,
+            "low_side_policy": "report_only",
             "hardware_buckets": 1,
             "buckets_evaluated": 0,
             "buckets_pooled_globally": 1,
             "global_pool_applied": False,
             "skipped": True,
+            "flagged_high_configurations": 0,
+            "flagged_low_configurations": 0,
             "dropped_configurations": 0,
             "dropped_rows": 0,
+            "reported_low_rows": 0,
         },
         "rejections": {
             "invalid_measurement": 1,
@@ -1632,7 +1637,7 @@ def test_partial_gpu_offload_honest_speed_still_passes():
     assert audit["rejections"] == {}
 
 
-def test_statistical_outliers_are_dropped_and_counted_by_direction():
+def test_high_outliers_are_dropped_while_low_outliers_are_reported():
     # 400 tokens/sec on this hardware is under the physical ceiling, so only
     # the distribution of its peers reveals it as fabricated. 0.5 is the
     # mirror image: also in range, also impossible in context.
@@ -1643,16 +1648,54 @@ def test_statistical_outliers_are_dropped_and_counted_by_direction():
 
     _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
 
-    assert sorted(y) == [18, 19, 20, 21, 22, 23, 24, 25]
-    assert audit["rejections"] == {
-        "statistical_speed_outlier_high": 1,
-        "statistical_speed_outlier_low": 1,
-    }
-    assert audit["valid_rows"] == 8
-    assert audit["rejected_rows"] == 2
-    assert audit["unique_configurations"] == 8
-    assert audit["speed_outliers"]["dropped_configurations"] == 2
-    assert audit["speed_outliers"]["dropped_rows"] == 2
+    assert sorted(y) == [0.5, 18, 19, 20, 21, 22, 23, 24, 25]
+    assert audit["rejections"] == {"statistical_speed_outlier_high": 1}
+    assert audit["valid_rows"] == 9
+    assert audit["rejected_rows"] == 1
+    assert audit["unique_configurations"] == 9
+    assert audit["speed_outliers"]["flagged_high_configurations"] == 1
+    assert audit["speed_outliers"]["flagged_low_configurations"] == 1
+    assert audit["speed_outliers"]["dropped_configurations"] == 1
+    assert audit["speed_outliers"]["dropped_rows"] == 1
+    assert audit["speed_outliers"]["reported_low_rows"] == 1
+
+
+def test_legacy_decimal_parameter_label_is_repaired_before_outlier_detection():
+    row = _v8_row(
+        100,
+        model_installed="qwen1_5-0_5b-chat-q4_k_m.gguf",
+        model_repo_id="Qwen/Qwen1.5-0.5B-Chat-GGUF",
+        model_size_bytes=407_155_552,
+        parameter_count_b=5.0,
+        active_parameter_count_b=5.0,
+        quant_bits=4.0,
+    )
+
+    sample, reason = train_model._real_row_to_sample(row)
+
+    assert reason is None
+    assert sample is not None
+    features, _speed = sample
+    assert features[train_model._FEATURE_INDEX["param_count_b"]] == 0.5
+    assert features[train_model._FEATURE_INDEX["active_param_count_b"]] == 0.5
+
+
+def test_decimal_repair_does_not_override_consistent_measured_metadata():
+    row = _v8_row(
+        20,
+        model_installed="custom-1_8B-Q4.gguf",
+        model_size_bytes=5 * 1024**3,
+        parameter_count_b=8.0,
+        active_parameter_count_b=8.0,
+        quant_bits=4.0,
+    )
+
+    sample, reason = train_model._real_row_to_sample(row)
+
+    assert reason is None
+    assert sample is not None
+    features, _speed = sample
+    assert features[train_model._FEATURE_INDEX["param_count_b"]] == 8.0
 
 
 def test_outlier_statistic_is_normalized_for_model_size():
@@ -1747,5 +1790,48 @@ def test_plausibility_summary_reports_every_drop():
     summary = train_model._plausibility_summary(audit)
 
     assert "dropped 1 row(s) exceeding the physical speed ceiling" in summary
-    assert "1 statistical outlier row(s) (1 high, 0 low)" in summary
+    assert "1 high-side statistical outlier row(s)" in summary
+    assert "reported 0 low-side row(s) without dropping them" in summary
     assert "hardware bucket(s)" in summary
+
+
+def test_calibration_report_is_redacted_reproducible_and_restores_policy():
+    rows = _plausible_fleet() + [
+        _v8_row(400, cpu_threads=20),
+        _v8_row(0.5, cpu_threads=21, tokens_per_sec_min=0.4, tokens_per_sec_max=0.6),
+    ]
+    original = (
+        train_model.PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S,
+        train_model.PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S,
+        train_model.SPEED_OUTLIER_FENCE_MULTIPLIER,
+        train_model.LOW_SIDE_OUTLIER_FENCE_MULTIPLIER,
+        train_model.MIN_OUTLIER_SAMPLE_SIZE,
+        train_model.LOW_SIDE_OUTLIER_POLICY,
+    )
+
+    report = train_model.build_plausibility_calibration_report(rows)
+
+    assert len(report["matrix"]) == 81
+    assert report["privacy"] == {
+        "contains_raw_telemetry": False,
+        "contains_event_ids": False,
+        "contains_model_or_repository_names": False,
+        "contains_endpoints_or_tokens": False,
+    }
+    assert len(report["snapshot_sha256"]) == 64
+    assert len(report["flagged_configurations"]) == 2
+    assert {item["decision"] for item in report["flagged_configurations"]} == {
+        "drop",
+        "report_only",
+    }
+    serialized = json.dumps(report)
+    assert "org/model-7B" not in serialized
+    assert "model-7B-Q4.gguf" not in serialized
+    assert (
+        train_model.PEAK_GPU_MEMORY_BANDWIDTH_GB_PER_S,
+        train_model.PEAK_CPU_MEMORY_BANDWIDTH_GB_PER_S,
+        train_model.SPEED_OUTLIER_FENCE_MULTIPLIER,
+        train_model.LOW_SIDE_OUTLIER_FENCE_MULTIPLIER,
+        train_model.MIN_OUTLIER_SAMPLE_SIZE,
+        train_model.LOW_SIDE_OUTLIER_POLICY,
+    ) == original

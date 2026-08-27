@@ -412,6 +412,42 @@ def test_model_metadata_matches_bare_tag_against_implicit_latest_suffix(monkeypa
     assert metadata["digest"] == "sha256:" + "a" * 64
 
 
+def test_model_metadata_uses_exact_gguf_parameter_count(monkeypatch):
+    """Do not trust Ollama's display label when it loses a decimal point."""
+
+    def fake_request(method, path, payload=None, timeout=10):
+        if path == "/api/tags":
+            return {
+                "models": [
+                    {
+                        "name": "qwen:latest",
+                        "size": 407_155_552,
+                        "details": {"family": "qwen"},
+                    }
+                ]
+            }
+        assert path == "/api/show"
+        return {
+            "details": {
+                "family": "qwen",
+                "parameter_size": "5B",
+                "quantization_level": "Q4_K_M",
+            },
+            "model_info": {
+                "general.architecture": "qwen",
+                "general.parameter_count": 494_032_384,
+            },
+            "capabilities": ["completion"],
+        }
+
+    monkeypatch.setattr(quality, "_request_json", fake_request)
+
+    metadata = quality._model_metadata("qwen")
+
+    assert metadata["parameter_size"] == "5B"
+    assert metadata["parameter_count_b"] == 0.494032384
+
+
 def test_model_metadata_rejects_already_linked_clip_mmproj(monkeypatch):
     """A model linked before omm refused clip/mmproj links (or linked
     manually via `ollama create`) must fail fast with a clear reason instead

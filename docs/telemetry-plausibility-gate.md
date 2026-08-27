@@ -75,9 +75,15 @@ delete honest small-model rows.
   identity would be enough to skip the check. If the global pool is also
   under 8, filtering is skipped entirely and reported as skipped. A
   degenerate (zero-width) IQR is treated the same way.
+- **Direction policy**: high-side outliers are rejected. Low-side outliers
+  are recorded in the audit but retained. A low measurement cannot make a
+  model look faster than it is, while MoE routing and 1-2 bit kernels can
+  produce honest low implied-bandwidth values that a hardware-only bucket
+  cannot explain.
 
-Rejection reasons are `statistical_speed_outlier_high` and
-`statistical_speed_outlier_low`.
+The rejection reason is `statistical_speed_outlier_high`. Low observations
+are counted by `flagged_low_configurations` and `reported_low_rows` under
+`telemetry_audit["speed_outliers"]` without appearing in `rejections`.
 
 ## Reporting
 
@@ -95,17 +101,36 @@ filter.
 {
   "statistic": "implied_memory_bandwidth_gb_per_s",
   "fence_multiplier": 3.0,
+  "low_fence_multiplier": 3.0,
   "minimum_sample_size": 8,
+  "low_side_policy": "report_only",
   "hardware_buckets": 4,
   "buckets_evaluated": 1,
   "buckets_pooled_globally": 3,
   "global_pool_applied": true,
   "skipped": false,
+  "flagged_high_configurations": 2,
+  "flagged_low_configurations": 3,
   "dropped_configurations": 2,
-  "dropped_rows": 5
+  "dropped_rows": 5,
+  "reported_low_rows": 3
 }
 ```
 
 `train_model.main()` also prints a one-line summary of both stages, so a
 nightly run that drops data says so in the CI log rather than truncating
 quietly.
+
+Nightly runs also preserve a 30-day `telemetry-plausibility-audit` artifact.
+It contains an 81-combination policy matrix, diversity-retention counts, and
+hashed per-configuration evidence. It deliberately excludes raw telemetry,
+event IDs, model/repository names, endpoints, tokens, and client versions.
+The same report can be reproduced from an authorized local snapshot without
+training or publishing a model:
+
+```bash
+python scripts/train_model.py --offline \
+  --telemetry-file /path/to/telemetry.json \
+  --plausibility-report /path/to/report.json \
+  --plausibility-report-only
+```
