@@ -1,0 +1,36 @@
+name: Branch ancestry check
+
+"on":
+  push:
+    branches:
+      - "main"
+      - "beta"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-ancestry-check
+  cancel-in-progress: true
+
+jobs:
+  main-ancestor-of-beta:
+    name: main must be an ancestor of beta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check that beta contains every commit on main
+        run: |
+          git fetch origin main beta
+          if ! git merge-base --is-ancestor origin/main origin/beta; then
+            echo "::error::main is not an ancestor of beta - the branches have diverged."
+            echo "This breaks omm's update-channel signature verification"
+            echo "(verify_update in src/omm/trust/__init__.py can only walk"
+            echo "forward from a shared ancestor). Merge origin/main into beta"
+            echo "to restore the invariant - see the beta-stays-ahead-of-main"
+            echo "convention."
+            exit 1
+          fi
