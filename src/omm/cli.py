@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import unquote, urlsplit
-from urllib.request import url2pathname
 
 import click
 import typer
@@ -1239,6 +1238,8 @@ def _editable_install_uses_src(install_record: dict | None = None) -> bool:
         or parsed.fragment
     ):
         return False
+    from urllib.request import url2pathname  # pulls in http.client/ssl - not worth paying on every command
+
     raw_path = url2pathname(unquote(parsed.path))
     if platform.system() == "Windows" and re.fullmatch(r"/[A-Za-z]:.*", raw_path):
         raw_path = raw_path[1:]
@@ -1296,7 +1297,7 @@ def _bg_version_check_cmd() -> None:
     so the `git ls-remote` round trip survives the short-lived parent
     command exiting; writes the result to the shared cache for a later
     `omm` invocation to pick up."""
-    version_check.cached_remote_head(_remote_head_commit, _channel_branch())
+    version_check.cached_remote_head(_remote_head_commit, _channel_branch(), installed=_installed_commit())
 
 
 def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
@@ -1316,20 +1317,6 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
     the command itself, and `quiet` by global_flags() when `--quiet` came
     after the subcommand name."""
     return opts.command_body_ran and not opts.quiet
-
-
-def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch: str = "main") -> None:
-    """The cached remote head can be up to _TTL_SECONDS stale, so a mismatch
-    against it is only a hint, not proof. Before alarming the user, re-check
-    live and refresh the cache - this trades a bit of extra latency (only on
-    the rare command where the notice would otherwise fire) for never showing
-    a stale "update available" once the real remote has caught up."""
-    latest = _remote_head_commit(branch)
-    if latest is None:  # offline/unreachable - don't guess, stay silent
-        return
-    version_check.record(latest, branch)
-    if latest != installed:
-        err_console.print("[muted]Update available! Run: omm update[/muted]")
 
 
 _SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
@@ -1377,6 +1364,36 @@ def _maybe_run_onboarding(ctx: typer.Context) -> None:
     config_mod.update_config(onboarding_completed=True)
 
 
+def _spawn_bg_version_check() -> None:
+    """Detached `git ls-remote` child that survives the short-lived parent
+    command exiting; writes its result to the shared cache for a later
+    `omm` invocation to pick up. Never blocks the caller."""
+    args = [sys.executable, "-m", "omm.cli", "_bg-version-check"]
+    # `start_new_session` (setsid) is POSIX-only - CPython's Windows
+    # _execute_child ignores it entirely, so the child stays in the
+    # parent's process group and can be torn down with it (e.g. the
+    # console window closing) before the `git ls-remote` it runs
+    # finishes. DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP is the
+    # Windows equivalent of actually detaching it.
+    if platform.system() == "Windows":
+        kwargs = {
+            "creationflags": subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+        }
+    else:
+        kwargs = {"start_new_session": True}
+    try:
+        subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **kwargs,
+        )
+    except OSError:
+        pass
+
+
 def _maybe_start_update_check(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand in _SKIP_UPDATE_CHECK_SUBCOMMANDS:
         return
@@ -1384,42 +1401,32 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
     if not installed:  # editable/dev install - nothing to compare against
         return
     branch = _channel_branch()
-    fresh, latest = version_check.cached_remote_head_if_fresh(branch)
+    fresh, latest, checked_against = version_check.cached_remote_head_if_fresh(branch)
     if fresh:
         if latest and latest != installed:
-            opts = ctx.ensure_object(GlobalOptions)
+            if checked_against == installed:
+                # This entry was fetched live while `installed` was already
+                # the current commit, so the mismatch can't be an artifact
+                # of a commit landing after the check - safe to print from
+                # cache alone, no extra network round trip.
+                opts = ctx.ensure_object(GlobalOptions)
 
-            def print_notice_unless_suppressed() -> None:
-                if _update_notice_is_wanted(opts):
-                    _confirm_and_print_update_notice(latest, installed, branch)
+                def print_notice_unless_suppressed() -> None:
+                    if _update_notice_is_wanted(opts):
+                        err_console.print("[muted]Update available! Run: omm update[/muted]")
 
-            ctx.call_on_close(print_notice_unless_suppressed)
+                ctx.call_on_close(print_notice_unless_suppressed)
+            elif version_check.mark_reconfirming(branch):
+                # `installed` moved since this entry was written (e.g. a
+                # commit just landed in SRC_DIR) - the comparison might be
+                # stale, so reconfirm live in a detached background check
+                # rather than block this command on `git ls-remote` or risk
+                # printing a false "update available". If still warranted,
+                # the notice shows up on a later command once confirmed.
+                _spawn_bg_version_check()
         return
-    if version_check.should_start_check(branch) and version_check.mark_checking(branch) is not False:
-        args = [sys.executable, "-m", "omm.cli", "_bg-version-check"]
-        # `start_new_session` (setsid) is POSIX-only - CPython's Windows
-        # _execute_child ignores it entirely, so the child stays in the
-        # parent's process group and can be torn down with it (e.g. the
-        # console window closing) before the `git ls-remote` it runs
-        # finishes. DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP is the
-        # Windows equivalent of actually detaching it.
-        if platform.system() == "Windows":
-            kwargs = {
-                "creationflags": subprocess.DETACHED_PROCESS
-                | subprocess.CREATE_NEW_PROCESS_GROUP
-            }
-        else:
-            kwargs = {"start_new_session": True}
-        try:
-            subprocess.Popen(
-                args,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                **kwargs,
-            )
-        except OSError:
-            pass
+    if version_check.should_start_check(branch) and version_check.mark_checking(branch):
+        _spawn_bg_version_check()
 
 
 _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
@@ -2684,7 +2691,7 @@ def update() -> None:
     installed = _installed_commit()
     latest = _remote_head_commit(branch) if installed else None
     if latest:
-        version_check.record(latest, branch)
+        version_check.record(latest, branch, installed=installed)
     if migrated and editable_install and installed and latest and installed == latest:
         console.print(f"[muted]omm is already up to date - {_version_line(installed)}[/muted]")
         _refresh_data()
@@ -6461,7 +6468,7 @@ def configure_version(
         current = config_mod.update_config(update_channel=requested)
         latest = _remote_head_commit(branch)
         if latest:
-            version_check.record(latest, branch)
+            version_check.record(latest, branch, installed=_installed_commit())
         console.print(f"[success]Switched to the {requested} channel.[/success]")
         _refresh_data()
     channel = current.get("update_channel") or "stable"

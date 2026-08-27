@@ -97,15 +97,23 @@ def test_cached_remote_head_keeps_channels_separate(isolated_omm_home):
 
 
 def test_cached_remote_head_if_fresh_returns_false_on_cold_cache(isolated_omm_home):
-    assert version_check.cached_remote_head_if_fresh() == (False, None)
+    assert version_check.cached_remote_head_if_fresh() == (False, None, None)
 
 
 def test_cached_remote_head_if_fresh_returns_cached_value_within_ttl(isolated_omm_home):
     (isolated_omm_home / "update_check.json").write_text(
+        json.dumps({"main": {"checked_at": time.time(), "remote_head": "cached_sha", "installed": "local_sha"}})
+    )
+
+    assert version_check.cached_remote_head_if_fresh(ttl_seconds=1800) == (True, "cached_sha", "local_sha")
+
+
+def test_cached_remote_head_if_fresh_returns_none_installed_when_absent(isolated_omm_home):
+    (isolated_omm_home / "update_check.json").write_text(
         json.dumps({"main": {"checked_at": time.time(), "remote_head": "cached_sha"}})
     )
 
-    assert version_check.cached_remote_head_if_fresh(ttl_seconds=1800) == (True, "cached_sha")
+    assert version_check.cached_remote_head_if_fresh(ttl_seconds=1800) == (True, "cached_sha", None)
 
 
 def test_cached_remote_head_if_fresh_returns_false_after_ttl_expires(isolated_omm_home):
@@ -113,7 +121,7 @@ def test_cached_remote_head_if_fresh_returns_false_after_ttl_expires(isolated_om
         json.dumps({"main": {"checked_at": time.time() - 9999, "remote_head": "old_sha"}})
     )
 
-    assert version_check.cached_remote_head_if_fresh(ttl_seconds=1800) == (False, None)
+    assert version_check.cached_remote_head_if_fresh(ttl_seconds=1800) == (False, None, None)
 
 
 def test_cached_remote_head_if_fresh_ignores_other_channels_cache(isolated_omm_home):
@@ -121,7 +129,15 @@ def test_cached_remote_head_if_fresh_ignores_other_channels_cache(isolated_omm_h
         json.dumps({"beta": {"checked_at": time.time(), "remote_head": "beta_sha"}})
     )
 
-    assert version_check.cached_remote_head_if_fresh("main", ttl_seconds=1800) == (False, None)
+    assert version_check.cached_remote_head_if_fresh("main", ttl_seconds=1800) == (False, None, None)
+
+
+def test_cached_remote_head_records_installed_alongside_remote_head(isolated_omm_home):
+    version_check.cached_remote_head(lambda ref: "fresh_sha", ref="main", installed="local_sha")
+
+    cache = json.loads((isolated_omm_home / "update_check.json").read_text())
+    assert cache["main"]["remote_head"] == "fresh_sha"
+    assert cache["main"]["installed"] == "local_sha"
 
 
 def test_should_start_check_true_on_cold_cache(isolated_omm_home):
@@ -193,3 +209,38 @@ def test_record_keeps_other_channels_untouched(isolated_omm_home):
     cache = json.loads((isolated_omm_home / "update_check.json").read_text())
     assert cache["main"]["remote_head"] == "main_sha"
     assert cache["beta"]["remote_head"] == "beta_sha"
+
+
+def test_record_stores_installed(isolated_omm_home):
+    version_check.record("main_sha", "main", installed="local_sha")
+
+    cache = json.loads((isolated_omm_home / "update_check.json").read_text())
+    assert cache["main"]["installed"] == "local_sha"
+
+
+def test_mark_reconfirming_true_on_cold_cache(isolated_omm_home):
+    assert version_check.mark_reconfirming() is True
+
+
+def test_mark_reconfirming_true_even_when_cache_is_fresh(isolated_omm_home):
+    """Unlike `mark_checking`, a reconfirm is warranted precisely because the
+    live-read `installed` moved since a still-fresh cache entry was written -
+    it must not be blocked by the entry's own TTL freshness."""
+    (isolated_omm_home / "update_check.json").write_text(
+        json.dumps({"main": {"checked_at": time.time(), "remote_head": "cached_sha", "installed": "older_sha"}})
+    )
+
+    assert version_check.mark_reconfirming() is True
+
+
+def test_mark_reconfirming_allows_only_one_fresh_claim(isolated_omm_home):
+    assert version_check.mark_reconfirming() is True
+    assert version_check.mark_reconfirming() is False
+
+
+def test_mark_reconfirming_shares_in_flight_marker_with_mark_checking(isolated_omm_home):
+    """Both spawn paths write the same `checking_since` field, so a stale-
+    cache check already in flight also blocks a reconfirm spawn for the same
+    ref, and vice versa - only one detached `git ls-remote` child at a time."""
+    assert version_check.mark_checking() is True
+    assert version_check.mark_reconfirming() is False

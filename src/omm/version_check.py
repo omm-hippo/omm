@@ -74,11 +74,16 @@ def cached_remote_head(
     fetch: Callable[[str], str | None],
     ref: str = "main",
     ttl_seconds: int = _TTL_SECONDS,
+    installed: str | None = None,
 ) -> str | None:
     """`fetch` is injected (cli._remote_head_commit) so the actual
     `git ls-remote` call stays single-sourced in cli.py. A `None` result
     (offline/unreachable) is cached too, same TTL, so an offline run
     doesn't retry the network call on every command.
+
+    `installed` records which local commit was current at fetch time, so a
+    later reader can tell whether this entry still covers the commit it's
+    being compared against (see `cached_remote_head_if_fresh`).
 
     Cached per `ref` (branch), so switching update channel (stable/beta)
     never serves a stale reading recorded for the other branch."""
@@ -96,7 +101,7 @@ def cached_remote_head(
     try:
         with locked(_cache_path()):
             cache = _load()
-            cache[ref] = {"checked_at": time.time(), "remote_head": latest}
+            cache[ref] = {"checked_at": time.time(), "remote_head": latest, "installed": installed}
             _save(cache)
     except (OSError, TimeoutError):
         pass
@@ -105,17 +110,24 @@ def cached_remote_head(
 
 def cached_remote_head_if_fresh(
     ref: str = "main", ttl_seconds: int = _TTL_SECONDS
-) -> tuple[bool, str | None]:
-    """Non-blocking read: never fetches. Returns `(True, remote_head)` if a
-    prior check (this run or a detached child from an earlier one) is still
-    within TTL, else `(False, None)` meaning the caller should decide
-    whether to kick off a fresh check itself."""
+) -> tuple[bool, str | None, str | None]:
+    """Non-blocking read: never fetches. Returns `(True, remote_head,
+    installed_at_check)` if a prior check (this run or a detached child from
+    an earlier one) is still within TTL, else `(False, None, None)` meaning
+    the caller should decide whether to kick off a fresh check itself.
+
+    `installed_at_check` is whichever local commit was current when this
+    entry was fetched - a caller comparing against a mismatch should treat
+    it as confirmed only if that still matches the current installed
+    commit; a live-read `installed` can move (a commit lands in SRC_DIR)
+    without the cache knowing, and comparing a mismatch against the wrong
+    `installed` is exactly the stale false-positive this field prevents."""
     cache = _load()
     entry = _ref_entry(cache, ref)
     checked_at = entry.get("checked_at")
     if _fresh(checked_at, ttl_seconds):
-        return True, _remote_head(entry.get("remote_head"))
-    return False, None
+        return True, _remote_head(entry.get("remote_head")), _remote_head(entry.get("installed"))
+    return False, None, None
 
 
 def should_start_check(ref: str = "main", ttl_seconds: int = _TTL_SECONDS) -> bool:
@@ -160,17 +172,45 @@ def mark_checking(
     return True
 
 
-def record(remote_head: str | None, ref: str = "main") -> None:
+def record(remote_head: str | None, ref: str = "main", installed: str | None = None) -> None:
     """Overwrite the cache with a freshly-known remote head (e.g. right
     after `omm update` fetches it live), so the next background check
-    doesn't serve a pre-update reading for up to `_TTL_SECONDS`."""
+    doesn't serve a pre-update reading for up to `_TTL_SECONDS`. `installed`
+    is the local commit this fetch was compared against, if any - see
+    `cached_remote_head_if_fresh`."""
     try:
         with locked(_cache_path()):
             cache = _load()
             cache[ref] = {
                 "checked_at": time.time(),
                 "remote_head": _remote_head(remote_head),
+                "installed": installed,
             }
             _save(cache)
     except (OSError, TimeoutError):
         pass
+
+
+def mark_reconfirming(ref: str = "main") -> bool:
+    """Atomically claim the right to spawn a detached recheck that
+    re-verifies a cached mismatch against the *current* installed commit.
+
+    Unlike `mark_checking`, this ignores the cache's own TTL freshness: a
+    reconfirm is needed because `installed` (read live on every command)
+    moved since the cached entry was written, which can happen well within
+    the normal 30-minute TTL. It still shares the same `checking_since`
+    in-flight marker as `mark_checking` so the two spawn paths can't race
+    each other into spawning two detached checkers for the same ref."""
+    try:
+        with locked(_cache_path()):
+            cache = _load()
+            entry = _ref_entry(cache, ref)
+            if _fresh(entry.get("checking_since"), _CHECK_IN_FLIGHT_TTL_SECONDS):
+                return False
+            entry["checking_since"] = time.time()
+            cache[ref] = entry
+            if not _save(cache):
+                return False
+    except (OSError, TimeoutError):
+        return False
+    return True
