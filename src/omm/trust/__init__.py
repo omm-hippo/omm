@@ -260,6 +260,24 @@ def _is_ancestor(repo_dir: Path, ancestor: str, descendant: str) -> bool | None:
     return None
 
 
+def _merge_base(repo_dir: Path, a: str, b: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "merge-base", a, b],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
 def verify_update(
     repo_dir: Path,
     current_commit: str | None,
@@ -270,10 +288,15 @@ def verify_update(
 
     An exact target signature authenticates its tree directly, except that an
     already-installed descendant cannot be rolled back to an older signed
-    ancestor. Otherwise, every commit on the first-parent path from the
-    installed commit is verified. Unsigned two-parent merges are accepted
-    only when their second parent is trusted and ``git merge-tree`` reproduces
-    the exact target tree.
+    ancestor. Otherwise, every commit on the first-parent path from a trusted
+    base commit is verified. That base is the installed commit itself when it
+    is an ancestor of the target (the common case: `omm update` moving
+    forward on one branch); when the target sits on a sibling branch instead
+    (e.g. switching update channels between branches that have diverged),
+    the base is their merge-base, since that commit was already part of the
+    installed commit's verified history. Unsigned two-parent merges are
+    accepted only when their second parent is trusted and ``git merge-tree``
+    reproduces the exact target tree.
     """
     ok, direct_message = verify_commit(repo_dir, target_commit, allowed_signers)
     if current_commit and target_commit != current_commit:
@@ -286,14 +309,18 @@ def verify_update(
         return ok, direct_message
     if not current_commit:
         return False, direct_message
-    if _is_ancestor(repo_dir, current_commit, target_commit) is not True:
-        return False, direct_message
+    if _is_ancestor(repo_dir, current_commit, target_commit) is True:
+        base = current_commit
+    else:
+        base = _merge_base(repo_dir, current_commit, target_commit)
+        if base is None:
+            return False, "current and target commits share no common history"
 
     try:
         lineage = subprocess.run(
             [
                 "git", "-C", str(repo_dir), "rev-list", "--first-parent",
-                "--reverse", f"{current_commit}..{target_commit}",
+                "--reverse", f"{base}..{target_commit}",
             ],
             capture_output=True,
             text=True,
@@ -318,7 +345,7 @@ def verify_update(
         evolving_anchor = Path(tmp) / "allowed_signers"
         evolving_anchor.write_bytes(original_anchor)
 
-        previous = current_commit
+        previous = base
         transitions = 0
         for candidate in candidates:
             verified, message = _verify_lineage_commit(
