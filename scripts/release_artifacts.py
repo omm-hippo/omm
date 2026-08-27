@@ -27,6 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
 CHECKSUMS_FILENAME = "SHA256SUMS"
 SUBPROCESS_TIMEOUT_SECONDS = 300
+MAX_ARCHIVE_MEMBERS = 10_000
+MAX_UNPACKED_ARCHIVE_BYTES = 512 * 1024 * 1024
+MAX_METADATA_BYTES = 4 * 1024 * 1024
 
 
 class ReleaseValidationError(RuntimeError):
@@ -75,6 +78,7 @@ def _safe_archive_path(name: str) -> PurePosixPath:
         path.is_absolute()
         or "\\" in name
         or not path.parts
+        or name != path.as_posix()
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
         raise ReleaseValidationError(f"archive contains unsafe path {name!r}")
@@ -85,10 +89,24 @@ def _wheel_identity(wheel: Path) -> tuple[str, str]:
     try:
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            if len(names) != len(set(names)):
-                raise ReleaseValidationError(f"{wheel.name} contains duplicate paths")
+            if len(names) > MAX_ARCHIVE_MEMBERS:
+                raise ReleaseValidationError(
+                    f"{wheel.name} contains too many archive members"
+                )
+            unpacked_size = 0
+            normalized_names: set[str] = set()
             for info in archive.infolist():
-                _safe_archive_path(info.filename.rstrip("/"))
+                normalized = _safe_archive_path(info.filename.rstrip("/")).as_posix()
+                if normalized in normalized_names:
+                    raise ReleaseValidationError(
+                        f"{wheel.name} contains duplicate path {normalized!r}"
+                    )
+                normalized_names.add(normalized)
+                unpacked_size += info.file_size
+                if unpacked_size > MAX_UNPACKED_ARCHIVE_BYTES:
+                    raise ReleaseValidationError(
+                        f"{wheel.name} exceeds the unpacked size limit"
+                    )
                 mode = info.external_attr >> 16
                 file_type = stat.S_IFMT(mode)
                 if (
@@ -108,6 +126,10 @@ def _wheel_identity(wheel: Path) -> tuple[str, str]:
                 raise ReleaseValidationError(
                     f"{wheel.name} must contain exactly one .dist-info/METADATA file"
                 )
+            if archive.getinfo(metadata_files[0]).file_size > MAX_METADATA_BYTES:
+                raise ReleaseValidationError(
+                    f"{wheel.name} metadata exceeds the size limit"
+                )
             return _metadata_identity(archive.read(metadata_files[0]), wheel)
     except zipfile.BadZipFile as error:
         raise ReleaseValidationError(f"cannot read wheel {wheel.name}: {error}") from error
@@ -117,14 +139,32 @@ def _sdist_identity(sdist: Path) -> tuple[str, str]:
     try:
         with tarfile.open(sdist, "r:gz") as archive:
             members = archive.getmembers()
+            if len(members) > MAX_ARCHIVE_MEMBERS:
+                raise ReleaseValidationError(
+                    f"{sdist.name} contains too many archive members"
+                )
             roots: set[str] = set()
+            normalized_names: set[str] = set()
+            unpacked_size = 0
             for member in members:
                 path = _safe_archive_path(member.name.rstrip("/"))
+                normalized = path.as_posix()
+                if normalized in normalized_names:
+                    raise ReleaseValidationError(
+                        f"{sdist.name} contains duplicate path {normalized!r}"
+                    )
+                normalized_names.add(normalized)
                 roots.add(path.parts[0])
                 if not (member.isfile() or member.isdir()):
                     raise ReleaseValidationError(
                         f"{sdist.name} contains an unsafe member {member.name!r}"
                     )
+                if member.isfile():
+                    unpacked_size += member.size
+                    if unpacked_size > MAX_UNPACKED_ARCHIVE_BYTES:
+                        raise ReleaseValidationError(
+                            f"{sdist.name} exceeds the unpacked size limit"
+                        )
             if len(roots) != 1:
                 raise ReleaseValidationError(
                     f"{sdist.name} must contain exactly one top-level directory"
@@ -139,6 +179,10 @@ def _sdist_identity(sdist: Path) -> tuple[str, str]:
             if len(metadata_files) != 1:
                 raise ReleaseValidationError(
                     f"{sdist.name} must contain exactly one top-level PKG-INFO file"
+                )
+            if metadata_files[0].size > MAX_METADATA_BYTES:
+                raise ReleaseValidationError(
+                    f"{sdist.name} metadata exceeds the size limit"
                 )
             stream = archive.extractfile(metadata_files[0])
             if stream is None:

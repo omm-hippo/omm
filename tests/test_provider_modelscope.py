@@ -46,13 +46,13 @@ _FILES_PAYLOAD = {
                 "Name": "model-q4_k_m.gguf",
                 "Path": "model-q4_k_m.gguf",
                 "Size": 491400032,
-                "Sha256": "abc123",
+                "Sha256": "a" * 64,
             },
             {
                 "Name": "model-q8_0.gguf",
                 "Path": "model-q8_0.gguf",
                 "Size": 900000000,
-                "Sha256": "def456",
+                "Sha256": "D" * 64,
             },
         ]
     },
@@ -107,7 +107,23 @@ def test_remote_file_sha256_finds_matching_file(monkeypatch):
     monkeypatch.setattr(
         requests, "get", lambda *a, **k: _FakeResponse(200, _FILES_PAYLOAD)
     )
-    assert modelscope.remote_file_sha256("org/repo", "model-q8_0.gguf") == "def456"
+    assert modelscope.remote_file_sha256("org/repo", "model-q8_0.gguf") == "d" * 64
+
+
+def test_remote_file_sha256_rejects_malformed_provider_digest(monkeypatch):
+    payload = {"Data": {"Files": [{"Path": "model.gguf", "Sha256": "not-a-digest"}]}}
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(200, payload))
+
+    assert modelscope.remote_file_sha256("org/repo", "model.gguf") is None
+
+
+def test_remote_file_sha256_accepts_prefixed_digest(monkeypatch):
+    payload = {
+        "Data": {"Files": [{"Path": "model.gguf", "Sha256": f"sha256:{'B' * 64}"}]}
+    }
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(200, payload))
+
+    assert modelscope.remote_file_sha256("org/repo", "model.gguf") == "b" * 64
 
 
 def test_remote_file_sha256_returns_none_on_404(monkeypatch):

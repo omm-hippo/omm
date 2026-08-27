@@ -156,6 +156,20 @@ def test_refetch_returns_none_when_no_change_reported(monkeypatch):
     assert result is None
 
 
+def test_refetch_that_changes_only_metadata_runs_once_per_selection(monkeypatch):
+    monkeypatch.setattr(contribute.predictor, "rank_candidates", lambda artifact, hw: [])
+    queue = contribute.ContributionQueue({"revision": 1}, _hw(), history_refs=set())
+    calls = 0
+
+    def refetch():
+        nonlocal calls
+        calls += 1
+        return {"revision": calls + 1}, True
+
+    assert queue.next_candidate(refetch=refetch) is None
+    assert calls == 1
+
+
 def test_mark_seen_reranks_remaining_queue_from_current_rank_candidates(monkeypatch):
     a, b, c = _candidate("o", "a.gguf"), _candidate("o", "b.gguf"), _candidate("o", "c.gguf")
     call_state = {"recalibrated": False}

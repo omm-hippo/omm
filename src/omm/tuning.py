@@ -7,6 +7,7 @@ Localfit can verify: model size, usable RAM/VRAM, unified memory, and CPU count.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, replace
 from typing import Mapping
@@ -72,6 +73,7 @@ def candidate_model_size_gb(candidate: dict) -> float | None:
     if (
         isinstance(size_bytes, (int, float))
         and not isinstance(size_bytes, bool)
+        and math.isfinite(size_bytes)
         and size_bytes > 0
     ):
         return float(size_bytes) / (1024**3)

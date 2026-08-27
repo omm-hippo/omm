@@ -105,3 +105,36 @@ def test_catalog_rollback_skips_corrupt_newest_snapshot(tmp_path):
 
     assert selected == valid
     assert artifact.read_text() == '{"version":1}'
+
+
+def test_catalog_rollback_skips_valid_json_with_wrong_content_hash(tmp_path):
+    artifact = tmp_path / "recommend.json"
+    history = tmp_path / "history"
+    artifact.write_text('{"version":1}')
+    valid = catalog.archive_current_artifact(artifact, history)
+    assert valid is not None
+    artifact.write_text('{"version":2}')
+
+    mismatched = history / f"{'f' * 64}.json"
+    mismatched.write_text('{"version":999}')
+    os.utime(mismatched, (valid.stat().st_mtime + 10, valid.stat().st_mtime + 10))
+
+    selected = catalog.rollback(artifact_path=artifact, history_dir=history)
+
+    assert selected == valid
+    assert artifact.read_text() == '{"version":1}'
+
+
+def test_archive_repairs_corrupt_existing_content_addressed_snapshot(tmp_path):
+    artifact = tmp_path / "recommend.json"
+    history = tmp_path / "history"
+    content = b'{"version":1}'
+    artifact.write_bytes(content)
+    expected = history / f"{hashlib.sha256(content).hexdigest()}.json"
+    history.mkdir()
+    expected.write_text('{"corrupt":true}')
+
+    archived = catalog.archive_current_artifact(artifact, history)
+
+    assert archived == expected
+    assert archived.read_bytes() == content

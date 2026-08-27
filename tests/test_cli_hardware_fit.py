@@ -225,3 +225,5 @@ def test_install_skip_unfit_flag_bypasses_prompt_without_a_tty(isolated_omm_home
 
     assert result.exit_code == 0, result.stdout
     assert download_calls == []
+    assert "Skipped" in result.stdout
+    assert "Installed" not in result.stdout

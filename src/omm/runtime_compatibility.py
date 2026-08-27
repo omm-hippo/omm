@@ -72,9 +72,13 @@ def verify_runtime(
         failure_reason = error.reason
     finally:
         if receipt is not None and receipt.loaded_by_omm and not keep_loaded:
-            unload = adapter.unload(receipt)
-            if not unload.unloaded:
+            try:
+                unload = adapter.unload(receipt)
+            except RuntimeAdapterError:
                 failure_reason = "unload_failed"
+            else:
+                if not unload.unloaded:
+                    failure_reason = "unload_failed"
 
     return CompatibilityResult(
         adapter.key,

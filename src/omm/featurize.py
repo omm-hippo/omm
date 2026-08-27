@@ -59,6 +59,10 @@ _TIER_WORDS = {
     "x3d": 1.0,
     "super": 0.5,
 }
+_TIER_PATTERNS = {
+    word: re.compile(rf"(?<![A-Za-z]){re.escape(word)}(?![A-Za-z])", re.IGNORECASE)
+    for word in _TIER_WORDS
+}
 
 _CHIP_MODEL_RE = re.compile(
     r"\bM(\d+)\b|\b(?:i[3579]-?|Ryzen\s*\d\s*|RTX\s?|GTX\s?)(\d{3,5})",
@@ -265,8 +269,13 @@ def parse_chip_score(text: str) -> tuple[float, float]:
     Returns (0.0, 0.0) for unrecognized or empty input."""
     m = _CHIP_MODEL_RE.search(text)
     score = float(m.group(1) or m.group(2)) if m else 0.0
-    lowered = text.lower()
-    tier = max((v for w, v in _TIER_WORDS.items() if w in lowered), default=0.0)
+    # Substring matching classified ordinary words such as "Processor" as
+    # Apple's/NVIDIA's "Pro" tier and "Titan" as "Ti". Boundaries are based
+    # on letters (not ``\b``) so compact names such as 7800X3D still match.
+    tier = max(
+        (value for word, value in _TIER_WORDS.items() if _TIER_PATTERNS[word].search(text)),
+        default=0.0,
+    )
     return score, tier
 
 

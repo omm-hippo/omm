@@ -516,6 +516,39 @@ def test_available_sampling_uses_median_and_observed_volatility():
     assert sample.reserve_gb == pytest.approx(0.5)
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"sample_count": 1.5}, "sample_count"),
+        ({"sample_count": True}, "sample_count"),
+        ({"interval_seconds": True}, "interval_seconds"),
+        ({"total_ram_gb": float("nan")}, "total_ram_gb"),
+    ],
+)
+def test_available_sampling_rejects_non_numeric_or_non_finite_controls(kwargs, message):
+    options = {"total_ram_gb": 16.0, "interval_seconds": 0, **kwargs}
+    with pytest.raises(ValueError, match=message):
+        contribute_memory.sample_available_memory(lambda: 8.0, **options)
+
+
+def test_candidate_memory_rejects_non_finite_size_and_boolean_profile_values():
+    assert contribute_memory.estimate_candidate_memory(
+        {"size_bytes": float("inf")},
+        _hardware(),
+        context_length=1024,
+        num_batch=128,
+        gpu_offload_percent=0,
+    ) is None
+    with pytest.raises(ValueError, match="num_batch"):
+        contribute_memory.estimate_candidate_memory(
+            {"size_bytes": 1024},
+            _hardware(),
+            context_length=1024,
+            num_batch=True,
+            gpu_offload_percent=0,
+        )
+
+
 def test_speed_mad_ratio_is_robust_to_one_outlier():
     assert contribute_memory.speed_mad_ratio([100.0, 101.0, 160.0]) == pytest.approx(
         1 / 101

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,32 @@ def test_platform_verifier_rejects_unexpected_files(tmp_path):
 
     with pytest.raises(npm_package.NpmPackageError, match="outside its allowlist"):
         npm_package.validate_platform_package(staged, "linux-x64-gnu")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation is not portable on Windows")
+@pytest.mark.parametrize("relative", ["LICENSE", "package.json"])
+def test_package_verifiers_reject_symlinked_metadata(tmp_path, relative):
+    binary = tmp_path / "omm"
+    binary.write_bytes(bytes.fromhex("7f454c46") + b" OMM")
+    staged = npm_package.stage_platform_package(
+        "linux-x64-gnu", binary, tmp_path / "out"
+    )
+    metadata = staged / relative
+    replacement = tmp_path / f"replacement-{relative}"
+    replacement.write_bytes(metadata.read_bytes())
+    metadata.unlink()
+    metadata.symlink_to(replacement)
+
+    with pytest.raises(npm_package.NpmPackageError, match="regular file"):
+        npm_package.validate_platform_package(staged, "linux-x64-gnu")
+
+    launcher = tmp_path / "launcher"
+    shutil.copytree(npm_package.LAUNCHER_SOURCE, launcher)
+    launcher_metadata = launcher / relative
+    launcher_metadata.unlink()
+    launcher_metadata.symlink_to(replacement)
+    with pytest.raises(npm_package.NpmPackageError, match="regular launcher file"):
+        npm_package.validate_launcher_source(launcher)
 
 
 def test_targets_reject_binary_paths_outside_the_package(tmp_path):

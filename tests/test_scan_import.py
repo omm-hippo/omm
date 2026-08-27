@@ -142,6 +142,15 @@ def test_scan_lmstudio_skips_symlinks(tmp_path, monkeypatch):
     assert found[0].display_name == "model.gguf"
 
 
+def test_flat_scan_accepts_case_insensitive_gguf_suffix(tmp_path):
+    model = tmp_path / "MODEL.GGUF"
+    model.write_bytes(b"gguf-bytes")
+
+    found = scan_import.scan_directory(tmp_path)
+
+    assert [item.path for item in found] == [model]
+
+
 def test_scan_anythingllm_reuses_ollama_format_at_its_own_dir(tmp_path, monkeypatch):
     models_dir = tmp_path / "anythingllm-ollama"
     blobs_dir = models_dir / "blobs"
@@ -455,6 +464,40 @@ def test_adopt_group_reuses_existing_hub_copy_for_same_hash(isolated_omm_home, t
     entry = registry.load_registry()["existing.gguf"]
     assert entry["linked"] == _all_linked(lmstudio=True, ollama=True)  # merged, lmstudio flag preserved
     assert entry["ollama_runtime_name"] == "existing:latest"
+
+
+def test_adopt_group_does_not_claim_bytes_saved_for_copy_fallback(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    import shutil
+
+    payload = b"copy fallback keeps duplicate bytes"
+    hub_file = scan_import.MODELS_DIR / "existing.gguf"
+    hub_file.write_bytes(payload)
+    digest = scan_import.sha256_file(hub_file)
+    registry.upsert_entry("existing.gguf", sha256=digest, linked={})
+    external = tmp_path / "external.gguf"
+    external.write_bytes(payload)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "lmstudio", "external.gguf", external, len(payload), digest
+            )
+        ],
+    )
+
+    def copy_fallback(source, destination):
+        shutil.copy2(source, destination)
+        return "copy"
+
+    monkeypatch.setattr(scan_import.linker, "link_file", copy_fallback)
+    monkeypatch.setattr(scan_import.linker, "is_engine_installed", lambda _key: False)
+
+    result = scan_import.adopt_group(group)
+
+    assert result.bytes_saved == 0
+    assert external.read_bytes() == payload
 
 
 def test_adopt_group_preserves_duplicate_changed_after_scan(isolated_omm_home, tmp_path):

@@ -94,6 +94,10 @@ def test_remote_prefix_stops_when_server_ignores_range(monkeypatch):
     assert response.yielded == 1
 
 
+def test_remote_prefix_cache_has_a_bounded_memory_footprint():
+    assert hub._remote_gguf_prefix_cached.cache_info().maxsize == 4
+
+
 def test_resolve_model_bare_repo_with_filename_makes_zero_network_calls(monkeypatch):
     """org/repo:filename with no provider prefix is the most common install
     form and was zero-network-call in the pre-multi-provider hub.py: the

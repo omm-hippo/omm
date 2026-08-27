@@ -19,10 +19,19 @@ from omm.engines import (
 class _FakeAdapter:
     key = "ollama"
 
-    def __init__(self, *, preloaded=False, generate_reason=None, unloads=True, reachable=True):
+    def __init__(
+        self,
+        *,
+        preloaded=False,
+        generate_reason=None,
+        unloads=True,
+        unload_reason=None,
+        reachable=True,
+    ):
         self.preloaded = preloaded
         self.generate_reason = generate_reason
         self.unloads = unloads
+        self.unload_reason = unload_reason
         self.reachable = reachable
         self.calls = []
 
@@ -50,6 +59,8 @@ class _FakeAdapter:
 
     def unload(self, receipt):
         self.calls.append("unload")
+        if self.unload_reason:
+            raise RuntimeAdapterError(self.unload_reason, "cleanup failed")
         return UnloadResult(self.unloads, None if self.unloads else "unload_failed")
 
 
@@ -105,6 +116,13 @@ def test_keep_loaded_skips_cleanup_only_for_omm_load():
 
 def test_unload_failure_overrides_probe_success():
     result = _verify(_FakeAdapter(unloads=False))
+
+    assert result.status == "failed"
+    assert result.failure_reason == "unload_failed"
+
+
+def test_unload_exception_is_reported_instead_of_escaping():
+    result = _verify(_FakeAdapter(unload_reason="unload_failed"))
 
     assert result.status == "failed"
     assert result.failure_reason == "unload_failed"

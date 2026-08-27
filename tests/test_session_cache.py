@@ -180,3 +180,17 @@ def test_concurrent_session_updates_do_not_lose_seen_refs(
         thread.join()
 
     assert set(session_cache.load_seen()) == {f"model-{i}" for i in range(20)}
+
+
+def test_lock_timeout_is_a_silent_best_effort_noop(isolated_omm_home, monkeypatch):
+    _fake_tty(monkeypatch)
+
+    def timed_out(*args, **kwargs):
+        raise session_cache.FileLockTimeout("busy")
+
+    monkeypatch.setattr(session_cache, "locked", timed_out)
+
+    session_cache.record_seen(["a"])
+    session_cache.record_results(["b"])
+
+    assert session_cache.load_seen() == []

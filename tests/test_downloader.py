@@ -1268,3 +1268,20 @@ def test_download_file_retry_warning_still_prints_when_quiet(tmp_path, monkeypat
 
     assert len(printed) == 1
     assert "재시도" in printed[0]
+
+
+def test_download_file_refuses_a_concurrent_writer(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    dest = tmp_path / "model.gguf"
+    monkeypatch.setattr(
+        downloader,
+        "_attempt_download",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not touch a shared partial download")
+        ),
+    )
+
+    with downloader.locked(downloader._download_lock_path(dest)):
+        with pytest.raises(downloader.DownloadError, match="already writing"):
+            downloader.download_file("https://example.com/model.gguf", dest)

@@ -364,6 +364,18 @@ def _same_ollama_id(left: str, right: str) -> bool:
     )
 
 
+def _runtime_bytes_to_gb(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        converted = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(converted) or converted < 0:
+        return None
+    return converted / (1024**3)
+
+
 class OllamaManagedRuntime:
     """Ollama bridge that uses only its API and OMM's ownership registry."""
 
@@ -388,16 +400,8 @@ class OllamaManagedRuntime:
                 continue
             size_bytes = row.get("size")
             vram_bytes = row.get("size_vram")
-            size_gb = (
-                float(size_bytes) / (1024**3)
-                if isinstance(size_bytes, (int, float)) and not isinstance(size_bytes, bool)
-                else 0.0
-            )
-            vram_gb = (
-                float(vram_bytes) / (1024**3)
-                if isinstance(vram_bytes, (int, float)) and not isinstance(vram_bytes, bool)
-                else None
-            )
+            size_gb = _runtime_bytes_to_gb(size_bytes) or 0.0
+            vram_gb = _runtime_bytes_to_gb(vram_bytes)
             owned = any(_same_ollama_id(model_id, managed) for managed in self._managed)
             residents.append(
                 ResidentModel(
@@ -448,13 +452,7 @@ def _lmstudio_registry_refs(
             value for value in (repo_id, filename, stem) if isinstance(value, str) and value
         )
         size_bytes = raw_entry.get("size_bytes")
-        size_gb = (
-            float(size_bytes) / (1024**3)
-            if isinstance(size_bytes, (int, float))
-            and not isinstance(size_bytes, bool)
-            and size_bytes > 0
-            else 0.0
-        )
+        size_gb = _runtime_bytes_to_gb(size_bytes) or 0.0
         refs[filename] = (RuntimeModelRef(key, aliases), size_gb)
     return refs
 

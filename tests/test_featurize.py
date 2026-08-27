@@ -38,6 +38,13 @@ def test_parse_chip_score_handles_gpu_names_the_same_way_as_cpu_names():
     assert parse_chip_score("") == (0.0, 0.0)
 
 
+def test_parse_chip_score_does_not_infer_tiers_from_substrings():
+    assert parse_chip_score("Intel Core i7-13700H Processor") == (13700.0, 0.0)
+    assert parse_chip_score("NVIDIA TITAN RTX") == (0.0, 0.0)
+    assert parse_chip_score("NVIDIA GeForce GTX 980 Maxwell") == (980.0, 0.0)
+    assert parse_chip_score("AMD Ryzen 7 7800X3D") == (7800.0, 1.0)
+
+
 def _gguf_named_1b():
     return {
         "name": "Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_Q4_k_m.gguf",
