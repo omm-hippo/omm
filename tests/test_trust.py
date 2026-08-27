@@ -356,6 +356,26 @@ def test_verify_update_rejects_unrelated_history(repo, signing_key, allowed_sign
     assert "no common history" in message
 
 
+def test_verify_update_channel_switch_accepts_ancestor_target(
+    repo, signing_key, allowed_signers
+):
+    """`omm setting version` switching to a channel whose tip is an ancestor
+    of the installed commit (e.g. beta -> stable, once beta has merged
+    everything main has) is a deliberate downgrade the user asked for, not an
+    attacker forcing a silent rollback - `same_branch=False` must accept it."""
+    older = _commit(repo, "older signed release", signing_key=signing_key)
+    (repo / "file.txt").write_text("newer work\n")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    installed = _commit(repo, "newer signed release", signing_key=signing_key)
+
+    ok, message = trust.verify_update(
+        repo, installed, older, allowed_signers, same_branch=False
+    )
+
+    assert ok, message
+    assert older[:7] in message
+
+
 def test_current_trust_anchor_points_at_bundled_file():
     anchor = trust.current_trust_anchor()
 

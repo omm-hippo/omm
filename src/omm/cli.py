@@ -2443,7 +2443,7 @@ def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProce
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="git command timed out")
 
 
-def _git_update_src(branch: str = "main") -> subprocess.CompletedProcess:
+def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subprocess.CompletedProcess:
     """Fast path for an already-migrated install: fetch + fast-forward the
     persistent clone in place. The editable install's .pth points straight
     at SRC_DIR/src, so this alone is enough to pick up code changes - no
@@ -2487,7 +2487,8 @@ def _git_update_src(branch: str = "main") -> subprocess.CompletedProcess:
     target_commit = rev_parse.stdout.strip()
 
     ok, message = trust.verify_update(
-        SRC_DIR, current_commit, target_commit, trust.current_trust_anchor()
+        SRC_DIR, current_commit, target_commit, trust.current_trust_anchor(),
+        same_branch=same_branch,
     )
     if not ok:
         return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
@@ -2497,11 +2498,16 @@ def _git_update_src(branch: str = "main") -> subprocess.CompletedProcess:
     )
 
 
-def _perform_update(branch: str) -> subprocess.CompletedProcess:
+def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.CompletedProcess:
     """Shared by `omm update` and `omm setting version` (channel switch):
     migrate-or-pull SRC_DIR onto `branch`, reinstalling via pipx only if
     dependencies changed or the editable environment still carries OMM's
-    validated legacy distribution name."""
+    validated legacy distribution name.
+
+    `same_branch` must be False for an explicit channel switch - see
+    `trust.verify_update`'s docstring for why a deliberate switch may accept
+    a target that is an ancestor of the installed commit, while `omm update`
+    on the currently tracked branch never should."""
     source = package_metadata.install_source()
     if source is not package_metadata.InstallSource.GIT:
         return subprocess.CompletedProcess(
@@ -2535,7 +2541,7 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
                 else result
             )
         console.print(f"Updating omm from {REPO_URL} ({branch}) ...")
-        result = _git_update_src(branch)
+        result = _git_update_src(branch, same_branch=same_branch)
         if result.returncode == 0:
             dependencies_satisfied = _deps_satisfied()
             if legacy_distribution or not dependencies_satisfied or not editable_install:
@@ -6461,7 +6467,7 @@ def configure_version(
         return
     if requested and requested != (current.get("update_channel") or "stable"):
         branch = _channel_branch(requested)
-        result = _perform_update(branch)
+        result = _perform_update(branch, same_branch=False)
         if result.returncode != 0:
             err_console.print(f"[error]Channel switch failed:[/error]\n{result.stderr}")
             raise typer.Exit(1)

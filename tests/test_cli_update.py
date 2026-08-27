@@ -199,7 +199,7 @@ def test_partial_migration_forces_pipx_even_when_source_and_deps_are_current(mon
     monkeypatch.setattr(
         cli,
         "_git_update_src",
-        lambda branch: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        lambda branch, **kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     )
     monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
     pipx_calls = []
@@ -1438,7 +1438,7 @@ def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli.trust,
         "verify_update",
-        lambda repo_dir, current, target, anchor: verify_calls.append(
+        lambda repo_dir, current, target, anchor, **kwargs: verify_calls.append(
             (repo_dir, current, target, anchor)
         ) or (True, "ok"),
     )

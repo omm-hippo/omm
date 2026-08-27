@@ -108,7 +108,7 @@ def test_setting_version_switch_to_beta_runs_perform_update_and_saves_config(iso
     monkeypatch.setattr(
         cli,
         "_perform_update",
-        lambda branch: calls.append(branch) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        lambda branch, **kwargs: calls.append(branch) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     )
     monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "beta_sha")
     monkeypatch.setattr(cli, "_refresh_data", lambda: None)
@@ -187,7 +187,7 @@ def test_setting_version_switch_failure_does_not_persist_channel(isolated_omm_ho
     monkeypatch.setattr(
         cli,
         "_perform_update",
-        lambda branch: subprocess.CompletedProcess([], 1, stdout="", stderr="offline"),
+        lambda branch, **kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr="offline"),
     )
 
     result = runner.invoke(cli.app, ["setting", "version", "--beta"])
@@ -367,7 +367,7 @@ def test_setting_bare_menu_version_submenu_switches_channel(isolated_omm_home, m
     monkeypatch.setattr(questionary, "select", fake_select)
     monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
     monkeypatch.setattr(
-        cli, "_perform_update", lambda branch: subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        cli, "_perform_update", lambda branch, **kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr="")
     )
     monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "beta_sha")
     monkeypatch.setattr(cli, "_refresh_data", lambda: None)

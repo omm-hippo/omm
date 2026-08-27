@@ -283,20 +283,32 @@ def verify_update(
     current_commit: str | None,
     target_commit: str,
     allowed_signers: Path | None,
+    *,
+    same_branch: bool = True,
 ) -> tuple[bool, str]:
     """Verify an update while safely following skipped trust rotations.
 
     An exact target signature authenticates its tree directly, except that an
-    already-installed descendant cannot be rolled back to an older signed
-    ancestor. Otherwise, every commit on the first-parent path from a trusted
-    base commit is verified. That base is the installed commit itself when it
-    is an ancestor of the target (the common case: `omm update` moving
-    forward on one branch); when the target sits on a sibling branch instead
-    (e.g. switching update channels between branches that have diverged),
-    the base is their merge-base, since that commit was already part of the
-    installed commit's verified history. Unsigned two-parent merges are
-    accepted only when their second parent is trusted and ``git merge-tree``
-    reproduces the exact target tree.
+    already-installed descendant cannot be silently rolled back to an older
+    signed ancestor while `same_branch` is True - the case for `omm update`,
+    where nothing but a compromised fetch could make "latest" move backward,
+    so any such move must be rejected outright. `same_branch=False` is for an
+    explicit, user-requested channel switch to a different branch: if the new
+    target turns out to be an ancestor of the installed commit, its content
+    was already checked out and verified at some earlier point on the way to
+    the installed commit (git's hash-chained history makes that commit's
+    bytes exactly what they always were), so there is nothing left to verify
+    - accept it directly rather than reject a deliberate, informed downgrade.
+
+    Otherwise, every commit on the first-parent path from a trusted base
+    commit is verified. That base is the installed commit itself when it is
+    an ancestor of the target (the common case: moving forward on one
+    branch); when the target sits on a sibling branch instead (e.g.
+    switching update channels between branches that have diverged), the base
+    is their merge-base, since that commit was already part of the installed
+    commit's verified history. Unsigned two-parent merges are accepted only
+    when their second parent is trusted and ``git merge-tree`` reproduces the
+    exact target tree.
     """
     ok, direct_message = verify_commit(repo_dir, target_commit, allowed_signers)
     if current_commit and target_commit != current_commit:
@@ -304,6 +316,12 @@ def verify_update(
         if target_is_ancestor is None:
             return False, "could not compare target and installed commit ancestry"
         if target_is_ancestor:
+            if not same_branch:
+                return (
+                    True,
+                    f"commit {target_commit[:7]} already verified as part of the "
+                    "installed history",
+                )
             return False, "target commit is older than the installed commit"
     if ok or allowed_signers is None:
         return ok, direct_message
