@@ -96,7 +96,7 @@ def test_recommend_screen_renders_hardware_table_and_selected_detail():
 
 def test_narrow_choice_hides_memory_column_without_losing_status():
     candidate = {
-        "filename": "TinyLlama-1.1B-Chat-Q4_K_M.gguf",
+        "filename": "TinyLlama-1.1B-Q4_K_M.gguf",
         "description": "Curated default",
     }
     [row] = recommend_ui.build_rows([(candidate, 32.0)], ["tinyllama"])
@@ -106,7 +106,43 @@ def test_narrow_choice_hides_memory_column_without_losing_status():
 
     assert "BEST FIT" in title
     assert "~32 tok/s" in title
+    assert "General purpose" in title
     assert "MEMORY" not in header
+    assert len(title) <= 70 - 4
+    assert len(header) <= 70
+
+
+def test_very_narrow_choice_hides_best_for_instead_of_clipping_the_line():
+    candidate = {
+        "filename": "TinyLlama-1.1B-Q4_K_M.gguf",
+        "description": "Curated default",
+    }
+    [row] = recommend_ui.build_rows([(candidate, 32.0)], ["tinyllama"])
+
+    title = "".join(text for _, text in recommend_ui.choice_title(row, 60))
+    header = recommend_ui.choice_header(60).plain
+
+    assert "BEST FOR" not in header
+    assert "General purpose" not in title
+    assert len(title) <= 60 - 4
+    assert len(header) <= 60
+
+
+def test_recommend_screen_explains_caution_without_adding_a_table_column():
+    output = StringIO()
+    console = Console(
+        file=output,
+        width=70,
+        color_system=None,
+        force_terminal=False,
+        theme=theme_mod.build_rich_theme("dark"),
+    )
+
+    recommend_ui.print_screen(console, _hardware(), 2, show_caution=True)
+
+    rendered = output.getvalue()
+    assert "CAUTION: Specialized or uncensored variant" in rendered
+    assert "REASON" not in recommend_ui.choice_header(70).plain
 
 
 def test_installed_candidate_has_installed_badge_and_real_source_detail():
