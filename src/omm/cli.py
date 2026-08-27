@@ -6501,6 +6501,29 @@ def configure_version(
         result = _perform_update(branch, same_branch=False)
         if result.returncode != 0:
             err_console.print(f"[error]Channel switch failed:[/error]\n{result.stderr}")
+            stderr_lower = (result.stderr or "").lower()
+            if "signature" in stderr_lower or "trust chain" in stderr_lower:
+                # A stale installed copy of trust.verify_update can permanently
+                # reject a legitimate branch switch it predates the logic for
+                # (see the module docstring's CAUTION) - no update from within
+                # this same stale copy can fix that. A full reinstall re-fetches
+                # install.sh fresh, which always carries current verification
+                # logic, so it recovers independently of the stuck install.
+                if platform.system() == "Windows":
+                    err_console.print(
+                        "\n[muted]If this channel is legitimate, the installed copy of omm may "
+                        "be too old to verify it. Reinstalling picks up current verification "
+                        "logic:[/muted]\n"
+                        "  [Net.ServicePointManager]::SecurityProtocol = "
+                        "[Net.SecurityProtocolType]::Tls12; irm https://omm.run/install.ps1 | iex"
+                    )
+                else:
+                    err_console.print(
+                        "\n[muted]If this channel is legitimate, the installed copy of omm may "
+                        "be too old to verify it. Reinstalling picks up current verification "
+                        "logic:[/muted]\n"
+                        "  curl -fsSL https://omm.run/install.sh | sh"
+                    )
             raise typer.Exit(1)
         current = config_mod.update_config(update_channel=requested)
         latest = _remote_head_commit(branch)

@@ -197,6 +197,39 @@ def test_setting_version_switch_failure_does_not_persist_channel(isolated_omm_ho
     assert config.load_config().get("update_channel", "stable") == "stable"
 
 
+def test_setting_version_switch_failure_hints_reinstall_on_signature_error(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda branch, **kwargs: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="commit abc1234 failed signature verification: gpg: ..."
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["setting", "version", "--beta"])
+
+    assert result.exit_code == 1
+    assert "install.sh" in result.stderr or "install.ps1" in result.stderr
+
+
+def test_setting_version_switch_failure_offline_has_no_reinstall_hint(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda branch, **kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr="offline"),
+    )
+
+    result = runner.invoke(cli.app, ["setting", "version", "--beta"])
+
+    assert result.exit_code == 1
+    assert "install.sh" not in result.stderr
+    assert "install.ps1" not in result.stderr
+
+
 def test_setting_version_is_a_noop_when_already_on_requested_channel(isolated_omm_home, monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "_perform_update", lambda branch: calls.append(branch))
