@@ -1380,8 +1380,15 @@ def test_ensure_model_unloaded_never_polls_indefinitely(monkeypatch):
     forever when the model stays (or appears to stay) loaded."""
     monkeypatch.setattr(quality, "unload_model", lambda tag: True)
     monkeypatch.setattr(quality, "_model_is_loaded", lambda tag: True)  # never confirms
+    clock = {"now": 0.0}
     slept = []
-    monkeypatch.setattr(quality.time, "sleep", lambda seconds: slept.append(seconds))
+
+    def fake_sleep(seconds):
+        slept.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(quality.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(quality.time, "sleep", fake_sleep)
 
     result = quality.ensure_model_unloaded("big:latest", max_wait_seconds=3, poll_interval_seconds=1)
 
