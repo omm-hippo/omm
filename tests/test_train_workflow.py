@@ -42,3 +42,16 @@ def test_train_workflow_does_not_resign_or_publish_a_changed_model_after_rejecti
         '--body "Automated nightly retrain. Candidate passed the quality gate'
         not in workflow
     )
+
+
+def test_train_workflow_preserves_only_the_redacted_plausibility_report():
+    workflow_path = ROOT / ".github" / "workflows" / "train.yml"
+    if not workflow_path.is_file():
+        pytest.skip("GitHub workflows are excluded from the runtime Docker image")
+    workflow = workflow_path.read_text(encoding="utf-8")
+
+    assert '--plausibility-report "$RUNNER_TEMP/telemetry-plausibility-report.json"' in workflow
+    assert "name: telemetry-plausibility-audit" in workflow
+    assert "telemetry-plausibility-report.json" in workflow
+    assert "telemetry.json" not in workflow
+    assert "retention-days: 30" in workflow
