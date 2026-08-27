@@ -178,196 +178,203 @@
     "name": "unsloth/Qwen3.8-27B-GGUF",
     "repo_id": "unsloth/Qwen3.8-27B-GGUF",
     "filename": "Qwen3.8-27B-UD-Q4_K_M.gguf",
-    "description": "111,148 downloads on ModelScope",
+    "description": "111,914 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
     "repo_id": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
     "filename": "Ornith-1.5-35B-Q4_K_M.gguf",
-    "description": "10,971 downloads on ModelScope",
+    "description": "11,072 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
     "repo_id": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
     "filename": "dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf",
-    "description": "33,466 downloads on ModelScope",
+    "description": "33,537 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "z-lab/Qwen3.8-27B-DFlash2-GGUF",
     "repo_id": "z-lab/Qwen3.8-27B-DFlash2-GGUF",
     "filename": "Qwen3.8-27B-DFlash2-Q4_K_M.gguf",
-    "description": "2,036 downloads on ModelScope",
+    "description": "2,056 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "ornith-ai/Ornith-1.5-9B-GGUF",
     "repo_id": "ornith-ai/Ornith-1.5-9B-GGUF",
     "filename": "Ornith-1.5-9B-Q4_K_M.gguf",
-    "description": "2,553 downloads on ModelScope",
+    "description": "2,620 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "unsloth/Qwen3.6-35B-A3B-GGUF",
     "repo_id": "unsloth/Qwen3.6-35B-A3B-GGUF",
     "filename": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
-    "description": "360,823 downloads on ModelScope",
+    "description": "360,879 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "unsloth/MiniMax-H3-GGUF",
     "repo_id": "unsloth/MiniMax-H3-GGUF",
     "filename": "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
-    "description": "48,672 downloads on ModelScope",
+    "description": "48,783 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "douyamv/Qwen3.8-27B-abliterated-GGUF",
     "repo_id": "douyamv/Qwen3.8-27B-abliterated-GGUF",
     "filename": "qwen3.8-27b-abliterated-q2_k.gguf",
-    "description": "2,364 downloads on ModelScope",
+    "description": "2,378 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Abiray/MiniMax-H3-GGUF",
     "repo_id": "Abiray/MiniMax-H3-GGUF",
     "filename": "unet/MiniMax-H3-FL2VA-Q4_K_M.gguf",
-    "description": "20,791 downloads on ModelScope",
-    "provider": "modelscope"
-  },
-  {
-    "name": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
-    "repo_id": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
-    "filename": "Ornith-1.5-35B-A3B-Q4_K_M.gguf",
-    "description": "1,960 downloads on ModelScope",
+    "description": "20,816 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Abiray/Qwen3.8-27B-Q4_K_M-GGUF",
     "repo_id": "Abiray/Qwen3.8-27B-Q4_K_M-GGUF",
     "filename": "Qwen3.8-27B-Q4_K_M.gguf",
-    "description": "2,927 downloads on ModelScope",
+    "description": "2,949 downloads on ModelScope",
+    "provider": "modelscope"
+  },
+  {
+    "name": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
+    "repo_id": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
+    "filename": "Ornith-1.5-35B-A3B-Q4_K_M.gguf",
+    "description": "1,963 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "unsloth/Qwen3.5-9B-GGUF",
     "repo_id": "unsloth/Qwen3.5-9B-GGUF",
     "filename": "Qwen3.5-9B-Q4_K_M.gguf",
-    "description": "113,085 downloads on ModelScope",
+    "description": "113,213 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Jackrong/Qwen3.8-27B-MTP-GGUF",
     "repo_id": "Jackrong/Qwen3.8-27B-MTP-GGUF",
     "filename": "Qwen3.8-27B-MTP-Q4_K_M.gguf",
-    "description": "3,155 downloads on ModelScope",
+    "description": "3,233 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
-    "name": "unsloth/Qwen3.5-4B-GGUF",
-    "repo_id": "unsloth/Qwen3.5-4B-GGUF",
-    "filename": "Qwen3.5-4B-Q4_K_M.gguf",
-    "description": "58,296 downloads on ModelScope",
+    "name": "lmstudio-community/Qwen3.8-27B-GGUF",
+    "repo_id": "lmstudio-community/Qwen3.8-27B-GGUF",
+    "filename": "Qwen3.8-27B-Q4_K_M.gguf",
+    "description": "7,716 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Qwen/Qwen2.5-7B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-7B-Instruct-GGUF",
     "filename": "qwen2.5-7b-instruct-q2_k.gguf",
-    "description": "198,870 downloads on ModelScope",
+    "description": "199,064 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
     "filename": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
-    "description": "32,475 downloads on ModelScope",
+    "description": "32,530 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
     "repo_id": "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
     "filename": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
-    "description": "46,206 downloads on ModelScope",
+    "description": "46,226 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
     "filename": "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-    "description": "28,927 downloads on ModelScope",
+    "description": "29,002 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Qwen/Qwen3-VL-4B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen3-VL-4B-Instruct-GGUF",
     "filename": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
-    "description": "18,699 downloads on ModelScope",
-    "provider": "modelscope"
-  },
-  {
-    "name": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
-    "repo_id": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
-    "filename": "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
-    "description": "48,546 downloads on ModelScope",
+    "description": "18,716 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
     "repo_id": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
     "filename": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
-    "description": "110,386 downloads on ModelScope",
+    "description": "110,399 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
-    "name": "ngxson/Qwen2.5-7B-Instruct-1M-Q4_K_M-GGUF",
-    "repo_id": "ngxson/Qwen2.5-7B-Instruct-1M-Q4_K_M-GGUF",
-    "filename": "qwen2.5-7b-instruct-1m-q4_k_m.gguf",
-    "description": "4,120 downloads on ModelScope",
+    "name": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+    "repo_id": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+    "filename": "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+    "description": "48,565 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Qwen/Qwen2.5-3B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-3B-Instruct-GGUF",
     "filename": "qwen2.5-3b-instruct-q4_k_m.gguf",
-    "description": "290,625 downloads on ModelScope",
+    "description": "290,703 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
-    "name": "AI-ModelScope/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
-    "repo_id": "AI-ModelScope/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
-    "filename": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
-    "description": "9,794 downloads on ModelScope",
+    "name": "ngxson/Qwen2.5-7B-Instruct-1M-Q4_K_M-GGUF",
+    "repo_id": "ngxson/Qwen2.5-7B-Instruct-1M-Q4_K_M-GGUF",
+    "filename": "qwen2.5-7b-instruct-1m-q4_k_m.gguf",
+    "description": "4,126 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
     "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    "description": "37,989 downloads on ModelScope",
+    "description": "38,042 downloads on ModelScope",
+    "provider": "modelscope"
+  },
+  {
+    "name": "AI-ModelScope/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+    "repo_id": "AI-ModelScope/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+    "filename": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
+    "description": "9,796 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
     "filename": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-    "description": "59,222 downloads on ModelScope",
+    "description": "59,299 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
     "name": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
     "filename": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
-    "description": "4,620 downloads on ModelScope",
+    "description": "4,626 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
-    "name": "unsloth/Qwen3-VL-8B-Instruct-GGUF",
-    "repo_id": "unsloth/Qwen3-VL-8B-Instruct-GGUF",
-    "filename": "Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
-    "description": "5,010 downloads on ModelScope",
+    "name": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+    "repo_id": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+    "filename": "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+    "description": "7,055 downloads on ModelScope",
+    "provider": "modelscope"
+  },
+  {
+    "name": "LLM-Research/glm-4-9b-chat-GGUF",
+    "repo_id": "LLM-Research/glm-4-9b-chat-GGUF",
+    "filename": "glm-4-9b-chat.BF16.gguf",
+    "description": "10,634 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
@@ -381,7 +388,7 @@
     "name": "ZhipuAI/glm-edge-4b-chat-gguf",
     "repo_id": "ZhipuAI/glm-edge-4b-chat-gguf",
     "filename": "ggml-model-Q4_K_M.gguf",
-    "description": "1,124 downloads on ModelScope",
+    "description": "1,125 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
@@ -410,6 +417,13 @@
     "repo_id": "Qwen/Qwen1.5-0.5B-Chat-GGUF",
     "filename": "qwen1_5-0_5b-chat-q4_k_m.gguf",
     "description": "15,108 downloads on ModelScope",
+    "provider": "modelscope"
+  },
+  {
+    "name": "bartowski/llama-3-neural-chat-v1-8b-GGUF",
+    "repo_id": "bartowski/llama-3-neural-chat-v1-8b-GGUF",
+    "filename": "llama-3-neural-chat-v1-8b-Q4_K_M.gguf",
+    "description": "5,837 downloads on ModelScope",
     "provider": "modelscope"
   },
   {
