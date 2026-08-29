@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import socket
 
@@ -18,6 +19,42 @@ from omm import (
     registry,
     scan_import,
 )
+
+
+@pytest.fixture
+def requires_symlink_support(tmp_path):
+    """Skip a symlink-specific test when the host cannot create symlinks.
+
+    Standard Windows accounts can lack SeCreateSymbolicLinkPrivilege unless
+    Developer Mode is enabled. Those hosts should still run the full portable
+    suite, while making the missing security-test capability explicit.
+    """
+    probe = tmp_path / ".symlink-capability"
+    probe.mkdir()
+    file_target = probe / "file-target"
+    file_target.write_bytes(b"probe")
+    directory_target = probe / "directory-target"
+    directory_target.mkdir()
+    try:
+        (probe / "file-link").symlink_to(file_target)
+        (probe / "directory-link").symlink_to(
+            directory_target, target_is_directory=True
+        )
+    except NotImplementedError as error:
+        pytest.skip(f"symbolic link creation is unavailable: {error}")
+    except OSError as error:
+        unsupported_errors = {
+            errno.EACCES,
+            errno.EPERM,
+            errno.ENOSYS,
+            getattr(errno, "EOPNOTSUPP", None),
+        }
+        if (
+            getattr(error, "winerror", None) == 1314
+            or error.errno in unsupported_errors
+        ):
+            pytest.skip(f"symbolic link creation is unavailable: {error}")
+        raise
 
 
 def _loopback_socket_address(address: object) -> bool:

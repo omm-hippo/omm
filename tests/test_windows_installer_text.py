@@ -257,6 +257,25 @@ def test_uninstallers_check_actual_pipx_environments_before_removal():
     assert 'entry_points[0].value != "omm.cli:main"' in sh
 
 
+def test_powershell_pipx_identity_uses_file_identity_for_virtualized_paths():
+    for name in ("install.ps1", "uninstall.ps1"):
+        script = (ROOT / name).read_text(encoding="utf-8")
+        helper = script.split("function Test-SameDirectoryIdentity {", 1)[1].split(
+            "function Test-PipxSnapshotIdentity", 1
+        )[0]
+        identity = script.split("function Test-PipxSnapshotIdentity {", 1)[1].split(
+            "$OmmEnvironmentVerifier", 1
+        )[0]
+
+        assert "os.path.samefile" in helper
+        assert "Test-Path -LiteralPath $leftFull -PathType Container" in helper
+        assert "Test-Path -LiteralPath $rightFull -PathType Container" in helper
+        assert 'Join-Path $rightFull "python.exe"' in helper
+        assert "& $identityPython -c" in helper
+        assert "Test-SameDirectoryIdentity $actualDir $expectedDir" in identity
+        assert "return $actualDir.Equals($expectedDir" not in identity
+
+
 def test_installers_reject_ambiguous_legacy_sources_and_verify_exact_app():
     ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
     sh = (ROOT / "install.sh").read_text(encoding="utf-8")
