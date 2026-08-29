@@ -348,7 +348,9 @@ def test_adopt_group_does_not_overwrite_second_level_name_collision(
     assert (scan_import.MODELS_DIR / result.filename).read_bytes() == payload
 
 
-def test_adopt_group_rejects_primary_swapped_to_symlink(isolated_omm_home, tmp_path):
+def test_adopt_group_rejects_primary_swapped_to_symlink(
+    isolated_omm_home, tmp_path, requires_symlink_support
+):
     external = tmp_path / "model.gguf"
     external.write_bytes(b"scanned bytes")
     digest = scan_import.sha256_file(external)

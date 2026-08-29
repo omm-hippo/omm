@@ -141,6 +141,44 @@ function Test-PipxSnapshotEnvironment {
     return (@($Snapshot.venvs.PSObject.Properties | Where-Object { $_.Name -ceq $Name }).Count -eq 1)
 }
 
+function Test-SameDirectoryIdentity {
+    param([string]$Left, [string]$Right)
+    try {
+        $leftFull = [IO.Path]::GetFullPath($Left).TrimEnd('\')
+        $rightFull = [IO.Path]::GetFullPath($Right).TrimEnd('\')
+        if ($leftFull.Equals($rightFull, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+        if (-not (Test-Path -LiteralPath $leftFull -PathType Container) -or
+            -not (Test-Path -LiteralPath $rightFull -PathType Container)) {
+            return $false
+        }
+        $identityPython = Join-Path $rightFull "python.exe"
+        if (-not (Test-Path -LiteralPath $identityPython -PathType Leaf)) {
+            return $false
+        }
+
+        # Packaged Windows apps can expose the same LocalAppData directory
+        # through both its normal path and a package LocalCache path. Compare
+        # the opened directory identities rather than trusting either string.
+        $previousErrorActionPreference = $ErrorActionPreference
+        $previousNativePref = $PSNativeCommandUseErrorActionPreference
+        $same = $false
+        try {
+            $ErrorActionPreference = "Continue"
+            $PSNativeCommandUseErrorActionPreference = $false
+            & $identityPython -c "import os, sys; raise SystemExit(0 if os.path.samefile(sys.argv[1], sys.argv[2]) else 1)" $leftFull $rightFull *> $null
+            $same = $LASTEXITCODE -eq 0
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $previousNativePref
+        }
+        return $same
+    } catch {
+        return $false
+    }
+}
+
 function Test-PipxSnapshotIdentity {
     param($Snapshot, [string]$Name, [string]$Distribution)
     if (-not (Test-PipxSnapshotEnvironment $Snapshot $Name)) { return $false }
@@ -159,7 +197,7 @@ function Test-PipxSnapshotIdentity {
     if ($ommPaths.Count -ne 1) { return $false }
     $actualDir = [IO.Path]::GetFullPath((Split-Path -Parent $ommPaths[0])).TrimEnd('\')
     $expectedDir = [IO.Path]::GetFullPath($expectedDir).TrimEnd('\')
-    return $actualDir.Equals($expectedDir, [StringComparison]::OrdinalIgnoreCase)
+    return Test-SameDirectoryIdentity $actualDir $expectedDir
 }
 
 $OmmEnvironmentVerifier = @'

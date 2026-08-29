@@ -1,8 +1,46 @@
+import pytest
 from typer.testing import CliRunner
 
 from omm import cli, config, onboarding
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize(
+    ("args", "usage"),
+    [
+        (["scan", "--help"], "USAGE: omm scan"),
+        (["engine", "install", "--help"], "USAGE: omm engine install"),
+    ],
+)
+def test_subcommand_help_bypasses_onboarding_and_root_side_effects(
+    isolated_omm_home, monkeypatch, args, usage
+):
+    before = (
+        config.CONFIG_PATH.read_bytes() if config.CONFIG_PATH.exists() else None
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("help must not run the root command prelude")
+
+    monkeypatch.setattr(cli, "_maybe_start_update_check", forbidden)
+    monkeypatch.setattr(cli, "_maybe_run_onboarding", forbidden)
+    monkeypatch.setattr(cli, "_maybe_auto_import", forbidden)
+    monkeypatch.setattr(cli.telemetry, "flush_pending", forbidden)
+    monkeypatch.setattr(cli.error_report, "flush_pending", forbidden)
+
+    result = runner.invoke(cli.app, args)
+
+    assert result.exit_code == 0, result.stdout
+    assert usage in result.stdout
+    after = config.CONFIG_PATH.read_bytes() if config.CONFIG_PATH.exists() else None
+    assert after == before
+
+
+def test_help_option_detection_preserves_literal_argument_after_separator():
+    assert cli._help_option_requested(["scan", "--help"]) is True
+    assert cli._help_option_requested(["engine", "install", "--help"]) is True
+    assert cli._help_option_requested(["search", "--", "--help"]) is False
 
 
 def test_bare_omm_runs_wizard_once_on_fresh_tty_install(isolated_omm_home, monkeypatch):

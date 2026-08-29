@@ -443,7 +443,11 @@ def _pipx_snapshot(venvs_root: Path, *, version="0.2.119"):
     [("0.5", False), ("0.12", True)],
 )
 def test_verify_pipx_installation_checks_paths_metadata_apps_and_exact_versions(
-    monkeypatch, tmp_path, metadata_version, metadata_has_environment
+    monkeypatch,
+    tmp_path,
+    requires_symlink_support,
+    metadata_version,
+    metadata_has_environment,
 ):
     venvs_root = tmp_path / "venvs"
     bin_dir = tmp_path / "bin"
@@ -494,7 +498,7 @@ def test_verify_pipx_installation_checks_paths_metadata_apps_and_exact_versions(
 
 
 def test_verify_pipx_installation_rejects_a_missing_secondary_app_link(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, requires_symlink_support
 ):
     venvs_root = tmp_path / "venvs"
     bin_dir = tmp_path / "bin"
@@ -739,7 +743,7 @@ def test_cleanup_never_uninstalls_an_unrelated_legacy_named_environment(monkeypa
 
 
 def test_failed_new_install_rolls_back_all_legacy_apps_and_verifies_omm(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, requires_symlink_support
 ):
     venvs_root = tmp_path / "venvs"
     legacy_bin = venvs_root / "omm" / "bin"
