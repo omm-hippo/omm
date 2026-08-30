@@ -39,6 +39,12 @@ generation.
   and `packaging/npm/launcher/package.json` on every commit (unless the commit already edits the
   `version` line). This is expected on every commit, not concurrent-session noise. Only `--no-verify`
   skips it — ask the user first.
+- `scripts/pre-push` rejects pushing a commit to `beta` or `main` whose own tip is not SSH-signed by
+  a key in `src/omm/trust/allowed_signers`. **Never sync a channel with GitHub's web UI** ("Sync
+  fork" / "Update branch" / merging a PR on the site) — it produces a web-flow-GPG-signed merge that
+  strands every `omm update` client and fails the "Trusted PR head" check. Merge locally instead
+  (`git merge origin/main`, auto-SSH-signed). If a web-flow merge already landed as the head, add an
+  SSH-signed endorsement commit on top — never force-push a shared channel.
 
 ## Working style (explicit user preferences)
 
