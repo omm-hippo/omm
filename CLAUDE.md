@@ -12,7 +12,9 @@ generation.
 
 - PyPI package `omm-model`; import package `omm`; entry points `omm` and `localfit-server`.
 - Working dir is `/Users/shinmingyu/Project/Localfit`; the GitHub repo name is `omm` (do not confuse).
-- Python 3.10+, CI pins 3.11. Stack: Typer CLI, Hatch build, `questionary` TUI, `cryptography`,
+- Python 3.10+; CI test job pins 3.12, bare-runtime-install job pins 3.11 (was all 3.11 —
+  moved while deps are frozen to the contest report through 2026-09-06; see the freeze note in
+  `pyproject.toml`). Stack: Typer CLI, Hatch build, `questionary` TUI, `cryptography`,
   `filelock`. `scikit-learn` is CI/training-only, never a runtime dependency.
 
 ## Repo, branches, workflow — read before any git operation

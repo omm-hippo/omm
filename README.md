@@ -232,6 +232,12 @@ relies on PyPI's own account security and TLS, the same trust model as
 installing any other PyPI package. It is a package-manager path, not a
 zero-prerequisite installer: install Python and pip first on a clean computer.
 
+Through 2026-09-06 every dependency is pinned to an exact version, so a fresh
+install reproduces the set documented in the project's open-source contest
+submission. The optional `server`, `dev`, and `nvidia` extras
+(`pip install "omm-model[server]"`) carry the rest of that pinned set; the
+`dev` and `server` extras need Python 3.12+ during the freeze.
+
 For an isolated command-line installation, `pipx` is recommended:
 
 ```sh
@@ -623,7 +629,7 @@ restores the most recent different snapshot.
 ## Development
 
 ```sh
-python -m venv .venv
+python -m venv .venv  # Python 3.12+ until 2026-09-06: the dev deps are pinned to the contest report
 source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]" -r requirements-train.txt
 python -m pytest -q
