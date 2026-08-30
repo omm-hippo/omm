@@ -6403,12 +6403,7 @@ def configure_telemetry(
     console.print(table)
 
 
-@upload_app.callback(invoke_without_command=True)
-@global_flags
-def upload_menu(ctx: typer.Context) -> None:
-    """Bare `omm setting upload` prints all three outbound-data policies."""
-    if ctx.invoked_subcommand is not None:
-        return
+def _print_upload_policy_table() -> None:
     from omm import usage
 
     cfg = load_config()
@@ -6421,9 +6416,22 @@ def upload_menu(ctx: typer.Context) -> None:
     )
     table.add_row("crash", cfg.get("error_report_send_policy") or "off (default)")
     console.print(table)
-    console.print(
-        "[muted]omm setting upload <benchmark|usage|crash> --enable / --disable[/muted]"
-    )
+
+
+@upload_app.callback(invoke_without_command=True)
+@global_flags
+def upload_menu(ctx: typer.Context) -> None:
+    """Bare `omm setting upload` shows the three outbound-data policies and,
+    on a terminal, opens a picker to change them."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not _stdin_is_tty():
+        _print_upload_policy_table()
+        console.print(
+            "[muted]omm setting upload <benchmark|usage|crash> --enable / --disable[/muted]"
+        )
+        return
+    _upload_channel_menu()
 
 
 @upload_app.command(name="benchmark")
@@ -6869,6 +6877,97 @@ def catalog_rollback() -> None:
     console.print(f"[success]Rolled back recommendation catalog from {selected.name}.[/success]")
 
 
+def _upload_channel_menu() -> None:
+    """Interactive picker for the three outbound-data channels, shared by
+    bare `omm setting upload` and the `omm setting` menu's Upload entry.
+    Each configure_* call is guarded: a bad value (e.g. --enable with no
+    endpoint) prints its reason and returns to the picker instead of
+    aborting the whole `omm setting` session."""
+    import questionary
+    from omm import usage
+
+    _print_upload_policy_table()
+    while True:
+        cfg = load_config()
+        bench = cfg.get("telemetry_send_policy", "ask")
+        usage_pol = "enabled" if usage.policy(cfg) == "enabled" else "off (default)"
+        crash_pol = error_report.send_policy(cfg)
+
+        channel = _ask_select(
+            questionary.select(
+                "What do you want to change?",
+                choices=[
+                    questionary.Choice(f"Benchmark results (current: {bench})", value="benchmark"),
+                    questionary.Choice(f"Usage stats (current: {usage_pol})", value="usage"),
+                    questionary.Choice(f"Crash reports (current: {crash_pol})", value="crash"),
+                    questionary.Choice("← Back", value="back"),
+                ],
+            )
+        )
+        if channel is None or channel == "back":
+            return
+
+        try:
+            if channel == "benchmark":
+                action = _ask_select(
+                    questionary.select(
+                        f"Benchmark uploads (current: {bench}):",
+                        choices=[
+                            questionary.Choice("Always send", value="enable"),
+                            questionary.Choice("Never send", value="disable"),
+                            questionary.Choice("Ask every time (default)", value="ask"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
+                )
+                if action in (None, "back"):
+                    continue
+                configure_upload_benchmark(
+                    enable=(action == "enable"),
+                    disable=(action == "disable"),
+                    ask=(action == "ask"),
+                )
+            elif channel == "usage":
+                action = _ask_select(
+                    questionary.select(
+                        f"Anonymous usage stats (current: {usage_pol}):",
+                        choices=[
+                            questionary.Choice("Send the anonymous daily batch", value="enable"),
+                            questionary.Choice("Never send (default)", value="disable"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
+                )
+                if action in (None, "back"):
+                    continue
+                configure_upload_usage(
+                    enable=(action == "enable"), disable=(action == "disable")
+                )
+            elif channel == "crash":
+                action = _ask_select(
+                    questionary.select(
+                        f"Crash reports (current: {crash_pol}):",
+                        choices=[
+                            questionary.Choice("Ask once per `omm contribute` run", value="ask"),
+                            questionary.Choice("Always send", value="enable"),
+                            questionary.Choice("Never send (default)", value="disable"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
+                )
+                if action in (None, "back"):
+                    continue
+                configure_upload_crash(
+                    enable=(action == "enable"),
+                    disable=(action == "disable"),
+                    ask=(action == "ask"),
+                )
+        except typer.Exit:
+            # configure_* already printed the reason to err_console; keep the
+            # picker alive instead of unwinding the whole menu.
+            pass
+
+
 @setting_app.callback(invoke_without_command=True)
 def setting_menu(ctx: typer.Context) -> None:
     """Bare `omm setting` opens an interactive menu; a subcommand skips it."""
@@ -6880,12 +6979,9 @@ def setting_menu(ctx: typer.Context) -> None:
         current = load_config()
         telemetry_backend = current.get("telemetry_backend") or "local"
         telemetry_endpoint = current.get("telemetry_endpoint") or "not configured"
-        upload_policy = current.get("telemetry_send_policy", "ask")
         catalog_manifest = current.get("catalog_manifest_url") or "not configured"
         update_channel = current.get("update_channel") or "stable"
         memory_guard_policy = current.get("memory_guard_policy", "ask")
-        error_reports_policy = error_report.send_policy(current)
-        usage_policy = "enabled" if current.get("usage_stats_policy") == "enabled" else "off"
 
         choice = _ask_select(
             questionary.select(
@@ -6895,7 +6991,9 @@ def setting_menu(ctx: typer.Context) -> None:
                         f"Telemetry (current: {telemetry_backend}, {telemetry_endpoint})",
                         value="telemetry",
                     ),
-                    questionary.Choice(f"Upload (current: {upload_policy})", value="upload"),
+                    questionary.Choice(
+                        "Upload / outbound data (benchmark, usage, crash)", value="upload"
+                    ),
                     questionary.Choice(f"Version channel (current: {update_channel})", value="version"),
                     questionary.Choice(
                         f"Theme (current: {current.get('theme', 'dark')})", value="theme"
@@ -6908,12 +7006,6 @@ def setting_menu(ctx: typer.Context) -> None:
                     questionary.Choice(
                         f"Memory guard (current: {memory_guard_policy})", value="memory-guard"
                     ),
-                    questionary.Choice(
-                        f"Crash reports (current: {error_reports_policy})", value="error-reports"
-                    ),
-                    questionary.Choice(
-                        f"Usage stats (current: {usage_policy})", value="usage-stats"
-                    ),
                     questionary.Choice("← Back", value="back"),
                 ],
             )
@@ -6921,110 +7013,67 @@ def setting_menu(ctx: typer.Context) -> None:
         if choice is None or choice == "back":
             return
 
-        if choice == "telemetry":
-            endpoint = questionary.text(
-                "Endpoint (blank to keep current, 'none' to clear):"
-            ).ask()
-            configure_telemetry(endpoint=endpoint or None)
-        elif choice == "upload":
-            action = _ask_select(
-                questionary.select(
-                    f"Uploads (current: {upload_policy}):",
-                    choices=[
-                        questionary.Choice("Always send", value="enable"),
-                        questionary.Choice("Never send", value="disable"),
-                        questionary.Choice("Ask every time", value="ask"),
-                        questionary.Choice("← Back", value="back"),
-                    ],
+        try:
+            if choice == "telemetry":
+                endpoint = questionary.text(
+                    "Endpoint (blank to keep current, 'none' to clear):"
+                ).ask()
+                configure_telemetry(endpoint=endpoint or None)
+            elif choice == "upload":
+                _upload_channel_menu()
+            elif choice == "version":
+                action = _ask_select(
+                    questionary.select(
+                        f"Update channel (current: {update_channel}):",
+                        choices=[
+                            questionary.Choice("Stable (main)", value="stable"),
+                            questionary.Choice("Beta", value="beta"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
                 )
-            )
-            if action is not None and action != "back":
-                configure_upload_benchmark(
-                    enable=(action == "enable"),
-                    disable=(action == "disable"),
-                    ask=(action == "ask"),
+                if action is not None and action != "back":
+                    configure_version(stable=(action == "stable"), beta=(action == "beta"))
+            elif choice == "theme":
+                # Previews, not a bare list of names - picking a color scheme
+                # sight-unseen is exactly what this feature exists to avoid.
+                action = _pick_theme_interactively(
+                    str(current.get("theme", "dark")), allow_back=True
                 )
-        elif choice == "version":
-            action = _ask_select(
-                questionary.select(
-                    f"Update channel (current: {update_channel}):",
-                    choices=[
-                        questionary.Choice("Stable (main)", value="stable"),
-                        questionary.Choice("Beta", value="beta"),
-                        questionary.Choice("← Back", value="back"),
-                    ],
+                if action is not None:
+                    configure_theme(set_name=action)
+            elif choice == "calibrate":
+                model_name = questionary.text(
+                    "Model to calibrate (blank for smallest installed):"
+                ).ask()
+                calibrate(model_name or None)
+            elif choice == "catalog-trust":
+                manifest_url = questionary.text("Signed manifest URL (https://...):").ask()
+                public_key = questionary.text("Base64 Ed25519 public key:").ask()
+                if manifest_url and public_key:
+                    catalog_trust(manifest_url=manifest_url, public_key=public_key)
+            elif choice == "catalog-rollback":
+                if _ask_confirm("Roll back the recommendation catalog?"):
+                    catalog_rollback()
+            elif choice == "memory-guard":
+                action = _ask_select(
+                    questionary.select(
+                        f"Memory guard policy (current: {memory_guard_policy}):",
+                        choices=[
+                            questionary.Choice("Ask before releasing OMM-owned memory", value="ask"),
+                            questionary.Choice("Block instead of asking", value="block"),
+                            questionary.Choice("Observe only (never block)", value="observe"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
                 )
-            )
-            if action is not None and action != "back":
-                configure_version(stable=(action == "stable"), beta=(action == "beta"))
-        elif choice == "theme":
-            # Previews, not a bare list of names - picking a color scheme
-            # sight-unseen is exactly what this feature exists to avoid.
-            action = _pick_theme_interactively(
-                str(current.get("theme", "dark")), allow_back=True
-            )
-            if action is not None:
-                configure_theme(set_name=action)
-        elif choice == "calibrate":
-            model_name = questionary.text(
-                "Model to calibrate (blank for smallest installed):"
-            ).ask()
-            calibrate(model_name or None)
-        elif choice == "catalog-trust":
-            manifest_url = questionary.text("Signed manifest URL (https://...):").ask()
-            public_key = questionary.text("Base64 Ed25519 public key:").ask()
-            if manifest_url and public_key:
-                catalog_trust(manifest_url=manifest_url, public_key=public_key)
-        elif choice == "catalog-rollback":
-            if _ask_confirm("Roll back the recommendation catalog?"):
-                catalog_rollback()
-        elif choice == "memory-guard":
-            action = _ask_select(
-                questionary.select(
-                    f"Memory guard policy (current: {memory_guard_policy}):",
-                    choices=[
-                        questionary.Choice("Ask before releasing OMM-owned memory", value="ask"),
-                        questionary.Choice("Block instead of asking", value="block"),
-                        questionary.Choice("Observe only (never block)", value="observe"),
-                        questionary.Choice("← Back", value="back"),
-                    ],
-                )
-            )
-            if action is not None and action != "back":
-                configure_memory_guard(policy=action, poll_seconds=None, low_memory_seconds=None)
-        elif choice == "error-reports":
-            action = _ask_select(
-                questionary.select(
-                    f"Error reports (current: {error_reports_policy}):",
-                    choices=[
-                        questionary.Choice("Ask once per `omm contribute` run", value="ask"),
-                        questionary.Choice("Always send", value="enable"),
-                        questionary.Choice("Never send (default)", value="disable"),
-                        questionary.Choice("← Back", value="back"),
-                    ],
-                )
-            )
-            if action is not None and action != "back":
-                configure_upload_crash(
-                    enable=(action == "enable"),
-                    disable=(action == "disable"),
-                    ask=(action == "ask"),
-                )
-        elif choice == "usage-stats":
-            action = _ask_select(
-                questionary.select(
-                    f"Anonymous usage stats (current: {usage_policy}):",
-                    choices=[
-                        questionary.Choice("Send the anonymous daily batch", value="enable"),
-                        questionary.Choice("Never send (default)", value="disable"),
-                        questionary.Choice("← Back", value="back"),
-                    ],
-                )
-            )
-            if action is not None and action != "back":
-                configure_upload_usage(
-                    enable=(action == "enable"), disable=(action == "disable")
-                )
+                if action is not None and action != "back":
+                    configure_memory_guard(policy=action, poll_seconds=None, low_memory_seconds=None)
+        except typer.Exit:
+            # A configure_* helper hit a bad value and already printed the
+            # reason to err_console. Keep the menu alive rather than aborting
+            # the whole `omm setting` session.
+            pass
 
         if not _ask_confirm("Change another setting?", default=True):
             return

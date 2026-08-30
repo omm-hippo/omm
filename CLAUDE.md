@@ -146,7 +146,10 @@ rows, world-readable), `error_reports` (`error_report.py`, private), and `usage`
 (`usage.py` — anonymous daily batch: random `~/.omm/client-id`, `client_version`, OS/arch,
 bucketed RAM/VRAM, GPU vendor, and a `<command> <outcome>` tally; **never** model names,
 paths, args, or IP). All three are configured under `omm setting upload {benchmark,usage,crash}`
-and consented to by one prompt in `omm setup`. `PRIVACY.md` is the user-facing spec; keep it,
+(bare `omm setting upload`, or `omm setting` → "Upload", opens an interactive picker over the
+three channels; `cli.py:_upload_channel_menu`). The `omm setup` data-sharing prompt covers
+`usage` + `crash` (`onboarding.run_data_sharing_step`); `benchmark` is not in it — its policy
+defaults to "ask" and is prompted per run. `PRIVACY.md` is the user-facing spec; keep it,
 the `omm setup` consent text, `validate.ts`, and `database.rules.json` in sync when fields change.
 
 **Run log.** `runlog.py` attaches a JSON-lines handler to the `omm` logger for one process;
