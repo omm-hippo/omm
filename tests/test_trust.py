@@ -343,6 +343,49 @@ def test_verify_update_across_diverged_branches_via_merge_base(
     assert target[:7] in message
 
 
+def test_verify_update_from_offtrunk_installed_commit(repo, signing_key, allowed_signers):
+    """A fresh install checks out the *signed PR-tip* (a GitHub merge
+    commit's second parent), which is an ancestor of the branch tip but not
+    on its first-parent trunk. The very next `omm update` must still verify:
+    seed the lineage walk from the trunk commit where that PR-tip's history
+    meets the trunk, not demand the first trunk merge's mainline parent be
+    the installed commit itself."""
+    base = _commit(repo, "base", signing_key=signing_key)
+    default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
+
+    _run(["git", "checkout", "-q", "-b", "pr", base], cwd=repo)
+    (repo / "pr.txt").write_text("reviewed work\n")
+    _run(["git", "add", "pr.txt"], cwd=repo)
+    installed = _commit(repo, "signed PR tip", signing_key=signing_key)
+
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    _run(["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "Merge PR", "pr"], cwd=repo)
+
+    # A later PR lands on the trunk as another GitHub-style merge, so the
+    # branch tip itself never verifies directly (GitHub signs the merge with
+    # its own key) - the lineage walk is the only path to trust.
+    _run(["git", "checkout", "-q", "-b", "pr2", "HEAD"], cwd=repo)
+    (repo / "pr2.txt").write_text("more reviewed work\n")
+    _run(["git", "add", "pr2.txt"], cwd=repo)
+    _commit(repo, "second signed PR tip", signing_key=signing_key)
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    _run(["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "Merge PR 2", "pr2"], cwd=repo)
+    target = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+
+    assert trust._is_ancestor(repo, installed, target) is True
+    on_first_parent = _run(
+        ["git", "rev-list", "--first-parent", target], cwd=repo
+    ).split()
+    assert installed not in on_first_parent
+
+    direct_ok, _ = trust.verify_commit(repo, target, allowed_signers)
+    ok, message = trust.verify_update(repo, installed, target, allowed_signers)
+
+    assert not direct_ok
+    assert ok, message
+    assert target[:7] in message
+
+
 def test_verify_update_rejects_unrelated_history(repo, signing_key, allowed_signers):
     installed = _commit(repo, "installed release", signing_key=signing_key)
     _run(["git", "checkout", "-q", "--orphan", "unrelated"], cwd=repo)

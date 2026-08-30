@@ -363,7 +363,25 @@ def verify_update(
         evolving_anchor = Path(tmp) / "allowed_signers"
         evolving_anchor.write_bytes(original_anchor)
 
-        previous = base
+        # `base` (the installed commit) and everything in its history are
+        # trusted. When `base` is an ancestor of `target` but sits on a
+        # second-parent side branch rather than `target`'s first-parent
+        # trunk - the normal shape right after a fresh install, whose
+        # checkout is the signed PR-tip (a merge's *second* parent), not the
+        # merge commit itself - the oldest lineage commit's first parent is
+        # not `base` but the trunk commit where `base`'s history last met the
+        # trunk. Seed from there; requiring `parents[0] == base` would stop
+        # the walk dead on the first trunk merge and misreport that merge's
+        # (GitHub-signed, unverifiable) signature as the failure.
+        oldest_parents = _parents(repo_dir, candidates[0])
+        trunk_base = oldest_parents[0] if oldest_parents else base
+        if trunk_base != base and _is_ancestor(repo_dir, trunk_base, base) is not True:
+            return False, (
+                f"lineage base {trunk_base[:7]} is not part of the installed "
+                "commit's trusted history"
+            )
+
+        previous = trunk_base
         transitions = 0
         for candidate in candidates:
             verified, message = _verify_lineage_commit(
