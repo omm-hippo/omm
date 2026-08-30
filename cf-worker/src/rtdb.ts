@@ -159,7 +159,7 @@ function firebaseDatabaseOrigin(databaseUrl: string): string {
 export async function writeEventOnce(
   serviceAccount: ServiceAccount,
   databaseUrl: string,
-  node: "telemetry" | "error_reports",
+  node: "telemetry" | "error_reports" | "usage",
   eventId: string,
   event: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; body: string }> {
@@ -170,7 +170,7 @@ export async function writeEventOnce(
 export async function putEventOnce(
   accessToken: string,
   databaseUrl: string,
-  node: "telemetry" | "error_reports",
+  node: "telemetry" | "error_reports" | "usage",
   eventId: string,
   event: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; body: string }> {

@@ -550,3 +550,75 @@ export function validateErrorReport(event: TelemetryEvent): { valid: boolean; re
   }
   return { valid: true };
 }
+
+const USAGE_FIELDS = new Set([
+  "schema_version", "client_id", "client_version", "install_source",
+  "os_name", "os_version", "cpu_arch", "ram_gb_bucket", "vram_gb_bucket",
+  "gpu_vendor", "recorded_at", "update_channel", "commands", "errors",
+]);
+const INSTALL_SOURCES = new Set(["pipx", "homebrew", "npm", "pypi", "winget", "git", "unknown"]);
+const GPU_VENDORS = new Set(["apple", "nvidia", "amd", "intel", "other", "none"]);
+const RAM_BUCKETS = new Set(["<8", "8-16", "16-32", "32-64", "64-128", "128+"]);
+const VRAM_BUCKETS = new Set(["none", "<4", "4-8", "8-12", "12-16", "16-24", "24+"]);
+// "<command> <outcome-or-ExceptionClassName>", e.g. "install ok",
+// "search usage-error", "install DownloadError".
+const TALLY_KEY_RE = /^[a-z][a-z-]* [A-Za-z][A-Za-z_-]*$/;
+
+function validTally(v: unknown): boolean {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  const entries = Object.entries(v as Record<string, unknown>);
+  if (entries.length > 100) return false;
+  return entries.every(
+    ([k, n]) =>
+      typeof k === "string" &&
+      k.length <= 80 &&
+      TALLY_KEY_RE.test(k) &&
+      typeof n === "number" &&
+      Number.isInteger(n) &&
+      n >= 1 &&
+      n <= 100000,
+  );
+}
+
+export function validateUsageEvent(event: TelemetryEvent): { valid: boolean; reason?: string } {
+  for (const key of Object.keys(event)) {
+    if (!USAGE_FIELDS.has(key)) return { valid: false, reason: `unknown field: ${key}` };
+  }
+  if (!hasAll(event, ["schema_version", "client_id", "client_version", "os_name", "recorded_at"])) {
+    return { valid: false, reason: "missing required usage field" };
+  }
+  if (num(event, "schema_version") !== 1) return { valid: false, reason: "unsupported schema_version" };
+  if (!/^[0-9a-f]{8,64}$/.test(str(event, "client_id"))) return { valid: false, reason: "invalid client_id" };
+  if (has(event, "install_source") && !INSTALL_SOURCES.has(str(event, "install_source"))) {
+    return { valid: false, reason: "invalid install_source" };
+  }
+  if (has(event, "gpu_vendor") && !GPU_VENDORS.has(str(event, "gpu_vendor"))) {
+    return { valid: false, reason: "invalid gpu_vendor" };
+  }
+  if (has(event, "ram_gb_bucket") && !RAM_BUCKETS.has(str(event, "ram_gb_bucket"))) {
+    return { valid: false, reason: "invalid ram_gb_bucket" };
+  }
+  if (has(event, "vram_gb_bucket") && !VRAM_BUCKETS.has(str(event, "vram_gb_bucket"))) {
+    return { valid: false, reason: "invalid vram_gb_bucket" };
+  }
+  if (has(event, "update_channel") && !["stable", "beta"].includes(str(event, "update_channel"))) {
+    return { valid: false, reason: "invalid update_channel" };
+  }
+  const stringLimits: Record<string, number> = {
+    client_version: 100, os_name: 128, os_version: 128, cpu_arch: 64,
+  };
+  for (const [key, limit] of Object.entries(stringLimits)) {
+    if (has(event, key)) {
+      const value = str(event, key);
+      if (!value || value.length > limit || looksLikePathOrControlChars(value)) {
+        return { valid: false, reason: `invalid ${key}` };
+      }
+    }
+  }
+  if (!(str(event, "recorded_at").length >= 20 && str(event, "recorded_at").length <= 50)) {
+    return { valid: false, reason: "invalid recorded_at" };
+  }
+  if (has(event, "commands") && !validTally(event.commands)) return { valid: false, reason: "invalid commands" };
+  if (has(event, "errors") && !validTally(event.errors)) return { valid: false, reason: "invalid errors" };
+  return { valid: true };
+}
