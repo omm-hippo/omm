@@ -1,3 +1,4 @@
+import questionary
 from typer.testing import CliRunner
 
 from omm import cli, config
@@ -62,6 +63,11 @@ def _scripted_selects(monkeypatch, answers):
     """Feed cli._ask_select a fixed sequence of answers (one per call)."""
     pending = list(answers)
     monkeypatch.setattr(cli, "_ask_select", lambda question: pending.pop(0))
+    # `_ask_select` is stubbed above, so its `questionary.select(...)` argument
+    # is never driven -- but constructing it still builds a prompt_toolkit
+    # Application eagerly, which raises NoConsoleScreenBufferError under the
+    # CliRunner on Windows CI. Stub the constructor to a no-op value.
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     # patching _stdin_is_tty would otherwise trip the first-run wizard
     monkeypatch.setattr(cli, "_maybe_run_onboarding", lambda ctx: None)
