@@ -1,7 +1,7 @@
 # Local run logging — design
 
 Date: 2026-08-30
-Status: approved for implementation
+Status: implemented on `beta` (plan: `docs/superpowers/plans/2026-08-30-local-run-logging.md`)
 Branch target: `beta`
 
 ## Goal
