@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from omm.atomic import atomic_write_text, backup_corrupt_file, locked
 from omm.config import REGISTRY_PATH, ensure_omm_home
+
+log = logging.getLogger(__name__)
 
 
 def load_registry() -> dict[str, Any]:
@@ -53,6 +56,10 @@ def upsert_entry(filename: str, **fields: Any) -> None:
                 raise TypeError("linked registry metadata must be a dictionary")
             linked.update(incoming)
         _save_registry_unlocked(registry)
+    log.info(
+        "registry upsert %s", filename,
+        extra={"event": "registry-upsert", "model": filename, "fields": sorted(fields)},
+    )
 
 
 def record_compatibility(filename: str, engine: str, result: dict[str, Any]) -> None:
@@ -77,3 +84,7 @@ def remove_entry(filename: str) -> None:
         registry = load_registry()
         registry.pop(filename, None)
         _save_registry_unlocked(registry)
+    log.info(
+        "registry remove %s", filename,
+        extra={"event": "registry-remove", "model": filename},
+    )

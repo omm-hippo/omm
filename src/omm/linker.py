@@ -47,6 +47,7 @@ from __future__ import annotations
 import hashlib
 import errno
 import json
+import logging
 import os
 import platform
 import re
@@ -72,6 +73,8 @@ from omm.hardware import HardwareInfo
 from omm.hashutil import sha256_file
 from omm.atomic import atomic_write_bytes, atomic_write_text, backup_corrupt_file, locked
 from omm.config import LINK_OWNERSHIP_PATH, MODELS_DIR
+
+log = logging.getLogger(__name__)
 
 
 def lmstudio_home_dir() -> Path:
@@ -662,6 +665,22 @@ def disk_usage_path(path: Path) -> Path:
 
 
 def link_file(
+    src: Path, dst: Path, *, on_copy: CopyReporter | None = None, force: bool = False
+) -> str:
+    """Expose ``src`` at ``dst`` and return symlink/hardlink/copy.
+
+    Thin wrapper over :func:`_link_file_impl` that records the chosen link
+    method to the run log.
+    """
+    method = _link_file_impl(src, dst, on_copy=on_copy, force=force)
+    log.info(
+        "exposed %s via %s", src.name, method,
+        extra={"event": "link", "file": src.name, "dst": str(dst), "method": method},
+    )
+    return method
+
+
+def _link_file_impl(
     src: Path, dst: Path, *, on_copy: CopyReporter | None = None, force: bool = False
 ) -> str:
     """Expose ``src`` at ``dst`` and return symlink/hardlink/copy.
