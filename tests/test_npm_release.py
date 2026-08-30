@@ -294,3 +294,29 @@ def test_probe_rejects_dangling_launcher_left_by_npm_uninstall(tmp_path, monkeyp
 
     with pytest.raises(npm_release.NpmReleaseError, match="left the OMM command"):
         npm_release._probe_install(prefix, tmp_path / "omm-home", "1.2.3", "platform")
+
+
+def test_probe_version_mismatch_reports_diagnostics(tmp_path, monkeypatch):
+    prefix = tmp_path / "prefix"
+    command = npm_release._command_path(prefix)
+    command.parent.mkdir(parents=True)
+    command.write_text("binary", encoding="utf-8")
+
+    def fake_run(executable, *arguments, **kwargs):
+        if arguments == ("--version",):
+            return npm_release.subprocess.CompletedProcess([], 0, stdout="omm 0.0.9\n", stderr="")
+        if arguments[:1] == ("ls",):
+            return npm_release.subprocess.CompletedProcess(
+                [], 1, stdout="p@1.2.3\n`-- (empty)\n", stderr="npm warn"
+            )
+        raise AssertionError((executable, arguments, kwargs))
+
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    with pytest.raises(npm_release.NpmReleaseError) as caught:
+        npm_release._probe_install(prefix, tmp_path / "omm-home", "1.2.3", "platform")
+    message = str(caught.value)
+    assert "reported the wrong version" in message
+    assert "omm 0.0.9" in message  # the actual --version output
+    assert "`-- (empty)" in message  # the npm ls tree
