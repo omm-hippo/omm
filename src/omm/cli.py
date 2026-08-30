@@ -69,6 +69,7 @@ from omm import (
     theme as theme_mod,
     trust,
     tuning,
+    usage,
     version_check,
 )
 from omm import contribute as contribute_mod
@@ -638,6 +639,12 @@ def _root(
                 f"[muted]Sent {reported} queued error report(s) "
                 "from a previous session.[/muted]"
             )
+        # Anonymous usage stats: at most one batch per day, silently (it is
+        # a background aggregate, not a per-session event worth a notice).
+        try:
+            usage.flush_pending()
+        except Exception:
+            pass
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
@@ -9316,7 +9323,7 @@ def main() -> None:
     leaves a `~/.omm/logs/<ts>_<pid>_<cmd>.jsonl` and a `history.log` block.
     `runlog` swallows its own errors, so it never changes the outcome here."""
     runlog.start(sys.argv[1:])
-    exit_code, outcome = 0, "ok"
+    exit_code, outcome, exc_name = 0, "ok", None
     try:
         app()
     except SystemExit as e:
@@ -9355,11 +9362,15 @@ def main() -> None:
         # SystemExit and KeyboardInterrupt are BaseException, so a normal
         # `typer.Exit` (including every `raise typer.Exit(1)` error path)
         # and a Ctrl+C never reach here - only real crashes do.
-        exit_code, outcome = 1, "failed"
+        exit_code, outcome, exc_name = 1, "failed", type(e).__name__
         _queue_crash_report(e)
         raise
     finally:
         runlog.finish(exit_code, outcome)
+        try:
+            usage.record_run(runlog.subcommand_of(sys.argv[1:]), outcome, exc_name)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

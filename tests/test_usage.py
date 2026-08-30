@@ -108,3 +108,19 @@ def test_flush_noop_when_policy_unset(isolated_omm_home, monkeypatch):
 
 def test_post_to_refuses_non_gateway_endpoint(isolated_omm_home):
     assert usage._post_to("https://evil.example/usage", {"schema_version": 1}) is False
+
+
+def test_cli_main_records_usage_run(isolated_omm_home, monkeypatch):
+    from omm import cli
+
+    monkeypatch.setattr(
+        config, "load_config",
+        lambda: {"usage_stats_policy": "enabled", "theme": "dark"},
+    )
+    monkeypatch.setattr("sys.argv", ["omm", "--version"])
+    try:
+        cli.main()
+    except SystemExit:
+        pass
+    rows = usage._read_pending()
+    assert rows and rows[0]["o"] == "ok"
