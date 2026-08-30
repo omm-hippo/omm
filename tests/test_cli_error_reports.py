@@ -49,7 +49,7 @@ def _enable_endpoint(**changes):
 def test_setting_error_reports_enable_saves_the_always_policy(isolated_omm_home):
     _enable_endpoint()
 
-    result = runner.invoke(cli.app, ["setting", "error-reports", "--enable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "crash", "--enable"])
 
     assert result.exit_code == 0, result.stdout
     assert config.load_config()["error_report_send_policy"] == "always"
@@ -58,7 +58,7 @@ def test_setting_error_reports_enable_saves_the_always_policy(isolated_omm_home)
 def test_setting_error_reports_ask_saves_the_ask_policy(isolated_omm_home):
     _enable_endpoint()
 
-    result = runner.invoke(cli.app, ["setting", "error-reports", "--ask"])
+    result = runner.invoke(cli.app, ["setting", "upload", "crash", "--ask"])
 
     assert result.exit_code == 0, result.stdout
     assert config.load_config()["error_report_send_policy"] == "ask"
@@ -69,7 +69,7 @@ def test_setting_error_reports_disable_saves_never_and_drops_the_queue(isolated_
     error_report.queue_report(RuntimeError("boom"), trigger="crash")
     assert error_report.pending_count() == 1
 
-    result = runner.invoke(cli.app, ["setting", "error-reports", "--disable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "crash", "--disable"])
 
     assert result.exit_code == 0, result.stdout
     assert config.load_config()["error_report_send_policy"] == "never"
@@ -79,7 +79,7 @@ def test_setting_error_reports_disable_saves_never_and_drops_the_queue(isolated_
 def test_setting_error_reports_enable_requires_a_telemetry_endpoint(isolated_omm_home):
     config.save_config({"telemetry_endpoint": None, "telemetry_backend": "local"})
 
-    result = runner.invoke(cli.app, ["setting", "error-reports", "--enable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "crash", "--enable"])
 
     assert result.exit_code == 1
     assert config.load_config()["error_report_send_policy"] is None
@@ -88,7 +88,7 @@ def test_setting_error_reports_enable_requires_a_telemetry_endpoint(isolated_omm
 def test_setting_error_reports_rejects_more_than_one_policy_flag(isolated_omm_home):
     _enable_endpoint()
 
-    result = runner.invoke(cli.app, ["setting", "error-reports", "--enable", "--disable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "crash", "--enable", "--disable"])
 
     assert result.exit_code == 1
     assert config.load_config()["error_report_send_policy"] is None
@@ -97,7 +97,7 @@ def test_setting_error_reports_rejects_more_than_one_policy_flag(isolated_omm_ho
 def test_setting_error_reports_shows_the_derived_write_only_destination(isolated_omm_home):
     _enable_endpoint()
 
-    result = runner.invoke(cli.app, ["setting", "error-reports"])
+    result = runner.invoke(cli.app, ["setting", "upload", "crash"])
 
     assert result.exit_code == 0, result.stdout
     assert "Error report policy" in result.stdout

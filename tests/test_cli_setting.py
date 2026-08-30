@@ -46,7 +46,7 @@ def test_setting_upload_enable_migrates_legacy_endpoint_to_gateway(isolated_omm_
     pointed at it must move to the gateway rather than send doomed writes."""
     config.update_config(telemetry_endpoint=config.LEGACY_FIREBASE_ENDPOINT, telemetry_backend="firebase_legacy")
 
-    result = runner.invoke(cli.app, ["setting", "upload", "--enable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--enable"])
 
     assert result.exit_code == 0, result.stdout
     saved = config.load_config()
@@ -57,7 +57,7 @@ def test_setting_upload_enable_migrates_legacy_endpoint_to_gateway(isolated_omm_
 def test_setting_upload_requires_explicit_endpoint_before_opt_in_once_cleared(isolated_omm_home):
     runner.invoke(cli.app, ["setting", "telemetry", "--endpoint", "none"])
 
-    result = runner.invoke(cli.app, ["setting", "upload", "--enable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--enable"])
 
     assert result.exit_code == 1
     assert config.load_config()["telemetry_send_policy"] == "ask"
@@ -362,7 +362,7 @@ def test_setting_bare_menu_offers_error_reports(isolated_omm_home, monkeypatch):
     labels = [choice.title for choice in captured_choices[0]]
     values = [choice.value for choice in captured_choices[0]]
     assert "error-reports" in values
-    assert any("Error reports" in label and "never" in label for label in labels)
+    assert any("Crash reports" in label and "never" in label for label in labels)
 
 
 def test_setting_bare_menu_error_reports_submenu_saves_policy(isolated_omm_home, monkeypatch):

@@ -392,6 +392,13 @@ setting_app = typer.Typer(
     rich_markup_mode=None,
 )
 app.add_typer(setting_app)
+upload_app = typer.Typer(
+    name="upload",
+    help="Choose what anonymous data omm may send: benchmark results, usage stats, crash reports. Each is off or ask by default. See PRIVACY.md.",
+    invoke_without_command=True,
+    rich_markup_mode=None,
+)
+setting_app.add_typer(upload_app)
 engine_app = typer.Typer(
     name="engine",
     help="Install local AI runner programs (Ollama, LM Studio, etc.).",
@@ -3040,14 +3047,14 @@ def _resolve_error_report_decision(flag: bool) -> bool:
             if flag:
                 err_console.print(
                     "[warning]Error reports are turned off, so --report-errors is ignored. "
-                    "Run `omm setting error-reports --ask` (or --enable) first if you want "
+                    "Run `omm setting upload crash --ask` (or --enable) first if you want "
                     "to send them.[/warning]"
                 )
             return False
         if flag:
             console.print(
                 "[muted]--report-errors: error reports from this run only will be sent. "
-                "Your saved setting is unchanged (`omm setting error-reports --enable` "
+                "Your saved setting is unchanged (`omm setting upload crash --enable` "
                 "makes it permanent).[/muted]"
             )
             return True
@@ -3062,7 +3069,7 @@ def _resolve_error_report_decision(flag: bool) -> bool:
     console.print(
         "[muted]omm would send "
         f"{'a report shaped exactly like this' if is_example else 'this report, already queued from an earlier run,'}"
-        " to the write-only error-report channel (see docs/error-reports.md):[/muted]"
+        " to the write-only error-report channel (see docs/crash-reports.md):[/muted]"
     )
     console.print(f"[muted]{escape(error_report.preview_text(report))}[/muted]", highlight=False)
     answer = _ask_upload_choice("Send scrubbed error reports?")
@@ -3070,7 +3077,7 @@ def _resolve_error_report_decision(flag: bool) -> bool:
         config_mod.update_config(error_report_send_policy="always")
         console.print(
             "[muted]Saved: omm will now always send scrubbed error reports "
-            "(change with `omm setting error-reports`).[/muted]"
+            "(change with `omm setting upload crash`).[/muted]"
         )
         return True
     return answer == "yes"
@@ -6358,9 +6365,32 @@ def configure_telemetry(
     console.print(table)
 
 
-@setting_app.command(name="upload")
+@upload_app.callback(invoke_without_command=True)
 @global_flags
-def configure_upload(
+def upload_menu(ctx: typer.Context) -> None:
+    """Bare `omm setting upload` prints all three outbound-data policies."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from omm import usage
+
+    cfg = load_config()
+    table = _table(title="Outbound data (see PRIVACY.md)", show_header=True)
+    table.add_column("Channel", style="label")
+    table.add_column("Policy")
+    table.add_row("benchmark", cfg.get("telemetry_send_policy", "ask"))
+    table.add_row(
+        "usage", "enabled" if usage.policy(cfg) == "enabled" else "off (default)"
+    )
+    table.add_row("crash", cfg.get("error_report_send_policy") or "off (default)")
+    console.print(table)
+    console.print(
+        "[muted]omm setting upload <benchmark|usage|crash> --enable / --disable[/muted]"
+    )
+
+
+@upload_app.command(name="benchmark")
+@global_flags
+def configure_upload_benchmark(
     enable: bool = typer.Option(False, "--enable", help="Always send benchmark results without asking."),
     disable: bool = typer.Option(False, "--disable", help="Never send benchmark results."),
     ask: bool = typer.Option(
@@ -6398,19 +6428,16 @@ def configure_upload(
     console.print(table)
 
 
-@setting_app.command(name="error-reports")
+@upload_app.command(name="crash")
 @global_flags
-def configure_error_reports(
-    enable: bool = typer.Option(False, "--enable", help="Always send scrubbed error reports without asking."),
-    disable: bool = typer.Option(False, "--disable", help="Never send error reports (the default)."),
+def configure_upload_crash(
+    enable: bool = typer.Option(False, "--enable", help="Always send scrubbed crash reports without asking."),
+    disable: bool = typer.Option(False, "--disable", help="Never send crash reports (the default)."),
     ask: bool = typer.Option(False, "--ask", help="Ask once per `omm contribute` run before sending."),
 ) -> None:
-    """Configure the opt-in error-report policy; see docs/error-reports.md for what is sent.
-
-    Kept separate from `omm setting upload` on purpose: error reports go to
-    a different, write-only channel than benchmark telemetry, so the two
-    consents are managed independently.
-    """
+    """Configure the opt-in crash-report policy; see docs/crash-reports.md for
+    exactly what is sent. Crash reports go to their own write-only channel,
+    separate from benchmark telemetry and usage stats."""
     chosen = [flag for flag in (enable, disable, ask) if flag]
     if len(chosen) > 1:
         err_console.print("[error]Choose only one of --enable, --disable, or --ask.[/error]")
@@ -6449,6 +6476,51 @@ def configure_error_reports(
     table.add_row("Error reports", labels[error_report.send_policy(current)])
     table.add_row("Destination", str(error_report.endpoint(current) or "not available"))
     console.print(table)
+
+
+@upload_app.command(name="usage")
+@global_flags
+def configure_upload_usage(
+    enable: bool = typer.Option(False, "--enable", help="Send the anonymous daily usage batch."),
+    disable: bool = typer.Option(False, "--disable", help="Never send usage stats (the default)."),
+    reset_id: bool = typer.Option(
+        False,
+        "--reset-id",
+        help="Generate a new random install id, unlinking future rows from past ones.",
+    ),
+) -> None:
+    """Anonymous daily usage stats (opt-in, off by default). See PRIVACY.md
+    for the exact fields. Run with no flags to print the current policy and
+    the exact payload that would be sent next."""
+    from omm import usage
+
+    if enable and disable:
+        err_console.print("[error]Choose one of --enable or --disable.[/error]")
+        raise typer.Exit(1)
+    if reset_id:
+        config_mod.CLIENT_ID_PATH.unlink(missing_ok=True)
+        console.print(f"[success]New install id:[/success] {config_mod.client_id()}")
+    if enable:
+        config_mod.update_config(usage_stats_policy="enabled")
+        console.print(
+            "[success]Usage stats enabled.[/success] "
+            "Turn off any time: `omm setting upload usage --disable`."
+        )
+    elif disable:
+        config_mod.update_config(usage_stats_policy=None)
+        discarded = usage.discard_pending()
+        console.print(
+            "[success]Usage stats disabled.[/success]"
+            + (f" Discarded {discarded} queued row(s)." if discarded else "")
+        )
+    if not (enable or disable or reset_id):
+        cfg = load_config()
+        console.print(
+            f"Policy: {'enabled' if usage.policy(cfg) == 'enabled' else 'off (default)'}"
+        )
+        console.print(f"Install id: {config_mod.client_id()}")
+        console.print("\n[label]Next batch would send:[/label]")
+        console.print_json(data=usage.build_payload())
 
 
 @setting_app.command(name="memory-guard")
@@ -6773,6 +6845,7 @@ def setting_menu(ctx: typer.Context) -> None:
         update_channel = current.get("update_channel") or "stable"
         memory_guard_policy = current.get("memory_guard_policy", "ask")
         error_reports_policy = error_report.send_policy(current)
+        usage_policy = "enabled" if current.get("usage_stats_policy") == "enabled" else "off"
 
         choice = _ask_select(
             questionary.select(
@@ -6796,7 +6869,10 @@ def setting_menu(ctx: typer.Context) -> None:
                         f"Memory guard (current: {memory_guard_policy})", value="memory-guard"
                     ),
                     questionary.Choice(
-                        f"Error reports (current: {error_reports_policy})", value="error-reports"
+                        f"Crash reports (current: {error_reports_policy})", value="error-reports"
+                    ),
+                    questionary.Choice(
+                        f"Usage stats (current: {usage_policy})", value="usage-stats"
                     ),
                     questionary.Choice("← Back", value="back"),
                 ],
@@ -6823,7 +6899,7 @@ def setting_menu(ctx: typer.Context) -> None:
                 )
             )
             if action is not None and action != "back":
-                configure_upload(
+                configure_upload_benchmark(
                     enable=(action == "enable"),
                     disable=(action == "disable"),
                     ask=(action == "ask"),
@@ -6889,10 +6965,25 @@ def setting_menu(ctx: typer.Context) -> None:
                 )
             )
             if action is not None and action != "back":
-                configure_error_reports(
+                configure_upload_crash(
                     enable=(action == "enable"),
                     disable=(action == "disable"),
                     ask=(action == "ask"),
+                )
+        elif choice == "usage-stats":
+            action = _ask_select(
+                questionary.select(
+                    f"Anonymous usage stats (current: {usage_policy}):",
+                    choices=[
+                        questionary.Choice("Send the anonymous daily batch", value="enable"),
+                        questionary.Choice("Never send (default)", value="disable"),
+                        questionary.Choice("← Back", value="back"),
+                    ],
+                )
+            )
+            if action is not None and action != "back":
+                configure_upload_usage(
+                    enable=(action == "enable"), disable=(action == "disable")
                 )
 
         if not _ask_confirm("Change another setting?", default=True):

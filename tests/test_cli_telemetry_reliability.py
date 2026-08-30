@@ -255,7 +255,7 @@ def test_setting_disable_does_not_flush_before_revoking_consent(
         lambda *args, **kwargs: post_calls.append((args, kwargs)),
     )
 
-    result = runner.invoke(cli.app, ["setting", "upload", "--disable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--disable"])
 
     assert result.exit_code == 0, result.stdout
     assert post_calls == []
@@ -280,7 +280,7 @@ def test_setting_ask_does_not_flush_before_changing_consent(
         lambda *args, **kwargs: post_calls.append((args, kwargs)),
     )
 
-    result = runner.invoke(cli.app, ["setting", "upload", "--ask"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--ask"])
 
     assert result.exit_code == 0, result.stdout
     assert post_calls == []

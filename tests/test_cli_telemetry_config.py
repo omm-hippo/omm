@@ -30,7 +30,7 @@ def test_telemetry_accepts_local_self_hosted_endpoint(isolated_omm_home):
 def test_upload_enable_requires_explicit_endpoint_before_opt_in(isolated_omm_home):
     runner.invoke(cli.app, ["setting", "telemetry", "--endpoint", "none"])
 
-    result = runner.invoke(cli.app, ["setting", "upload", "--enable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--enable"])
 
     assert result.exit_code == 1
     assert config.load_config()["telemetry_send_policy"] == "ask"
@@ -39,7 +39,7 @@ def test_upload_enable_requires_explicit_endpoint_before_opt_in(isolated_omm_hom
 def test_upload_enable_succeeds_once_endpoint_is_configured(isolated_omm_home):
     runner.invoke(cli.app, ["setting", "telemetry", "--endpoint", "https://example.com"])
 
-    result = runner.invoke(cli.app, ["setting", "upload", "--enable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--enable"])
 
     assert result.exit_code == 0, result.stdout
     assert config.load_config()["telemetry_send_policy"] == "always"
@@ -48,21 +48,21 @@ def test_upload_enable_succeeds_once_endpoint_is_configured(isolated_omm_home):
 def test_upload_ask_resets_policy_to_ask(isolated_omm_home):
     config.update_config(telemetry_send_policy="always", telemetry_endpoint="https://example.com")
 
-    result = runner.invoke(cli.app, ["setting", "upload", "--ask"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--ask"])
 
     assert result.exit_code == 0, result.stdout
     assert config.load_config()["telemetry_send_policy"] == "ask"
 
 
 def test_upload_disable_sets_never_policy(isolated_omm_home):
-    result = runner.invoke(cli.app, ["setting", "upload", "--disable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--disable"])
 
     assert result.exit_code == 0, result.stdout
     assert config.load_config()["telemetry_send_policy"] == "never"
 
 
 def test_upload_rejects_multiple_policy_flags(isolated_omm_home):
-    result = runner.invoke(cli.app, ["setting", "upload", "--enable", "--disable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--enable", "--disable"])
 
     assert result.exit_code == 1
     assert "only one" in result.stderr.lower()
