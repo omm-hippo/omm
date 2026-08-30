@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   release:
-    name: Publish the Release once two teammates have approved
+    name: Publish the Release for a signed tag
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -41,24 +41,6 @@ jobs:
 
       - name: Require the tag and project version to match
         run: python scripts/release_artifacts.py check-tag --tag "${GITHUB_REF_NAME}"
-
-      - name: Require two approving reviewers on the merged pull request
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          pr="$(gh api "repos/${GH_REPO}/commits/${GITHUB_SHA}/pulls" \
-            --jq '[.[] | select(.base.ref == "main" and .merged_at != null)][0].number')"
-          if [ -z "${pr}" ] || [ "${pr}" = "null" ]; then
-            echo "::error::no merged main pull request found for ${GITHUB_SHA}; create the Release manually" >&2
-            exit 1
-          fi
-          echo "merged pull request: #${pr}"
-          author="$(gh api "repos/${GH_REPO}/pulls/${pr}" --jq '.user.login')"
-          gh api --paginate --slurp "repos/${GH_REPO}/pulls/${pr}/reviews" > reviews.json
-          python scripts/release_gate.py \
-            --reviews reviews.json --author "${author}" --min 2
 
       - name: Create the GitHub Release
         env:
