@@ -290,6 +290,31 @@ def _command_path(prefix: Path) -> Path:
     return prefix / ("omm.cmd" if os.name == "nt" else "bin/omm")
 
 
+def _install_tree(prefix: Path) -> str:
+    """Best-effort ``npm ls`` dump for a failed probe. Never raises.
+
+    A probe failure (wrong version, missing binary) usually means npm resolved
+    the platform optional dependency differently than expected. The CI log only
+    shows the exception, so capture the installed tree to point at the cause on
+    the next release without a manual repro (issue #237).
+    """
+    try:
+        listed = _run(
+            _npm(),
+            "ls",
+            "--global",
+            "--prefix",
+            str(prefix),
+            "--all",
+            "--depth",
+            "2",
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, NpmReleaseError) as error:
+        return f"npm ls unavailable: {error}"
+    return f"{listed.stdout}\n{listed.stderr}".strip() or "npm ls produced no output"
+
+
 def _probe_install(
     prefix: Path,
     omm_home: Path,
@@ -298,11 +323,19 @@ def _probe_install(
 ) -> None:
     command = _command_path(prefix)
     if not command.is_file():
-        raise NpmReleaseError(f"npm did not expose the OMM command at {command}")
+        raise NpmReleaseError(
+            f"npm did not expose the OMM command at {command}\n"
+            f"npm ls:\n{_install_tree(prefix)}"
+        )
     version_result = _run(command, "--version")
     version_lines = f"{version_result.stdout}\n{version_result.stderr}".splitlines()
     if f"omm {version}" not in {line.strip() for line in version_lines}:
-        raise NpmReleaseError("npm-installed OMM reported the wrong version")
+        raise NpmReleaseError(
+            "npm-installed OMM reported the wrong version\n"
+            f"--version stdout: {version_result.stdout!r}\n"
+            f"--version stderr: {version_result.stderr!r}\n"
+            f"npm ls:\n{_install_tree(prefix)}"
+        )
     help_result = _run(command, "--help")
     if "Example usage:" not in f"{help_result.stdout}\n{help_result.stderr}":
         raise NpmReleaseError("npm-installed OMM help probe failed")
