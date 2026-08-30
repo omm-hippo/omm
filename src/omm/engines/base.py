@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 from dataclasses import dataclass
 from typing import Literal, Protocol, Sequence
 from urllib.parse import urlsplit
+
+from omm.runlog import scrub_url as _scrub_url
+
+log = logging.getLogger(__name__)
 
 FailureReason = Literal[
     "server_unavailable",
@@ -307,6 +312,16 @@ class LoopbackJsonClient:
         except requests.RequestException as error:
             raise RuntimeAdapterError(default_failure, "the local runtime request failed") from error
 
+        log.debug(
+            "%s %s -> %s", method, _scrub_url(f"{self.base_url}{path}"),
+            getattr(response, "status_code", "?"),
+            extra={
+                "event": "http",
+                "method": method,
+                "url": _scrub_url(f"{self.base_url}{path}"),
+                "status": getattr(response, "status_code", None),
+            },
+        )
         if not response.ok:
             message = self._response_message(response)
             reason = self._classify(message, default_failure)

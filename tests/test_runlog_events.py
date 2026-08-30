@@ -77,3 +77,72 @@ def test_download_failure_logged(isolated_omm_home, tmp_path, monkeypatch):
     runlog.finish(1, "failed")
 
     assert "download-failed" in _events(config.OMM_HOME)
+
+
+def test_scan_import_adoption_logged(isolated_omm_home, tmp_path):
+    from omm import scan_import
+
+    payload = b"identical gguf bytes"
+    ollama_path = tmp_path / "ollama-blob"
+    ollama_path.write_bytes(payload)
+    lmstudio_dir = tmp_path / "lmstudio" / "org" / "repo"
+    lmstudio_dir.mkdir(parents=True)
+    lmstudio_path = lmstudio_dir / "model.gguf"
+    lmstudio_path.write_bytes(payload)
+    group = scan_import.ModelGroup(
+        sha256=scan_import.sha256_file(ollama_path),
+        locations=[
+            scan_import.ExternalGguf(
+                "ollama", "llama3:latest", ollama_path, len(payload), "deadbeef"
+            ),
+            scan_import.ExternalGguf(
+                "lmstudio", "model.gguf", lmstudio_path, len(payload), "deadbeef"
+            ),
+        ],
+    )
+
+    runlog.start(["scan"])
+    scan_import.adopt_group(group)
+    runlog.finish(0, "ok")
+
+    assert "adopt" in _events(config.OMM_HOME)
+
+
+class _FakeResp:
+    ok = True
+    status_code = 200
+    headers: dict = {}
+
+    def json(self):
+        return {"ok": True}
+
+
+class _FakeSession:
+    trust_env = True
+
+    def request(self, *a, **k):
+        return _FakeResp()
+
+
+def test_http_detail_only_with_debug(isolated_omm_home, monkeypatch):
+    from omm.engines import base
+
+    def call_once():
+        client = base.LoopbackJsonClient("http://127.0.0.1:11434")
+        client._session = _FakeSession()
+        client.request("GET", "/api/tags")
+
+    monkeypatch.delenv("OMM_DEBUG", raising=False)
+    runlog.start(["verify"])
+    call_once()
+    runlog.finish(0, "ok")
+    assert "http" not in _events(config.OMM_HOME)
+
+    monkeypatch.setenv("OMM_DEBUG", "1")
+    runlog.start(["verify"])
+    call_once()
+    runlog.finish(0, "ok")
+    # newest jsonl is the debug run
+    newest = sorted((config.OMM_HOME / "logs").glob("*.jsonl"))[-1]
+    events = [json.loads(line).get("event") for line in newest.read_text().splitlines()]
+    assert "http" in events
