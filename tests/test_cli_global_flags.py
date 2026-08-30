@@ -83,13 +83,13 @@ def test_no_color_flag_disables_ansi_codes(isolated_omm_home, monkeypatch):
 
 
 def test_json_on_unsupported_command_warns_instead_of_silently_no_opping(isolated_omm_home):
-    # `omm autoremove --json` previously exited 0 and printed plain text -
+    # `omm cleanup --json` previously exited 0 and printed plain text -
     # a script piping that expecting JSON would get garbage silently (see
-    # #81). autoremove doesn't restructure its output for --json.
-    result = runner.invoke(cli.app, ["autoremove", "--json"])
+    # #81). cleanup doesn't restructure its output for --json.
+    result = runner.invoke(cli.app, ["cleanup", "--json"])
 
     assert result.exit_code == 0, result.stdout
-    assert "--json has no effect on `omm autoremove`" in result.stderr
+    assert "--json has no effect on `omm cleanup`" in result.stderr
 
 
 def test_json_on_supported_command_does_not_warn(isolated_omm_home):
@@ -100,10 +100,10 @@ def test_json_on_supported_command_does_not_warn(isolated_omm_home):
 
 
 def test_yes_on_unsupported_command_warns_instead_of_silently_no_opping(isolated_omm_home):
-    result = runner.invoke(cli.app, ["autoremove", "--yes"])
+    result = runner.invoke(cli.app, ["cleanup", "--yes"])
 
     assert result.exit_code == 0, result.stdout
-    assert "--yes has no effect on `omm autoremove`" in result.stderr
+    assert "--yes has no effect on `omm cleanup`" in result.stderr
 
 
 def test_yes_on_supported_command_does_not_warn(isolated_omm_home, monkeypatch):

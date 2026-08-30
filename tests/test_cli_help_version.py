@@ -68,7 +68,7 @@ def test_help_all_lists_every_command():
     result = runner.invoke(cli.app, ["help", "--all"])
 
     assert result.exit_code == 0, result.stdout
-    assert "autoremove" in result.stdout
+    assert "cleanup" in result.stdout
 
 
 def test_help_all_expands_nested_setting_subcommands():

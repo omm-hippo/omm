@@ -429,8 +429,7 @@ omm upgrade <name> [--dry-run]  # Refresh a model against its source if it has c
 omm upgrade [--yes] [--dry-run]  # Check every installed model for updates
 omm link [--engine NAME]  # Re-verify and repair installed-model links across supported runners
 omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
-omm autoremove  # Clean up broken symlinks in AI runner model directories
-omm cleanup  # Clean up orphaned partial/incomplete downloads
+omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 ```
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `search`/`install` mark models predicted not to run on this machine's hardware in red.

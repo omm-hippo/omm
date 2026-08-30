@@ -651,7 +651,6 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "setup",
             "engine",
             "import",
-            "autoremove",
             "cleanup",
             "link",
             "update",
@@ -7285,15 +7284,20 @@ def _cleanup_incomplete_installs() -> int:
 
 @app.command()
 @global_flags
-def autoremove() -> None:
-    """Clean up broken symlinks left in AI runner model directories.
+def cleanup() -> None:
+    """Clean up leftover partial downloads and broken runner symlinks.
 
-    Removes symlinks left behind when a model's source .gguf was deleted
-    without going through `omm uninstall`."""
+    Removes orphaned partial or unregistered .gguf downloads left behind by
+    interrupted installs, plus symlinks in AI runner model directories whose
+    source .gguf was deleted without going through `omm uninstall`."""
+    incomplete_removed = _cleanup_incomplete_installs()
+
     removed_by_engine: dict[str, int] = {}
     for spec in linker.ENGINES:
         if linker.is_engine_installed(spec.key):
-            removed_by_engine[spec.label] = linker.autoremove_engine(spec.key)
+            count = linker.autoremove_engine(spec.key)
+            if count:
+                removed_by_engine[spec.label] = count
     custom_removed = 0
     for entry in registry.load_registry().values():
         for destination in entry.get("custom_links", []):
@@ -7301,29 +7305,20 @@ def autoremove() -> None:
                 custom_removed += 1
     if custom_removed:
         removed_by_engine["custom"] = custom_removed
+    links_removed = sum(removed_by_engine.values())
 
-    if not any(removed_by_engine.values()):
-        console.print("[success]No broken symlinks found.[/success]")
+    if not incomplete_removed and not links_removed:
+        console.print("[success]Nothing to clean up.[/success]")
         return
 
-    parts = [f"{count} broken {label} link(s)" for label, count in removed_by_engine.items() if count]
-    console.print(f"[success]Removed {', '.join(parts) or '0 broken links'}.[/success]")
-
-
-@app.command()
-@global_flags
-def cleanup() -> None:
-    """Clean up leftover partial downloads and install cache files.
-
-    Removes orphaned partial or unregistered .gguf downloads left behind
-    in the models directory by interrupted or incomplete installs."""
-    incomplete_removed = _cleanup_incomplete_installs()
-
-    if incomplete_removed == 0:
-        console.print("[success]No leftover install files found.[/success]")
-        return
-
-    console.print(f"[success]Cleaned up {incomplete_removed} incomplete install file(s).[/success]")
+    parts: list[str] = []
+    if incomplete_removed:
+        parts.append(f"{incomplete_removed} incomplete install file(s)")
+    if links_removed:
+        parts.append(
+            ", ".join(f"{count} broken {label} link(s)" for label, count in removed_by_engine.items())
+        )
+    console.print(f"[success]Cleaned up {', '.join(parts)}.[/success]")
 
 
 def _guard_benchmark_models(models: list[str]) -> None:
@@ -9231,7 +9226,6 @@ def contribute(
             listener.stop_event.set()
 
         cleanup()
-        autoremove()
 
         after_count = _telemetry_row_count(endpoint) if endpoint else None
         duration = time.monotonic() - start_time
@@ -9313,7 +9307,7 @@ def _queue_crash_report(error: BaseException) -> None:
 def main() -> None:
     """Console-script entry point (see pyproject.toml [project.scripts]).
     Catches disk-full errors that escape every local handler - e.g. a JSON
-    write during `omm autoremove` - and prints one clean line instead of
+    write during `omm cleanup` - and prints one clean line instead of
     Typer's default traceback. Everything else is queued as an opt-in error
     report and then propagates untouched, so a genuine bug still surfaces as
     a normal traceback and can be reported.
