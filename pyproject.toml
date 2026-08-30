@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "omm-model"
-version = "0.3.27"
+version = "0.3.28"
 description = "Open source Model Manager - a package manager for local LLMs (GGUF)"
 requires-python = ">=3.10"
 license = "MIT"
@@ -15,35 +15,93 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
+# FROZEN through 2026-09-06: every version below is hard-pinned to the exact
+# dependency table submitted in the 2026 open-source contest report (붙임1,
+# 2026-08-27) so a fresh `pip install` from this repo reproduces that table
+# bit-for-bit. The transitive closure is listed explicitly because plain
+# `pip install` / `pip install git+...` reads only this file - it does not
+# consult any lock file. Relax back to `>=` floors after 2026-09-06.
+# Only `python_version` markers are allowed in [project.dependencies] itself
+# (omm update's _dependency_spec_applies supports no others); colorama is
+# therefore pinned unconditionally here rather than behind a sys_platform
+# marker - harmless on non-Windows, ~20 KB pure Python.
 dependencies = [
-    "typer>=0.12",
-    "click>=8.1",
-    "rich>=13",
-    "psutil>=5.9",
-    "requests>=2.31",
-    "questionary>=2.0",
-    "cryptography>=43",
-    "filelock>=3.16",
-    "tomli>=2.0; python_version < '3.11'",
+    "typer==0.27.1",
+    "click==8.5.0",
+    "rich==15.0.0",
+    "psutil==7.2.2",
+    "requests==2.34.2",
+    "questionary==2.1.1",
+    "cryptography==50.0.1",
+    "filelock==3.32.4",
+    # transitive closure of the direct runtime deps above
+    "annotated-doc==0.0.5",
+    "certifi==2026.7.22",
+    "cffi==2.1.1",
+    "charset-normalizer==3.5.1",
+    "colorama==0.4.6",
+    "idna==3.19",
+    "markdown-it-py==4.2.0",
+    "mdurl==0.1.2",
+    "prompt_toolkit==3.0.53",
+    "pycparser==3.0",
+    "Pygments==2.21.0",
+    "shellingham==1.5.4",
+    "typing_extensions==4.16.0",
+    "urllib3==2.7.0",
+    "wcwidth==0.8.2",
+    "tomli==2.4.1; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
+# Also frozen through 2026-09-06 - see the note on [project.dependencies].
 dev = [
-    "pytest>=8",
-    "fastapi>=0.115",
-    "httpx2>=2.12",
-    "uvicorn>=0.30",
-    "scikit-learn>=1.4",
+    "pytest==9.1.1",
+    "fastapi==0.141.1",
+    "httpx2==2.12.0",
+    "uvicorn==0.52.4",
+    "scikit-learn==1.9.0",
+    # transitive closure of the dev set
+    "annotated-types==0.8.0",
+    "anyio==4.14.2",
+    "h11==0.16.0",
+    "httpcore2==2.12.0",
+    "iniconfig==2.3.0",
+    "joblib==1.5.3",
+    "narwhals==2.25.0",
+    "numpy==2.5.2",
+    "packaging==26.3",
+    "pluggy==1.6.0",
+    "pydantic==2.13.4",
+    "pydantic-core==2.46.4",
+    "scipy==1.18.1",
+    "starlette==1.6.0",
+    "threadpoolctl==3.6.0",
+    "truststore==0.10.4",
+    "typing-inspection==0.4.4",
+    "exceptiongroup==1.3.1; python_version < '3.11'",
 ]
 server = [
-    "fastapi>=0.115",
-    "pydantic>=2.9",
-    "uvicorn>=0.30",
+    "fastapi==0.141.1",
+    "pydantic==2.13.4",
+    "uvicorn==0.52.4",
+    # transitive closure of the server set
+    "annotated-doc==0.0.5",
+    "annotated-types==0.8.0",
+    "anyio==4.14.2",
+    "h11==0.16.0",
+    "httpcore2==2.12.0",
+    "httpx2==2.12.0",
+    "pydantic-core==2.46.4",
+    "starlette==1.6.0",
+    "truststore==0.10.4",
+    "typing-inspection==0.4.4",
+    "exceptiongroup==1.3.1; python_version < '3.11'",
 ]
 # NVIDIA VRAM detection (hardware.py._scan_nvidia_vram already lazy-imports
 # pynvml behind a broad try/except, so it's safe to omit entirely on
 # machines without an NVIDIA GPU - e.g. every Mac).
-nvidia = ["nvidia-ml-py>=12"]
+nvidia = ["nvidia-ml-py==13.610.43"]
 
 [project.scripts]
 omm = "omm.cli:main"
