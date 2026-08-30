@@ -251,6 +251,30 @@
         }
       }
     },
+    "usage": {
+      ".read": false,
+      ".write": false,
+      "$event": {
+        ".validate": "newData.hasChildren(['schema_version', 'client_id', 'client_version', 'os_name', 'recorded_at'])",
+        "schema_version": { ".validate": "newData.isNumber() && newData.val() == 1" },
+        "client_id": { ".validate": "newData.isString() && newData.val().matches(/^[0-9a-f]{8,64}$/)" },
+        "client_version": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100" },
+        "install_source": { ".validate": "!newData.exists() || newData.val() == 'pipx' || newData.val() == 'homebrew' || newData.val() == 'npm' || newData.val() == 'pypi' || newData.val() == 'winget' || newData.val() == 'git' || newData.val() == 'unknown'" },
+        "os_name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 128" },
+        "os_version": { ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 128)" },
+        "cpu_arch": { ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 64)" },
+        "ram_gb_bucket": { ".validate": "!newData.exists() || newData.val() == '<8' || newData.val() == '8-16' || newData.val() == '16-32' || newData.val() == '32-64' || newData.val() == '64-128' || newData.val() == '128+'" },
+        "vram_gb_bucket": { ".validate": "!newData.exists() || newData.val() == 'none' || newData.val() == '<4' || newData.val() == '4-8' || newData.val() == '8-12' || newData.val() == '12-16' || newData.val() == '16-24' || newData.val() == '24+'" },
+        "gpu_vendor": { ".validate": "!newData.exists() || newData.val() == 'apple' || newData.val() == 'nvidia' || newData.val() == 'amd' || newData.val() == 'intel' || newData.val() == 'other' || newData.val() == 'none'" },
+        "update_channel": { ".validate": "!newData.exists() || newData.val() == 'stable' || newData.val() == 'beta'" },
+        "recorded_at": { ".validate": "newData.isString() && newData.val().length >= 20 && newData.val().length <= 50" },
+        "commands": { "$k": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 100000" } },
+        "errors": { "$k": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 100000" } },
+        "$other": {
+          ".validate": false
+        }
+      }
+    },
     "$other": {
       ".read": false,
       ".write": false
