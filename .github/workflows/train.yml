@@ -51,13 +51,23 @@ jobs:
             --minimum-real-configurations 100 \
             --baseline "$RUNNER_TEMP/localfit-incumbent.json" \
             --output "$RUNNER_TEMP/localfit-candidate.json" \
-            --quality-report "$RUNNER_TEMP/localfit-quality-report.json"
+            --quality-report "$RUNNER_TEMP/localfit-quality-report.json" \
+            --plausibility-report "$RUNNER_TEMP/telemetry-plausibility-report.json"
           python scripts/retrain_decision.py \
             --quality-report "$RUNNER_TEMP/localfit-quality-report.json" \
             --candidate "$RUNNER_TEMP/localfit-candidate.json" \
             --incumbent "$RUNNER_TEMP/localfit-incumbent.json" \
             --github-output "$GITHUB_OUTPUT"
           cp "$RUNNER_TEMP/localfit-candidate.json" published/localfit-recommend-model.json
+
+      - name: Preserve redacted telemetry plausibility audit
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: telemetry-plausibility-audit
+          path: ${{ runner.temp }}/telemetry-plausibility-report.json
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Sign published catalog
         if: >-

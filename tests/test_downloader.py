@@ -110,7 +110,9 @@ def test_download_file_completes_normally_without_stop_check(tmp_path, monkeypat
     assert not dest.with_suffix(dest.suffix + ".part").exists()
 
 
-def test_download_file_refuses_symlinked_partial_path(tmp_path, monkeypatch):
+def test_download_file_refuses_symlinked_partial_path(
+    tmp_path, monkeypatch, requires_symlink_support
+):
     dest = tmp_path / "model.gguf"
     victim = tmp_path / "victim"
     victim.write_bytes(b"preserve")

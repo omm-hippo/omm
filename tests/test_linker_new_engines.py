@@ -40,7 +40,7 @@ def test_link_jan_escapes_quotes_in_model_path(tmp_path, monkeypatch):
 
 
 def test_link_jan_rejects_symlinked_model_directory(
-    isolated_omm_home, tmp_path, monkeypatch
+    isolated_omm_home, tmp_path, monkeypatch, requires_symlink_support
 ):
     models_dir = tmp_path / "jan-models"
     outside = tmp_path / "outside"
@@ -784,7 +784,9 @@ def test_find_koboldcpp_binary_returns_none_when_absent(tmp_path, monkeypatch):
     assert linker.koboldcpp_models_dir() is None
 
 
-def test_engine_discovery_ignores_unapproved_and_symlinked_roots(tmp_path, monkeypatch):
+def test_engine_discovery_ignores_unapproved_and_symlinked_roots(
+    tmp_path, monkeypatch, requires_symlink_support
+):
     managed = tmp_path / "omm-owned"
     managed.mkdir()
     unapproved = tmp_path / "Downloads"

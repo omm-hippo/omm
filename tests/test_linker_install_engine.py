@@ -757,7 +757,9 @@ def test_extract_textgenwebui_tar_rejects_hardlinks_and_special_files(
     assert not (dest_dir / "textgen-4.9").exists()
 
 
-def test_extract_textgenwebui_tar_preserves_safe_relative_symlinks(tmp_path):
+def test_extract_textgenwebui_tar_preserves_safe_relative_symlinks(
+    tmp_path, requires_symlink_support
+):
     archive_path = tmp_path / "release.tar.gz"
     with tarfile.open(archive_path, "w:gz") as tf:
         python = tarfile.TarInfo("textgen-4.9/app/bin/python3.13")
@@ -863,7 +865,9 @@ def test_extract_textgenwebui_zip_rejects_declared_symlink(tmp_path):
     assert not (dest_dir / "textgen-4.9").exists()
 
 
-def test_extract_textgenwebui_refuses_preexisting_top_level_symlink(tmp_path):
+def test_extract_textgenwebui_refuses_preexisting_top_level_symlink(
+    tmp_path, requires_symlink_support
+):
     archive_path = tmp_path / "release.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("textgen-4.9/app/server.py", "# fake")

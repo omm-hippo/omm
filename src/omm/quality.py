@@ -569,6 +569,14 @@ def _model_metadata(
         and 0 < expert_used_count <= expert_count
     )
     active_parameter_count_b = None
+    total_parameter_count = model_info.get("general.parameter_count")
+    parameter_count_b = (
+        total_parameter_count / 1_000_000_000
+        if isinstance(total_parameter_count, int)
+        and not isinstance(total_parameter_count, bool)
+        and total_parameter_count > 0
+        else None
+    )
     if is_moe:
         # Keep dense-model metadata requests small. Only MoE models need the
         # verbose tensor inventory required for an exact routed-weight count.
@@ -612,6 +620,12 @@ def _model_metadata(
         ][:32],
         "is_moe": is_moe,
     }
+    if parameter_count_b is not None:
+        # Ollama's human-readable details.parameter_size has historically
+        # dropped decimal separators from imported filenames (for example,
+        # Qwen1.5 0.5B/1.8B became 5B/8B). general.parameter_count is the
+        # GGUF's integer tensor count and is the authoritative source.
+        metadata["parameter_count_b"] = parameter_count_b
     if active_parameter_count_b is not None:
         metadata["active_parameter_count_b"] = active_parameter_count_b
     return metadata

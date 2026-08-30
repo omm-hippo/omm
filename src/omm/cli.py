@@ -353,6 +353,21 @@ Further help:
 _COMMAND_ALIASES = {"rm": "uninstall", "ls": "list", "up": "upgrade"}
 
 
+def _help_option_requested(args: list[str]) -> bool:
+    """Detect a real help option before Click consumes subcommand arguments.
+
+    Click invokes a group's callback before it parses a subcommand's eager
+    ``--help`` option. Preserve ``--`` semantics so a literal argument named
+    ``--help`` does not accidentally suppress the normal command prelude.
+    """
+    for arg in args:
+        if arg == "--":
+            return False
+        if arg == "--help":
+            return True
+    return False
+
+
 class _RootHelpGroup(typer.core.TyperGroup):
     """Homebrew-style curated `omm --help`/`omm help` - a short list of
     common commands instead of the full alphabetical listing of every
@@ -363,6 +378,10 @@ class _RootHelpGroup(typer.core.TyperGroup):
 
     def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         formatter.write(_ROOT_HELP_TEXT)
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        ctx.meta["omm_help_requested"] = _help_option_requested(args)
+        return super().parse_args(ctx, args)
 
     def get_command(self, ctx: click.Context, cmd_name: str):
         cmd_name = _COMMAND_ALIASES.get(cmd_name, cmd_name)
@@ -599,7 +618,9 @@ def _root(
     opts.yes = opts.yes or yes_flag
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
-    side_effect_minimal_mode = ctx.invoked_subcommand == "doctor"
+    side_effect_minimal_mode = (
+        ctx.invoked_subcommand == "doctor" or bool(ctx.meta.get("omm_help_requested"))
+    )
     theme = (
         doctor_mod.read_theme_read_only()
         if side_effect_minimal_mode
@@ -610,10 +631,10 @@ def _root(
     if opts.no_color:
         console.no_color = True
         err_console.no_color = True
-    # `omm doctor` promises a literal read-only snapshot. The normal root
-    # prelude can create/migrate config, spawn an update checker, offer to
-    # import models, and flush queued network events, so return directly
-    # before any of those hooks are reached.
+    # `omm doctor` and every help path promise a literal read-only snapshot.
+    # The normal root prelude can create/migrate config, spawn an update
+    # checker, offer to import models, and flush queued network events, so
+    # return directly before any of those hooks are reached.
     if side_effect_minimal_mode:
         return
     _maybe_start_update_check(ctx)
