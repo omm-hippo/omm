@@ -74,7 +74,11 @@ async function fetchAccessToken(serviceAccount: ServiceAccount): Promise<string>
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    redirect: "error",
+    // "manual", not "error": the Workers runtime rejects redirect:"error"
+    // with a TypeError. "manual" surfaces a 3xx as a non-ok response, which
+    // the `!response.ok` check below treats as a failure just the same - we
+    // still never follow a redirect off oauth2.googleapis.com.
+    redirect: "manual",
     body: new URLSearchParams({
       grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
       assertion: jwt,
@@ -159,7 +163,7 @@ function firebaseDatabaseOrigin(databaseUrl: string): string {
 export async function writeEventOnce(
   serviceAccount: ServiceAccount,
   databaseUrl: string,
-  node: "telemetry" | "error_reports",
+  node: "telemetry" | "error_reports" | "usage",
   eventId: string,
   event: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; body: string }> {
@@ -170,7 +174,7 @@ export async function writeEventOnce(
 export async function putEventOnce(
   accessToken: string,
   databaseUrl: string,
-  node: "telemetry" | "error_reports",
+  node: "telemetry" | "error_reports" | "usage",
   eventId: string,
   event: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; body: string }> {
@@ -180,7 +184,9 @@ export async function putEventOnce(
   const databaseOrigin = firebaseDatabaseOrigin(databaseUrl);
   const response = await fetch(`${databaseOrigin}/${node}/${eventId}.json`, {
     method: "PUT",
-    redirect: "error",
+    // "manual", not "error" (the Workers runtime rejects redirect:"error").
+    // A 3xx comes back as a non-ok response and is reported as {ok:false}.
+    redirect: "manual",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${accessToken}`,

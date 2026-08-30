@@ -1,5 +1,5 @@
 import { isTimestampFresh, proofDigest, verifyProofOfWork } from "./pow";
-import { validateErrorReport, validateTelemetryEvent } from "./validate";
+import { validateErrorReport, validateTelemetryEvent, validateUsageEvent } from "./validate";
 import { writeEventOnce, type ServiceAccount } from "./rtdb";
 
 export interface Env {
@@ -114,7 +114,9 @@ export default {
       ? "telemetry"
       : url.pathname === "/error-report"
         ? "error_reports"
-        : null;
+        : url.pathname === "/usage"
+          ? "usage"
+          : null;
     if (request.method !== "POST" || node === null) {
       return json({ error: "not found" }, 404);
     }
@@ -168,7 +170,9 @@ export default {
 
     const result = node === "telemetry"
       ? validateTelemetryEvent(event as Record<string, unknown>)
-      : validateErrorReport(event as Record<string, unknown>);
+      : node === "error_reports"
+        ? validateErrorReport(event as Record<string, unknown>)
+        : validateUsageEvent(event as Record<string, unknown>);
     if (!result.valid) {
       return json({ error: result.reason ?? "invalid event" }, 400);
     }

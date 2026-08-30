@@ -28,6 +28,13 @@ suppresses calibration."""
 
 @dataclass
 class HardwareInfo:
+    """시스템의 하드웨어 정보를 담는 데이터 클래스.
+    
+    왜 필요한가:
+    운영체제, CPU, 메모리(RAM/VRAM) 등의 시스템 제원을 한 곳에 모아,
+    어떤 모델을 로드할 수 있는지 혹은 어떤 최적화를 적용해야 하는지 
+    판단하는 기초 자료로 활용하기 위해 필요합니다.
+    """
     os_name: str
     os_version: str
     cpu: str
@@ -45,7 +52,13 @@ class HardwareInfo:
 
 @dataclass(frozen=True)
 class MemoryBudget:
-    """Live capacity that can be assigned without crowding other apps."""
+    """Live capacity that can be assigned without crowding other apps.
+    
+    왜 필요한가:
+    현재 시스템에서 사용 가능한 여유 메모리 한도를 계산하여, 
+    모델 실행 시 시스템 다운이나 심각한 스와핑(Swapping)이 발생하지 않도록 
+    안전한 메모리 사용 상한선을 강제하기 위해 필요합니다.
+    """
 
     model_budget_gb: float
     ram_budget_gb: float
@@ -65,14 +78,22 @@ def available_ram_gb() -> float:
     Runtime pressure monitoring must be cheap enough to honor its polling
     interval. On Windows, ``scan_hardware`` can take several seconds and miss
     short but meaningful pressure events.
+    
+    왜 필요한가:
+    전체 하드웨어를 스캔하는 작업은 비용(시간)이 크기 때문에, 
+    주기적으로 메모리 부족 상태를 모니터링하기 위해서는 
+    빠르게 가용 RAM 용량만 가져올 수 있는 경량화된 함수가 필요합니다.
     """
     try:
+        # print("""psutil.virtual_memory().available :""",psutil.virtual_memory().available / (1024**3))
         return psutil.virtual_memory().available / (1024**3)
     except (OSError, psutil.Error):
         # The pressure watcher treats zero as immediate pressure and fails
         # closed. Propagating AccessDenied from its daemon thread would stop
         # monitoring silently while the owned model load continued.
         return 0.0
+
+# available_ram_gb()
 
 
 def sample_cpu_utilization_percent(
@@ -92,6 +113,11 @@ def sample_cpu_utilization_percent(
 
     Returns None when psutil cannot report utilization, so callers treat an
     unavailable reading as "unknown", never as "idle".
+    
+    왜 필요한가:
+    벤치마크 수행 시 백그라운드 프로세스의 부하가 결과에 미치는 
+    왜곡을 감지하기 위해 필요합니다. 일시적인 스파이크를 걸러내고 
+    지속적인 부하만을 파악하기 위해 여러 번 샘플링한 중앙값을 사용합니다.
     """
     if isinstance(samples, bool) or not isinstance(samples, int) or not 1 <= samples <= 10:
         raise ValueError("samples must be an integer from 1 to 10")
@@ -125,6 +151,11 @@ class WindowsCommitInfo:
     ``available_gb`` is headroom a new allocation can take right now.
     ``limit_gb`` is the whole configured budget - RAM plus the current
     pagefile - and therefore what a candidate can never exceed.
+    
+    왜 필요한가:
+    Windows 시스템에서 RAM과 페이징 파일을 합친 전체 가상 메모리(Commit) 
+    한도와 현재 가용량을 파악하여, Out of Memory(OOM) 에러를 미연에 방지하기 
+    위해 필요한 데이터 구조입니다.
     """
 
     available_gb: float
@@ -165,6 +196,11 @@ def windows_commit_info() -> WindowsCommitInfo | None:
     ``CommitLimit - CommitTotal`` is capacity newly committed pages may use.
     Return ``None`` when Windows cannot provide the counters, so callers retain
     their portable physical-memory fallback instead of assuming capacity.
+    
+    왜 필요한가:
+    Windows 운영체제 특성상 물리 메모리 외에 페이징 파일을 포함한 실제 
+    가용 메모리(Commit) 공간을 확인해야 안전하게 대용량 모델을 
+    로드할 수 있기 때문에 이 함수가 필요합니다.
     """
     if platform.system() != "Windows":
         return None
@@ -214,6 +250,11 @@ def calculate_memory_budget(hw: HardwareInfo) -> MemoryBudget:
     ``psutil.available`` includes reclaimable memory. Localfit still leaves a
     proportional reserve for the OS and applications opened after the scan.
     Unified-memory Macs use the RAM result once because CPU and GPU share it.
+    
+    왜 필요한가:
+    운영체제와 다른 백그라운드 프로그램들이 안정적으로 동작할 수 있도록 
+    최소한의 예비 메모리(Reserve)를 남겨두고, 실제로 AI 모델이 사용할 수 있는 
+    안전한 메모리 예산(Budget)을 계산하기 위해 필요합니다.
     """
     ram_reserve = max(
         RAM_SAFETY_RESERVE_MIN_GB,
@@ -263,7 +304,12 @@ _OS_DISPLAY_NAMES = {"Darwin": "macOS"}
 
 
 def _os_version(raw_os_name: str) -> str:
-    """Return the user-facing OS version, not Darwin's kernel version."""
+    """Return the user-facing OS version, not Darwin's kernel version.
+    
+    왜 필요한가:
+    사용자에게 익숙한 형태의 OS 버전을 보여주기 위해 필요합니다.
+    특히 macOS의 경우 다윈 커널 버전이 아닌 실제 macOS 버전을 추출해야 합니다.
+    """
     if raw_os_name != "Darwin":
         return platform.release()
 
@@ -277,11 +323,22 @@ def _os_version(raw_os_name: str) -> str:
 
 
 def _is_apple_silicon() -> bool:
+    """
+    왜 필요한가:
+    현재 시스템이 Apple Silicon (M1/M2 등)인지 확인하여,
+    통합 메모리(Unified Memory) 아키텍처에 맞는 메모리 예산 계산 및
+    전용 최적화를 적용하기 위해 필요합니다.
+    """
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
 def _mac_sysctl_cpu_brand() -> str | None:
-    """Run `sysctl -n machdep.cpu.brand_string` once, or None on failure."""
+    """Run `sysctl -n machdep.cpu.brand_string` once, or None on failure.
+    
+    왜 필요한가:
+    macOS 환경에서 CPU의 정확한 모델명(예: Apple M1 Max)을 가져오기 위해,
+    sysctl 명령어를 통해 시스템 정보를 직접 조회할 필요가 있습니다.
+    """
     try:
         out = subprocess.run(
             ["sysctl", "-n", "machdep.cpu.brand_string"],
@@ -298,17 +355,35 @@ def _mac_sysctl_cpu_brand() -> str | None:
 
 
 def _mac_cpu_brand() -> str:
+    """
+    왜 필요한가:
+    macOS 환경에서 CPU 이름을 조회할 때, `_mac_sysctl_cpu_brand()` 결과가 없으면
+    Python 기본 `platform.processor()`를 폴백(fallback)으로 사용하여 
+    최대한 정보를 제공하기 위해 필요합니다.
+    """
     brand = _mac_sysctl_cpu_brand()
     return brand if brand is not None else (platform.processor() or "Unknown")
 
 
 def _mac_chip_name() -> str:
+    """
+    왜 필요한가:
+    Apple Silicon 기기에서 칩 이름을 가져오되, 구체적인 모델명을 모를 경우 
+    'Apple Silicon'이라는 일반적인 명칭이라도 반환하여 
+    UI나 로그에 표시하기 위해 필요합니다.
+    """
     brand = _mac_sysctl_cpu_brand()
     return brand if brand is not None else "Apple Silicon"
 
 
 def _linux_cpu_model() -> str | None:
-    """Return Linux CPU brand; platform.processor() is often only ``x86_64``."""
+    """Return Linux CPU brand; platform.processor() is often only ``x86_64``.
+    
+    왜 필요한가:
+    Linux에서는 Python의 기본 `platform.processor()`가 구체적인 CPU 모델명 대신 
+    단순히 아키텍처(x86_64)만 반환하는 경우가 많기 때문에, 
+    `/proc/cpuinfo` 파일을 직접 파싱하여 정확한 모델명을 알아내기 위해 필요합니다.
+    """
     try:
         with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as cpuinfo:
             for line in cpuinfo:
@@ -348,7 +423,13 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _powershell_json(command: str, *, timeout: float = 5):
-    """Run a PowerShell snippet that prints JSON and parse it, or return None."""
+    """Run a PowerShell snippet that prints JSON and parse it, or return None.
+    
+    왜 필요한가:
+    Windows 시스템에서 하드웨어 정보를 안정적으로 얻기 위해 
+    PowerShell 명령어를 실행하고 그 결과를 JSON 형태로 파싱하여 
+    파이썬 객체로 쉽게 다루기 위해 필요합니다. (특히 인코딩 이슈를 회피하기 위함)
+    """
     powershell = os.path.join(
         os.environ.get("SystemRoot", r"C:\Windows"),
         "System32",
@@ -376,7 +457,12 @@ def _powershell_json(command: str, *, timeout: float = 5):
 
 
 def _windows_cim(class_name: str, properties: list[str]) -> list[dict]:
-    """Read a small CIM projection without depending on pywin32/wmi."""
+    """Read a small CIM projection without depending on pywin32/wmi.
+    
+    왜 필요한가:
+    외부 라이브러리(pywin32 등)에 대한 의존성 없이, Windows 내장 CIM(WMI) 인스턴스를 
+    조회하여 CPU나 GPU 같은 시스템 구성 요소의 상세 정보를 얻기 위해 필요합니다.
+    """
     projection = ",".join(properties)
     data = _powershell_json(
         f"Get-CimInstance {class_name} | Select-Object {projection} | "
@@ -390,6 +476,12 @@ def _windows_cim(class_name: str, properties: list[str]) -> list[dict]:
 
 
 def _windows_cpu_model() -> str | None:
+    """
+    왜 필요한가:
+    Windows 시스템에서 정확한 CPU 모델명(예: Intel Core i7)을 추출하기 위해,
+    CIM 조회를 먼저 시도하고 실패하면 레지스트리를 읽는 방식으로 
+    안정적으로 CPU 정보를 가져오기 위해 필요합니다.
+    """
     for item in _windows_cim("Win32_Processor", ["Name"]):
         name = str(item.get("Name") or "").strip()
         if name:
@@ -410,7 +502,13 @@ def _windows_cpu_model() -> str | None:
 
 
 def _windows_registry_gpus() -> list[dict]:
-    """Registry fallback for locked-down machines where CIM is denied."""
+    """Registry fallback for locked-down machines where CIM is denied.
+    
+    왜 필요한가:
+    보안 설정 등으로 인해 CIM(WMI) 접근이 차단된 Windows 환경에서도 
+    레지스트리를 직접 뒤져서 그래픽 카드(GPU) 정보를 알아내기 위한 
+    최후의 수단(Fallback)으로 필요합니다.
+    """
     try:
         import winreg
     except ImportError:
@@ -462,6 +560,11 @@ def _scan_windows_gpu() -> tuple[str | None, float | None, float | None]:
     Win32_VideoController.AdapterRAM is useful for many discrete AMD cards,
     but is not dedicated VRAM for Intel/shared adapters. Keep those totals
     unknown rather than feeding a fabricated capacity to fit decisions.
+    
+    왜 필요한가:
+    NVIDIA 그래픽 카드가 아닌 환경(예: AMD 또는 Intel 내장 그래픽)에서 
+    사용 가능한 GPU와 그 VRAM 용량을 파악하기 위해, CIM과 레지스트리 정보를 
+    종합하여 최적의 그래픽 어댑터를 찾아내기 위해 필요합니다.
     """
     adapters: dict[str, tuple[str, int | None]] = {}
     # CIM frequently exposes every adapter but AdapterRAM is a legacy
@@ -514,7 +617,13 @@ def _scan_windows_gpu() -> tuple[str | None, float | None, float | None]:
 
 
 def _scan_nvidia_vram() -> tuple[str | None, float | None, float | None]:
-    """Return (gpu_name, vram_total_gb, vram_free_gb) or (None, None, None) if unavailable."""
+    """Return (gpu_name, vram_total_gb, vram_free_gb) or (None, None, None) if unavailable.
+    
+    왜 필요한가:
+    NVIDIA GPU의 경우 NVML(pynvml) 라이브러리를 통해 VRAM의 전체 용량과 
+    현재 사용 가능한 여유 용량을 정확히 측정할 수 있으므로, 
+    이 모델의 메모리 핏(Fit)을 계산하기 위한 핵심 정보를 얻기 위해 필요합니다.
+    """
     try:
         import pynvml
 
@@ -535,6 +644,12 @@ def _scan_nvidia_vram() -> tuple[str | None, float | None, float | None]:
 
 
 def _scan_hardware() -> HardwareInfo:
+    """
+    왜 필요한가:
+    OS, CPU 코어 수, RAM, GPU 등 시스템 전반의 하드웨어 정보를 
+    한 번의 종합 스캔으로 수집하여 HardwareInfo 객체로 반환함으로써,
+    메모리 예산 계산과 최적화의 기반 데이터를 제공하기 위해 필요합니다.
+    """
     try:
         vm = psutil.virtual_memory()
         ram_total_gb = vm.total / (1024**3)
@@ -618,6 +733,11 @@ _last_scan: HardwareInfo | None = None
 
 
 def scan_hardware() -> HardwareInfo:
+    """
+    왜 필요한가:
+    실제로 하드웨어 스캔을 수행하면서 그 결과를 전역 변수에 캐싱해 두어, 
+    이후 빠른 조회가 필요할 때 중복 스캔 비용을 없애기 위해 필요합니다.
+    """
     global _last_scan
     _last_scan = _scan_hardware()
     return _last_scan
@@ -625,5 +745,11 @@ def scan_hardware() -> HardwareInfo:
 
 def last_scan() -> HardwareInfo | None:
     """The most recent `scan_hardware()` result in this process, or None
-    when this command never needed one."""
+    when this command never needed one.
+    
+    왜 필요한가:
+    오류 보고(error_report)나 단순 정보 조회 등 하드웨어 스캔 자체가 목적이 아닐 때,
+    굳이 느린 스캔 작업을 새로 시작하지 않고 이전에 성공했던 스캔 결과가 있다면 
+    그것을 재사용하기 위해 필요합니다.
+    """
     return _last_scan

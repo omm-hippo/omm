@@ -6,6 +6,8 @@ runner = CliRunner()
 
 
 def test_compact_list_collapses_engine_columns(isolated_omm_home):
+    (isolated_omm_home / "models").mkdir(parents=True, exist_ok=True)
+    (isolated_omm_home / "models" / "model.gguf").write_bytes(b"")
     registry.save_registry(
         {"model.gguf": {"size_bytes": 1024, "linked": {"ollama": True}}}
     )

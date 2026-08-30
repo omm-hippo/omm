@@ -13,10 +13,23 @@ describe("idempotent RTDB writes", () => {
       `https://test.firebaseio.com/telemetry/${"a".repeat(64)}.json`,
       expect.objectContaining({
         method: "PUT",
-        redirect: "error",
+        redirect: "manual",
         headers: expect.objectContaining({ "if-match": "null_etag" }),
       }),
     );
+    vi.unstubAllGlobals();
+  });
+
+  it("treats a redirect response as a failed write (redirect:manual, not followed)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("", { status: 307, headers: { location: "https://evil.example" } })),
+    );
+    const result = await putEventOnce(
+      "token", "https://test.firebaseio.com", "usage", "c".repeat(64), { value: 1 },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(307);
     vi.unstubAllGlobals();
   });
 

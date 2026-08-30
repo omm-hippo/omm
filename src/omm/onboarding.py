@@ -292,6 +292,71 @@ def install_selected_engines(console: Console, selected: list[str]) -> bool:
     return succeeded
 
 
+_DATA_SHARING_TEXT = """\
+omm can send anonymous usage data so we know which versions and hardware to
+support, and which commands are breaking.
+
+If you say yes, once a day omm sends ONE batch containing:
+  - a random id (not tied to you - reset: omm setting upload usage --reset-id)
+  - omm version, install method, OS, CPU architecture
+  - RAM / VRAM size range, GPU vendor
+  - which commands you ran and whether they succeeded
+It never sends model names, search terms, file paths, your IP, or hostname.
+
+Saying yes also turns on crash reports (you're asked before each one is sent).
+
+Default is OFF. Change any time with `omm setting upload`.
+Full details: https://github.com/omm-hippo/omm/blob/main/PRIVACY.md"""
+
+
+def _confirm_data_sharing(default: bool) -> bool:
+    import questionary
+
+    question = _add_escape_to_cancel(
+        questionary.confirm(
+            "Send anonymous usage data + crash reports?", default=default
+        )
+    )
+    return bool(question.ask())
+
+
+def run_data_sharing_step(console: Console) -> None:
+    """Ask once whether omm may send anonymous usage stats (and, with the
+    same yes, crash reports). Both stay off unless the user explicitly
+    answers yes on a TTY - a non-interactive run never enables them."""
+    if not _stdin_is_tty():
+        console.print(
+            "[muted]Anonymous usage stats and crash reports are off. "
+            "Enable any time with `omm setting upload`.[/muted]\n"
+        )
+        return
+
+    from rich.panel import Panel
+
+    console.print(Panel(_DATA_SHARING_TEXT, title="Help improve omm", border_style="muted"))
+    current = config_mod.load_config().get("usage_stats_policy") == "enabled"
+    try:
+        said_yes = _confirm_data_sharing(current)
+    except Exception:
+        # Escape-to-cancel or a questionary failure: change nothing.
+        return
+    if said_yes:
+        changes: dict[str, object] = {"usage_stats_policy": "enabled"}
+        # Only flip crash reports on if the user has never chosen for them -
+        # an earlier explicit `--disable` must not be silently reversed.
+        if config_mod.load_config().get("error_report_send_policy") is None:
+            changes["error_report_send_policy"] = "ask"
+        config_mod.update_config(**changes)
+        console.print(
+            "[success]Thanks![/success] Turn it off any time: `omm setting upload`.\n"
+        )
+    else:
+        # "never", not None: records that the question was asked and
+        # declined, so `omm update` does not ask again.
+        config_mod.update_config(usage_stats_policy="never")
+        console.print("[muted]No data will be sent.[/muted]\n")
+
+
 def run_completion_step(console: Console) -> None:
     """Offers to enable shell tab-completion via typer's built-in
     `--install-completion` machinery - the same engine behind the `omm
@@ -356,16 +421,13 @@ def run_wizard(console: Console) -> None:
                 "Fix the installer error above, then run `omm setup` again.[/error]"
             )
             raise typer.Exit(1)
+    run_data_sharing_step(console)
     run_completion_step(console)
     console.print(
         "\n[success]Setup complete.[/success] "
-        "Run `omm setting` any time to change telemetry, upload, or update-channel settings.\n"
+        "Run `omm setting` any time to change data-sharing or update-channel settings.\n"
     )
     console.print(
         "[accent]Next:[/accent] `omm recommend` picks a model that fits this PC and installs it, "
         "then `omm run` starts chatting with it.\n"
-    )
-    console.print(
-        "[muted]Error reports are off unless you turn them on: "
-        "`omm setting error-reports --ask` (see docs/error-reports.md).[/muted]\n"
     )

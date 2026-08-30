@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,10 @@ RECOMMEND_MODEL_PATH = OMM_HOME / "recommend-model.json"
 EVALUATIONS_DIR = OMM_HOME / "evaluations"
 CALIBRATION_PATH = OMM_HOME / "calibration.json"
 CATALOG_HISTORY_DIR = OMM_HOME / "catalog-history"
+# Stable random per-install id for anonymous usage stats. Its own file, never
+# config.json - config gets copied between machines and this must not travel
+# with it. See omm.usage and config.client_id().
+CLIENT_ID_PATH = OMM_HOME / "client-id"
 LEGACY_FIREBASE_ENDPOINT = (
     "https://localfit-8ab57-default-rtdb.firebaseio.com/telemetry.json"
 )
@@ -46,6 +51,12 @@ TELEMETRY_GATEWAY_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.
 # RTDB with create-only semantics. Direct Firebase client writes are denied.
 # Self-hosted collectors still use the path derived by error_report.endpoint().
 ERROR_REPORTS_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/error-report"
+# Anonymous usage-stats batch destination. Its own Worker route + RTDB node
+# (`/usage`), gated by the same proof-of-work envelope as telemetry. Never
+# derived from telemetry_endpoint: usage stats always go upstream, and the
+# stream is opt-in and off by default (see omm.usage, usage_stats_policy in
+# DEFAULT_CONFIG below, and PRIVACY.md).
+USAGE_GATEWAY_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/usage"
 # Public client identifier for the `localfit-8ab57` Firebase project - not a
 # secret. Firebase Web API keys are safe to ship in client code (they only
 # identify the project to Google's Identity Toolkit; actual access is
@@ -91,6 +102,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # message, since an explicit opt-out must not be overridable by a
     # runtime flag.
     "error_report_send_policy": None,
+    # Anonymous usage stats. Opt-in, off by default: None means "never",
+    # "enabled" means the daily batch runs. Stored None (not "never") so an
+    # unset state stays distinguishable from an explicit opt-out, matching
+    # error_report_send_policy. There is no "ask" - a daily background batch
+    # has no interaction point.
+    "usage_stats_policy": None,
     "rules_url": None,
     "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.json",
     "default_engine": None,
@@ -223,6 +240,25 @@ def update_config(**changes: Any) -> dict[str, Any]:
         current.update(changes)
         atomic_write_text(CONFIG_PATH, json.dumps(current, indent=2) + "\n")
     return current
+
+
+def client_id() -> str:
+    """Stable random per-install identifier (uuid4 hex), created on first
+    read. Its own file, never config.json - config gets copied between
+    machines and this must not travel with it. Best-effort: any I/O failure
+    returns a fresh ephemeral id rather than raising, so its only caller
+    (omm.usage) never has to handle an exception."""
+    try:
+        if CLIENT_ID_PATH.exists():
+            existing = CLIENT_ID_PATH.read_text(encoding="utf-8").strip()
+            if len(existing) == 32 and all(c in "0123456789abcdef" for c in existing):
+                return existing
+        fresh = uuid.uuid4().hex
+        CLIENT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(CLIENT_ID_PATH, fresh + "\n")
+        return fresh
+    except OSError:
+        return uuid.uuid4().hex
 
 
 def add_storage_saved_bytes(delta: int) -> int:

@@ -85,7 +85,7 @@ jobs:
           test -e "$managed/keep-me.txt"
 
   python:
-    name: Python 3.11 on ${{ matrix.os }}
+    name: Python 3.12 on ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -95,7 +95,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
       - name: Install Localfit test dependencies
         run: python -m pip install -e ".[dev]" -r requirements-train.txt

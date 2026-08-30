@@ -12,6 +12,7 @@ drives this.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import unicodedata
@@ -24,6 +25,8 @@ from omm import linker, registry
 from omm.config import MODELS_DIR, ensure_omm_home
 from omm.hashutil import sha256_file
 from omm.hub import ModelResolutionError, validate_model_filename
+
+log = logging.getLogger(__name__)
 
 _OLLAMA_MODEL_LAYER = "application/vnd.ollama.image.model"
 
@@ -359,6 +362,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             if isinstance(entry, dict)
             and entry.get("sha256") == group.sha256
             and _is_safe_registry_filename(fn, managed_path)
+            and managed_path(fn).exists()
         ),
         None,
     )
@@ -529,4 +533,14 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             fields["ollama_runtime_name"] = ollama_runtime_name
         registry.upsert_entry(filename, **fields)
 
+    log.info(
+        "adopted %s (%d location(s), %s)", filename, len(adopted_links),
+        "reused hub copy" if existing_filename else "new hub import",
+        extra={
+            "event": "adopt",
+            "file": filename,
+            "count": len(adopted_links),
+            "reason": "reused" if existing_filename else "new",
+        },
+    )
     return AdoptResult(filename=filename, bytes_saved=bytes_saved, link_warnings=link_warnings)

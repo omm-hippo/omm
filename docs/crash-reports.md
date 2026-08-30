@@ -1,4 +1,4 @@
-# Error reports: what they contain, and what they never contain
+# Crash reports: what they contain, and what they never contain
 
 `omm contribute` runs unattended on machines nobody is watching. When a
 model fails to load, a daemon dies, or omm itself crashes, that information

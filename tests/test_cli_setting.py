@@ -46,7 +46,7 @@ def test_setting_upload_enable_migrates_legacy_endpoint_to_gateway(isolated_omm_
     pointed at it must move to the gateway rather than send doomed writes."""
     config.update_config(telemetry_endpoint=config.LEGACY_FIREBASE_ENDPOINT, telemetry_backend="firebase_legacy")
 
-    result = runner.invoke(cli.app, ["setting", "upload", "--enable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--enable"])
 
     assert result.exit_code == 0, result.stdout
     saved = config.load_config()
@@ -57,7 +57,7 @@ def test_setting_upload_enable_migrates_legacy_endpoint_to_gateway(isolated_omm_
 def test_setting_upload_requires_explicit_endpoint_before_opt_in_once_cleared(isolated_omm_home):
     runner.invoke(cli.app, ["setting", "telemetry", "--endpoint", "none"])
 
-    result = runner.invoke(cli.app, ["setting", "upload", "--enable"])
+    result = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--enable"])
 
     assert result.exit_code == 1
     assert config.load_config()["telemetry_send_policy"] == "ask"
@@ -108,7 +108,7 @@ def test_setting_version_switch_to_beta_runs_perform_update_and_saves_config(iso
     monkeypatch.setattr(
         cli,
         "_perform_update",
-        lambda branch: calls.append(branch) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        lambda branch, **kwargs: calls.append(branch) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     )
     monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "beta_sha")
     monkeypatch.setattr(cli, "_refresh_data", lambda: None)
@@ -187,7 +187,7 @@ def test_setting_version_switch_failure_does_not_persist_channel(isolated_omm_ho
     monkeypatch.setattr(
         cli,
         "_perform_update",
-        lambda branch: subprocess.CompletedProcess([], 1, stdout="", stderr="offline"),
+        lambda branch, **kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr="offline"),
     )
 
     result = runner.invoke(cli.app, ["setting", "version", "--beta"])
@@ -195,6 +195,39 @@ def test_setting_version_switch_failure_does_not_persist_channel(isolated_omm_ho
     assert result.exit_code == 1
     assert "offline" in result.stderr
     assert config.load_config().get("update_channel", "stable") == "stable"
+
+
+def test_setting_version_switch_failure_hints_reinstall_on_signature_error(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda branch, **kwargs: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="commit abc1234 failed signature verification: gpg: ..."
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["setting", "version", "--beta"])
+
+    assert result.exit_code == 1
+    assert "install.sh" in result.stderr or "install.ps1" in result.stderr
+
+
+def test_setting_version_switch_failure_offline_has_no_reinstall_hint(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda branch, **kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr="offline"),
+    )
+
+    result = runner.invoke(cli.app, ["setting", "version", "--beta"])
+
+    assert result.exit_code == 1
+    assert "install.sh" not in result.stderr
+    assert "install.ps1" not in result.stderr
 
 
 def test_setting_version_is_a_noop_when_already_on_requested_channel(isolated_omm_home, monkeypatch):
@@ -329,7 +362,7 @@ def test_setting_bare_menu_offers_error_reports(isolated_omm_home, monkeypatch):
     labels = [choice.title for choice in captured_choices[0]]
     values = [choice.value for choice in captured_choices[0]]
     assert "error-reports" in values
-    assert any("Error reports" in label and "never" in label for label in labels)
+    assert any("Crash reports" in label and "never" in label for label in labels)
 
 
 def test_setting_bare_menu_error_reports_submenu_saves_policy(isolated_omm_home, monkeypatch):
@@ -367,7 +400,7 @@ def test_setting_bare_menu_version_submenu_switches_channel(isolated_omm_home, m
     monkeypatch.setattr(questionary, "select", fake_select)
     monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
     monkeypatch.setattr(
-        cli, "_perform_update", lambda branch: subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        cli, "_perform_update", lambda branch, **kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr="")
     )
     monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "beta_sha")
     monkeypatch.setattr(cli, "_refresh_data", lambda: None)

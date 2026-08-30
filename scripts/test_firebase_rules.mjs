@@ -120,4 +120,34 @@ const fixedKey = `error_reports/fixed-${Date.now()}`;
 const firstWrite = await request(fixedKey, "PUT", validReport);
 assert.equal(firstWrite.ok, false, "direct fixed-key error report write was accepted");
 
+// --- /usage: gateway-only and unreadable ------------------------------
+//
+// Same posture as /error_reports: the Cloudflare Worker (Firebase Admin,
+// rules-bypassing) is the only writer, and nobody may read the node back.
+const validUsage = {
+  schema_version: 1,
+  client_id: "0123456789abcdef0123456789abcdef",
+  client_version: "0.3.11",
+  install_source: "pipx",
+  os_name: "Darwin",
+  os_version: "23.5.0",
+  cpu_arch: "arm64",
+  ram_gb_bucket: "16-32",
+  vram_gb_bucket: "none",
+  gpu_vendor: "apple",
+  recorded_at: "2026-08-30T00:00:00+00:00",
+  update_channel: "stable",
+  commands: { "install ok": 3 },
+};
+
+for (const auth of [true, false]) {
+  const usageCreated = await request("usage", "POST", validUsage, { auth });
+  assert.equal(usageCreated.ok, false, `direct usage write was accepted (auth: ${auth})`);
+  const usageRead = await request("usage", "GET", undefined, { auth });
+  assert.equal(usageRead.ok, false, `usage was readable (auth: ${auth})`);
+}
+const usageFixed = `usage/fixed-${Date.now()}`;
+const usageFixedWrite = await request(usageFixed, "PUT", validUsage);
+assert.equal(usageFixedWrite.ok, false, "direct fixed-key usage write was accepted");
+
 console.log("Firebase rules scenarios passed.");

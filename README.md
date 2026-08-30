@@ -2,8 +2,10 @@
 
 [![Cross-platform validation](https://github.com/omm-hippo/omm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/omm-hippo/omm/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/omm-model)](https://pypi.org/project/omm-model/)
+[![npm](https://img.shields.io/npm/v/@omm-hippo/omm)](https://www.npmjs.com/package/@omm-hippo/omm)
 [![Python](https://img.shields.io/pypi/pyversions/omm-model)](https://pypi.org/project/omm-model/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-3.0-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
 `omm` is an apt/brew-style package manager for local GGUF models. It keeps one
 model hub, exposes models to supported local AI runners, checks whether a model
@@ -22,7 +24,7 @@ on it.
   text-generation-webui, and KoboldCpp without silently duplicating large files.
 - Ranks models against live RAM, VRAM, operating-system, and runner state.
 - Verifies load and generation through local Ollama or LM Studio APIs.
-- Keeps telemetry, benchmark uploads, and error reports opt-in.
+- Keeps every outbound channel opt-in — benchmark uploads, anonymous usage stats, and crash reports. See [PRIVACY.md](PRIVACY.md).
 
 ## Table of contents
 
@@ -427,8 +429,7 @@ omm upgrade <name> [--dry-run]  # Refresh a model against its source if it has c
 omm upgrade [--yes] [--dry-run]  # Check every installed model for updates
 omm link [--engine NAME]  # Re-verify and repair installed-model links across supported runners
 omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
-omm autoremove  # Clean up broken symlinks in AI runner model directories
-omm cleanup  # Clean up orphaned partial/incomplete downloads
+omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 ```
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `search`/`install` mark models predicted not to run on this machine's hardware in red.
@@ -461,11 +462,13 @@ shown by `omm info`.
 
 ```sh
 omm update  # Update a canonical OMM Git-source install; package installs print their manager command
-omm setting  # Interactive menu for telemetry, upload policy, error reports, version, theme, calibration, and catalog trust
+omm setting  # Interactive menu for outbound data, version, theme, calibration, and catalog trust
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
-omm setting upload --enable|--disable|--ask  # Configure the benchmark-upload send policy
-omm setting error-reports --enable|--disable|--ask  # Configure the opt-in crash/error-report send policy
+omm setting upload  # Show all three outbound-data policies (benchmark / usage / crash); see PRIVACY.md
+omm setting upload benchmark --enable|--disable|--ask  # Benchmark-result upload policy
+omm setting upload usage --enable|--disable  # Anonymous daily usage stats (off by default)
+omm setting upload crash --enable|--disable|--ask  # Opt-in crash-report policy
 omm setting memory-guard --policy ask|block|observe  # Protect local runtime loads from live memory pressure
 omm setting theme [--set NAME]  # Show or change omm's output color theme
 omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model

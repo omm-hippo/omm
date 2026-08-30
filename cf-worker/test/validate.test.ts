@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateErrorReport, validateTelemetryEvent } from "../src/validate";
+import { validateErrorReport, validateTelemetryEvent, validateUsageEvent } from "../src/validate";
 
 // Fixtures and expected outcomes are ported 1:1 from
 // scripts/test_firebase_rules.mjs (the emulator-based rules test suite) so
@@ -24,6 +24,59 @@ describe("error report validation", () => {
   it("rejects unknown fields and local paths", () => {
     expect(validateErrorReport({ ...report, traceback: "secret" }).valid).toBe(false);
     expect(validateErrorReport({ ...report, catalog_ref: "/Users/alice/model.gguf" }).valid).toBe(false);
+  });
+});
+
+describe("usage event validation", () => {
+  const base = {
+    schema_version: 1,
+    client_id: "0123456789abcdef0123456789abcdef",
+    client_version: "0.3.11",
+    install_source: "pipx",
+    os_name: "Darwin",
+    os_version: "23.5.0",
+    cpu_arch: "arm64",
+    ram_gb_bucket: "16-32",
+    vram_gb_bucket: "none",
+    gpu_vendor: "apple",
+    recorded_at: "2026-08-30T00:00:00+00:00",
+    update_channel: "stable",
+    commands: { "install ok": 3, "search ok": 5, "install DownloadError": 1 },
+  };
+
+  it("accepts a well-formed row", () => {
+    expect(validateUsageEvent({ ...base }).valid).toBe(true);
+  });
+
+  it("rejects an unknown field", () => {
+    expect(validateUsageEvent({ ...base, hostname: "x" }).valid).toBe(false);
+  });
+
+  it("rejects a bad bucket / vendor / source", () => {
+    expect(validateUsageEvent({ ...base, ram_gb_bucket: "1234gb" }).valid).toBe(false);
+    expect(validateUsageEvent({ ...base, gpu_vendor: "matrox" }).valid).toBe(false);
+    expect(validateUsageEvent({ ...base, install_source: "curl" }).valid).toBe(false);
+  });
+
+  it("rejects an oversized commands map", () => {
+    const many: Record<string, number> = {};
+    for (let i = 0; i < 101; i++) {
+      const a = String.fromCharCode(97 + (i % 26));
+      const b = String.fromCharCode(97 + Math.floor(i / 26));
+      many[`${a}${b} ok`] = 1;
+    }
+    expect(Object.keys(many).length).toBe(101);
+    expect(validateUsageEvent({ ...base, commands: many }).valid).toBe(false);
+  });
+
+  it("rejects a non-integer / out-of-range count", () => {
+    expect(validateUsageEvent({ ...base, commands: { "install ok": 1.5 } }).valid).toBe(false);
+    expect(validateUsageEvent({ ...base, commands: { "install ok": 0 } }).valid).toBe(false);
+  });
+
+  it("rejects a bad client_id and a path-like string", () => {
+    expect(validateUsageEvent({ ...base, client_id: "NOTHEX" }).valid).toBe(false);
+    expect(validateUsageEvent({ ...base, cpu_arch: "/Users/alice" }).valid).toBe(false);
   });
 });
 

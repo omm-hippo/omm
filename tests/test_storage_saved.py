@@ -27,10 +27,11 @@ def test_load_config_sanitizes_invalid_storage_saved_bytes(isolated_omm_home):
 
 def test_scan_json_reports_hub_storage_and_saved_bytes(isolated_omm_home, monkeypatch):
     config.add_storage_saved_bytes(2 * 1024**3)
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"fake-gguf")
     monkeypatch.setattr(
         cli.registry, "load_registry", lambda: {"model.gguf": {"size_bytes": 1024**3}}
     )
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
 
     result = runner.invoke(cli.app, ["scan", "--json"])
 
@@ -42,10 +43,11 @@ def test_scan_json_reports_hub_storage_and_saved_bytes(isolated_omm_home, monkey
 
 def test_scan_table_shows_hub_storage_and_saved_rows(isolated_omm_home, monkeypatch):
     config.add_storage_saved_bytes(512 * 1024**2)
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"fake-gguf")
     monkeypatch.setattr(
         cli.registry, "load_registry", lambda: {"model.gguf": {"size_bytes": 1024**3}}
     )
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
 
     result = runner.invoke(cli.app, ["scan"])
 
@@ -61,7 +63,7 @@ def test_scan_falls_back_to_stat_when_size_bytes_missing(isolated_omm_home, monk
     model_path.parent.mkdir(parents=True, exist_ok=True)
     model_path.write_bytes(b"x" * 1024**2)
     monkeypatch.setattr(cli.registry, "load_registry", lambda: {"model.gguf": {}})
-    monkeypatch.setattr(cli.scan_import, "find_external_models", lambda: [])
+    monkeypatch.setattr(cli.scan_import, "find_external_model_identities", lambda: [])
 
     result = runner.invoke(cli.app, ["scan", "--json"])
 

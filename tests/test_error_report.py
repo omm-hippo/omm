@@ -346,6 +346,41 @@ def test_flush_keeps_a_failed_report_queued_for_a_later_run(isolated_omm_home, m
     assert error_report.pending_count() == 1
 
 
+def test_flush_backs_off_after_a_failure_instead_of_retrying_every_call(
+    isolated_omm_home, monkeypatch
+):
+    _write_config(error_report_send_policy="always")
+    error_report.queue_report(RuntimeError("boom"), trigger="crash")
+    calls = []
+    monkeypatch.setattr(
+        requests, "post", lambda *a, **k: calls.append(1) or _FakeResp(500, "server error")
+    )
+    monkeypatch.setattr("omm.firebase_auth.get_id_token", lambda: "token")
+
+    assert error_report.flush_pending() == 0
+    assert len(calls) == 1
+
+    # A second call arriving immediately after (e.g. the next `omm` command)
+    # must not pay another proof-of-work solve + HTTP round trip while the
+    # cooldown from the first failure is still active.
+    assert error_report.flush_pending() == 0
+    assert len(calls) == 1
+
+
+def test_flush_clears_backoff_once_a_send_succeeds(isolated_omm_home, monkeypatch):
+    _write_config(error_report_send_policy="always")
+    error_report.queue_report(RuntimeError("boom"), trigger="crash")
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(500, "server error"))
+    monkeypatch.setattr("omm.firebase_auth.get_id_token", lambda: "token")
+    error_report.flush_pending()
+
+    monkeypatch.setattr(error_report, "_backoff_active", lambda: False)
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200))
+
+    assert error_report.flush_pending() == 1
+    assert error_report._read_backoff() == {}
+
+
 def test_flush_sends_nothing_under_ask_until_the_user_is_asked(isolated_omm_home, monkeypatch):
     _write_config(error_report_send_policy="ask")
     error_report.queue_report(RuntimeError("boom"), trigger="crash")

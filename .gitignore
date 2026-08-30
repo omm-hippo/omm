@@ -9,6 +9,7 @@ build/
 .test-tmp-*/
 .DS_Store
 .claude/
+.antigravitycli/
 .firebase/
 *-debug.log
 .worktrees/
@@ -22,3 +23,7 @@ cf-worker/.wrangler/
 cf-worker/dist/
 cf-worker/.dev.vars
 .github/FUNDING.yml
+demo/
+
+# local AI-tooling scratch, not part of the project
+add_korean_comments.py

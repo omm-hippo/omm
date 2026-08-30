@@ -15,6 +15,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import logging
 import re
 import threading
 import time
@@ -43,6 +44,9 @@ from rich.text import Text
 
 from omm import config
 from omm.atomic import atomic_write_text, locked
+from omm.runlog import scrub_url
+
+log = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 1024 * 1024
 _DEFAULT_THREADS = 4
@@ -891,6 +895,46 @@ def _sleep_with_stop_check(seconds: float, stop_check: Callable[[], bool] | None
 
 
 def download_file(
+    url: str,
+    dest: Path,
+    stop_check: Callable[[], bool] | None = None,
+    *,
+    quiet: bool = False,
+    no_color: bool = False,
+) -> None:
+    """Download `url` to `dest`, recording start / completion / failure to
+    the run log. See :func:`_download_file_impl` for the transfer details."""
+    log.info(
+        "download start %s", dest.name,
+        extra={"event": "download-start", "file": dest.name, "url": scrub_url(url)},
+    )
+    try:
+        _download_file_impl(
+            url, dest, stop_check, quiet=quiet, no_color=no_color
+        )
+    except DownloadCancelled:
+        log.info(
+            "download cancelled %s", dest.name,
+            extra={"event": "download-cancelled", "file": dest.name},
+        )
+        raise
+    except Exception as e:
+        log.warning(
+            "download failed %s: %s", dest.name, e,
+            extra={"event": "download-failed", "file": dest.name, "reason": str(e)[:200]},
+        )
+        raise
+    log.info(
+        "download complete %s", dest.name,
+        extra={
+            "event": "download-complete",
+            "file": dest.name,
+            "size": dest.stat().st_size if dest.exists() else None,
+        },
+    )
+
+
+def _download_file_impl(
     url: str,
     dest: Path,
     stop_check: Callable[[], bool] | None = None,

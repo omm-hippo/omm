@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import unquote, urlsplit
-from urllib.request import url2pathname
 
 import click
 import typer
@@ -62,6 +61,7 @@ from omm import (
     recommend_ui,
     registry,
     rules as rules_mod,
+    runlog,
     scan_import,
     search as search_mod,
     session_cache,
@@ -69,6 +69,7 @@ from omm import (
     theme as theme_mod,
     trust,
     tuning,
+    usage,
     version_check,
 )
 from omm import contribute as contribute_mod
@@ -410,6 +411,13 @@ setting_app = typer.Typer(
     rich_markup_mode=None,
 )
 app.add_typer(setting_app)
+upload_app = typer.Typer(
+    name="upload",
+    help="Choose what anonymous data omm may send: benchmark results, usage stats, crash reports. Each is off or ask by default. See PRIVACY.md.",
+    invoke_without_command=True,
+    rich_markup_mode=None,
+)
+setting_app.add_typer(upload_app)
 engine_app = typer.Typer(
     name="engine",
     help="Install local AI runner programs (Ollama, LM Studio, etc.).",
@@ -659,6 +667,12 @@ def _root(
                 f"[muted]Sent {reported} queued error report(s) "
                 "from a previous session.[/muted]"
             )
+        # Anonymous usage stats: at most one batch per day, silently (it is
+        # a background aggregate, not a per-session event worth a notice).
+        try:
+            usage.flush_pending()
+        except Exception:
+            pass
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
@@ -672,10 +686,10 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "setup",
             "engine",
             "import",
-            "autoremove",
             "cleanup",
             "link",
             "update",
+            "log",
             "help",
         ],
     ),
@@ -982,9 +996,9 @@ def scan() -> None:
     opts = _global_opts()
     info = scan_hardware()
     installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
-    reg = registry.load_registry()
+    reg = _prune_missing_models(registry.load_registry())
     cleaned = _reconcile_stale_link_records(reg, installed)
-    external = scan_import.find_external_models()
+    external = scan_import.find_external_model_identities()
     hub_storage_gb = _hub_storage_bytes(reg) / (1024**3)
     storage_saved_gb = load_config().get("storage_saved_bytes", 0) / (1024**3)
 
@@ -1260,6 +1274,8 @@ def _editable_install_uses_src(install_record: dict | None = None) -> bool:
         or parsed.fragment
     ):
         return False
+    from urllib.request import url2pathname  # pulls in http.client/ssl - not worth paying on every command
+
     raw_path = url2pathname(unquote(parsed.path))
     if platform.system() == "Windows" and re.fullmatch(r"/[A-Za-z]:.*", raw_path):
         raw_path = raw_path[1:]
@@ -1317,7 +1333,7 @@ def _bg_version_check_cmd() -> None:
     so the `git ls-remote` round trip survives the short-lived parent
     command exiting; writes the result to the shared cache for a later
     `omm` invocation to pick up."""
-    version_check.cached_remote_head(_remote_head_commit, _channel_branch())
+    version_check.cached_remote_head(_remote_head_commit, _channel_branch(), installed=_installed_commit())
 
 
 def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
@@ -1337,20 +1353,6 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
     the command itself, and `quiet` by global_flags() when `--quiet` came
     after the subcommand name."""
     return opts.command_body_ran and not opts.quiet
-
-
-def _confirm_and_print_update_notice(cached_latest: str, installed: str, branch: str = "main") -> None:
-    """The cached remote head can be up to _TTL_SECONDS stale, so a mismatch
-    against it is only a hint, not proof. Before alarming the user, re-check
-    live and refresh the cache - this trades a bit of extra latency (only on
-    the rare command where the notice would otherwise fire) for never showing
-    a stale "update available" once the real remote has caught up."""
-    latest = _remote_head_commit(branch)
-    if latest is None:  # offline/unreachable - don't guess, stay silent
-        return
-    version_check.record(latest, branch)
-    if latest != installed:
-        err_console.print("[muted]Update available! Run: omm update[/muted]")
 
 
 _SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
@@ -1398,6 +1400,36 @@ def _maybe_run_onboarding(ctx: typer.Context) -> None:
     config_mod.update_config(onboarding_completed=True)
 
 
+def _spawn_bg_version_check() -> None:
+    """Detached `git ls-remote` child that survives the short-lived parent
+    command exiting; writes its result to the shared cache for a later
+    `omm` invocation to pick up. Never blocks the caller."""
+    args = [sys.executable, "-m", "omm.cli", "_bg-version-check"]
+    # `start_new_session` (setsid) is POSIX-only - CPython's Windows
+    # _execute_child ignores it entirely, so the child stays in the
+    # parent's process group and can be torn down with it (e.g. the
+    # console window closing) before the `git ls-remote` it runs
+    # finishes. DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP is the
+    # Windows equivalent of actually detaching it.
+    if platform.system() == "Windows":
+        kwargs = {
+            "creationflags": subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+        }
+    else:
+        kwargs = {"start_new_session": True}
+    try:
+        subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **kwargs,
+        )
+    except OSError:
+        pass
+
+
 def _maybe_start_update_check(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand in _SKIP_UPDATE_CHECK_SUBCOMMANDS:
         return
@@ -1405,42 +1437,32 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
     if not installed:  # editable/dev install - nothing to compare against
         return
     branch = _channel_branch()
-    fresh, latest = version_check.cached_remote_head_if_fresh(branch)
+    fresh, latest, checked_against = version_check.cached_remote_head_if_fresh(branch)
     if fresh:
         if latest and latest != installed:
-            opts = ctx.ensure_object(GlobalOptions)
+            if checked_against == installed:
+                # This entry was fetched live while `installed` was already
+                # the current commit, so the mismatch can't be an artifact
+                # of a commit landing after the check - safe to print from
+                # cache alone, no extra network round trip.
+                opts = ctx.ensure_object(GlobalOptions)
 
-            def print_notice_unless_suppressed() -> None:
-                if _update_notice_is_wanted(opts):
-                    _confirm_and_print_update_notice(latest, installed, branch)
+                def print_notice_unless_suppressed() -> None:
+                    if _update_notice_is_wanted(opts):
+                        err_console.print("[muted]Update available! Run: omm update[/muted]")
 
-            ctx.call_on_close(print_notice_unless_suppressed)
+                ctx.call_on_close(print_notice_unless_suppressed)
+            elif version_check.mark_reconfirming(branch):
+                # `installed` moved since this entry was written (e.g. a
+                # commit just landed in SRC_DIR) - the comparison might be
+                # stale, so reconfirm live in a detached background check
+                # rather than block this command on `git ls-remote` or risk
+                # printing a false "update available". If still warranted,
+                # the notice shows up on a later command once confirmed.
+                _spawn_bg_version_check()
         return
-    if version_check.should_start_check(branch) and version_check.mark_checking(branch) is not False:
-        args = [sys.executable, "-m", "omm.cli", "_bg-version-check"]
-        # `start_new_session` (setsid) is POSIX-only - CPython's Windows
-        # _execute_child ignores it entirely, so the child stays in the
-        # parent's process group and can be torn down with it (e.g. the
-        # console window closing) before the `git ls-remote` it runs
-        # finishes. DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP is the
-        # Windows equivalent of actually detaching it.
-        if platform.system() == "Windows":
-            kwargs = {
-                "creationflags": subprocess.DETACHED_PROCESS
-                | subprocess.CREATE_NEW_PROCESS_GROUP
-            }
-        else:
-            kwargs = {"start_new_session": True}
-        try:
-            subprocess.Popen(
-                args,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                **kwargs,
-            )
-        except OSError:
-            pass
+    if version_check.should_start_check(branch) and version_check.mark_checking(branch):
+        _spawn_bg_version_check()
 
 
 _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
@@ -2299,10 +2321,12 @@ def _deps_satisfied() -> bool:
     return True
 
 
-def _run_pipx_install_with_progress(args: list[str]) -> subprocess.CompletedProcess:
+def _run_pipx_install_with_progress(
+    args: list[str], *, label: str = "Reinstalling omm via pipx..."
+) -> subprocess.CompletedProcess:
     with Progress(
         SpinnerColumn(),
-        TextColumn("[accent]Reinstalling omm via pipx...[/accent]"),
+        TextColumn(f"[accent]{label}[/accent]"),
         BarColumn(),
         TaskProgressColumn(),
         TimeElapsedColumn(),
@@ -2457,7 +2481,7 @@ def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProce
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="git command timed out")
 
 
-def _git_update_src(branch: str = "main") -> subprocess.CompletedProcess:
+def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subprocess.CompletedProcess:
     """Fast path for an already-migrated install: fetch + fast-forward the
     persistent clone in place. The editable install's .pth points straight
     at SRC_DIR/src, so this alone is enough to pick up code changes - no
@@ -2501,7 +2525,8 @@ def _git_update_src(branch: str = "main") -> subprocess.CompletedProcess:
     target_commit = rev_parse.stdout.strip()
 
     ok, message = trust.verify_update(
-        SRC_DIR, current_commit, target_commit, trust.current_trust_anchor()
+        SRC_DIR, current_commit, target_commit, trust.current_trust_anchor(),
+        same_branch=same_branch,
     )
     if not ok:
         return subprocess.CompletedProcess([], 1, stdout="", stderr=message)
@@ -2511,11 +2536,16 @@ def _git_update_src(branch: str = "main") -> subprocess.CompletedProcess:
     )
 
 
-def _perform_update(branch: str) -> subprocess.CompletedProcess:
+def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.CompletedProcess:
     """Shared by `omm update` and `omm setting version` (channel switch):
     migrate-or-pull SRC_DIR onto `branch`, reinstalling via pipx only if
     dependencies changed or the editable environment still carries OMM's
-    validated legacy distribution name."""
+    validated legacy distribution name.
+
+    `same_branch` must be False for an explicit channel switch - see
+    `trust.verify_update`'s docstring for why a deliberate switch may accept
+    a target that is an ancestor of the installed commit, while `omm update`
+    on the currently tracked branch never should."""
     source = package_metadata.install_source()
     if source is not package_metadata.InstallSource.GIT:
         return subprocess.CompletedProcess(
@@ -2549,10 +2579,10 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
                 else result
             )
         console.print(f"Updating omm from {REPO_URL} ({branch}) ...")
-        result = _git_update_src(branch)
+        result = _git_update_src(branch, same_branch=same_branch)
         if result.returncode == 0:
             dependencies_satisfied = _deps_satisfied()
-            if legacy_distribution or not dependencies_satisfied or not editable_install:
+            if legacy_distribution or not editable_install:
                 # With the renamed distribution, pipx derives a new
                 # `omm-model` environment from this spec. `--force` lets the
                 # successfully-created environment take over the shared
@@ -2564,6 +2594,35 @@ def _perform_update(branch: str) -> subprocess.CompletedProcess:
                 result = _verified_pipx_install_result(result)
                 if legacy_state is not None:
                     result = _finalize_legacy_pipx_migration(result, legacy_state)
+            elif not dependencies_satisfied:
+                # A newly declared dependency (common on a branch switch,
+                # since beta always picks up new deps before main) doesn't
+                # need the whole venv rebuilt - `pipx runpip` runs pip inside
+                # the *existing* omm-model venv pipx already tracks, so it
+                # only fetches what's actually missing/outdated instead of
+                # every already-satisfied package. Skips
+                # `_verified_pipx_install_result`'s exact-version check: that
+                # check exists to catch a `pipx install --force` silently
+                # landing the wrong environment, and compares against pipx's
+                # own dist-info snapshot, which (like any editable install)
+                # stays frozen at whatever it was on the last full install -
+                # applying it here would flag this deliberately lighter path
+                # as broken on every single use.
+                result = _run_pipx_install_with_progress(
+                    [
+                        _PIPX_COMMAND, "runpip", package_metadata.DISTRIBUTION_NAME,
+                        "install", "--editable", _install_spec(),
+                    ],
+                    label="Installing new dependencies...",
+                )
+                if result.returncode != 0:
+                    # Fall back to the full rebuild this branch was trying to
+                    # avoid - e.g. an older pipx without `runpip`, or a venv
+                    # too broken for a partial install to repair.
+                    result = _run_pipx_install_with_progress(
+                        [_PIPX_COMMAND, "install", "--force", "--editable", _install_spec()]
+                    )
+                    result = _verified_pipx_install_result(result)
         return result
     except FileNotFoundError:
         if platform.system() == "Windows":
@@ -2705,7 +2764,7 @@ def update() -> None:
     installed = _installed_commit()
     latest = _remote_head_commit(branch) if installed else None
     if latest:
-        version_check.record(latest, branch)
+        version_check.record(latest, branch, installed=installed)
     if migrated and editable_install and installed and latest and installed == latest:
         console.print(f"[muted]omm is already up to date - {_version_line(installed)}[/muted]")
         _refresh_data()
@@ -2720,6 +2779,23 @@ def update() -> None:
     after = _version_line(_installed_commit())
     console.print(f"[success]Ω Updated: {before} -> {after}[/success]")
     _refresh_data()
+    _maybe_prompt_data_sharing_after_update()
+
+
+def _maybe_prompt_data_sharing_after_update() -> None:
+    """After a real update, show the data-sharing consent once to users who
+    updated past the version that introduced it and were never asked (a
+    fresh install gets the same step inside `omm setup`).
+    `usage_stats_policy` is None only when the question has never been
+    answered - "enabled" or "never" both mean it has."""
+    if not _stdin_is_tty():
+        return
+    if load_config().get("usage_stats_policy") is not None:
+        return
+    try:
+        onboarding.run_data_sharing_step(console)
+    except Exception:
+        pass
 
 
 def _add_escape_to_cancel(question: questionary.Question) -> questionary.Question:
@@ -2779,6 +2855,18 @@ _HANGUL_JAMO_TO_LATIN = {
     "ㅋ": "z", "ㅌ": "x", "ㅊ": "c", "ㅍ": "v", "ㅠ": "b",
     "ㅜ": "n", "ㅡ": "m",
 }
+
+# Set for the duration of _ask_single_key's own event loop. `omm install`/
+# `omm contribute` run a background _EscListener thread that puts stdin into
+# raw mode and reads keys on its own to catch Esc mid-download/mid-benchmark.
+# If a y/n/a prompt opens while that thread is still alive, two independent
+# raw-mode readers race on the same stdin fd - whichever one's select() wins
+# a given keystroke gets it, so presses are randomly swallowed by the
+# listener (which only acts on Escape) instead of reaching the prompt. That's
+# why a key sometimes needed several presses to register. _EscListener checks
+# this flag and skips its own read while a foreground prompt is running, so
+# only the prompt ever consumes stdin.
+_FOREGROUND_PROMPT_ACTIVE = threading.Event()
 
 
 def _build_single_key_bindings(
@@ -2862,9 +2950,12 @@ def _ask_single_key(
         return to_formatted_text(tokens)
 
     merged_style = merge_styles_default([None])
-    return PromptSession(
-        get_prompt_tokens, key_bindings=bindings, style=merged_style
-    ).app.run()
+    session = PromptSession(get_prompt_tokens, key_bindings=bindings, style=merged_style)
+    _FOREGROUND_PROMPT_ACTIVE.set()
+    try:
+        return session.app.run()
+    finally:
+        _FOREGROUND_PROMPT_ACTIVE.clear()
 
 
 def _ask_confirm(message: str, default: bool = False) -> bool:
@@ -2994,14 +3085,14 @@ def _resolve_error_report_decision(flag: bool) -> bool:
             if flag:
                 err_console.print(
                     "[warning]Error reports are turned off, so --report-errors is ignored. "
-                    "Run `omm setting error-reports --ask` (or --enable) first if you want "
+                    "Run `omm setting upload crash --ask` (or --enable) first if you want "
                     "to send them.[/warning]"
                 )
             return False
         if flag:
             console.print(
                 "[muted]--report-errors: error reports from this run only will be sent. "
-                "Your saved setting is unchanged (`omm setting error-reports --enable` "
+                "Your saved setting is unchanged (`omm setting upload crash --enable` "
                 "makes it permanent).[/muted]"
             )
             return True
@@ -3016,7 +3107,7 @@ def _resolve_error_report_decision(flag: bool) -> bool:
     console.print(
         "[muted]omm would send "
         f"{'a report shaped exactly like this' if is_example else 'this report, already queued from an earlier run,'}"
-        " to the write-only error-report channel (see docs/error-reports.md):[/muted]"
+        " to the write-only error-report channel (see docs/crash-reports.md):[/muted]"
     )
     console.print(f"[muted]{escape(error_report.preview_text(report))}[/muted]", highlight=False)
     answer = _ask_upload_choice("Send scrubbed error reports?")
@@ -3024,7 +3115,7 @@ def _resolve_error_report_decision(flag: bool) -> bool:
         config_mod.update_config(error_report_send_policy="always")
         console.print(
             "[muted]Saved: omm will now always send scrubbed error reports "
-            "(change with `omm setting error-reports`).[/muted]"
+            "(change with `omm setting upload crash`).[/muted]"
         )
         return True
     return answer == "yes"
@@ -6167,6 +6258,24 @@ def upgrade(
         console.print(f"[success]{filename} updated to {_entry_version(fresh_entry)}.[/success]")
 
 
+def _prune_missing_models(reg: dict) -> dict:
+    """Drop registry entries whose model file no longer exists on disk
+    (e.g. deleted by hand outside omm) and persist the removal, so `list`
+    reflects the real model folder instead of stale registry state."""
+    present = {}
+    for filename, entry in reg.items():
+        try:
+            path = _managed_model_path(filename)
+        except ModelResolutionError:
+            registry.remove_entry(filename)
+            continue
+        if path.exists():
+            present[filename] = entry
+        else:
+            registry.remove_entry(filename)
+    return present
+
+
 @app.command(name="list")
 @global_flags
 def list_models(
@@ -6179,7 +6288,7 @@ def list_models(
     Alias: ls"""
     _validate_engine(engine)
     json_output = _global_opts().json
-    reg = registry.load_registry()
+    reg = _prune_missing_models(registry.load_registry())
     had_any_models = bool(reg)
     if engine is not None:
         reg = {
@@ -6230,6 +6339,35 @@ def list_models(
     session_cache.record_results(list(reg.keys()))
 
 
+@app.command(name="log")
+@global_flags
+def log_cmd(
+    ctx: typer.Context,
+    lines: int = typer.Option(40, "--lines", "-n", help="Show the last N runs."),
+    grep: str = typer.Option(
+        None, "--grep", help="Only show runs whose block contains TEXT."
+    ),
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild",
+        help="Regenerate history.log from the per-run JSONL files.",
+    ),
+) -> None:
+    """Show the local run log (~/.omm/logs/history.log).
+
+    Every `omm` command appends a summary block here; full detail for one
+    run is in its `~/.omm/logs/<timestamp>_<pid>_<command>.jsonl` file. The
+    log is local only - it is never uploaded."""
+    if rebuild:
+        count = runlog.rebuild_history()
+        console.print(f"[muted]Rebuilt history.log from {count} run(s).[/muted]")
+    text = runlog.read_history(lines=lines, grep=grep)
+    if not text.strip():
+        console.print("[muted]No run log yet.[/muted]")
+        return
+    console.print(text.rstrip())
+
+
 @setting_app.command(name="telemetry")
 @global_flags
 def configure_telemetry(
@@ -6265,9 +6403,32 @@ def configure_telemetry(
     console.print(table)
 
 
-@setting_app.command(name="upload")
+@upload_app.callback(invoke_without_command=True)
 @global_flags
-def configure_upload(
+def upload_menu(ctx: typer.Context) -> None:
+    """Bare `omm setting upload` prints all three outbound-data policies."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from omm import usage
+
+    cfg = load_config()
+    table = _table(title="Outbound data (see PRIVACY.md)", show_header=True)
+    table.add_column("Channel", style="label")
+    table.add_column("Policy")
+    table.add_row("benchmark", cfg.get("telemetry_send_policy", "ask"))
+    table.add_row(
+        "usage", "enabled" if usage.policy(cfg) == "enabled" else "off (default)"
+    )
+    table.add_row("crash", cfg.get("error_report_send_policy") or "off (default)")
+    console.print(table)
+    console.print(
+        "[muted]omm setting upload <benchmark|usage|crash> --enable / --disable[/muted]"
+    )
+
+
+@upload_app.command(name="benchmark")
+@global_flags
+def configure_upload_benchmark(
     enable: bool = typer.Option(False, "--enable", help="Always send benchmark results without asking."),
     disable: bool = typer.Option(False, "--disable", help="Never send benchmark results."),
     ask: bool = typer.Option(
@@ -6305,19 +6466,16 @@ def configure_upload(
     console.print(table)
 
 
-@setting_app.command(name="error-reports")
+@upload_app.command(name="crash")
 @global_flags
-def configure_error_reports(
-    enable: bool = typer.Option(False, "--enable", help="Always send scrubbed error reports without asking."),
-    disable: bool = typer.Option(False, "--disable", help="Never send error reports (the default)."),
+def configure_upload_crash(
+    enable: bool = typer.Option(False, "--enable", help="Always send scrubbed crash reports without asking."),
+    disable: bool = typer.Option(False, "--disable", help="Never send crash reports (the default)."),
     ask: bool = typer.Option(False, "--ask", help="Ask once per `omm contribute` run before sending."),
 ) -> None:
-    """Configure the opt-in error-report policy; see docs/error-reports.md for what is sent.
-
-    Kept separate from `omm setting upload` on purpose: error reports go to
-    a different, write-only channel than benchmark telemetry, so the two
-    consents are managed independently.
-    """
+    """Configure the opt-in crash-report policy; see docs/crash-reports.md for
+    exactly what is sent. Crash reports go to their own write-only channel,
+    separate from benchmark telemetry and usage stats."""
     chosen = [flag for flag in (enable, disable, ask) if flag]
     if len(chosen) > 1:
         err_console.print("[error]Choose only one of --enable, --disable, or --ask.[/error]")
@@ -6356,6 +6514,53 @@ def configure_error_reports(
     table.add_row("Error reports", labels[error_report.send_policy(current)])
     table.add_row("Destination", str(error_report.endpoint(current) or "not available"))
     console.print(table)
+
+
+@upload_app.command(name="usage")
+@global_flags
+def configure_upload_usage(
+    enable: bool = typer.Option(False, "--enable", help="Send the anonymous daily usage batch."),
+    disable: bool = typer.Option(False, "--disable", help="Never send usage stats (the default)."),
+    reset_id: bool = typer.Option(
+        False,
+        "--reset-id",
+        help="Generate a new random install id, unlinking future rows from past ones.",
+    ),
+) -> None:
+    """Anonymous daily usage stats (opt-in, off by default). See PRIVACY.md
+    for the exact fields. Run with no flags to print the current policy and
+    the exact payload that would be sent next."""
+    from omm import usage
+
+    if enable and disable:
+        err_console.print("[error]Choose one of --enable or --disable.[/error]")
+        raise typer.Exit(1)
+    if reset_id:
+        config_mod.CLIENT_ID_PATH.unlink(missing_ok=True)
+        console.print(f"[success]New install id:[/success] {config_mod.client_id()}")
+    if enable:
+        config_mod.update_config(usage_stats_policy="enabled")
+        console.print(
+            "[success]Usage stats enabled.[/success] "
+            "Turn off any time: `omm setting upload usage --disable`."
+        )
+    elif disable:
+        # "never" (an explicit choice), not None (never asked) - so a later
+        # `omm update` does not re-prompt.
+        config_mod.update_config(usage_stats_policy="never")
+        discarded = usage.discard_pending()
+        console.print(
+            "[success]Usage stats disabled.[/success]"
+            + (f" Discarded {discarded} queued row(s)." if discarded else "")
+        )
+    if not (enable or disable or reset_id):
+        cfg = load_config()
+        console.print(
+            f"Policy: {'enabled' if usage.policy(cfg) == 'enabled' else 'off (default)'}"
+        )
+        console.print(f"Install id: {config_mod.client_id()}")
+        console.print("\n[label]Next batch would send:[/label]")
+        console.print_json(data=usage.build_payload())
 
 
 @setting_app.command(name="memory-guard")
@@ -6442,14 +6647,37 @@ def configure_version(
         return
     if requested and requested != (current.get("update_channel") or "stable"):
         branch = _channel_branch(requested)
-        result = _perform_update(branch)
+        result = _perform_update(branch, same_branch=False)
         if result.returncode != 0:
             err_console.print(f"[error]Channel switch failed:[/error]\n{result.stderr}")
+            stderr_lower = (result.stderr or "").lower()
+            if "signature" in stderr_lower or "trust chain" in stderr_lower:
+                # A stale installed copy of trust.verify_update can permanently
+                # reject a legitimate branch switch it predates the logic for
+                # (see the module docstring's CAUTION) - no update from within
+                # this same stale copy can fix that. A full reinstall re-fetches
+                # install.sh fresh, which always carries current verification
+                # logic, so it recovers independently of the stuck install.
+                if platform.system() == "Windows":
+                    err_console.print(
+                        "\n[muted]If this channel is legitimate, the installed copy of omm may "
+                        "be too old to verify it. Reinstalling picks up current verification "
+                        "logic:[/muted]\n"
+                        "  [Net.ServicePointManager]::SecurityProtocol = "
+                        "[Net.SecurityProtocolType]::Tls12; irm https://omm.run/install.ps1 | iex"
+                    )
+                else:
+                    err_console.print(
+                        "\n[muted]If this channel is legitimate, the installed copy of omm may "
+                        "be too old to verify it. Reinstalling picks up current verification "
+                        "logic:[/muted]\n"
+                        "  curl -fsSL https://omm.run/install.sh | sh"
+                    )
             raise typer.Exit(1)
         current = config_mod.update_config(update_channel=requested)
         latest = _remote_head_commit(branch)
         if latest:
-            version_check.record(latest, branch)
+            version_check.record(latest, branch, installed=_installed_commit())
         console.print(f"[success]Switched to the {requested} channel.[/success]")
         _refresh_data()
     channel = current.get("update_channel") or "stable"
@@ -6657,6 +6885,7 @@ def setting_menu(ctx: typer.Context) -> None:
         update_channel = current.get("update_channel") or "stable"
         memory_guard_policy = current.get("memory_guard_policy", "ask")
         error_reports_policy = error_report.send_policy(current)
+        usage_policy = "enabled" if current.get("usage_stats_policy") == "enabled" else "off"
 
         choice = _ask_select(
             questionary.select(
@@ -6680,7 +6909,10 @@ def setting_menu(ctx: typer.Context) -> None:
                         f"Memory guard (current: {memory_guard_policy})", value="memory-guard"
                     ),
                     questionary.Choice(
-                        f"Error reports (current: {error_reports_policy})", value="error-reports"
+                        f"Crash reports (current: {error_reports_policy})", value="error-reports"
+                    ),
+                    questionary.Choice(
+                        f"Usage stats (current: {usage_policy})", value="usage-stats"
                     ),
                     questionary.Choice("← Back", value="back"),
                 ],
@@ -6707,7 +6939,7 @@ def setting_menu(ctx: typer.Context) -> None:
                 )
             )
             if action is not None and action != "back":
-                configure_upload(
+                configure_upload_benchmark(
                     enable=(action == "enable"),
                     disable=(action == "disable"),
                     ask=(action == "ask"),
@@ -6773,10 +7005,25 @@ def setting_menu(ctx: typer.Context) -> None:
                 )
             )
             if action is not None and action != "back":
-                configure_error_reports(
+                configure_upload_crash(
                     enable=(action == "enable"),
                     disable=(action == "disable"),
                     ask=(action == "ask"),
+                )
+        elif choice == "usage-stats":
+            action = _ask_select(
+                questionary.select(
+                    f"Anonymous usage stats (current: {usage_policy}):",
+                    choices=[
+                        questionary.Choice("Send the anonymous daily batch", value="enable"),
+                        questionary.Choice("Never send (default)", value="disable"),
+                        questionary.Choice("← Back", value="back"),
+                    ],
+                )
+            )
+            if action is not None and action != "back":
+                configure_upload_usage(
+                    enable=(action == "enable"), disable=(action == "disable")
                 )
 
         if not _ask_confirm("Change another setting?", default=True):
@@ -7175,15 +7422,20 @@ def _cleanup_incomplete_installs() -> int:
 
 @app.command()
 @global_flags
-def autoremove() -> None:
-    """Clean up broken symlinks left in AI runner model directories.
+def cleanup() -> None:
+    """Clean up leftover partial downloads and broken runner symlinks.
 
-    Removes symlinks left behind when a model's source .gguf was deleted
-    without going through `omm uninstall`."""
+    Removes orphaned partial or unregistered .gguf downloads left behind by
+    interrupted installs, plus symlinks in AI runner model directories whose
+    source .gguf was deleted without going through `omm uninstall`."""
+    incomplete_removed = _cleanup_incomplete_installs()
+
     removed_by_engine: dict[str, int] = {}
     for spec in linker.ENGINES:
         if linker.is_engine_installed(spec.key):
-            removed_by_engine[spec.label] = linker.autoremove_engine(spec.key)
+            count = linker.autoremove_engine(spec.key)
+            if count:
+                removed_by_engine[spec.label] = count
     custom_removed = 0
     for entry in registry.load_registry().values():
         for destination in entry.get("custom_links", []):
@@ -7191,29 +7443,20 @@ def autoremove() -> None:
                 custom_removed += 1
     if custom_removed:
         removed_by_engine["custom"] = custom_removed
+    links_removed = sum(removed_by_engine.values())
 
-    if not any(removed_by_engine.values()):
-        console.print("[success]No broken symlinks found.[/success]")
+    if not incomplete_removed and not links_removed:
+        console.print("[success]Nothing to clean up.[/success]")
         return
 
-    parts = [f"{count} broken {label} link(s)" for label, count in removed_by_engine.items() if count]
-    console.print(f"[success]Removed {', '.join(parts) or '0 broken links'}.[/success]")
-
-
-@app.command()
-@global_flags
-def cleanup() -> None:
-    """Clean up leftover partial downloads and install cache files.
-
-    Removes orphaned partial or unregistered .gguf downloads left behind
-    in the models directory by interrupted or incomplete installs."""
-    incomplete_removed = _cleanup_incomplete_installs()
-
-    if incomplete_removed == 0:
-        console.print("[success]No leftover install files found.[/success]")
-        return
-
-    console.print(f"[success]Cleaned up {incomplete_removed} incomplete install file(s).[/success]")
+    parts: list[str] = []
+    if incomplete_removed:
+        parts.append(f"{incomplete_removed} incomplete install file(s)")
+    if links_removed:
+        parts.append(
+            ", ".join(f"{count} broken {label} link(s)" for label, count in removed_by_engine.items())
+        )
+    console.print(f"[success]Cleaned up {', '.join(parts)}.[/success]")
 
 
 def _guard_benchmark_models(models: list[str]) -> None:
@@ -8507,6 +8750,9 @@ class _EscListener:
                     # buffer non-blockingly, so there's no fd to select() on
                     # (Windows select() only works on sockets anyway).
                     while not self.stop_event.is_set():
+                        if _FOREGROUND_PROMPT_ACTIVE.is_set():
+                            time.sleep(0.05)
+                            continue
                         for key_press in inp.read_keys():
                             if key_press.key == Keys.Escape:
                                 self.stop_event.set()
@@ -8515,6 +8761,9 @@ class _EscListener:
                     import select
 
                     while not self.stop_event.is_set():
+                        if _FOREGROUND_PROMPT_ACTIVE.is_set():
+                            time.sleep(0.05)
+                            continue
                         ready, _, _ = select.select([inp.fileno()], [], [], 0.1)
                         if not ready:
                             continue
@@ -9115,7 +9364,6 @@ def contribute(
             listener.stop_event.set()
 
         cleanup()
-        autoremove()
 
         after_count = _telemetry_row_count(endpoint) if endpoint else None
         duration = time.monotonic() - start_time
@@ -9197,16 +9445,32 @@ def _queue_crash_report(error: BaseException) -> None:
 def main() -> None:
     """Console-script entry point (see pyproject.toml [project.scripts]).
     Catches disk-full errors that escape every local handler - e.g. a JSON
-    write during `omm autoremove` - and prints one clean line instead of
+    write during `omm cleanup` - and prints one clean line instead of
     Typer's default traceback. Everything else is queued as an opt-in error
     report and then propagates untouched, so a genuine bug still surfaces as
-    a normal traceback and can be reported."""
+    a normal traceback and can be reported.
+
+    Brackets `app()` with the local run log (`runlog`): every invocation
+    leaves a `~/.omm/logs/<ts>_<pid>_<cmd>.jsonl` and a `history.log` block.
+    `runlog` swallows its own errors, so it never changes the outcome here."""
+    runlog.start(sys.argv[1:])
+    exit_code, outcome, exc_name = 0, "ok", None
     try:
         app()
+    except SystemExit as e:
+        # app() exits this way even on success, so this is the common path.
+        exit_code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        outcome = "ok" if exit_code == 0 else ("usage-error" if exit_code == 2 else "failed")
+        raise
+    except KeyboardInterrupt:
+        exit_code, outcome = 130, "interrupted"
+        raise
     except InsufficientDiskSpaceError as e:
+        exit_code, outcome = 1, "failed"
         err_console.print(f"[error]{e}[/error]")
         raise SystemExit(1) from None
     except PermissionError as e:
+        exit_code, outcome = 1, "failed"
         target = f" ({e.filename})" if e.filename else ""
         errors.print_cli_error(
             err_console,
@@ -9216,6 +9480,7 @@ def main() -> None:
         )
         raise SystemExit(1) from None
     except OSError as e:
+        exit_code, outcome = 1, "failed"
         if e.errno == errno.ENOSPC:
             err_console.print(
                 "[error]Not enough disk space to complete this operation. "
@@ -9228,8 +9493,15 @@ def main() -> None:
         # SystemExit and KeyboardInterrupt are BaseException, so a normal
         # `typer.Exit` (including every `raise typer.Exit(1)` error path)
         # and a Ctrl+C never reach here - only real crashes do.
+        exit_code, outcome, exc_name = 1, "failed", type(e).__name__
         _queue_crash_report(e)
         raise
+    finally:
+        runlog.finish(exit_code, outcome)
+        try:
+            usage.record_run(runlog.subcommand_of(sys.argv[1:]), outcome, exc_name)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

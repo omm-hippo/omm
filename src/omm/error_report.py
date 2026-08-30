@@ -19,7 +19,7 @@ deliberate:
 * the hosted gateway has a paired `/error-report` route; self-hosted
   destinations are derived from `telemetry_endpoint` rather than configured
   separately, so there is no second URL to keep in sync;
-* the payload is an allow-list of fields (see `docs/error-reports.md`).
+* the payload is an allow-list of fields (see `docs/crash-reports.md`).
   Tracebacks, absolute paths, usernames, environment variables, the command
   line, and generated model text are never part of it.
 """
@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import platform
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -55,6 +56,15 @@ TRIGGERS = ("install_quality_eval", "daemon_restart_giveup", "crash")
 _MAX_LOG_LINES = 500
 _MAX_PENDING_REPORTS = 200
 _DEFAULT_MAX_RETRIES_PER_FLUSH = 3
+
+# A gateway that is down or misconfigured (see omm-hippo/omm - the
+# `/error-report` route once 404ed after a stale Worker deploy) must not
+# make every single `omm` command pay a proof-of-work solve plus an HTTP
+# round trip for a send that is going to fail anyway. Consecutive failures
+# push the next attempt out exponentially, capped at `_BACKOFF_MAX_SECONDS`;
+# any fully-successful flush clears it immediately.
+_BACKOFF_INITIAL_SECONDS = 30
+_BACKOFF_MAX_SECONDS = 6 * 60 * 60
 _MAX_MESSAGE_LENGTH = 2000
 _MAX_TYPE_LENGTH = 200
 _MAX_CATALOG_REF_LENGTH = 620
@@ -173,7 +183,7 @@ def scrub_paths(text: str) -> str:
     file without naming its owner.
 
     Regex-only by design: this is a targeted username/home-prefix scrubber,
-    not general-purpose PII detection (see `docs/error-reports.md`).
+    not general-purpose PII detection (see `docs/crash-reports.md`).
     """
     if not isinstance(text, str) or not text:
         return ""
@@ -187,6 +197,48 @@ def _log_path():
 
 def _pending_path():
     return config.OMM_HOME / "error_reports_pending.json"
+
+
+def _backoff_path():
+    return config.OMM_HOME / "error_reports_backoff.json"
+
+
+def _read_backoff() -> dict[str, Any]:
+    path = _backoff_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_backoff(data: dict[str, Any]) -> None:
+    try:
+        atomic_write_text(_backoff_path(), json.dumps(data))
+    except OSError:
+        pass
+
+
+def _backoff_active() -> bool:
+    next_attempt_at = _read_backoff().get("next_attempt_at")
+    return isinstance(next_attempt_at, (int, float)) and time.time() < next_attempt_at
+
+
+def _record_flush_outcome(*, attempted: int, sent: int) -> None:
+    """Widen the cooldown on a partial/total failure, clear it on a clean
+    flush. `attempted` excludes calls that never reached the network (no
+    pending reports, or already inside an active cooldown)."""
+    if attempted == 0:
+        return
+    if sent == attempted:
+        if _backoff_path().exists():
+            _write_backoff({})
+        return
+    failures = int(_read_backoff().get("consecutive_failures", 0)) + 1
+    delay = min(_BACKOFF_INITIAL_SECONDS * (2 ** (failures - 1)), _BACKOFF_MAX_SECONDS)
+    _write_backoff({"consecutive_failures": failures, "next_attempt_at": time.time() + delay})
 
 
 def log_attempt(outcome: str, detail: str = "") -> None:
@@ -556,6 +608,8 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH, force: bool
         return 0
     if force and send_policy(config_data) == "never" and policy_is_set(config_data):
         return 0
+    if _backoff_active():
+        return 0
     path = _pending_path()
     try:
         # Keep multiple flushers serialized without blocking queue writers
@@ -586,6 +640,7 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH, force: bool
                         path,
                         json.dumps(still_pending[-_MAX_PENDING_REPORTS:]),
                     )
+            _record_flush_outcome(attempted=len(to_retry), sent=sent)
             return sent
     except (OSError, FileLockTimeout):
         return 0

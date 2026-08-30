@@ -1,0 +1,76 @@
+name: Create the GitHub Release for a signed tag
+
+"on":
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish the Release once two teammates have approved
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Verify the tag is signed by an allowed signer
+        run: |
+          git -c gpg.ssh.allowedSignersFile=src/omm/trust/allowed_signers \
+            verify-tag "${GITHUB_REF_NAME}"
+
+      - name: Require the tag to point into main history
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+
+      - name: Require the tag and project version to match
+        run: python scripts/release_artifacts.py check-tag --tag "${GITHUB_REF_NAME}"
+
+      - name: Require two approving reviewers on the merged pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pr="$(gh api "repos/${GH_REPO}/commits/${GITHUB_SHA}/pulls" \
+            --jq '[.[] | select(.base.ref == "main" and .merged_at != null)][0].number')"
+          if [ -z "${pr}" ] || [ "${pr}" = "null" ]; then
+            echo "::error::no merged main pull request found for ${GITHUB_SHA}; create the Release manually" >&2
+            exit 1
+          fi
+          echo "merged pull request: #${pr}"
+          author="$(gh api "repos/${GH_REPO}/pulls/${pr}" --jq '.user.login')"
+          gh api --paginate --slurp "repos/${GH_REPO}/pulls/${pr}/reviews" > reviews.json
+          python scripts/release_gate.py \
+            --reviews reviews.json --author "${author}" --min 2
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} already exists; leaving it unchanged"
+            exit 0
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "OMM ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag
