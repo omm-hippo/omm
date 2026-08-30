@@ -19,7 +19,7 @@ deliberate:
 * the hosted gateway has a paired `/error-report` route; self-hosted
   destinations are derived from `telemetry_endpoint` rather than configured
   separately, so there is no second URL to keep in sync;
-* the payload is an allow-list of fields (see `docs/error-reports.md`).
+* the payload is an allow-list of fields (see `docs/crash-reports.md`).
   Tracebacks, absolute paths, usernames, environment variables, the command
   line, and generated model text are never part of it.
 """
@@ -183,7 +183,7 @@ def scrub_paths(text: str) -> str:
     file without naming its owner.
 
     Regex-only by design: this is a targeted username/home-prefix scrubber,
-    not general-purpose PII detection (see `docs/error-reports.md`).
+    not general-purpose PII detection (see `docs/crash-reports.md`).
     """
     if not isinstance(text, str) or not text:
         return ""

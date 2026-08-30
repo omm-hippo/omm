@@ -140,6 +140,23 @@ still requires 0 reviews to *merge* — the gate is release-only. Windows portab
 through the `cf-worker/` Cloudflare Worker gateway. `database.rules.json` enforces the schema per
 `benchmark_version` (currently v8/v9; older versions grandfathered) and is emulator-tested in CI.
 `src/localfit_server/` (FastAPI) is an optional self-hostable collector — not the primary path.
+Three separate opt-in outbound channels share the `cf-worker/` PoW gateway, each its own
+RTDB node + `database.rules.json` block + `validate.ts` validator: `telemetry` (benchmark
+rows, world-readable), `error_reports` (`error_report.py`, private), and `usage`
+(`usage.py` — anonymous daily batch: random `~/.omm/client-id`, `client_version`, OS/arch,
+bucketed RAM/VRAM, GPU vendor, and a `<command> <outcome>` tally; **never** model names,
+paths, args, or IP). All three are configured under `omm setting upload {benchmark,usage,crash}`
+and consented to by one prompt in `omm setup`. `PRIVACY.md` is the user-facing spec; keep it,
+the `omm setup` consent text, `validate.ts`, and `database.rules.json` in sync when fields change.
+
+**Run log.** `runlog.py` attaches a JSON-lines handler to the `omm` logger for one process;
+`cli.main()` brackets `app()` with `runlog.start()`/`finish()`. Every invocation writes
+`~/.omm/logs/<ts>_<pid>_<cmd>.jsonl` plus a `history.log` block (`omm log` reads it). **Local
+only** — never uploaded, and the outbound channels above do not read it. `OMM_DEBUG=1` adds
+subprocess/HTTP detail. Domain modules emit events via `logging.getLogger("omm.<module>")`.
+`runlog.py`/`usage.py` swallow their own errors and stay import-side-effect-free (read
+`config.OMM_HOME` at call time). `linker.link_file` / `downloader.download_file` are thin
+logging wrappers over `_link_file_impl` / `_download_file_impl`.
 
 **CLI shape.** `cli.py` is a ~9,300-line Typer monolith (entry `omm.cli:main`). Startup speed
 matters: `questionary`, `requests`, `prompt_toolkit`, and `importlib.metadata` are lazy-imported
