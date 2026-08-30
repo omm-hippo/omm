@@ -2,8 +2,10 @@
 
 [![Cross-platform validation](https://github.com/omm-hippo/omm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/omm-hippo/omm/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/omm-model)](https://pypi.org/project/omm-model/)
+[![npm](https://img.shields.io/npm/v/@omm-hippo/omm)](https://www.npmjs.com/package/@omm-hippo/omm)
 [![Python](https://img.shields.io/pypi/pyversions/omm-model)](https://pypi.org/project/omm-model/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-3.0-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
 `omm` is an apt/brew-style package manager for local GGUF models. It keeps one
 model hub, exposes models to supported local AI runners, checks whether a model
