@@ -655,6 +655,7 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "cleanup",
             "link",
             "update",
+            "log",
             "help",
         ],
     ),
@@ -6285,6 +6286,35 @@ def list_models(
         )
     console.print(table)
     session_cache.record_results(list(reg.keys()))
+
+
+@app.command(name="log")
+@global_flags
+def log_cmd(
+    ctx: typer.Context,
+    lines: int = typer.Option(40, "--lines", "-n", help="Show the last N runs."),
+    grep: str = typer.Option(
+        None, "--grep", help="Only show runs whose block contains TEXT."
+    ),
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild",
+        help="Regenerate history.log from the per-run JSONL files.",
+    ),
+) -> None:
+    """Show the local run log (~/.omm/logs/history.log).
+
+    Every `omm` command appends a summary block here; full detail for one
+    run is in its `~/.omm/logs/<timestamp>_<pid>_<command>.jsonl` file. The
+    log is local only - it is never uploaded."""
+    if rebuild:
+        count = runlog.rebuild_history()
+        console.print(f"[muted]Rebuilt history.log from {count} run(s).[/muted]")
+    text = runlog.read_history(lines=lines, grep=grep)
+    if not text.strip():
+        console.print("[muted]No run log yet.[/muted]")
+        return
+    console.print(text.rstrip())
 
 
 @setting_app.command(name="telemetry")
