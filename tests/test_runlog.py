@@ -114,3 +114,20 @@ def test_read_history_grep_and_lines(isolated_omm_home):
         runlog.finish(0, "ok")
     assert "omm search" in runlog.read_history(grep="search")
     assert "omm list" not in runlog.read_history(grep="search")
+
+
+def test_cli_main_writes_run_log(isolated_omm_home, monkeypatch):
+    from omm import cli
+
+    monkeypatch.setattr("sys.argv", ["omm", "--version"])
+    try:
+        cli.main()
+    except SystemExit as e:
+        assert e.code in (0, None)
+    files = _jsonl_files(config.OMM_HOME)
+    assert len(files) == 1
+    records = [json.loads(line) for line in files[0].read_text().splitlines()]
+    assert records[0]["event"] == "run_start"
+    assert records[-1]["event"] == "run_end"
+    assert records[-1]["exit_code"] == 0
+    assert (config.OMM_HOME / "logs" / "history.log").exists()

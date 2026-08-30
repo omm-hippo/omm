@@ -61,6 +61,7 @@ from omm import (
     recommend_ui,
     registry,
     rules as rules_mod,
+    runlog,
     scan_import,
     search as search_mod,
     session_cache,
@@ -9285,13 +9286,29 @@ def main() -> None:
     write during `omm autoremove` - and prints one clean line instead of
     Typer's default traceback. Everything else is queued as an opt-in error
     report and then propagates untouched, so a genuine bug still surfaces as
-    a normal traceback and can be reported."""
+    a normal traceback and can be reported.
+
+    Brackets `app()` with the local run log (`runlog`): every invocation
+    leaves a `~/.omm/logs/<ts>_<pid>_<cmd>.jsonl` and a `history.log` block.
+    `runlog` swallows its own errors, so it never changes the outcome here."""
+    runlog.start(sys.argv[1:])
+    exit_code, outcome = 0, "ok"
     try:
         app()
+    except SystemExit as e:
+        # app() exits this way even on success, so this is the common path.
+        exit_code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        outcome = "ok" if exit_code == 0 else ("usage-error" if exit_code == 2 else "failed")
+        raise
+    except KeyboardInterrupt:
+        exit_code, outcome = 130, "interrupted"
+        raise
     except InsufficientDiskSpaceError as e:
+        exit_code, outcome = 1, "failed"
         err_console.print(f"[error]{e}[/error]")
         raise SystemExit(1) from None
     except PermissionError as e:
+        exit_code, outcome = 1, "failed"
         target = f" ({e.filename})" if e.filename else ""
         errors.print_cli_error(
             err_console,
@@ -9301,6 +9318,7 @@ def main() -> None:
         )
         raise SystemExit(1) from None
     except OSError as e:
+        exit_code, outcome = 1, "failed"
         if e.errno == errno.ENOSPC:
             err_console.print(
                 "[error]Not enough disk space to complete this operation. "
@@ -9313,8 +9331,11 @@ def main() -> None:
         # SystemExit and KeyboardInterrupt are BaseException, so a normal
         # `typer.Exit` (including every `raise typer.Exit(1)` error path)
         # and a Ctrl+C never reach here - only real crashes do.
+        exit_code, outcome = 1, "failed"
         _queue_crash_report(e)
         raise
+    finally:
+        runlog.finish(exit_code, outcome)
 
 
 if __name__ == "__main__":
