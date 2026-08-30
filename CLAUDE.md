@@ -127,11 +127,9 @@ algorithm strands every already-installed client; such users need a manual
 **Releases.** Pushing a signed `v<version>` tag into `main` history is the release trigger.
 `release.yml` (PyPI + Homebrew dispatch) and `npm-release.yml` fire on it, and `github-release.yml`
 creates the GitHub Release itself: it re-verifies the tag signature against `trust/allowed_signers`,
-matches the tag to `pyproject` version, finds the merged PR for the tagged commit, and requires
-**≥2 distinct approving reviewers** (author excluded, latest review per person) via
-`scripts/release_gate.py` before `gh release create --generate-notes`. A team of 3 → 2 approvals =
-consensus. Fewer approvals fails the workflow; create the Release by hand then. Branch protection
-still requires 0 reviews to *merge* — the gate is release-only. Windows portable ZIP and the
+matches the tag to `pyproject` version, requires the tag to point into `main` history, then runs
+`gh release create --generate-notes`. No reviewer-approval gate — pushing a valid signed tag is
+enough. Windows portable ZIP and the
 `whl`/`tar.gz`/`SHA256SUMS` assets are still attached manually (`windows-portable.yml` dispatch).
 
 **Telemetry.** `benchmark.py` measures real tokens/sec via Ollama's `/api/generate`;
@@ -176,5 +174,5 @@ Check these before assuming undocumented intent behind a feature's shape.
   owning script.
 - `.github/workflows/` — `ci.yml` (6 required checks), `train.yml`, per-runner `ci-engine-*.yml`,
   `trusted-head.yml` / `branch-ancestry-check.yml` (branch protection), `github-release.yml`
-  (auto GitHub Release, ≥2-reviewer gated), release/npm/portable.
+  (auto GitHub Release on a signed tag), release/npm/portable.
 - `demo/model-visualizer/` — standalone React demo of the RandomForest walk; not shipped.
