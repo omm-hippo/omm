@@ -1,7 +1,7 @@
 # Anonymous usage statistics — design
 
 Date: 2026-08-30
-Status: approved for implementation
+Status: implemented on `beta` (plan: `docs/superpowers/plans/2026-08-30-usage-stats.md`)
 Branch target: `beta`
 Prior art: this is "sub-project 2" from `2026-08-30-local-run-logging-design.md`.
 
