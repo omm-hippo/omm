@@ -11,8 +11,11 @@ pull request.
 
 ## Development setup
 
-The package supports Python 3.10 or newer. Python 3.11 matches the core CI
-environment.
+The installed CLI supports Python 3.10 or newer. **Until 2026-09-06 the
+dependencies are version-frozen to the project's contest submission, and the
+`dev`/`server` extras in that frozen set require Python 3.12+** (`numpy==2.5.2`
+and its peers publish no 3.11 wheel). Use a 3.12+ interpreter for development
+during the freeze; the runtime-only install still works on 3.10/3.11.
 
 ```sh
 git clone https://github.com/omm-hippo/omm.git
@@ -69,8 +72,9 @@ export OMM_HOME="$(mktemp -d)"  # macOS/Linux example
 
 ## Checks for the area you changed
 
-Core CI always runs Python 3.11 on Windows, macOS, and Ubuntu, a bare runtime
-install, installer/uninstaller checks, a Linux container build, and Firebase
+Core CI runs the test suite on Python 3.12 across Windows, macOS, and Ubuntu
+(3.11 until the 2026-09-06 dependency freeze lifts), plus a bare runtime install
+on 3.11, installer/uninstaller checks, a Linux container build, and Firebase
 rules tests. Path-scoped workflows may also run runner integration checks,
 npm packaging, Python/npm release builds, and the Windows portable build.
 
