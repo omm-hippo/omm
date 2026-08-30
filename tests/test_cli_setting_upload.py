@@ -16,7 +16,7 @@ def test_upload_usage_enable_disable(isolated_omm_home):
     assert runner.invoke(cli.app, ["setting", "upload", "usage", "--enable"]).exit_code == 0
     assert config.load_config()["usage_stats_policy"] == "enabled"
     assert runner.invoke(cli.app, ["setting", "upload", "usage", "--disable"]).exit_code == 0
-    assert config.load_config()["usage_stats_policy"] is None
+    assert config.load_config()["usage_stats_policy"] == "never"
 
 
 def test_upload_usage_bare_shows_dry_run_payload(isolated_omm_home):

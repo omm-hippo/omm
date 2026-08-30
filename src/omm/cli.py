@@ -2758,6 +2758,23 @@ def update() -> None:
     after = _version_line(_installed_commit())
     console.print(f"[success]Ω Updated: {before} -> {after}[/success]")
     _refresh_data()
+    _maybe_prompt_data_sharing_after_update()
+
+
+def _maybe_prompt_data_sharing_after_update() -> None:
+    """After a real update, show the data-sharing consent once to users who
+    updated past the version that introduced it and were never asked (a
+    fresh install gets the same step inside `omm setup`).
+    `usage_stats_policy` is None only when the question has never been
+    answered - "enabled" or "never" both mean it has."""
+    if not _stdin_is_tty():
+        return
+    if load_config().get("usage_stats_policy") is not None:
+        return
+    try:
+        onboarding.run_data_sharing_step(console)
+    except Exception:
+        pass
 
 
 def _add_escape_to_cancel(question: questionary.Question) -> questionary.Question:
@@ -6507,7 +6524,9 @@ def configure_upload_usage(
             "Turn off any time: `omm setting upload usage --disable`."
         )
     elif disable:
-        config_mod.update_config(usage_stats_policy=None)
+        # "never" (an explicit choice), not None (never asked) - so a later
+        # `omm update` does not re-prompt.
+        config_mod.update_config(usage_stats_policy="never")
         discarded = usage.discard_pending()
         console.print(
             "[success]Usage stats disabled.[/success]"

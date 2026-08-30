@@ -341,14 +341,19 @@ def run_data_sharing_step(console: Console) -> None:
         # Escape-to-cancel or a questionary failure: change nothing.
         return
     if said_yes:
-        config_mod.update_config(
-            usage_stats_policy="enabled", error_report_send_policy="ask"
-        )
+        changes: dict[str, object] = {"usage_stats_policy": "enabled"}
+        # Only flip crash reports on if the user has never chosen for them -
+        # an earlier explicit `--disable` must not be silently reversed.
+        if config_mod.load_config().get("error_report_send_policy") is None:
+            changes["error_report_send_policy"] = "ask"
+        config_mod.update_config(**changes)
         console.print(
             "[success]Thanks![/success] Turn it off any time: `omm setting upload`.\n"
         )
     else:
-        config_mod.update_config(usage_stats_policy=None)
+        # "never", not None: records that the question was asked and
+        # declined, so `omm update` does not ask again.
+        config_mod.update_config(usage_stats_policy="never")
         console.print("[muted]No data will be sent.[/muted]\n")
 
 

@@ -43,8 +43,10 @@ model text.
 
 **When:** at most once per day, as a single background batch on your next `omm`
 command.
-**Default:** off. Enabled only by an explicit "yes" during `omm setup`, or
-`omm setting upload usage --enable`.
+**Default:** off. Enabled only by an explicit "yes" during `omm setup`, the
+one-time prompt shown after an `omm update` that crosses the version this was
+added in, or `omm setting upload usage --enable`. A "no" at any of those is
+remembered — you are not asked again.
 **Purpose:** tell the maintainers which versions and hardware to support and
 which commands are failing in the field.
 

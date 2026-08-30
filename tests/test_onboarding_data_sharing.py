@@ -23,7 +23,7 @@ def test_no_changes_nothing_meaningful(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(onboarding, "_confirm_data_sharing", lambda default: False)
     onboarding.run_data_sharing_step(_console())
     cfg = config.load_config()
-    assert cfg.get("usage_stats_policy") is None
+    assert cfg.get("usage_stats_policy") == "never"
     assert cfg.get("error_report_send_policy") is None
 
 
