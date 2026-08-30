@@ -205,3 +205,129 @@ def build_payload() -> dict:
     if errors:
         payload["errors"] = errors
     return payload
+
+
+# --- flush ------------------------------------------------------------
+
+
+def log_attempt(outcome: str, detail: str = "") -> None:
+    try:
+        with locked(_log_path(), timeout=10):
+            path = _log_path()
+            lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+            lines.append(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "outcome": outcome,
+                "detail": detail[:_DETAIL_SLICE],
+            }))
+            atomic_write_text(path, "\n".join(lines[-_MAX_LOG_LINES:]) + "\n")
+    except (OSError, FileLockTimeout):
+        pass
+
+
+def _read_json(path) -> dict:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _read_state() -> dict:
+    return _read_json(_state_path())
+
+
+def _stamp_state() -> None:
+    try:
+        with locked(_state_path(), timeout=10):
+            atomic_write_text(_state_path(), json.dumps({"last_sent": time.time()}))
+    except (OSError, FileLockTimeout):
+        pass
+
+
+def _backoff_active() -> bool:
+    try:
+        return time.time() < float(_read_json(_backoff_path()).get("until", 0))
+    except (TypeError, ValueError):
+        return False
+
+
+def _set_backoff(seconds: float) -> None:
+    try:
+        with locked(_backoff_path(), timeout=10):
+            atomic_write_text(
+                _backoff_path(), json.dumps({"until": time.time() + seconds})
+            )
+    except (OSError, FileLockTimeout):
+        pass
+
+
+def _clear_backoff() -> None:
+    try:
+        with locked(_backoff_path(), timeout=10):
+            _backoff_path().unlink(missing_ok=True)
+    except (OSError, FileLockTimeout):
+        pass
+
+
+def _post_to(endpoint: str, payload: dict) -> bool:
+    """POST one PoW-signed batch. Only ``config.USAGE_GATEWAY_ENDPOINT`` is
+    ever an allowed target - this stream has no self-hosted variant."""
+    if endpoint != config.USAGE_GATEWAY_ENDPOINT:
+        log_attempt("skipped_bad_endpoint")
+        return False
+    import requests
+
+    from omm.telemetry import _solve_proof_of_work
+
+    wire = {k: v for k, v in payload.items() if v is not None}
+    event_json = json.dumps(wire, sort_keys=True, separators=(",", ":"))
+    timestamp_ms, nonce = _solve_proof_of_work(event_json)
+    try:
+        resp = requests.post(
+            endpoint,
+            json={"event_json": event_json, "timestamp": timestamp_ms, "nonce": nonce},
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        log_attempt("send_failed_network", str(e))
+        return False
+    if 200 <= resp.status_code < 300:
+        log_attempt("sent_ok")
+        return True
+    log_attempt(
+        f"send_failed_http_{resp.status_code}",
+        str(getattr(resp, "text", "") or ""),
+    )
+    return False
+
+
+def _post(payload: dict) -> bool:
+    return _post_to(config.USAGE_GATEWAY_ENDPOINT, payload)
+
+
+def flush_pending(force: bool = False) -> bool:
+    """Send one batch if opted in, past the 24h interval, and not backing
+    off. Clears pending + stamps state on success. One POST per call.
+    Swallows all errors; returns whether it sent."""
+    try:
+        if policy() != "enabled":
+            return False
+        rows = _read_pending()
+        if not rows and not force:
+            return False
+        if not force:
+            if _backoff_active():
+                return False
+            last = float(_read_state().get("last_sent", 0) or 0)
+            if time.time() - last < _FLUSH_INTERVAL_S:
+                return False
+        if _post(build_payload()):
+            discard_pending()
+            _stamp_state()
+            _clear_backoff()
+            return True
+        _set_backoff(6 * 3600)
+        return False
+    except Exception:
+        return False

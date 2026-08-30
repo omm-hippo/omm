@@ -62,3 +62,49 @@ def test_discard_pending(isolated_omm_home, monkeypatch):
     usage.record_run("install", "ok", None)
     assert usage.discard_pending() == 1
     assert usage.pending_count() == 0
+
+
+def test_flush_noop_before_interval(isolated_omm_home, monkeypatch):
+    _enable(monkeypatch)
+    (config.OMM_HOME).mkdir(parents=True, exist_ok=True)
+    (config.OMM_HOME / "usage-state.json").write_text(
+        json.dumps({"last_sent": time.time()})
+    )
+    usage.record_run("install", "ok", None)
+    calls = []
+    monkeypatch.setattr(usage, "_post", lambda p: calls.append(p) or True)
+    assert usage.flush_pending() is False
+    assert calls == []
+
+
+def test_flush_sends_and_clears_on_2xx(isolated_omm_home, monkeypatch):
+    _enable(monkeypatch)
+    usage.record_run("install", "ok", None)
+    sent = []
+    monkeypatch.setattr(usage, "_post", lambda p: sent.append(p) or True)
+    assert usage.flush_pending(force=True) is True
+    assert sent and sent[0]["commands"]["install ok"] == 1
+    assert usage.pending_count() == 0
+
+
+def test_flush_keeps_pending_on_failure(isolated_omm_home, monkeypatch):
+    _enable(monkeypatch)
+    usage.record_run("install", "ok", None)
+    monkeypatch.setattr(usage, "_post", lambda p: False)
+    assert usage.flush_pending(force=True) is False
+    assert usage.pending_count() == 1
+
+
+def test_flush_noop_when_policy_unset(isolated_omm_home, monkeypatch):
+    # opted out: even with pending rows written under an earlier consent
+    monkeypatch.setattr(config, "load_config", lambda: {"usage_stats_policy": "enabled"})
+    usage.record_run("install", "ok", None)
+    monkeypatch.setattr(config, "load_config", lambda: {})
+    sent = []
+    monkeypatch.setattr(usage, "_post", lambda p: sent.append(p) or True)
+    assert usage.flush_pending(force=True) is False
+    assert sent == []
+
+
+def test_post_to_refuses_non_gateway_endpoint(isolated_omm_home):
+    assert usage._post_to("https://evil.example/usage", {"schema_version": 1}) is False
