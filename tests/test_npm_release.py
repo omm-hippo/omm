@@ -320,3 +320,32 @@ def test_probe_version_mismatch_reports_diagnostics(tmp_path, monkeypatch):
     assert "reported the wrong version" in message
     assert "omm 0.0.9" in message  # the actual --version output
     assert "`-- (empty)" in message  # the npm ls tree
+
+
+def test_native_command_passes_plain_executables_through():
+    assert npm_release._native_command("npm", "--version") == ["npm", "--version"]
+
+
+def test_native_command_builds_raw_cmd_line_for_spaced_scripts(monkeypatch):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", "C:\\WINDOWS\\system32\\cmd.exe")
+    command = npm_release._native_command(
+        "C:\\Program Files\\nodejs\\npm.CMD", "install", "--global"
+    )
+    assert command == (
+        '"C:\\WINDOWS\\system32\\cmd.exe" /d /s /c '
+        '""C:\\Program Files\\nodejs\\npm.CMD" install --global"'
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="cmd.exe invocation is Windows-only")
+def test_run_executes_cmd_script_from_spaced_path(tmp_path):
+    scripts = tmp_path / "dir with spaces"
+    scripts.mkdir()
+    script = scripts / "probe.cmd"
+    script.write_text("@echo probe-ok %1\n", encoding="ascii")
+
+    result = npm_release._run(script, "hello")
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "probe-ok hello"
