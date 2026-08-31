@@ -39,6 +39,12 @@ generation.
   and `packaging/npm/launcher/package.json` on every commit (unless the commit already edits the
   `version` line). This is expected on every commit, not concurrent-session noise. Only `--no-verify`
   skips it — ask the user first.
+- `scripts/pre-push` rejects pushing a commit to `beta` or `main` whose own tip is not SSH-signed by
+  a key in `src/omm/trust/allowed_signers`. **Never sync a channel with GitHub's web UI** ("Sync
+  fork" / "Update branch" / merging a PR on the site) — it produces a web-flow-GPG-signed merge that
+  strands every `omm update` client and fails the "Trusted PR head" check. Merge locally instead
+  (`git merge origin/main`, auto-SSH-signed). If a web-flow merge already landed as the head, add an
+  SSH-signed endorsement commit on top — never force-push a shared channel.
 
 ## Working style (explicit user preferences)
 
@@ -146,7 +152,10 @@ rows, world-readable), `error_reports` (`error_report.py`, private), and `usage`
 (`usage.py` — anonymous daily batch: random `~/.omm/client-id`, `client_version`, OS/arch,
 bucketed RAM/VRAM, GPU vendor, and a `<command> <outcome>` tally; **never** model names,
 paths, args, or IP). All three are configured under `omm setting upload {benchmark,usage,crash}`
-and consented to by one prompt in `omm setup`. `PRIVACY.md` is the user-facing spec; keep it,
+(bare `omm setting upload`, or `omm setting` → "Upload", opens an interactive picker over the
+three channels; `cli.py:_upload_channel_menu`). The `omm setup` data-sharing prompt covers
+`usage` + `crash` (`onboarding.run_data_sharing_step`); `benchmark` is not in it — its policy
+defaults to "ask" and is prompted per run. `PRIVACY.md` is the user-facing spec; keep it,
 the `omm setup` consent text, `validate.ts`, and `database.rules.json` in sync when fields change.
 
 **Run log.** `runlog.py` attaches a JSON-lines handler to the `omm` logger for one process;
