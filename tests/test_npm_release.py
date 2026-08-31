@@ -266,6 +266,63 @@ def test_registry_signature_audit_installs_dependencies(tmp_path, monkeypatch):
     assert calls[3][2]["cwd"] == audit_install[2]["cwd"]
 
 
+def test_registry_probe_retries_transient_optional_dependency_lag(tmp_path, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+
+    commands = []
+
+    def fake_run(executable, *arguments, **kwargs):
+        commands.append(arguments)
+        return npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    probe_calls = {"n": 0}
+
+    def flaky_probe(*args):
+        probe_calls["n"] += 1
+        if probe_calls["n"] == 1:
+            raise npm_release.NpmReleaseError(
+                "npm-installed OMM reported the wrong version\nnpm ls:\n<tree>"
+            )
+
+    monkeypatch.setattr(npm_release, "_probe_install", flaky_probe)
+
+    npm_release.smoke_registry("0.3.40", "win32-x64", "https://registry.example/")
+
+    assert probe_calls["n"] == 2
+    assert sleeps == [npm_release.REGISTRY_PROBE_BACKOFF_SECONDS]
+    assert ("cache", "clean", "--force") in commands
+
+
+def test_registry_probe_gives_up_and_surfaces_the_tree_dump(tmp_path, monkeypatch):
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(
+        npm_release,
+        "_run",
+        lambda executable, *arguments, **kwargs: npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout="", stderr=""
+        ),
+    )
+
+    def always_broken(*args):
+        raise npm_release.NpmReleaseError("wrong version\nnpm ls:\n<tree>")
+
+    monkeypatch.setattr(npm_release, "_probe_install", always_broken)
+
+    with pytest.raises(npm_release.NpmReleaseError) as error:
+        npm_release.smoke_registry("0.3.40", "win32-x64", "https://registry.example/")
+
+    message = str(error.value)
+    assert f"after {npm_release.REGISTRY_PROBE_ATTEMPTS} attempts" in message
+    assert "<tree>" in message
+
+
 @pytest.mark.skipif(os.name == "nt", reason="uses a POSIX launcher symlink")
 def test_probe_rejects_dangling_launcher_left_by_npm_uninstall(tmp_path, monkeypatch):
     prefix = tmp_path / "prefix"
