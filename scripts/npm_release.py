@@ -400,26 +400,64 @@ def smoke_tarballs(pack_dir: Path, target_name: str) -> None:
         )
 
 
+# A brand-new version's platform `optionalDependencies` can take a while to
+# propagate across the npm registry CDN after `publish`. During that window a
+# plain `npm install --global @omm-hippo/omm@<new>` intermittently resolves the
+# wrong platform package (or none), so the post-publish probe fails even though
+# every artifact is correct -- exactly the transient seen on the v0.3.33 release
+# (issue #237). Retry the install + probe from a clean slate before giving up;
+# a real defect fails every attempt and still raises with the #242 tree dump.
+REGISTRY_PROBE_ATTEMPTS = 5
+REGISTRY_PROBE_BACKOFF_SECONDS = 20
+
+
+def _install_launcher_from_registry(
+    prefix: Path,
+    omm_home: Path,
+    version: str,
+    target_package: str,
+    registry: str,
+) -> None:
+    last_error: NpmReleaseError | None = None
+    for attempt in range(REGISTRY_PROBE_ATTEMPTS):
+        if attempt > 0:
+            _run(_npm(), "cache", "clean", "--force", check=False)
+            time.sleep(REGISTRY_PROBE_BACKOFF_SECONDS)
+            shutil.rmtree(prefix, ignore_errors=True)
+        try:
+            _run(
+                _npm(),
+                "install",
+                "--global",
+                "--prefix",
+                str(prefix),
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+                "--registry",
+                registry,
+                f"{npm_package.LAUNCHER_NAME}@{version}",
+            )
+            _probe_install(prefix, omm_home, version, target_package)
+            return
+        except NpmReleaseError as error:
+            last_error = error
+    raise NpmReleaseError(
+        f"npm registry path still broken after {REGISTRY_PROBE_ATTEMPTS} attempts "
+        f"(post-publish optional-dependency propagation lag or a real defect; "
+        f"issue #237)\n{last_error}"
+    )
+
+
 def smoke_registry(version: str, target_name: str, registry: str = REGISTRY) -> None:
     registry = _validate_registry_url(registry)
     target_package = npm_package.targets()[target_name]["package"]
     with tempfile.TemporaryDirectory(prefix="omm-npm-registry-") as temporary:
         root = Path(temporary)
         prefix = root / "prefix"
-        _run(
-            _npm(),
-            "install",
-            "--global",
-            "--prefix",
-            str(prefix),
-            "--ignore-scripts",
-            "--no-audit",
-            "--no-fund",
-            "--registry",
-            registry,
-            f"{npm_package.LAUNCHER_NAME}@{version}",
+        _install_launcher_from_registry(
+            prefix, root / "omm-home", version, target_package, registry
         )
-        _probe_install(prefix, root / "omm-home", version, target_package)
 
         audit = root / "audit"
         audit.mkdir()
