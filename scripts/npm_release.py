@@ -232,11 +232,22 @@ def verify_bundle(pack_dir: Path, *, write_checksums: bool = False) -> list[Pack
     return packages
 
 
-def _native_command(executable: str | Path, *arguments: str) -> list[str]:
+def _native_command(executable: str | Path, *arguments: str) -> list[str] | str:
+    """Build the argument for ``subprocess.run`` that executes ``executable``.
+
+    ``.cmd``/``.bat`` scripts (npm on Windows) must go through ``cmd.exe``. That
+    invocation is returned as a single raw command-line string, not a list: for
+    a list, ``subprocess`` would re-quote the already-quoted payload with
+    backslash-escaped quotes that ``cmd.exe`` cannot parse, which breaks any
+    interpreter installed under a path with spaces (``C:\\Program Files\\nodejs``,
+    the default Node install). With ``/s``, ``cmd.exe`` strips the outer quotes
+    around the payload and runs the quoted line inside verbatim.
+    """
     executable = str(executable)
     if os.name == "nt" and Path(executable).suffix.casefold() in {".cmd", ".bat"}:
         command = subprocess.list2cmdline([executable, *arguments])
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", command]
+        comspec = os.environ.get("COMSPEC", "cmd.exe")
+        return f'"{comspec}" /d /s /c "{command}"'
     return [executable, *arguments]
 
 
