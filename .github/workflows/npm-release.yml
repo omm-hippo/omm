@@ -348,6 +348,11 @@ jobs:
       - run: | # zizmor: ignore[adhoc-packages] exact verification CLI version
           npm install --global npm@11.19.0
       - name: Install, verify signatures, run, and uninstall from npmjs
+        # `${OMM_VERSION}` is POSIX-shell expansion: on the windows-2025 runner
+        # the default shell is pwsh, which leaves it empty, so `smoke-registry`
+        # ran with `--version ""` and the probe always reported "wrong version"
+        # on win32-x64 only (issue #237). Pin the shell.
+        shell: bash
         env:
           OMM_VERSION: ${{ needs.identity.outputs.version }}
         run: >-
