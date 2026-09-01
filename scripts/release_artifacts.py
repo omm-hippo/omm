@@ -63,6 +63,90 @@ def validate_tag(tag: str, version: str) -> None:
         )
 
 
+def _git(
+    repository: Path,
+    *args: str,
+    check: bool = True,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repository), *args],
+        check=check,
+        capture_output=capture_output,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def _git_output(repository: Path, *args: str) -> str:
+    return _git(repository, *args, capture_output=True).stdout.strip()
+
+
+def verify_release_identity(
+    tag: str,
+    *,
+    repository: Path = ROOT,
+    remote: str = "origin",
+    main_branch: str = "main",
+) -> tuple[str, str]:
+    """Tie a signed release tag to the checked-out project and main history."""
+
+    repository = repository.resolve()
+    pyproject = repository / "pyproject.toml"
+    allowed_signers = repository / "src" / "omm" / "trust" / "allowed_signers"
+    if not repository.is_dir():
+        raise ReleaseValidationError(f"release repository does not exist: {repository}")
+    if not allowed_signers.is_file():
+        raise ReleaseValidationError(f"allowed signers file does not exist: {allowed_signers}")
+
+    _, version = project_identity(pyproject)
+    validate_tag(tag, version)
+
+    signature = _git(
+        repository,
+        "-c",
+        f"gpg.ssh.allowedSignersFile={allowed_signers}",
+        "verify-tag",
+        tag,
+        check=False,
+    )
+    if signature.returncode != 0:
+        raise ReleaseValidationError(
+            f"release tag {tag!r} is not signed by an allowed signer"
+        )
+
+    tag_commit = _git_output(repository, "rev-parse", f"{tag}^{{commit}}")
+    checkout_commit = _git_output(repository, "rev-parse", "HEAD^{commit}")
+    if tag_commit != checkout_commit:
+        raise ReleaseValidationError(
+            f"release tag {tag!r} points to {tag_commit}, but HEAD is {checkout_commit}"
+        )
+
+    remote_ref = f"refs/remotes/{remote}/{main_branch}"
+    _git(
+        repository,
+        "fetch",
+        "--no-tags",
+        remote,
+        f"{main_branch}:{remote_ref}",
+    )
+    ancestry = _git(
+        repository,
+        "merge-base",
+        "--is-ancestor",
+        tag_commit,
+        remote_ref,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise ReleaseValidationError(
+            f"release commit {tag_commit} is not in {remote}/{main_branch} history"
+        )
+    return version, tag_commit
+
+
 def _metadata_identity(payload: bytes, source: Path) -> tuple[str, str]:
     metadata = BytesParser().parsebytes(payload)
     name = metadata.get("Name")
@@ -354,6 +438,12 @@ def _parser() -> argparse.ArgumentParser:
     tag_parser = subparsers.add_parser("check-tag")
     tag_parser.add_argument("--tag", required=True)
 
+    identity_parser = subparsers.add_parser("verify-release")
+    identity_parser.add_argument("--tag", required=True)
+    identity_parser.add_argument("--repository", type=Path, default=ROOT)
+    identity_parser.add_argument("--remote", default="origin")
+    identity_parser.add_argument("--main-branch", default="main")
+
     for command in ("verify-dist", "write-checksums", "verify-checksums", "smoke-install"):
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--dist-dir", type=Path, default=ROOT / "dist")
@@ -366,6 +456,14 @@ def main() -> int:
         if args.command == "check-tag":
             _, version = project_identity()
             validate_tag(args.tag, version)
+        elif args.command == "verify-release":
+            version, commit = verify_release_identity(
+                args.tag,
+                repository=args.repository,
+                remote=args.remote,
+                main_branch=args.main_branch,
+            )
+            print(f"Verified signed release v{version} at {commit}")
         elif args.command == "verify-dist":
             validate_archives(args.dist_dir)
         elif args.command == "write-checksums":

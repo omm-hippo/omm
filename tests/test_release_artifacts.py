@@ -4,6 +4,7 @@ import importlib.util
 import io
 import re
 import stat
+import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
@@ -37,6 +38,111 @@ def test_release_tag_must_match_project_version_exactly():
         release_artifacts.validate_tag("1.2.3", "1.2.3")
     with pytest.raises(release_artifacts.ReleaseValidationError):
         release_artifacts.validate_tag("v1.2.4", "1.2.3")
+
+
+def _release_identity_repository(tmp_path):
+    repository = tmp_path / "repository"
+    signers = repository / "src" / "omm" / "trust" / "allowed_signers"
+    signers.parent.mkdir(parents=True)
+    signers.write_text("release@example.test ssh-ed25519 AAAA\n", encoding="utf-8")
+    (repository / "pyproject.toml").write_text(
+        '[project]\nname = "example-cli"\nversion = "1.2.3"\n',
+        encoding="utf-8",
+    )
+    return repository
+
+
+def test_release_identity_verifies_signature_checkout_and_main_history(
+    tmp_path, monkeypatch
+):
+    repository = _release_identity_repository(tmp_path)
+    calls = []
+
+    def fake_git(repo, *args, check=True, capture_output=False):
+        calls.append((repo, args, check, capture_output))
+        stdout = "abc123\n" if args[0] == "rev-parse" else ""
+        return subprocess.CompletedProcess(args, 0, stdout=stdout)
+
+    monkeypatch.setattr(release_artifacts, "_git", fake_git)
+
+    assert release_artifacts.verify_release_identity(
+        "v1.2.3", repository=repository
+    ) == ("1.2.3", "abc123")
+    commands = [call[1] for call in calls]
+    assert any(command[-2:] == ("verify-tag", "v1.2.3") for command in commands)
+    assert ("rev-parse", "v1.2.3^{commit}") in commands
+    assert ("rev-parse", "HEAD^{commit}") in commands
+    assert (
+        "fetch",
+        "--no-tags",
+        "origin",
+        "main:refs/remotes/origin/main",
+    ) in commands
+    assert (
+        "merge-base",
+        "--is-ancestor",
+        "abc123",
+        "refs/remotes/origin/main",
+    ) in commands
+
+
+def test_release_identity_rejects_an_unsigned_tag(tmp_path, monkeypatch):
+    repository = _release_identity_repository(tmp_path)
+
+    def fake_git(_repo, *args, **_kwargs):
+        return subprocess.CompletedProcess(args, 1 if "verify-tag" in args else 0)
+
+    monkeypatch.setattr(release_artifacts, "_git", fake_git)
+
+    with pytest.raises(release_artifacts.ReleaseValidationError, match="allowed signer"):
+        release_artifacts.verify_release_identity("v1.2.3", repository=repository)
+
+
+def test_release_identity_rejects_a_tag_for_another_checkout(tmp_path, monkeypatch):
+    repository = _release_identity_repository(tmp_path)
+
+    def fake_git(_repo, *args, **_kwargs):
+        if args == ("rev-parse", "v1.2.3^{commit}"):
+            return subprocess.CompletedProcess(args, 0, stdout="tag-commit\n")
+        if args == ("rev-parse", "HEAD^{commit}"):
+            return subprocess.CompletedProcess(args, 0, stdout="other-commit\n")
+        return subprocess.CompletedProcess(args, 0, stdout="")
+
+    monkeypatch.setattr(release_artifacts, "_git", fake_git)
+
+    with pytest.raises(release_artifacts.ReleaseValidationError, match="but HEAD is"):
+        release_artifacts.verify_release_identity("v1.2.3", repository=repository)
+
+
+def test_release_identity_rejects_a_commit_outside_main(tmp_path, monkeypatch):
+    repository = _release_identity_repository(tmp_path)
+
+    def fake_git(_repo, *args, **_kwargs):
+        returncode = 1 if args[0] == "merge-base" else 0
+        stdout = "abc123\n" if args[0] == "rev-parse" else ""
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout)
+
+    monkeypatch.setattr(release_artifacts, "_git", fake_git)
+
+    with pytest.raises(release_artifacts.ReleaseValidationError, match="not in origin/main"):
+        release_artifacts.verify_release_identity("v1.2.3", repository=repository)
+
+
+def test_release_workflows_share_one_identity_gate():
+    workflow_root = ROOT / ".github" / "workflows"
+    if not workflow_root.is_dir():
+        pytest.skip("GitHub workflow files are excluded from the Docker build context")
+
+    for name in (
+        "release.yml",
+        "github-release.yml",
+        "npm-release.yml",
+        "windows-portable.yml",
+    ):
+        workflow = (workflow_root / name).read_text(encoding="utf-8")
+        assert workflow.count("release_artifacts.py verify-release") == 1, name
+        assert "git -c gpg.ssh.allowedSignersFile" not in workflow, name
+        assert "git merge-base --is-ancestor" not in workflow, name
 
 
 def test_release_smoke_uses_windows_venv_executable_names():
@@ -211,9 +317,7 @@ def test_release_workflow_builds_smoke_installs_and_gates_publishing():
 
     assert "python -m build" in workflow
     assert "python -m twine check dist/*.whl dist/*.tar.gz" in workflow
-    assert "scripts/release_artifacts.py check-tag" in workflow
-    assert "scripts/distribution_versions.py" in workflow
-    assert "git merge-base --is-ancestor" in workflow
+    assert "scripts/release_artifacts.py verify-release" in workflow
     assert "scripts/release_artifacts.py smoke-install" in workflow
     assert "ubuntu-latest, macos-latest, windows-latest" in workflow
     assert 'python: ["3.10", "3.14"]' in workflow
@@ -230,11 +334,17 @@ def test_release_workflow_builds_smoke_installs_and_gates_publishing():
     assert "needs: verify-testpypi" in workflow
     assert "needs: publish-pypi" in workflow
     assert "needs: verify-pypi-files" in workflow
-    assert "name: Verify PyPI and Homebrew version sync" in workflow
+    assert "verify-distribution-sync:" not in workflow
+    assert "scripts/distribution_versions.py" not in workflow
     assert re.search(
         r"(?m)^  sync-homebrew:\n(?:    .*\n)*?    needs: verify-pypi-install$",
         workflow,
     )
+    assert "name: Request asynchronous Homebrew Formula synchronization" in workflow
+    assert "name: Add Python artifacts to the draft GitHub Release" in workflow
+    assert "needs: [build, verify-pypi-install]" in workflow
+    assert "uses: ./.github/workflows/github-release.yml" in workflow
+    assert "asset_set: python" in workflow
     assert "secrets.HOMEBREW_TAP_DISPATCH_TOKEN" in workflow
     assert '"repos/omm-hippo/homebrew-omm/dispatches"' in workflow
     assert "event_type=pypi_release_verified" in workflow

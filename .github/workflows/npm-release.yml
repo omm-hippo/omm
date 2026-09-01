@@ -21,12 +21,14 @@ name: Build, verify, and publish npm release
       - "scripts/npm_entry.py"
       - "scripts/npm_package.py"
       - "scripts/npm_release.py"
+      - "scripts/release_artifacts.py"
       - "scripts/windows_portable.py"
       - "src/**"
       - "tests/test_npm_binary.py"
       - "tests/test_npm_package.py"
       - "tests/test_npm_release.py"
       - "tests/test_npm_workflow.py"
+      - "tests/test_release_artifacts.py"
       - "LICENSE"
 
 permissions:
@@ -66,9 +68,7 @@ jobs:
             release_tag="${GITHUB_REF_NAME}"
           fi
           test "$release_tag" = "v${OMM_VERSION}"
-          git -c gpg.ssh.allowedSignersFile=src/omm/trust/allowed_signers verify-tag "$release_tag"
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          git merge-base --is-ancestor HEAD origin/main
+          python scripts/release_artifacts.py verify-release --tag "$release_tag"
 
   platform:
     name: Build npm package for ${{ matrix.target }}

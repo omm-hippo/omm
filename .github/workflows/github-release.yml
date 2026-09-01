@@ -1,58 +1,197 @@
-name: Create the GitHub Release for a signed tag
+name: Publish a GitHub Release with validated assets
 
 "on":
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      version:
+        description: Signed OMM release version, without the v prefix
+        required: true
+        type: string
+      asset_set:
+        description: Validated artifact set to add (python or windows)
+        required: true
+        type: string
+    outputs:
+      published:
+        description: Whether this call observed and published all five assets
+        value: ${{ jobs.release.outputs.published }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: github-release-${{ github.ref }}
+  group: github-release-v${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
   release:
-    name: Publish the Release for a signed tag
+    name: Publish the asset-backed Release for a signed tag
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
-      pull-requests: read
+    outputs:
+      published: ${{ steps.publish_state.outputs.published }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out trusted release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: tooling
+          persist-credentials: false
+      - name: Check out the signed release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
           fetch-depth: 0
           persist-credentials: false
+          ref: refs/tags/v${{ inputs.version }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-
-      - name: Verify the tag is signed by an allowed signer
-        run: |
-          git -c gpg.ssh.allowedSignersFile=src/omm/trust/allowed_signers \
-            verify-tag "${GITHUB_REF_NAME}"
-
-      - name: Require the tag to point into main history
-        run: |
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
-
-      - name: Require the tag and project version to match
-        run: python scripts/release_artifacts.py check-tag --tag "${GITHUB_REF_NAME}"
-
-      - name: Create the GitHub Release
+      - name: Verify the signed release identity
+        run: >-
+          python tooling/scripts/release_artifacts.py verify-release
+          --tag "v${{ inputs.version }}"
+          --repository source
+      - name: Download the validated Python bundle
+        if: inputs.asset_set == 'python'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-release-dist
+          path: release-assets
+      - name: Download the validated Windows bundle
+        if: inputs.asset_set == 'windows'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-portable-${{ inputs.version }}
+          path: release-assets
+      - name: Publish only after all five immutable assets are present
+        id: publish_state
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          ASSET_SET: ${{ inputs.asset_set }}
         run: |
           set -euo pipefail
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "release ${GITHUB_REF_NAME} already exists; leaving it unchanged"
+          tag="v${VERSION}"
+          case "${ASSET_SET}" in
+            python)
+              current_assets=(
+                "omm_model-${VERSION}-py3-none-any.whl"
+                "omm_model-${VERSION}.tar.gz"
+                "SHA256SUMS"
+              )
+              ;;
+            windows)
+              current_assets=(
+                "omm-windows-x64-${VERSION}.zip"
+                "omm-windows-x64-${VERSION}.zip.sha256"
+              )
+              ;;
+            *)
+              echo "unsupported release asset set: ${ASSET_SET}" >&2
+              exit 1
+              ;;
+          esac
+          all_assets=(
+            "omm_model-${VERSION}-py3-none-any.whl"
+            "omm_model-${VERSION}.tar.gz"
+            "SHA256SUMS"
+            "omm-windows-x64-${VERSION}.zip"
+            "omm-windows-x64-${VERSION}.zip.sha256"
+          )
+
+          release_json="$(
+            gh api --paginate --slurp "repos/${GH_REPO}/releases?per_page=100" |
+              jq --arg tag "${tag}" '[.[][] | select(.tag_name == $tag)]'
+          )"
+          release_count="$(printf '%s' "${release_json}" | jq 'length')"
+          if [ "${release_count}" = "0" ]; then
+            gh release create "${tag}" \
+              --repo "${GH_REPO}" \
+              --draft \
+              --title "OMM ${tag}" \
+              --generate-notes \
+              --verify-tag
+            release_json="$(
+              gh api --paginate --slurp "repos/${GH_REPO}/releases?per_page=100" |
+                jq --arg tag "${tag}" '[.[][] | select(.tag_name == $tag)]'
+            )"
+            release_count="$(printf '%s' "${release_json}" | jq 'length')"
+          fi
+          if [ "${release_count}" != "1" ]; then
+            echo "expected exactly one GitHub Release for ${tag}" >&2
+            exit 1
+          fi
+          release_id="$(printf '%s' "${release_json}" | jq -r '.[0].id')"
+          is_draft="$(printf '%s' "${release_json}" | jq -r '.[0].draft')"
+
+          for asset in "${current_assets[@]}"
+          do
+            test -f "release-assets/${asset}"
+            test ! -L "release-assets/${asset}"
+            count="$(gh api "repos/${GH_REPO}/releases/${release_id}" \
+              --jq "[.assets[] | select(.name == \"${asset}\")] | length")"
+            if [ "${count}" = "0" ]; then
+              gh release upload "${tag}" "release-assets/${asset}" --repo "${GH_REPO}"
+            elif [ "${count}" = "1" ]; then
+              mkdir -p downloaded
+              gh release download "${tag}" --repo "${GH_REPO}" \
+                --pattern "${asset}" --dir downloaded --clobber
+              cmp "release-assets/${asset}" "downloaded/${asset}"
+            else
+              echo "release contains duplicate asset names for ${asset}" >&2
+              exit 1
+            fi
+          done
+
+          mkdir -p uploaded-assets
+          for asset in "${current_assets[@]}"
+          do
+            gh release download "${tag}" --repo "${GH_REPO}" \
+              --pattern "${asset}" --dir uploaded-assets --clobber
+            cmp "release-assets/${asset}" "uploaded-assets/${asset}"
+          done
+
+          complete="true"
+          for asset in "${all_assets[@]}"
+          do
+            count="$(gh api "repos/${GH_REPO}/releases/${release_id}" \
+              --jq "[.assets[] | select(.name == \"${asset}\")] | length")"
+            if [ "${count}" = "0" ]; then
+              complete="false"
+            elif [ "${count}" != "1" ]; then
+              echo "release contains duplicate asset names for ${asset}" >&2
+              exit 1
+            fi
+          done
+          if [ "${complete}" != "true" ]; then
+            echo "Release ${tag} remains draft until all five validated assets arrive."
+            echo "published=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "OMM ${GITHUB_REF_NAME}" \
-            --generate-notes \
-            --verify-tag
+
+          mkdir -p published-assets
+          for asset in "${all_assets[@]}"
+          do
+            gh release download "${tag}" --repo "${GH_REPO}" \
+              --pattern "${asset}" --dir published-assets --clobber
+          done
+          (
+            cd published-assets
+            sha256sum --check SHA256SUMS
+            sha256sum --check "omm-windows-x64-${VERSION}.zip.sha256"
+          )
+
+          for asset in "${current_assets[@]}"
+          do
+            cmp "release-assets/${asset}" "published-assets/${asset}"
+          done
+
+          asset_count="$(gh api "repos/${GH_REPO}/releases/${release_id}" --jq '.assets | length')"
+          test "${asset_count}" = "5"
+          if [ "${is_draft}" = "true" ]; then
+            gh release edit "${tag}" --repo "${GH_REPO}" --draft=false
+          fi
+          echo "published=true" >> "${GITHUB_OUTPUT}"

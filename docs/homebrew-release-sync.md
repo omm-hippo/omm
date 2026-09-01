@@ -8,11 +8,15 @@ of the following have succeeded for a signed `v*` release:
 3. Public `pipx` install, command execution, and uninstall on Ubuntu, macOS,
    and Windows.
 
-The final `sync-homebrew` job sends a `pypi_release_verified` repository
+The final asynchronous `sync-homebrew` job sends a `pypi_release_verified` repository
 dispatch to `omm-hippo/homebrew-omm`. The Tap validates the source repository,
 tag, commit, and public PyPI release before running `brew bump`. Homebrew's
 upstream release cooldown remains authoritative; scheduled Tap runs retry after
 the cooldown and open a Formula PR rather than pushing directly to `main`.
+Because repository dispatch is asynchronous and the cooldown may still apply,
+the source release workflow does not require immediate PyPI/Homebrew version
+parity. The Tap workflow and its eventual Formula PR own that destination-side
+verification.
 
 ## Required repository secret
 
@@ -25,4 +29,4 @@ create the repository-dispatch event.
 The release job fails explicitly if this secret is absent. That failure occurs
 after PyPI's public installation checks and means the package is published but
 the Tap was not notified. After restoring the secret, rerun only the failed
-`Request Homebrew Formula synchronization` job.
+`Request asynchronous Homebrew Formula synchronization` job.

@@ -157,15 +157,54 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     if not workflow_path.is_file():
         pytest.skip("GitHub workflow files are excluded from the Docker build context")
     workflow = workflow_path.read_text(encoding="utf-8")
+    github_release = (
+        ROOT / ".github/workflows/github-release.yml"
+    ).read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
+    assert 'tags:\n      - "v*"' in workflow
     assert "pull_request:" in workflow
-    assert "verify-tag" in workflow
-    assert "merge-base --is-ancestor HEAD origin/main" in workflow
+    assert "scripts/release_artifacts.py verify-release" in workflow
+    assert "github.ref_name" in workflow
+    assert "--tag $env:RELEASE_TAG" in workflow
+    assert "git -c gpg.ssh.allowedSignersFile" not in workflow
+    assert "git merge-base --is-ancestor" not in workflow
     assert "github.event_name == 'workflow_dispatch'" in workflow
     assert "contents: write" in workflow
-    assert 'gh release upload "v${VERSION}" "release-assets/${asset}" --repo' in workflow
-    assert "gh release upload" in workflow and "gh release upload --clobber" not in workflow
+    assert "uses: ./.github/workflows/github-release.yml" in workflow
+    assert "asset_set: windows" in workflow
+    assert "workflow_call:" in github_release
+    assert "group: github-release-v${{ inputs.version }}" in github_release
+    assert "value: ${{ jobs.release.outputs.published }}" in github_release
+    assert 'echo "published=false" >> "${GITHUB_OUTPUT}"' in github_release
+    assert 'echo "published=true" >> "${GITHUB_OUTPUT}"' in github_release
+    assert "push:" not in github_release
+    assert "scripts/release_artifacts.py verify-release" in github_release
+    assert "path: tooling" in github_release
+    assert "path: source" in github_release
+    assert "--repository source" in github_release
+    assert 'releases?per_page=100' in github_release
+    assert 'releases/${release_id}' in github_release
+    assert 'gh release upload "${tag}" "release-assets/${asset}" --repo' in github_release
+    assert "gh release upload --clobber" not in github_release
+    assert "--draft" in github_release
+    assert "--draft=false" in github_release
+    for asset in (
+        "omm_model-${VERSION}-py3-none-any.whl",
+        "omm_model-${VERSION}.tar.gz",
+        "SHA256SUMS",
+        "omm-windows-x64-${VERSION}.zip",
+        "omm-windows-x64-${VERSION}.zip.sha256",
+    ):
+        assert asset in github_release
+    assert "all five validated assets arrive" in github_release
+    assert "sha256sum --check SHA256SUMS" in github_release
+    assert 'sha256sum --check "omm-windows-x64-${VERSION}.zip.sha256"' in github_release
+    assert 'test "${asset_count}" = "5"' in github_release
+    assert 'cmp "release-assets/${asset}" "uploaded-assets/${asset}"' in github_release
+    assert 'cmp "release-assets/${asset}" "published-assets/${asset}"' in github_release
+    assert github_release.index("--draft") < github_release.index("gh release upload")
+    assert github_release.index("gh release upload") < github_release.index("--draft=false")
     reuse_step = "Reuse a verified immutable release asset on reruns"
     defender_step = "Scan the verified portable executable with Microsoft Defender"
     manifest_step = "Generate and validate the WinGet manifest set"
@@ -189,6 +228,7 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert "expected exactly three schema compatibility warnings" in workflow
     assert "--ignore-warnings" in workflow
     assert "winget install --manifest" in workflow
+    assert "needs.publish.outputs.published == 'true'" in workflow
     assert "winget uninstall --manifest $manifestPath" in workflow
     assert "local manifest for correlation" in workflow
     assert workflow.count("--accept-source-agreements") == 2
