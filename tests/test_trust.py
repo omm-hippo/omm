@@ -51,7 +51,11 @@ def _commit(repo_dir, message, *, signing_key=None):
         _run(["git", "config", "user.signingkey", str(signing_key.with_suffix(".pub"))], cwd=repo_dir)
         _run(["git", "commit", "-q", "-S", "-m", message], cwd=repo_dir)
     else:
-        _run(["git", "commit", "-q", "-m", message], cwd=repo_dir)
+        # Keep unsigned-commit fixtures independent of the developer's global
+        # commit.gpgsign setting. Several trust tests specifically exercise an
+        # unsigned commit, so inheriting that setting silently changes their
+        # security contract.
+        _run(["git", "commit", "-q", "--no-gpg-sign", "-m", message], cwd=repo_dir)
     return _run(["git", "rev-parse", "HEAD"], cwd=repo_dir).strip()
 
 

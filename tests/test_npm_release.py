@@ -299,6 +299,36 @@ def test_registry_probe_retries_transient_optional_dependency_lag(tmp_path, monk
     assert ("cache", "clean", "--force") in commands
 
 
+def test_registry_probe_retries_transient_npm_install_failure(tmp_path, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_probe_install", lambda *args: None)
+
+    registry_installs = {"n": 0}
+
+    def fake_run(executable, *arguments, **kwargs):
+        if arguments[:2] == ("install", "--global"):
+            registry_installs["n"] += 1
+            if registry_installs["n"] == 1:
+                raise npm_release.subprocess.CalledProcessError(
+                    1,
+                    [str(executable), *arguments],
+                    output="",
+                    stderr="temporary registry failure",
+                )
+        return npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    npm_release.smoke_registry("0.3.40", "win32-x64", "https://registry.example/")
+
+    assert registry_installs["n"] == 2
+    assert sleeps == [npm_release.REGISTRY_PROBE_BACKOFF_SECONDS]
+
+
 def test_registry_probe_gives_up_and_surfaces_the_tree_dump(tmp_path, monkeypatch):
     monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(npm_release, "_npm", lambda: "npm")

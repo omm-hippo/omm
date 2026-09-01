@@ -442,6 +442,16 @@ def _install_launcher_from_registry(
             return
         except NpmReleaseError as error:
             last_error = error
+        except subprocess.CalledProcessError as error:
+            # `_run(..., check=True)` raises before `_probe_install` when npm
+            # itself sees a transient registry/CDN failure. Treat that as part
+            # of the bounded install + probe retry contract instead of giving
+            # up after the first attempt.
+            last_error = NpmReleaseError(
+                f"npm registry command failed with exit code {error.returncode}\n"
+                f"stdout: {error.stdout or ''}\n"
+                f"stderr: {error.stderr or ''}"
+            )
     raise NpmReleaseError(
         f"npm registry path still broken after {REGISTRY_PROBE_ATTEMPTS} attempts "
         f"(post-publish optional-dependency propagation lag or a real defect; "
