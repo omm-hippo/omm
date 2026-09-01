@@ -1273,6 +1273,38 @@ def test_report_failure_telemetry_v8_sends_chip_scores_not_raw_names(isolated_om
     assert "cpu_model" not in event
 
 
+def test_report_failure_telemetry_uses_verified_moe_active_parameter_count(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry,
+        "send_event",
+        lambda event, force=False: sent.append(event) or True,
+    )
+
+    cli._report_failure_telemetry(
+        {
+            "tag": "custom-moe:latest",
+            "outcome": "model_unfit",
+            "failure_reason": "out_of_memory",
+            "model_metadata": {
+                "size_bytes": 20_000_000_000,
+                "parameter_size": "20B",
+                "parameter_count_b": 20.0,
+                "active_parameter_count_b": 4.2,
+                "quantization_level": "Q4_K_M",
+                "is_moe": True,
+            },
+        },
+        {},
+    )
+
+    assert sent[0]["parameter_count_b"] == 20.0
+    assert sent[0]["active_parameter_count_b"] == 4.2
+
+
 def test_benchmark_says_when_it_falls_back_to_lmstudio(isolated_omm_home, monkeypatch):
     """Ollama and LM Studio produce numbers that read identically, so a run
     that silently switched engines left the user unable to tell which one

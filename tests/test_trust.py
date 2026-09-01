@@ -41,6 +41,10 @@ def repo(tmp_path):
     _run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir)
     _run(["git", "config", "user.name", "test"], cwd=repo_dir)
     _run(["git", "config", "gpg.format", "ssh"], cwd=repo_dir)
+    # Do not inherit a developer's global commit.gpgsign=true. Individual
+    # tests opt in with `git commit -S`; every other commit must stay truly
+    # unsigned even after a signed commit set the repo-local signing key.
+    _run(["git", "config", "commit.gpgsign", "false"], cwd=repo_dir)
     (repo_dir / "file.txt").write_text("hello\n")
     _run(["git", "add", "file.txt"], cwd=repo_dir)
     return repo_dir

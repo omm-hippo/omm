@@ -802,6 +802,7 @@ def test_failed_new_install_rolls_back_all_legacy_apps_and_verifies_omm(
 
 def test_update_fast_path_falls_back_to_pipx_when_deps_changed(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_editable_install_uses_src", lambda *args: True)
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
     monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
     monkeypatch.setattr(
@@ -831,6 +832,7 @@ def test_update_fast_path_falls_back_to_pipx_when_deps_changed(monkeypatch):
 
 def test_update_falls_back_to_full_reinstall_when_runpip_fails(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_editable_install_uses_src", lambda *args: True)
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
     monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
     monkeypatch.setattr(
