@@ -114,6 +114,7 @@ from omm.hub import (
     best_filenames_by_tier,
     download_url,
     fetch_repo_files,
+    fetch_repo_metadata,
     fetch_repo_param_count_b,
     model_filename_identity,
     rank_quant_variants,
@@ -5816,19 +5817,124 @@ def verify(
             _stop_engine_daemon(selected_engine, daemon_handle)
 
 
+# The rows `omm info` shows for a model it had to resolve remotely, in the
+# order they are printed. A provider that has no equivalent for a key just
+# omits it (see providers/base.py:prune_metadata), so the table only ever
+# holds facts somebody actually reported.
+_REMOTE_INFO_ROWS = (
+    ("Author", "author"),
+    ("Downloads", "downloads"),
+    ("Likes", "likes"),
+    ("License", "license"),
+    ("Task", "task"),
+    ("Base model", "base_model"),
+    ("Architecture", "architecture"),
+    ("Context length", "context_length"),
+    ("Updated", "last_modified"),
+    ("Also known as", "chinese_name"),
+    ("Gated", "gated"),
+    ("URL", "url"),
+)
+
+
+def _format_metadata_value(key: str, value: object) -> str:
+    """Counts read better grouped, and a provider timestamp is an ISO
+    datetime nobody needs to the second."""
+    if key in ("downloads", "likes"):
+        return f"{value:,}"
+    if key == "context_length":
+        return f"{value:,} tokens"
+    if key == "last_modified":
+        return str(value)[:10]
+    return str(value)
+
+
+def _fit_hint(ref: str) -> str:
+    """`omm info` used to end in the `omm fit` memory card. It stopped, so
+    that the two commands answer different questions - this points at the
+    one that still answers "will it run here?"."""
+    return f"[muted]Run `omm fit {ref}` to see whether it fits this PC.[/muted]"
+
+
+def _info_not_installed(model_name: str, json_output: bool) -> None:
+    """`omm info` for a reference that is not in the registry: a numbered
+    `omm search` result, a curated id, or any `org/repo[:file.gguf]`.
+
+    Resolution goes through the same `_resolve_model_interactive` path
+    `omm fit` and `omm install` use, so every shape `omm search` prints
+    resolves here too. Since that already costs a provider round trip, the
+    repo-level metadata worth having before starting a multi-GB download is
+    fetched alongside it."""
+    try:
+        resolved = _resolve_model_interactive(model_name)
+    except ModelResolutionError as error:
+        _print_not_installed_error(model_name)
+        err_console.print(f"[muted]{error}[/muted]")
+        raise typer.Exit(1) from error
+
+    provider = resolved.provider or "huggingface"
+    size_bytes = None
+    metadata: dict = {}
+    if resolved.repo_id:
+        size_bytes = remote_file_size(provider, resolved.repo_id, resolved.filename)
+        metadata = fetch_repo_metadata(provider, resolved.repo_id)
+
+    if json_output:
+        console.print_json(
+            data={
+                "filename": resolved.filename,
+                "repo_id": resolved.repo_id,
+                "provider": provider,
+                "installed": False,
+                "size_bytes": size_bytes,
+                "download_url": resolved.url,
+                **metadata,
+            }
+        )
+        return
+
+    table = _table(title=resolved.filename, show_header=False)
+    table.add_column("Field", style="label")
+    table.add_column("Value")
+    table.add_row("Repo", resolved.repo_id or "(direct URL)")
+    table.add_row("Provider", provider)
+    if size_bytes:
+        table.add_row("Size", f"{size_bytes / (1024**3):.2f} GB")
+    for label, key in _REMOTE_INFO_ROWS:
+        if key in metadata:
+            table.add_row(label, _format_metadata_value(key, metadata[key]))
+    table.add_row("Status", "not installed")
+    console.print(table)
+
+    ref = (
+        search_mod.exact_install_ref(
+            {"repo_id": resolved.repo_id, "filename": resolved.filename, "provider": provider}
+        )
+        or model_name
+    )
+    console.print(f"[muted]Install with: omm install {ref}[/muted]")
+    console.print(_fit_hint(ref))
+
+
 @app.command()
 @global_flags
 def info(
-    model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
+    model_name: str = typer.Argument(
+        ...,
+        autocompletion=complete_install_name,
+        help="Installed model, curated id, repo/file, or search number.",
+    ),
 ) -> None:
-    """Show name, version, size, and linked-program run commands for an installed model."""
+    """Show what a model is - source repo, version, size and linked-program run
+    commands once installed, or author, downloads, license and architecture for
+    a search result. `omm fit` is what tells you whether it runs here."""
     json_output = _global_opts().json
     model_name = _resolve_ref(model_name)
     reg = registry.load_registry()
     filename, entry = _lookup_entry(model_name, reg)
     if entry is None:
-        _print_not_installed_error(model_name)
-        raise typer.Exit(1)
+        _info_not_installed(model_name, json_output)
+        return
 
     stored_size = entry.get("size_bytes")
     size_bytes = stored_size if _positive_finite_number(stored_size) else 0
@@ -5843,6 +5949,7 @@ def info(
                 "filename": filename,
                 "repo_id": entry.get("repo_id"),
                 "provider": entry.get("provider") or ("huggingface" if entry.get("repo_id") else None),
+                "installed": True,
                 "version": _entry_version(entry),
                 "size_bytes": size_bytes,
                 "installed_at": entry.get("installed_at", "unknown"),
@@ -5888,9 +5995,7 @@ def info(
             )
 
     console.print(table)
-    if size_bytes > 0:
-        console.print()
-        console.print(_fit_card(filename, int(size_bytes)))
+    console.print(_fit_hint(filename))
     note = _missing_engines_note(installed)
     if note:
         console.print(note, style="muted")

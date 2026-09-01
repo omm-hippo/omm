@@ -9,12 +9,14 @@ downloader.py's _probe_range_support for the corresponding fix."""
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from functools import lru_cache
 import re
 from urllib.parse import quote_plus
 
-from omm.providers.base import ModelResolutionError
+from omm.providers.base import ModelResolutionError, coerce_count, first_str, prune_metadata
 
+MS_MODEL = "https://modelscope.cn/api/v1/models/{repo_id}"
 MS_REPO_FILES = "https://modelscope.cn/api/v1/models/{repo_id}/repo/files"
 MS_DOWNLOAD = "https://modelscope.cn/api/v1/models/{repo_id}/repo"
 
@@ -89,6 +91,52 @@ def fetch_repo_param_count_b(repo_id: str) -> float | None:
     total-params field like HF's does - always None, filename-based
     parsing is the only source for ModelScope repos."""
     return None
+
+
+def _epoch_to_iso(value: object) -> str | None:
+    """ModelScope timestamps are Unix seconds; unset ones come back as the
+    year-1 sentinel (-62135596800), which must not render as a date."""
+    seconds = coerce_count(value)
+    if not seconds:
+        return None
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%Y-%m-%d")
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def fetch_repo_metadata(repo_id: str) -> dict:
+    """ModelScope's counterpart to the HuggingFace repo metadata: the same
+    keys where the API has an equivalent (Downloads, Stars, License,
+    BaseModel), plus `chinese_name`, which is how most ModelScope repos are
+    actually labeled. ModelScope exposes no parsed GGUF header, so
+    `architecture`/`context_length` are absent.
+
+    Never raises and returns {} on any failure."""
+    import requests
+
+    try:
+        resp = requests.get(MS_MODEL.format(repo_id=repo_id), timeout=15)
+        resp.raise_for_status()
+        payload = resp.json()
+    except (requests.RequestException, ValueError):
+        return {}
+    data = payload.get("Data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return {}
+
+    return prune_metadata(
+        {
+            "author": first_str(data.get("Path")) or first_str(data.get("CreatedBy")),
+            "downloads": coerce_count(data.get("Downloads")),
+            "likes": coerce_count(data.get("Stars")),
+            "license": first_str(data.get("License")),
+            "base_model": first_str(data.get("BaseModel")),
+            "chinese_name": first_str(data.get("ChineseName")),
+            "last_modified": _epoch_to_iso(data.get("LastUpdatedTime")),
+            "url": f"https://modelscope.cn/models/{repo_id}",
+        }
+    )
 
 
 def download_url(repo_id: str, filename: str) -> str:

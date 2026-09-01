@@ -430,7 +430,7 @@ omm import [directory] [--yes]  # Adopt GGUF files found across supported runner
 omm uninstall <name> [--dry-run]  # Uninstall a model and clean up its symlinks/manifests (alias: rm)
 omm uninstall all [--yes] [--dry-run]  # Uninstall every model installed via omm
 omm list [--json] [--engine NAME]  # Show models installed via omm and their linked status (alias: ls)
-omm info <name> [--json]  # Show a model's name, version, size, and linked-program run commands
+omm info <name> [--json]  # What a model is: source repo, version, size and run commands once installed; author, downloads, license and architecture for a search result
 omm upgrade <name> [--dry-run]  # Refresh a model against its source if it has changed since install (alias: up)
 omm upgrade [--yes] [--dry-run]  # Check every installed model for updates
 omm link [--engine NAME]  # Re-verify and repair installed-model links across supported runners
@@ -438,7 +438,7 @@ omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy i
 omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 ```
 
-`install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `search`/`install` mark models predicted not to run on this machine's hardware in red.
+`install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `omm info` and `omm fit` both work on a model that is not installed yet, so a search result can be inspected before downloading several GB; `omm info` describes the model, `omm fit` answers whether it runs on this machine. `search`/`install` mark models predicted not to run on this machine's hardware in red.
 
 `omm install --skip-unfit` is a scripting-friendly skip, not a successful
 installation: it prints `Skipped` and leaves the model hub unchanged. If an

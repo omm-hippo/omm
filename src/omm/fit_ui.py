@@ -1,4 +1,4 @@
-"""`omm fit` / `omm info` memory card: one model laid over this PC's RAM.
+"""`omm fit` memory card: one model laid over this PC's RAM.
 
 Reproduces the memory-budget card on omm.run in the terminal - the same
 four numbers `omm scan` already prints, but drawn as a bar so "does this

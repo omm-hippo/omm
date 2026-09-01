@@ -257,7 +257,10 @@ def test_fit_command_cancels_cleanly_when_provider_picker_is_escaped(
     assert "Cancelled" in result.stderr
 
 
-def test_info_shows_the_card_for_installed_models(isolated_omm_home, monkeypatch):
+def test_info_points_at_the_card_instead_of_printing_it(isolated_omm_home, monkeypatch):
+    """`omm info` used to end in this card, which left the two commands
+    saying nearly the same thing. It now describes the model and defers the
+    memory verdict to `omm fit` (see tests/test_cli_info.py)."""
     registry.save_registry({"model.gguf": {"size_bytes": 4 * 1024**3, "linked": {}, "sha256": "abc"}})
     monkeypatch.setattr(cli, "scan_hardware", _hw)
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: False)
@@ -265,4 +268,5 @@ def test_info_shows_the_card_for_installed_models(isolated_omm_home, monkeypatch
     result = runner.invoke(cli.app, ["info", "model.gguf"])
 
     assert result.exit_code == 0, result.output
-    assert "Safe model budget" in result.stdout
+    assert "Safe model budget" not in result.stdout
+    assert "omm fit model.gguf" in result.stdout

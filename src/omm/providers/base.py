@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 
 class ModelResolutionError(Exception):
     """`fix`, when set, is a copy-pasteable next step for the CLI's
@@ -47,3 +49,32 @@ class AmbiguousProviderError(ModelResolutionError):
             f"'{repo_id}' exists on more than one provider: {', '.join(providers)}. "
             f"Specify one, e.g. {providers[0]}:{repo_id}"
         )
+
+
+def coerce_count(value: object) -> int | None:
+    """A whole-number metadata field (downloads, likes, context length), or
+    None when the provider sent something that isn't one. `bool` is not a
+    count even though Python says it is an int."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return int(value)
+
+
+def first_str(value: object) -> str | None:
+    """Providers spell single-valued card fields (base_model, language) as
+    either a string or a one-element list - normalize both to a string."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
+def prune_metadata(fields: dict) -> dict:
+    """Drop the keys this provider had no value for, so callers render only
+    rows that are actually known instead of a column of "unknown"."""
+    return {key: value for key, value in fields.items() if value not in (None, "", [], {})}

@@ -143,3 +143,124 @@ def test_info_omits_missing_note_when_all_engines_installed(isolated_omm_home, m
 
     assert result.exit_code == 0, result.stdout
     assert "not installed" not in result.stdout
+
+
+def _resolved(**overrides):
+    resolved = cli.ResolvedModel(
+        url="https://huggingface.co/org/repo/resolve/main/model-Q4_K_M.gguf",
+        filename="model-Q4_K_M.gguf",
+        repo_id="org/repo",
+        provider="huggingface",
+    )
+    for key, value in overrides.items():
+        setattr(resolved, key, value)
+    return resolved
+
+
+def _stub_remote(monkeypatch, *, resolved=None, size_bytes=4 * 1024**3, metadata=None):
+    monkeypatch.setattr(cli, "_resolve_model_interactive", lambda name: resolved or _resolved())
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: size_bytes)
+    monkeypatch.setattr(
+        cli,
+        "fetch_repo_metadata",
+        lambda provider, repo_id: metadata
+        if metadata is not None
+        else {
+            "author": "org",
+            "downloads": 319887,
+            "likes": 74,
+            "license": "apache-2.0",
+            "architecture": "qwen2",
+            "context_length": 32768,
+            "last_modified": "2024-09-19T12:54:25.000Z",
+            "url": "https://huggingface.co/org/repo",
+        },
+    )
+
+
+def test_info_resolves_a_model_that_is_not_installed(isolated_omm_home, monkeypatch):
+    _stub_remote(monkeypatch)
+
+    result = runner.invoke(cli.app, ["info", "org/repo"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "model-Q4_K_M.gguf" in result.stdout
+    assert "not installed" in result.stdout
+    assert "4.00 GB" in result.stdout
+
+
+def test_info_shows_provider_metadata_for_a_search_result(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: ["org/repo"])
+    _stub_remote(monkeypatch)
+
+    result = runner.invoke(cli.app, ["info", "1"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "319,887" in result.stdout  # downloads, grouped
+    assert "apache-2.0" in result.stdout
+    assert "qwen2" in result.stdout
+    assert "32,768 tokens" in result.stdout
+    assert "2024-09-19" in result.stdout
+    assert "12:54:25" not in result.stdout  # the timestamp is trimmed to a date
+    assert "https://huggingface.co/org/repo" in result.stdout
+
+
+def test_info_omits_rows_the_provider_did_not_report(isolated_omm_home, monkeypatch):
+    _stub_remote(monkeypatch, metadata={"author": "org"})
+
+    result = runner.invoke(cli.app, ["info", "org/repo"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Author" in result.stdout
+    assert "License" not in result.stdout
+    assert "Context length" not in result.stdout
+
+
+def test_info_points_at_install_and_fit_for_an_uninstalled_model(isolated_omm_home, monkeypatch):
+    _stub_remote(monkeypatch)
+
+    result = runner.invoke(cli.app, ["info", "org/repo"])
+
+    assert "omm install org/repo:model-Q4_K_M.gguf" in result.stdout
+    assert "omm fit org/repo:model-Q4_K_M.gguf" in result.stdout
+
+
+def test_info_json_for_an_uninstalled_model(isolated_omm_home, monkeypatch):
+    _stub_remote(monkeypatch)
+
+    result = runner.invoke(cli.app, ["info", "org/repo", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["installed"] is False
+    assert payload["filename"] == "model-Q4_K_M.gguf"
+    assert payload["repo_id"] == "org/repo"
+    assert payload["provider"] == "huggingface"
+    assert payload["size_bytes"] == 4 * 1024**3
+    assert payload["downloads"] == 319887
+    assert payload["license"] == "apache-2.0"
+
+
+def test_info_reports_a_reference_no_provider_could_resolve(isolated_omm_home, monkeypatch):
+    def _explode(name):
+        raise cli.ModelResolutionError(f"HF repo '{name}' not found.")
+
+    monkeypatch.setattr(cli, "_resolve_model_interactive", _explode)
+
+    result = runner.invoke(cli.app, ["info", "org/nope"])
+
+    assert result.exit_code == 1
+    assert "is not installed via omm" in result.stderr
+    assert "not found" in result.stderr
+
+
+def test_info_does_not_print_the_fit_card(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: False)
+    registry.save_registry({"model.gguf": _entry()})
+
+    result = runner.invoke(cli.app, ["info", "model.gguf"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "In use by other apps" not in result.stdout
+    assert "Safe model budget" not in result.stdout
+    assert "omm fit model.gguf" in result.stdout
