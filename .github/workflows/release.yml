@@ -8,6 +8,7 @@ name: Build, verify, and publish Python release
   pull_request:
     paths:
       - ".github/workflows/release.yml"
+      - ".github/workflows/github-release.yml"
       - "pyproject.toml"
       - "requirements-release.txt"
       - "requirements-train.txt"
@@ -15,6 +16,7 @@ name: Build, verify, and publish Python release
       - "scripts/release_artifacts.py"
       - "scripts/pypi_release.py"
       - "tests/test_release_artifacts.py"
+      - "tests/test_github_release.py"
       - "tests/test_pypi_release.py"
       - "docs/homebrew-release-sync.md"
       - "LICENSE"
@@ -305,6 +307,7 @@ jobs:
     needs: [build, verify-pypi-install]
     permissions:
       contents: write
+      attestations: read
     uses: ./.github/workflows/github-release.yml
     with:
       version: ${{ needs.build.outputs.version }}

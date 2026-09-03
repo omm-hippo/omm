@@ -140,7 +140,7 @@ def test_release_workflows_share_one_identity_gate():
         "windows-portable.yml",
     ):
         workflow = (workflow_root / name).read_text(encoding="utf-8")
-        assert workflow.count("release_artifacts.py verify-release") == 1, name
+        assert len(re.findall(r"release_artifacts\.py verify-release(?=\s)", workflow)) == 1, name
         assert "git -c gpg.ssh.allowedSignersFile" not in workflow, name
         assert "git merge-base --is-ancestor" not in workflow, name
 

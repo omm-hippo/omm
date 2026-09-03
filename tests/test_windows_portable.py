@@ -198,8 +198,8 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     ):
         assert asset in github_release
     assert "all five validated assets arrive" in github_release
-    assert "sha256sum --check SHA256SUMS" in github_release
-    assert 'sha256sum --check "omm-windows-x64-${VERSION}.zip.sha256"' in github_release
+    assert "scripts/release_artifacts.py verify-release-assets" in github_release
+    assert '--dist-dir published-assets --version "${VERSION}"' in github_release
     assert 'test "${asset_count}" = "5"' in github_release
     assert 'cmp "release-assets/${asset}" "uploaded-assets/${asset}"' in github_release
     assert 'cmp "release-assets/${asset}" "published-assets/${asset}"' in github_release
@@ -227,11 +227,11 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert "winget validate --manifest" in workflow
     assert "expected exactly three schema compatibility warnings" in workflow
     assert "--ignore-warnings" in workflow
-    assert "winget install --manifest" in workflow
-    assert "needs.publish.outputs.published == 'true'" in workflow
-    assert "winget uninstall --manifest $manifestPath" in workflow
-    assert "local manifest for correlation" in workflow
-    assert workflow.count("--accept-source-agreements") == 2
+    assert "winget install --manifest" in github_release
+    assert "needs.release.outputs.published == 'true'" in github_release
+    assert "winget uninstall --manifest $manifestPath" in github_release
+    assert "local manifest for correlation" in github_release
+    assert github_release.count("--accept-source-agreements") == 2
     assert "scripts/winget_manifest.py" in workflow
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
     assert "actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661" in workflow

@@ -365,6 +365,7 @@ def check_homebrew_formula(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pyproject", type=Path, default=PYPROJECT)
+    parser.add_argument("--target", choices=[target.name for target in TARGETS])
     parser.add_argument(
         "--homebrew-formula",
         type=Path,
@@ -376,7 +377,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        results = check_all(pyproject=args.pyproject)
+        targets = tuple(target for target in TARGETS if args.target in (None, target.name))
+        results = check_all(pyproject=args.pyproject, targets=targets)
         if args.homebrew_formula is not None:
             homebrew = check_homebrew_formula(
                 args.homebrew_formula, pyproject=args.pyproject

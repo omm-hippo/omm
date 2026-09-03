@@ -32,8 +32,9 @@ generation.
   auto-merges `origin/main` into `beta` on every push to `main`, SSH-signed by the retrain bot key
   (in `allowed_signers`) so beta `omm update` clients verify it. It only needs a human when that
   merge hits a conflict — the job fails loudly and you resolve it with a local `git merge origin/main`
-  → push. `branch-ancestry-check.yml` stays as the post-hoc safety net. Most feature work targets
-  `beta`.
+  → push. `branch-ancestry-check.yml` stays as the post-hoc safety net; it polls through a ~3-minute
+  grace window on a `main` push so it only goes red when `sync-beta.yml` genuinely couldn't catch up.
+  Most feature work targets `beta`.
 - **Committing freely is fine; pushing is always a separate explicit ask.** Wait for it every time.
 - The user runs multiple Claude sessions against this checkout at once. Re-check `git log -5` /
   `git status` right before committing. Only ever `git add <your own filenames>` — never `-A` / `.`.
@@ -142,8 +143,10 @@ check the allowed tag signature, exact project version and checkout, and `main` 
 The Python and Windows workflows each call the reusable `github-release.yml` only after their own
 validation gates pass. They add wheel, sdist, `SHA256SUMS`, Windows ZIP, and ZIP checksum to one
 draft; it is published only after all five remote assets pass checksum verification. Existing
-asset bytes are never replaced by a rerun. If the Windows asset set arrives first, its public
-WinGet install job is skipped until a rerun observes the completed public Release.
+asset bytes are never replaced by a rerun. The reusable publisher verifies that checksums cover
+every expected filename. Its Windows job tests installation and uninstallation using a local
+WinGet manifest pointing to the public archive, regardless of which asset set arrives last.
+This does not submit the manifest to the WinGet community repository.
 
 **Telemetry.** `benchmark.py` measures real tokens/sec via Ollama's `/api/generate`;
 `contribute.py` runs an unattended benchmark loop (auto start/stop of the Ollama daemon under

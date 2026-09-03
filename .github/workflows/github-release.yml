@@ -102,6 +102,9 @@ jobs:
             "omm-windows-x64-${VERSION}.zip.sha256"
           )
 
+          python tooling/scripts/release_artifacts.py verify-release-assets \
+            --dist-dir release-assets --version "${VERSION}" --asset-set "${ASSET_SET}"
+
           release_json="$(
             gh api --paginate --slurp "repos/${GH_REPO}/releases?per_page=100" |
               jq --arg tag "${tag}" '[.[][] | select(.tag_name == $tag)]'
@@ -126,6 +129,14 @@ jobs:
           fi
           release_id="$(printf '%s' "${release_json}" | jq -r '.[0].id')"
           is_draft="$(printf '%s' "${release_json}" | jq -r '.[0].draft')"
+          if [ "${is_draft}" != "true" ]; then
+            existing_names="$(printf '%s' "${release_json}" | jq -c '[.[0].assets[].name] | sort')"
+            expected_names="$(printf '%s\n' "${all_assets[@]}" | jq -Rsc 'split("\n")[:-1] | sort')"
+            if [ "${existing_names}" != "${expected_names}" ]; then
+              echo "published release has an incomplete or unexpected asset set; refusing to modify it" >&2
+              exit 1
+            fi
+          fi
 
           for asset in "${current_assets[@]}"
           do
@@ -178,11 +189,8 @@ jobs:
             gh release download "${tag}" --repo "${GH_REPO}" \
               --pattern "${asset}" --dir published-assets --clobber
           done
-          (
-            cd published-assets
-            sha256sum --check SHA256SUMS
-            sha256sum --check "omm-windows-x64-${VERSION}.zip.sha256"
-          )
+          python tooling/scripts/release_artifacts.py verify-release-assets \
+            --dist-dir published-assets --version "${VERSION}"
 
           for asset in "${current_assets[@]}"
           do
@@ -195,3 +203,89 @@ jobs:
             gh release edit "${tag}" --repo "${GH_REPO}" --draft=false
           fi
           echo "published=true" >> "${GITHUB_OUTPUT}"
+
+  verify-winget-install:
+    name: Install and uninstall through the published WinGet manifest
+    if: >-
+      needs.release.outputs.published == 'true'
+    needs: release
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tooling
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          persist-credentials: false
+          ref: refs/tags/v${{ inputs.version }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Build the manifest from the published Windows bytes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $version = $env:VERSION
+          $archiveName = "omm-windows-x64-$version.zip"
+          gh release download "v$version" --repo $env:GH_REPO `
+            --pattern $archiveName --pattern "$archiveName.sha256" --dir release-assets
+          if ($LASTEXITCODE -ne 0) { throw "could not download the published Windows assets" }
+          python tooling/scripts/release_artifacts.py verify-release-assets `
+            --dist-dir release-assets --version $version --asset-set windows
+          if ($LASTEXITCODE -ne 0) { throw "published Windows checksum verification failed" }
+          $archive = "release-assets/$archiveName"
+          gh attestation verify $archive --repo $env:GH_REPO
+          if ($LASTEXITCODE -ne 0) { throw "published Windows attestation verification failed" }
+          $releaseDate = git -C source show -s --format=%cs HEAD
+          if ($LASTEXITCODE -ne 0) { throw "could not resolve the release date" }
+          python tooling/scripts/winget_manifest.py `
+            --version $version --archive $archive --release-date $releaseDate `
+            --installer-url "https://github.com/omm-hippo/omm/releases/download/v$version/$archiveName" `
+            --output-dir release-assets/winget
+          if ($LASTEXITCODE -ne 0) { throw "published Windows manifest validation failed" }
+      - name: Exercise the published user install and uninstall path
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          $manifestPath = "release-assets/winget/manifests/o/OmmHippo/OMM/$version"
+          $winget = Get-Command winget -ErrorAction SilentlyContinue
+          if ($null -eq $winget) { throw "winget is unavailable on this Windows runner" }
+          winget settings --enable LocalManifestFiles
+          if ($LASTEXITCODE -ne 0) { throw "could not enable local manifest files" }
+          winget install --manifest $manifestPath `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements `
+            --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw "WinGet installation failed" }
+          $command = Get-Command omm -ErrorAction Stop
+          $actualVersion = & $command.Source --version
+          if ($LASTEXITCODE -ne 0 -or ($actualVersion | Out-String).Trim() -ne "omm $version") {
+            throw "installed command does not report the published version: $actualVersion"
+          }
+          $dataRoot = Join-Path $env:RUNNER_TEMP "omm-winget-user-data"
+          New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
+          Set-Content -LiteralPath (Join-Path $dataRoot "preserve-me") -Value "user data"
+          $env:OMM_HOME = $dataRoot
+          # The package is not in the community source yet, so use the same
+          # local manifest for correlation during this pre-submission smoke test.
+          winget uninstall --manifest $manifestPath `
+            --silent `
+            --accept-source-agreements `
+            --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw "WinGet uninstall failed" }
+          if (Get-Command omm -ErrorAction SilentlyContinue) {
+            throw "omm command remains exposed after WinGet uninstall"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $dataRoot "preserve-me"))) {
+            throw "WinGet uninstall removed user data"
+          }
