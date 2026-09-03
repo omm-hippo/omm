@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import shutil
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -31,16 +32,19 @@ EXPECTED_LAUNCHER_FILES = {
     "package.json",
     "targets.json",
 }
-MAGIC_PREFIXES = {
-    "darwin": {
-        bytes.fromhex("cffaedfe"),
-        bytes.fromhex("feedfacf"),
-        bytes.fromhex("cafebabe"),
-        bytes.fromhex("cafebabf"),
-    },
-    "linux": {bytes.fromhex("7f454c46")},
-    "win32": {b"MZ"},
+MACHO_MAGICS = {
+    bytes.fromhex("cffaedfe"): "little",
+    bytes.fromhex("feedfacf"): "big",
 }
+MACHO_FAT_MAGICS = {bytes.fromhex("cafebabe"), bytes.fromhex("cafebabf")}
+ELF_MAGIC = bytes.fromhex("7f454c46")
+PE_MAGIC = b"MZ"
+PE_SIGNATURE = bytes.fromhex("50450000")
+# Mach-O cputype (header offset 4) and ELF/PE machine fields, mapped to npm cpu names.
+MACHO_CPU_TYPES = {0x01000007: "x64", 0x0100000C: "arm64"}
+ELF_MACHINES = {0x3E: "x64", 0xB7: "arm64"}
+PE_MACHINES = {0x8664: "x64", 0xAA64: "arm64"}
+HEADER_BYTES = 4096
 EXPECTED_TARGETS = {
     "darwin-arm64",
     "darwin-x64",
@@ -260,13 +264,74 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _validate_binary(binary: Path, os_name: str) -> None:
+def _read_header(binary: Path | bytes) -> bytes:
+    if isinstance(binary, (bytes, bytearray)):
+        return bytes(binary[:HEADER_BYTES])
+    with binary.open("rb") as stream:
+        return stream.read(HEADER_BYTES)
+
+
+def binary_architecture(binary: Path | bytes) -> tuple[str, str]:
+    """Return the (npm os, npm cpu) pair a real executable header declares.
+
+    The magic number alone only identifies the operating system: the same
+    Mach-O and ELF magic covers both the x64 and the arm64 build, so the CPU
+    architecture has to come from the header's machine field.
+    """
+    header = _read_header(binary)
+    if header.startswith(ELF_MAGIC):
+        if len(header) < 20:
+            raise NpmPackageError("ELF executable header is truncated")
+        if header[4] != 2:
+            raise NpmPackageError("ELF executable is not 64-bit")
+        byteorder = "little" if header[5] == 1 else "big"
+        machine = int.from_bytes(header[18:20], byteorder)
+        cpu = ELF_MACHINES.get(machine)
+        if cpu is None:
+            raise NpmPackageError(f"unsupported ELF machine 0x{machine:04x}")
+        return "linux", cpu
+    if header[:4] in MACHO_FAT_MAGICS:
+        raise NpmPackageError(
+            "universal (fat) Mach-O binaries are not published; "
+            "stage a single-architecture binary"
+        )
+    byteorder = MACHO_MAGICS.get(header[:4])
+    if byteorder is not None:
+        if len(header) < 8:
+            raise NpmPackageError("Mach-O executable header is truncated")
+        cputype = int.from_bytes(header[4:8], byteorder)
+        cpu = MACHO_CPU_TYPES.get(cputype)
+        if cpu is None:
+            raise NpmPackageError(f"unsupported Mach-O cputype 0x{cputype:08x}")
+        return "darwin", cpu
+    if header.startswith(PE_MAGIC):
+        if len(header) < 0x40:
+            raise NpmPackageError("PE executable header is truncated")
+        offset = int.from_bytes(header[0x3C:0x40], "little")
+        if offset + 6 > len(header) or header[offset : offset + 4] != PE_SIGNATURE:
+            raise NpmPackageError("PE executable has no COFF header")
+        machine = int.from_bytes(header[offset + 4 : offset + 6], "little")
+        cpu = PE_MACHINES.get(machine)
+        if cpu is None:
+            raise NpmPackageError(f"unsupported PE machine 0x{machine:04x}")
+        return "win32", cpu
+    raise NpmPackageError("binary does not match a supported executable format")
+
+
+def validate_binary_format(binary: Path | bytes, target: Mapping[str, str]) -> None:
+    """Reject a binary whose header does not declare the target's os and cpu."""
+    os_name, cpu = binary_architecture(binary)
+    if os_name != target["os"] or cpu != target["cpu"]:
+        raise NpmPackageError(
+            f"binary is {os_name}-{cpu} but the target requires "
+            f"{target['os']}-{target['cpu']}"
+        )
+
+
+def _validate_binary(binary: Path, target: Mapping[str, str]) -> None:
     if not binary.is_file() or binary.is_symlink():
         raise NpmPackageError(f"binary must be a regular non-symlink file: {binary}")
-    with binary.open("rb") as stream:
-        prefix = stream.read(4)
-    if not any(prefix.startswith(magic) for magic in MAGIC_PREFIXES[os_name]):
-        raise NpmPackageError(f"binary does not match the {os_name} executable format")
+    validate_binary_format(binary, target)
 
 
 def stage_platform_package(
@@ -280,7 +345,7 @@ def stage_platform_package(
     if target_name not in target_map:
         raise NpmPackageError(f"unsupported npm target: {target_name!r}")
     target = target_map[target_name]
-    _validate_binary(binary, target["os"])
+    _validate_binary(binary, target)
     version = project_version()
     destination = output_dir / target_name
     if destination.exists():
@@ -345,7 +410,7 @@ def validate_platform_package(
                 f"platform package metadata must be a regular file: {relative}"
             )
     manifest = _read_json(root / "package.json")
-    _validate_binary(binary, target["os"])
+    _validate_binary(binary, target)
     if (
         manifest.get("name") != target["package"]
         or manifest.get("version") != version

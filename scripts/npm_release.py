@@ -179,9 +179,12 @@ def inspect_tarball(path: Path) -> PackageInfo:
             f"npm platform tarball {name!r} license does not match the repository"
         )
     binary = files[binary_name]
-    magic = npm_package.MAGIC_PREFIXES[target["os"]]
-    if not any(binary.startswith(prefix) for prefix in magic):
-        raise NpmReleaseError(f"npm platform binary does not match {target_name}")
+    try:
+        npm_package.validate_binary_format(binary, target)
+    except npm_package.NpmPackageError as error:
+        raise NpmReleaseError(
+            f"npm platform binary does not match {target_name}: {error}"
+        ) from error
     metadata = manifest.get("omm")
     if not isinstance(metadata, dict) or metadata != {
         "binary": target["binary"],

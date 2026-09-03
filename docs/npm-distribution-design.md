@@ -58,6 +58,8 @@ the Python/npm metadata contract. It has read-only permissions and contains no
 `npm publish` command or OIDC write permission.
 
 `scripts/npm_package.py` rejects symlinked binaries, wrong executable formats,
+binaries whose header declares a different CPU architecture than the target
+(Mach-O cputype, ELF `e_machine`, PE `Machine`, plus universal Mach-O files),
 version drift, unexpected files, missing licenses, package identity drift, and
 install lifecycle scripts. The validation workflow stages private packages. A
 separate native build job freezes the actual OMM command on macOS arm64/Intel

@@ -19,8 +19,23 @@ import npm_release
 
 
 def _magic(target: str) -> bytes:
-    os_name = npm_package.targets()[target]["os"]
-    return next(iter(npm_package.MAGIC_PREFIXES[os_name]))
+    """A minimal executable header carrying the target's real machine field."""
+    value = npm_package.targets()[target]
+    if value["os"] == "darwin":
+        cputype = 0x01000007 if value["cpu"] == "x64" else 0x0100000C
+        return bytes.fromhex("cffaedfe") + cputype.to_bytes(4, "little")
+    if value["os"] == "linux":
+        header = bytearray(64)
+        header[0:4] = bytes.fromhex("7f454c46")
+        header[4] = 2
+        header[5] = 1
+        header[16:18] = (2).to_bytes(2, "little")
+        header[18:20] = (0x3E if value["cpu"] == "x64" else 0xB7).to_bytes(2, "little")
+        return bytes(header)
+    header = bytearray(0x40)
+    header[0:2] = b"MZ"
+    header[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    return bytes(header) + bytes.fromhex("50450000") + (0x8664).to_bytes(2, "little")
 
 
 def _pack(source: Path, destination: Path) -> None:

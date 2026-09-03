@@ -19,6 +19,39 @@ npm_package = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(npm_package)
 
 
+def _macho(cputype: int, byteorder: str = "little") -> bytes:
+    magic = bytes.fromhex("cffaedfe" if byteorder == "little" else "feedfacf")
+    return magic + cputype.to_bytes(4, byteorder) + b" OMM Mach-O"
+
+
+def _elf(machine: int, *, bits: int = 2) -> bytes:
+    header = bytearray(64)
+    header[0:4] = bytes.fromhex("7f454c46")
+    header[4] = bits
+    header[5] = 1
+    header[16:18] = (2).to_bytes(2, "little")
+    header[18:20] = machine.to_bytes(2, "little")
+    return bytes(header)
+
+
+def _pe(machine: int) -> bytes:
+    header = bytearray(0x40)
+    header[0:2] = b"MZ"
+    header[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    return bytes(header) + bytes.fromhex("50450000") + machine.to_bytes(2, "little")
+
+
+def _binary(target: str) -> bytes:
+    """A minimal but honest executable header for one npm target."""
+    return {
+        "darwin-arm64": _macho(0x0100000C),
+        "darwin-x64": _macho(0x01000007),
+        "linux-arm64-gnu": _elf(0xB7),
+        "linux-x64-gnu": _elf(0x3E),
+        "win32-x64": _pe(0x8664),
+    }[target]
+
+
 def test_launcher_contract_matches_project_and_python_install_detection():
     npm_package.validate_launcher_source()
     target_map = npm_package.targets()
@@ -82,17 +115,10 @@ def test_publishable_launcher_is_staged_without_weakening_source_guard(tmp_path)
     assert staged_manifest["private"] is False
 
 
-@pytest.mark.parametrize(
-    ("target", "magic"),
-    [
-        ("darwin-arm64", bytes.fromhex("cffaedfe")),
-        ("linux-x64-gnu", bytes.fromhex("7f454c46")),
-        ("win32-x64", b"MZ"),
-    ],
-)
-def test_stage_platform_package_is_private_and_exact(tmp_path, target, magic):
+@pytest.mark.parametrize("target", sorted(npm_package.EXPECTED_TARGETS))
+def test_stage_platform_package_is_private_and_exact(tmp_path, target):
     binary = tmp_path / f"input-{target}"
-    binary.write_bytes(magic + b" standalone OMM")
+    binary.write_bytes(_binary(target) + b" standalone OMM")
     staged = npm_package.stage_platform_package(target, binary, tmp_path / "out")
 
     npm_package.validate_platform_package(staged, target)
@@ -106,7 +132,7 @@ def test_stage_platform_package_is_private_and_exact(tmp_path, target, magic):
 
 def test_publishable_platform_is_explicit_and_still_exact(tmp_path):
     binary = tmp_path / "omm.exe"
-    binary.write_bytes(b"MZ" + b" standalone OMM")
+    binary.write_bytes(_binary("win32-x64") + b" standalone OMM")
     staged = npm_package.stage_platform_package(
         "win32-x64",
         binary,
@@ -134,7 +160,7 @@ def test_stage_platform_rejects_wrong_format_symlink_and_overwrite(tmp_path):
         npm_package.stage_platform_package("linux-x64-gnu", wrong, tmp_path / "out")
 
     real = tmp_path / "real"
-    real.write_bytes(bytes.fromhex("7f454c46") + b" OMM")
+    real.write_bytes(_binary("linux-x64-gnu") + b" OMM")
     if os.name != "nt":
         linked = tmp_path / "linked"
         linked.symlink_to(real)
@@ -148,12 +174,67 @@ def test_stage_platform_rejects_wrong_format_symlink_and_overwrite(tmp_path):
         npm_package.stage_platform_package("linux-x64-gnu", real, tmp_path / "out")
 
 
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("darwin-arm64", ("darwin", "arm64")),
+        ("darwin-x64", ("darwin", "x64")),
+        ("linux-arm64-gnu", ("linux", "arm64")),
+        ("linux-x64-gnu", ("linux", "x64")),
+        ("win32-x64", ("win32", "x64")),
+    ],
+)
+def test_binary_architecture_reads_the_machine_field_of_every_target(target, expected):
+    assert npm_package.binary_architecture(_binary(target)) == expected
+    npm_package.validate_binary_format(_binary(target), npm_package.targets()[target])
+
+
+@pytest.mark.parametrize(
+    ("target", "header", "match"),
+    [
+        # Same Mach-O magic as darwin-x64, but the cputype says arm64.
+        ("darwin-x64", _macho(0x0100000C), "darwin-arm64"),
+        ("darwin-arm64", _macho(0x01000007), "darwin-x64"),
+        # Same ELF magic as linux-x64-gnu, but e_machine says aarch64.
+        ("linux-x64-gnu", _elf(0xB7), "linux-arm64"),
+        ("linux-arm64-gnu", _elf(0x3E), "linux-x64"),
+        # A 32-bit ELF and an i386 PE carry the same magic as the 64-bit ones.
+        ("linux-x64-gnu", _elf(0x3E, bits=1), "not 64-bit"),
+        ("win32-x64", _pe(0x014C), "unsupported PE machine 0x014c"),
+        # Universal binaries are never produced by this pipeline.
+        ("darwin-arm64", bytes.fromhex("cafebabe") + bytes(60), "universal"),
+        ("darwin-x64", bytes.fromhex("cafebabf") + bytes(60), "universal"),
+        # An ELF staged as the Windows package is still an os mismatch.
+        ("win32-x64", _elf(0x3E), "linux-x64"),
+    ],
+)
+def test_stage_platform_rejects_a_mislabelled_architecture(
+    tmp_path, target, header, match
+):
+    binary = tmp_path / "input"
+    binary.write_bytes(header + b" standalone OMM")
+
+    with pytest.raises(npm_package.NpmPackageError, match=match):
+        npm_package.stage_platform_package(target, binary, tmp_path / "out")
+    assert not (tmp_path / "out" / target).exists()
+
+
+REAL_WINDOWS_BINARY = Path("D:/omm-tmp/npm-binary/omm.exe")
+
+
+@pytest.mark.skipif(
+    not REAL_WINDOWS_BINARY.is_file(), reason="no real Windows binary available"
+)
+def test_binary_architecture_reads_a_real_windows_executable():
+    assert npm_package.binary_architecture(REAL_WINDOWS_BINARY) == ("win32", "x64")
+
+
 def test_platform_package_normalizes_windows_license_line_endings(tmp_path, monkeypatch):
     license_file = tmp_path / "LICENSE"
     license_file.write_bytes(b"line one\r\nline two\r\n")
     monkeypatch.setattr(npm_package, "LICENSE_FILE", license_file)
     binary = tmp_path / "omm"
-    binary.write_bytes(next(iter(npm_package.MAGIC_PREFIXES["darwin"])) + b" payload")
+    binary.write_bytes(_binary("darwin-arm64") + b" payload")
 
     staged = npm_package.stage_platform_package(
         "darwin-arm64", binary, tmp_path / "stage", publishable=True
@@ -165,7 +246,7 @@ def test_platform_package_normalizes_windows_license_line_endings(tmp_path, monk
 
 def test_platform_verifier_rejects_unexpected_files(tmp_path):
     binary = tmp_path / "omm"
-    binary.write_bytes(bytes.fromhex("7f454c46") + b" OMM")
+    binary.write_bytes(_binary("linux-x64-gnu") + b" OMM")
     staged = npm_package.stage_platform_package(
         "linux-x64-gnu", binary, tmp_path / "out"
     )
@@ -179,7 +260,7 @@ def test_platform_verifier_rejects_unexpected_files(tmp_path):
 @pytest.mark.parametrize("relative", ["LICENSE", "package.json"])
 def test_package_verifiers_reject_symlinked_metadata(tmp_path, relative):
     binary = tmp_path / "omm"
-    binary.write_bytes(bytes.fromhex("7f454c46") + b" OMM")
+    binary.write_bytes(_binary("linux-x64-gnu") + b" OMM")
     staged = npm_package.stage_platform_package(
         "linux-x64-gnu", binary, tmp_path / "out"
     )
