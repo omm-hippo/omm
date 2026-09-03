@@ -28,9 +28,12 @@ generation.
   Merge strategy is "create a merge commit" only (squash/rebase disabled — flattening breaks the
   SSH-signature chain that `omm update` verifies). If CI job names change, update the branch-protection
   `required_status_checks` contexts to match.
-- `beta` is unprotected and **must always be a superset of `main`**. After anything lands on `main`,
-  check `git log origin/beta..origin/main --oneline --no-merges` and port every result to `beta`.
-  Most feature work targets `beta`.
+- `beta` is unprotected and **must always be a superset of `main`**. `.github/workflows/sync-beta.yml`
+  auto-merges `origin/main` into `beta` on every push to `main`, SSH-signed by the retrain bot key
+  (in `allowed_signers`) so beta `omm update` clients verify it. It only needs a human when that
+  merge hits a conflict — the job fails loudly and you resolve it with a local `git merge origin/main`
+  → push. `branch-ancestry-check.yml` stays as the post-hoc safety net. Most feature work targets
+  `beta`.
 - **Committing freely is fine; pushing is always a separate explicit ask.** Wait for it every time.
 - The user runs multiple Claude sessions against this checkout at once. Re-check `git log -5` /
   `git status` right before committing. Only ever `git add <your own filenames>` — never `-A` / `.`.

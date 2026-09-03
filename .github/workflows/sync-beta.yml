@@ -1,0 +1,85 @@
+name: Sync main into beta
+
+# Root fix for the recurring "Branch ancestry check" failure: every path that
+# lands a commit on main (human PR merges, the nightly retrain auto-merge) used
+# to leave beta behind until someone ran the port by hand, and beta is required
+# to be a superset of main (see the beta-stays-ahead-of-main convention in
+# CLAUDE.md, enforced post-hoc by branch-ancestry-check.yml). This workflow does
+# that port automatically on every push to main.
+
+"on":
+  push:
+    branches:
+      - "main"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Serialize our own runs so rapid main pushes each merge in order; later runs
+# become no-ops once beta already contains main. Do not cancel a run mid-merge.
+concurrency:
+  group: sync-main-to-beta
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge main into beta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: beta
+          fetch-depth: 0
+          token: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
+
+      - name: Merge origin/main into beta
+        env:
+          LOCALFIT_RETRAIN_SSH_KEY: ${{ secrets.LOCALFIT_RETRAIN_SSH_KEY }}
+        run: |
+          set -euo pipefail
+
+          # Sign the merge commit with the retrain bot's key, which is listed in
+          # src/omm/trust/allowed_signers. beta update clients then verify it as
+          # an exact-signed lineage commit (verify_update in
+          # src/omm/trust/__init__.py). A GITHUB_TOKEN / web-UI merge would be
+          # GPG-signed by a key omm does not trust and strand every beta install
+          # at the next `omm update` - the exact failure mode CLAUDE.md warns
+          # about for "Sync fork" / "Update branch".
+          umask 077
+          key_path="$RUNNER_TEMP/omm-sync-signing-key"
+          printf '%s\n' "$LOCALFIT_RETRAIN_SSH_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          git config user.name "omm-retrain-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config gpg.format ssh
+          git config commit.gpgsign true
+          git config user.signingkey "$key_path"
+
+          for attempt in 1 2 3; do
+            git fetch origin main beta
+
+            if git merge-base --is-ancestor origin/main origin/beta; then
+              echo "beta already contains every commit on main; nothing to do."
+              exit 0
+            fi
+
+            git checkout -B beta origin/beta
+            if ! git merge --no-ff --no-edit \
+                -m "Merge branch 'main' into beta" origin/main; then
+              git merge --abort || true
+              echo "::error::Merging origin/main into beta hit a conflict. Resolve it locally: git checkout beta && git merge origin/main && git push origin beta"
+              exit 1
+            fi
+
+            if git push origin HEAD:beta; then
+              echo "Pushed beta $(git rev-parse --short HEAD) (now a superset of main)."
+              exit 0
+            fi
+
+            echo "beta push lost a race (attempt ${attempt}/3); re-syncing and retrying."
+            sleep 3
+          done
+
+          echo "::error::could not push beta after 3 attempts"
+          exit 1
