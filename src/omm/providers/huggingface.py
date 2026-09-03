@@ -5,10 +5,9 @@ git history for prior behavior if something looks unfamiliar."""
 from __future__ import annotations
 
 import math
-import re
 from urllib.parse import quote
 
-from omm.providers.base import ModelResolutionError
+from omm.providers.base import ModelResolutionError, normalize_sha256
 
 HF_API = "https://huggingface.co/api/models/{repo_id}"
 HF_DOWNLOAD = "https://huggingface.co/{repo_id}/resolve/main/{filename}"
@@ -109,11 +108,7 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
         if not entries:
             return None
         lfs = entries[0].get("lfs", {})
-        digest = lfs.get("oid") or lfs.get("sha256")
-        if not isinstance(digest, str):
-            return None
-        digest = digest.removeprefix("sha256:").lower()
-        return digest if re.fullmatch(r"[0-9a-f]{64}", digest) else None
+        return normalize_sha256(lfs.get("oid") or lfs.get("sha256"))
     except (ValueError, KeyError, TypeError, AttributeError, IndexError):
         return None
 

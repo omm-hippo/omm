@@ -425,3 +425,26 @@ def test_current_trust_anchor_points_at_bundled_file():
     assert anchor is not None
     assert anchor.name == "allowed_signers"
     assert "ssh-ed25519" in anchor.read_text()
+
+
+def test_verify_update_accepts_the_installed_commit_as_its_own_target(
+    repo, signing_key, allowed_signers
+):
+    """A no-op update (nothing new fetched) targets the commit already checked
+    out. When that is an unsigned two-parent merge the lineage walk accepted
+    at install time, re-verifying it used to fail: the walk from a commit to
+    itself is empty."""
+    _commit(repo, "base", signing_key=signing_key)
+    default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
+    _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
+    (repo / "feature.txt").write_text("reviewed\n")
+    _run(["git", "add", "feature.txt"], cwd=repo)
+    _commit(repo, "signed feature", signing_key=signing_key)
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    _run(["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "merge", "feature"], cwd=repo)
+    merge = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+
+    ok, message = trust.verify_update(repo, merge, merge, allowed_signers)
+
+    assert ok, message
+    assert "already the installed commit" in message

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -130,7 +131,9 @@ def _gpu_vendor(gpu_name: str | None) -> str:
     if not gpu_name:
         return "none"
     low = gpu_name.lower()
-    if "apple" in low or "m1" in low or "m2" in low or "m3" in low or "m4" in low:
+    # Apple chips are "M1".."M5" as a standalone token; a bare substring
+    # check also matched model numbers like "Quadro M2000M" or "FirePro M4000".
+    if "apple" in low or re.search(r"(?<![a-z0-9])m[1-9](?![a-z0-9])", low):
         return "apple"
     if any(m in low for m in ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla")):
         return "nvidia"

@@ -502,3 +502,29 @@ def test_module_has_no_process_kill_or_privilege_escalation_path():
     assert "sudo" not in source
     assert "os.kill" not in source
     assert "subprocess" not in source
+
+
+def test_blended_requirement_on_discrete_gpu_reclaims_biggest_resident_first():
+    """The CLI passes one blended requirement, never a per-pool split. On a
+    discrete-GPU host every resident used to score 0.0 for reclamation, so
+    the unload order was whatever the runtime listed first."""
+    hardware = _hardware(
+        unified_memory=False,
+        ram_total_gb=32.0,
+        ram_available_gb=3.0,
+        vram_total_gb=8.0,
+        vram_free_gb=1.0,
+    )
+    residents = (_resident("small", size=1.0), _resident("large", size=6.0))
+    plan = guard.plan_memory_guard(4.0, hardware, residents)
+    assert plan.available_vram_gb is not None
+    assert plan.required_ram_gb is None and plan.required_vram_gb is None
+    runtime = _Runtime()
+    refreshed = iter([guard.plan_memory_guard(4.0, _hardware(ram_available_gb=15.0), [])])
+
+    result = guard.execute_guard(
+        plan, "ask", runtime, consent=lambda _plan: True, recalculate=lambda: next(refreshed)
+    )
+
+    assert result.allowed is True
+    assert [resident.model_id for resident in result.unloaded] == ["large"]

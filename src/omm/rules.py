@@ -100,4 +100,7 @@ def matching_rules(rules: list[dict], available_gb: float, has_gpu: bool) -> lis
         needed = rule["min_vram_gb"] if has_gpu else rule["min_ram_gb"]
         if available_gb >= needed:
             matches.append(rule)
-    return sorted(matches, key=lambda r: r["min_ram_gb"], reverse=True)
+    # Rank by the same pool the filter used: the rule with the largest
+    # requirement that still fits is the most capable model for this host.
+    pool = "min_vram_gb" if has_gpu else "min_ram_gb"
+    return sorted(matches, key=lambda r: r[pool], reverse=True)

@@ -7,7 +7,6 @@ Localfit can verify: model size, usable RAM/VRAM, unified memory, and CPU count.
 
 from __future__ import annotations
 
-import math
 import os
 from dataclasses import dataclass, replace
 from typing import Mapping
@@ -19,7 +18,7 @@ from omm.contribute_memory import (
     VRAM_RESERVE_RATIO,
 )
 
-from omm.featurize import parse_param_count_billions, parse_quant_bits
+from omm.featurize import parse_param_count_billions, parse_quant_bits, positive_finite_number
 from omm.hardware import HardwareInfo, calculate_memory_budget
 
 MEMORY_OVERHEAD = 1.2
@@ -69,14 +68,9 @@ def _candidate_text(candidate: dict) -> str:
 
 
 def candidate_model_size_gb(candidate: dict) -> float | None:
-    size_bytes = candidate.get("size_bytes")
-    if (
-        isinstance(size_bytes, (int, float))
-        and not isinstance(size_bytes, bool)
-        and math.isfinite(size_bytes)
-        and size_bytes > 0
-    ):
-        return float(size_bytes) / (1024**3)
+    size_bytes = positive_finite_number(candidate.get("size_bytes"))
+    if size_bytes is not None:
+        return size_bytes / (1024**3)
     text = _candidate_text(candidate)
     parameters = parse_param_count_billions(text)
     quant_bits = parse_quant_bits(text)
@@ -95,10 +89,6 @@ def candidate_quant_bits(candidate: dict) -> float | None:
         if parsed is not None:
             return parsed
     return None
-
-
-def available_model_memory_gb(hw: HardwareInfo) -> float:
-    return calculate_memory_budget(hw).model_budget_gb
 
 
 def recommend_runtime_settings(

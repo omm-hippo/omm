@@ -1579,3 +1579,95 @@ def test_link_model_does_not_print_skip_notice_for_uninstalled_engines(
         "textgenwebui": False,
         "koboldcpp": False,
     }
+
+
+def test_zero_speed_benchmark_never_uploads_without_consent(isolated_omm_home, monkeypatch):
+    """`benchmark_ollama` reports "generation attempted and failed" as 0.0,
+    not None. That is not a measurement: --no-upload (and the ask/never
+    policies) must hold for it exactly as for a real number - it used to
+    skip the consent gate entirely and upload a 0 tok/s row."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag, options=None: 0.0)
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+    )
+    sent = []
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
+    attempts = []
+    monkeypatch.setattr(cli.telemetry, "log_attempt", lambda outcome, detail="": attempts.append(outcome))
+
+    outcome = cli._install_impl(_resolved(), no_upload=True)
+
+    assert sent == []
+    assert outcome.telemetry_sent is False
+    assert "skipped_generation_failed" in attempts
+
+
+def test_install_stops_the_daemon_it_started_when_health_check_still_fails(
+    isolated_omm_home, monkeypatch
+):
+    """Ollama installed-but-stopped: install starts it for the compatibility
+    check. If the follow-up health probe still fails, nothing else in the
+    install ever touches that handle, so it must be stopped right there or
+    the `ollama serve` omm spawned outlives the command."""
+    from omm.engines.base import RuntimeHealth
+
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "stopped")
+    handle = object()
+    monkeypatch.setattr(cli, "_ensure_ollama_running", lambda action, *, assume_yes=False: handle)
+    stopped = []
+    monkeypatch.setattr(cli, "_stop_engine_daemon", lambda engine, proc: stopped.append((engine, proc)))
+
+    class _Unreachable:
+        def health(self):
+            return RuntimeHealth(False, version=None, failure_reason="server_unavailable")
+
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _Unreachable())
+
+    outcome = cli._install_impl(
+        _resolved(), verify_runtime_after_install=True, runtime_load_consent=True, assume_yes=True
+    )
+
+    assert outcome.compatibility_status == "failed"
+    assert stopped == [("ollama", handle)]
+
+
+def test_run_interruptible_abandons_work_on_a_daemon_thread():
+    """An abandoned call must not keep the interpreter alive at exit: the
+    worker has to be a daemon thread. ThreadPoolExecutor workers are joined
+    at shutdown, which made Esc-cancel wait for the benchmark anyway."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow():
+        started.set()
+        release.wait(5)
+        return "done"
+
+    stop_event = threading.Event()
+    threading.Timer(0.05, stop_event.set).start()
+    try:
+        with pytest.raises(cli._Interrupted):
+            cli._run_interruptible(slow, stop_event)
+        assert started.wait(1)
+        workers = [t for t in threading.enumerate() if t.name == "omm-interruptible"]
+        assert workers and all(t.daemon for t in workers)
+    finally:
+        release.set()
+
+
+def test_run_interruptible_returns_the_result_and_reraises_errors():
+    stop_event = threading.Event()
+
+    assert cli._run_interruptible(lambda: 42, stop_event) == 42
+
+    def boom():
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        cli._run_interruptible(boom, stop_event)

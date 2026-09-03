@@ -124,3 +124,17 @@ def test_cli_main_records_usage_run(isolated_omm_home, monkeypatch):
         pass
     rows = usage._read_pending()
     assert rows and rows[0]["o"] == "ok"
+
+
+def test_gpu_vendor_does_not_mistake_model_numbers_for_apple_chips():
+    expected = {
+        "Apple M2 Pro": "apple",
+        "M4 Max": "apple",
+        "NVIDIA Quadro M2000M": "nvidia",
+        "AMD FirePro M4000": "amd",
+        "NVIDIA GeForce RTX 4090": "nvidia",
+        "Intel Iris Xe": "intel",
+        None: "none",
+        "Something else": "other",
+    }
+    assert {name: usage._gpu_vendor(name) for name in expected} == expected

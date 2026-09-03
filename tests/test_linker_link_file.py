@@ -1123,3 +1123,22 @@ def test_link_ollama_explicit_models_dir_never_calls_ollama_cli(
     result = linker.link_ollama(source, "model", models_dir=models_dir)
 
     assert result is False  # no tokenizer.chat_template in the stubbed metadata
+
+
+def test_link_ollama_refused_at_manifest_writes_no_blobs(isolated_omm_home, tmp_path, monkeypatch):
+    """The manifest conflict is decided before any blob is written: a
+    refused link used to leave ownership-recorded model/config blobs that no
+    manifest references and no cleanup path reclaims."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("stale manifest, no ownership record")
+
+    with pytest.raises(linker.LinkError, match="unowned Ollama manifest"):
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert not (models_dir / "blobs").exists()
+    assert manifest.read_text() == "stale manifest, no ownership record"

@@ -1529,7 +1529,13 @@ def test_generate_lmstudio_normalizes_response_to_ollama_shape(monkeypatch):
 
     result = quality._generate_lmstudio("qwen2.5-0.5b-instruct", "hi", pack["generation"], 64, 1234)
 
-    assert result == {"response": "FINAL: 42", "eval_count": 54, "eval_duration": 569_500_000}
+    # generation_time minus time_to_first_token: the decode window LM
+    # Studio's own tokens_per_second (111.03 = 54 / 0.4865) is computed over.
+    assert result == {
+        "response": "FINAL: 42",
+        "eval_count": 54,
+        "eval_duration": int((0.5695 - 0.083) * 1_000_000_000),
+    }
     assert captured["port"] == 1234
     assert captured["method"] == "POST"
     assert captured["path"] == "/api/v0/chat/completions"
@@ -1935,3 +1941,39 @@ def test_collect_evidence_lmstudio_confirm_performance_timeout_is_a_noop(monkeyp
     assert entry["outcome"] == "transient_error"
     assert entry["failure_reason"] == "generation_timeout"
     assert "confirmation_attempts" not in entry
+
+
+def test_generate_lmstudio_excludes_time_to_first_token_from_decode_time(monkeypatch):
+    """LM Studio's generation_time includes prompt processing; Ollama's
+    eval_duration does not. The normalized duration must be the decode
+    window - the one LM Studio's own tokens_per_second is computed over -
+    or every LM Studio speed lands 10-20% under Ollama's for the same run."""
+    monkeypatch.setattr(
+        quality, "_lmstudio_request_json",
+        lambda *a, **k: {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 54},
+            "stats": {"tokens_per_second": 111.03, "time_to_first_token": 0.083, "generation_time": 0.5695},
+        },
+    )
+    pack, _digest = quality.load_pack()
+
+    response = quality._generate_lmstudio("m", "hi", pack["generation"], 64, 1234)
+
+    assert quality._tokens_per_second(response) == pytest.approx(111.03, rel=0.01)
+
+
+def test_generate_lmstudio_ignores_a_ttft_that_is_not_shorter_than_generation(monkeypatch):
+    monkeypatch.setattr(
+        quality, "_lmstudio_request_json",
+        lambda *a, **k: {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 100},
+            "stats": {"time_to_first_token": 2.0, "generation_time": 2.0},
+        },
+    )
+    pack, _digest = quality.load_pack()
+
+    response = quality._generate_lmstudio("m", "hi", pack["generation"], 64, 1234)
+
+    assert response["eval_duration"] == 2_000_000_000

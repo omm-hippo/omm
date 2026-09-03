@@ -1409,6 +1409,28 @@ def link_ollama(
         raise LinkError(f"Could not lock the Ollama model store: {error}") from error
 
 
+def _manifest_owned_or_matches(
+    manifest_path: Path, expected_source: Path | None, expected_sha256: str | None
+) -> bool:
+    """Whether omm may replace or delete this Ollama manifest: either its
+    ownership record says omm wrote it for `expected_source`, or its model
+    layer already hashes to `expected_sha256`. The digest fallback covers
+    an omm-written manifest whose ownership record was lost (registry
+    file corrupted and reset, or created before the registry existed);
+    without it every re-link of that exact model would fail forever and
+    `omm uninstall` would skip it too, since `linked.ollama` never turns
+    True. Same content is unambiguously safe to replace."""
+    if _owned_manifest(manifest_path, expected_source=expected_source):
+        return True
+    if expected_sha256 is None:
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = {}
+    return _manifest_model_layer_sha256(manifest) == expected_sha256
+
+
 def _link_ollama_unlocked(
     gguf_path: Path,
     model_name: str,
@@ -1480,7 +1502,23 @@ def _link_ollama_unlocked(
     model_digest = f"sha256:{model_sha256}"
 
     blobs_dir = models_dir / "blobs"
+    manifest_root = models_dir / "manifests" / "registry.ollama.ai" / "library"
+    manifest_dir = manifest_root / model_name
+    manifest_path = manifest_dir / "latest"
     try:
+        # Manifest checks come before any blob is written: a link that is
+        # going to be refused at the manifest used to leave ownership-
+        # recorded model/config blobs behind that no manifest references
+        # and no cleanup path ever reclaims.
+        if manifest_dir.is_symlink():
+            raise LinkError(f"Refusing Ollama symlinked manifest directory: {manifest_dir}.")
+        if not manifest_dir.resolve().is_relative_to(manifest_root.resolve()):
+            raise LinkError("Refusing Ollama manifest path outside the models directory.")
+        if (
+            manifest_path.exists() or manifest_path.is_symlink()
+        ) and not _manifest_owned_or_matches(manifest_path, gguf_path, model_sha256):
+            raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
+
         blobs_dir.mkdir(parents=True, exist_ok=True)
 
         model_blob = blobs_dir / f"sha256-{model_sha256}"
@@ -1573,15 +1611,7 @@ def _link_ollama_unlocked(
             ],
         }
 
-        manifest_root = models_dir / "manifests" / "registry.ollama.ai" / "library"
-        manifest_root.mkdir(parents=True, exist_ok=True)
-        manifest_dir = manifest_root / model_name
-        if manifest_dir.is_symlink():
-            raise LinkError(f"Refusing Ollama symlinked manifest directory: {manifest_dir}.")
-        if not manifest_dir.resolve().is_relative_to(manifest_root.resolve()):
-            raise LinkError("Refusing Ollama manifest path outside the models directory.")
         manifest_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = manifest_dir / "latest"
         manifest_json = json.dumps(manifest, indent=2)
         # Locked + read-back verified: two omm processes linking the same
         # model_name concurrently used to be able to interleave unlocked
@@ -1591,25 +1621,9 @@ def _link_ollama_unlocked(
         # transient race rather than a real format drift.
         with locked(_engine_path_lock(manifest_path)):
             if manifest_path.exists() or manifest_path.is_symlink():
-                owned = _owned_manifest(manifest_path, expected_source=gguf_path)
-                if not owned:
-                    # Mirrors unlink_ollama's fallback: an omm-written manifest
-                    # whose ownership record was lost (registry file corrupted
-                    # and reset, or created before the registry existed) would
-                    # otherwise permanently fail every re-link of this exact
-                    # model - install reports success but leaves the stale
-                    # manifest in place, and later `omm uninstall` also skips
-                    # it because `linked.ollama` never turns True. If the
-                    # existing manifest's model layer already hashes to the
-                    # same content this call is about to write, it's
-                    # unambiguously safe to replace regardless of the missing
-                    # ownership record.
-                    try:
-                        existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    except (OSError, ValueError):
-                        existing_manifest = {}
-                    owned = _manifest_model_layer_sha256(existing_manifest) == model_sha256
-                if not owned:
+                # Re-checked under the manifest lock: another process may
+                # have published here since the pre-check above.
+                if not _manifest_owned_or_matches(manifest_path, gguf_path, model_sha256):
                     raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
                 manifest_path.unlink()
                 _update_link_ownership(manifest_path, None)
@@ -2008,14 +2022,7 @@ def _unlink_ollama_manifest_only(
     with locked(_engine_path_lock(manifest_path)):
         if not manifest_path.exists():
             return False, set()
-        owned = _owned_manifest(manifest_path, expected_source=expected_source)
-        if not owned and expected_content_sha256 is not None:
-            try:
-                manifest_for_check = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                manifest_for_check = {}
-            owned = _manifest_model_layer_sha256(manifest_for_check) == expected_content_sha256
-        if not owned:
+        if not _manifest_owned_or_matches(manifest_path, expected_source, expected_content_sha256):
             return False, set()
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -2209,43 +2216,47 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
     if not blobs_dir.exists():
         return (0, 0)
 
-    broken_digests = set()
-    # Cleared together in one locked read-modify-write at the end instead of
-    # once per removed blob/manifest - a run that finds many broken links at
-    # once used to reload and rewrite the whole on-disk registry that many
-    # times over for no observable difference in the end state.
-    cleared_paths: list[Path] = []
-    for blob in blobs_dir.iterdir():
-        if blob.is_symlink() and not blob.exists():
-            try:
-                blob.unlink()
-            except OSError:
-                continue
-            cleared_paths.append(blob)
-            broken_digests.add(blob.name)
-
-    manifests_removed = 0
-    if broken_digests and manifests_root.exists():
-        for manifest_path in list(manifests_root.rglob("latest")):
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            layer_digests = _manifest_blob_digests(manifest)
-            if layer_digests & broken_digests:
+    # Under the same lock link/unlink hold: a broken-blob scan must not
+    # delete a blob another process just created before it publishes the
+    # manifest that references it.
+    with locked(_models_transaction_lock(models_dir)):
+        broken_digests = set()
+        # Cleared together in one locked read-modify-write at the end instead of
+        # once per removed blob/manifest - a run that finds many broken links at
+        # once used to reload and rewrite the whole on-disk registry that many
+        # times over for no observable difference in the end state.
+        cleared_paths: list[Path] = []
+        for blob in blobs_dir.iterdir():
+            if blob.is_symlink() and not blob.exists():
                 try:
-                    manifest_path.unlink()
+                    blob.unlink()
                 except OSError:
                     continue
-                cleared_paths.append(manifest_path)
-                manifests_removed += 1
-                try:
-                    manifest_path.parent.rmdir()
-                except OSError:
-                    pass
+                cleared_paths.append(blob)
+                broken_digests.add(blob.name)
 
-    _bulk_clear_link_ownership(cleared_paths)
-    return (len(broken_digests), manifests_removed)
+        manifests_removed = 0
+        if broken_digests and manifests_root.exists():
+            for manifest_path in list(manifests_root.rglob("latest")):
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                layer_digests = _manifest_blob_digests(manifest)
+                if layer_digests & broken_digests:
+                    try:
+                        manifest_path.unlink()
+                    except OSError:
+                        continue
+                    cleared_paths.append(manifest_path)
+                    manifests_removed += 1
+                    try:
+                        manifest_path.parent.rmdir()
+                    except OSError:
+                        pass
+
+        _bulk_clear_link_ownership(cleared_paths)
+        return (len(broken_digests), manifests_removed)
 
 
 # --- Per-OS app data directory (Electron/Tauri userData convention) --------

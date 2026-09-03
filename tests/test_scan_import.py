@@ -576,3 +576,33 @@ def test_adopt_group_restores_duplicate_when_link_creation_fails(isolated_omm_ho
         scan_import.adopt_group(group)
     assert external.read_bytes() == payload
     assert not list(tmp_path.glob(".external.gguf.omm-import-*"))
+
+
+def test_adopt_group_removes_partial_hub_copy_when_move_fails(isolated_omm_home, tmp_path, monkeypatch):
+    """A cross-volume move copies first, so a failure part-way used to leave
+    the half-written hub file behind as an unregistered orphan while the
+    original was restored."""
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"scanned bytes")
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "import", "model.gguf", external, external.stat().st_size, digest
+            )
+        ],
+    )
+
+    def failing_move(src, dst):
+        Path(dst).write_bytes(Path(src).read_bytes()[:5])
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(scan_import.shutil, "move", failing_move)
+
+    with pytest.raises(OSError):
+        scan_import.adopt_group(group)
+
+    assert external.read_bytes() == b"scanned bytes"
+    assert not list((isolated_omm_home / "models").glob("*.gguf"))
+    assert not list(tmp_path.glob(".model.gguf.omm-import-*"))

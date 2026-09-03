@@ -365,17 +365,6 @@ def _mac_cpu_brand() -> str:
     return brand if brand is not None else (platform.processor() or "Unknown")
 
 
-def _mac_chip_name() -> str:
-    """
-    왜 필요한가:
-    Apple Silicon 기기에서 칩 이름을 가져오되, 구체적인 모델명을 모를 경우 
-    'Apple Silicon'이라는 일반적인 명칭이라도 반환하여 
-    UI나 로그에 표시하기 위해 필요합니다.
-    """
-    brand = _mac_sysctl_cpu_brand()
-    return brand if brand is not None else "Apple Silicon"
-
-
 def _linux_cpu_model() -> str | None:
     """Return Linux CPU brand; platform.processor() is often only ``x86_64``.
     

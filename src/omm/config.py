@@ -222,21 +222,27 @@ def save_config(config: dict[str, Any]) -> None:
         atomic_write_text(CONFIG_PATH, json.dumps(config, indent=2) + "\n")
 
 
+def _read_config_unlocked() -> dict[str, Any]:
+    """config.json merged over the defaults, backing up (and ignoring) a
+    corrupt file. Callers hold the config lock."""
+    data: dict[str, Any] = {}
+    if CONFIG_PATH.exists():
+        try:
+            loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+            else:
+                backup_corrupt_file(CONFIG_PATH)
+        except (OSError, ValueError):
+            backup_corrupt_file(CONFIG_PATH)
+    return _merge_config(data)
+
+
 def update_config(**changes: Any) -> dict[str, Any]:
     """Merge a small update while serializing the complete read/write cycle."""
     ensure_omm_home()
     with locked(CONFIG_PATH):
-        data: dict[str, Any] = {}
-        if CONFIG_PATH.exists():
-            try:
-                loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    data = loaded
-                else:
-                    backup_corrupt_file(CONFIG_PATH)
-            except (OSError, ValueError):
-                backup_corrupt_file(CONFIG_PATH)
-        current = _merge_config(data)
+        current = _read_config_unlocked()
         current.update(changes)
         atomic_write_text(CONFIG_PATH, json.dumps(current, indent=2) + "\n")
     return current
@@ -272,17 +278,7 @@ def add_storage_saved_bytes(delta: int) -> int:
         raise ValueError("storage saved byte delta must be a non-negative integer")
     ensure_omm_home()
     with locked(CONFIG_PATH):
-        data: dict[str, Any] = {}
-        if CONFIG_PATH.exists():
-            try:
-                loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    data = loaded
-                else:
-                    backup_corrupt_file(CONFIG_PATH)
-            except (OSError, ValueError):
-                backup_corrupt_file(CONFIG_PATH)
-        current = _merge_config(data)
+        current = _read_config_unlocked()
         total = int(current["storage_saved_bytes"]) + delta
         current["storage_saved_bytes"] = total
         atomic_write_text(CONFIG_PATH, json.dumps(current, indent=2) + "\n")
