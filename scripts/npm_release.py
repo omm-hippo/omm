@@ -338,8 +338,19 @@ def _probe_install(
             f"npm did not expose the OMM command at {command}\n"
             f"npm ls:\n{_install_tree(prefix)}"
         )
-    version_result = _run(command, "--version")
+    # These probes run the installed command, so a non-zero exit is a probe
+    # result, not an internal error: report it as NpmReleaseError with the same
+    # diagnostics as a wrong answer, instead of letting subprocess raise a
+    # CalledProcessError that carries neither the output nor the install tree.
+    version_result = _run(command, "--version", check=False)
     version_lines = f"{version_result.stdout}\n{version_result.stderr}".splitlines()
+    if version_result.returncode != 0:
+        raise NpmReleaseError(
+            f"npm-installed OMM --version exited {version_result.returncode}\n"
+            f"--version stdout: {version_result.stdout!r}\n"
+            f"--version stderr: {version_result.stderr!r}\n"
+            f"npm ls:\n{_install_tree(prefix)}"
+        )
     if f"omm {version}" not in {line.strip() for line in version_lines}:
         raise NpmReleaseError(
             "npm-installed OMM reported the wrong version\n"
@@ -347,9 +358,16 @@ def _probe_install(
             f"--version stderr: {version_result.stderr!r}\n"
             f"npm ls:\n{_install_tree(prefix)}"
         )
-    help_result = _run(command, "--help")
-    if "Example usage:" not in f"{help_result.stdout}\n{help_result.stderr}":
-        raise NpmReleaseError("npm-installed OMM help probe failed")
+    help_result = _run(command, "--help", check=False)
+    if help_result.returncode != 0 or "Example usage:" not in (
+        f"{help_result.stdout}\n{help_result.stderr}"
+    ):
+        raise NpmReleaseError(
+            f"npm-installed OMM help probe failed (exit {help_result.returncode})\n"
+            f"--help stdout: {help_result.stdout!r}\n"
+            f"--help stderr: {help_result.stderr!r}\n"
+            f"npm ls:\n{_install_tree(prefix)}"
+        )
     environment = dict(os.environ)
     environment["OMM_HOME"] = str(omm_home)
     update = _run(command, "update", check=False, env=environment)
@@ -418,7 +436,12 @@ def _install_launcher_from_registry(
     target_package: str,
     registry: str,
 ) -> None:
-    last_error: NpmReleaseError | None = None
+    # A lagging CDN does not only produce a wrong install tree: `npm install`
+    # itself returns 5xx/ETARGET/EBADPLATFORM and the probe can time out. `_run`
+    # uses `check=True`, so those arrive as CalledProcessError/TimeoutExpired,
+    # not NpmReleaseError -- catching only NpmReleaseError here meant the retry
+    # loop never ran for the most common transient failures.
+    last_error: Exception | None = None
     for attempt in range(REGISTRY_PROBE_ATTEMPTS):
         if attempt > 0:
             _run(_npm(), "cache", "clean", "--force", check=False)
@@ -440,13 +463,96 @@ def _install_launcher_from_registry(
             )
             _probe_install(prefix, omm_home, version, target_package)
             return
-        except NpmReleaseError as error:
+        except (NpmReleaseError, subprocess.SubprocessError, OSError) as error:
             last_error = error
+    detail = f"{type(last_error).__name__}: {last_error}"
+    if not isinstance(last_error, NpmReleaseError):
+        # Only NpmReleaseError already carries the #242 tree dump.
+        detail = f"{detail}\nnpm ls:\n{_install_tree(prefix)}"
     raise NpmReleaseError(
         f"npm registry path still broken after {REGISTRY_PROBE_ATTEMPTS} attempts "
         f"(post-publish optional-dependency propagation lag or a real defect; "
-        f"issue #237)\n{last_error}"
+        f"issue #237)\n{detail}"
     )
+
+
+def _audit_entry_names(entries: Any) -> list[str]:
+    if not isinstance(entries, list):
+        return []
+    names = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            names.append(f"{entry.get('name')}@{entry.get('version')}")
+        else:
+            names.append(str(entry))
+    return sorted(names)
+
+
+def _audit_signatures(audit: Path, version: str, target_package: str) -> None:
+    """Require verified registry signatures *and* provenance attestations.
+
+    ``npm audit signatures`` exits non-zero only when a registry *signature* is
+    invalid or missing. Attestations are merely counted in its human-readable
+    summary, so a version published without provenance passes the bare command
+    -- verified against npm 11.12.1: a tree holding only ``lodash@4.17.21``
+    (registry signature, no provenance) exits 0.
+
+    Parse the report instead. ``--include-attestations`` is what adds the
+    ``verified`` array; plain ``--json`` reports only ``invalid`` and
+    ``missing``. Every OMM package installed in the audited tree -- the launcher
+    plus the one platform package npm resolved for this host -- must appear
+    there, which is what the design doc's "verify registry signatures and
+    provenance" actually promises.
+    """
+
+    result = _run(
+        _npm(),
+        "audit",
+        "signatures",
+        "--json",
+        "--include-attestations",
+        cwd=audit,
+        check=False,
+    )
+    try:
+        report = json.loads(result.stdout)
+    except ValueError as error:
+        raise NpmReleaseError(
+            f"npm audit signatures returned invalid JSON (exit {result.returncode})\n"
+            f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
+        ) from error
+    if not isinstance(report, dict):
+        raise NpmReleaseError("npm audit signatures did not return a report object")
+
+    invalid = _audit_entry_names(report.get("invalid"))
+    missing = _audit_entry_names(report.get("missing"))
+    if invalid or missing:
+        raise NpmReleaseError(
+            "npm registry signatures are not trustworthy: "
+            f"invalid={invalid}, missing={missing}"
+        )
+    verified = report.get("verified")
+    if not isinstance(verified, list):
+        raise NpmReleaseError(
+            "npm audit signatures reported no attestation details; "
+            f"report keys: {sorted(report)}"
+        )
+    attested = {
+        (entry.get("name"), entry.get("version"))
+        for entry in verified
+        if isinstance(entry, dict)
+    }
+    expected = {(npm_package.LAUNCHER_NAME, version), (target_package, version)}
+    if not expected <= attested:
+        raise NpmReleaseError(
+            "npm published these without a verified provenance attestation: "
+            f"{sorted(f'{name}@{value}' for name, value in expected - attested)}; "
+            f"attested: {_audit_entry_names(verified)}"
+        )
+    if result.returncode != 0:
+        raise NpmReleaseError(
+            f"npm audit signatures failed (exit {result.returncode}): {result.stderr}"
+        )
 
 
 def smoke_registry(version: str, target_name: str, registry: str = REGISTRY) -> None:
@@ -473,7 +579,7 @@ def smoke_registry(version: str, target_name: str, registry: str = REGISTRY) -> 
             f"{npm_package.LAUNCHER_NAME}@{version}",
             cwd=audit,
         )
-        _run(_npm(), "audit", "signatures", cwd=audit)
+        _audit_signatures(audit, version, target_package)
 
 
 def _registry_integrity(package: PackageInfo, registry: str) -> str | None:
