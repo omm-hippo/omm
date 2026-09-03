@@ -24,15 +24,20 @@ request from `preinstall`, `install`, or `postinstall`.
 
 | Target | npm package | Current support boundary |
 |---|---|---|
-| macOS Apple Silicon | `@omm-hippo/omm-darwin-arm64` | private local tarball path exercised; hosted CI and public package not yet verified |
-| macOS Intel | `@omm-hippo/omm-darwin-x64` | validation job defined; hosted CI, physical device, and public package not yet verified |
-| Linux x64 glibc | `@omm-hippo/omm-linux-x64-gnu` | validation job defined; hosted CI and public package not yet verified |
-| Linux arm64 glibc | `@omm-hippo/omm-linux-arm64-gnu` | validation job defined; hosted CI and public package not yet verified |
-| Windows x64 | `@omm-hippo/omm-win32-x64` | artifact work is owned by the separate Winget task |
+| macOS Apple Silicon | `@omm-hippo/omm-darwin-arm64` | published at 0.3.41 with registry signature and provenance; hosted CI install/run/update/uninstall verified from the registry; no physical-device registry run yet |
+| macOS Intel | `@omm-hippo/omm-darwin-x64` | published at 0.3.41 with registry signature and provenance; hosted CI install/run/update/uninstall verified from the registry; physical device not yet verified |
+| Linux x64 glibc | `@omm-hippo/omm-linux-x64-gnu` | published at 0.3.41 with registry signature and provenance; hosted CI install/run/update/uninstall verified from the registry; physical device not yet verified |
+| Linux arm64 glibc | `@omm-hippo/omm-linux-arm64-gnu` | published at 0.3.41 with registry signature and provenance; hosted CI install/run/update/uninstall verified from the registry; physical device not yet verified |
+| Windows x64 | `@omm-hippo/omm-win32-x64` | published at 0.3.41 with registry signature and provenance; verified by tarball smoke in CI and manually on a physical Windows 11 x64 machine (install, `omm --version`, update guidance, uninstall, `npm audit signatures`); the CI registry-probe step (`Verify public npm path on win32-x64`) was broken by pwsh var expansion (issue #237), fixed in PR #249, not yet exercised by a real tag release |
 
 An optional dependency is allowed to be absent when it does not match the
 current operating system. The launcher must still fail clearly if the matching
-package is absent, such as when npm was run with `--omit=optional`.
+package is absent, such as when the platform package directory is deleted,
+blocked, or the platform is unsupported. `--omit=optional` does not reproduce
+this: on a bare global install spec, npm 11.12.1 and 11.19.0 both still install
+the matching platform package, since optional deps of a dependency are not
+pruned by that flag. `packaging/npm/launcher/test/launcher.test.js` simulates
+absence directly by deleting the platform package directory.
 
 The launcher checks package name, OMM version, OS, CPU, libc where relevant,
 target identifier, and binary containment before starting the executable. It
@@ -79,16 +84,20 @@ validated tarball exactly. Destination jobs then install from npmjs, verify
 registry signatures and provenance, run OMM, check update guidance, and remove
 the package on all five hosted targets.
 
-## Registry setup required later
+## Registry setup
 
 The `omm-hippo` organization has been created and its owner enabled account
-two-factor authentication. The six intended packages still return registry
-404 responses, so their names are not reserved and no public user path exists.
-The CLI must be authenticated again immediately before the first publication;
-browser authentication does not prove terminal authentication.
+two-factor authentication. All six packages (`@omm-hippo/omm` and the five
+platform packages) have completed the one-time bootstrap: they exist on the
+public registry at 0.3.41 (and earlier at 0.3.33) with correct os/cpu/libc
+metadata, registry signatures, and SLSA provenance attestations, published by
+the `npm-release.yml` OIDC job on 2026-09-01. `main` is currently at 0.3.44,
+untagged and unpublished — the next tag push exercises the bootstrap-completed
+path again, not a first-time one.
 
-Once the organization exists, each launcher/platform package needs its own npm
-Trusted Publisher configuration. The intended GitHub settings are:
+Each launcher/platform package now has its own npm Trusted Publisher
+configuration, evidenced by the OIDC job publishing successfully for tags
+v0.3.33 and v0.3.41. The GitHub settings are:
 
 - Organization: `omm-hippo`
 - Repository: `omm`
@@ -100,14 +109,14 @@ Trusted Publishing currently requires a GitHub-hosted runner, `id-token: write`,
 Node.js 22.14 or newer, and npm 11.5.1 or newer. Publishing through it creates
 provenance automatically. `npm-release.yml` pins npm 11.19.0 for publishing.
 
-npm requires a package to exist before a Trusted Publisher can be configured,
-and staged publishing cannot create a brand-new package. Therefore the first
-six package versions require an explicitly approved one-time bootstrap with
-2FA. After that, configure every package for
-`omm-hippo / omm / npm-release.yml / npm` with `npm publish` permission, enable
-the repository variable, and use only the protected OIDC job for later
-versions. The launcher must not become public before every matching platform
-package exists.
+The one-time bootstrap (npm requires a package to exist before a Trusted
+Publisher can be configured, and staged publishing cannot create a brand-new
+package) is done for all six packages. It still applies as a rule for any
+future new package: a brand-new package name needs an explicitly approved,
+2FA-gated bootstrap publish before its Trusted Publisher can be configured.
+The repository variable `NPM_TRUSTED_PUBLISHING` gates the protected OIDC job
+for all publishes after bootstrap. The launcher must not become public before
+every matching platform package exists.
 
 ## Verification levels
 
@@ -116,14 +125,24 @@ package exists.
   release workflow exist.
 - **Unit-verified:** focused Node and Python tests, package allowlist checks,
   workflow lint, and workflow security audit pass locally.
-- **Simulator-verified:** requires clean installation, execution, update, and
+- **Simulator-verified:** clean installation, execution, update, and
   uninstall using built private package tarballs on the four native hosted
-  OS/CPU paths. This does not prove public registry publishing.
-- **Physical-device-verified:** the private local tarball path has been exercised
-  on an Apple Silicon Mac: install, `omm --version`, `omm --help`, npm-managed
-  update guidance without Git mutation, and uninstall. This does not verify the
-  public registry path.
-- **Not verified / 미검증:** first package bootstrap, Trusted Publisher,
-  protected `npm` Environment, public publishing, provenance destination
-  results, release-workflow hosted jobs, public install/upgrade/uninstall,
-  physical Intel Mac, and physical Linux remain unverified.
+  OS/CPU paths.
+- **Release-verified (hosted CI, tags v0.3.33 and v0.3.41):** first package
+  bootstrap, Trusted Publisher configuration, the protected `npm` Environment,
+  public publishing, provenance attestation, and every release-workflow hosted
+  job (build, bundle, tarball smoke on 5 targets, publish, `verify-registry`)
+  passed — except the win32-x64 registry-verify leg (issue #237, fixed in PR
+  #249, not yet exercised by a real tag release). Public install, run,
+  `omm update` guidance (exit 1, no `OMM_HOME/src` mutation), `npm audit
+  signatures`, and uninstall are verified from the registry on all four hosted
+  POSIX targets (macOS arm64/Intel, Linux x64/arm64 glibc).
+- **Physical-device-verified:** public registry install verified on a physical
+  Windows 11 x64 machine (Node 24.11, npm 11.12.1): install, `omm --version`,
+  `omm update` guidance, `npm audit signatures` (2 verified signatures, 2
+  verified attestations), and uninstall.
+- **Not verified / 미검증:** the win32-x64 registry-verify leg in CI after
+  #249 (no real tag release has exercised it yet); physical Intel Mac;
+  physical Linux; `npm update --global` as an actual upgrade between two
+  published versions (0.3.33 → 0.3.41 was never exercised as an upgrade path,
+  only as independent installs).
