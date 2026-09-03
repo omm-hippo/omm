@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shutil
@@ -19,8 +20,23 @@ import npm_release
 
 
 def _magic(target: str) -> bytes:
-    os_name = npm_package.targets()[target]["os"]
-    return next(iter(npm_package.MAGIC_PREFIXES[os_name]))
+    """A minimal executable header carrying the target's real machine field."""
+    value = npm_package.targets()[target]
+    if value["os"] == "darwin":
+        cputype = 0x01000007 if value["cpu"] == "x64" else 0x0100000C
+        return bytes.fromhex("cffaedfe") + cputype.to_bytes(4, "little")
+    if value["os"] == "linux":
+        header = bytearray(64)
+        header[0:4] = bytes.fromhex("7f454c46")
+        header[4] = 2
+        header[5] = 1
+        header[16:18] = (2).to_bytes(2, "little")
+        header[18:20] = (0x3E if value["cpu"] == "x64" else 0xB7).to_bytes(2, "little")
+        return bytes(header)
+    header = bytearray(0x40)
+    header[0:2] = b"MZ"
+    header[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    return bytes(header) + bytes.fromhex("50450000") + (0x8664).to_bytes(2, "little")
 
 
 def _pack(source: Path, destination: Path) -> None:
@@ -161,9 +177,11 @@ def test_existing_registry_package_must_have_identical_bytes(tmp_path, monkeypat
         npm_release.publish_bundle(pack)
 
 
-def test_reuse_published_packages_replaces_rebuilt_bytes(tmp_path, monkeypatch):
-    built_pack = _bundle(tmp_path / "built", b" rebuilt")
-    published_pack = _bundle(tmp_path / "published", b" published")
+def _reuse_fixture(tmp_path, monkeypatch, published_suffix: bytes, built_suffix: bytes = b""):
+    """Stage a built bundle plus a registry copy of one platform package."""
+
+    built_pack = _bundle(tmp_path / "built", built_suffix)
+    published_pack = _bundle(tmp_path / "published", published_suffix)
     package_name = npm_package.targets()["win32-x64"]["package"]
     built = next(
         package
@@ -174,6 +192,11 @@ def test_reuse_published_packages_replaces_rebuilt_bytes(tmp_path, monkeypatch):
         package
         for package in npm_release.verify_bundle(published_pack, write_checksums=True)
         if package.name == package_name
+    )
+    # npm pack is not byte-reproducible: give the registry copy a different gzip
+    # envelope so an accepted reuse cannot be explained by equal raw bytes.
+    published.path.write_bytes(
+        gzip.compress(gzip.decompress(published.path.read_bytes()), mtime=0)
     )
 
     monkeypatch.setattr(
@@ -193,11 +216,49 @@ def test_reuse_published_packages_replaces_rebuilt_bytes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
     monkeypatch.setattr(npm_release, "_run", fake_run)
+    return built_pack, built, published
+
+
+def test_reuse_published_packages_accepts_bytes_that_repack_this_build(
+    tmp_path, monkeypatch
+):
+    built_pack, built, published = _reuse_fixture(tmp_path, monkeypatch, b"")
+    assert built.path.read_bytes() != published.path.read_bytes()
 
     npm_release.reuse_published_packages(built_pack)
 
     assert built.path.read_bytes() == published.path.read_bytes()
     npm_release.verify_bundle(built_pack)
+
+
+def test_reuse_published_packages_rejects_bytes_from_another_build(tmp_path, monkeypatch):
+    built_pack, built, published = _reuse_fixture(
+        tmp_path, monkeypatch, b" published", b" rebuilt"
+    )
+    original = built.path.read_bytes()
+
+    with pytest.raises(npm_release.NpmReleaseError) as caught:
+        npm_release.reuse_published_packages(built_pack)
+
+    message = str(caught.value)
+    assert built.name in message and built.version in message
+    assert npm_release._sha256(built.path) in message
+    assert npm_release._sha256(published.path) in message
+    assert built.path.read_bytes() == original  # the local build is never replaced
+
+
+def test_reuse_published_packages_rejects_a_different_platform_binary(
+    tmp_path, monkeypatch
+):
+    built_pack, _, _ = _reuse_fixture(tmp_path, monkeypatch, b"\x00")
+    binary = npm_package.targets()["win32-x64"]["binary"]
+
+    with pytest.raises(npm_release.NpmReleaseError) as caught:
+        npm_release.reuse_published_packages(built_pack)
+
+    message = str(caught.value)
+    assert "does not contain the files this run built" in message
+    assert f"package/{binary}" in message
 
 
 def test_reuse_published_packages_rejects_registry_integrity_mismatch(
@@ -234,18 +295,52 @@ def test_reuse_published_packages_rejects_registry_integrity_mismatch(
         npm_release.reuse_published_packages(built_pack)
 
 
-def test_registry_signature_audit_installs_dependencies(tmp_path, monkeypatch):
+# Shape observed from a real `npm audit signatures --json --include-attestations`
+# (npm 11.12.1, Node 24.11.0) over an `@omm-hippo/omm@0.3.41` install: the report
+# is `{"invalid": [], "missing": [], "verified": [...]}` and each `verified`
+# entry carries name/version/location/registry/attestations/attestationBundles.
+# Without `--include-attestations` only `invalid` and `missing` are reported.
+def _audit_report(version: str, target: str, *, attested: bool = True, missing=()) -> str:
+    verified = []
+    if attested:
+        for name in (npm_package.LAUNCHER_NAME, npm_package.targets()[target]["package"]):
+            verified.append(
+                {
+                    "name": name,
+                    "version": version,
+                    "location": f"node_modules/{name}",
+                    "registry": "https://registry.example/",
+                    "attestations": {"url": "https://registry.example/-/npm/v1/attestations"},
+                    "attestationBundles": [{"predicateType": "provenance"}],
+                }
+            )
+    return json.dumps(
+        {
+            "invalid": [],
+            "missing": [{"name": name, "version": version} for name in missing],
+            "verified": verified,
+        }
+    )
+
+
+def _audit_calls(monkeypatch, report: str) -> list:
     calls = []
 
     def fake_run(executable, *arguments, **kwargs):
         calls.append((executable, arguments, kwargs))
+        stdout = report if arguments[:1] == ("audit",) else ""
         return npm_release.subprocess.CompletedProcess(
-            [str(executable), *arguments], 0, stdout="", stderr=""
+            [str(executable), *arguments], 0, stdout=stdout, stderr=""
         )
 
     monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
     monkeypatch.setattr(npm_release, "_run", fake_run)
     monkeypatch.setattr(npm_release, "_probe_install", lambda *args: None)
+    return calls
+
+
+def test_registry_signature_audit_installs_dependencies(tmp_path, monkeypatch):
+    calls = _audit_calls(monkeypatch, _audit_report("0.2.147", "darwin-arm64"))
 
     npm_release.smoke_registry(
         "0.2.147",
@@ -262,8 +357,36 @@ def test_registry_signature_audit_installs_dependencies(tmp_path, monkeypatch):
     )
     assert "--package-lock-only" not in audit_install[1]
     assert audit_install[2]["cwd"].name == "audit"
-    assert calls[3][1] == ("audit", "signatures")
+    assert calls[3][1] == ("audit", "signatures", "--json", "--include-attestations")
     assert calls[3][2]["cwd"] == audit_install[2]["cwd"]
+
+
+def test_registry_audit_rejects_a_version_published_without_provenance(monkeypatch):
+    # `npm audit signatures` exits 0 for a signature-only package, so only the
+    # empty `verified` array can catch a version published without provenance.
+    _audit_calls(monkeypatch, _audit_report("0.2.147", "darwin-arm64", attested=False))
+
+    with pytest.raises(npm_release.NpmReleaseError, match="without a verified provenance"):
+        npm_release.smoke_registry("0.2.147", "darwin-arm64", "https://registry.example/")
+
+
+def test_registry_audit_rejects_a_missing_registry_signature(monkeypatch):
+    _audit_calls(
+        monkeypatch,
+        _audit_report(
+            "0.2.147", "darwin-arm64", missing=(npm_package.LAUNCHER_NAME,)
+        ),
+    )
+
+    with pytest.raises(npm_release.NpmReleaseError, match="signatures are not trustworthy"):
+        npm_release.smoke_registry("0.2.147", "darwin-arm64", "https://registry.example/")
+
+
+def test_registry_audit_rejects_a_report_without_attestation_details(monkeypatch):
+    _audit_calls(monkeypatch, json.dumps({"invalid": [], "missing": []}))
+
+    with pytest.raises(npm_release.NpmReleaseError, match="no attestation details"):
+        npm_release.smoke_registry("0.2.147", "darwin-arm64", "https://registry.example/")
 
 
 def test_registry_probe_retries_transient_optional_dependency_lag(tmp_path, monkeypatch):
@@ -275,8 +398,9 @@ def test_registry_probe_retries_transient_optional_dependency_lag(tmp_path, monk
 
     def fake_run(executable, *arguments, **kwargs):
         commands.append(arguments)
+        stdout = _audit_report("0.3.40", "win32-x64") if arguments[:1] == ("audit",) else ""
         return npm_release.subprocess.CompletedProcess(
-            [str(executable), *arguments], 0, stdout="", stderr=""
+            [str(executable), *arguments], 0, stdout=stdout, stderr=""
         )
 
     monkeypatch.setattr(npm_release, "_run", fake_run)
@@ -317,8 +441,9 @@ def test_registry_probe_retries_transient_npm_install_failure(tmp_path, monkeypa
                     output="",
                     stderr="temporary registry failure",
                 )
+        stdout = _audit_report("0.3.40", "win32-x64") if arguments[:1] == ("audit",) else ""
         return npm_release.subprocess.CompletedProcess(
-            [str(executable), *arguments], 0, stdout="", stderr=""
+            [str(executable), *arguments], 0, stdout=stdout, stderr=""
         )
 
     monkeypatch.setattr(npm_release, "_run", fake_run)
@@ -351,6 +476,146 @@ def test_registry_probe_gives_up_and_surfaces_the_tree_dump(tmp_path, monkeypatc
     message = str(error.value)
     assert f"after {npm_release.REGISTRY_PROBE_ATTEMPTS} attempts" in message
     assert "<tree>" in message
+
+
+def test_registry_install_failure_keeps_process_output_and_install_tree(tmp_path, monkeypatch):
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_install_tree", lambda prefix: "fixture install tree")
+    installs = []
+
+    def fail_install(executable, *arguments, **kwargs):
+        if arguments[0] == "install":
+            installs.append(arguments)
+            raise npm_release.subprocess.CalledProcessError(
+                1, "npm install", output="registry response", stderr="npm error ETARGET"
+            )
+        return npm_release.subprocess.CompletedProcess([executable, *arguments], 0)
+
+    monkeypatch.setattr(npm_release, "_run", fail_install)
+    with pytest.raises(npm_release.NpmReleaseError) as error:
+        npm_release._install_launcher_from_registry(
+            tmp_path / "prefix", tmp_path / "omm-home", "0.3.45",
+            "@omm-hippo/omm-darwin-arm64", "https://registry.example/",
+        )
+
+    assert len(installs) == npm_release.REGISTRY_PROBE_ATTEMPTS
+    assert "stdout: registry response" in str(error.value)
+    assert "stderr: npm error ETARGET" in str(error.value)
+    assert "fixture install tree" in str(error.value)
+
+
+def test_registry_probe_retries_a_cache_cleanup_timeout(tmp_path, monkeypatch):
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_probe_install", lambda *args: None)
+    calls = {"install": 0, "cache": 0}
+
+    def transient_failure(executable, *arguments, **kwargs):
+        operation = arguments[0]
+        calls[operation] += 1
+        if operation == "install" and calls[operation] == 1:
+            raise npm_release.subprocess.CalledProcessError(1, "npm install")
+        if operation == "cache" and calls[operation] == 1:
+            raise npm_release.subprocess.TimeoutExpired("npm cache clean", 300)
+        return npm_release.subprocess.CompletedProcess([executable, *arguments], 0)
+
+    monkeypatch.setattr(npm_release, "_run", transient_failure)
+    npm_release._install_launcher_from_registry(
+        tmp_path / "prefix", tmp_path / "omm-home", "0.3.45",
+        "@omm-hippo/omm-darwin-arm64", "https://registry.example/",
+    )
+
+    assert calls == {"install": 2, "cache": 2}
+
+
+def test_registry_probe_retries_a_failed_npm_install(tmp_path, monkeypatch):
+    # `_run` uses check=True, so a registry 5xx/ETARGET surfaces as
+    # CalledProcessError -- which used to escape the retry loop entirely.
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_probe_install", lambda *args: None)
+    installs = {"n": 0}
+
+    def fake_run(executable, *arguments, **kwargs):
+        if arguments[:1] == ("install",) and "--global" in arguments:
+            installs["n"] += 1
+            if installs["n"] == 1:
+                raise npm_release.subprocess.CalledProcessError(
+                    1, "npm install", output="", stderr="npm error code ETARGET"
+                )
+        stdout = _audit_report("0.3.40", "win32-x64") if arguments[:1] == ("audit",) else ""
+        return npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout=stdout, stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    npm_release.smoke_registry("0.3.40", "win32-x64", "https://registry.example/")
+
+    assert installs["n"] == 2
+
+
+def test_registry_probe_gives_up_after_repeated_timeouts_with_the_tree_dump(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_probe_install", lambda *args: None)
+    attempts = {"n": 0}
+
+    def fake_run(executable, *arguments, **kwargs):
+        if arguments[:1] == ("install",) and "--global" in arguments:
+            attempts["n"] += 1
+            raise npm_release.subprocess.TimeoutExpired("npm install", 300)
+        if arguments[:1] == ("ls",):
+            return npm_release.subprocess.CompletedProcess(
+                [], 0, stdout="p@1.2.3\n`-- (empty)\n", stderr=""
+            )
+        return npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    with pytest.raises(npm_release.NpmReleaseError) as error:
+        npm_release.smoke_registry("0.3.40", "win32-x64", "https://registry.example/")
+
+    message = str(error.value)
+    assert attempts["n"] == npm_release.REGISTRY_PROBE_ATTEMPTS
+    assert f"after {npm_release.REGISTRY_PROBE_ATTEMPTS} attempts" in message
+    assert "TimeoutExpired" in message
+    assert "`-- (empty)" in message  # the npm ls tree the caught error lacks
+
+
+def test_probe_reports_a_non_zero_version_exit_with_diagnostics(tmp_path, monkeypatch):
+    prefix = tmp_path / "prefix"
+    command = npm_release._command_path(prefix)
+    command.parent.mkdir(parents=True)
+    command.write_text("binary", encoding="utf-8")
+
+    def fake_run(executable, *arguments, **kwargs):
+        if arguments == ("--version",):
+            assert kwargs.get("check") is False
+            return npm_release.subprocess.CompletedProcess(
+                [], 3, stdout="", stderr="ImportError: no module named omm"
+            )
+        if arguments[:1] == ("ls",):
+            return npm_release.subprocess.CompletedProcess(
+                [], 1, stdout="p@1.2.3\n`-- (empty)\n", stderr=""
+            )
+        raise AssertionError((executable, arguments, kwargs))
+
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    with pytest.raises(npm_release.NpmReleaseError) as caught:
+        npm_release._probe_install(prefix, tmp_path / "omm-home", "1.2.3", "platform")
+
+    message = str(caught.value)
+    assert "--version exited 3" in message
+    assert "no module named omm" in message
+    assert "`-- (empty)" in message
 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses a POSIX launcher symlink")
@@ -411,6 +676,119 @@ def test_probe_version_mismatch_reports_diagnostics(tmp_path, monkeypatch):
 
 def test_native_command_passes_plain_executables_through():
     assert npm_release._native_command("npm", "--version") == ["npm", "--version"]
+
+
+def test_native_command_leaves_posix_arguments_untouched(monkeypatch):
+    monkeypatch.setattr(npm_release.os, "name", "posix")
+    assert npm_release._native_command("/usr/bin/npm", "install", "a&b", "%PATH%") == [
+        "/usr/bin/npm",
+        "install",
+        "a&b",
+        "%PATH%",
+    ]
+
+
+@pytest.mark.parametrize(
+    "directory",
+    ["dir (1)", "a&b", "plain"],
+)
+def test_native_command_quotes_executables_cmd_would_split(monkeypatch, directory):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", "C:\\WINDOWS\\system32\\cmd.exe")
+    executable = f"C:\\tools\\{directory}\\npm.cmd"
+
+    command = npm_release._native_command(executable, "install")
+
+    assert command == (
+        f'"C:\\WINDOWS\\system32\\cmd.exe" /d /s /c ""{executable}" install"'
+    )
+
+
+def test_native_command_quotes_an_executable_without_arguments(monkeypatch):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", "cmd.exe")
+
+    assert npm_release._native_command("C:\\a&b\\npm.cmd") == (
+        '"cmd.exe" /d /s /c ""C:\\a&b\\npm.cmd""'
+    )
+
+
+def test_native_command_keeps_an_empty_argument(monkeypatch):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", "cmd.exe")
+
+    assert npm_release._native_command("C:\\npm.cmd", "config", "") == (
+        '"cmd.exe" /d /s /c ""C:\\npm.cmd" config """'
+    )
+
+
+@pytest.mark.parametrize(
+    "argument",
+    ["%PATH%", "a^b", "x>out.txt", "x&whoami", "x|more", 'say"hi', "line\nbreak"],
+)
+def test_native_command_rejects_cmd_metacharacter_arguments(monkeypatch, argument):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", "cmd.exe")
+
+    with pytest.raises(npm_release.NpmReleaseError, match="cmd.exe interprets"):
+        npm_release._native_command("C:\\npm.cmd", "install", argument)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="cmd.exe invocation is Windows-only")
+@pytest.mark.parametrize("directory", ["dir (1)", "a&b"])
+def test_run_executes_cmd_script_from_a_path_cmd_would_split(tmp_path, directory):
+    scripts = tmp_path / directory
+    scripts.mkdir()
+    script = scripts / "probe.cmd"
+    script.write_text("@echo probe-ok %1\n", encoding="ascii")
+
+    result = npm_release._run(script, "hello")
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "probe-ok hello"
+
+
+def test_command_shims_cover_every_wrapper_npm_writes(tmp_path, monkeypatch):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    assert [path.name for path in npm_release._command_shims(tmp_path)] == [
+        "omm",
+        "omm.cmd",
+        "omm.ps1",
+    ]
+
+    monkeypatch.setattr(npm_release.os, "name", "posix")
+    assert npm_release._command_shims(tmp_path) == [tmp_path / "bin" / "omm"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="npm only writes three shims on Windows")
+def test_probe_rejects_a_powershell_shim_left_by_npm_uninstall(tmp_path, monkeypatch):
+    prefix = tmp_path / "prefix"
+    prefix.mkdir(parents=True)
+    for shim in npm_release._command_shims(prefix):
+        shim.write_text("shim", encoding="utf-8")
+
+    def fake_run(executable, *arguments, **kwargs):
+        if arguments == ("--version",):
+            return npm_release.subprocess.CompletedProcess([], 0, stdout="omm 1.2.3\n", stderr="")
+        if arguments == ("--help",):
+            return npm_release.subprocess.CompletedProcess(
+                [], 0, stdout="Example usage:\n", stderr=""
+            )
+        if arguments == ("update",):
+            return npm_release.subprocess.CompletedProcess(
+                [], 1, stdout="npm update --global @omm-hippo/omm\n", stderr=""
+            )
+        if arguments and arguments[0] == "uninstall":
+            (prefix / "omm").unlink()
+            (prefix / "omm.cmd").unlink()  # npm leaves omm.ps1 behind
+            return npm_release.subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        raise AssertionError((executable, arguments, kwargs))
+
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    with pytest.raises(npm_release.NpmReleaseError, match="omm.ps1"):
+        npm_release._probe_install(prefix, tmp_path / "omm-home", "1.2.3", "platform")
 
 
 def test_native_command_builds_raw_cmd_line_for_spaced_scripts(monkeypatch):

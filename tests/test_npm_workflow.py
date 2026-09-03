@@ -36,6 +36,9 @@ def test_npm_workflow_is_validation_only_and_pinned():
     assert "windows-" not in binary_section
     assert "win32-x64" not in binary_section
     assert "npm pack --dry-run --json" in workflow
+    for packed in ("LICENSE", "bin/omm.js", "lib/launcher.js", "targets.json"):
+        assert f'"{packed}",' in workflow
+    assert "npm would publish" in workflow
     assert "npm publish" not in workflow
     assert "id-token: write" not in workflow
     assert "persist-credentials: false" in workflow
@@ -50,7 +53,10 @@ def test_npm_release_workflow_is_gated_and_verifies_every_public_path():
 
     assert 'tags:\n      - "v*"' in workflow
     assert "scripts/release_artifacts.py verify-release" in workflow
-    assert "git -c gpg.ssh.allowedSignersFile" not in workflow
+    trusted_signers = 'git show origin/main:src/omm/trust/allowed_signers > "$RUNNER_TEMP/allowed_signers"'
+    tag_signature = 'git -c gpg.ssh.allowedSignersFile="$RUNNER_TEMP/allowed_signers" verify-tag "$release_tag"'
+    assert workflow.index(trusted_signers) < workflow.index(tag_signature)
+    assert workflow.index(tag_signature) < workflow.index("scripts/release_artifacts.py verify-release")
     assert "git merge-base --is-ancestor" not in workflow
     assert "NPM_TRUSTED_PUBLISHING == 'enabled'" in workflow
     assert "environment:\n      name: npm" in workflow

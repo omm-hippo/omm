@@ -37,13 +37,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: npm-release-${{ github.ref }}
+  group: npm-release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   identity:
     name: Verify npm release identity
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.identity.outputs.version }}
     steps:
@@ -70,6 +71,10 @@ jobs:
             release_tag="${GITHUB_REF_NAME}"
           fi
           test "$release_tag" = "v${OMM_VERSION}"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          # Trust the current main signer list, then verify exact tag/version/HEAD identity.
+          git show origin/main:src/omm/trust/allowed_signers > "$RUNNER_TEMP/allowed_signers"
+          git -c gpg.ssh.allowedSignersFile="$RUNNER_TEMP/allowed_signers" verify-tag "$release_tag"
           python scripts/release_artifacts.py verify-release --tag "$release_tag"
 
   platform:
@@ -188,6 +193,7 @@ jobs:
     name: Build npm launcher package
     needs: identity
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -217,6 +223,7 @@ jobs:
     name: Verify the complete npm release bundle
     needs: [platform, windows, launcher]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -339,7 +346,9 @@ jobs:
           - os: windows-2025
             target: win32-x64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # 5 attempts x (install + probe), each up to 300s, per REGISTRY_PROBE_ATTEMPTS /
+    # REGISTRY_PROBE_BACKOFF_SECONDS in scripts/npm_release.py -- keep in sync with that retry loop.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
