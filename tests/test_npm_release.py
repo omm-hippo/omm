@@ -383,6 +383,119 @@ def test_native_command_passes_plain_executables_through():
     assert npm_release._native_command("npm", "--version") == ["npm", "--version"]
 
 
+def test_native_command_leaves_posix_arguments_untouched(monkeypatch):
+    monkeypatch.setattr(npm_release.os, "name", "posix")
+    assert npm_release._native_command("/usr/bin/npm", "install", "a&b", "%PATH%") == [
+        "/usr/bin/npm",
+        "install",
+        "a&b",
+        "%PATH%",
+    ]
+
+
+@pytest.mark.parametrize(
+    "directory",
+    ["dir (1)", "a&b", "plain"],
+)
+def test_native_command_quotes_executables_cmd_would_split(monkeypatch, directory):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", "C:\\WINDOWS\\system32\\cmd.exe")
+    executable = f"C:\\tools\\{directory}\\npm.cmd"
+
+    command = npm_release._native_command(executable, "install")
+
+    assert command == (
+        f'"C:\\WINDOWS\\system32\\cmd.exe" /d /s /c ""{executable}" install"'
+    )
+
+
+def test_native_command_quotes_an_executable_without_arguments(monkeypatch):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", "cmd.exe")
+
+    assert npm_release._native_command("C:\\a&b\\npm.cmd") == (
+        '"cmd.exe" /d /s /c ""C:\\a&b\\npm.cmd""'
+    )
+
+
+def test_native_command_keeps_an_empty_argument(monkeypatch):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", "cmd.exe")
+
+    assert npm_release._native_command("C:\\npm.cmd", "config", "") == (
+        '"cmd.exe" /d /s /c ""C:\\npm.cmd" config """'
+    )
+
+
+@pytest.mark.parametrize(
+    "argument",
+    ["%PATH%", "a^b", "x>out.txt", "x&whoami", "x|more", 'say"hi', "line\nbreak"],
+)
+def test_native_command_rejects_cmd_metacharacter_arguments(monkeypatch, argument):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", "cmd.exe")
+
+    with pytest.raises(npm_release.NpmReleaseError, match="cmd.exe interprets"):
+        npm_release._native_command("C:\\npm.cmd", "install", argument)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="cmd.exe invocation is Windows-only")
+@pytest.mark.parametrize("directory", ["dir (1)", "a&b"])
+def test_run_executes_cmd_script_from_a_path_cmd_would_split(tmp_path, directory):
+    scripts = tmp_path / directory
+    scripts.mkdir()
+    script = scripts / "probe.cmd"
+    script.write_text("@echo probe-ok %1\n", encoding="ascii")
+
+    result = npm_release._run(script, "hello")
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "probe-ok hello"
+
+
+def test_command_shims_cover_every_wrapper_npm_writes(tmp_path, monkeypatch):
+    monkeypatch.setattr(npm_release.os, "name", "nt")
+    assert [path.name for path in npm_release._command_shims(tmp_path)] == [
+        "omm",
+        "omm.cmd",
+        "omm.ps1",
+    ]
+
+    monkeypatch.setattr(npm_release.os, "name", "posix")
+    assert npm_release._command_shims(tmp_path) == [tmp_path / "bin" / "omm"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="npm only writes three shims on Windows")
+def test_probe_rejects_a_powershell_shim_left_by_npm_uninstall(tmp_path, monkeypatch):
+    prefix = tmp_path / "prefix"
+    prefix.mkdir(parents=True)
+    for shim in npm_release._command_shims(prefix):
+        shim.write_text("shim", encoding="utf-8")
+
+    def fake_run(executable, *arguments, **kwargs):
+        if arguments == ("--version",):
+            return npm_release.subprocess.CompletedProcess([], 0, stdout="omm 1.2.3\n", stderr="")
+        if arguments == ("--help",):
+            return npm_release.subprocess.CompletedProcess(
+                [], 0, stdout="Example usage:\n", stderr=""
+            )
+        if arguments == ("update",):
+            return npm_release.subprocess.CompletedProcess(
+                [], 1, stdout="npm update --global @omm-hippo/omm\n", stderr=""
+            )
+        if arguments and arguments[0] == "uninstall":
+            (prefix / "omm").unlink()
+            (prefix / "omm.cmd").unlink()  # npm leaves omm.ps1 behind
+            return npm_release.subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        raise AssertionError((executable, arguments, kwargs))
+
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    with pytest.raises(npm_release.NpmReleaseError, match="omm.ps1"):
+        npm_release._probe_install(prefix, tmp_path / "omm-home", "1.2.3", "platform")
+
+
 def test_native_command_builds_raw_cmd_line_for_spaced_scripts(monkeypatch):
     monkeypatch.setattr(npm_release.os, "name", "nt")
     monkeypatch.setenv("COMSPEC", "C:\\WINDOWS\\system32\\cmd.exe")

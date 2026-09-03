@@ -232,6 +232,9 @@ def verify_bundle(pack_dir: Path, *, write_checksums: bool = False) -> list[Pack
     return packages
 
 
+CMD_METACHARACTERS = frozenset('&|<>^%"\r\n')
+
+
 def _native_command(executable: str | Path, *arguments: str) -> list[str] | str:
     """Build the argument for ``subprocess.run`` that executes ``executable``.
 
@@ -242,10 +245,31 @@ def _native_command(executable: str | Path, *arguments: str) -> list[str] | str:
     interpreter installed under a path with spaces (``C:\\Program Files\\nodejs``,
     the default Node install). With ``/s``, ``cmd.exe`` strips the outer quotes
     around the payload and runs the quoted line inside verbatim.
+
+    Two invariants keep that payload safe, because ``cmd.exe`` parses it before
+    the script ever sees it and ``subprocess.list2cmdline`` does not help: it
+    quotes only tokens containing whitespace, and its quoting targets the MSVC
+    ``argv`` parser, not a shell.
+
+    1. The executable is always quoted. Unquoted, a path holding ``(`` or ``&``
+       is split by ``cmd.exe`` and the command fails to start.
+    2. No argument may contain a ``cmd.exe`` metacharacter. Unquoted, ``%VAR%``
+       is expanded, ``^`` is eaten, ``>`` redirects to a file, and ``&`` runs a
+       second command. Such arguments cannot be passed through ``cmd.exe`` to a
+       ``.cmd`` script safely, so they are rejected rather than mangled.
     """
     executable = str(executable)
     if os.name == "nt" and Path(executable).suffix.casefold() in {".cmd", ".bat"}:
-        command = subprocess.list2cmdline([executable, *arguments])
+        for argument in arguments:
+            unsafe = sorted(CMD_METACHARACTERS.intersection(argument))
+            if unsafe:
+                raise NpmReleaseError(
+                    f"cannot run {Path(executable).name} with the argument "
+                    f"{argument!r}: cmd.exe interprets {unsafe} while parsing the "
+                    f"command line, so the argument cannot reach the script intact"
+                )
+        tail = subprocess.list2cmdline(arguments)
+        command = f'"{executable}"' + (f" {tail}" if tail else "")
         comspec = os.environ.get("COMSPEC", "cmd.exe")
         return f'"{comspec}" /d /s /c "{command}"'
     return [executable, *arguments]
@@ -299,6 +323,19 @@ def _npm() -> str:
 
 def _command_path(prefix: Path) -> Path:
     return prefix / ("omm.cmd" if os.name == "nt" else "bin/omm")
+
+
+def _command_shims(prefix: Path) -> list[Path]:
+    """Every wrapper npm creates in a global prefix for the ``omm`` bin entry.
+
+    On Windows npm writes three of them side by side -- ``omm`` (the sh shim),
+    ``omm.cmd`` and ``omm.ps1`` -- so checking only the one this module runs
+    would call a partial uninstall clean. Verified against npm 11.12.1
+    installing ``@omm-hippo/omm`` into a scratch ``--prefix``.
+    """
+    if os.name == "nt":
+        return [prefix / "omm", prefix / "omm.cmd", prefix / "omm.ps1"]
+    return [prefix / "bin" / "omm"]
 
 
 def _install_tree(prefix: Path) -> str:
@@ -369,8 +406,12 @@ def _probe_install(
     )
     # Path.exists() follows symlinks, so it misses a dangling launcher left
     # behind when npm removes the target but not the link itself.
-    if os.path.lexists(command):
-        raise NpmReleaseError("npm uninstall left the OMM command exposed")
+    leftover = [shim for shim in _command_shims(prefix) if os.path.lexists(shim)]
+    if leftover:
+        raise NpmReleaseError(
+            "npm uninstall left the OMM command exposed: "
+            f"{[shim.name for shim in leftover]}"
+        )
 
 
 def smoke_tarballs(pack_dir: Path, target_name: str) -> None:
