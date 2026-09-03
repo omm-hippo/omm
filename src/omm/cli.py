@@ -1200,8 +1200,15 @@ def _refresh_data() -> None:
 
 _BARE_REPO_URL = REPO_URL.removeprefix("git+")
 
-_PACKAGE_CHECKOUT = Path(__file__).resolve().parents[2]
-SRC_DIR = _PACKAGE_CHECKOUT if (_PACKAGE_CHECKOUT / ".git").exists() else OMM_HOME / "src"
+# None unless this module really runs from an OMM source checkout - a frozen
+# npm/portable build must not adopt whatever sits two directories above its
+# extraction dir (that is the system temp dir) as its own repository.
+_PACKAGE_CHECKOUT = package_metadata._package_checkout()
+SRC_DIR = (
+    _PACKAGE_CHECKOUT
+    if _PACKAGE_CHECKOUT is not None and (_PACKAGE_CHECKOUT / ".git").exists()
+    else OMM_HOME / "src"
+)
 
 
 def _update_channel() -> str:

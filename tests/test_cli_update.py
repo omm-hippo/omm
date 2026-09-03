@@ -140,6 +140,39 @@ def test_package_managed_update_refuses_git_migration_and_shows_manager_command(
     assert "left the installation unchanged" in result.stderr
 
 
+def test_npm_install_update_touches_neither_git_nor_the_source_tree(monkeypatch):
+    """An npm-managed install must stop at the guidance message.
+
+    The shipped npm build is a frozen one-file binary whose extraction dir
+    sits in the system temp directory, so any Git/pipx work `omm update`
+    would otherwise do there operates on a world-writable path.
+    """
+
+    def _forbidden(name):
+        def _raise(*args, **kwargs):
+            raise AssertionError(f"{name} must not run for an npm install")
+
+        return _raise
+
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.NPM,
+    )
+    monkeypatch.setattr(cli, "_run_git", _forbidden("_run_git"))
+    monkeypatch.setattr(cli.shutil, "rmtree", _forbidden("shutil.rmtree"))
+    monkeypatch.setattr(cli.subprocess, "Popen", _forbidden("subprocess.Popen"))
+    monkeypatch.setattr(cli, "_editable_install_uses_src", lambda *args: False)
+    monkeypatch.setattr(cli, "_installed_commit", lambda: None)
+    monkeypatch.setattr(cli, "_refresh_data", _forbidden("_refresh_data"))
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "managed by npm" in result.stderr
+    assert "npm update --global @omm-hippo/omm" in result.stderr
+
+
 def test_src_head_ignores_a_stale_clone_for_a_package_managed_install(monkeypatch, tmp_path):
     stale_src = tmp_path / "src"
     (stale_src / ".git").mkdir(parents=True)
