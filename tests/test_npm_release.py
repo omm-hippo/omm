@@ -423,6 +423,37 @@ def test_registry_probe_retries_transient_optional_dependency_lag(tmp_path, monk
     assert ("cache", "clean", "--force") in commands
 
 
+def test_registry_probe_retries_transient_npm_install_failure(tmp_path, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_probe_install", lambda *args: None)
+
+    registry_installs = {"n": 0}
+
+    def fake_run(executable, *arguments, **kwargs):
+        if arguments[:2] == ("install", "--global"):
+            registry_installs["n"] += 1
+            if registry_installs["n"] == 1:
+                raise npm_release.subprocess.CalledProcessError(
+                    1,
+                    [str(executable), *arguments],
+                    output="",
+                    stderr="temporary registry failure",
+                )
+        stdout = _audit_report("0.3.40", "win32-x64") if arguments[:1] == ("audit",) else ""
+        return npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout=stdout, stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    npm_release.smoke_registry("0.3.40", "win32-x64", "https://registry.example/")
+
+    assert registry_installs["n"] == 2
+    assert sleeps == [npm_release.REGISTRY_PROBE_BACKOFF_SECONDS]
+
+
 def test_registry_probe_gives_up_and_surfaces_the_tree_dump(tmp_path, monkeypatch):
     monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
@@ -445,6 +476,57 @@ def test_registry_probe_gives_up_and_surfaces_the_tree_dump(tmp_path, monkeypatc
     message = str(error.value)
     assert f"after {npm_release.REGISTRY_PROBE_ATTEMPTS} attempts" in message
     assert "<tree>" in message
+
+
+def test_registry_install_failure_keeps_process_output_and_install_tree(tmp_path, monkeypatch):
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_install_tree", lambda prefix: "fixture install tree")
+    installs = []
+
+    def fail_install(executable, *arguments, **kwargs):
+        if arguments[0] == "install":
+            installs.append(arguments)
+            raise npm_release.subprocess.CalledProcessError(
+                1, "npm install", output="registry response", stderr="npm error ETARGET"
+            )
+        return npm_release.subprocess.CompletedProcess([executable, *arguments], 0)
+
+    monkeypatch.setattr(npm_release, "_run", fail_install)
+    with pytest.raises(npm_release.NpmReleaseError) as error:
+        npm_release._install_launcher_from_registry(
+            tmp_path / "prefix", tmp_path / "omm-home", "0.3.45",
+            "@omm-hippo/omm-darwin-arm64", "https://registry.example/",
+        )
+
+    assert len(installs) == npm_release.REGISTRY_PROBE_ATTEMPTS
+    assert "stdout: registry response" in str(error.value)
+    assert "stderr: npm error ETARGET" in str(error.value)
+    assert "fixture install tree" in str(error.value)
+
+
+def test_registry_probe_retries_a_cache_cleanup_timeout(tmp_path, monkeypatch):
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_probe_install", lambda *args: None)
+    calls = {"install": 0, "cache": 0}
+
+    def transient_failure(executable, *arguments, **kwargs):
+        operation = arguments[0]
+        calls[operation] += 1
+        if operation == "install" and calls[operation] == 1:
+            raise npm_release.subprocess.CalledProcessError(1, "npm install")
+        if operation == "cache" and calls[operation] == 1:
+            raise npm_release.subprocess.TimeoutExpired("npm cache clean", 300)
+        return npm_release.subprocess.CompletedProcess([executable, *arguments], 0)
+
+    monkeypatch.setattr(npm_release, "_run", transient_failure)
+    npm_release._install_launcher_from_registry(
+        tmp_path / "prefix", tmp_path / "omm-home", "0.3.45",
+        "@omm-hippo/omm-darwin-arm64", "https://registry.example/",
+    )
+
+    assert calls == {"install": 2, "cache": 2}
 
 
 def test_registry_probe_retries_a_failed_npm_install(tmp_path, monkeypatch):

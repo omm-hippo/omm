@@ -82,10 +82,10 @@ jobs:
             const packed = report[0].files.map((file) => file.path).sort();
             if (JSON.stringify(packed) !== JSON.stringify(expected)) {
               throw new Error(
-                `npm would publish ${JSON.stringify(packed)}, expected ${JSON.stringify(expected)}`
+                "npm would publish " + JSON.stringify(packed) + ", expected " + JSON.stringify(expected)
               );
             }
-            console.log(`launcher tarball allowlist is exact: ${packed.join(", ")}`);
+            console.log("launcher tarball allowlist is exact: " + packed.join(", "));
           '
         working-directory: packaging/npm/launcher
 

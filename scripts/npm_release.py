@@ -487,11 +487,11 @@ def _install_launcher_from_registry(
     # loop never ran for the most common transient failures.
     last_error: Exception | None = None
     for attempt in range(REGISTRY_PROBE_ATTEMPTS):
-        if attempt > 0:
-            _run(_npm(), "cache", "clean", "--force", check=False)
-            time.sleep(REGISTRY_PROBE_BACKOFF_SECONDS)
-            shutil.rmtree(prefix, ignore_errors=True)
         try:
+            if attempt > 0:
+                _run(_npm(), "cache", "clean", "--force", check=False)
+                time.sleep(REGISTRY_PROBE_BACKOFF_SECONDS)
+                shutil.rmtree(prefix, ignore_errors=True)
             _run(
                 _npm(),
                 "install",
@@ -510,6 +510,11 @@ def _install_launcher_from_registry(
         except (NpmReleaseError, subprocess.SubprocessError, OSError) as error:
             last_error = error
     detail = f"{type(last_error).__name__}: {last_error}"
+    if isinstance(last_error, subprocess.CalledProcessError):
+        detail += (
+            f"\nstdout: {last_error.stdout or ''}"
+            f"\nstderr: {last_error.stderr or ''}"
+        )
     if not isinstance(last_error, NpmReleaseError):
         # Only NpmReleaseError already carries the #242 tree dump.
         detail = f"{detail}\nnpm ls:\n{_install_tree(prefix)}"
