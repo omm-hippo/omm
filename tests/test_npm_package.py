@@ -10,6 +10,8 @@ import pytest
 
 from omm import package_metadata
 
+from npm_headers import _binary, _elf, _macho, _pe
+
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "npm_package", ROOT / "scripts" / "npm_package.py"
@@ -17,39 +19,6 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 npm_package = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(npm_package)
-
-
-def _macho(cputype: int, byteorder: str = "little") -> bytes:
-    magic = bytes.fromhex("cffaedfe" if byteorder == "little" else "feedfacf")
-    return magic + cputype.to_bytes(4, byteorder) + b" OMM Mach-O"
-
-
-def _elf(machine: int, *, bits: int = 2) -> bytes:
-    header = bytearray(64)
-    header[0:4] = bytes.fromhex("7f454c46")
-    header[4] = bits
-    header[5] = 1
-    header[16:18] = (2).to_bytes(2, "little")
-    header[18:20] = machine.to_bytes(2, "little")
-    return bytes(header)
-
-
-def _pe(machine: int) -> bytes:
-    header = bytearray(0x40)
-    header[0:2] = b"MZ"
-    header[0x3C:0x40] = (0x40).to_bytes(4, "little")
-    return bytes(header) + bytes.fromhex("50450000") + machine.to_bytes(2, "little")
-
-
-def _binary(target: str) -> bytes:
-    """A minimal but honest executable header for one npm target."""
-    return {
-        "darwin-arm64": _macho(0x0100000C),
-        "darwin-x64": _macho(0x01000007),
-        "linux-arm64-gnu": _elf(0xB7),
-        "linux-x64-gnu": _elf(0x3E),
-        "win32-x64": _pe(0x8664),
-    }[target]
 
 
 def test_launcher_contract_matches_project_and_python_install_detection():
