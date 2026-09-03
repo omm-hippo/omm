@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
@@ -8,7 +9,15 @@ const { spawnSync } = require("node:child_process");
 const launcherManifest = require("../package.json");
 const targets = require("../targets.json");
 
+const REINSTALL = "Reinstall with: npm install --global @omm-hippo/omm";
+const QUIET_SIGNALS = new Set(["SIGINT", "SIGPIPE"]);
+
 class LauncherError extends Error {}
+
+function describe(error) {
+  const message = error && error.message ? error.message : String(error);
+  return message.replace(/\.+$/, "");
+}
 
 function runtimeLibc(report = process.report) {
   if (!report || typeof report.getReport !== "function") {
@@ -42,11 +51,50 @@ function selectTarget(
   return { key, ...target };
 }
 
-function readManifest(manifestPath) {
+function isBrokenPipe(error) {
+  return Boolean(error) && (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED");
+}
+
+function ignoreBrokenPipe(stream) {
+  stream.on("error", (error) => {
+    if (isBrokenPipe(error)) {
+      return;
+    }
+    process.exitCode = 1;
+  });
+  return stream;
+}
+
+function readManifest(manifestPath, packageName) {
   try {
     return JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   } catch (error) {
-    throw new LauncherError(`Cannot read npm platform package metadata: ${error.message}`);
+    throw new LauncherError(
+      `The npm package ${packageName} is installed but its package.json is unreadable: ` +
+        `${describe(error)}. ${REINSTALL}`,
+    );
+  }
+}
+
+function resolveManifestPath(resolvePackage, target) {
+  try {
+    return resolvePackage(`${target.package}/package.json`);
+  } catch (error) {
+    if (error && error.code === "MODULE_NOT_FOUND") {
+      throw new LauncherError(
+        `The optional npm package ${target.package}@${launcherManifest.version} is missing. ` +
+          "Reinstall @omm-hippo/omm without --omit=optional and check that this platform is supported.",
+      );
+    }
+    if (error && error.code === "ERR_PACKAGE_PATH_NOT_EXPORTED") {
+      throw new LauncherError(
+        `The npm package ${target.package} is installed but does not expose its package.json. ` +
+          `${REINSTALL}`,
+      );
+    }
+    throw new LauncherError(
+      `Cannot load the npm package ${target.package}: ${describe(error)}. ${REINSTALL}`,
+    );
   }
 }
 
@@ -73,18 +121,10 @@ function sha256File(filePath) {
 function resolvePlatformPackage(options = {}) {
   const target = selectTarget(options.platform, options.arch, options.report);
   const resolvePackage = options.resolvePackage || require.resolve;
-  let manifestPath;
-  try {
-    manifestPath = resolvePackage(`${target.package}/package.json`);
-  } catch (error) {
-    throw new LauncherError(
-      `The optional npm package ${target.package}@${launcherManifest.version} is missing. ` +
-        "Reinstall @omm-hippo/omm without --omit=optional and check that this platform is supported.",
-    );
-  }
+  const manifestPath = resolveManifestPath(resolvePackage, target);
 
   const root = fs.realpathSync(path.dirname(manifestPath));
-  const manifest = readManifest(manifestPath);
+  const manifest = readManifest(manifestPath, target.package);
   const metadata = manifest.omm;
   if (
     manifest.name !== target.package ||
@@ -122,13 +162,19 @@ function resolvePlatformPackage(options = {}) {
   return { root, binary, manifest, target };
 }
 
+function signalExitCode(signal) {
+  const number = os.constants.signals[signal];
+  return Number.isInteger(number) ? 128 + number : 1;
+}
+
 function run(argv, options = {}) {
+  const stderr = options.stderr || process.stderr;
   let resolved;
   try {
     resolved = resolvePlatformPackage(options);
   } catch (error) {
     const message = error instanceof LauncherError ? error.message : String(error);
-    (options.stderr || process.stderr).write(`omm: ${message}\n`);
+    stderr.write(`omm: ${message}\n`);
     return 1;
   }
 
@@ -143,17 +189,29 @@ function run(argv, options = {}) {
     },
   });
   if (result.error) {
-    (options.stderr || process.stderr).write(`omm: ${result.error.message}\n`);
+    const reason = result.error.code || result.error.message;
+    stderr.write(
+      `omm: cannot start the ${resolved.target.package} executable: ${reason}. ${REINSTALL}\n`,
+    );
     return 1;
+  }
+  if (result.signal) {
+    if (!QUIET_SIGNALS.has(result.signal)) {
+      stderr.write(`omm: the omm executable was terminated by ${result.signal}.\n`);
+    }
+    return signalExitCode(result.signal);
   }
   return Number.isInteger(result.status) ? result.status : 1;
 }
 
 module.exports = {
   LauncherError,
+  ignoreBrokenPipe,
+  isBrokenPipe,
   resolvePlatformPackage,
   run,
   runtimeLibc,
   selectTarget,
   sha256File,
+  signalExitCode,
 };

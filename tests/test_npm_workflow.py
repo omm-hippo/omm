@@ -36,6 +36,9 @@ def test_npm_workflow_is_validation_only_and_pinned():
     assert "windows-" not in binary_section
     assert "win32-x64" not in binary_section
     assert "npm pack --dry-run --json" in workflow
+    for packed in ("LICENSE", "bin/omm.js", "lib/launcher.js", "targets.json"):
+        assert f'"{packed}",' in workflow
+    assert "npm would publish" in workflow
     assert "npm publish" not in workflow
     assert "id-token: write" not in workflow
     assert "persist-credentials: false" in workflow

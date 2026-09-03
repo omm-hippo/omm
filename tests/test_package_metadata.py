@@ -1,5 +1,7 @@
 import importlib.metadata
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -288,7 +290,10 @@ def _write_npm_package(tmp_path, monkeypatch, *, overrides=None):
         else:
             manifest[key] = value
     (tmp_path / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
-    monkeypatch.setattr(package_metadata, "_package_checkout", lambda: tmp_path / "checkout")
+    # The shipped npm build is frozen, so it never has a source checkout.
+    # Do NOT point this at a merely-nonexistent directory: that would hide
+    # whether a `.git` next to the running binary can shadow the npm claim.
+    monkeypatch.setattr(package_metadata, "_package_checkout", lambda: None)
     monkeypatch.setattr(
         package_metadata, "find_distribution", lambda: ("omm-model", current)
     )
@@ -342,4 +347,158 @@ def test_npm_claim_requires_exact_launcher_and_executable(monkeypatch, tmp_path)
     other = tmp_path / "other-omm"
     other.write_bytes(b"other")
     monkeypatch.setattr(package_metadata.sys, "executable", str(other))
+    assert package_metadata.install_source() is package_metadata.InstallSource.UNKNOWN
+
+
+def _write_source_tree(root: Path) -> Path:
+    """Create the two files `_package_checkout` requires of a real checkout."""
+
+    (root / "src" / "omm").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "omm" / "cli.py").write_text("# omm cli\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text('[project]\nname = "omm-model"\n', encoding="utf-8")
+    return root
+
+
+def _init_git_checkout(root: Path, origin: str) -> Path:
+    """A real Git repository, so `_checkout_origin` reads a real origin."""
+
+    subprocess.run(["git", "init", "--quiet", str(root)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "remote", "add", "origin", origin],
+        check=True,
+        capture_output=True,
+    )
+    return root
+
+
+requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+
+
+def test_package_checkout_accepts_a_real_omm_source_tree(monkeypatch, tmp_path):
+    root = _write_source_tree(tmp_path / "repo")
+    monkeypatch.setattr(
+        package_metadata, "__file__", str(root / "src" / "omm" / "package_metadata.py")
+    )
+
+    assert package_metadata._package_checkout() == root.resolve()
+
+
+def test_package_checkout_is_none_for_a_frozen_build(monkeypatch, tmp_path):
+    """PyInstaller --onefile puts `__file__` under <TEMP>/_MEIxxxx/omm/, so the
+    naive parents[2] candidate is the *system temp directory* itself."""
+
+    temp_root = _write_source_tree(tmp_path / "temp")
+    (temp_root / ".git").mkdir()
+    extraction = temp_root / "_MEI123456" / "omm"
+    extraction.mkdir(parents=True)
+    monkeypatch.setattr(package_metadata, "__file__", str(extraction / "package_metadata.pyc"))
+    monkeypatch.setattr(package_metadata.sys, "frozen", True, raising=False)
+
+    assert package_metadata._package_checkout() is None
+
+
+def test_package_checkout_rejects_a_git_directory_that_is_not_an_omm_tree(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "unrelated"
+    (root / ".git").mkdir(parents=True)
+    (root / "src" / "omm").mkdir(parents=True)
+    monkeypatch.setattr(
+        package_metadata, "__file__", str(root / "src" / "omm" / "package_metadata.py")
+    )
+
+    assert package_metadata._package_checkout() is None
+
+
+@requires_git
+def test_frozen_build_ignores_a_planted_git_directory(monkeypatch, tmp_path):
+    """A world-writable /tmp must never turn an npm/portable binary into a
+    Git install that `omm update` would `git fetch` and reinstall editable."""
+
+    temp_root = _write_source_tree(tmp_path / "temp")
+    _init_git_checkout(temp_root, "https://github.com/omm-hippo/omm.git")
+    extraction = temp_root / "_MEI123456" / "omm"
+    extraction.mkdir(parents=True)
+    monkeypatch.setattr(package_metadata, "__file__", str(extraction / "package_metadata.pyc"))
+    monkeypatch.setattr(package_metadata.sys, "frozen", True, raising=False)
+    monkeypatch.delenv("OMM_NPM_PACKAGE_ROOT", raising=False)
+    monkeypatch.delenv("OMM_NPM_LAUNCHER_PACKAGE", raising=False)
+    monkeypatch.setattr(
+        package_metadata,
+        "_checkout_origin",
+        lambda checkout: pytest.fail("a frozen build has no checkout to inspect"),
+    )
+    monkeypatch.setattr(
+        package_metadata, "find_distribution", lambda: ("omm-model", _FakeDistribution())
+    )
+    monkeypatch.setattr(package_metadata, "direct_url", lambda distribution=None: None)
+    monkeypatch.setattr(
+        package_metadata,
+        "_installation_paths",
+        lambda distribution: [Path("/ordinary/venv/lib/python3.14/site-packages")],
+    )
+
+    assert package_metadata.install_source() is package_metadata.InstallSource.PYPI
+
+
+@requires_git
+def test_verified_npm_install_is_not_shadowed_by_an_adjacent_git_checkout(
+    monkeypatch, tmp_path
+):
+    """Even a genuine OMM checkout sitting at the candidate root must lose to
+    a verified npm install - npm is the mechanism that owns the binary."""
+
+    _write_npm_package(tmp_path, monkeypatch)
+    checkout = _write_source_tree(tmp_path / "checkout")
+    _init_git_checkout(checkout, "https://github.com/omm-hippo/omm.git")
+    monkeypatch.setattr(package_metadata, "_package_checkout", lambda: checkout)
+
+    assert package_metadata._checkout_origin(checkout) == "https://github.com/omm-hippo/omm.git"
+    assert package_metadata.install_source() is package_metadata.InstallSource.NPM
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("OMM_NPM_LAUNCHER_PACKAGE", "@omm-hippo/omm"),
+        ("OMM_NPM_PACKAGE_ROOT", "/some/other/place"),
+    ],
+)
+def test_incomplete_npm_claim_falls_through_to_the_normal_ladder(
+    monkeypatch, tmp_path, variable, value
+):
+    """One stray variable must not demote a real pipx install to UNKNOWN -
+    that hides the correct `pipx upgrade` guidance behind a doctor FAIL."""
+
+    monkeypatch.delenv("OMM_NPM_PACKAGE_ROOT", raising=False)
+    monkeypatch.delenv("OMM_NPM_LAUNCHER_PACKAGE", raising=False)
+    monkeypatch.setenv(variable, value)
+    monkeypatch.setattr(package_metadata, "_package_checkout", lambda: None)
+    monkeypatch.setattr(
+        package_metadata, "find_distribution", lambda: ("omm-model", _FakeDistribution())
+    )
+    monkeypatch.setattr(package_metadata, "direct_url", lambda distribution=None: None)
+    monkeypatch.setattr(
+        package_metadata,
+        "_installation_paths",
+        lambda distribution: [
+            Path("/Users/alice/.local/share/pipx/venvs/omm-model/lib/python3.14/site-packages")
+        ],
+    )
+
+    assert package_metadata.install_source() is package_metadata.InstallSource.PIPX
+
+
+def test_complete_but_unverifiable_npm_claim_is_unknown(monkeypatch, tmp_path):
+    monkeypatch.setenv("OMM_NPM_PACKAGE_ROOT", str(tmp_path / "missing"))
+    monkeypatch.setenv("OMM_NPM_LAUNCHER_PACKAGE", "@omm-hippo/omm")
+    monkeypatch.setattr(
+        package_metadata,
+        "_package_checkout",
+        lambda: pytest.fail("the npm claim must be resolved before the checkout test"),
+    )
+    monkeypatch.setattr(
+        package_metadata, "find_distribution", lambda: ("omm-model", _FakeDistribution())
+    )
+
     assert package_metadata.install_source() is package_metadata.InstallSource.UNKNOWN
