@@ -32,8 +32,9 @@ generation.
   auto-merges `origin/main` into `beta` on every push to `main`, SSH-signed by the retrain bot key
   (in `allowed_signers`) so beta `omm update` clients verify it. It only needs a human when that
   merge hits a conflict — the job fails loudly and you resolve it with a local `git merge origin/main`
-  → push. `branch-ancestry-check.yml` stays as the post-hoc safety net. Most feature work targets
-  `beta`.
+  → push. `branch-ancestry-check.yml` stays as the post-hoc safety net; it polls through a ~3-minute
+  grace window on a `main` push so it only goes red when `sync-beta.yml` genuinely couldn't catch up.
+  Most feature work targets `beta`.
 - **Committing freely is fine; pushing is always a separate explicit ask.** Wait for it every time.
 - The user runs multiple Claude sessions against this checkout at once. Re-check `git log -5` /
   `git status` right before committing. Only ever `git add <your own filenames>` — never `-A` / `.`.
