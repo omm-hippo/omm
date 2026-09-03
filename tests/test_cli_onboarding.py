@@ -11,6 +11,7 @@ runner = CliRunner()
     [
         (["scan", "--help"], "USAGE: omm scan"),
         (["engine", "install", "--help"], "USAGE: omm engine install"),
+        (["help", "--all"], "Core:"),
     ],
 )
 def test_subcommand_help_bypasses_onboarding_and_root_side_effects(

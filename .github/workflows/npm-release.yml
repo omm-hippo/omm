@@ -21,12 +21,16 @@ name: Build, verify, and publish npm release
       - "scripts/npm_entry.py"
       - "scripts/npm_package.py"
       - "scripts/npm_release.py"
+      - "scripts/release_artifacts.py"
+      - "scripts/dependency_parity.py"
+      - "tests/test_dependency_parity.py"
       - "scripts/windows_portable.py"
       - "src/**"
       - "tests/test_npm_binary.py"
       - "tests/test_npm_package.py"
       - "tests/test_npm_release.py"
       - "tests/test_npm_workflow.py"
+      - "tests/test_release_artifacts.py"
       - "LICENSE"
 
 permissions:
@@ -66,9 +70,7 @@ jobs:
             release_tag="${GITHUB_REF_NAME}"
           fi
           test "$release_tag" = "v${OMM_VERSION}"
-          git -c gpg.ssh.allowedSignersFile=src/omm/trust/allowed_signers verify-tag "$release_tag"
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          git merge-base --is-ancestor HEAD origin/main
+          python scripts/release_artifacts.py verify-release --tag "$release_tag"
 
   platform:
     name: Build npm package for ${{ matrix.target }}
@@ -102,6 +104,7 @@ jobs:
       - name: Install the pinned standalone build graph
         run: |
           python -m pip install --disable-pip-version-check --no-input -r requirements-npm-binary.txt
+          python scripts/dependency_parity.py --target "${{ matrix.target }}"
           python -m pip install --disable-pip-version-check --no-input --no-deps --no-build-isolation .
       - name: Build and stage the publishable platform package
         run: |
@@ -141,6 +144,11 @@ jobs:
           package-manager-cache: false
       - name: Install the pinned Windows build graph
         run: python -m pip install --disable-pip-version-check --no-input -r requirements-windows-portable.txt
+      - name: Verify the Windows runtime graph
+        shell: pwsh
+        run: |
+          python scripts/dependency_parity.py --target win32-x64
+          if ($LASTEXITCODE -ne 0) { throw "Windows runtime dependency parity failed" }
       - name: Build and install the exact source wheel
         shell: pwsh
         run: |

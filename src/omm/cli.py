@@ -619,7 +619,8 @@ def _root(
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
     side_effect_minimal_mode = (
-        ctx.invoked_subcommand == "doctor" or bool(ctx.meta.get("omm_help_requested"))
+        ctx.invoked_subcommand in {"doctor", "help"}
+        or bool(ctx.meta.get("omm_help_requested"))
     )
     theme = (
         doctor_mod.read_theme_read_only()
@@ -7929,6 +7930,28 @@ def _report_telemetry(
                 f"[muted]Telemetry not sent - benchmark failed ({failure_reason}).[/muted]"
             )
         return False
+    measured_speeds = tuple(
+        value
+        for value in (tokens_per_sec, speed_min, speed_max)
+        if value is not None
+    )
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+        for value in measured_speeds
+    ):
+        # benchmark_ollama_samples deliberately preserves a failed generation
+        # as a zero sample. That is useful locally, but it is not a measured
+        # speed and must never become a legacy success row in the regression
+        # dataset (including when two positive samples leave the median > 0).
+        telemetry.log_attempt("skipped_no_timing_metrics", filename)
+        console.print(
+            "[muted]Telemetry not sent - benchmark produced no valid positive "
+            "timing measurement.[/muted]"
+        )
+        return False
     info = scan_hardware()
     if size_bytes is None:
         try:
@@ -8258,9 +8281,15 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
         quant_bits = parse_quant_bits(value) if isinstance(value, str) else None
     if quant_bits is None:
         quant_bits = candidate_quant_bits(candidate)
-    active_parameter_count = resolve_active_parameter_count_billions(
-        candidate, parameter_count
+    active_parameter_count = _number(
+        "active_parameter_count_b", "active_parameter_count_billions"
     )
+    if active_parameter_count is None:
+        active_parameter_count = resolve_active_parameter_count_billions(
+            candidate, parameter_count
+        )
+    elif parameter_count is not None:
+        active_parameter_count = min(active_parameter_count, parameter_count)
     if parameter_count is not None:
         event["parameter_count_b"] = parameter_count
     if active_parameter_count is not None:

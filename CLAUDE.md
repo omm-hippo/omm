@@ -137,12 +137,16 @@ algorithm strands every already-installed client; such users need a manual
 `cd ~/.omm/src && git fetch origin && git reset --hard origin/main` bridge.
 
 **Releases.** Pushing a signed `v<version>` tag into `main` history is the release trigger.
-`release.yml` (PyPI + Homebrew dispatch) and `npm-release.yml` fire on it, and `github-release.yml`
-creates the GitHub Release itself: it re-verifies the tag signature against `trust/allowed_signers`,
-matches the tag to `pyproject` version, requires the tag to point into `main` history, then runs
-`gh release create --generate-notes`. No reviewer-approval gate — pushing a valid signed tag is
-enough. Windows portable ZIP and the
-`whl`/`tar.gz`/`SHA256SUMS` assets are still attached manually (`windows-portable.yml` dispatch).
+`release.yml` (PyPI + asynchronous Homebrew dispatch), `npm-release.yml`, and
+`windows-portable.yml` fire on it. All release paths use `release_artifacts.py verify-release` to
+check the allowed tag signature, exact project version and checkout, and `main` ancestry.
+The Python and Windows workflows each call the reusable `github-release.yml` only after their own
+validation gates pass. They add wheel, sdist, `SHA256SUMS`, Windows ZIP, and ZIP checksum to one
+draft; it is published only after all five remote assets pass checksum verification. Existing
+asset bytes are never replaced by a rerun. The reusable publisher verifies that checksums cover
+every expected filename. Its Windows job tests installation and uninstallation using a local
+WinGet manifest pointing to the public archive, regardless of which asset set arrives last.
+This does not submit the manifest to the WinGet community repository.
 
 **Telemetry.** `benchmark.py` measures real tokens/sec via Ollama's `/api/generate`;
 `contribute.py` runs an unattended benchmark loop (auto start/stop of the Ollama daemon under
@@ -189,5 +193,5 @@ Check these before assuming undocumented intent behind a feature's shape.
   owning script.
 - `.github/workflows/` — `ci.yml` (6 required checks), `train.yml`, per-runner `ci-engine-*.yml`,
   `trusted-head.yml` / `branch-ancestry-check.yml` (branch protection), `github-release.yml`
-  (auto GitHub Release on a signed tag), release/npm/portable.
+  (asset-backed reusable Release publisher), release/npm/portable.
 - `demo/model-visualizer/` — standalone React demo of the RandomForest walk; not shipped.

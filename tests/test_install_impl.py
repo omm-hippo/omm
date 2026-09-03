@@ -972,6 +972,46 @@ def test_report_telemetry_omits_quality_fields_by_default(isolated_omm_home, mon
     assert sent[0]["sample_count"] == 1
 
 
+@pytest.mark.parametrize("tokens_per_sec", [0.0, -1.0, float("nan"), float("inf")])
+def test_report_telemetry_skips_invalid_speed_measurements(
+    isolated_omm_home, monkeypatch, tokens_per_sec
+):
+    monkeypatch.setattr(
+        cli.telemetry,
+        "send_event",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("an invalid speed is not a real measurement")
+        ),
+    )
+
+    sent = cli._report_telemetry("model.gguf", "org/repo", tokens_per_sec)
+
+    assert sent is False
+
+
+def test_report_telemetry_skips_a_sample_range_containing_failed_zero(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli.telemetry,
+        "send_event",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a failed sample must not be uploaded as measured speed")
+        ),
+    )
+
+    sent = cli._report_telemetry(
+        "model.gguf",
+        "org/repo",
+        10.0,
+        sample_count=3,
+        speed_min=0.0,
+        speed_max=11.0,
+    )
+
+    assert sent is False
+
+
 def test_report_telemetry_emits_v7_success_with_cpu_fields(
     isolated_omm_home, monkeypatch
 ):

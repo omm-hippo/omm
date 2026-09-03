@@ -49,8 +49,9 @@ def test_npm_release_workflow_is_gated_and_verifies_every_public_path():
     workflow = workflow_path.read_text(encoding="utf-8")
 
     assert 'tags:\n      - "v*"' in workflow
-    assert "verify-tag" in workflow
-    assert "git merge-base --is-ancestor HEAD origin/main" in workflow
+    assert "scripts/release_artifacts.py verify-release" in workflow
+    assert "git -c gpg.ssh.allowedSignersFile" not in workflow
+    assert "git merge-base --is-ancestor" not in workflow
     assert "NPM_TRUSTED_PUBLISHING == 'enabled'" in workflow
     assert "environment:\n      name: npm" in workflow
     assert "id-token: write" in workflow
