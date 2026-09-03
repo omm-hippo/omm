@@ -9054,6 +9054,10 @@ def _run_contribution_loop(
         # bookkeeping for it.
         deferred.pop(ref_str, None)
 
+        # Bound only once validation below succeeds. A Ctrl+C before that point
+        # can't have started a download yet, so a None here means "nothing to
+        # clean up" - never fall back to a previous iteration's filename.
+        filename: str | None = None
         try:
             provider = validate_provider(candidate.get("provider") or "huggingface")
             repo_id = validate_repo_id(candidate["repo_id"])
@@ -9090,7 +9094,8 @@ def _run_contribution_loop(
             # same unload-before-delete cleanup path while the active filename
             # is still known instead of letting it escape and strand a GGUF.
             stop_event.set()
-            _cleanup_interrupted_install(filename)
+            if filename is not None:
+                _cleanup_interrupted_install(filename)
             break
         except (DownloadError, ModelResolutionError, linker.LinkError) as e:
             err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
@@ -9152,7 +9157,8 @@ def _run_contribution_loop(
                     break
                 except KeyboardInterrupt:
                     stop_event.set()
-                    _cleanup_interrupted_install(filename)
+                    if filename is not None:
+                        _cleanup_interrupted_install(filename)
                     break
                 except (DownloadError, linker.LinkError) as e:
                     err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")

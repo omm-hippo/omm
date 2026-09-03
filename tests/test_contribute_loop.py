@@ -182,6 +182,31 @@ def test_keyboard_interrupt_uses_owned_cleanup_path(isolated_omm_home, monkeypat
     assert stats.benchmarked == []
 
 
+def test_keyboard_interrupt_before_download_starts_does_not_crash(isolated_omm_home, monkeypatch):
+    # Ctrl+C during candidate validation, before _install_impl runs, means no
+    # GGUF was fetched. The handler must not reference an unbound `filename`
+    # (NameError on the first iteration) nor clean up a stale one.
+    queue = _FakeQueue([_candidate(filename="never-downloaded.gguf")])
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", lambda candidate, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "validate_provider", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
+    monkeypatch.setattr(
+        cli, "_install_impl", lambda *a, **k: (_ for _ in ()).throw(AssertionError("reached install"))
+    )
+    cleaned = []
+    monkeypatch.setattr(
+        cli, "_cleanup_interrupted_install", lambda filename: cleaned.append(filename)
+    )
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert cleaned == []
+    assert stop_event.is_set()
+    assert stats.benchmarked == []
+
+
 def test_low_memory_candidate_is_skipped_before_download(isolated_omm_home, monkeypatch):
     candidate = _candidate(filename="too-large-for-live-memory.gguf")
     candidate["size_bytes"] = 1024**3
