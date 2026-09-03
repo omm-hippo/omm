@@ -1814,9 +1814,22 @@ def _fallback_to_native_create_unlocked(
     manifest_path = (
         models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name / "latest"
     )
+    previous_manifest: bytes | None = None
+    previous_manifest_mode: int | None = None
+    previous_source: Path | None = None
+    previous_digests: set[str] = set()
     if manifest_path.exists() or manifest_path.is_symlink():
-        if not _owned_manifest(manifest_path):
+        previous_record = _ownership_record(manifest_path)
+        if not _owned_manifest(manifest_path, record=previous_record):
             raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
+        previous_manifest = manifest_path.read_bytes()
+        previous_manifest_mode = stat_module.S_IMODE(manifest_path.stat().st_mode)
+        source = previous_record.get("source") if previous_record else None
+        previous_source = Path(source) if isinstance(source, str) else None
+        try:
+            previous_digests = _manifest_blob_digests(json.loads(previous_manifest))
+        except ValueError:
+            pass
 
     source_size = gguf_path.stat().st_size
     required = source_size + disk_safety_reserve(source_size)
@@ -1833,11 +1846,8 @@ def _fallback_to_native_create_unlocked(
             f"{required / 1024**3:.1f} GiB including safety space."
         )
 
-    # Capacity is proven before replacing a currently working omm manifest.
-    # A failed preflight must never destroy the user's existing Ollama model.
-    if manifest_path.exists() or manifest_path.is_symlink():
-        _unlink_ollama_unlocked(model_name, models_dir=models_dir)
-
+    # Keep the previous model's blobs until the native replacement succeeds.
+    # Deleting them before `ollama create` made a failed process irreversible.
     blobs_dir = models_dir / "blobs"
     try:
         blobs_dir.mkdir(parents=True, exist_ok=True)
@@ -1874,17 +1884,30 @@ def _fallback_to_native_create_unlocked(
 
     def cleanup_transaction() -> None:
         blobs_to_remove = transaction_blobs()
-        try:
-            with locked(_engine_path_lock(manifest_path)):
-                manifest_path.unlink(missing_ok=True)
-                _update_link_ownership(manifest_path, None)
-        except OSError:
-            pass
+        # Reclaim partial replacement bytes before restoring the small
+        # manifest, so a disk-full import can still recover its old tag.
         for blob in blobs_to_remove:
             try:
                 blob.unlink(missing_ok=True)
             except OSError:
                 pass
+        try:
+            with locked(_engine_path_lock(manifest_path)):
+                if previous_manifest is None:
+                    manifest_path.unlink(missing_ok=True)
+                    _update_link_ownership(manifest_path, None)
+                else:
+                    atomic_write_bytes(manifest_path, previous_manifest)
+                    # atomic_write_bytes starts at 0600; keep a daemon running
+                    # under another account able to read its restored manifest.
+                    manifest_path.chmod(previous_manifest_mode)
+                    _record_ownership(manifest_path, previous_source, "manifest")
+        except (OSError, FileLockTimeout) as error:
+            if previous_manifest is not None:
+                raise LinkError(
+                    f"Could not restore the previous Ollama registration at {manifest_path}: "
+                    f"{error}. The previous model blobs were preserved."
+                ) from error
 
     with tempfile.TemporaryDirectory() as tmp:
         modelfile = Path(tmp) / "Modelfile"
@@ -1927,6 +1950,7 @@ def _fallback_to_native_create_unlocked(
             _record_ownership(blob, None, "copy")
     except OSError:
         pass
+    _reclaim_ollama_blobs(models_dir, previous_digests)
 
 
 def _ensure_ollama_accepts(
@@ -2237,7 +2261,9 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
 
         manifests_removed = 0
         if broken_digests and manifests_root.exists():
-            for manifest_path in list(manifests_root.rglob("latest")):
+            for manifest_path in list(manifests_root.rglob("*")):
+                if not manifest_path.is_file():
+                    continue
                 try:
                     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
@@ -2448,7 +2474,7 @@ def read_jan_model_path(config_path: Path) -> str | None:
     parser rather than adding a new dependency for it."""
     try:
         text = config_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     match = _JAN_MODEL_PATH_RE.search(text)
     if match is None:

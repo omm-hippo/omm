@@ -41,6 +41,42 @@ def _stub_common(monkeypatch, ollama=True, lmstudio=False):
     monkeypatch.setattr(cli, "remote_file_sha256", lambda *args: None)
 
 
+def test_prepare_install_artifact_returns_verified_download(tmp_path, monkeypatch):
+    """The extracted file stage completes before link/registry work begins."""
+    destination = tmp_path / "model.gguf"
+    capacity_checks = []
+    monkeypatch.setattr(
+        cli,
+        "download_file",
+        lambda _url, path, **_kwargs: path.write_bytes(b"model-bytes"),
+    )
+    monkeypatch.setattr(cli, "sha256_file", lambda _path: "expected-sha")
+    monkeypatch.setattr(
+        cli,
+        "_ensure_install_disk_capacity",
+        lambda *args, **kwargs: capacity_checks.append((args, kwargs)),
+    )
+
+    prepared = cli._prepare_install_artifact(
+        url="https://example.test/model.gguf",
+        filename="model.gguf",
+        repo_id=None,
+        provider="huggingface",
+        dest=destination,
+        expected_sha256="expected-sha",
+        force=False,
+        skip_unfit=False,
+        stop_event=None,
+        only_engine=None,
+        opts=cli.GlobalOptions(),
+    )
+
+    assert prepared == cli._PreparedInstallArtifact("expected-sha", downloaded_now=True)
+    assert capacity_checks == [
+        ((destination, len(b"model-bytes")), {"include_download": False, "only_engine": None})
+    ]
+
+
 def test_skip_unfit_returns_outcome_without_prompting_or_downloading(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
@@ -972,6 +1008,46 @@ def test_report_telemetry_omits_quality_fields_by_default(isolated_omm_home, mon
     assert sent[0]["sample_count"] == 1
 
 
+@pytest.mark.parametrize("tokens_per_sec", [0.0, -1.0, float("nan"), float("inf")])
+def test_report_telemetry_skips_invalid_speed_measurements(
+    isolated_omm_home, monkeypatch, tokens_per_sec
+):
+    monkeypatch.setattr(
+        cli.telemetry,
+        "send_event",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("an invalid speed is not a real measurement")
+        ),
+    )
+
+    sent = cli._report_telemetry("model.gguf", "org/repo", tokens_per_sec)
+
+    assert sent is False
+
+
+def test_report_telemetry_skips_a_sample_range_containing_failed_zero(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli.telemetry,
+        "send_event",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a failed sample must not be uploaded as measured speed")
+        ),
+    )
+
+    sent = cli._report_telemetry(
+        "model.gguf",
+        "org/repo",
+        10.0,
+        sample_count=3,
+        speed_min=0.0,
+        speed_max=11.0,
+    )
+
+    assert sent is False
+
+
 def test_report_telemetry_emits_v7_success_with_cpu_fields(
     isolated_omm_home, monkeypatch
 ):
@@ -1671,3 +1747,96 @@ def test_run_interruptible_returns_the_result_and_reraises_errors():
 
     with pytest.raises(RuntimeError, match="boom"):
         cli._run_interruptible(boom, stop_event)
+
+
+@pytest.mark.parametrize("skip_unfit", [False, True])
+def test_force_preserves_existing_model_when_disk_preflight_fails(
+    isolated_omm_home, monkeypatch, skip_unfit
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    resolved = _resolved()
+    dest = cli.MODELS_DIR / resolved.filename
+    dest.write_bytes(b"previous-working-model")
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(b"partial-download")
+    saved = {resolved.filename: {"sha256": "old", "linked": {"ollama": True}}}
+    registry.save_registry(saved)
+    monkeypatch.setattr(cli, "remote_file_size", lambda *args: 10_000)
+
+    def no_space(*args, **kwargs):
+        raise cli.InsufficientDiskSpaceError("disk full", fix="Free up disk space.")
+
+    monkeypatch.setattr(cli, "_ensure_install_disk_capacity", no_space)
+    monkeypatch.setattr(
+        cli, "download_file",
+        lambda *args, **kwargs: pytest.fail("must stop before downloading"),
+    )
+    if skip_unfit:
+        assert cli._install_impl(resolved, force=True, skip_unfit=True).skipped_low_disk
+    else:
+        with pytest.raises(cli.typer.Exit):
+            cli._install_impl(resolved, force=True)
+
+    assert dest.read_bytes() == b"previous-working-model"
+    assert part.read_bytes() == b"partial-download"
+    assert registry.load_registry() == saved
+
+
+@pytest.mark.parametrize("suffix", ["", ".part", ".part.ranges.json", ".part.meta"])
+def test_force_preflight_credits_only_unshared_file_on_download_volume(
+    isolated_omm_home, monkeypatch, suffix
+):
+    import os
+
+    dest = cli.MODELS_DIR / "old.gguf"
+    existing = dest.with_name(dest.name + suffix)
+    existing.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(cli.linker, "disk_safety_reserve", lambda needed: 0)
+    monkeypatch.setattr(cli.linker, "disk_copy_risks", lambda *args, **kwargs: [])
+    monkeypatch.setattr(cli.shutil, "disk_usage", lambda path: SimpleNamespace(free=2048))
+
+    cli._ensure_install_disk_capacity(
+        dest, 4096, include_download=True, only_engine=None, replace_existing=True
+    )
+    assert existing.read_bytes() == b"x" * 4096
+    with pytest.raises(cli.InsufficientDiskSpaceError):
+        cli._ensure_install_disk_capacity(dest, 4096, include_download=True, only_engine=None)
+
+    os.link(existing, dest.with_name("still-used.gguf"))
+    with pytest.raises(cli.InsufficientDiskSpaceError):
+        cli._ensure_install_disk_capacity(
+            dest, 4096, include_download=True, only_engine=None, replace_existing=True
+        )
+
+
+def test_force_preflight_does_not_credit_symlink_target(
+    isolated_omm_home, monkeypatch, requires_symlink_support
+):
+    target = cli.MODELS_DIR / "target.gguf"
+    target.write_bytes(b"x" * 4096)
+    dest = cli.MODELS_DIR / "alias.gguf"
+    dest.symlink_to(target)
+
+    assert cli._reclaimable_file_bytes(dest) == 0
+
+
+def test_force_preflight_does_not_credit_sparse_file_logical_size(
+    isolated_omm_home
+):
+    dest = cli.MODELS_DIR / "sparse.gguf"
+    with dest.open("wb") as handle:
+        handle.truncate(1024 * 1024)
+    info = dest.stat()
+    if hasattr(info, "st_blocks"):
+        assert cli._reclaimable_file_bytes(dest) <= info.st_blocks * 512
+
+
+def test_run_interruptible_does_not_start_work_after_cancellation():
+    stop_event = threading.Event()
+    stop_event.set()
+    started = threading.Event()
+
+    with pytest.raises(cli._Interrupted):
+        cli._run_interruptible(started.set, stop_event)
+
+    assert not started.wait(0.05)

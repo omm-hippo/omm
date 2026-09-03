@@ -4,15 +4,17 @@ import time
 from omm import config, usage
 
 
-def _enable(monkeypatch):
-    monkeypatch.setattr(
-        config, "load_config", lambda: {"usage_stats_policy": "enabled"}
-    )
+def _enable(_monkeypatch):
+    config.update_config(usage_stats_policy="enabled")
 
 
 def test_record_run_noop_when_unset(isolated_omm_home):
+    assert not config.CONFIG_PATH.exists()
+
     usage.record_run("install", "ok", None)
+
     assert usage.pending_count() == 0
+    assert not config.CONFIG_PATH.exists()
 
 
 def test_record_run_appends_when_enabled(isolated_omm_home, monkeypatch):
@@ -97,9 +99,9 @@ def test_flush_keeps_pending_on_failure(isolated_omm_home, monkeypatch):
 
 def test_flush_noop_when_policy_unset(isolated_omm_home, monkeypatch):
     # opted out: even with pending rows written under an earlier consent
-    monkeypatch.setattr(config, "load_config", lambda: {"usage_stats_policy": "enabled"})
+    _enable(monkeypatch)
     usage.record_run("install", "ok", None)
-    monkeypatch.setattr(config, "load_config", lambda: {})
+    config.update_config(usage_stats_policy=None)
     sent = []
     monkeypatch.setattr(usage, "_post", lambda p: sent.append(p) or True)
     assert usage.flush_pending(force=True) is False
@@ -113,10 +115,7 @@ def test_post_to_refuses_non_gateway_endpoint(isolated_omm_home):
 def test_cli_main_records_usage_run(isolated_omm_home, monkeypatch):
     from omm import cli
 
-    monkeypatch.setattr(
-        config, "load_config",
-        lambda: {"usage_stats_policy": "enabled", "theme": "dark"},
-    )
+    config.update_config(usage_stats_policy="enabled", theme="dark")
     monkeypatch.setattr("sys.argv", ["omm", "--version"])
     try:
         cli.main()

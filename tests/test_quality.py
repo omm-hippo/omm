@@ -821,6 +821,31 @@ def test_collect_evidence_preserves_sibling_results_after_one_model_fails(monkey
     assert "simulated OOM" not in json.dumps(report)
 
 
+def test_failure_entry_preserves_verified_moe_training_features():
+    metadata = {
+        "digest": "sha256:" + "a" * 64,
+        "size_bytes": 20_000_000_000,
+        "parameter_size": "20B",
+        "parameter_count_b": 20.0,
+        "active_parameter_count_b": 4.2,
+        "quantization_level": "Q4_K_M",
+        "is_moe": True,
+    }
+
+    entry = quality._build_failure_entry(
+        "custom-moe:latest",
+        quality.QualityEvaluationError(
+            "out of memory",
+            failure_reason=quality.FAILURE_REASON_OUT_OF_MEMORY,
+        ),
+        metadata,
+        None,
+        True,
+    )
+
+    assert entry["model_metadata"] == metadata
+
+
 def test_collect_evidence_classifies_daemon_unreachable_as_transient(monkeypatch):
     # A healthy version response here means collect_evidence's own daemon
     # precheck (which now runs before every tag) lets this attempt through;

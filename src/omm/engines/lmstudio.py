@@ -49,7 +49,7 @@ class LMStudioAdapter:
             version = None
         return RuntimeHealth(True, version=version)
 
-    def list_models(self) -> list[RuntimeModel]:
+    def _model_rows(self) -> list[dict]:
         rows = self._client.request(
             "GET",
             "/api/v1/models",
@@ -58,9 +58,25 @@ class LMStudioAdapter:
         ).data.get("models")
         if not isinstance(rows, list):
             raise RuntimeAdapterError("unknown", "LM Studio returned an invalid model list")
+        return [row for row in rows if isinstance(row, dict)]
+
+    @staticmethod
+    def _instance_ids(row: dict) -> tuple[str, ...]:
+        instances = row.get("loaded_instances")
+        if not isinstance(instances, list):
+            return ()
+        return tuple(
+            instance["id"]
+            for instance in instances
+            if isinstance(instance, dict)
+            and isinstance(instance.get("id"), str)
+            and instance["id"]
+        )
+
+    def list_models(self) -> list[RuntimeModel]:
         models = []
-        for row in rows:
-            if not isinstance(row, dict) or row.get("type") != "llm":
+        for row in self._model_rows():
+            if row.get("type") != "llm":
                 continue
             key = row.get("key")
             if not isinstance(key, str) or not key:
@@ -68,19 +84,7 @@ class LMStudioAdapter:
             display_name = row.get("display_name")
             if not isinstance(display_name, str) or not display_name:
                 display_name = key
-            instances = row.get("loaded_instances")
-            if not isinstance(instances, list):
-                instances = []
-            instance_id = next(
-                (
-                    instance.get("id")
-                    for instance in instances
-                    if isinstance(instance, dict)
-                    and isinstance(instance.get("id"), str)
-                    and instance.get("id")
-                ),
-                None,
-            )
+            instance_id = next(iter(self._instance_ids(row)), None)
             aliases = []
             for field in ("variants",):
                 values = row.get(field)
@@ -185,10 +189,13 @@ class LMStudioAdapter:
                 timeout_failure="unload_failed",
             )
             for attempt in range(4):
-                selected = find_runtime_model(
-                    self.list_models(), RuntimeModelRef(receipt.model.key, receipt.model.aliases)
+                # A second client may have loaded another instance of this
+                # model. Confirm only that the instance OMM owns disappeared.
+                still_loaded = any(
+                    receipt.instance_id in self._instance_ids(row)
+                    for row in self._model_rows()
                 )
-                if selected is None or not selected.loaded:
+                if not still_loaded:
                     return UnloadResult(True)
                 if attempt < 3:
                     time.sleep(0.1)

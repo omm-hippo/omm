@@ -736,6 +736,101 @@ def test_failed_native_ollama_import_removes_new_blobs_and_manifest(
     assert not manifest.exists()
 
 
+@pytest.mark.parametrize("failure", ["before-write", "after-write", "timeout", "os-error"])
+def test_failed_native_ollama_replacement_restores_previous_registration(
+    isolated_omm_home, tmp_path, monkeypatch, failure
+):
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"source weights")
+    models_dir = tmp_path / "ollama"
+    old_blob = models_dir / "blobs" / "sha256-old"
+    old_blob.parent.mkdir(parents=True)
+    old_blob.write_bytes(b"previous native weights")
+    new_blob = old_blob.with_name("sha256-new")
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    manifest.parent.mkdir(parents=True)
+    original = b'{"layers":[{"digest":"sha256:old"}],"custom":"keep"}'
+    manifest.write_bytes(original)
+    manifest.chmod(0o644)
+    original_mode = linker.stat_module.S_IMODE(manifest.stat().st_mode)
+    linker._record_ownership(old_blob, None, "copy")
+    linker._record_ownership(manifest, source, "manifest")
+
+    def run_ollama(cmd, **kwargs):
+        if failure != "before-write":
+            new_blob.write_bytes(b"partial replacement")
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text('{"layers":[{"digest":"sha256:new"}]}')
+        if failure == "timeout":
+            raise linker.subprocess.TimeoutExpired(cmd, 600)
+        if failure == "os-error":
+            raise OSError("process could not complete")
+        return _FakeResult(returncode=1, stderr="model import failed")
+
+    monkeypatch.setattr(linker, "find_ollama_executable", lambda: Path("/fixture/ollama"))
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
+    )
+    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+
+    with pytest.raises(linker.LinkError):
+        linker._fallback_to_native_create(source, "model", models_dir)
+
+    assert manifest.read_bytes() == original
+    assert linker.stat_module.S_IMODE(manifest.stat().st_mode) == original_mode
+    assert old_blob.read_bytes() == b"previous native weights"
+    assert linker._owned_manifest(manifest, expected_source=source)
+    assert linker._owned_copy(old_blob)
+    assert not new_blob.exists()
+    assert source.read_bytes() == b"source weights"
+
+
+def test_successful_native_ollama_replacement_reclaims_only_unreferenced_old_blobs(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"source weights")
+    models_dir = tmp_path / "ollama"
+    old_blob = models_dir / "blobs" / "sha256-old"
+    old_blob.parent.mkdir(parents=True)
+    old_blob.write_bytes(b"old weights")
+    shared_blob = old_blob.with_name("sha256-shared")
+    shared_blob.write_bytes(b"shared weights")
+    new_blob = old_blob.with_name("sha256-new")
+    root = models_dir / "manifests" / "registry.ollama.ai" / "library"
+    manifest = root / "model" / "latest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"layers":[{"digest":"sha256:old"},{"digest":"sha256:shared"}]}')
+    other_manifest = root / "user-model" / "latest"
+    other_manifest.parent.mkdir()
+    other_manifest.write_text('{"layers":[{"digest":"sha256:shared"}]}')
+    for blob in (old_blob, shared_blob):
+        linker._record_ownership(blob, None, "copy")
+    linker._record_ownership(manifest, source, "manifest")
+
+    def run_ollama(cmd, **kwargs):
+        # The previous model remains recoverable until native import succeeds.
+        assert old_blob.read_bytes() == b"old weights"
+        new_blob.write_bytes(b"replacement weights")
+        manifest.write_text('{"layers":[{"digest":"sha256:new"}]}')
+        return _FakeResult(returncode=0)
+
+    monkeypatch.setattr(linker, "find_ollama_executable", lambda: Path("/fixture/ollama"))
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
+    )
+    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+
+    linker._fallback_to_native_create(source, "model", models_dir)
+
+    assert not old_blob.exists()
+    assert shared_blob.read_bytes() == b"shared weights"
+    assert other_manifest.is_file()
+    assert new_blob.read_bytes() == b"replacement weights"
+    assert linker._owned_manifest(manifest)
+    assert linker._owned_copy(new_blob)
+
+
 def test_link_ollama_wraps_invalid_gguf_metadata_as_link_error(
     isolated_omm_home, tmp_path, monkeypatch
 ):

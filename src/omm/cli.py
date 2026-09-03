@@ -11,6 +11,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -619,7 +620,8 @@ def _root(
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
     side_effect_minimal_mode = (
-        ctx.invoked_subcommand == "doctor" or bool(ctx.meta.get("omm_help_requested"))
+        ctx.invoked_subcommand in {"doctor", "help"}
+        or bool(ctx.meta.get("omm_help_requested"))
     )
     theme = (
         doctor_mod.read_theme_read_only()
@@ -3734,6 +3736,14 @@ class InstallOutcome:
     benchmark_engine: str | None = None
 
 
+@dataclass(frozen=True)
+class _PreparedInstallArtifact:
+    """A checksum-verified central GGUF ready for engine linking."""
+
+    sha256: str
+    downloaded_now: bool
+
+
 class InstallInterrupted(Exception):
     """Esc fired mid-download or mid-benchmark inside `_install_impl`,
     whether that's a single `omm install` or `omm contribute`'s loop."""
@@ -3757,6 +3767,8 @@ def _run_interruptible(fn, stop_event: threading.Event | None):
     pool overhead on the plain `omm install` path."""
     if stop_event is None:
         return fn()
+    if stop_event.is_set():
+        raise _Interrupted()
 
     # A daemon thread, not a ThreadPoolExecutor: the interpreter joins
     # every non-daemon executor worker at exit, so an abandoned in-flight
@@ -3925,12 +3937,30 @@ class _VolumeRequirement:
     reasons: list[str] | None = None
 
 
+def _reclaimable_file_bytes(dest: Path) -> int:
+    """Credit only a regular file whose last hard link force will remove."""
+    try:
+        info = dest.lstat()
+    except OSError:
+        return 0
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        return 0
+    if hasattr(info, "st_blocks"):
+        return min(info.st_size, info.st_blocks * 512)
+    # Windows does not report st_blocks; compressed/sparse sizes overstate
+    # disk allocation, so those files receive no speculative credit.
+    if getattr(info, "st_file_attributes", 0) & 0xA00:
+        return 0
+    return info.st_size
+
+
 def _ensure_install_disk_capacity(
     dest: Path,
     size_bytes: int,
     *,
     include_download: bool,
     only_engine: str | None,
+    replace_existing: bool = False,
 ) -> None:
     """Preflight the peak bytes omm may add on every affected volume."""
     if size_bytes <= 0:
@@ -3950,8 +3980,13 @@ def _ensure_install_disk_capacity(
     for risk in linker.disk_copy_risks(dest, only_engine=only_engine):
         add(risk.path, risk.reason)
 
+    reclaimable = (
+        sum(_reclaimable_file_bytes(path) for path in (dest, *_download_part_paths(dest)))
+        if include_download and replace_existing else 0
+    )
+    download_volume = linker.storage_volume_key(dest.parent) if reclaimable else None
     failures = []
-    for requirement in groups.values():
+    for volume, requirement in groups.items():
         reserve = linker.disk_safety_reserve(requirement.bytes_needed)
         required = requirement.bytes_needed + reserve
         try:
@@ -3960,7 +3995,7 @@ def _ensure_install_disk_capacity(
             raise InsufficientDiskSpaceError(
                 f"Could not verify free space on the volume containing {requirement.path}: {error}"
             ) from error
-        if free < required:
+        if free + (reclaimable if volume == download_volume else 0) < required:
             reasons = ", ".join(requirement.reasons or [])
             failures.append(
                 f"{requirement.path} needs up to {required / 1024**3:.1f} GiB "
@@ -4456,6 +4491,115 @@ def _verify_lmstudio_after_install(
     return result.status, False, False
 
 
+def _prepare_install_artifact(
+    *,
+    url: str,
+    filename: str,
+    repo_id: str | None,
+    provider: str,
+    dest: Path,
+    expected_sha256: str | None,
+    force: bool,
+    skip_unfit: bool,
+    stop_event: threading.Event | None,
+    only_engine: str | None,
+    opts: GlobalOptions,
+) -> _PreparedInstallArtifact | None:
+    """Reuse or download one central artifact, then verify it for linking.
+
+    Returns ``None`` only when the contribution loop elected to skip a
+    low-disk candidate. All other failures retain the existing command's
+    exception and cleanup behavior so callers can continue to own the
+    install transaction, registry update, and runtime verification stages.
+    """
+    downloaded_now = False
+    if dest.exists() and not force:
+        existing_sha256 = sha256_file(dest)
+        if expected_sha256 is not None and existing_sha256 != expected_sha256:
+            raise DownloadError(
+                f"{filename} already exists but does not match the provider SHA-256; "
+                "refusing to reuse or overwrite it."
+            )
+        if expected_sha256 is None:
+            existing_entry = registry.load_registry().get(filename)
+            if not (
+                isinstance(existing_entry, dict)
+                and existing_entry.get("source") == url
+                and existing_entry.get("sha256") == existing_sha256
+            ):
+                raise DownloadError(
+                    f"{filename} already exists but its source and digest cannot "
+                    "be verified; refusing to adopt or overwrite it."
+                )
+        err_console.print(f"[warning]{filename} already downloaded, skipping fetch.[/warning]")
+    else:
+        size_bytes = remote_file_size(provider, repo_id, filename) if repo_id else None
+        if size_bytes:
+            try:
+                _ensure_install_disk_capacity(
+                    dest,
+                    size_bytes,
+                    include_download=True,
+                    only_engine=only_engine,
+                    replace_existing=force,
+                )
+            except InsufficientDiskSpaceError as error:
+                if skip_unfit:
+                    err_console.print(f"[warning]Skipping {error}.[/warning]")
+                    return None
+                errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
+                raise typer.Exit(1) from error
+        if force:
+            # Keep the existing model intact if preflight rejects the new
+            # download. Once accepted, force must not reuse old partial bytes.
+            _cleanup_incomplete_install(filename)
+        try:
+            if stop_event is not None:
+                download_file(
+                    url, dest, stop_check=stop_event.is_set,
+                    quiet=opts.quiet, no_color=opts.no_color,
+                )
+            else:
+                download_file(url, dest, quiet=opts.quiet, no_color=opts.no_color)
+            downloaded_now = True
+        except DownloadCancelled as error:
+            raise InstallInterrupted(filename) from error
+        except InsufficientDiskSpaceError as error:
+            _cleanup_incomplete_install(filename)
+            errors.print_cli_error(err_console, str(error), fix=error.fix)
+            if skip_unfit:
+                return None
+            raise typer.Exit(1) from error
+        except DownloadError:
+            raise
+
+    try:
+        _ensure_install_disk_capacity(
+            dest,
+            dest.stat().st_size,
+            include_download=False,
+            only_engine=only_engine,
+        )
+    except InsufficientDiskSpaceError as error:
+        if downloaded_now:
+            _cleanup_incomplete_install(filename)
+        if skip_unfit:
+            err_console.print(f"[warning]Skipping {error}.[/warning]")
+            return None
+        errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
+        raise typer.Exit(1) from error
+
+    if not opts.quiet:
+        console.print("Verifying checksum..." if expected_sha256 else "Computing checksum...")
+    sha256 = sha256_file(dest)
+    if expected_sha256 is not None and sha256 != expected_sha256:
+        dest.unlink(missing_ok=True)
+        raise DownloadError(
+            f"Downloaded SHA-256 for {filename} does not match the provider metadata."
+        )
+    return _PreparedInstallArtifact(sha256=sha256, downloaded_now=downloaded_now)
+
+
 def _install_impl(
     resolved,
     *,
@@ -4528,7 +4672,6 @@ def _install_impl(
                     f"(range {speed_low:.1f}–{speed_high:.1f}).[/muted]"
                 )
 
-    downloaded_now = False
     expected_sha256 = resolved.expected_sha256 or (
         remote_file_sha256(provider, repo_id, filename)
         if resolved.provider and repo_id
@@ -4539,88 +4682,23 @@ def _install_impl(
             f"{provider} did not provide a SHA-256 digest for {filename}; "
             "refusing an unverifiable download."
         )
-    if dest.exists() and not force:
-        existing_sha256 = sha256_file(dest)
-        if expected_sha256 is not None and existing_sha256 != expected_sha256:
-            raise DownloadError(
-                f"{filename} already exists but does not match the provider SHA-256; "
-                "refusing to reuse or overwrite it."
-            )
-        if expected_sha256 is None:
-            existing_entry = registry.load_registry().get(filename)
-            if not (
-                isinstance(existing_entry, dict)
-                and existing_entry.get("source") == url
-                and existing_entry.get("sha256") == existing_sha256
-            ):
-                raise DownloadError(
-                    f"{filename} already exists but its source and digest cannot "
-                    "be verified; refusing to adopt or overwrite it."
-                )
-        err_console.print(f"[warning]{filename} already downloaded, skipping fetch.[/warning]")
-    else:
-        if force:
-            # A forced install must never reuse completed or partial bytes.
-            _cleanup_incomplete_install(filename)
-        size_bytes = remote_file_size(provider, repo_id, filename) if repo_id else None
-        if size_bytes:
-            try:
-                _ensure_install_disk_capacity(
-                    dest,
-                    size_bytes,
-                    include_download=True,
-                    only_engine=link_only_engine,
-                )
-            except InsufficientDiskSpaceError as error:
-                if skip_unfit:
-                    err_console.print(f"[warning]Skipping {error}.[/warning]")
-                    return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-                errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
-                raise typer.Exit(1) from error
-        try:
-            if stop_event is not None:
-                download_file(
-                    url, dest, stop_check=stop_event.is_set,
-                    quiet=opts.quiet, no_color=opts.no_color,
-                )
-            else:
-                download_file(url, dest, quiet=opts.quiet, no_color=opts.no_color)
-            downloaded_now = True
-        except DownloadCancelled as e:
-            raise InstallInterrupted(filename) from e
-        except InsufficientDiskSpaceError as e:
-            _cleanup_incomplete_install(filename)
-            errors.print_cli_error(err_console, str(e), fix=e.fix)
-            if skip_unfit:
-                return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-            raise typer.Exit(1) from e
-        except DownloadError:
-            raise
-
-    try:
-        _ensure_install_disk_capacity(
-            dest,
-            dest.stat().st_size,
-            include_download=False,
-            only_engine=link_only_engine,
-        )
-    except InsufficientDiskSpaceError as error:
-        if downloaded_now:
-            _cleanup_incomplete_install(filename)
-        if skip_unfit:
-            err_console.print(f"[warning]Skipping {error}.[/warning]")
-            return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-        errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
-        raise typer.Exit(1) from error
-
-    if not opts.quiet:
-        console.print("Verifying checksum..." if expected_sha256 else "Computing checksum...")
-    sha256 = sha256_file(dest)
-    if expected_sha256 is not None and sha256 != expected_sha256:
-        dest.unlink(missing_ok=True)
-        raise DownloadError(
-            f"Downloaded SHA-256 for {filename} does not match the provider metadata."
-        )
+    prepared = _prepare_install_artifact(
+        url=url,
+        filename=filename,
+        repo_id=repo_id,
+        provider=provider,
+        dest=dest,
+        expected_sha256=expected_sha256,
+        force=force,
+        skip_unfit=skip_unfit,
+        stop_event=stop_event,
+        only_engine=link_only_engine,
+        opts=opts,
+    )
+    if prepared is None:
+        return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
+    sha256 = prepared.sha256
+    downloaded_now = prepared.downloaded_now
 
     ollama_tag = linker.sanitize_ollama_tag(filename)
     try:
@@ -5362,11 +5440,15 @@ def install(
     _report_lmstudio_load_verification(outcome)
 
 
-def _cleanup_download_parts(destination: Path) -> bool:
+def _download_part_paths(destination: Path) -> tuple[Path, Path, Path]:
     part = destination.with_suffix(destination.suffix + ".part")
     metadata = part.with_name(f"{part.name}.meta")
+    return part, _sidecar_path(part), metadata
+
+
+def _cleanup_download_parts(destination: Path) -> bool:
     cleaned = False
-    for path in (part, _sidecar_path(part), metadata):
+    for path in _download_part_paths(destination):
         if path.exists():
             _unlink_with_retry(path)
             cleaned = cleaned or not path.exists()
@@ -7932,6 +8014,28 @@ def _report_telemetry(
                 f"[muted]Telemetry not sent - benchmark failed ({failure_reason}).[/muted]"
             )
         return False
+    measured_speeds = tuple(
+        value
+        for value in (tokens_per_sec, speed_min, speed_max)
+        if value is not None
+    )
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+        for value in measured_speeds
+    ):
+        # benchmark_ollama_samples deliberately preserves a failed generation
+        # as a zero sample. That is useful locally, but it is not a measured
+        # speed and must never become a legacy success row in the regression
+        # dataset (including when two positive samples leave the median > 0).
+        telemetry.log_attempt("skipped_no_timing_metrics", filename)
+        console.print(
+            "[muted]Telemetry not sent - benchmark produced no valid positive "
+            "timing measurement.[/muted]"
+        )
+        return False
     info = scan_hardware()
     if size_bytes is None:
         try:
@@ -8261,9 +8365,15 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
         quant_bits = parse_quant_bits(value) if isinstance(value, str) else None
     if quant_bits is None:
         quant_bits = candidate_quant_bits(candidate)
-    active_parameter_count = resolve_active_parameter_count_billions(
-        candidate, parameter_count
+    active_parameter_count = _number(
+        "active_parameter_count_b", "active_parameter_count_billions"
     )
+    if active_parameter_count is None:
+        active_parameter_count = resolve_active_parameter_count_billions(
+            candidate, parameter_count
+        )
+    elif parameter_count is not None:
+        active_parameter_count = min(active_parameter_count, parameter_count)
     if parameter_count is not None:
         event["parameter_count_b"] = parameter_count
     if active_parameter_count is not None:

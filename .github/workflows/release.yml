@@ -8,16 +8,16 @@ name: Build, verify, and publish Python release
   pull_request:
     paths:
       - ".github/workflows/release.yml"
+      - ".github/workflows/github-release.yml"
       - "pyproject.toml"
       - "requirements-release.txt"
       - "requirements-train.txt"
       - "src/**"
       - "scripts/release_artifacts.py"
       - "scripts/pypi_release.py"
-      - "scripts/distribution_versions.py"
       - "tests/test_release_artifacts.py"
+      - "tests/test_github_release.py"
       - "tests/test_pypi_release.py"
-      - "tests/test_distribution_versions.py"
       - "docs/homebrew-release-sync.md"
       - "LICENSE"
       - "README.md"
@@ -34,6 +34,8 @@ jobs:
     name: Build wheel and source archive
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      version: ${{ steps.release_identity.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,14 +46,13 @@ jobs:
           python-version: "3.11"
       - name: Install pinned release tools
         run: python -m pip install --disable-pip-version-check --no-input -r requirements-release.txt
-      - name: Require release tags to point into main history
+      - name: Verify the signed release identity
         if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
-      - name: Require tag and project version to match
+        run: python scripts/release_artifacts.py verify-release --tag "${GITHUB_REF_NAME}"
+      - name: Expose the verified release version
+        id: release_identity
         if: startsWith(github.ref, 'refs/tags/')
-        run: python scripts/release_artifacts.py check-tag --tag "${GITHUB_REF_NAME}"
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - name: Build archives
         run: python -m build
       - name: Validate package metadata
@@ -268,24 +269,8 @@ jobs:
           python scripts/pypi_release.py pipx-smoke
           --index-url https://pypi.org/simple/
 
-  verify-distribution-sync:
-    name: Verify PyPI and Homebrew version sync
-    needs: verify-pypi-files
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-      - name: Require PyPI, Homebrew, and source versions to match
-        run: python scripts/distribution_versions.py
-
   sync-homebrew:
-    name: Request Homebrew Formula synchronization
+    name: Request asynchronous Homebrew Formula synchronization
     needs: verify-pypi-install
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -315,3 +300,15 @@ jobs:
             -f "client_payload[source_repository]=${GITHUB_REPOSITORY}" \
             -f "client_payload[source_sha]=${GITHUB_SHA}" \
             -f "client_payload[source_run_id]=${GITHUB_RUN_ID}"
+
+  publish-github-release:
+    name: Add Python artifacts to the draft GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, verify-pypi-install]
+    permissions:
+      contents: write
+      attestations: read
+    uses: ./.github/workflows/github-release.yml
+    with:
+      version: ${{ needs.build.outputs.version }}
+      asset_set: python

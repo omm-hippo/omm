@@ -41,6 +41,10 @@ def repo(tmp_path):
     _run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir)
     _run(["git", "config", "user.name", "test"], cwd=repo_dir)
     _run(["git", "config", "gpg.format", "ssh"], cwd=repo_dir)
+    # Do not inherit a developer's global commit.gpgsign=true. Individual
+    # tests opt in with `git commit -S`; every other commit must stay truly
+    # unsigned even after a signed commit set the repo-local signing key.
+    _run(["git", "config", "commit.gpgsign", "false"], cwd=repo_dir)
     (repo_dir / "file.txt").write_text("hello\n")
     _run(["git", "add", "file.txt"], cwd=repo_dir)
     return repo_dir
@@ -51,7 +55,11 @@ def _commit(repo_dir, message, *, signing_key=None):
         _run(["git", "config", "user.signingkey", str(signing_key.with_suffix(".pub"))], cwd=repo_dir)
         _run(["git", "commit", "-q", "-S", "-m", message], cwd=repo_dir)
     else:
-        _run(["git", "commit", "-q", "-m", message], cwd=repo_dir)
+        # Keep unsigned-commit fixtures independent of the developer's global
+        # commit.gpgsign setting. Several trust tests specifically exercise an
+        # unsigned commit, so inheriting that setting silently changes their
+        # security contract.
+        _run(["git", "commit", "-q", "--no-gpg-sign", "-m", message], cwd=repo_dir)
     return _run(["git", "rev-parse", "HEAD"], cwd=repo_dir).strip()
 
 

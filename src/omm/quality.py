@@ -1212,7 +1212,10 @@ def _build_failure_entry(
             "digest": metadata.get("digest"),
             "size_bytes": metadata.get("size_bytes"),
             "parameter_size": metadata.get("parameter_size"),
+            "parameter_count_b": metadata.get("parameter_count_b"),
+            "active_parameter_count_b": metadata.get("active_parameter_count_b"),
             "quantization_level": metadata.get("quantization_level"),
+            "is_moe": metadata.get("is_moe"),
         }
     if profile is not None:
         # The runtime omm *attempted* to use - not a live /api/ps snapshot,

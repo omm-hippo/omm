@@ -24,6 +24,26 @@ def _all_linked(**overrides) -> dict:
     return linked
 
 
+def test_scan_jan_skips_non_utf8_manifest_without_losing_valid_models(
+    tmp_path, monkeypatch
+):
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    corrupt = models_dir / "corrupt" / "model.yml"
+    corrupt.parent.mkdir(parents=True)
+    corrupt.write_bytes(b"model_path: \xff\n")
+    model = tmp_path / "valid.gguf"
+    model.write_bytes(b"model data")
+    valid = models_dir / "valid" / "model.yml"
+    valid.parent.mkdir()
+    valid.write_text(f"model_path: {json.dumps(str(model))}\n", encoding="utf-8")
+
+    assert [entry.path for entry in scan_import.scan_jan()] == [model]
+    assert [entry.path for entry in scan_import._scan_jan_identities()] == [model]
+    assert linker.autoremove_jan() == 0
+    assert corrupt.read_bytes() == b"model_path: \xff\n"
+
+
 def _write_manifest(manifests_root, namespace, name, tag, digest_hex, size=100):
     manifest_dir = manifests_root / "registry.ollama.ai" / namespace / name
     manifest_dir.mkdir(parents=True)
