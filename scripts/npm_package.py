@@ -31,6 +31,9 @@ EXPECTED_LAUNCHER_FILES = {
     "package.json",
     "targets.json",
 }
+# npm filters the packed tarball through this field, so it decides what the
+# published launcher actually contains no matter what staging validated.
+EXPECTED_LAUNCHER_FILES_FIELD = ["bin", "lib", "targets.json"]
 MAGIC_PREFIXES = {
     "darwin": {
         bytes.fromhex("cffaedfe"),
@@ -164,6 +167,10 @@ def validate_launcher_source(
         raise NpmPackageError("npm launcher must expose only the omm command")
     if manifest.get("engines") != {"node": ">=22.14.0"}:
         raise NpmPackageError("npm launcher must require the trusted-publishing Node floor")
+    if manifest.get("files") != EXPECTED_LAUNCHER_FILES_FIELD:
+        raise NpmPackageError(
+            f"npm launcher files must be exactly {EXPECTED_LAUNCHER_FILES_FIELD}"
+        )
     if not isinstance(scripts, dict) or LIFECYCLE_SCRIPTS.intersection(scripts):
         raise NpmPackageError("npm launcher cannot contain install lifecycle scripts")
     expected_optional = {
@@ -234,7 +241,9 @@ def stage_launcher(output_dir: Path, *, publishable: bool = False) -> Path:
         manifest = _read_json(destination / "package.json")
         manifest["private"] = False
         (destination / "package.json").write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
         )
     (destination / "bin" / "omm.js").chmod(0o755)
     validate_launcher_package(destination, publishable=publishable)
@@ -316,7 +325,9 @@ def stage_platform_package(
     if "libc" in target:
         manifest["libc"] = [target["libc"]]
     (destination / "package.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
     )
     validate_platform_package(destination, target_name, publishable=publishable)
     return destination

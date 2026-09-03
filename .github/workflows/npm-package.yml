@@ -68,7 +68,25 @@ jobs:
       - name: Test launcher without installing dependencies
         run: npm --prefix packaging/npm/launcher test
       - name: Inspect the private package allowlist
-        run: npm pack --dry-run --json
+        shell: bash
+        run: |
+          npm pack --dry-run --json | node -e '
+            const expected = [
+              "LICENSE",
+              "bin/omm.js",
+              "lib/launcher.js",
+              "package.json",
+              "targets.json",
+            ];
+            const report = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+            const packed = report[0].files.map((file) => file.path).sort();
+            if (JSON.stringify(packed) !== JSON.stringify(expected)) {
+              throw new Error(
+                `npm would publish ${JSON.stringify(packed)}, expected ${JSON.stringify(expected)}`
+              );
+            }
+            console.log(`launcher tarball allowlist is exact: ${packed.join(", ")}`);
+          '
         working-directory: packaging/npm/launcher
 
   contract:

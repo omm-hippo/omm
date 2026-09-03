@@ -56,6 +56,31 @@ def test_stage_launcher_has_an_exact_allowlist_and_stays_private(tmp_path):
         assert (staged / "bin" / "omm.js").stat().st_mode & 0o111
 
 
+def test_launcher_source_rejects_a_narrowed_files_allowlist(tmp_path):
+    launcher = tmp_path / "launcher"
+    shutil.copytree(npm_package.LAUNCHER_SOURCE, launcher)
+    manifest_path = launcher / "package.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["files"] == npm_package.EXPECTED_LAUNCHER_FILES_FIELD
+    manifest["files"] = ["bin", "targets.json"]
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    with pytest.raises(npm_package.NpmPackageError, match="files must be exactly"):
+        npm_package.validate_launcher_source(launcher)
+
+
+def test_staged_manifests_are_written_with_unix_line_endings(tmp_path):
+    launcher = npm_package.stage_launcher(tmp_path / "launcher", publishable=True)
+    binary = tmp_path / "omm"
+    binary.write_bytes(bytes.fromhex("7f454c46") + b" OMM")
+    platform_package = npm_package.stage_platform_package(
+        "linux-x64-gnu", binary, tmp_path / "platform"
+    )
+
+    assert b"\r" not in (launcher / "package.json").read_bytes()
+    assert b"\r" not in (platform_package / "package.json").read_bytes()
+
+
 def test_copy_text_lf_normalizes_windows_line_endings(tmp_path):
     source = tmp_path / "source.js"
     destination = tmp_path / "destination.js"

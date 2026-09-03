@@ -226,7 +226,7 @@ def verify_bundle(pack_dir: Path, *, write_checksums: bool = False) -> list[Pack
     expected_lines = [f"{_sha256(path)}  {path.name}" for path in tarballs]
     expected_text = "\n".join(expected_lines) + "\n"
     if write_checksums:
-        checksum_path.write_text(expected_text, encoding="ascii")
+        checksum_path.write_text(expected_text, encoding="ascii", newline="\n")
     elif not checksum_path.is_file() or checksum_path.read_text(encoding="ascii") != expected_text:
         raise NpmReleaseError("npm bundle checksums are missing or do not match")
     return packages
