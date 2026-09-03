@@ -2,6 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## PR 설명은 한국어로, 사람을 위해 쓴다 (필수)
+
+팀원 모두 AI 에이전트로 개발하고 PR을 올린다. AI가 쓴 영어 PR 본문은 그 세션에 없던 사람이 읽으면
+무슨 맥락에서 나온 변경인지 알 수 없다. 그래서 PR 본문은 **반드시** 아래 네 항목을 이 순서로,
+한국어로, 개발자가 아닌 팀원도 읽을 수 있게 먼저 쓴다. 영어 기술 세부는 그 뒤에 붙여도 된다.
+CI 체크 `PR 설명 확인`(`.github/workflows/pr-description-check.yml`)이 이 구조와 한국어 분량을 검사한다.
+
+- `## 한줄 요약` — 이 PR이 무엇을 하는지 한 문장.
+- `## 배경` — 왜 이 변경이 나왔는지: 어떤 이슈·버그·대화·리뷰에서 시작됐는지 (맥락).
+- `## 무엇을 바꿨나` — 바꾼 것을 쉬운 말로. 함수·파일 이름은 꼭 필요할 때만.
+- `## 어떻게 확인했나` — 실행한 명령과 결과. 못 해본 경로는 "미검증"으로 적는다.
+
+커밋 제목은 영어 conventional 형식 그대로 둔다. PR 본문은 커밋 메시지의 번역이 아니라 "이 세션에
+없던 사람에게 하는 설명"이다. `gh pr create --body-file`로 올릴 때도 같은 구조를 쓴다
+(`.github/PULL_REQUEST_TEMPLATE.md`가 그 틀이다).
+
 ## What this is
 
 `omm` (Open source Model Manager) — an apt/brew-style CLI package manager for local GGUF LLMs.
