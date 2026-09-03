@@ -25,6 +25,51 @@ def _canonical_git_install(monkeypatch):
     )
 
 
+class _NeutralDistribution:
+    """Stand-in for the distribution `cli` finds at runtime.
+
+    Carries the current distribution name and no PEP 610 record, so
+    `find_distribution()` reports the non-legacy name and `direct_url()`
+    reports `None`.
+    """
+
+    version = "0.0.0"
+
+    def read_text(self, name):
+        return None
+
+    def locate_file(self, name):
+        return Path("/venv/site-packages") / name
+
+
+@pytest.fixture(autouse=True)
+def _neutral_installed_distribution(monkeypatch):
+    """Keep update tests independent of the host's *own* omm installation.
+
+    `_perform_update` reads `package_metadata.find_distribution()` to decide
+    whether the running environment still carries OMM's legacy distribution
+    name, and `_editable_install_uses_src` / `_installed_commit` read the real
+    PEP 610 `direct_url.json`. On a developer machine whose venv happens to
+    hold a stale legacy `omm` distribution, the legacy-pipx migration guard
+    fires before the behaviour under test and those tests fail - even though
+    CI, which installs `omm-model` cleanly, is green.
+
+    Patching the `importlib.metadata` lookup rather than
+    `package_metadata.find_distribution` keeps one seam for the whole file:
+    autouse fixtures run before the test body, so a test that deliberately
+    exercises the legacy path (`find_distribution`) or feeds its own
+    `direct_url.json` (`importlib.metadata.distribution`) still wins by
+    monkeypatching it itself.
+    """
+
+    def _neutral_lookup(name):
+        if name == cli.package_metadata.DISTRIBUTION_NAME:
+            return _NeutralDistribution()
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", _neutral_lookup)
+
+
 class _FakeProc:
     def __init__(self, lines, returncode=0):
         self.stdout = iter(lines)
@@ -802,6 +847,10 @@ def test_failed_new_install_rolls_back_all_legacy_apps_and_verifies_omm(
 
 def test_update_fast_path_falls_back_to_pipx_when_deps_changed(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    # The lighter `pipx runpip` path is only reachable for a verified
+    # editable install; state that instead of inheriting it from whatever
+    # PEP 610 record the host's own omm installation happens to carry.
+    monkeypatch.setattr(cli, "_editable_install_uses_src", lambda *args: True)
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
     monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
     monkeypatch.setattr(
@@ -831,6 +880,10 @@ def test_update_fast_path_falls_back_to_pipx_when_deps_changed(monkeypatch):
 
 def test_update_falls_back_to_full_reinstall_when_runpip_fails(monkeypatch):
     monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    # The lighter `pipx runpip` path is only reachable for a verified
+    # editable install; state that instead of inheriting it from whatever
+    # PEP 610 record the host's own omm installation happens to carry.
+    monkeypatch.setattr(cli, "_editable_install_uses_src", lambda *args: True)
     monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
     monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
     monkeypatch.setattr(
