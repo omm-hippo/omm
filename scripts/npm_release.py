@@ -502,8 +502,44 @@ def _registry_integrity(package: PackageInfo, registry: str) -> str | None:
     )
 
 
+def _packed_contents(path: Path) -> dict[str, str]:
+    """Return the sha256 of every packed file, keyed by tar member name.
+
+    ``npm pack`` is not byte-reproducible across hosts: gzip framing and member
+    timestamps differ even when the packed files are identical, so two correct
+    builds of one version almost never share a tarball sha256. The extracted
+    members are what actually ship, so member content is the only comparison
+    that can prove two tarballs carry the same release.
+    """
+
+    try:
+        with tarfile.open(path, mode="r:gz") as bundle:
+            files = _tar_files(bundle)
+    except (OSError, tarfile.TarError) as error:
+        raise NpmReleaseError(f"cannot read npm tarball {path.name}: {error}") from error
+    return {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+
+
+def _differing_members(built: dict[str, str], published: dict[str, str]) -> list[str]:
+    shared = built.keys() & published.keys()
+    return sorted(
+        (built.keys() ^ published.keys())
+        | {name for name in shared if built[name] != published[name]}
+    )
+
+
 def reuse_published_packages(pack_dir: Path, registry: str = REGISTRY) -> None:
-    """Replace rebuilt tarballs with immutable bytes already in the registry."""
+    """Adopt registry bytes for versions this run rebuilt identically.
+
+    npm versions are immutable, so a rerun cannot overwrite an already-published
+    version and must keep the registry copy for the checksum manifest and for
+    ``publish_bundle``'s integrity guard. Adopting those bytes is only safe once
+    they are proven to carry this run's build: the registry copy is downloaded,
+    checked against the registry's own integrity, re-validated against the
+    source contract, and then compared file by file with the freshly built
+    tarball. A mismatch means the published version came from different sources
+    and the release must not silently inherit it (a new version is the only fix).
+    """
 
     registry = _validate_registry_url(registry)
     packages = verify_bundle(pack_dir, write_checksums=True)
@@ -512,6 +548,8 @@ def reuse_published_packages(pack_dir: Path, registry: str = REGISTRY) -> None:
         if published_integrity is None:
             print(f"Not published yet; keeping built bytes: {package.name}@{package.version}")
             continue
+        built_contents = _packed_contents(package.path)
+        built_sha256 = _sha256(package.path)
         with tempfile.TemporaryDirectory(prefix="omm-npm-published-") as temporary:
             destination = Path(temporary)
             _run(
@@ -543,6 +581,15 @@ def reuse_published_packages(pack_dir: Path, registry: str = REGISTRY) -> None:
             if _integrity(downloaded.path) != published_integrity:
                 raise NpmReleaseError(
                     f"downloaded registry package integrity does not match {package.name}"
+                )
+            published_contents = _packed_contents(downloaded.path)
+            if published_contents != built_contents:
+                raise NpmReleaseError(
+                    f"published {package.name}@{package.version} does not contain the "
+                    f"files this run built, so its bytes cannot be reused; "
+                    f"differing packed files: {_differing_members(built_contents, published_contents)}; "
+                    f"built tarball sha256 {built_sha256}, "
+                    f"registry tarball sha256 {_sha256(downloaded.path)}"
                 )
             shutil.copyfile(downloaded.path, package.path)
             print(f"Reused published bytes: {package.name}@{package.version}")

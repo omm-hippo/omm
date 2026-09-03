@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shutil
@@ -161,9 +162,11 @@ def test_existing_registry_package_must_have_identical_bytes(tmp_path, monkeypat
         npm_release.publish_bundle(pack)
 
 
-def test_reuse_published_packages_replaces_rebuilt_bytes(tmp_path, monkeypatch):
-    built_pack = _bundle(tmp_path / "built", b" rebuilt")
-    published_pack = _bundle(tmp_path / "published", b" published")
+def _reuse_fixture(tmp_path, monkeypatch, published_suffix: bytes, built_suffix: bytes = b""):
+    """Stage a built bundle plus a registry copy of one platform package."""
+
+    built_pack = _bundle(tmp_path / "built", built_suffix)
+    published_pack = _bundle(tmp_path / "published", published_suffix)
     package_name = npm_package.targets()["win32-x64"]["package"]
     built = next(
         package
@@ -174,6 +177,11 @@ def test_reuse_published_packages_replaces_rebuilt_bytes(tmp_path, monkeypatch):
         package
         for package in npm_release.verify_bundle(published_pack, write_checksums=True)
         if package.name == package_name
+    )
+    # npm pack is not byte-reproducible: give the registry copy a different gzip
+    # envelope so an accepted reuse cannot be explained by equal raw bytes.
+    published.path.write_bytes(
+        gzip.compress(gzip.decompress(published.path.read_bytes()), mtime=0)
     )
 
     monkeypatch.setattr(
@@ -193,11 +201,49 @@ def test_reuse_published_packages_replaces_rebuilt_bytes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
     monkeypatch.setattr(npm_release, "_run", fake_run)
+    return built_pack, built, published
+
+
+def test_reuse_published_packages_accepts_bytes_that_repack_this_build(
+    tmp_path, monkeypatch
+):
+    built_pack, built, published = _reuse_fixture(tmp_path, monkeypatch, b"")
+    assert built.path.read_bytes() != published.path.read_bytes()
 
     npm_release.reuse_published_packages(built_pack)
 
     assert built.path.read_bytes() == published.path.read_bytes()
     npm_release.verify_bundle(built_pack)
+
+
+def test_reuse_published_packages_rejects_bytes_from_another_build(tmp_path, monkeypatch):
+    built_pack, built, published = _reuse_fixture(
+        tmp_path, monkeypatch, b" published", b" rebuilt"
+    )
+    original = built.path.read_bytes()
+
+    with pytest.raises(npm_release.NpmReleaseError) as caught:
+        npm_release.reuse_published_packages(built_pack)
+
+    message = str(caught.value)
+    assert built.name in message and built.version in message
+    assert npm_release._sha256(built.path) in message
+    assert npm_release._sha256(published.path) in message
+    assert built.path.read_bytes() == original  # the local build is never replaced
+
+
+def test_reuse_published_packages_rejects_a_different_platform_binary(
+    tmp_path, monkeypatch
+):
+    built_pack, _, _ = _reuse_fixture(tmp_path, monkeypatch, b"\x00")
+    binary = npm_package.targets()["win32-x64"]["binary"]
+
+    with pytest.raises(npm_release.NpmReleaseError) as caught:
+        npm_release.reuse_published_packages(built_pack)
+
+    message = str(caught.value)
+    assert "does not contain the files this run built" in message
+    assert f"package/{binary}" in message
 
 
 def test_reuse_published_packages_rejects_registry_integrity_mismatch(

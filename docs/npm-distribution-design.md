@@ -74,8 +74,10 @@ The publish job is disabled unless the repository variable
 `NPM_TRUSTED_PUBLISHING` is exactly `enabled`. It also uses the protected `npm`
 GitHub Environment. Only that job receives `id-token: write`; no npm token is
 accepted by the workflow. Platform packages publish before the launcher. A
-rerun accepts an existing version only when its registry integrity matches the
-validated tarball exactly. Destination jobs then install from npmjs, verify
+rerun accepts an existing version only when the registry copy matches its own
+published integrity and every file it packs is byte-identical to the freshly
+built, validated tarball; the gzip envelopes are allowed to differ because
+`npm pack` is not byte-reproducible across hosts. Destination jobs then install from npmjs, verify
 registry signatures and provenance, run OMM, check update guidance, and remove
 the package on all five hosted targets.
 
