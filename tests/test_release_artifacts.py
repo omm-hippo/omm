@@ -141,7 +141,12 @@ def test_release_workflows_share_one_identity_gate():
     ):
         workflow = (workflow_root / name).read_text(encoding="utf-8")
         assert len(re.findall(r"release_artifacts\.py verify-release(?=\s)", workflow)) == 1, name
-        assert "git -c gpg.ssh.allowedSignersFile" not in workflow, name
+        if name == "npm-release.yml":
+            # npm additionally requires the current main signer list; the
+            # shared helper still owns exact tag/version/HEAD/ancestry checks.
+            assert "git show origin/main:src/omm/trust/allowed_signers" in workflow
+        else:
+            assert "git -c gpg.ssh.allowedSignersFile" not in workflow, name
         assert "git merge-base --is-ancestor" not in workflow, name
 
 

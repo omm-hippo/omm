@@ -155,9 +155,34 @@ def direct_url(
     return parsed if isinstance(parsed, dict) else None
 
 
-def _package_checkout() -> Path:
+def _package_checkout() -> Path | None:
+    """Repository root when this module runs from a real OMM source checkout.
+
+    ``None`` whenever the candidate root cannot be trusted:
+
+    * A frozen (PyInstaller) build has no checkout at all.  ``__file__`` then
+      points inside the one-file extraction directory, so the candidate root
+      is the *system temporary directory* - a world-writable location on
+      Linux, where any unrelated (or planted) ``.git`` would otherwise be
+      read as this project's checkout.
+    * A layout that is not an OMM source tree.  A real checkout always
+      carries both ``src/omm/cli.py`` and ``pyproject.toml``; an installed
+      package two directories below some other repository does not.
+    """
+
+    if getattr(sys, "frozen", False):
+        return None
     # src/omm/package_metadata.py -> repository root for a source checkout.
-    return Path(__file__).resolve().parents[2]
+    try:
+        root = Path(__file__).resolve().parents[2]
+    except (IndexError, OSError):
+        return None
+    try:
+        if (root / "src" / "omm" / "cli.py").is_file() and (root / "pyproject.toml").is_file():
+            return root
+    except OSError:
+        return None
+    return None
 
 
 def _installation_paths(
@@ -355,10 +380,30 @@ def install_source() -> InstallSource:
     a checkout with an exact allowed ``origin``, or matching Git VCS data in
     PEP 610 metadata. Every other result is package-managed (or unknown), so
     the CLI can refuse to replace it with an editable Git checkout.
+
+    A complete npm claim (both launcher variables) is resolved *before* the
+    checkout test: an npm-managed build must never be able to reclassify
+    itself as Git because of a ``.git`` directory that happens to sit next to
+    the running binary.  The claim still fails closed - unverifiable means
+    UNKNOWN, never NPM - but an incomplete claim (only one of the two
+    variables) is ignored, so a stray environment variable cannot demote a
+    genuine pipx/Homebrew/winget install to UNKNOWN.
     """
 
+    npm_claimed = bool(
+        os.environ.get(_NPM_PACKAGE_ROOT_ENV)
+        and os.environ.get(_NPM_LAUNCHER_PACKAGE_ENV)
+    )
+    if npm_claimed:
+        npm_found = find_distribution()
+        return (
+            InstallSource.NPM
+            if _npm_install_is_verified(npm_found[1] if npm_found is not None else None)
+            else InstallSource.UNKNOWN
+        )
+
     checkout = _package_checkout()
-    if (checkout / ".git").exists():
+    if checkout is not None and (checkout / ".git").exists():
         origin = _checkout_origin(checkout)
         return InstallSource.GIT if _allowed_git_origin(origin) else InstallSource.UNKNOWN
 
@@ -375,17 +420,6 @@ def install_source() -> InstallSource:
 
     paths = _installation_paths(installed_distribution)
     normalized_paths = [_normalized_path(path) for path in paths]
-
-    npm_claimed = bool(
-        os.environ.get(_NPM_PACKAGE_ROOT_ENV)
-        or os.environ.get(_NPM_LAUNCHER_PACKAGE_ENV)
-    )
-    if npm_claimed:
-        return (
-            InstallSource.NPM
-            if _npm_install_is_verified(installed_distribution)
-            else InstallSource.UNKNOWN
-        )
 
     pipx_home = os.environ.get("PIPX_HOME")
     if (Path(sys.prefix) / "pipx_metadata.json").is_file() or any(

@@ -1202,8 +1202,15 @@ def _refresh_data() -> None:
 
 _BARE_REPO_URL = REPO_URL.removeprefix("git+")
 
-_PACKAGE_CHECKOUT = Path(__file__).resolve().parents[2]
-SRC_DIR = _PACKAGE_CHECKOUT if (_PACKAGE_CHECKOUT / ".git").exists() else OMM_HOME / "src"
+# None unless this module really runs from an OMM source checkout - a frozen
+# npm/portable build must not adopt whatever sits two directories above its
+# extraction dir (that is the system temp dir) as its own repository.
+_PACKAGE_CHECKOUT = package_metadata._package_checkout()
+SRC_DIR = (
+    _PACKAGE_CHECKOUT
+    if _PACKAGE_CHECKOUT is not None and (_PACKAGE_CHECKOUT / ".git").exists()
+    else OMM_HOME / "src"
+)
 
 
 def _update_channel() -> str:
@@ -9049,6 +9056,10 @@ def _run_contribution_loop(
         # bookkeeping for it.
         deferred.pop(ref_str, None)
 
+        # Bound only once validation below succeeds. A Ctrl+C before that point
+        # can't have started a download yet, so a None here means "nothing to
+        # clean up" - never fall back to a previous iteration's filename.
+        filename: str | None = None
         try:
             provider = validate_provider(candidate.get("provider") or "huggingface")
             repo_id = validate_repo_id(candidate["repo_id"])
@@ -9085,7 +9096,8 @@ def _run_contribution_loop(
             # same unload-before-delete cleanup path while the active filename
             # is still known instead of letting it escape and strand a GGUF.
             stop_event.set()
-            _cleanup_interrupted_install(filename)
+            if filename is not None:
+                _cleanup_interrupted_install(filename)
             break
         except (DownloadError, ModelResolutionError, linker.LinkError) as e:
             err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
@@ -9147,7 +9159,8 @@ def _run_contribution_loop(
                     break
                 except KeyboardInterrupt:
                     stop_event.set()
-                    _cleanup_interrupted_install(filename)
+                    if filename is not None:
+                        _cleanup_interrupted_install(filename)
                     break
                 except (DownloadError, linker.LinkError) as e:
                     err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
