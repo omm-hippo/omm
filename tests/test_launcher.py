@@ -175,7 +175,15 @@ def test_find_windows_app_exe_none_when_no_roots_have_the_app(monkeypatch, tmp_p
 
 
 def test_spawn_detached_uses_creation_flags_on_windows(monkeypatch, tmp_path):
+    """CREATE_NEW_PROCESS_GROUP/DETACHED_PROCESS are Windows-only stdlib
+    attributes - the real `subprocess` module simply does not define them
+    on Linux/macOS, regardless of what platform.system() is mocked to
+    return. Supply stand-in values via monkeypatch (raising=False, since
+    they may or may not already exist on the host running the test) so
+    this branch is exercised the same way on every CI OS."""
     monkeypatch.setattr(launcher.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(launcher.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
+    monkeypatch.setattr(launcher.subprocess, "DETACHED_PROCESS", 0x00000008, raising=False)
     captured = {}
 
     def fake_popen(args, **kwargs):
@@ -188,7 +196,7 @@ def test_spawn_detached_uses_creation_flags_on_windows(monkeypatch, tmp_path):
 
     assert captured["args"] == ["app.exe"]
     assert captured["kwargs"]["cwd"] == str(tmp_path)
-    assert captured["kwargs"]["creationflags"] & subprocess_module.CREATE_NEW_PROCESS_GROUP
+    assert captured["kwargs"]["creationflags"] == 0x00000200 | 0x00000008
     assert "start_new_session" not in captured["kwargs"]
 
 
