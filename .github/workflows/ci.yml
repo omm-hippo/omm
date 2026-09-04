@@ -146,3 +146,24 @@ jobs:
           --only database
           --project demo-localfit
           "node scripts/test_firebase_rules.mjs"
+
+  homebrew-formula:
+    name: Homebrew Formula matches the frozen dependency table
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check out the Homebrew Tap (read-only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: omm-hippo/homebrew-omm
+          path: homebrew-omm
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Compare Formula/omm.rb against pyproject.toml (issue #238)
+        run: >-
+          python scripts/homebrew_formula.py check
+          --formula homebrew-omm/Formula/omm.rb
+          --version "$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+          --allow-version-lag
