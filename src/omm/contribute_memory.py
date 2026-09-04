@@ -179,6 +179,11 @@ def metadata_keys_for_architecture(architecture: str) -> set[str]:
     }
 
 
+def _require_int_in_range(value: object, low: int, high: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ValueError(f"{name} must be between {low} and {high}")
+
+
 def _positive_number(metadata: Mapping[str, object], key: str) -> float | None:
     value = metadata.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -239,24 +244,9 @@ def estimate_candidate_memory(
         or size_bytes <= 0
     ):
         return None
-    if (
-        isinstance(context_length, bool)
-        or not isinstance(context_length, int)
-        or not 256 <= context_length <= 131_072
-    ):
-        raise ValueError("context_length must be between 256 and 131072")
-    if (
-        isinstance(num_batch, bool)
-        or not isinstance(num_batch, int)
-        or not 1 <= num_batch <= 65_536
-    ):
-        raise ValueError("num_batch must be between 1 and 65536")
-    if (
-        isinstance(gpu_offload_percent, bool)
-        or not isinstance(gpu_offload_percent, int)
-        or not 0 <= gpu_offload_percent <= 100
-    ):
-        raise ValueError("gpu_offload_percent must be between 0 and 100")
+    _require_int_in_range(context_length, 256, 131_072, "context_length")
+    _require_int_in_range(num_batch, 1, 65_536, "num_batch")
+    _require_int_in_range(gpu_offload_percent, 0, 100, "gpu_offload_percent")
 
     weights_gb = float(size_bytes) / GIB
     buffers = _buffer_estimate_bytes(metadata or {}, context_length, num_batch)

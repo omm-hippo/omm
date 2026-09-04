@@ -10,10 +10,9 @@ downloader.py's _probe_range_support for the corresponding fix."""
 from __future__ import annotations
 
 from functools import lru_cache
-import re
 from urllib.parse import quote_plus
 
-from omm.providers.base import ModelResolutionError
+from omm.providers.base import ModelResolutionError, normalize_sha256
 
 MS_REPO_FILES = "https://modelscope.cn/api/v1/models/{repo_id}/repo/files"
 MS_DOWNLOAD = "https://modelscope.cn/api/v1/models/{repo_id}/repo"
@@ -133,9 +132,5 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
         return None
     for f in files:
         if f.get("Path") == filename:
-            sha = f.get("Sha256")
-            if not isinstance(sha, str):
-                return None
-            digest = sha.removeprefix("sha256:").lower()
-            return digest if re.fullmatch(r"[0-9a-f]{64}", digest) else None
+            return normalize_sha256(f.get("Sha256"))
     return None

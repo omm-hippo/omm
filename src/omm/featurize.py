@@ -111,7 +111,7 @@ def parse_param_count_billions(text: str) -> float | None:
 
 def candidate_parameter_count_billions(candidate: dict) -> float | None:
     """Prefer verified candidate metadata, then filename-derived values."""
-    explicit = _positive_finite_number(candidate.get("parameter_count_b"))
+    explicit = positive_finite_number(candidate.get("parameter_count_b"))
     if explicit is not None:
         return explicit
     sources = [str(candidate.get("filename") or "")]
@@ -160,7 +160,7 @@ def _known_gpt_oss_active_parameter_count(candidate: dict) -> float | None:
 
 
 def candidate_active_parameter_count_billions(candidate: dict) -> float | None:
-    explicit = _positive_finite_number(candidate.get("active_parameter_count_b"))
+    explicit = positive_finite_number(candidate.get("active_parameter_count_b"))
     known_gpt_oss = _known_gpt_oss_active_parameter_count(candidate)
     if known_gpt_oss is not None:
         total = candidate_parameter_count_billions(candidate)
@@ -233,7 +233,7 @@ def parse_quant_bits(text: str) -> float | None:
 
 def candidate_quant_bits(candidate: dict) -> float | None:
     """Read an explicit quantization or infer effective stored bits from size."""
-    explicit = _positive_finite_number(candidate.get("quant_bits"))
+    explicit = positive_finite_number(candidate.get("quant_bits"))
     if explicit is not None:
         return explicit
     sources = [str(candidate.get("filename") or "")]
@@ -248,14 +248,14 @@ def candidate_quant_bits(candidate: dict) -> float | None:
 
     parameters = candidate_parameter_count_billions(candidate)
     size_bytes = candidate.get("size_bytes")
-    if parameters and (size_value := _positive_finite_number(size_bytes)) is not None:
+    if parameters and (size_value := positive_finite_number(size_bytes)) is not None:
         effective_bits = size_value * 8 / (parameters * 1_000_000_000)
         if 0.5 <= effective_bits <= 32:
             return round(effective_bits, 2)
     return None
 
 
-def _positive_finite_number(value: object) -> float | None:
+def positive_finite_number(value: object) -> float | None:
     """Return a usable numeric metadata value, excluding bool and non-finite values."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -286,13 +286,9 @@ def estimate_model_size_gb(text: str, size_bytes: int | float | None = None) -> 
     files contain metadata and tensors that are not captured by the simple
     ``parameters * bits`` calculation.
     """
-    if (
-        isinstance(size_bytes, (int, float))
-        and not isinstance(size_bytes, bool)
-        and math.isfinite(size_bytes)
-        and size_bytes > 0
-    ):
-        return float(size_bytes) / (1024**3)
+    size_value = positive_finite_number(size_bytes)
+    if size_value is not None:
+        return size_value / (1024**3)
 
     param_count_b = parse_param_count_billions(text)
     quant_bits = parse_quant_bits(text)

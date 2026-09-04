@@ -41,6 +41,42 @@ def _stub_common(monkeypatch, ollama=True, lmstudio=False):
     monkeypatch.setattr(cli, "remote_file_sha256", lambda *args: None)
 
 
+def test_prepare_install_artifact_returns_verified_download(tmp_path, monkeypatch):
+    """The extracted file stage completes before link/registry work begins."""
+    destination = tmp_path / "model.gguf"
+    capacity_checks = []
+    monkeypatch.setattr(
+        cli,
+        "download_file",
+        lambda _url, path, **_kwargs: path.write_bytes(b"model-bytes"),
+    )
+    monkeypatch.setattr(cli, "sha256_file", lambda _path: "expected-sha")
+    monkeypatch.setattr(
+        cli,
+        "_ensure_install_disk_capacity",
+        lambda *args, **kwargs: capacity_checks.append((args, kwargs)),
+    )
+
+    prepared = cli._prepare_install_artifact(
+        url="https://example.test/model.gguf",
+        filename="model.gguf",
+        repo_id=None,
+        provider="huggingface",
+        dest=destination,
+        expected_sha256="expected-sha",
+        force=False,
+        skip_unfit=False,
+        stop_event=None,
+        only_engine=None,
+        opts=cli.GlobalOptions(),
+    )
+
+    assert prepared == cli._PreparedInstallArtifact("expected-sha", downloaded_now=True)
+    assert capacity_checks == [
+        ((destination, len(b"model-bytes")), {"include_download": False, "only_engine": None})
+    ]
+
+
 def test_skip_unfit_returns_outcome_without_prompting_or_downloading(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
@@ -1619,3 +1655,188 @@ def test_link_model_does_not_print_skip_notice_for_uninstalled_engines(
         "textgenwebui": False,
         "koboldcpp": False,
     }
+
+
+def test_zero_speed_benchmark_never_uploads_without_consent(isolated_omm_home, monkeypatch):
+    """`benchmark_ollama` reports "generation attempted and failed" as 0.0,
+    not None. That is not a measurement: --no-upload (and the ask/never
+    policies) must hold for it exactly as for a real number - it used to
+    skip the consent gate entirely and upload a 0 tok/s row."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag, options=None: 0.0)
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+    )
+    sent = []
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
+    attempts = []
+    monkeypatch.setattr(cli.telemetry, "log_attempt", lambda outcome, detail="": attempts.append(outcome))
+
+    outcome = cli._install_impl(_resolved(), no_upload=True)
+
+    assert sent == []
+    assert outcome.telemetry_sent is False
+    assert "skipped_generation_failed" in attempts
+
+
+def test_install_stops_the_daemon_it_started_when_health_check_still_fails(
+    isolated_omm_home, monkeypatch
+):
+    """Ollama installed-but-stopped: install starts it for the compatibility
+    check. If the follow-up health probe still fails, nothing else in the
+    install ever touches that handle, so it must be stopped right there or
+    the `ollama serve` omm spawned outlives the command."""
+    from omm.engines.base import RuntimeHealth
+
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "stopped")
+    handle = object()
+    monkeypatch.setattr(cli, "_ensure_ollama_running", lambda action, *, assume_yes=False: handle)
+    stopped = []
+    monkeypatch.setattr(cli, "_stop_engine_daemon", lambda engine, proc: stopped.append((engine, proc)))
+
+    class _Unreachable:
+        def health(self):
+            return RuntimeHealth(False, version=None, failure_reason="server_unavailable")
+
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: _Unreachable())
+
+    outcome = cli._install_impl(
+        _resolved(), verify_runtime_after_install=True, runtime_load_consent=True, assume_yes=True
+    )
+
+    assert outcome.compatibility_status == "failed"
+    assert stopped == [("ollama", handle)]
+
+
+def test_run_interruptible_abandons_work_on_a_daemon_thread():
+    """An abandoned call must not keep the interpreter alive at exit: the
+    worker has to be a daemon thread. ThreadPoolExecutor workers are joined
+    at shutdown, which made Esc-cancel wait for the benchmark anyway."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow():
+        started.set()
+        release.wait(5)
+        return "done"
+
+    stop_event = threading.Event()
+    threading.Timer(0.05, stop_event.set).start()
+    try:
+        with pytest.raises(cli._Interrupted):
+            cli._run_interruptible(slow, stop_event)
+        assert started.wait(1)
+        workers = [t for t in threading.enumerate() if t.name == "omm-interruptible"]
+        assert workers and all(t.daemon for t in workers)
+    finally:
+        release.set()
+
+
+def test_run_interruptible_returns_the_result_and_reraises_errors():
+    stop_event = threading.Event()
+
+    assert cli._run_interruptible(lambda: 42, stop_event) == 42
+
+    def boom():
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        cli._run_interruptible(boom, stop_event)
+
+
+@pytest.mark.parametrize("skip_unfit", [False, True])
+def test_force_preserves_existing_model_when_disk_preflight_fails(
+    isolated_omm_home, monkeypatch, skip_unfit
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    resolved = _resolved()
+    dest = cli.MODELS_DIR / resolved.filename
+    dest.write_bytes(b"previous-working-model")
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(b"partial-download")
+    saved = {resolved.filename: {"sha256": "old", "linked": {"ollama": True}}}
+    registry.save_registry(saved)
+    monkeypatch.setattr(cli, "remote_file_size", lambda *args: 10_000)
+
+    def no_space(*args, **kwargs):
+        raise cli.InsufficientDiskSpaceError("disk full", fix="Free up disk space.")
+
+    monkeypatch.setattr(cli, "_ensure_install_disk_capacity", no_space)
+    monkeypatch.setattr(
+        cli, "download_file",
+        lambda *args, **kwargs: pytest.fail("must stop before downloading"),
+    )
+    if skip_unfit:
+        assert cli._install_impl(resolved, force=True, skip_unfit=True).skipped_low_disk
+    else:
+        with pytest.raises(cli.typer.Exit):
+            cli._install_impl(resolved, force=True)
+
+    assert dest.read_bytes() == b"previous-working-model"
+    assert part.read_bytes() == b"partial-download"
+    assert registry.load_registry() == saved
+
+
+@pytest.mark.parametrize("suffix", ["", ".part", ".part.ranges.json", ".part.meta"])
+def test_force_preflight_credits_only_unshared_file_on_download_volume(
+    isolated_omm_home, monkeypatch, suffix
+):
+    import os
+
+    dest = cli.MODELS_DIR / "old.gguf"
+    existing = dest.with_name(dest.name + suffix)
+    existing.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(cli.linker, "disk_safety_reserve", lambda needed: 0)
+    monkeypatch.setattr(cli.linker, "disk_copy_risks", lambda *args, **kwargs: [])
+    monkeypatch.setattr(cli.shutil, "disk_usage", lambda path: SimpleNamespace(free=2048))
+
+    cli._ensure_install_disk_capacity(
+        dest, 4096, include_download=True, only_engine=None, replace_existing=True
+    )
+    assert existing.read_bytes() == b"x" * 4096
+    with pytest.raises(cli.InsufficientDiskSpaceError):
+        cli._ensure_install_disk_capacity(dest, 4096, include_download=True, only_engine=None)
+
+    os.link(existing, dest.with_name("still-used.gguf"))
+    with pytest.raises(cli.InsufficientDiskSpaceError):
+        cli._ensure_install_disk_capacity(
+            dest, 4096, include_download=True, only_engine=None, replace_existing=True
+        )
+
+
+def test_force_preflight_does_not_credit_symlink_target(
+    isolated_omm_home, monkeypatch, requires_symlink_support
+):
+    target = cli.MODELS_DIR / "target.gguf"
+    target.write_bytes(b"x" * 4096)
+    dest = cli.MODELS_DIR / "alias.gguf"
+    dest.symlink_to(target)
+
+    assert cli._reclaimable_file_bytes(dest) == 0
+
+
+def test_force_preflight_does_not_credit_sparse_file_logical_size(
+    isolated_omm_home
+):
+    dest = cli.MODELS_DIR / "sparse.gguf"
+    with dest.open("wb") as handle:
+        handle.truncate(1024 * 1024)
+    info = dest.stat()
+    if hasattr(info, "st_blocks"):
+        assert cli._reclaimable_file_bytes(dest) <= info.st_blocks * 512
+
+
+def test_run_interruptible_does_not_start_work_after_cancellation():
+    stop_event = threading.Event()
+    stop_event.set()
+    started = threading.Event()
+
+    with pytest.raises(cli._Interrupted):
+        cli._run_interruptible(started.set, stop_event)
+
+    assert not started.wait(0.05)

@@ -2,6 +2,19 @@
 
 from __future__ import annotations
 
+import re
+
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def normalize_sha256(value: object) -> str | None:
+    """A provider-reported digest as bare lowercase hex, or None unless it
+    is a well-formed SHA-256 (an optional `sha256:` prefix is accepted)."""
+    if not isinstance(value, str):
+        return None
+    digest = value.removeprefix("sha256:").lower()
+    return digest if _SHA256_HEX.fullmatch(digest) else None
+
 
 class ModelResolutionError(Exception):
     """`fix`, when set, is a copy-pasteable next step for the CLI's

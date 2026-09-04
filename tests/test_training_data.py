@@ -759,7 +759,9 @@ def test_training_data_with_synthetic_prior_rejects_invalid_weight(weight):
 
 
 def test_quality_gate_split_rejects_too_few_selection_contexts():
-    with pytest.raises(ValueError, match="at least two selection contexts"):
+    # The soft-skip class main() catches, not a bare ValueError that would
+    # crash the nightly job when all telemetry shares one hardware context.
+    with pytest.raises(train_model.InsufficientTelemetryError, match="at least two selection contexts"):
         train_model.stable_holdout_split([[0.0] * len(train_model.FEATURE_ORDER)], [1.0], 0.2)
 
 

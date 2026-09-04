@@ -241,23 +241,8 @@ def scan_jan() -> list[ExternalGguf]:
 
 
 def scan_directory(path: Path) -> list[ExternalGguf]:
-    found = []
-    for gguf_path in _iter_gguf_files(path):
-        if not gguf_path.is_file() or gguf_path.is_symlink():
-            continue
-        try:
-            found.append(
-                ExternalGguf(
-                    "import",
-                    gguf_path.name,
-                    gguf_path,
-                    gguf_path.stat().st_size,
-                    sha256_file(gguf_path),
-                )
-            )
-        except OSError:
-            continue
-    return found
+    """Real .gguf files under a user-supplied directory (`omm import PATH`)."""
+    return _scan_flat_dir("import", path)
 
 
 def find_external_models(extra_path: Path | None = None) -> list[ExternalGguf]:
@@ -422,6 +407,16 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             shutil.move(str(quarantine), str(hub_path))
         except Exception:
             if quarantine.exists() or quarantine.is_symlink():
+                # The move did not complete. Across volumes it copies
+                # first, so a failure part-way can already have left bytes
+                # at hub_path - an unregistered orphan unless removed here
+                # (hub_path was chosen above precisely because nothing
+                # existed there).
+                try:
+                    if not hub_path.is_symlink():
+                        hub_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
                 quarantine.replace(preferred.path)
             raise
 

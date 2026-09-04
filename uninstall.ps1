@@ -188,7 +188,8 @@ function Test-PipxSnapshotIdentity {
     if (($null -ne $metadata.environment -and $metadata.environment -cne $Name) -or $main.package -cne $Distribution -or $main.suffix -cne "") {
         return $false
     }
-    if (@($main.apps | Where-Object { $_ -ceq "omm" }).Count -ne 1) { return $false }
+    # pipx on Windows records apps as launcher filenames ("omm.exe").
+    if (@($main.apps | Where-Object { $_ -in @("omm", "omm.exe") }).Count -ne 1) { return $false }
     $expectedDir = Join-Path (Join-Path $PipxLocalVenvs $Name) "Scripts"
     $ommPaths = @($main.app_paths | ForEach-Object {
         $path = [string]$_.'__Path__'

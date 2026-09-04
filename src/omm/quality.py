@@ -27,6 +27,7 @@ from typing import Callable
 from filelock import Timeout as FileLockTimeout
 
 from omm.atomic import atomic_write_text, locked
+from omm.featurize import positive_finite_number
 from omm.hardware import HardwareInfo
 from omm import benchmark, linker, tuning
 from omm.engines.base import LoopbackJsonClient, RuntimeAdapterError
@@ -859,7 +860,7 @@ def _generate_lmstudio(
     """POST /api/v0/chat/completions and normalize the response into
     Ollama's response shape at this transport boundary:
     {"response": <text>, "eval_count": <completion_tokens>,
-     "eval_duration": <int(generation_time * 1e9)>}.
+     "eval_duration": <int((generation_time - time_to_first_token) * 1e9)>}.
 
     This is the ONLY place LM Studio's response shape is known about -
     accuracy scoring (which reads response["response"]) and
@@ -901,14 +902,18 @@ def _generate_lmstudio(
     completion_tokens = usage.get("completion_tokens")
     if isinstance(completion_tokens, int) and not isinstance(completion_tokens, bool) and completion_tokens > 0:
         result["eval_count"] = completion_tokens
-    generation_time = stats.get("generation_time")
-    if (
-        isinstance(generation_time, (int, float))
-        and not isinstance(generation_time, bool)
-        and math.isfinite(generation_time)
-        and generation_time > 0
-    ):
-        result["eval_duration"] = int(generation_time * 1_000_000_000)
+    # LM Studio's generation_time includes time_to_first_token (prompt
+    # processing) while Ollama's eval_duration is decode-only. Subtract
+    # the TTFT so both engines' tokens/sec measure the same window -
+    # LM Studio's own stats.tokens_per_second is completion_tokens over
+    # exactly this decode time.
+    generation_time = positive_finite_number(stats.get("generation_time"))
+    time_to_first_token = positive_finite_number(stats.get("time_to_first_token"))
+    if generation_time is not None:
+        decode_time = generation_time
+        if time_to_first_token is not None and time_to_first_token < generation_time:
+            decode_time = generation_time - time_to_first_token
+        result["eval_duration"] = int(decode_time * 1_000_000_000)
     return result
 
 
