@@ -8,6 +8,7 @@ do not accidentally query the unrelated distribution that already owns the
 
 from __future__ import annotations
 
+import functools
 import importlib.metadata
 import json
 import os
@@ -372,6 +373,7 @@ def _checkout_origin(checkout: Path) -> str | None:
     return origin or None
 
 
+@functools.lru_cache(maxsize=1)
 def install_source() -> InstallSource:
     """Best-effort classification of the currently executing OMM install.
 
@@ -388,6 +390,17 @@ def install_source() -> InstallSource:
     UNKNOWN, never NPM - but an incomplete claim (only one of the two
     variables) is ignored, so a stray environment variable cannot demote a
     genuine pipx/Homebrew/winget install to UNKNOWN.
+
+    Cached for the life of the process: on a Git checkout this shells out to
+    ``git remote get-url origin`` (a real subprocess, 5s timeout), and the
+    CLI calls this several times per command (``cli.py``, ``doctor.py``,
+    ``usage.py``). The answer cannot change within one process - the checkout,
+    the npm/pipx/Homebrew/winget environment, and the installed distribution
+    are all fixed at interpreter startup - so recomputing it is pure waste.
+    Tests that vary its inputs (``_package_checkout``, env vars, the
+    installed distribution) must call ``install_source.cache_clear()``
+    between cases; ``tests/conftest.py`` does this automatically before and
+    after every test.
     """
 
     npm_claimed = bool(
