@@ -22,6 +22,8 @@ _BENCHMARK_PROMPT = "Explain what an operating system is."
 # Matches quality._speed_probe's measured num_predict, so speed numbers from
 # this simple probe and the full `omm benchmark` speed probe stay comparable.
 _NUM_PREDICT = 64
+# Same "is this sample real" filter as quality.MIN_TIMED_TOKENS /
+# quality.MAX_PLAUSIBLE_TOKENS_PER_SECOND - change both together.
 _MIN_TIMED_TOKENS = 2
 _MAX_PLAUSIBLE_TOKENS_PER_SECOND = 100_000.0
 _DAEMON_START_TIMEOUT = 15.0

@@ -11,6 +11,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -853,7 +854,7 @@ def _install_spec() -> str:
 
 def _shorten_home(path: Path) -> str:
     try:
-        return f"~/{path.relative_to(Path.home())}"
+        return f"~/{path.relative_to(Path.home()).as_posix()}"
     except ValueError:
         return str(path)
 
@@ -880,8 +881,6 @@ def _managed_model_path(filename: str) -> Path:
                 f"model filename collides with registered path "
                 f"{registered_filename!r} on a case-insensitive filesystem"
             )
-        if not isinstance(registered_filename, str):
-            continue
         registered_path = MODELS_DIR / registered_filename
         try:
             registered_is_managed = registered_path.resolve().is_relative_to(root)
@@ -973,21 +972,23 @@ def _positive_finite_number(value: object) -> bool:
         return False
 
 
+def _entry_size_bytes(filename: str, entry: dict[str, Any]) -> int | None:
+    """A registry entry's model size: the stored `size_bytes` when it is a
+    usable number, else a live stat() of the managed file, else None when
+    the file is gone or its path cannot be resolved."""
+    size_bytes = entry.get("size_bytes")
+    if _positive_finite_number(size_bytes):
+        return int(size_bytes)
+    try:
+        return _managed_model_path(filename).stat().st_size
+    except (ModelResolutionError, OSError):
+        return None
+
+
 def _hub_storage_bytes(reg: dict[str, Any]) -> int:
-    """Total on-disk size of every omm-hub-managed model. Prefers each
-    entry's stored `size_bytes` and falls back to a live stat() when it's
-    missing/invalid (same fallback used for Memory Guard's own size check
-    above) or the file is gone (then it just contributes 0)."""
-    total = 0
-    for filename, entry in reg.items():
-        size_bytes = entry.get("size_bytes")
-        if not _positive_finite_number(size_bytes):
-            try:
-                size_bytes = _managed_model_path(filename).stat().st_size
-            except (ModelResolutionError, OSError):
-                size_bytes = 0
-        total += int(size_bytes)
-    return total
+    """Total on-disk size of every omm-hub-managed model; a missing file
+    contributes 0."""
+    return sum(_entry_size_bytes(filename, entry) or 0 for filename, entry in reg.items())
 
 
 @app.command()
@@ -1326,10 +1327,6 @@ def _remote_head_commit(ref: str = "main") -> str | None:
     if result.returncode != 0 or not result.stdout.strip():
         return None
     return result.stdout.split()[0]
-
-
-def _cached_remote_head_commit(ref: str = "main") -> str | None:
-    return version_check.cached_remote_head(_remote_head_commit, ref)
 
 
 _SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check"}
@@ -3351,20 +3348,9 @@ def recommend(
             [candidate for candidate, _speed in viable]
         )
         session_cache.record_seen(refs)
-        if json_output:
-            _print_recommend_json(viable, refs, installations, profile)
-            return
-        if auto_yes:
-            selected = _first_uninstalled_ref(refs, installations)
-            if selected is None:
-                console.print("[success]All recommended models are already installed.[/success]")
-                return
-        else:
-            selected = _select_recommended_model(info, viable, refs, installations)
-            if selected is None:
-                err_console.print("[warning]Cancelled.[/warning]")
-                raise typer.Exit(0)
-        _finish_recommendation(selected, viable, refs, installations)
+        _present_recommendations(
+            info, viable, refs, installations, profile, json_output=json_output, auto_yes=auto_yes
+        )
         return
 
     if not _global_opts().quiet and not json_output:
@@ -3395,8 +3381,19 @@ def recommend(
     refs = [rule["name"] for rule in matches]
     installations = recommend_status.detect_installation_statuses(matches)
     session_cache.record_seen(refs)
+    _present_recommendations(
+        info, ranked_rules, refs, installations, profile, json_output=json_output, auto_yes=auto_yes
+    )
+
+
+def _present_recommendations(
+    info, ranked, refs, installations, profile, *, json_output: bool, auto_yes: bool
+) -> None:
+    """Shared tail of `recommend` for the ML ranking and the static-rules
+    fallback: dump JSON, or pick a model (the first uninstalled one under
+    --yes, interactively otherwise) and hand it to `_finish_recommendation`."""
     if json_output:
-        _print_recommend_json(ranked_rules, refs, installations, profile)
+        _print_recommend_json(ranked, refs, installations, profile)
         return
     if auto_yes:
         selected = _first_uninstalled_ref(refs, installations)
@@ -3404,12 +3401,11 @@ def recommend(
             console.print("[success]All recommended models are already installed.[/success]")
             return
     else:
-        selected = _select_recommended_model(info, ranked_rules, refs, installations)
+        selected = _select_recommended_model(info, ranked, refs, installations)
         if selected is None:
             err_console.print("[warning]Cancelled.[/warning]")
             raise typer.Exit(0)
-
-    _finish_recommendation(selected, ranked_rules, refs, installations)
+    _finish_recommendation(selected, ranked, refs, installations)
 
 
 def _print_runtime_profile(profile: tuning.RuntimeProfile) -> None:
@@ -3747,6 +3743,14 @@ class InstallOutcome:
     benchmark_engine: str | None = None
 
 
+@dataclass(frozen=True)
+class _PreparedInstallArtifact:
+    """A checksum-verified central GGUF ready for engine linking."""
+
+    sha256: str
+    downloaded_now: bool
+
+
 class InstallInterrupted(Exception):
     """Esc fired mid-download or mid-benchmark inside `_install_impl`,
     whether that's a single `omm install` or `omm contribute`'s loop."""
@@ -3770,22 +3774,33 @@ def _run_interruptible(fn, stop_event: threading.Event | None):
     pool overhead on the plain `omm install` path."""
     if stop_event is None:
         return fn()
+    if stop_event.is_set():
+        raise _Interrupted()
 
-    from concurrent.futures import ThreadPoolExecutor
-    from concurrent.futures import TimeoutError as _FuturesTimeoutError
+    # A daemon thread, not a ThreadPoolExecutor: the interpreter joins
+    # every non-daemon executor worker at exit, so an abandoned in-flight
+    # benchmark used to keep the process alive after "Cancelled." until
+    # Ollama finished generating anyway - the opposite of what Esc is for.
+    outcome: dict[str, object] = {}
+    done = threading.Event()
 
-    pool = ThreadPoolExecutor(max_workers=1)
-    try:
-        future = pool.submit(fn)
-        while True:
-            if stop_event.is_set():
-                raise _Interrupted()
-            try:
-                return future.result(timeout=0.2)
-            except _FuturesTimeoutError:
-                continue
-    finally:
-        pool.shutdown(wait=False)
+    def _run() -> None:
+        try:
+            outcome["value"] = fn()
+        except BaseException as error:  # re-raised on the calling thread
+            outcome["error"] = error
+        finally:
+            done.set()
+
+    threading.Thread(target=_run, name="omm-interruptible", daemon=True).start()
+    while True:
+        if stop_event.is_set():
+            raise _Interrupted()
+        if done.wait(0.2):
+            break
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 def _sample_background_cpu_load() -> float | None:
@@ -3929,12 +3944,30 @@ class _VolumeRequirement:
     reasons: list[str] | None = None
 
 
+def _reclaimable_file_bytes(dest: Path) -> int:
+    """Credit only a regular file whose last hard link force will remove."""
+    try:
+        info = dest.lstat()
+    except OSError:
+        return 0
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        return 0
+    if hasattr(info, "st_blocks"):
+        return min(info.st_size, info.st_blocks * 512)
+    # Windows does not report st_blocks; compressed/sparse sizes overstate
+    # disk allocation, so those files receive no speculative credit.
+    if getattr(info, "st_file_attributes", 0) & 0xA00:
+        return 0
+    return info.st_size
+
+
 def _ensure_install_disk_capacity(
     dest: Path,
     size_bytes: int,
     *,
     include_download: bool,
     only_engine: str | None,
+    replace_existing: bool = False,
 ) -> None:
     """Preflight the peak bytes omm may add on every affected volume."""
     if size_bytes <= 0:
@@ -3954,8 +3987,13 @@ def _ensure_install_disk_capacity(
     for risk in linker.disk_copy_risks(dest, only_engine=only_engine):
         add(risk.path, risk.reason)
 
+    reclaimable = (
+        sum(_reclaimable_file_bytes(path) for path in (dest, *_download_part_paths(dest)))
+        if include_download and replace_existing else 0
+    )
+    download_volume = linker.storage_volume_key(dest.parent) if reclaimable else None
     failures = []
-    for requirement in groups.values():
+    for volume, requirement in groups.items():
         reserve = linker.disk_safety_reserve(requirement.bytes_needed)
         required = requirement.bytes_needed + reserve
         try:
@@ -3964,7 +4002,7 @@ def _ensure_install_disk_capacity(
             raise InsufficientDiskSpaceError(
                 f"Could not verify free space on the volume containing {requirement.path}: {error}"
             ) from error
-        if free < required:
+        if free + (reclaimable if volume == download_volume else 0) < required:
             reasons = ", ".join(requirement.reasons or [])
             failures.append(
                 f"{requirement.path} needs up to {required / 1024**3:.1f} GiB "
@@ -4416,12 +4454,7 @@ def _verify_lmstudio_after_install(
             )
             return None, True, False
         if enforce_memory_guard:
-            size_bytes = entry.get("size_bytes")
-            if not _positive_finite_number(size_bytes):
-                try:
-                    size_bytes = _managed_model_path(filename).stat().st_size
-                except (ModelResolutionError, OSError):
-                    size_bytes = None
+            size_bytes = _entry_size_bytes(filename, entry)
             if not _positive_finite_number(size_bytes):
                 err_console.print(
                     "[error]Memory Guard could not determine the model size; "
@@ -4463,6 +4496,115 @@ def _verify_lmstudio_after_install(
             "The downloaded model was kept.[/warning]"
         )
     return result.status, False, False
+
+
+def _prepare_install_artifact(
+    *,
+    url: str,
+    filename: str,
+    repo_id: str | None,
+    provider: str,
+    dest: Path,
+    expected_sha256: str | None,
+    force: bool,
+    skip_unfit: bool,
+    stop_event: threading.Event | None,
+    only_engine: str | None,
+    opts: GlobalOptions,
+) -> _PreparedInstallArtifact | None:
+    """Reuse or download one central artifact, then verify it for linking.
+
+    Returns ``None`` only when the contribution loop elected to skip a
+    low-disk candidate. All other failures retain the existing command's
+    exception and cleanup behavior so callers can continue to own the
+    install transaction, registry update, and runtime verification stages.
+    """
+    downloaded_now = False
+    if dest.exists() and not force:
+        existing_sha256 = sha256_file(dest)
+        if expected_sha256 is not None and existing_sha256 != expected_sha256:
+            raise DownloadError(
+                f"{filename} already exists but does not match the provider SHA-256; "
+                "refusing to reuse or overwrite it."
+            )
+        if expected_sha256 is None:
+            existing_entry = registry.load_registry().get(filename)
+            if not (
+                isinstance(existing_entry, dict)
+                and existing_entry.get("source") == url
+                and existing_entry.get("sha256") == existing_sha256
+            ):
+                raise DownloadError(
+                    f"{filename} already exists but its source and digest cannot "
+                    "be verified; refusing to adopt or overwrite it."
+                )
+        err_console.print(f"[warning]{filename} already downloaded, skipping fetch.[/warning]")
+    else:
+        size_bytes = remote_file_size(provider, repo_id, filename) if repo_id else None
+        if size_bytes:
+            try:
+                _ensure_install_disk_capacity(
+                    dest,
+                    size_bytes,
+                    include_download=True,
+                    only_engine=only_engine,
+                    replace_existing=force,
+                )
+            except InsufficientDiskSpaceError as error:
+                if skip_unfit:
+                    err_console.print(f"[warning]Skipping {error}.[/warning]")
+                    return None
+                errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
+                raise typer.Exit(1) from error
+        if force:
+            # Keep the existing model intact if preflight rejects the new
+            # download. Once accepted, force must not reuse old partial bytes.
+            _cleanup_incomplete_install(filename)
+        try:
+            if stop_event is not None:
+                download_file(
+                    url, dest, stop_check=stop_event.is_set,
+                    quiet=opts.quiet, no_color=opts.no_color,
+                )
+            else:
+                download_file(url, dest, quiet=opts.quiet, no_color=opts.no_color)
+            downloaded_now = True
+        except DownloadCancelled as error:
+            raise InstallInterrupted(filename) from error
+        except InsufficientDiskSpaceError as error:
+            _cleanup_incomplete_install(filename)
+            errors.print_cli_error(err_console, str(error), fix=error.fix)
+            if skip_unfit:
+                return None
+            raise typer.Exit(1) from error
+        except DownloadError:
+            raise
+
+    try:
+        _ensure_install_disk_capacity(
+            dest,
+            dest.stat().st_size,
+            include_download=False,
+            only_engine=only_engine,
+        )
+    except InsufficientDiskSpaceError as error:
+        if downloaded_now:
+            _cleanup_incomplete_install(filename)
+        if skip_unfit:
+            err_console.print(f"[warning]Skipping {error}.[/warning]")
+            return None
+        errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
+        raise typer.Exit(1) from error
+
+    if not opts.quiet:
+        console.print("Verifying checksum..." if expected_sha256 else "Computing checksum...")
+    sha256 = sha256_file(dest)
+    if expected_sha256 is not None and sha256 != expected_sha256:
+        dest.unlink(missing_ok=True)
+        raise DownloadError(
+            f"Downloaded SHA-256 for {filename} does not match the provider metadata."
+        )
+    return _PreparedInstallArtifact(sha256=sha256, downloaded_now=downloaded_now)
 
 
 def _install_impl(
@@ -4537,7 +4679,6 @@ def _install_impl(
                     f"(range {speed_low:.1f}–{speed_high:.1f}).[/muted]"
                 )
 
-    downloaded_now = False
     expected_sha256 = resolved.expected_sha256 or (
         remote_file_sha256(provider, repo_id, filename)
         if resolved.provider and repo_id
@@ -4548,88 +4689,23 @@ def _install_impl(
             f"{provider} did not provide a SHA-256 digest for {filename}; "
             "refusing an unverifiable download."
         )
-    if dest.exists() and not force:
-        existing_sha256 = sha256_file(dest)
-        if expected_sha256 is not None and existing_sha256 != expected_sha256:
-            raise DownloadError(
-                f"{filename} already exists but does not match the provider SHA-256; "
-                "refusing to reuse or overwrite it."
-            )
-        if expected_sha256 is None:
-            existing_entry = registry.load_registry().get(filename)
-            if not (
-                isinstance(existing_entry, dict)
-                and existing_entry.get("source") == url
-                and existing_entry.get("sha256") == existing_sha256
-            ):
-                raise DownloadError(
-                    f"{filename} already exists but its source and digest cannot "
-                    "be verified; refusing to adopt or overwrite it."
-                )
-        err_console.print(f"[warning]{filename} already downloaded, skipping fetch.[/warning]")
-    else:
-        if force:
-            # A forced install must never reuse completed or partial bytes.
-            _cleanup_incomplete_install(filename)
-        size_bytes = remote_file_size(provider, repo_id, filename) if repo_id else None
-        if size_bytes:
-            try:
-                _ensure_install_disk_capacity(
-                    dest,
-                    size_bytes,
-                    include_download=True,
-                    only_engine=link_only_engine,
-                )
-            except InsufficientDiskSpaceError as error:
-                if skip_unfit:
-                    err_console.print(f"[warning]Skipping {error}.[/warning]")
-                    return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-                errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
-                raise typer.Exit(1) from error
-        try:
-            if stop_event is not None:
-                download_file(
-                    url, dest, stop_check=stop_event.is_set,
-                    quiet=opts.quiet, no_color=opts.no_color,
-                )
-            else:
-                download_file(url, dest, quiet=opts.quiet, no_color=opts.no_color)
-            downloaded_now = True
-        except DownloadCancelled as e:
-            raise InstallInterrupted(filename) from e
-        except InsufficientDiskSpaceError as e:
-            _cleanup_incomplete_install(filename)
-            errors.print_cli_error(err_console, str(e), fix=e.fix)
-            if skip_unfit:
-                return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-            raise typer.Exit(1) from e
-        except DownloadError:
-            raise
-
-    try:
-        _ensure_install_disk_capacity(
-            dest,
-            dest.stat().st_size,
-            include_download=False,
-            only_engine=link_only_engine,
-        )
-    except InsufficientDiskSpaceError as error:
-        if downloaded_now:
-            _cleanup_incomplete_install(filename)
-        if skip_unfit:
-            err_console.print(f"[warning]Skipping {error}.[/warning]")
-            return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
-        errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
-        raise typer.Exit(1) from error
-
-    if not opts.quiet:
-        console.print("Verifying checksum..." if expected_sha256 else "Computing checksum...")
-    sha256 = sha256_file(dest)
-    if expected_sha256 is not None and sha256 != expected_sha256:
-        dest.unlink(missing_ok=True)
-        raise DownloadError(
-            f"Downloaded SHA-256 for {filename} does not match the provider metadata."
-        )
+    prepared = _prepare_install_artifact(
+        url=url,
+        filename=filename,
+        repo_id=repo_id,
+        provider=provider,
+        dest=dest,
+        expected_sha256=expected_sha256,
+        force=force,
+        skip_unfit=skip_unfit,
+        stop_event=stop_event,
+        only_engine=link_only_engine,
+        opts=opts,
+    )
+    if prepared is None:
+        return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
+    sha256 = prepared.sha256
+    downloaded_now = prepared.downloaded_now
 
     ollama_tag = linker.sanitize_ollama_tag(filename)
     try:
@@ -4720,6 +4796,12 @@ def _install_impl(
                 health = adapter.health()
                 ollama_runtime_version = health.version
         if not health.reachable:
+            if ollama_daemon_handle is not None:
+                # omm started this daemon a moment ago and nothing below
+                # runs while the health check still fails, so stop it here
+                # or the `ollama serve` it spawned outlives the install.
+                _stop_engine_daemon("ollama", ollama_daemon_handle)
+                ollama_daemon_handle = None
             _record_install_compatibility(
                 filename,
                 "ollama",
@@ -5189,14 +5271,19 @@ def _install_impl(
             else:
                 telemetry.log_attempt("declined_by_user", filename)
         else:
+            # `benchmark_ollama` reports "generation attempted and failed"
+            # as 0.0, not None. That is not a measurement, so it must never
+            # reach the upload path (the consent-gated branch above); pass
+            # None so `_report_telemetry` only logs a skipped benchmark.
             telemetry_sent = _report_telemetry(
                 filename,
                 repo_id,
-                tokens_per_sec,
+                None,
                 provider=resolved.provider,
                 failure_reason=(
                     guard_failure_reason
                     or (eval_error.failure_reason if eval_error is not None else None)
+                    or ("generation_failed" if tokens_per_sec is not None else None)
                 ),
                 engine=benchmark_engine,
             )
@@ -5360,11 +5447,15 @@ def install(
     _report_lmstudio_load_verification(outcome)
 
 
-def _cleanup_download_parts(destination: Path) -> bool:
+def _download_part_paths(destination: Path) -> tuple[Path, Path, Path]:
     part = destination.with_suffix(destination.suffix + ".part")
     metadata = part.with_name(f"{part.name}.meta")
+    return part, _sidecar_path(part), metadata
+
+
+def _cleanup_download_parts(destination: Path) -> bool:
     cleaned = False
-    for path in (part, _sidecar_path(part), metadata):
+    for path in _download_part_paths(destination):
         if path.exists():
             _unlink_with_retry(path)
             cleaned = cleaned or not path.exists()
@@ -5472,10 +5563,7 @@ def _remove_one(
                 remaining_custom_links.append(destination)
 
     removed_model = _unlink_with_retry(dest)
-    part = dest.with_suffix(dest.suffix + ".part")
-    _unlink_with_retry(part)
-    _unlink_with_retry(_sidecar_path(part))
-    _unlink_with_retry(part.with_name(f"{part.name}.meta"))
+    _cleanup_download_parts(dest)
 
     if not removed_model:
         registry.upsert_entry(
@@ -5543,12 +5631,7 @@ def remove(
             raise typer.Exit(1)
         return
 
-    filename = _resolve_ref(filename)
-    reg = registry.load_registry()
-    entry = reg.get(filename)
-    if entry is None and not filename.lower().endswith(".gguf"):
-        filename = f"{filename}.gguf"
-        entry = reg.get(filename)
+    filename, entry = _lookup_entry(_resolve_ref(filename), registry.load_registry())
     if entry is None:
         dest = MODELS_DIR / filename
         part = dest.with_suffix(dest.suffix + ".part")
@@ -5572,15 +5655,14 @@ def remove(
         raise typer.Exit(1)
 
 
-def _lookup_entry(filename: str, reg: dict) -> tuple[str, dict] | tuple[None, None]:
+def _lookup_entry(filename: str, reg: dict) -> tuple[str, dict | None]:
     """Find a registry entry by exact filename, retrying with a `.gguf`
-    suffix appended (mirrors the lookup `remove` already does)."""
+    suffix appended. On a miss the entry is None and the filename is the
+    last name tried, so callers can still point at its `.gguf` path."""
     entry = reg.get(filename)
     if entry is None and not filename.lower().endswith(".gguf"):
         filename = f"{filename}.gguf"
         entry = reg.get(filename)
-    if entry is None:
-        return None, None
     return filename, entry
 
 
@@ -5904,6 +5986,20 @@ def info(
         console.print(note, style="muted")
 
 
+def _download_update(url: str, tmp: Path, filename: str) -> bool:
+    """Download a model's newer file to `tmp`; on failure report it, clean
+    up the partial download and return False."""
+    opts = _global_opts()
+    try:
+        download_file(url, tmp, quiet=opts.quiet, no_color=opts.no_color)
+    except DownloadError as e:
+        err_console.print(f"[error]{filename}: update download failed: {e}[/error]")
+        tmp.unlink(missing_ok=True)
+        _cleanup_download_parts(tmp)
+        return False
+    return True
+
+
 def _update_one(filename: str, entry: dict) -> str:
     """Refresh one installed model against its source. Returns "updated",
     "up_to_date", or "skipped". HF-repo installs check a cheap remote hash
@@ -5950,13 +6046,7 @@ def _update_one(filename: str, entry: dict) -> str:
             return "up_to_date"
 
         url = download_url(provider, repo_id, filename)
-        opts = _global_opts()
-        try:
-            download_file(url, tmp, quiet=opts.quiet, no_color=opts.no_color)
-        except DownloadError as e:
-            err_console.print(f"[error]{filename}: update download failed: {e}[/error]")
-            tmp.unlink(missing_ok=True)
-            _cleanup_download_parts(tmp)
+        if not _download_update(url, tmp, filename):
             return "skipped"
         new_sha256 = sha256_file(tmp)
         if new_sha256 != remote_sha256:
@@ -5973,13 +6063,7 @@ def _update_one(filename: str, entry: dict) -> str:
             return "skipped"
 
         tmp = dest.with_name(dest.name + ".update")
-        opts = _global_opts()
-        try:
-            download_file(source, tmp, quiet=opts.quiet, no_color=opts.no_color)
-        except DownloadError as e:
-            err_console.print(f"[error]{filename}: update download failed: {e}[/error]")
-            tmp.unlink(missing_ok=True)
-            _cleanup_download_parts(tmp)
+        if not _download_update(source, tmp, filename):
             return "skipped"
 
         new_sha256 = sha256_file(tmp)
@@ -6442,6 +6526,12 @@ def upload_menu(ctx: typer.Context) -> None:
     _upload_channel_menu()
 
 
+def _reject_conflicting_policy_flags(enable: bool, disable: bool, ask: bool) -> None:
+    if sum((enable, disable, ask)) > 1:
+        err_console.print("[error]Choose only one of --enable, --disable, or --ask.[/error]")
+        raise typer.Exit(1)
+
+
 @upload_app.command(name="benchmark")
 @global_flags
 def configure_upload_benchmark(
@@ -6457,10 +6547,7 @@ def configure_upload_benchmark(
     ),
 ) -> None:
     """Configure the benchmark-upload send policy; see `omm setting telemetry` for the destination."""
-    chosen = [flag for flag in (enable, disable, ask) if flag]
-    if len(chosen) > 1:
-        err_console.print("[error]Choose only one of --enable, --disable, or --ask.[/error]")
-        raise typer.Exit(1)
+    _reject_conflicting_policy_flags(enable, disable, ask)
     current = load_config()
     changes = {}
     if enable:
@@ -6492,10 +6579,7 @@ def configure_upload_crash(
     """Configure the opt-in crash-report policy; see docs/crash-reports.md for
     exactly what is sent. Crash reports go to their own write-only channel,
     separate from benchmark telemetry and usage stats."""
-    chosen = [flag for flag in (enable, disable, ask) if flag]
-    if len(chosen) > 1:
-        err_console.print("[error]Choose only one of --enable, --disable, or --ask.[/error]")
-        raise typer.Exit(1)
+    _reject_conflicting_policy_flags(enable, disable, ask)
     current = load_config()
     changes = {}
     if enable:
@@ -8828,33 +8912,20 @@ class _EscListener:
             from prompt_toolkit.input import create_input
             from prompt_toolkit.keys import Keys
 
+            import select
+
             inp = create_input()
             with inp.raw_mode():
-                if sys.platform == "win32":
-                    # Win32Input.read_keys() already polls the console input
-                    # buffer non-blockingly, so there's no fd to select() on
-                    # (Windows select() only works on sockets anyway).
-                    while not self.stop_event.is_set():
-                        if _FOREGROUND_PROMPT_ACTIVE.is_set():
-                            time.sleep(0.05)
-                            continue
-                        for key_press in inp.read_keys():
-                            if key_press.key == Keys.Escape:
-                                self.stop_event.set()
-                        time.sleep(0.1)
-                else:
-                    import select
-
-                    while not self.stop_event.is_set():
-                        if _FOREGROUND_PROMPT_ACTIVE.is_set():
-                            time.sleep(0.05)
-                            continue
-                        ready, _, _ = select.select([inp.fileno()], [], [], 0.1)
-                        if not ready:
-                            continue
-                        for key_press in inp.read_keys():
-                            if key_press.key == Keys.Escape:
-                                self.stop_event.set()
+                while not self.stop_event.is_set():
+                    if _FOREGROUND_PROMPT_ACTIVE.is_set():
+                        time.sleep(0.05)
+                        continue
+                    ready, _, _ = select.select([inp.fileno()], [], [], 0.1)
+                    if not ready:
+                        continue
+                    for key_press in inp.read_keys():
+                        if key_press.key == Keys.Escape:
+                            self.stop_event.set()
         except Exception:
             pass  # best-effort; Ctrl+C still works as a fallback
 
@@ -9238,6 +9309,7 @@ def _print_contribution_summary(
     total_candidates: int | None = None,
     covered_candidates: int | None = None,
     succeeded_candidates: int | None = None,
+    engine: str = "ollama",
 ) -> None:
     minutes, seconds = divmod(int(duration_seconds), 60)
     console.print("=" * 70)
@@ -9263,7 +9335,7 @@ def _print_contribution_summary(
         )
     if stats.daemon_restarts:
         console.print(
-            f"[warning]Ollama daemon was found dead and restarted {stats.daemon_restarts}x "
+            f"[warning]{_engine_label(engine)} daemon was found dead and restarted {stats.daemon_restarts}x "
             "during this session.[/warning]"
         )
     if before_count is not None and after_count is not None:
@@ -9467,6 +9539,7 @@ def contribute(
             total_candidates=total_candidates,
             covered_candidates=covered_candidates,
             succeeded_candidates=len(benchmark_history.loaded_refs()),
+            engine=engine,
         )
         if stats.exhausted:
             contribute_state.record_exhausted(total_candidates, covered_candidates)

@@ -39,8 +39,20 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
         size = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(size) or b"{}")
 
+    def _redirect(self):
+        if self.path != "/redirect-source":
+            return False
+        self._json(
+            self.state.get("redirect_status", 307),
+            {"error": "redirect response must not be accepted"},
+            {"Location": self.state["redirect_location"]},
+        )
+        return True
+
     def do_GET(self):
         self.state.setdefault("calls", []).append(("GET", self.path, None))
+        if self._redirect():
+            return
         if self.state.get("old_api") and self.path == "/api/v1/models":
             self._json(404, {"error": "not found"})
             return
@@ -55,7 +67,9 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
             self._json(200, {"models": rows})
             return
         if self.path == "/api/v1/models":
-            instances = [{"id": "local/model"}] if self.state.get("loaded") else []
+            instances = [{"id": value} for value in self.state.get("extra_instances", [])]
+            if self.state.get("loaded"):
+                instances.append({"id": "local/model"})
             self._json(
                 200,
                 {
@@ -78,6 +92,8 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
         payload = self._payload()
         self.state.setdefault("calls", []).append(("POST", self.path, payload))
         self.state["authorization"] = self.headers.get("Authorization")
+        if self._redirect():
+            return
         if self.state.get("unauthorized"):
             self._json(401, {"error": "secret must not leak"})
             return
@@ -115,7 +131,8 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
             if self.state.get("unload_fails"):
                 self._json(500, {"error": "busy"})
                 return
-            self.state["loaded"] = False
+            if not self.state.get("unload_ignored"):
+                self.state["loaded"] = False
             self._json(200, {"instance_id": payload.get("instance_id")})
             return
         self._json(404, {"error": "not found"})
@@ -198,6 +215,28 @@ def test_lmstudio_ignores_empty_loaded_instance_ids():
 
     assert model.loaded is False
     assert model.instance_id is None
+
+
+@pytest.mark.parametrize("unload_ignored", [False, True])
+def test_lmstudio_unload_verifies_its_instance_when_another_instance_remains(
+    runtime_server, unload_ignored
+):
+    base_url, state = runtime_server
+    adapter = LMStudioAdapter(base_url)
+    receipt = adapter.load(RuntimeModelRef("local/model"), LoadOptions())
+    # Another client can load the same model while OMM is probing. Its
+    # instance appears first, so checking only the first instance is unsafe.
+    state["extra_instances"] = ["user-instance"]
+    state["unload_ignored"] = unload_ignored
+
+    result = adapter.unload(receipt)
+
+    assert result.unloaded is (not unload_ignored)
+    assert state["extra_instances"] == ["user-instance"]
+    assert [
+        payload for method, path, payload in state["calls"]
+        if method == "POST" and path == "/api/v1/models/unload"
+    ] == [{"instance_id": "local/model"}]
 
 
 def test_ollama_probe_disables_thinking_for_bounded_visible_answer(runtime_server):
@@ -358,6 +397,20 @@ def test_loopback_client_ignores_environment_proxies(runtime_server, monkeypatch
     monkeypatch.setenv("NO_PROXY", "")
 
     assert OllamaAdapter(base_url).health().reachable is True
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_loopback_client_does_not_follow_runtime_redirects(runtime_server, status):
+    base_url, state = runtime_server
+    state["redirect_status"] = status
+    state["redirect_location"] = f"{base_url}/api/v1/chat"
+    client = LoopbackJsonClient(base_url, token="fixture-only-token")
+    payload = {"input": "private local prompt"}
+
+    with pytest.raises(RuntimeAdapterError, match="redirect"):
+        client.request("POST", "/redirect-source", payload=payload)
+
+    assert state["calls"] == [("POST", "/redirect-source", payload)]
 
 
 @pytest.mark.parametrize(

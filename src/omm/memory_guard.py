@@ -233,7 +233,11 @@ def execute_guard(
         # that actually reclaim the currently short pool. Sorting solely by
         # total size could unload a large RAM-only model before the small
         # GPU resident that is the reason this plan needs reclamation.
-        if plan.available_vram_gb is None:
+        if plan.available_vram_gb is None or (
+            plan.required_ram_gb is None and plan.required_vram_gb is None
+        ):
+            # No per-pool requirement to score against (the CLI passes one
+            # blended requirement), so reclaim the biggest resident first.
             return resident.size_gb
         score = 0.0
         if plan.required_ram_gb is not None:

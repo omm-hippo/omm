@@ -1118,7 +1118,9 @@ def stable_holdout_split(
     for features, target in zip(X, y):
         groups.setdefault(selection_context_key(FEATURE_ORDER, features), []).append((features, target))
     if len(groups) < 2:
-        raise ValueError("quality gate requires at least two selection contexts")
+        # A ValueError subclass main() already soft-skips on: one hardware
+        # context is "not enough telemetry yet", not a crash of the nightly job.
+        raise InsufficientTelemetryError("quality gate requires at least two selection contexts")
     ordered_groups = sorted(
         (
             sorted(
