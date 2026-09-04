@@ -114,7 +114,17 @@ state exactly what you ran and separate these levels when they apply:
 4. Run the relevant checks above and record the results in the PR description.
 5. Explain user-visible behavior, compatibility impact, and remaining
    verification boundaries.
-6. Respond to review without mixing unrelated cleanup into the same PR.
+6. Write the PR description **in plain Korean first**, using the four
+   headings from `.github/PULL_REQUEST_TEMPLATE.md` in this order:
+   `## 한줄 요약`, `## 배경`, `## 무엇을 바꿨나`, `## 어떻게 확인했나`.
+   Every contributor here develops with an AI agent, and an AI-written
+   English body tells a teammate who was not in that session nothing about
+   where the change came from. `## 배경` must give that context (the issue,
+   the bug, the review, the conversation). English technical detail may
+   follow the Korean sections. The `PR 설명 확인` check enforces the headings
+   and a minimum amount of Korean text; bot PRs (`retrain/*`, the
+   `beta` → `main` sync) are exempt. Commit subjects may stay English.
+7. Respond to review without mixing unrelated cleanup into the same PR.
 
 ## Trusted pull-request head
 

@@ -333,7 +333,7 @@ def test_release_workflow_builds_smoke_installs_and_gates_publishing():
     assert workflow.count("id-token: write") == 2
     assert workflow.count(
         "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
-    ) == 5
+    ) == 6
     assert "needs: [smoke-install, release-tests]" in workflow
     assert "needs: publish-testpypi" in workflow
     assert "needs: verify-testpypi" in workflow
@@ -346,6 +346,12 @@ def test_release_workflow_builds_smoke_installs_and_gates_publishing():
         workflow,
     )
     assert "name: Request asynchronous Homebrew Formula synchronization" in workflow
+    assert re.search(
+        r"(?m)^  render-homebrew-formula:\n(?:    .*\n)*?    needs: \[build, verify-pypi-install\]$",
+        workflow,
+    )
+    assert "name: Render the Homebrew Formula for this release" in workflow
+    assert "scripts/homebrew_formula.py render" in workflow
     assert "name: Add Python artifacts to the draft GitHub Release" in workflow
     assert "needs: [build, verify-pypi-install]" in workflow
     assert "uses: ./.github/workflows/github-release.yml" in workflow

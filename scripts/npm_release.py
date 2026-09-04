@@ -525,6 +525,257 @@ def _install_launcher_from_registry(
     )
 
 
+def _assert_installed_version(prefix: Path, expected_version: str) -> None:
+    """Assert that the `omm` command in `prefix` reports `expected_version`.
+
+    A narrower sibling of `_probe_install`'s version check: this one is used
+    mid-upgrade, where the command must not also be probed for `--help`,
+    update guidance, or uninstalled yet.
+    """
+    command = _command_path(prefix)
+    if not command.is_file():
+        raise NpmReleaseError(
+            f"npm did not expose the OMM command at {command}\n"
+            f"npm ls:\n{_install_tree(prefix)}"
+        )
+    result = _run(command, "--version", check=False)
+    lines = f"{result.stdout}\n{result.stderr}".splitlines()
+    if result.returncode != 0 or f"omm {expected_version}" not in {
+        line.strip() for line in lines
+    }:
+        raise NpmReleaseError(
+            f"npm-installed OMM did not report version {expected_version!r}\n"
+            f"--version stdout: {result.stdout!r}\n--version stderr: {result.stderr!r}\n"
+            f"npm ls:\n{_install_tree(prefix)}"
+        )
+
+
+def _dependency_version(tree: Any, name: str) -> str | None:
+    """Find `name`'s resolved version anywhere in an `npm ls --json` tree."""
+    if not isinstance(tree, dict):
+        return None
+    dependencies = tree.get("dependencies")
+    if not isinstance(dependencies, dict):
+        return None
+    entry = dependencies.get(name)
+    if isinstance(entry, dict) and isinstance(entry.get("version"), str):
+        return entry["version"]
+    for child in dependencies.values():
+        found = _dependency_version(child, name)
+        if found is not None:
+            return found
+    return None
+
+
+def _assert_platform_package_moved(
+    prefix: Path, target_package: str, previous_version: str, version: str
+) -> None:
+    """Assert `target_package` now resolves to `version`, and that
+    `previous_version` -- the platform package version the prefix had before
+    the upgrade -- no longer appears anywhere in the installed tree."""
+    result = _run(
+        _npm(), "ls", "--global", "--prefix", str(prefix), "--all", "--json", check=False
+    )
+    try:
+        tree = json.loads(result.stdout)
+    except ValueError as error:
+        raise NpmReleaseError(
+            f"npm ls --json returned invalid JSON (exit {result.returncode})\n"
+            f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
+        ) from error
+    resolved = _dependency_version(tree, target_package)
+    if resolved != version:
+        raise NpmReleaseError(
+            f"npm ls reports {target_package}@{resolved!r} after upgrading to "
+            f"{version!r}\nnpm ls:\n{result.stdout}"
+        )
+    if previous_version in (result.stdout or ""):
+        raise NpmReleaseError(
+            f"npm ls still mentions the old platform version {previous_version!r} "
+            f"after upgrading {target_package} to {version!r}\nnpm ls:\n{result.stdout}"
+        )
+
+
+def _upgrade_to_version_with_retry(
+    prefix: Path,
+    version: str,
+    target_package: str,
+    previous_version: str,
+    registry: str,
+) -> None:
+    """Move an already-installed global prefix to `version`.
+
+    Retries like `_install_launcher_from_registry` for the same post-publish
+    optional-dependency propagation lag (issue #237), which is exactly as
+    likely here: `version` is normally the just-published release under
+    test. Unlike that function, this does **not** wipe `prefix` between
+    attempts -- that would erase the `previous_version` install this step is
+    upgrading from, defeating the point of the upgrade smoke.
+
+    Uses a fresh `npm install --global @omm-hippo/omm@<version>` rather than
+    `npm update --global @omm-hippo/omm` -- the command OMM's own `omm
+    update` guidance prints -- because the previous-version install this
+    upgrades from (see `_exercise_registry_upgrade`) itself requests an
+    exact pinned spec (`@omm-hippo/omm@<previous_version>`), and npm records
+    that exact spec as the install's semver range. `npm update --global`
+    only moves a package within the range recorded at its original install;
+    against an exact pin there is no range to move within, so it reports
+    "already up to date" and never changes the version. Only a fresh install
+    with an explicit newer version spec reliably forces the change this test
+    needs to prove: that a genuinely newer platform-package resolution
+    replaces the old one in the same global prefix, not just that two
+    independent installs each work in isolation. Whether `npm update
+    --global` also works for a user who originally installed without
+    pinning a version is not exercised here.
+    """
+    last_error: Exception | None = None
+    for attempt in range(REGISTRY_PROBE_ATTEMPTS):
+        try:
+            if attempt > 0:
+                _run(_npm(), "cache", "clean", "--force", check=False)
+                time.sleep(REGISTRY_PROBE_BACKOFF_SECONDS)
+            _run(
+                _npm(),
+                "install",
+                "--global",
+                "--prefix",
+                str(prefix),
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+                "--registry",
+                registry,
+                f"{npm_package.LAUNCHER_NAME}@{version}",
+            )
+            _assert_installed_version(prefix, version)
+            _assert_platform_package_moved(prefix, target_package, previous_version, version)
+            return
+        except (NpmReleaseError, subprocess.SubprocessError, OSError) as error:
+            last_error = error
+    detail = f"{type(last_error).__name__}: {last_error}"
+    if isinstance(last_error, subprocess.CalledProcessError):
+        detail += (
+            f"\nstdout: {last_error.stdout or ''}"
+            f"\nstderr: {last_error.stderr or ''}"
+        )
+    if not isinstance(last_error, NpmReleaseError):
+        detail = f"{detail}\nnpm ls:\n{_install_tree(prefix)}"
+    raise NpmReleaseError(
+        f"npm registry upgrade path still broken after {REGISTRY_PROBE_ATTEMPTS} "
+        f"attempts (post-publish optional-dependency propagation lag or a real "
+        f"defect; issue #237)\n{detail}"
+    )
+
+
+def _exercise_registry_upgrade(
+    prefix: Path,
+    omm_home: Path,
+    previous_version: str,
+    version: str,
+    target_package: str,
+    registry: str,
+) -> None:
+    """Prove the real upgrade path between two published versions.
+
+    Installs `previous_version` from the registry, confirms `omm --version`
+    reports it, moves the same global prefix to `version`, and confirms both
+    the launcher and its resolved platform package actually moved -- not
+    just that two independent installs each happen to work in isolation.
+    This was never exercised before (see docs/npm-distribution-design.md):
+    0.3.33 and 0.3.41 had only ever been installed as two unrelated fresh
+    installs, never upgraded from one to the other in the same prefix.
+
+    Finishes with the same full probe (`--help`, `omm update` guidance, then
+    uninstall) the non-upgrade path uses, so the upgraded install is proven
+    functional and the prefix is left clean either way.
+    """
+    _run(
+        _npm(),
+        "install",
+        "--global",
+        "--prefix",
+        str(prefix),
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--registry",
+        registry,
+        f"{npm_package.LAUNCHER_NAME}@{previous_version}",
+    )
+    _assert_installed_version(prefix, previous_version)
+
+    _upgrade_to_version_with_retry(prefix, version, target_package, previous_version, registry)
+
+    _probe_install(prefix, omm_home, version, target_package)
+
+
+def _published_versions(registry: str) -> list[str]:
+    """All versions of the launcher package published to `registry`."""
+    result = _run(
+        _npm(),
+        "view",
+        npm_package.LAUNCHER_NAME,
+        "versions",
+        "--json",
+        "--registry",
+        registry,
+        check=False,
+    )
+    if result.returncode != 0:
+        if "E404" in f"{result.stdout}\n{result.stderr}":
+            return []
+        raise NpmReleaseError(
+            f"npm view {npm_package.LAUNCHER_NAME} versions failed: {result.stderr}"
+        )
+    try:
+        value = json.loads(result.stdout)
+    except ValueError as error:
+        raise NpmReleaseError("npm view versions returned invalid JSON") from error
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    raise NpmReleaseError("npm view versions returned an unexpected shape")
+
+
+def _version_key(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in value.split("."))
+
+
+def _resolve_previous_version(
+    version: str, previous_version: str | None, registry: str
+) -> str | None:
+    """Turn `--previous-version` into a concrete version, or None to skip.
+
+    A literal value is returned as-is (after rejecting it matching
+    `version`). `"auto"` resolves to the highest published version other
+    than `version` itself, so CI does not need to know in advance what the
+    previous release was. Returns None -- meaning the upgrade smoke is
+    skipped -- only for `"auto"` with nothing to resolve to (first-ever
+    release, or every published version equals `version`); an explicit
+    literal value is never silently skipped.
+    """
+    if previous_version is None:
+        return None
+    if previous_version != "auto":
+        if previous_version == version:
+            raise NpmReleaseError("--previous-version must not equal --version")
+        return previous_version
+    candidates = sorted(
+        (item for item in _published_versions(registry) if item != version),
+        key=_version_key,
+    )
+    if not candidates:
+        print(
+            f"No previously published {npm_package.LAUNCHER_NAME} version found "
+            f"before {version}; skipping the upgrade smoke."
+        )
+        return None
+    resolved = candidates[-1]
+    print(f"Resolved --previous-version auto to {resolved} for the upgrade smoke.")
+    return resolved
+
+
 def _audit_entry_names(entries: Any) -> list[str]:
     if not isinstance(entries, list):
         return []
@@ -604,15 +855,33 @@ def _audit_signatures(audit: Path, version: str, target_package: str) -> None:
         )
 
 
-def smoke_registry(version: str, target_name: str, registry: str = REGISTRY) -> None:
+def smoke_registry(
+    version: str,
+    target_name: str,
+    registry: str = REGISTRY,
+    previous_version: str | None = None,
+) -> None:
+    """Install `version` from the registry and probe it.
+
+    With `previous_version` set (a literal version, or `"auto"` to resolve
+    the latest published version other than `version`), first installs
+    `previous_version`, then upgrades the same global prefix to `version` in
+    place -- see `_exercise_registry_upgrade` for what that proves and why.
+    """
     registry = _validate_registry_url(registry)
     target_package = npm_package.targets()[target_name]["package"]
     with tempfile.TemporaryDirectory(prefix="omm-npm-registry-") as temporary:
         root = Path(temporary)
         prefix = root / "prefix"
-        _install_launcher_from_registry(
-            prefix, root / "omm-home", version, target_package, registry
-        )
+        omm_home = root / "omm-home"
+
+        resolved_previous = _resolve_previous_version(version, previous_version, registry)
+        if resolved_previous is None:
+            _install_launcher_from_registry(prefix, omm_home, version, target_package, registry)
+        else:
+            _exercise_registry_upgrade(
+                prefix, omm_home, resolved_previous, version, target_package, registry
+            )
 
         audit = root / "audit"
         audit.mkdir()
@@ -811,6 +1080,14 @@ def _parser() -> argparse.ArgumentParser:
     registry_smoke.add_argument("--version", required=True)
     registry_smoke.add_argument("--target", choices=sorted(npm_package.targets()), required=True)
     registry_smoke.add_argument("--registry", default=REGISTRY)
+    registry_smoke.add_argument(
+        "--previous-version",
+        help=(
+            "Install this version first, then upgrade to --version in the same "
+            "global prefix. Pass 'auto' to resolve the latest published version "
+            "other than --version; omit to skip the upgrade smoke entirely."
+        ),
+    )
 
     publish = commands.add_parser("publish-bundle")
     publish.add_argument("--pack-dir", type=Path, required=True)
@@ -830,7 +1107,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "smoke-tarballs":
             smoke_tarballs(args.pack_dir, args.target)
         elif args.command == "smoke-registry":
-            smoke_registry(args.version, args.target, args.registry)
+            smoke_registry(args.version, args.target, args.registry, args.previous_version)
         elif args.command == "publish-bundle":
             publish_bundle(args.pack_dir, args.registry)
         elif args.command == "reuse-published":

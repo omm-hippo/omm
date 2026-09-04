@@ -588,6 +588,208 @@ def test_registry_probe_gives_up_after_repeated_timeouts_with_the_tree_dump(
     assert "`-- (empty)" in message  # the npm ls tree the caught error lacks
 
 
+def test_smoke_registry_exercises_the_upgrade_path_when_previous_version_given(monkeypatch):
+    calls = []
+
+    def fake_run(executable, *arguments, **kwargs):
+        calls.append(arguments)
+        stdout = _audit_report("0.3.41", "win32-x64") if arguments[:1] == ("audit",) else ""
+        return npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout=stdout, stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    version_calls = []
+    monkeypatch.setattr(
+        npm_release,
+        "_assert_installed_version",
+        lambda prefix, expected: version_calls.append(expected),
+    )
+    moved_calls = []
+    monkeypatch.setattr(
+        npm_release,
+        "_assert_platform_package_moved",
+        lambda prefix, package, previous, version: moved_calls.append(
+            (package, previous, version)
+        ),
+    )
+    probe_calls = []
+    monkeypatch.setattr(npm_release, "_probe_install", lambda *args: probe_calls.append(args))
+
+    npm_release.smoke_registry(
+        "0.3.41",
+        "win32-x64",
+        "https://registry.example/",
+        previous_version="0.3.33",
+    )
+
+    installs = [call for call in calls if call[:2] == ("install", "--global")]
+    assert len(installs) == 2, "must install the previous version, then upgrade in place"
+    assert installs[0][-1] == f"{npm_package.LAUNCHER_NAME}@0.3.33"
+    assert installs[1][-1] == f"{npm_package.LAUNCHER_NAME}@0.3.41"
+    # Both installs land in the same prefix -- the whole point of an upgrade
+    # smoke rather than two unrelated installs.
+    assert installs[0][installs[0].index("--prefix") + 1] == installs[1][
+        installs[1].index("--prefix") + 1
+    ]
+    assert version_calls == ["0.3.33", "0.3.41"]
+    assert moved_calls == [
+        (npm_package.targets()["win32-x64"]["package"], "0.3.33", "0.3.41")
+    ]
+    assert probe_calls, "the final full probe (help/update guidance/uninstall) must still run"
+
+
+def test_smoke_registry_upgrade_retries_without_wiping_the_previous_install(monkeypatch):
+    """The upgrade step must retry like a fresh install (issue #237's
+    propagation lag applies to the newly published version too), but must
+    not `shutil.rmtree` the prefix between attempts -- that would erase the
+    previous-version install this step is upgrading from."""
+    monkeypatch.setattr(npm_release.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_probe_install", lambda *args: None)
+    monkeypatch.setattr(npm_release, "_assert_platform_package_moved", lambda *args: None)
+
+    rmtree_calls = []
+    monkeypatch.setattr(
+        npm_release.shutil, "rmtree", lambda path, **kwargs: rmtree_calls.append(path)
+    )
+
+    upgrade_installs = {"n": 0}
+    version_probes = []
+
+    def fake_run(executable, *arguments, **kwargs):
+        if arguments[:2] == ("install", "--global") and arguments[-1].endswith("@0.3.41"):
+            upgrade_installs["n"] += 1
+            if upgrade_installs["n"] == 1:
+                raise npm_release.subprocess.CalledProcessError(
+                    1, "npm install", output="", stderr="npm error ETARGET"
+                )
+        return npm_release.subprocess.CompletedProcess([str(executable), *arguments], 0)
+
+    def fake_assert_installed_version(prefix, expected):
+        version_probes.append(expected)
+
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+    monkeypatch.setattr(npm_release, "_assert_installed_version", fake_assert_installed_version)
+
+    npm_release._exercise_registry_upgrade(
+        Path("prefix"),
+        Path("omm-home"),
+        "0.3.33",
+        "0.3.41",
+        "@omm-hippo/omm-win32-x64",
+        "https://registry.example/",
+    )
+
+    assert upgrade_installs["n"] == 2  # first attempt failed the install itself, second succeeded
+    assert version_probes == ["0.3.33", "0.3.41"]  # previous, then the one successful upgrade
+    assert rmtree_calls == []
+
+
+def test_smoke_registry_resolves_previous_version_auto_to_the_latest_other_version(monkeypatch):
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+
+    def fake_run(executable, *arguments, **kwargs):
+        assert arguments == (
+            "view",
+            npm_package.LAUNCHER_NAME,
+            "versions",
+            "--json",
+            "--registry",
+            "https://registry.example/",
+        )
+        return npm_release.subprocess.CompletedProcess(
+            [], 0, stdout=json.dumps(["0.3.20", "0.3.33", "0.3.41"]), stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+
+    resolved = npm_release._resolve_previous_version(
+        "0.3.41", "auto", "https://registry.example/"
+    )
+
+    assert resolved == "0.3.33"
+
+
+def test_smoke_registry_skips_the_upgrade_when_auto_finds_no_previous_version(
+    monkeypatch, capsys
+):
+    """Before the first-ever release (or if every published version already
+    equals the target), 'auto' must skip the upgrade smoke gracefully rather
+    than failing -- and fall back to the plain single-install path."""
+
+    def fake_run(executable, *arguments, **kwargs):
+        if arguments[:2] == ("view", npm_package.LAUNCHER_NAME):
+            return npm_release.subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps(["0.3.41"]), stderr=""
+            )
+        stdout = _audit_report("0.3.41", "win32-x64") if arguments[:1] == ("audit",) else ""
+        return npm_release.subprocess.CompletedProcess(
+            [str(executable), *arguments], 0, stdout=stdout, stderr=""
+        )
+
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+    install_calls = []
+    monkeypatch.setattr(
+        npm_release,
+        "_install_launcher_from_registry",
+        lambda *args: install_calls.append(args),
+    )
+    upgrade_calls = []
+    monkeypatch.setattr(
+        npm_release, "_exercise_registry_upgrade", lambda *args: upgrade_calls.append(args)
+    )
+
+    npm_release.smoke_registry(
+        "0.3.41",
+        "win32-x64",
+        "https://registry.example/",
+        previous_version="auto",
+    )
+
+    assert len(install_calls) == 1
+    assert upgrade_calls == []
+    assert "No previously published" in capsys.readouterr().out
+
+
+def test_smoke_registry_rejects_an_explicit_previous_version_equal_to_the_target():
+    with pytest.raises(npm_release.NpmReleaseError, match="must not equal"):
+        npm_release._resolve_previous_version(
+            "0.3.41", "0.3.41", "https://registry.example/"
+        )
+
+
+def test_assert_platform_package_moved_detects_a_stale_old_version(monkeypatch, tmp_path):
+    stale_tree = json.dumps(
+        {
+            "dependencies": {
+                npm_package.LAUNCHER_NAME: {
+                    "version": "0.3.41",
+                    "dependencies": {
+                        "@omm-hippo/omm-win32-x64": {"version": "0.3.33"},
+                    },
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(
+        npm_release,
+        "_run",
+        lambda *args, **kwargs: npm_release.subprocess.CompletedProcess(
+            [], 0, stdout=stale_tree, stderr=""
+        ),
+    )
+
+    with pytest.raises(npm_release.NpmReleaseError, match="reports .*0.3.33.* after upgrading"):
+        npm_release._assert_platform_package_moved(
+            tmp_path / "prefix", "@omm-hippo/omm-win32-x64", "0.3.33", "0.3.41"
+        )
+
+
 def test_probe_reports_a_non_zero_version_exit_with_diagnostics(tmp_path, monkeypatch):
     prefix = tmp_path / "prefix"
     command = npm_release._command_path(prefix)
