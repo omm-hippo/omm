@@ -145,8 +145,18 @@ every matching platform package exists.
   Windows 11 x64 machine (Node 24.11, npm 11.12.1): install, `omm --version`,
   `omm update` guidance, `npm audit signatures` (2 verified signatures, 2
   verified attestations), and uninstall.
+- **Upgrade-verified (local, win32-x64):** the real upgrade path between two
+  published versions — install 0.3.33 from the registry into a global
+  prefix, confirm `omm --version` reports it, `npm install --global
+  @omm-hippo/omm@0.3.41` into the *same* prefix, confirm the version and the
+  resolved platform package (`@omm-hippo/omm-win32-x64`) both moved to
+  0.3.41 and 0.3.33 no longer appears in `npm ls --global --all --json` —
+  has been exercised locally on Windows today via `scripts/npm_release.py
+  smoke-registry --previous-version`. The `verify-registry` CI job now
+  passes `--previous-version auto` on every target, so the next real tag
+  release exercises this same upgrade path in hosted CI automatically, not
+  just locally.
 - **Not verified / 미검증:** the win32-x64 registry-verify leg in CI after
   #249 (no real tag release has exercised it yet); physical Intel Mac;
-  physical Linux; `npm update --global` as an actual upgrade between two
-  published versions (0.3.33 → 0.3.41 was never exercised as an upgrade path,
-  only as independent installs).
+  physical Linux; the upgrade smoke above running in hosted CI (wired for
+  the next release, not yet exercised by a real tag push).

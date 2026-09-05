@@ -343,6 +343,10 @@ def test_npm_claim_requires_exact_launcher_and_executable(monkeypatch, tmp_path)
     monkeypatch.setenv("OMM_NPM_LAUNCHER_PACKAGE", "@example/omm")
     assert package_metadata.install_source() is package_metadata.InstallSource.UNKNOWN
 
+    # install_source() is cached: without clearing, this second call would
+    # return the first call's cached UNKNOWN result without re-evaluating
+    # the "wrong executable" scenario below, masking a regression there.
+    package_metadata.install_source.cache_clear()
     monkeypatch.setenv("OMM_NPM_LAUNCHER_PACKAGE", "@omm-hippo/omm")
     other = tmp_path / "other-omm"
     other.write_bytes(b"other")

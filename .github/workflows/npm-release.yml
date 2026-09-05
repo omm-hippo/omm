@@ -376,3 +376,4 @@ jobs:
           python scripts/npm_release.py smoke-registry
           --version "${OMM_VERSION}"
           --target "${{ matrix.target }}"
+          --previous-version auto
