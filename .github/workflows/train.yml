@@ -120,15 +120,17 @@ jobs:
           git checkout -b "$branch"
           git commit -m "$COMMIT_MESSAGE"
 
-          # Branch protection blocks direct pushes to main (no bypass, even for
-          # admins), so land the update through a normal PR instead.
+          # Branch protection blocks direct pushes to beta (the trunk; no
+          # bypass, even for admins), so land the update through a normal PR.
+          # The published artifacts reach main only at the next release cut,
+          # which is fine - config.py fetches them off beta.
           git push origin "$branch"
           pr_url=$(gh pr create \
             --title "$PR_TITLE" \
             --body "$PR_BODY" \
-            --base main --head "$branch")
+            --base beta --head "$branch")
 
-          # main requires 1 approving review. The PR is authored as minigu5
+          # beta requires 1 approving review. The PR is authored as minigu5
           # (via LOCALFIT_RETRAIN_PAT, so it triggers CI - a PR opened with
           # the default GITHUB_TOKEN would not), so minigu5 can't self-approve
           # it and auto-merge would sit blocked forever. Approve as a distinct

@@ -32,9 +32,12 @@ MIN_HANGUL = 40
 # PRs created by automation carry no human-readable context to enforce.
 BOT_LOGIN_SUFFIX = "[bot]"
 BOT_LOGINS = {"omm-retrain-bot"}
-# train.yml opens `retrain/<timestamp>` PRs; the beta -> main sync PR has head `beta`.
-EXEMPT_HEAD_BRANCHES = {"beta"}
-EXEMPT_HEAD_PREFIXES = ("retrain/",)
+# train.yml opens `retrain/<timestamp>` PRs; emergency-signal.yml opens
+# `emergency-signal/<timestamp>` PRs. Both auto-merge and both now target the
+# beta trunk. (There is no beta -> main sync PR any more - since the
+# 2026-09-06 redesign, main only fast-forwards from beta, never via PR.)
+EXEMPT_HEAD_BRANCHES: set[str] = set()
+EXEMPT_HEAD_PREFIXES = ("retrain/", "emergency-signal/")
 
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.S)

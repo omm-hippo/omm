@@ -108,12 +108,20 @@ def test_headings_inside_code_fences_are_ignored():
         ("github-actions[bot]", "retrain/20260903-074624"),
         ("omm-retrain-bot", "retrain/20260903-074624"),
         ("minigu5", "retrain/20260903-074624"),
-        ("minigu5", "beta"),
+        ("minigu5", "emergency-signal/20260906-120000"),
     ],
 )
-def test_bot_and_sync_prs_are_exempt(author, head_ref):
+def test_bot_prs_are_exempt(author, head_ref):
     verdict = check.evaluate("", author=author, head_ref=head_ref)
     assert verdict.ok and verdict.exempt
+
+
+def test_beta_head_is_no_longer_exempt():
+    # main only fast-forwards from beta now; a `beta` head PR would be a
+    # mistake, and if someone opens one it gets the same Korean-description
+    # requirement as any other.
+    verdict = check.evaluate("", author="minigu5", head_ref="beta")
+    assert not verdict.ok and not verdict.exempt
 
 
 def test_main_reads_environment_and_writes_summary(tmp_path, monkeypatch, capsys):

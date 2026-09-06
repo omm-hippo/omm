@@ -84,9 +84,11 @@ jobs:
 
           # Same SSH-signed-commit approach as train.yml, for the same reason:
           # the PR head must pass the Trusted PR head check (see
-          # src/omm/trust/allowed_signers), and main has no direct-push
-          # bypass, so even an emergency goes through a PR - just an
-          # auto-merging one, not a slower human-reviewed one.
+          # src/omm/trust/allowed_signers), and beta (the trunk) has no
+          # direct-push bypass, so even an emergency goes through a PR - just
+          # an auto-merging one, not a slower human-reviewed one. config.py
+          # reads the signal off beta, so it reaches users as soon as this
+          # PR merges, without waiting for a release cut.
           umask 077
           key_path="$RUNNER_TEMP/omm-emergency-signing-key"
           printf '%s\n' "$LOCALFIT_RETRAIN_SSH_KEY" > "$key_path"
@@ -106,5 +108,5 @@ jobs:
           pr_url=$(gh pr create \
             --title "Emergency update signal: $([ "${{ inputs.clear }}" = "true" ] && echo clear || echo set)" \
             --body "Triggered manually via workflow_dispatch by @${{ github.actor }}. See the workflow run for the exact message/fixed_in_version inputs." \
-            --base main --head "$branch")
+            --base beta --head "$branch")
           gh pr merge "$pr_url" --auto --merge
