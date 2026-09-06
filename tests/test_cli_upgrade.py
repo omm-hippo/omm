@@ -1,5 +1,6 @@
 from pathlib import Path
 import hashlib
+import pytest
 
 from typer.testing import CliRunner
 
@@ -26,6 +27,54 @@ def _entry(**overrides):
 def _no_engines(monkeypatch):
     monkeypatch.setattr(cli.linker, "is_lmstudio_installed", lambda: False)
     monkeypatch.setattr(cli.linker, "is_ollama_installed", lambda: False)
+
+
+@pytest.mark.parametrize("method", ["hardlink", "copy"])
+def test_upgrade_refreshes_registered_custom_destination(
+    isolated_omm_home, tmp_path, monkeypatch, method
+):
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: False)
+    monkeypatch.setattr(cli.linker.platform, "system", lambda: "Windows")
+    if method == "copy":
+        monkeypatch.setattr(Path, "hardlink_to", lambda *a, **k: (_ for _ in ()).throw(OSError("cross-drive")))
+        monkeypatch.setattr(Path, "symlink_to", lambda *a, **k: (_ for _ in ()).throw(OSError("no privilege")))
+    source = cli.MODELS_DIR / "model.gguf"
+    source.write_bytes(b"old-model")
+    registry.save_registry({source.name: _entry(repo_id=None)})
+    target = tmp_path / "custom-app"
+    linked = runner.invoke(cli.app, ["link", str(target)])
+    assert linked.exit_code == 0, linked.output
+    destination = target / source.name
+    monkeypatch.setattr(cli, "download_file", lambda url, path, **kw: Path(path).write_bytes(b"new-model"))
+
+    result = runner.invoke(cli.app, ["upgrade", source.name])
+
+    assert result.exit_code == 0, result.output
+    assert source.read_bytes() == destination.read_bytes() == b"new-model"
+    assert registry.load_registry()[source.name]["sha256"] == hashlib.sha256(b"new-model").hexdigest()
+
+
+def test_upgrade_preserves_user_replacement_at_custom_destination(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: False)
+    source = cli.MODELS_DIR / "model.gguf"
+    source.write_bytes(b"old-model")
+    registry.save_registry({source.name: _entry(repo_id=None)})
+    target = tmp_path / "custom-app"
+    linked = runner.invoke(cli.app, ["link", str(target)])
+    assert linked.exit_code == 0, linked.output
+    destination = target / source.name
+    destination.unlink()
+    destination.write_bytes(b"user-owned-model")
+    monkeypatch.setattr(cli, "download_file", lambda url, path, **kw: Path(path).write_bytes(b"new-model"))
+
+    result = runner.invoke(cli.app, ["upgrade", source.name])
+
+    assert result.exit_code == 0, result.output
+    assert source.read_bytes() == b"new-model"
+    assert destination.read_bytes() == b"user-owned-model"
+    assert "could not be refreshed" in " ".join(result.stderr.split())
 
 
 def test_upgrade_single_repo_model_up_to_date(isolated_omm_home, monkeypatch):

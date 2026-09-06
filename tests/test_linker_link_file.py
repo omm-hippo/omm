@@ -218,6 +218,72 @@ def test_link_file_skips_delete_recreate_when_already_linked(isolated_omm_home, 
     assert update_calls == []  # ownership registry never rewritten
 
 
+@pytest.mark.parametrize("method", ["hardlink", "copy"])
+def test_relink_refreshes_replaced_source(isolated_omm_home, tmp_path, monkeypatch, method):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    if method == "copy":
+        monkeypatch.setattr(Path, "hardlink_to", lambda *a, **k: (_ for _ in ()).throw(OSError("cross-drive")))
+        monkeypatch.setattr(Path, "symlink_to", lambda *a, **k: (_ for _ in ()).throw(OSError("no privilege")))
+    source = tmp_path / "source.gguf"
+    destination = tmp_path / "app" / "model.gguf"
+    source.write_bytes(b"old-model")
+    assert linker.link_file(source, destination) == method
+    replacement = tmp_path / "new.gguf"
+    replacement.write_bytes(b"new-model")
+    replacement.replace(source)
+
+    assert linker.link_file(source, destination) == method
+
+    assert destination.read_bytes() == b"new-model"
+    if method == "hardlink":
+        assert destination.samefile(source)
+
+
+@pytest.mark.parametrize("legacy_record", [False, True])
+def test_relink_refreshes_copy_after_in_place_source_change(
+    isolated_omm_home, tmp_path, monkeypatch, legacy_record
+):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(Path, "hardlink_to", lambda *a, **k: (_ for _ in ()).throw(OSError("cross-drive")))
+    monkeypatch.setattr(Path, "symlink_to", lambda *a, **k: (_ for _ in ()).throw(OSError("no privilege")))
+    source = tmp_path / "source.gguf"
+    destination = tmp_path / "app" / "model.gguf"
+    source.write_bytes(b"old-model")
+    assert linker.link_file(source, destination) == "copy"
+    if legacy_record:
+        record = linker._ownership_record(destination)
+        record.pop("source_identity", None)
+        linker._update_link_ownership(destination, record)
+    source.write_bytes(b"updated-model-with-new-size")
+
+    assert linker.link_file(source, destination) == "copy"
+
+    assert destination.read_bytes() == source.read_bytes()
+
+
+def test_relink_skips_unchanged_copy_without_recopy_or_rehash(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(Path, "hardlink_to", lambda *a, **k: (_ for _ in ()).throw(OSError("cross-drive")))
+    monkeypatch.setattr(Path, "symlink_to", lambda *a, **k: (_ for _ in ()).throw(OSError("no privilege")))
+    source = tmp_path / "source.gguf"
+    destination = tmp_path / "app" / "model.gguf"
+    source.write_bytes(b"model")
+    assert linker.link_file(source, destination) == "copy"
+    original_identity = destination.stat()
+
+    def unexpected_work(*args, **kwargs):
+        raise AssertionError("unchanged copy must not be copied, hashed, or recorded again")
+
+    monkeypatch.setattr(linker.shutil, "copy2", unexpected_work)
+    monkeypatch.setattr(linker, "sha256_file", unexpected_work)
+    monkeypatch.setattr(linker, "_update_link_ownership", unexpected_work)
+
+    assert linker.link_file(source, destination) == "copy"
+    assert destination.stat() == original_identity
+
+
 def test_link_file_replaces_existing_destination(isolated_omm_home, tmp_path):
     src = tmp_path / "model.gguf"
     src.write_bytes(b"weights")

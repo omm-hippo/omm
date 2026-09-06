@@ -6007,11 +6007,6 @@ def _update_one(filename: str, entry: dict) -> str:
     such endpoint, so they re-download to a temp file and compare hashes
     before swapping it in."""
     try:
-        filename = validate_model_filename(filename)
-    except ModelResolutionError as error:
-        err_console.print(f"[error]{filename}: unsafe registry filename ({error}).[/error]")
-        return "skipped"
-    try:
         dest = _managed_model_path(filename)
     except ModelResolutionError as error:
         err_console.print(f"[error]{filename}: unsafe registry filename ({error}).[/error]")
@@ -6062,7 +6057,6 @@ def _update_one(filename: str, entry: dict) -> str:
             err_console.print(f"[warning]{filename}: no source URL on record, skipped.[/warning]")
             return "skipped"
 
-        tmp = dest.with_name(dest.name + ".update")
         if not _download_update(source, tmp, filename):
             return "skipped"
 
@@ -6099,6 +6093,16 @@ def _update_one(filename: str, entry: dict) -> str:
 
     ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
     linked = _link_model(dest, repo_id, ollama_tag)
+    for destination in entry.get("custom_links") or []:
+        if not isinstance(destination, str):
+            continue
+        try:
+            linker.link_file(dest, Path(destination))
+        except (linker.LinkError, OSError) as error:
+            err_console.print(
+                f"[warning]{filename}: custom link at {destination} could not be "
+                f"refreshed: {error}[/warning]"
+            )
     registry.upsert_entry(
         filename,
         sha256=new_sha256,
