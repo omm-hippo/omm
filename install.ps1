@@ -19,9 +19,11 @@ if ($currentDirectory -eq $OmmHome -or $currentDirectory.StartsWith($homePrefix,
 }
 $SourcesDir = Join-Path $OmmHome "sources"
 
-# Set $env:OMM_INSTALL_BRANCH before piping this script into iex to install
-# from a branch other than the repo default (e.g. to try a beta build).
-$Branch = $env:OMM_INSTALL_BRANCH
+# The repo default branch is `beta` (the trunk). A fresh install tracks the
+# stable channel = `main`; set $env:OMM_INSTALL_BRANCH = "beta" before piping
+# this script into iex to try a beta build. `omm setting version` switches
+# channels afterward.
+$Branch = if ($env:OMM_INSTALL_BRANCH) { $env:OMM_INSTALL_BRANCH } else { "main" }
 
 # Trust anchor for the signature check below - must stay identical to
 # src/omm/trust/allowed_signers in the repo (that copy is what `omm
@@ -634,11 +636,8 @@ if ($NewPipxPresent -and (
 New-Item -ItemType Directory -Force -Path $SourcesDir | Out-Null
 $StagingDir = Join-Path $SourcesDir ("checkout-" + $PID + "-" + [guid]::NewGuid().ToString("N"))
 Write-Host "Cloning omm source to a versioned staging directory ..."
-$CloneArgs = @("clone", "--filter=blob:none", "--quiet")
-if ($Branch) {
-    Write-Host "Using branch: $Branch"
-    $CloneArgs += @("-b", $Branch)
-}
+Write-Host "Using branch: $Branch"
+$CloneArgs = @("clone", "--filter=blob:none", "--quiet", "-b", $Branch, "--single-branch")
 $CloneArgs += @($RepoUrl, $StagingDir)
 git @CloneArgs
 if ($LASTEXITCODE -ne 0) {

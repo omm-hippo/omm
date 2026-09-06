@@ -4,6 +4,10 @@
 set -eu
 
 REPO_URL="https://github.com/omm-hippo/omm.git"
+# The repo default branch is `beta` (the trunk). A fresh install tracks the
+# stable channel = `main`; set OMM_INSTALL_BRANCH=beta to try a beta build.
+# `omm setting version` switches channels afterward.
+OMM_INSTALL_BRANCH="${OMM_INSTALL_BRANCH:-main}"
 OMM_HOME="${OMM_HOME:-$HOME/.omm}"
 SOURCES_DIR="$OMM_HOME/sources"
 case "$OMM_HOME" in
@@ -608,7 +612,7 @@ mkdir -p "$SOURCES_DIR"
 STAGING_DIR="$SOURCES_DIR/checkout.$$"
 rm -rf "$STAGING_DIR"
 echo "Cloning omm source to a versioned staging directory ..."
-git clone --filter=blob:none --quiet "$REPO_URL" "$STAGING_DIR"
+git clone --filter=blob:none --quiet --branch "$OMM_INSTALL_BRANCH" --single-branch "$REPO_URL" "$STAGING_DIR"
 
 echo "Verifying commit signature ..."
 head_commit=$(git -C "$STAGING_DIR" rev-parse HEAD)
