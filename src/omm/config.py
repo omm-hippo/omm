@@ -74,13 +74,20 @@ LEGACY_MODEL_URLS = frozenset(
         "https://raw.githubusercontent.com/minigu5/Localfit/main/published/recommend-model.json",
         "https://raw.githubusercontent.com/minigu5/Omm/main/published/recommend-model.json",
         "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.json",
+        # Served off `main` until the branch redesign (2026-09-06) that made
+        # `beta` the trunk. `main` now only moves on a release cut, so the
+        # published artifacts (never consumed via `omm update`, independently
+        # Ed25519-verified) are served off `beta` to stay current.
+        "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.json",
     }
 )
 # Same idea as LEGACY_MODEL_URLS, for the signed manifest URL after the
-# recommend-model.json -> localfit-recommend-model.json artifact rename.
+# recommend-model.json -> localfit-recommend-model.json artifact rename and
+# after the 2026-09-06 main -> beta serving switch.
 LEGACY_MANIFEST_URLS = frozenset(
     {
         "https://raw.githubusercontent.com/omm-hippo/omm/main/published/recommend-model.manifest.json",
+        "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.manifest.json",
     }
 )
 
@@ -109,10 +116,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # has no interaction point.
     "usage_stats_policy": None,
     "rules_url": None,
-    "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.json",
+    "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/beta/published/localfit-recommend-model.json",
     "default_engine": None,
     "external_scan_done": False,
-    "catalog_manifest_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.manifest.json",
+    "catalog_manifest_url": "https://raw.githubusercontent.com/omm-hippo/omm/beta/published/localfit-recommend-model.manifest.json",
     "catalog_public_key": "p8uo6GFXDcg8Rp7/t8GGl5hwPsXhObY5vI1sll5KpaI=",
     "contribute_always_ack": False,
     "update_channel": "stable",
