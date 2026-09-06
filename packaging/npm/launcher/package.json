@@ -1,6 +1,6 @@
 {
   "name": "@omm-hippo/omm",
-  "version": "0.3.52",
+  "version": "0.3.53",
   "description": "npm launcher for the Open Model Manager CLI",
   "license": "MIT",
   "private": true,
