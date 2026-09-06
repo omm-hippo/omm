@@ -48,3 +48,14 @@ def test_consent_text_covers_every_payload_concept(isolated_omm_home):
     text = onboarding._DATA_SHARING_TEXT.lower()
     for concept in ("version", "install", "os", "cpu", "ram", "vram", "gpu", "command"):
         assert concept in text, concept
+
+
+def test_cancelled_prompt_changes_nothing(isolated_omm_home, monkeypatch):
+    """Escape (questionary's `.ask()` returns None) is "not now", not "never":
+    nothing is recorded, so the question can be asked again later."""
+    monkeypatch.setattr(onboarding, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(onboarding, "_confirm_data_sharing", lambda default: None)
+    onboarding.run_data_sharing_step(_console())
+    cfg = config.load_config()
+    assert cfg.get("usage_stats_policy") is None
+    assert cfg.get("error_report_send_policy") is None

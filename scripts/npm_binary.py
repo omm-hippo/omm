@@ -17,6 +17,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import npm_package  # noqa: E402  (needs the sys.path fixup above)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY_SCRIPT = Path(__file__).resolve().with_name("npm_entry.py")
@@ -28,15 +34,6 @@ TARGETS = {
     ("darwin", "x64"): "darwin-x64",
     ("linux", "arm64"): "linux-arm64-gnu",
     ("linux", "x64"): "linux-x64-gnu",
-}
-MAGIC_PREFIXES = {
-    "darwin": {
-        bytes.fromhex("cffaedfe"),
-        bytes.fromhex("feedfacf"),
-        bytes.fromhex("cafebabe"),
-        bytes.fromhex("cafebabf"),
-    },
-    "linux": {bytes.fromhex("7f454c46")},
 }
 
 
@@ -114,14 +111,24 @@ def build_environment() -> dict[str, str]:
     return environment
 
 
-def _validate_magic(executable: Path, target: str) -> None:
+def _validate_architecture(executable: Path, target: str) -> None:
+    """Reject a build whose executable header does not match `target`.
+
+    Delegates to `npm_package.validate_binary_format`, the same CPU-aware
+    check (Mach-O cputype, ELF e_machine, PE Machine) staging uses, so a
+    binary built on the wrong runner architecture fails here with the exact
+    message staging would give it later.
+    """
     if not executable.is_file() or executable.is_symlink():
         raise NpmBinaryError(f"missing regular executable: {executable}")
-    with executable.open("rb") as stream:
-        prefix = stream.read(4)
-    os_name = "darwin" if target.startswith("darwin-") else "linux"
-    if not any(prefix.startswith(magic) for magic in MAGIC_PREFIXES[os_name]):
-        raise NpmBinaryError(f"executable does not match target {target}")
+    target_map = npm_package.targets()
+    expected = target_map.get(target)
+    if expected is None:
+        raise NpmBinaryError(f"unsupported npm target: {target!r}")
+    try:
+        npm_package.validate_binary_format(executable, expected)
+    except npm_package.NpmPackageError as error:
+        raise NpmBinaryError(str(error)) from error
 
 
 def _run_probe(executable: Path, flag: str) -> subprocess.CompletedProcess[str]:
@@ -148,7 +155,7 @@ def _run_probe(executable: Path, flag: str) -> subprocess.CompletedProcess[str]:
 
 
 def validate_executable(executable: Path, target: str, version: str) -> None:
-    _validate_magic(executable, target)
+    _validate_architecture(executable, target)
     version_result = _run_probe(executable, "--version")
     version_lines = f"{version_result.stdout}\n{version_result.stderr}".splitlines()
     if f"omm {version}" not in {line.strip() for line in version_lines}:

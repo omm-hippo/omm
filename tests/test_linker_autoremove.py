@@ -144,6 +144,38 @@ def test_autoremove_ollama_removes_unowned_broken_blob_and_manifest(isolated_omm
     assert not manifest.exists()
 
 
+def test_autoremove_ollama_cleans_every_broken_tag_and_preserves_live_tags(
+    isolated_omm_home, tmp_path, requires_symlink_support
+):
+    models_dir = tmp_path / "ollama"
+    blobs_dir = models_dir / "blobs"
+    blobs_dir.mkdir(parents=True)
+    broken_digest = "a" * 64
+    live_digest = "b" * 64
+    broken_blob = blobs_dir / f"sha256-{broken_digest}"
+    broken_blob.symlink_to(tmp_path / "gone.gguf")
+    live_blob = blobs_dir / f"sha256-{live_digest}"
+    live_blob.write_bytes(b"keep model data")
+    model_dir = models_dir / "manifests" / "registry.ollama.ai" / "acme" / "model"
+    model_dir.mkdir(parents=True)
+    for tag in ("latest", "q4_k_m", "7b"):
+        (model_dir / tag).write_text(
+            json.dumps({"layers": [{"digest": f"sha256:{broken_digest}"}]}),
+            encoding="utf-8",
+        )
+    live_manifest = model_dir / "q8_0"
+    live_manifest.write_text(
+        json.dumps({"layers": [{"digest": f"sha256:{live_digest}"}]}),
+        encoding="utf-8",
+    )
+
+    assert linker.autoremove_ollama(models_dir) == (1, 3)
+
+    assert sorted(path.name for path in model_dir.iterdir()) == ["q8_0"]
+    assert live_blob.read_bytes() == b"keep model data"
+    assert not broken_blob.is_symlink()
+
+
 def test_autoremove_ollama_preserves_unowned_but_still_valid_blob_and_manifest(
     isolated_omm_home, tmp_path, monkeypatch
 ):

@@ -13,6 +13,7 @@ from omm import calibration, catalog
 from omm.atomic import atomic_write_bytes, atomic_write_text, locked
 from omm.config import RECOMMEND_MODEL_PATH
 from omm.featurize import (
+    positive_finite_number,
     FEATURE_ORDER,
     build_features,
     candidate_active_parameter_count_billions,
@@ -24,10 +25,6 @@ from omm.featurize import (
 from omm.hardware import HardwareInfo, calculate_memory_budget
 from omm.mltree import predict_ensemble_range
 from omm.tuning import RuntimeProfile, recommend_runtime_settings
-
-
-class ModelFetchError(Exception):
-    pass
 
 
 MODEL_MEMORY_OVERHEAD = 1.2
@@ -170,14 +167,9 @@ def available_model_memory_gb(hw: HardwareInfo) -> float:
 
 def estimate_required_memory_gb(candidate: dict) -> float | None:
     """Estimate model weights plus runtime overhead from verified metadata."""
-    size_bytes = candidate.get("size_bytes")
-    if (
-        isinstance(size_bytes, (int, float))
-        and not isinstance(size_bytes, bool)
-        and math.isfinite(size_bytes)
-        and size_bytes > 0
-    ):
-        return float(size_bytes) / (1024**3) * MODEL_MEMORY_OVERHEAD
+    size_bytes = positive_finite_number(candidate.get("size_bytes"))
+    if size_bytes is not None:
+        return size_bytes / (1024**3) * MODEL_MEMORY_OVERHEAD
 
     parameters = candidate_parameter_count_billions(candidate)
     quant_bits = candidate_quant_bits(candidate)

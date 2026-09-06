@@ -24,6 +24,26 @@ def _all_linked(**overrides) -> dict:
     return linked
 
 
+def test_scan_jan_skips_non_utf8_manifest_without_losing_valid_models(
+    tmp_path, monkeypatch
+):
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    corrupt = models_dir / "corrupt" / "model.yml"
+    corrupt.parent.mkdir(parents=True)
+    corrupt.write_bytes(b"model_path: \xff\n")
+    model = tmp_path / "valid.gguf"
+    model.write_bytes(b"model data")
+    valid = models_dir / "valid" / "model.yml"
+    valid.parent.mkdir()
+    valid.write_text(f"model_path: {json.dumps(str(model))}\n", encoding="utf-8")
+
+    assert [entry.path for entry in scan_import.scan_jan()] == [model]
+    assert [entry.path for entry in scan_import._scan_jan_identities()] == [model]
+    assert linker.autoremove_jan() == 0
+    assert corrupt.read_bytes() == b"model_path: \xff\n"
+
+
 def _write_manifest(manifests_root, namespace, name, tag, digest_hex, size=100):
     manifest_dir = manifests_root / "registry.ollama.ai" / namespace / name
     manifest_dir.mkdir(parents=True)
@@ -576,3 +596,33 @@ def test_adopt_group_restores_duplicate_when_link_creation_fails(isolated_omm_ho
         scan_import.adopt_group(group)
     assert external.read_bytes() == payload
     assert not list(tmp_path.glob(".external.gguf.omm-import-*"))
+
+
+def test_adopt_group_removes_partial_hub_copy_when_move_fails(isolated_omm_home, tmp_path, monkeypatch):
+    """A cross-volume move copies first, so a failure part-way used to leave
+    the half-written hub file behind as an unregistered orphan while the
+    original was restored."""
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"scanned bytes")
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "import", "model.gguf", external, external.stat().st_size, digest
+            )
+        ],
+    )
+
+    def failing_move(src, dst):
+        Path(dst).write_bytes(Path(src).read_bytes()[:5])
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(scan_import.shutil, "move", failing_move)
+
+    with pytest.raises(OSError):
+        scan_import.adopt_group(group)
+
+    assert external.read_bytes() == b"scanned bytes"
+    assert not list((isolated_omm_home / "models").glob("*.gguf"))
+    assert not list(tmp_path.glob(".model.gguf.omm-import-*"))

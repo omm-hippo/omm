@@ -11,10 +11,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from functools import lru_cache
-import re
 from urllib.parse import quote_plus
 
-from omm.providers.base import ModelResolutionError, coerce_count, first_str, prune_metadata
+from omm.providers.base import (
+    ModelResolutionError,
+    coerce_count,
+    first_str,
+    normalize_sha256,
+    prune_metadata,
+)
 
 MS_MODEL = "https://modelscope.cn/api/v1/models/{repo_id}"
 MS_REPO_FILES = "https://modelscope.cn/api/v1/models/{repo_id}/repo/files"
@@ -181,9 +186,5 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
         return None
     for f in files:
         if f.get("Path") == filename:
-            sha = f.get("Sha256")
-            if not isinstance(sha, str):
-                return None
-            digest = sha.removeprefix("sha256:").lower()
-            return digest if re.fullmatch(r"[0-9a-f]{64}", digest) else None
+            return normalize_sha256(f.get("Sha256"))
     return None

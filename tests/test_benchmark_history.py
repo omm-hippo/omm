@@ -228,3 +228,16 @@ def test_unreadable_cooldown_timestamp_never_suppresses_forever(isolated_omm_hom
     path.write_text(json.dumps(data))
 
     assert benchmark_history.failure_cooldowns() == {}
+
+
+def test_corrupt_history_is_backed_up_before_being_reset(isolated_omm_home):
+    """Like config.json/models.json: an unreadable file is preserved, not
+    silently replaced by the next record with an empty history."""
+    path = isolated_omm_home / "benchmark_history.json"
+    path.write_text("{not json")
+
+    assert benchmark_history.loaded_refs() == set()
+
+    backups = list(isolated_omm_home.glob("benchmark_history.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == "{not json"

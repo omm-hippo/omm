@@ -199,21 +199,32 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def load_config() -> dict[str, Any]:
-    ensure_omm_home()
+def _read_config_data() -> dict[str, Any]:
+    """Read saved fields, preserving corrupt bytes before falling back."""
     if not CONFIG_PATH.exists():
-        fresh = {**DEFAULT_CONFIG, "onboarding_completed": False}
-        save_config(fresh)
-        return fresh
+        return {}
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         backup_corrupt_file(CONFIG_PATH)
-        return dict(DEFAULT_CONFIG)
+        return {}
     if not isinstance(data, dict):
         backup_corrupt_file(CONFIG_PATH)
-        return dict(DEFAULT_CONFIG)
-    return _merge_config(data)
+        return {}
+    return data
+
+
+def load_config() -> dict[str, Any]:
+    ensure_omm_home()
+    if not CONFIG_PATH.exists():
+        with locked(CONFIG_PATH):
+            # A concurrent setting command may have initialized the file
+            # after the first check. Never replace its choices with defaults.
+            if not CONFIG_PATH.exists():
+                fresh = {**DEFAULT_CONFIG, "onboarding_completed": False}
+                atomic_write_text(CONFIG_PATH, json.dumps(fresh, indent=2) + "\n")
+                return fresh
+    return _merge_config(_read_config_data())
 
 
 def save_config(config: dict[str, Any]) -> None:
@@ -226,17 +237,7 @@ def update_config(**changes: Any) -> dict[str, Any]:
     """Merge a small update while serializing the complete read/write cycle."""
     ensure_omm_home()
     with locked(CONFIG_PATH):
-        data: dict[str, Any] = {}
-        if CONFIG_PATH.exists():
-            try:
-                loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    data = loaded
-                else:
-                    backup_corrupt_file(CONFIG_PATH)
-            except (OSError, ValueError):
-                backup_corrupt_file(CONFIG_PATH)
-        current = _merge_config(data)
+        current = _merge_config(_read_config_data())
         current.update(changes)
         atomic_write_text(CONFIG_PATH, json.dumps(current, indent=2) + "\n")
     return current
@@ -249,14 +250,16 @@ def client_id() -> str:
     returns a fresh ephemeral id rather than raising, so its only caller
     (omm.usage) never has to handle an exception."""
     try:
-        if CLIENT_ID_PATH.exists():
-            existing = CLIENT_ID_PATH.read_text(encoding="utf-8").strip()
+        with locked(CLIENT_ID_PATH):
+            try:
+                existing = CLIENT_ID_PATH.read_text(encoding="utf-8").strip()
+            except (FileNotFoundError, UnicodeError):
+                existing = ""
             if len(existing) == 32 and all(c in "0123456789abcdef" for c in existing):
                 return existing
-        fresh = uuid.uuid4().hex
-        CLIENT_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(CLIENT_ID_PATH, fresh + "\n")
-        return fresh
+            fresh = uuid.uuid4().hex
+            atomic_write_text(CLIENT_ID_PATH, fresh + "\n")
+            return fresh
     except OSError:
         return uuid.uuid4().hex
 
@@ -272,17 +275,7 @@ def add_storage_saved_bytes(delta: int) -> int:
         raise ValueError("storage saved byte delta must be a non-negative integer")
     ensure_omm_home()
     with locked(CONFIG_PATH):
-        data: dict[str, Any] = {}
-        if CONFIG_PATH.exists():
-            try:
-                loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    data = loaded
-                else:
-                    backup_corrupt_file(CONFIG_PATH)
-            except (OSError, ValueError):
-                backup_corrupt_file(CONFIG_PATH)
-        current = _merge_config(data)
+        current = _merge_config(_read_config_data())
         total = int(current["storage_saved_bytes"]) + delta
         current["storage_saved_bytes"] = total
         atomic_write_text(CONFIG_PATH, json.dumps(current, indent=2) + "\n")

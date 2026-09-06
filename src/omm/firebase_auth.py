@@ -44,7 +44,7 @@ def _load_cache() -> dict[str, Any]:
     try:
         with locked(path, timeout=10):
             loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError, FileLockTimeout):
+    except (OSError, ValueError, FileLockTimeout):
         return {}
     return loaded if isinstance(loaded, dict) else {}
 

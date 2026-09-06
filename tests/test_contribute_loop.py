@@ -188,6 +188,7 @@ def test_keyboard_interrupt_before_download_starts_does_not_crash(isolated_omm_h
     # (NameError on the first iteration) nor clean up a stale one.
     queue = _FakeQueue([_candidate(filename="never-downloaded.gguf")])
     stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", lambda candidate, **kwargs: None)
     monkeypatch.setattr(
         cli, "validate_provider", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt())

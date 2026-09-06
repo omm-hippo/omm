@@ -26,6 +26,16 @@ class InstallationStatus:
 NOT_INSTALLED = InstallationStatus()
 
 
+def _linked_engines(entry: dict) -> tuple[str, ...]:
+    """Engine keys a registry entry is linked into, in ENGINES order."""
+    linked = entry.get("linked")
+    return tuple(
+        spec.key
+        for spec in linker.ENGINES
+        if isinstance(linked, dict) and linked.get(spec.key) is True
+    )
+
+
 def _normalized(value: object) -> str:
     return str(value).strip().replace("\\", "/").casefold()
 
@@ -78,12 +88,7 @@ def _managed_status(candidate: dict, reg: dict) -> InstallationStatus | None:
             continue
         if not _managed_file_exists(filename):
             continue
-        linked = entry.get("linked")
-        engines = tuple(
-            spec.key
-            for spec in linker.ENGINES
-            if isinstance(linked, dict) and linked.get(spec.key) is True
-        )
+        engines = _linked_engines(entry)
         return InstallationStatus(True, True, engines, filename, "exact")
     return None
 
@@ -125,12 +130,7 @@ def _managed_model_identity_status(
         }
         if not candidate_identities & installed_identities:
             continue
-        linked = entry.get("linked")
-        engines = tuple(
-            spec.key
-            for spec in linker.ENGINES
-            if isinstance(linked, dict) and linked.get(spec.key) is True
-        )
+        engines = _linked_engines(entry)
         return InstallationStatus(
             True,
             True,

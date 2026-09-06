@@ -2,6 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## PR 설명은 한국어로, 사람을 위해 쓴다 (필수)
+
+팀원 모두 AI 에이전트로 개발하고 PR을 올린다. AI가 쓴 영어 PR 본문은 그 세션에 없던 사람이 읽으면
+무슨 맥락에서 나온 변경인지 알 수 없다. 그래서 PR 본문은 **반드시** 아래 네 항목을 이 순서로,
+한국어로, 개발자가 아닌 팀원도 읽을 수 있게 먼저 쓴다. 영어 기술 세부는 그 뒤에 붙여도 된다.
+CI 체크 `PR 설명 확인`(`.github/workflows/pr-description-check.yml`)이 이 구조와 한국어 분량을 검사한다.
+
+- `## 한줄 요약` — 이 PR이 무엇을 하는지 한 문장.
+- `## 배경` — 왜 이 변경이 나왔는지: 어떤 이슈·버그·대화·리뷰에서 시작됐는지 (맥락).
+- `## 무엇을 바꿨나` — 바꾼 것을 쉬운 말로. 함수·파일 이름은 꼭 필요할 때만.
+- `## 어떻게 확인했나` — 실행한 명령과 결과. 못 해본 경로는 "미검증"으로 적는다.
+
+커밋 제목은 영어 conventional 형식 그대로 둔다. PR 본문은 커밋 메시지의 번역이 아니라 "이 세션에
+없던 사람에게 하는 설명"이다. `gh pr create --body-file`로 올릴 때도 같은 구조를 쓴다
+(`.github/PULL_REQUEST_TEMPLATE.md`가 그 틀이다).
+
 ## What this is
 
 `omm` (Open source Model Manager) — an apt/brew-style CLI package manager for local GGUF LLMs.
@@ -32,8 +48,9 @@ generation.
   auto-merges `origin/main` into `beta` on every push to `main`, SSH-signed by the retrain bot key
   (in `allowed_signers`) so beta `omm update` clients verify it. It only needs a human when that
   merge hits a conflict — the job fails loudly and you resolve it with a local `git merge origin/main`
-  → push. `branch-ancestry-check.yml` stays as the post-hoc safety net. Most feature work targets
-  `beta`.
+  → push. `branch-ancestry-check.yml` stays as the post-hoc safety net; it polls through a ~3-minute
+  grace window on a `main` push so it only goes red when `sync-beta.yml` genuinely couldn't catch up.
+  Most feature work targets `beta`.
 - **Committing freely is fine; pushing is always a separate explicit ask.** Wait for it every time.
 - The user runs multiple Claude sessions against this checkout at once. Re-check `git log -5` /
   `git status` right before committing. Only ever `git add <your own filenames>` — never `-A` / `.`.
@@ -136,12 +153,16 @@ algorithm strands every already-installed client; such users need a manual
 `cd ~/.omm/src && git fetch origin && git reset --hard origin/main` bridge.
 
 **Releases.** Pushing a signed `v<version>` tag into `main` history is the release trigger.
-`release.yml` (PyPI + Homebrew dispatch) and `npm-release.yml` fire on it, and `github-release.yml`
-creates the GitHub Release itself: it re-verifies the tag signature against `trust/allowed_signers`,
-matches the tag to `pyproject` version, requires the tag to point into `main` history, then runs
-`gh release create --generate-notes`. No reviewer-approval gate — pushing a valid signed tag is
-enough. Windows portable ZIP and the
-`whl`/`tar.gz`/`SHA256SUMS` assets are still attached manually (`windows-portable.yml` dispatch).
+`release.yml` (PyPI + asynchronous Homebrew dispatch), `npm-release.yml`, and
+`windows-portable.yml` fire on it. All release paths use `release_artifacts.py verify-release` to
+check the allowed tag signature, exact project version and checkout, and `main` ancestry.
+The Python and Windows workflows each call the reusable `github-release.yml` only after their own
+validation gates pass. They add wheel, sdist, `SHA256SUMS`, Windows ZIP, and ZIP checksum to one
+draft; it is published only after all five remote assets pass checksum verification. Existing
+asset bytes are never replaced by a rerun. The reusable publisher verifies that checksums cover
+every expected filename. Its Windows job tests installation and uninstallation using a local
+WinGet manifest pointing to the public archive, regardless of which asset set arrives last.
+This does not submit the manifest to the WinGet community repository.
 
 **Telemetry.** `benchmark.py` measures real tokens/sec via Ollama's `/api/generate`;
 `contribute.py` runs an unattended benchmark loop (auto start/stop of the Ollama daemon under
@@ -188,5 +209,5 @@ Check these before assuming undocumented intent behind a feature's shape.
   owning script.
 - `.github/workflows/` — `ci.yml` (6 required checks), `train.yml`, per-runner `ci-engine-*.yml`,
   `trusted-head.yml` / `branch-ancestry-check.yml` (branch protection), `github-release.yml`
-  (auto GitHub Release on a signed tag), release/npm/portable.
+  (asset-backed reusable Release publisher), release/npm/portable.
 - `demo/model-visualizer/` — standalone React demo of the RandomForest walk; not shipped.

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -55,6 +56,21 @@ def policy(config_data: dict[str, Any] | None = None) -> str:
     return "enabled" if data.get("usage_stats_policy") == "enabled" else "never"
 
 
+def _recording_enabled_read_only() -> bool:
+    """Check opt-in without creating, migrating, or repairing config.
+
+    ``record_run`` executes in ``cli.main()``'s finalizer, including for
+    eager help/version and usage-error paths. Usage collection is off by
+    default, so an absent or unreadable config must be a side-effect-free
+    opt-out rather than a reason to create ``config.json``.
+    """
+    try:
+        loaded = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(loaded, dict) and policy(loaded) == "enabled"
+
+
 # --- collection --------------------------------------------------------
 
 
@@ -76,7 +92,7 @@ def record_run(subcommand: str, outcome: str, error_class: str | None) -> None:
     """Append one row for this invocation. No-op unless opted in. No
     network. Swallows all errors."""
     try:
-        if policy() != "enabled":
+        if not _recording_enabled_read_only():
             return
         row = {"c": str(subcommand)[:40], "o": str(outcome)[:20]}
         if error_class and outcome == "failed":
@@ -130,7 +146,9 @@ def _gpu_vendor(gpu_name: str | None) -> str:
     if not gpu_name:
         return "none"
     low = gpu_name.lower()
-    if "apple" in low or "m1" in low or "m2" in low or "m3" in low or "m4" in low:
+    # Apple chips are "M1".."M5" as a standalone token; a bare substring
+    # check also matched model numbers like "Quadro M2000M" or "FirePro M4000".
+    if "apple" in low or re.search(r"(?<![a-z0-9])m[1-9](?![a-z0-9])", low):
         return "apple"
     if any(m in low for m in ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla")):
         return "nvidia"

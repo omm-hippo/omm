@@ -247,3 +247,15 @@ def test_uninstall_keeps_registry_when_model_file_cannot_be_removed(
     assert dest.exists()
     assert "Could not remove" in result.stderr
     assert "Removed" not in result.stdout
+
+
+def test_lookup_entry_reports_the_gguf_name_it_tried_on_a_miss(isolated_omm_home):
+    registry.save_registry({"a.gguf": {"linked": {"lmstudio": False, "ollama": False}}})
+    reg = registry.load_registry()
+
+    filename, entry = cli._lookup_entry("a", reg)
+    assert filename == "a.gguf"
+    assert entry is not None
+
+    assert cli._lookup_entry("missing", reg) == ("missing.gguf", None)
+    assert cli._lookup_entry("missing.gguf", reg) == ("missing.gguf", None)

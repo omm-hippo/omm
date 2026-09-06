@@ -291,6 +291,9 @@ class LoopbackJsonClient:
                 json=payload,
                 headers=dict(self._headers),
                 timeout=timeout,
+                # The validated loopback origin is the entire trust boundary.
+                # Following a 307/308 could resend prompts to another server.
+                allow_redirects=False,
             )
         except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as error:
             transport_kind = (
@@ -322,6 +325,10 @@ class LoopbackJsonClient:
                 "status": getattr(response, "status_code", None),
             },
         )
+        if 300 <= response.status_code < 400:
+            raise RuntimeAdapterError(
+                default_failure, "the local runtime returned an unexpected redirect"
+            )
         if not response.ok:
             message = self._response_message(response)
             reason = self._classify(message, default_failure)

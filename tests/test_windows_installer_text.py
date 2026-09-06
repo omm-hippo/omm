@@ -328,3 +328,16 @@ def test_powershell_verifiers_use_stdin_instead_of_multiline_dash_c():
     for script in (installer, uninstaller):
         assert "$OmmEnvironmentVerifier | & $environmentPython -" in script
         assert "-c $OmmEnvironmentVerifier" not in script
+
+
+def test_uninstaller_accepts_pipx_exe_app_name_like_installer():
+    """pipx on Windows records apps as launcher filenames ("omm.exe").
+    install.ps1 accepts both spellings; uninstall.ps1 must too, or a real
+    Windows uninstall fails its identity verification every time."""
+    install = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    uninstall = (ROOT / "uninstall.ps1").read_text(encoding="utf-8")
+
+    accepted = '$_ -in @("omm", "omm.exe")'
+    assert accepted in install
+    assert accepted in uninstall
+    assert '$_ -ceq "omm" }' not in uninstall

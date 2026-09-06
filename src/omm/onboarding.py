@@ -309,7 +309,9 @@ Default is OFF. Change any time with `omm setting upload`.
 Full details: https://github.com/omm-hippo/omm/blob/main/PRIVACY.md"""
 
 
-def _confirm_data_sharing(default: bool) -> bool:
+def _confirm_data_sharing(default: bool) -> bool | None:
+    """True/False for an answer; None when the prompt was cancelled
+    (questionary turns the Escape/Ctrl+C abort into a None result)."""
     import questionary
 
     question = _add_escape_to_cancel(
@@ -317,7 +319,7 @@ def _confirm_data_sharing(default: bool) -> bool:
             "Send anonymous usage data + crash reports?", default=default
         )
     )
-    return bool(question.ask())
+    return question.ask()
 
 
 def run_data_sharing_step(console: Console) -> None:
@@ -338,7 +340,11 @@ def run_data_sharing_step(console: Console) -> None:
     try:
         said_yes = _confirm_data_sharing(current)
     except Exception:
-        # Escape-to-cancel or a questionary failure: change nothing.
+        # A questionary failure: change nothing.
+        return
+    if said_yes is None:
+        # Escape-to-cancel is not an answer: record nothing, so the next
+        # `omm update` may ask again (an explicit "No" is remembered).
         return
     if said_yes:
         changes: dict[str, object] = {"usage_stats_policy": "enabled"}

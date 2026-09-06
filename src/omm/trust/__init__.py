@@ -310,6 +310,13 @@ def verify_update(
     when their second parent is trusted and ``git merge-tree`` reproduces the
     exact target tree.
     """
+    if current_commit and target_commit == current_commit:
+        # Nothing to update: the target is the commit already checked out
+        # and running. Re-verifying it would reject the common case where
+        # it is an unsigned two-parent merge that the lineage walk below
+        # accepted when it was installed - the walk from a commit to
+        # itself is empty, so it used to fail a no-op `omm update`.
+        return True, f"commit {target_commit[:7]} is already the installed commit"
     ok, direct_message = verify_commit(repo_dir, target_commit, allowed_signers)
     if current_commit and target_commit != current_commit:
         target_is_ancestor = _is_ancestor(repo_dir, target_commit, current_commit)

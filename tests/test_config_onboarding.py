@@ -36,3 +36,25 @@ def test_marking_onboarding_complete_persists(isolated_omm_home):
 
 def test_default_config_includes_dark_theme_fallback():
     assert config.DEFAULT_CONFIG["theme"] == "dark"
+
+
+def test_first_read_preserves_settings_created_concurrently(isolated_omm_home, monkeypatch):
+    from pathlib import Path
+
+    original_exists = Path.exists
+    intervened = False
+
+    def exists_with_concurrent_writer(path):
+        nonlocal intervened
+        existed = original_exists(path)
+        if path == config.CONFIG_PATH and not existed and not intervened:
+            intervened = True
+            config.update_config(default_engine="lmstudio", usage_stats_policy="never")
+        return existed
+
+    monkeypatch.setattr(Path, "exists", exists_with_concurrent_writer)
+    loaded = config.load_config()
+
+    assert loaded["default_engine"] == "lmstudio"
+    assert loaded["usage_stats_policy"] == "never"
+    assert config.load_config()["usage_stats_policy"] == "never"

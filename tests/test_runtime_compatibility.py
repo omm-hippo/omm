@@ -183,3 +183,17 @@ def test_registry_preserves_other_engine_and_old_entries(isolated_omm_home):
 def test_record_compatibility_rejects_missing_registry_entry(isolated_omm_home):
     with pytest.raises(KeyError):
         registry.record_compatibility("missing.gguf", "ollama", {"status": "failed"})
+
+
+def test_probe_failure_reason_survives_a_failed_unload():
+    result = _verify(_FakeAdapter(generate_reason="out_of_memory", unloads=False))
+
+    assert result.status == "failed"
+    assert result.failure_reason == "out_of_memory"
+
+
+def test_probe_failure_reason_survives_an_unload_exception():
+    result = _verify(_FakeAdapter(generate_reason="out_of_memory", unload_reason="unload_failed"))
+
+    assert result.status == "failed"
+    assert result.failure_reason == "out_of_memory"

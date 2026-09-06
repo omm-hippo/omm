@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from omm import config
-from omm.atomic import atomic_write_text, locked
+from omm.atomic import atomic_write_text, backup_corrupt_file, locked
 
 # Failure reasons that describe *this machine right now* rather than the
 # model: the memory guard cancelled the run, the runtime could not allocate,
@@ -66,9 +66,16 @@ def _load() -> dict[str, Any]:
         return {"entries": {}, "failures": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError:
+        return {"entries": {}, "failures": {}}
+    except ValueError:
+        # Keep the unreadable file (as config.json/models.json do) instead
+        # of letting the next record overwrite every earlier benchmark
+        # with a fresh, empty history.
+        backup_corrupt_file(path)
         return {"entries": {}, "failures": {}}
     if not isinstance(data, dict):
+        backup_corrupt_file(path)
         return {"entries": {}, "failures": {}}
     entries = data.get("entries")
     failures = data.get("failures")

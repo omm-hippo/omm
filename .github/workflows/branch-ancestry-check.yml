@@ -24,13 +24,26 @@ jobs:
           fetch-depth: 0
       - name: Check that beta contains every commit on main
         run: |
-          git fetch origin main beta
-          if ! git merge-base --is-ancestor origin/main origin/beta; then
-            echo "::error::main is not an ancestor of beta - the branches have diverged."
-            echo "This breaks omm's update-channel signature verification"
-            echo "(verify_update in src/omm/trust/__init__.py can only walk"
-            echo "forward from a shared ancestor). Merge origin/main into beta"
-            echo "to restore the invariant - see the beta-stays-ahead-of-main"
-            echo "convention."
-            exit 1
-          fi
+          set -euo pipefail
+          # A push to main races sync-beta.yml, which ports the new commit into
+          # beta within ~20s. Poll through a grace window so an ordinary main
+          # merge does not flash red before that lands. A real divergence -
+          # sync-beta hit a merge conflict and left beta behind - still fails
+          # once the window expires, which is when a human is genuinely needed.
+          for attempt in $(seq 1 18); do
+            git fetch --quiet origin main beta
+            if git merge-base --is-ancestor origin/main origin/beta; then
+              echo "beta contains every commit on main."
+              exit 0
+            fi
+            echo "beta is behind main (attempt ${attempt}/18); waiting for sync-beta.yml..."
+            sleep 10
+          done
+          echo "::error::main is not an ancestor of beta after a 3-minute grace window - the branches have diverged."
+          echo "This breaks omm's update-channel signature verification"
+          echo "(verify_update in src/omm/trust/__init__.py can only walk"
+          echo "forward from a shared ancestor). sync-beta.yml normally ports"
+          echo "main into beta automatically; a lingering divergence means that"
+          echo "merge hit a conflict. Resolve it locally:"
+          echo "  git checkout beta && git merge origin/main && git push origin beta"
+          exit 1

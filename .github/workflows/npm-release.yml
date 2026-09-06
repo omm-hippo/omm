@@ -21,25 +21,30 @@ name: Build, verify, and publish npm release
       - "scripts/npm_entry.py"
       - "scripts/npm_package.py"
       - "scripts/npm_release.py"
+      - "scripts/release_artifacts.py"
+      - "scripts/dependency_parity.py"
+      - "tests/test_dependency_parity.py"
       - "scripts/windows_portable.py"
       - "src/**"
       - "tests/test_npm_binary.py"
       - "tests/test_npm_package.py"
       - "tests/test_npm_release.py"
       - "tests/test_npm_workflow.py"
+      - "tests/test_release_artifacts.py"
       - "LICENSE"
 
 permissions:
   contents: read
 
 concurrency:
-  group: npm-release-${{ github.ref }}
+  group: npm-release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   identity:
     name: Verify npm release identity
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.identity.outputs.version }}
     steps:
@@ -66,9 +71,11 @@ jobs:
             release_tag="${GITHUB_REF_NAME}"
           fi
           test "$release_tag" = "v${OMM_VERSION}"
-          git -c gpg.ssh.allowedSignersFile=src/omm/trust/allowed_signers verify-tag "$release_tag"
           git fetch --no-tags origin main:refs/remotes/origin/main
-          git merge-base --is-ancestor HEAD origin/main
+          # Trust the current main signer list, then verify exact tag/version/HEAD identity.
+          git show origin/main:src/omm/trust/allowed_signers > "$RUNNER_TEMP/allowed_signers"
+          git -c gpg.ssh.allowedSignersFile="$RUNNER_TEMP/allowed_signers" verify-tag "$release_tag"
+          python scripts/release_artifacts.py verify-release --tag "$release_tag"
 
   platform:
     name: Build npm package for ${{ matrix.target }}
@@ -102,6 +109,7 @@ jobs:
       - name: Install the pinned standalone build graph
         run: |
           python -m pip install --disable-pip-version-check --no-input -r requirements-npm-binary.txt
+          python scripts/dependency_parity.py --target "${{ matrix.target }}"
           python -m pip install --disable-pip-version-check --no-input --no-deps --no-build-isolation .
       - name: Build and stage the publishable platform package
         run: |
@@ -141,6 +149,11 @@ jobs:
           package-manager-cache: false
       - name: Install the pinned Windows build graph
         run: python -m pip install --disable-pip-version-check --no-input -r requirements-windows-portable.txt
+      - name: Verify the Windows runtime graph
+        shell: pwsh
+        run: |
+          python scripts/dependency_parity.py --target win32-x64
+          if ($LASTEXITCODE -ne 0) { throw "Windows runtime dependency parity failed" }
       - name: Build and install the exact source wheel
         shell: pwsh
         run: |
@@ -180,6 +193,7 @@ jobs:
     name: Build npm launcher package
     needs: identity
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -209,6 +223,7 @@ jobs:
     name: Verify the complete npm release bundle
     needs: [platform, windows, launcher]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -331,7 +346,9 @@ jobs:
           - os: windows-2025
             target: win32-x64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # 5 attempts x (install + probe), each up to 300s, per REGISTRY_PROBE_ATTEMPTS /
+    # REGISTRY_PROBE_BACKOFF_SECONDS in scripts/npm_release.py -- keep in sync with that retry loop.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -359,3 +376,4 @@ jobs:
           python scripts/npm_release.py smoke-registry
           --version "${OMM_VERSION}"
           --target "${{ matrix.target }}"
+          --previous-version auto

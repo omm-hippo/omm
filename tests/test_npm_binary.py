@@ -7,8 +7,15 @@ from pathlib import Path
 
 import pytest
 
+from npm_headers import _binary
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "scripts"
+if str(SCRIPTS) not in sys.path:
+    # npm_binary.py itself does `import npm_package`; when run normally as
+    # `python scripts/npm_binary.py`, Python auto-adds its own dir to
+    # sys.path[0], but the spec-based load below does not, so add it here.
+    sys.path.insert(0, str(SCRIPTS))
 SPEC = importlib.util.spec_from_file_location(
     "npm_binary", ROOT / "scripts" / "npm_binary.py"
 )
@@ -72,7 +79,7 @@ def test_build_uses_stable_entry_and_reproducible_environment(tmp_path, monkeypa
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "omm").write_bytes(bytes.fromhex("cffaedfe") + b" executable")
+        (output_dir / "omm").write_bytes(_binary("darwin-arm64") + b" executable")
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(npm_binary, "current_target", lambda: "darwin-arm64")
@@ -90,7 +97,7 @@ def test_build_uses_stable_entry_and_reproducible_environment(tmp_path, monkeypa
 
 def test_executable_probe_checks_version_and_help(tmp_path, monkeypatch):
     executable = tmp_path / "omm"
-    executable.write_bytes(bytes.fromhex("7f454c46") + b" executable")
+    executable.write_bytes(_binary("linux-x64-gnu") + b" executable")
     calls = []
 
     def fake_run(command, **kwargs):
@@ -108,13 +115,24 @@ def test_executable_probe_rejects_wrong_format(tmp_path):
     executable = tmp_path / "omm"
     executable.write_bytes(b"not a native executable")
 
-    with pytest.raises(npm_binary.NpmBinaryError, match="does not match target"):
+    with pytest.raises(
+        npm_binary.NpmBinaryError, match="does not match a supported executable format"
+    ):
         npm_binary.validate_executable(executable, "linux-x64-gnu", "1.2.3")
+
+
+def test_executable_probe_rejects_wrong_architecture(tmp_path):
+    """A binary built for the wrong CPU fails with staging's own message."""
+    executable = tmp_path / "omm"
+    executable.write_bytes(_binary("darwin-x64") + b" executable")
+
+    with pytest.raises(npm_binary.NpmBinaryError, match="target requires darwin-arm64"):
+        npm_binary.validate_executable(executable, "darwin-arm64", "1.2.3")
 
 
 def test_executable_probe_rejects_version_prefix_match(tmp_path, monkeypatch):
     executable = tmp_path / "omm"
-    executable.write_bytes(bytes.fromhex("7f454c46") + b" executable")
+    executable.write_bytes(_binary("linux-x64-gnu") + b" executable")
 
     def fake_run(command, **kwargs):
         output = "omm 1.2.30" if command[-1] == "--version" else "Example usage:"
@@ -128,7 +146,7 @@ def test_executable_probe_rejects_version_prefix_match(tmp_path, monkeypatch):
 
 def test_executable_probe_reports_captured_failure_output(tmp_path, monkeypatch):
     executable = tmp_path / "omm"
-    executable.write_bytes(bytes.fromhex("7f454c46") + b" executable")
+    executable.write_bytes(_binary("linux-x64-gnu") + b" executable")
 
     def fake_run(command, **kwargs):
         raise subprocess.CalledProcessError(
@@ -147,3 +165,21 @@ def test_executable_probe_reports_captured_failure_output(tmp_path, monkeypatch)
     assert "--version" in message
     assert "startup output" in message
     assert "loader failure" in message
+
+
+REAL_WINDOWS_BINARY = Path("D:/omm-tmp/npm-binary/omm.exe")
+
+
+@pytest.mark.skipif(
+    not REAL_WINDOWS_BINARY.is_file(), reason="no real Windows binary available"
+)
+def test_architecture_check_accepts_a_real_native_binary():
+    """The shared npm_package helper reads a genuine executable, not just synthetic headers.
+
+    npm_binary itself never builds win32-x64 (owned by the WinGet workflow),
+    but its architecture check now delegates to the same
+    npm_package.validate_binary_format used for every other target, so this
+    pins that the delegation works against a real binary and not only the
+    synthetic headers built above.
+    """
+    npm_binary._validate_architecture(REAL_WINDOWS_BINARY, "win32-x64")

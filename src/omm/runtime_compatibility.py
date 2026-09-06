@@ -72,13 +72,15 @@ def verify_runtime(
         failure_reason = error.reason
     finally:
         if receipt is not None and receipt.loaded_by_omm and not keep_loaded:
+            # Keep the probe's own reason: an out_of_memory generation
+            # followed by a failed unload is still an out_of_memory result.
             try:
                 unload = adapter.unload(receipt)
             except RuntimeAdapterError:
-                failure_reason = "unload_failed"
+                failure_reason = failure_reason or "unload_failed"
             else:
                 if not unload.unloaded:
-                    failure_reason = "unload_failed"
+                    failure_reason = failure_reason or "unload_failed"
 
     return CompatibilityResult(
         adapter.key,

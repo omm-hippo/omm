@@ -3,16 +3,21 @@ hatchling==1.32.0
 pyinstaller==6.22.2
 pyinstaller-hooks-contrib==2026.6
 
-# Exact runtime graph used to freeze macOS and glibc Linux npm commands.
+# Runtime graph mirrored from pyproject.toml and checked by
+# tests/test_dependency_parity.py for every npm binary target.
 annotated-doc==0.0.5
 certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.1
-click==8.4.2
+click==8.5.0
+colorama==0.4.6
 # 49+ no longer ships an Intel macOS wheel. Building it against the runner's
-# Homebrew OpenSSL produces a frozen binary with an incompatible libssl.
-cryptography==48.0.0
-filelock==3.32.3
+# Homebrew OpenSSL produces a frozen binary with an incompatible libssl. Keep
+# this exception limited to darwin-x64; every other npm target uses the project
+# pin below.
+cryptography==48.0.0; sys_platform == "darwin" and platform_machine == "x86_64"
+cryptography==50.0.1; sys_platform != "darwin" or platform_machine != "x86_64"
+filelock==3.32.4
 idna==3.19
 markdown-it-py==4.2.0
 mdurl==0.1.2
@@ -25,5 +30,6 @@ requests==2.34.2
 rich==15.0.0
 shellingham==1.5.4
 typer==0.27.1
+typing-extensions==4.16.0
 urllib3==2.7.0
 wcwidth==0.8.2

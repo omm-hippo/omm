@@ -1,0 +1,39 @@
+name: PR 설명 확인
+
+# Every teammate develops with an AI agent and the resulting English PR bodies
+# leave reviewers without context. CONTRIBUTING.md requires four Korean
+# sections (한줄 요약 / 배경 / 무엇을 바꿨나 / 어떻게 확인했나); this check
+# enforces them. Bot PRs (retrain/*, the beta -> main sync) are exempt inside
+# the script. Read-only: it never comments, so it also works for fork PRs.
+
+"on":
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-description-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  description:
+    name: 한국어 설명 네 항목
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Check the four Korean sections
+        env:
+          # Passed through env, never interpolated into the shell, so a PR body
+          # cannot inject commands.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_REF: ${{ github.head_ref }}
+        run: python scripts/check_pr_description.py

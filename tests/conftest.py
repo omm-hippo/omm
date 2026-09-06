@@ -15,6 +15,7 @@ from omm import (
     config,
     hardware,
     linker,
+    package_metadata,
     predictor,
     registry,
     scan_import,
@@ -147,6 +148,27 @@ def _no_real_engine_writes(tmp_path, monkeypatch):
     yield
     linker.find_koboldcpp_binary.cache_clear()
     linker.find_textgenwebui_root.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_install_source_cache():
+    """`package_metadata.install_source()` is `lru_cache`d (it spawns a real
+    `git remote get-url origin` subprocess on a Git checkout otherwise), so a
+    result cached by one test would silently leak into every test that runs
+    after it - including tests that monkeypatch `_package_checkout` or the
+    npm/pipx/etc. environment to get a different answer. Clear before every
+    test so each one observes only its own inputs.
+
+    Deliberately does *not* also clear on teardown: several tests replace
+    `install_source` itself with a plain lambda via
+    `monkeypatch.setattr(cli.package_metadata, "install_source", ...)`, and
+    that attribute is still swapped out for part of teardown (monkeypatch's
+    own finalizer restores it, and finalizer order relative to this fixture
+    is not guaranteed) - calling `.cache_clear()` on whatever happens to be
+    installed at that moment can hit a plain function with no such method.
+    Clearing only on setup already gives every test a clean cache and avoids
+    that ordering hazard entirely."""
+    package_metadata.install_source.cache_clear()
 
 
 @pytest.fixture(autouse=True)
