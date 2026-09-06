@@ -450,6 +450,14 @@ def get_store() -> BenchmarkStore:
     return BenchmarkStore(Path(configured).expanduser())
 
 
+def _bearer_token_matches(authorization: str | None, expected: str) -> bool:
+    # compare_digest rejects non-ASCII str values with TypeError. HTTP header
+    # bytes can decode to such text, so compare bytes and keep bad tokens 401s.
+    return authorization is not None and hmac.compare_digest(
+        authorization.encode("utf-8"), f"Bearer {expected}".encode("utf-8")
+    )
+
+
 def require_admin(authorization: str | None = Header(default=None)) -> None:
     expected = os.getenv("LOCALFIT_ADMIN_TOKEN")
     if not expected:
@@ -457,7 +465,7 @@ def require_admin(authorization: str | None = Header(default=None)) -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="LOCALFIT_ADMIN_TOKEN is not configured",
         )
-    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
+    if not _bearer_token_matches(authorization, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
 
 
@@ -482,7 +490,7 @@ def require_ingest(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="LOCALFIT_INGEST_TOKEN is required for remote ingestion",
         )
-    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {expected}"):
+    if not _bearer_token_matches(authorization, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
 
 
