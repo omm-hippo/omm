@@ -6,7 +6,13 @@ import math
 from numbers import Real
 from typing import Any
 
-from omm.mltree import predict_ensemble
+from omm.mltree import (
+    MAX_CANDIDATES,
+    MAX_TOTAL_TREE_NODES,
+    MAX_TREE_DEPTH,
+    MAX_TREES,
+    predict_ensemble,
+)
 
 
 class InsufficientTelemetryError(ValueError):
@@ -27,23 +33,33 @@ def _finite_number(value: Any, name: str) -> float:
     return number
 
 
-def _validate_node(node: Any, feature_count: int, path: str) -> None:
-    if not isinstance(node, dict):
-        raise ValueError(f"{path} must be an object")
-    if node.get("leaf") is True:
-        _finite_number(node.get("value"), f"{path}.value")
-        return
-
-    feature = node.get("feature")
-    if isinstance(feature, bool) or not isinstance(feature, int):
-        raise ValueError(f"{path}.feature must be an integer")
-    if not 0 <= feature < feature_count:
-        raise ValueError(f"{path}.feature is outside feature_order")
-    _finite_number(node.get("threshold"), f"{path}.threshold")
-    if "left" not in node or "right" not in node:
-        raise ValueError(f"{path} must contain left and right children")
-    _validate_node(node["left"], feature_count, f"{path}.left")
-    _validate_node(node["right"], feature_count, f"{path}.right")
+def _validate_tree(tree: Any, feature_count: int, path: str, node_budget: int) -> int:
+    """Validate one tree iteratively and return its node count."""
+    nodes = 0
+    stack: list[tuple[Any, int, str]] = [(tree, 1, path)]
+    while stack:
+        node, depth, node_path = stack.pop()
+        nodes += 1
+        if nodes > node_budget:
+            raise ValueError("artifact contains too many tree nodes")
+        if depth > MAX_TREE_DEPTH:
+            raise ValueError(f"{node_path} exceeds maximum tree depth")
+        if not isinstance(node, dict):
+            raise ValueError(f"{node_path} must be an object")
+        if node.get("leaf") is True:
+            _finite_number(node.get("value"), f"{node_path}.value")
+            continue
+        feature = node.get("feature")
+        if isinstance(feature, bool) or not isinstance(feature, int):
+            raise ValueError(f"{node_path}.feature must be an integer")
+        if not 0 <= feature < feature_count:
+            raise ValueError(f"{node_path}.feature is outside feature_order")
+        _finite_number(node.get("threshold"), f"{node_path}.threshold")
+        if "left" not in node or "right" not in node:
+            raise ValueError(f"{node_path} must contain left and right children")
+        stack.append((node["right"], depth + 1, f"{node_path}.right"))
+        stack.append((node["left"], depth + 1, f"{node_path}.left"))
+    return nodes
 
 
 def validate_artifact(artifact: dict, expected_feature_order: list[str]) -> None:
@@ -65,12 +81,22 @@ def validate_artifact(artifact: dict, expected_feature_order: list[str]) -> None
     trees = artifact.get("trees")
     if not isinstance(trees, list) or not trees:
         raise ValueError("artifact must contain non-empty trees")
+    if len(trees) > MAX_TREES:
+        raise ValueError("artifact contains too many trees")
+    total_tree_nodes = 0
     for index, tree in enumerate(trees):
-        _validate_node(tree, len(expected_feature_order), f"trees[{index}]")
+        total_tree_nodes += _validate_tree(
+            tree,
+            len(expected_feature_order),
+            f"trees[{index}]",
+            MAX_TOTAL_TREE_NODES - total_tree_nodes,
+        )
     candidates = artifact.get("candidates")
     if candidates is not None:
         if not isinstance(candidates, list):
             raise ValueError("artifact candidates must be a list")
+        if len(candidates) > MAX_CANDIDATES:
+            raise ValueError("artifact contains too many candidates")
         for index, candidate in enumerate(candidates):
             if not isinstance(candidate, dict):
                 raise ValueError(f"candidates[{index}] must be an object")

@@ -21,6 +21,14 @@ import math
 from typing import Any
 
 
+# Shared producer/runtime limits for the plain-JSON tree format. Keeping these
+# beside the evaluator prevents the training gate and CLI loader from drifting.
+MAX_TREE_DEPTH = 256
+MAX_TREES = 512
+MAX_TOTAL_TREE_NODES = 250_000
+MAX_CANDIDATES = 4_096
+
+
 def predict_tree(node: dict[str, Any], features: list[float]) -> float:
     while not node.get("leaf"):
         value = features[node["feature"]]

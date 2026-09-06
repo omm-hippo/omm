@@ -23,13 +23,21 @@ from omm.featurize import (
     parse_chip_score,
 )
 from omm.hardware import HardwareInfo, calculate_memory_budget
-from omm.mltree import predict_ensemble_range
+from omm.mltree import (
+    MAX_CANDIDATES,
+    MAX_TOTAL_TREE_NODES,
+    MAX_TREE_DEPTH,
+    MAX_TREES,
+    predict_ensemble_range,
+)
 from omm.tuning import RuntimeProfile, recommend_runtime_settings
 
 
 MODEL_MEMORY_OVERHEAD = 1.2
 SUPPORTED_MODEL_VERSION = 4
-MAX_TREE_DEPTH = 256
+MAX_MODEL_ARTIFACT_BYTES = 16 * 1024 * 1024
+MAX_MODEL_MANIFEST_BYTES = 1024 * 1024
+_RESPONSE_CHUNK_BYTES = 64 * 1024
 
 # Roughly average human reading speed. rank_candidates() sorts by predicted
 # speed alone, so a smaller model is always ranked above a larger one that's
@@ -68,9 +76,13 @@ def validate_model_artifact(artifact: object) -> dict:
     trees = artifact.get("trees")
     if not isinstance(trees, list) or not trees:
         raise ValueError("model artifact must contain a non-empty trees list")
+    if len(trees) > MAX_TREES:
+        raise ValueError("model artifact contains too many trees")
     candidates = artifact.get("candidates")
     if not isinstance(candidates, list):
         raise ValueError("model artifact candidates must be a list")
+    if len(candidates) > MAX_CANDIDATES:
+        raise ValueError("model artifact contains too many candidates")
     for candidate in candidates:
         if not isinstance(candidate, dict):
             raise ValueError("model artifact candidates must be objects")
@@ -90,12 +102,16 @@ def validate_model_artifact(artifact: object) -> dict:
         ):
             raise ValueError("model artifact candidate size_bytes must be a positive finite number")
 
+    total_tree_nodes = 0
     for tree in trees:
         # Iterative validation prevents a deeply nested untrusted artifact from
         # crashing with RecursionError before load_model can fall back to cache.
         stack: list[tuple[object, int]] = [(tree, 1)]
         while stack:
             node, depth = stack.pop()
+            total_tree_nodes += 1
+            if total_tree_nodes > MAX_TOTAL_TREE_NODES:
+                raise ValueError("model artifact contains too many tree nodes")
             if depth > MAX_TREE_DEPTH:
                 raise ValueError("tree exceeds maximum depth")
             if not isinstance(node, dict):
@@ -129,6 +145,53 @@ def validate_model_artifact(artifact: object) -> dict:
             stack.append((node["right"], depth + 1))
             stack.append((node["left"], depth + 1))
     return artifact
+
+
+def _bounded_response_bytes(response, *, maximum: int, label: str) -> bytes:
+    """Read an HTTP response without trusting Content-Length or JSON shape."""
+    headers = getattr(response, "headers", {})
+    raw_length = headers.get("Content-Length") if hasattr(headers, "get") else None
+    try:
+        declared_length = int(raw_length)
+    except (TypeError, ValueError):
+        declared_length = None
+    if declared_length is not None and declared_length > maximum:
+        raise ValueError(f"{label} exceeds the {maximum}-byte safety limit")
+
+    iterator = getattr(response, "iter_content", None)
+    if callable(iterator):
+        content = bytearray()
+        for chunk in iterator(chunk_size=_RESPONSE_CHUNK_BYTES):
+            if not isinstance(chunk, bytes):
+                raise ValueError(f"{label} response contained non-byte data")
+            if len(content) + len(chunk) > maximum:
+                raise ValueError(f"{label} exceeds the {maximum}-byte safety limit")
+            content.extend(chunk)
+        return bytes(content)
+
+    raw_content = getattr(response, "content", None)
+    if isinstance(raw_content, bytes):
+        if len(raw_content) > maximum:
+            raise ValueError(f"{label} exceeds the {maximum}-byte safety limit")
+        return raw_content
+
+    raise ValueError(f"{label} response did not provide byte content")
+
+
+def _read_bounded_json_response(response, *, maximum: int, label: str) -> tuple[object, bytes]:
+    try:
+        content = _bounded_response_bytes(response, maximum=maximum, label=label)
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+    if len(content) > maximum:
+        # Covers json()-only compatibility objects used above.
+        raise ValueError(f"{label} exceeds the {maximum}-byte safety limit")
+    try:
+        return json.loads(content), content
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError(f"{label} is not valid JSON") from error
 
 
 def extract_emergency_signal(artifact: dict | None) -> dict | None:
@@ -251,21 +314,38 @@ def fetch_and_cache_model(
 ) -> dict:
     import requests
 
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
-    artifact = resp.json()
+    resp = requests.get(url, timeout=15, stream=True)
+    try:
+        resp.raise_for_status()
+    except requests.RequestException:
+        close = getattr(resp, "close", None)
+        if callable(close):
+            close()
+        raise
+    artifact, raw_content = _read_bounded_json_response(
+        resp,
+        maximum=MAX_MODEL_ARTIFACT_BYTES,
+        label="recommendation model",
+    )
     validate_model_artifact(artifact)
     if bool(manifest_url) != bool(public_key):
         raise ValueError("catalog manifest URL and public key must be configured together")
     manifest = None
     verified_content: bytes | None = None
     if manifest_url and public_key:
-        manifest_response = requests.get(manifest_url, timeout=15)
-        manifest_response.raise_for_status()
-        manifest = manifest_response.json()
-        raw_content = getattr(resp, "content", None)
-        if not isinstance(raw_content, bytes):
-            raw_content = json.dumps(artifact, separators=(",", ":")).encode()
+        manifest_response = requests.get(manifest_url, timeout=15, stream=True)
+        try:
+            manifest_response.raise_for_status()
+        except requests.RequestException:
+            close = getattr(manifest_response, "close", None)
+            if callable(close):
+                close()
+            raise
+        manifest, _manifest_content = _read_bounded_json_response(
+            manifest_response,
+            maximum=MAX_MODEL_MANIFEST_BYTES,
+            label="recommendation manifest",
+        )
         catalog.verify_signed_artifact(raw_content, manifest, public_key)
         # The provenance signature is over the exact response bytes. Caching a
         # re-serialized equivalent JSON object makes that stored provenance
@@ -309,6 +389,8 @@ def load_cached_model() -> dict | None:
     if not RECOMMEND_MODEL_PATH.exists():
         return None
     try:
+        if RECOMMEND_MODEL_PATH.stat().st_size > MAX_MODEL_ARTIFACT_BYTES:
+            return None
         return validate_model_artifact(json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError, RecursionError, ValueError):
         return None

@@ -83,3 +83,17 @@ def test_fetch_repo_files_accepts_case_insensitive_gguf_suffix(monkeypatch):
     files, _ = huggingface.fetch_repo_files("org/repo")
 
     assert files == ["MODEL.GGUF"]
+
+
+def test_remote_file_sha256_matches_the_requested_path(monkeypatch):
+    payload = [
+        {"path": "other.gguf", "lfs": {"oid": "a" * 64}},
+        {"path": "nested/model.gguf", "lfs": {"oid": "b" * 64}},
+    ]
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda url, json, timeout: _FakeResponse(payload=payload),
+    )
+
+    assert huggingface.remote_file_sha256("org/repo", "nested/model.gguf") == "b" * 64
