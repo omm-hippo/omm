@@ -64,8 +64,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Parse installer and uninstaller
-        run: sh -n install.sh uninstall.sh
+      - name: Parse installer, uninstaller, and version hook
+        run: |
+          sh -n install.sh
+          sh -n uninstall.sh
+          sh -n scripts/pre-commit
       - name: Smoke-test safe POSIX purge
         run: |
           root=$(mktemp -d)
