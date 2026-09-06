@@ -39,32 +39,39 @@ generation.
   frozen dead mirror that **must stay alive** (stranded installs still fetch it until they update past
   `355c60a`). Always run `git remote -v` before any `gh --repo` / `gh issue` / `gh pr` command — a
   stale org name from memory has caused issues filed on the invisible legacy repo.
-- `main` is branch-protected: PR + 6 required CI checks, `enforce_admins` on, **direct push rejected**.
-  Flow is always: `git checkout -b` → commit → push branch → `gh pr create` → 6 green → merge.
-  Merge strategy is "create a merge commit" only (squash/rebase disabled — flattening breaks the
-  SSH-signature chain that `omm update` verifies). If CI job names change, update the branch-protection
+- **`beta` is the trunk.** All PRs target `beta` — feature work, fixes, the nightly retrain, the
+  emergency signal. It is branch-protected: PR + required CI checks + 1 review, `enforce_admins` on,
+  required signatures, **direct push rejected**. Flow is always: `git checkout -b` → commit → push
+  branch → `gh pr create` (base `beta`, the repo default) → green → merge. Merge strategy is "create
+  a merge commit" only (squash/rebase disabled — flattening breaks the SSH-signature chain that `omm
+  update` verifies). If CI job names change, update the `beta` branch-protection
   `required_status_checks` contexts to match.
-- `beta` is unprotected and **must always be a superset of `main`**. `.github/workflows/sync-beta.yml`
-  auto-merges `origin/main` into `beta` on every push to `main`, SSH-signed by the retrain bot key
-  (in `allowed_signers`) so beta `omm update` clients verify it. It only needs a human when that
-  merge hits a conflict — the job fails loudly and you resolve it with a local `git merge origin/main`
-  → push. `branch-ancestry-check.yml` stays as the post-hoc safety net; it polls through a ~3-minute
-  grace window on a `main` push so it only goes red when `sync-beta.yml` genuinely couldn't catch up.
-  Most feature work targets `beta`.
+- **`main` is the stable release pointer.** It only ever *fast-forwards* to a commit that already
+  exists on `beta`, so `main` is an ancestor of `beta` by construction — the invariant `omm update`'s
+  signature chain needs, now structural instead of enforced after the fact. **Never open a PR against
+  `main`.** The only supported way to move it is `python scripts/cut_release.py` (fast-forward +
+  signed `v<version>` tag). `branch-ancestry-check.yml` remains as a cheap catch for a botched cut.
+  `main` is protected against force-push and deletion; it has no required-PR rule because the release
+  cut is a direct FF push.
+- The published catalog artifacts (`published/*.json`: recommend model, signed manifest, emergency
+  signal) are served to every client — stable and beta — off `raw.githubusercontent.com/.../beta/`,
+  not `main`. They are never consumed through `omm update` and are independently Ed25519-verified, so
+  the serving branch is not a trust boundary; `beta` just keeps them current between release cuts.
 - **Committing freely is fine; pushing is always a separate explicit ask.** Wait for it every time.
 - The user runs multiple Claude sessions against this checkout at once. Re-check `git log -5` /
   `git status` right before committing. Only ever `git add <your own filenames>` — never `-A` / `.`.
   Never blind `git stash pop`/`drop` — `git stash list` and diff first; the stash stack is shared.
 - `core.hooksPath = scripts`. `scripts/pre-commit` auto-bumps the patch version in `pyproject.toml`
-  and `packaging/npm/launcher/package.json` on every commit (unless the commit already edits the
-  `version` line). This is expected on every commit, not concurrent-session noise. Only `--no-verify`
-  skips it — ask the user first.
+  and `packaging/npm/launcher/package.json` (the top-level `version` **and** the five
+  `@omm-hippo/omm-<platform>` optional dependencies, in lockstep) on every commit, unless the commit
+  already edits the `version` line. This is expected on every commit, not concurrent-session noise.
+  Only `--no-verify` skips it — ask the user first.
 - `scripts/pre-push` rejects pushing a commit to `beta` or `main` whose own tip is not SSH-signed by
-  a key in `src/omm/trust/allowed_signers`. **Never sync a channel with GitHub's web UI** ("Sync
-  fork" / "Update branch" / merging a PR on the site) — it produces a web-flow-GPG-signed merge that
-  strands every `omm update` client and fails the "Trusted PR head" check. Merge locally instead
-  (`git merge origin/main`, auto-SSH-signed). If a web-flow merge already landed as the head, add an
-  SSH-signed endorsement commit on top — never force-push a shared channel.
+  a key in `src/omm/trust/allowed_signers`. **Never merge a PR on the GitHub web UI** (nor "Sync
+  fork" / "Update branch") — it produces a web-flow-GPG-signed merge that strands every `omm update`
+  client and fails the "Trusted PR head" check. Merge locally (`git merge --no-ff origin/<pr-branch>`,
+  auto-SSH-signed) and push `beta`. If a web-flow merge already landed as the head, add an SSH-signed
+  endorsement commit on top — never force-push a shared channel.
 
 ## Working style (explicit user preferences)
 
@@ -134,9 +141,10 @@ runner's local API to actually load a model and measure generation. `src/omm/pro
 **Recommendation ML.** `omm recommend` ranks candidate GGUFs by predicted tokens/sec.
 `mltree.py` holds a RandomForest serialized as **plain JSON, never pickle** (untrusted-download ACE
 risk; also keeps sklearn out of the runtime). `predictor.py` loads `published/recommend-model.json`
-+ `published/candidates.json` from `raw.githubusercontent.com/omm-hippo/omm/main/`. `.github/workflows/train.yml`
++ `published/candidates.json` from `raw.githubusercontent.com/omm-hippo/omm/beta/` (the trunk, so
+the artifacts stay current between release cuts — see the branches section). `.github/workflows/train.yml`
 retrains nightly from telemetry (`scripts/train_model.py`, gated by `scripts/model_quality_gate.py`)
-and commits the artifacts straight into the repo. `featurize.py` turns raw hardware into model
+and lands the artifacts on `beta` via an auto-merging PR. `featurize.py` turns raw hardware into model
 features; `rules.py` holds the old heuristic thresholds used as synthetic bootstrap rows.
 
 **Signing.** The recommendation artifact is Ed25519-signed by `scripts/sign_catalog.py` in the
@@ -150,9 +158,11 @@ merge commits are resolved to their second parent (the signed PR tip) — this o
 2-parent case, not octopus merges. `install.sh` / `install.ps1` carry a **duplicated copy** of this
 verify logic (no Python available on a fresh machine) — keep them in sync. Changing the verify
 algorithm strands every already-installed client; such users need a manual
-`cd ~/.omm/src && git fetch origin && git reset --hard origin/main` bridge.
+`cd ~/.omm/src && git fetch origin && git reset --hard origin/<channel>` bridge (`<channel>` =
+`main` for stable, `beta` for beta).
 
-**Releases.** Pushing a signed `v<version>` tag into `main` history is the release trigger.
+**Releases.** `python scripts/cut_release.py` fast-forwards `main` to a vetted `beta` commit and
+pushes a signed `v<version>` tag on it; that tag in `main` history is the release trigger.
 `release.yml` (PyPI + asynchronous Homebrew dispatch), `npm-release.yml`, and
 `windows-portable.yml` fire on it. All release paths use `release_artifacts.py verify-release` to
 check the allowed tag signature, exact project version and checkout, and `main` ancestry.
@@ -202,12 +212,15 @@ Check these before assuming undocumented intent behind a feature's shape.
 
 ## Other directories
 
-- `scripts/` — release (`pypi_release.py`, `npm_release.py`), training, `sign_catalog.py`,
-  `verify_trusted_head.py`, winget/portable build tooling.
+- `scripts/` — release (`cut_release.py` to move `main`, `pypi_release.py`, `npm_release.py`),
+  training, `sign_catalog.py`, `verify_trusted_head.py`, `check_pr_description.py`, `pre-commit` /
+  `pre-push` hooks, winget/portable build tooling.
 - `packaging/npm/` — the npm-distributed native launcher (`launcher/lib/launcher.js`).
 - `published/` — generated: recommend model, candidates, signed manifest. Never hand-edit; use the
   owning script.
-- `.github/workflows/` — `ci.yml` (6 required checks), `train.yml`, per-runner `ci-engine-*.yml`,
-  `trusted-head.yml` / `branch-ancestry-check.yml` (branch protection), `github-release.yml`
-  (asset-backed reusable Release publisher), release/npm/portable.
+- `.github/workflows/` — `ci.yml` (required checks), `train.yml` / `emergency-signal.yml` (auto-merge
+  PRs to `beta`), per-runner `ci-engine-*.yml`, `trusted-head.yml` (branch protection),
+  `branch-ancestry-check.yml` (post-cut safety net for `main` FF), `github-release.yml` (asset-backed
+  reusable Release publisher), release/npm/portable. No `sync-beta.yml` — `main` is downstream of
+  `beta` now, not the other way around.
 - `demo/model-visualizer/` — standalone React demo of the RandomForest walk; not shipped.
