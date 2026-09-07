@@ -159,3 +159,17 @@ def test_fetch_repo_metadata_returns_empty_on_bad_json(monkeypatch):
     )
 
     assert huggingface.fetch_repo_metadata("org/repo") == {}
+
+
+def test_remote_file_sha256_matches_the_requested_path(monkeypatch):
+    payload = [
+        {"path": "other.gguf", "lfs": {"oid": "a" * 64}},
+        {"path": "nested/model.gguf", "lfs": {"oid": "b" * 64}},
+    ]
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda url, json, timeout: _FakeResponse(payload=payload),
+    )
+
+    assert huggingface.remote_file_sha256("org/repo", "nested/model.gguf") == "b" * 64

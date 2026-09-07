@@ -950,7 +950,6 @@ def real_rows_to_training_data_with_audit(
     rejections: dict[str, int] = {}
     valid_rows = 0
     samples_used = 0
-    samples_capped = 0
     direct_v6_groups: set[tuple[float, ...]] = set()
     direct_v7_groups: set[tuple[float, ...]] = set()
     direct_v8_groups: set[tuple[float, ...]] = set()
@@ -1009,7 +1008,6 @@ def real_rows_to_training_data_with_audit(
         rejections[reason] = rejections.get(reason, 0) + dropped_rows
         valid_rows -= dropped_rows
         samples_used -= len(dropped_samples)
-        samples_capped -= dropped_rows - len(dropped_samples)
         outlier_rows_dropped += dropped_rows
         dropped_configurations += 1
         direct_v6_groups.discard(group_key)
@@ -1027,7 +1025,9 @@ def real_rows_to_training_data_with_audit(
         "valid_rows": valid_rows,
         "rejected_rows": len(rows) - valid_rows,
         "samples_used": samples_used,
-        "samples_capped": samples_capped,
+        # Preserved for audit-schema compatibility. Every accepted sample is
+        # retained within MAX_REAL_ROWS, so no per-configuration cap remains.
+        "samples_capped": 0,
         "unique_configurations": len(groups),
         "direct_v6_unique_configurations": len(direct_v6_groups),
         "direct_v7_unique_configurations": len(direct_v7_groups),

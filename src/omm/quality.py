@@ -37,8 +37,9 @@ OLLAMA_HOST = "http://localhost:11434"
 MAX_PACK_BYTES = 1_000_000
 MAX_ITEMS = 100
 MAX_PROMPT_CHARS = 10_000
-_FINAL_NUMBER_RE = re.compile(r"FINAL\s*[:=]\s*([-+]?\d[\d,]*(?:\.\d+)?)", re.IGNORECASE)
-_ANY_NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
+_NUMBER_PATTERN = r"[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?"
+_FINAL_NUMBER_RE = re.compile(rf"FINAL\s*[:=]\s*({_NUMBER_PATTERN})", re.IGNORECASE)
+_ANY_NUMBER_RE = re.compile(_NUMBER_PATTERN)
 
 # v7 failure taxonomy (see docs/telemetry-v7.md). Every QualityEvaluationError
 # carries one of these so callers can classify without parsing free-text
@@ -163,6 +164,9 @@ class SpeedSummary:
     samples: tuple[float, ...]
 
 
+MAX_NORMALIZED_NUMBER_DIGITS = 256
+
+
 def default_pack_path() -> Path:
     return Path(str(files("omm").joinpath("data/quality-pack-v1.json")))
 
@@ -237,13 +241,26 @@ def load_pack(path: Path | None = None) -> tuple[dict, str]:
 
 
 def _normalize_number(value: str) -> str | None:
+    compact = value.replace(",", "")
+    if len(compact) > MAX_NORMALIZED_NUMBER_DIGITS:
+        return None
     try:
-        number = Decimal(value.replace(",", ""))
+        number = Decimal(compact)
     except (InvalidOperation, AttributeError):
         return None
     if not number.is_finite():
         return None
-    normalized = format(number.normalize(), "f")
+    digits = number.as_tuple().digits
+    if len(digits) > MAX_NORMALIZED_NUMBER_DIGITS or abs(number.adjusted()) > MAX_NORMALIZED_NUMBER_DIGITS:
+        return None
+    # Decimal.normalize() obeys the ambient decimal context and silently
+    # rounds values beyond its precision (28 digits by default). Format the
+    # exact coefficient, then remove only insignificant fractional zeroes.
+    normalized = format(number, "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    if len(normalized.lstrip("+-")) > MAX_NORMALIZED_NUMBER_DIGITS + 2:
+        return None
     return "0" if normalized in ("-0", "+0") else normalized
 
 
