@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from omm import cli
 from omm.hardware import HardwareInfo
+from omm.hub import ResolvedModel
 
 runner = CliRunner()
 
@@ -185,6 +186,58 @@ def test_recommend_yes_installs_top_candidate_without_prompting(monkeypatch, iso
 
     assert result.exit_code == 0, result.stdout
     assert installed == ["ms:org/repo:model.gguf"]
+
+
+def test_recommend_install_does_not_leak_typer_option_sentinels(
+    monkeypatch, isolated_omm_home
+):
+    """`_finish_recommendation` calls `install()` as a plain function with
+    only the model name, so `skip_unfit`/`force`/`upload` used to reach
+    `_install_impl` as truthy Typer OptionInfo objects. A truthy
+    `skip_unfit` silently turns a link/disk failure into a no-op install."""
+    candidate = {
+        "name": "org/repo",
+        "repo_id": "org/repo",
+        "filename": "model.gguf",
+        "provider": "huggingface",
+        "description": "test",
+    }
+    artifact = {"candidates": [candidate]}
+
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor, "rank_candidates", lambda artifact, hw: [(candidate, 42.0)]
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+    monkeypatch.setattr(
+        cli,
+        "_resolve_model_interactive",
+        lambda name: ResolvedModel(
+            url="https://example.com/model.gguf",
+            filename="model.gguf",
+            repo_id="org/repo",
+        ),
+    )
+
+    seen = {}
+
+    def fake_install_impl(resolved, **kwargs):
+        seen.update(kwargs)
+        return cli.InstallOutcome("model.gguf", "org/repo", linked={"ollama": True})
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+
+    result = runner.invoke(cli.app, ["recommend", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert seen["skip_unfit"] is False
+    assert seen["force"] is False
+    assert seen["auto_upload"] is False
+    assert seen["no_upload"] is False
 
 
 def test_recommend_yes_skips_installed_top_candidate(monkeypatch, isolated_omm_home):
