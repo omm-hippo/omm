@@ -40,17 +40,22 @@ generation.
   `355c60a`). Always run `git remote -v` before any `gh --repo` / `gh issue` / `gh pr` command — a
   stale org name from memory has caused issues filed on the invisible legacy repo.
 - **`beta` is the trunk.** All PRs target `beta` — feature work, fixes, the nightly retrain, the
-  emergency signal. It is branch-protected: PR + required CI checks + 1 review, `enforce_admins` on,
-  required signatures, **direct push rejected**. Flow is always: `git checkout -b` → commit → push
-  branch → `gh pr create` (base `beta`, the repo default) → green → merge. Merge strategy is "create
-  a merge commit" only (squash/rebase disabled — flattening breaks the SSH-signature chain that `omm
-  update` verifies). If CI job names change, update the `beta` branch-protection
-  `required_status_checks` contexts to match.
+  emergency signal. It is branch-protected: PR + required CI checks + **2 reviews** (the team is 3),
+  `enforce_admins` on, required signatures, **direct push rejected**. Flow is always: `git checkout
+  -b` → commit → push branch → `gh pr create` (base `beta`, the repo default) → green → 2 approvals →
+  merge. Merge strategy is "create a merge commit" only (squash/rebase disabled — flattening breaks
+  the SSH-signature chain that `omm update` verifies). If CI job names change, update the `beta`
+  branch-protection `required_status_checks` contexts to match. The `release:` commit from
+  `cut_release.py` is the one exception to "PR required" — the release maintainers are in
+  `bypass_pull_request_allowances`.
 - **`main` is the stable release pointer.** It only ever *fast-forwards* to a commit that already
   exists on `beta`, so `main` is an ancestor of `beta` by construction — the invariant `omm update`'s
   signature chain needs, now structural instead of enforced after the fact. **Never open a PR against
-  `main`.** The only supported way to move it is `python scripts/cut_release.py` (fast-forward +
-  signed `v<version>` tag). `branch-ancestry-check.yml` remains as a cheap catch for a botched cut.
+  `main`.** The only supported way to move it — and the only thing that bumps the version — is
+  `python scripts/cut_release.py`: it verifies the beta tip's required checks are green, bumps the
+  patch by +0.0.1, makes a signed `release: v<version>` commit, fast-forwards `beta` and `main` to
+  it, and pushes a signed `v<version>` tag (the release trigger).
+  `branch-ancestry-check.yml` remains as a cheap catch for a botched cut.
   `main` is protected against force-push and deletion; it has no required-PR rule because the release
   cut is a direct FF push.
 - The published catalog artifacts (`published/*.json`: recommend model, signed manifest, emergency
@@ -61,11 +66,11 @@ generation.
 - The user runs multiple Claude sessions against this checkout at once. Re-check `git log -5` /
   `git status` right before committing. Only ever `git add <your own filenames>` — never `-A` / `.`.
   Never blind `git stash pop`/`drop` — `git stash list` and diff first; the stash stack is shared.
-- `core.hooksPath = scripts`. `scripts/pre-commit` auto-bumps the patch version in `pyproject.toml`
-  and `packaging/npm/launcher/package.json` (the top-level `version` **and** the five
-  `@omm-hippo/omm-<platform>` optional dependencies, in lockstep) on every commit, unless the commit
-  already edits the `version` line. This is expected on every commit, not concurrent-session noise.
-  Only `--no-verify` skips it — ask the user first.
+- `core.hooksPath = scripts`. There is **no `pre-commit` hook** — the version is not auto-bumped.
+  `pyproject.toml` and `packaging/npm/launcher/package.json` carry the **last released** `X.Y.Z` and
+  only change in a `cut_release.py` `release:` commit. Do not hand-edit the `version` line in a
+  feature PR. `omm --version` shows the commit hash + channel, so two beta commits sharing a version
+  string is fine and expected.
 - `scripts/pre-push` rejects pushing a commit to `beta` or `main` whose own tip is not SSH-signed by
   a key in `src/omm/trust/allowed_signers`. **Never merge a PR on the GitHub web UI** (nor "Sync
   fork" / "Update branch") — it produces a web-flow-GPG-signed merge that strands every `omm update`
@@ -161,10 +166,12 @@ algorithm strands every already-installed client; such users need a manual
 `cd ~/.omm/src && git fetch origin && git reset --hard origin/<channel>` bridge (`<channel>` =
 `main` for stable, `beta` for beta).
 
-**Releases.** `python scripts/cut_release.py` fast-forwards `main` to a vetted `beta` commit and
-pushes a signed `v<version>` tag on it; that tag in `main` history is the release trigger.
-`release.yml` (PyPI + asynchronous Homebrew dispatch), `npm-release.yml`, and
-`windows-portable.yml` fire on it. All release paths use `release_artifacts.py verify-release` to
+**Releases.** `python scripts/cut_release.py` checks the beta tip's required checks are green,
+bumps the patch by +0.0.1, makes a signed `release: v<version>` commit, fast-forwards `beta` and
+`main` to it, and pushes a signed `v<version>` tag; that tag in `main` history is the release
+trigger. `release.yml` (PyPI + asynchronous Homebrew dispatch), `npm-release.yml`, and
+`windows-portable.yml` fire on it. Each PyPI/npm publish still pauses on its deploy-environment
+`required_reviewers` (one approval per release, kept as the supply-chain gate). All release paths use `release_artifacts.py verify-release` to
 check the allowed tag signature, exact project version and checkout, and `main` ancestry.
 The Python and Windows workflows each call the reusable `github-release.yml` only after their own
 validation gates pass. They add wheel, sdist, `SHA256SUMS`, Windows ZIP, and ZIP checksum to one
@@ -212,9 +219,9 @@ Check these before assuming undocumented intent behind a feature's shape.
 
 ## Other directories
 
-- `scripts/` — release (`cut_release.py` to move `main`, `pypi_release.py`, `npm_release.py`),
-  training, `sign_catalog.py`, `verify_trusted_head.py`, `check_pr_description.py`, `pre-commit` /
-  `pre-push` hooks, winget/portable build tooling.
+- `scripts/` — release (`cut_release.py` to move `main` + bump the version, `pypi_release.py`,
+  `npm_release.py`), training, `sign_catalog.py`, `verify_trusted_head.py`, `check_pr_description.py`,
+  the `pre-push` hook (SSH-signature gate), winget/portable build tooling.
 - `packaging/npm/` — the npm-distributed native launcher (`launcher/lib/launcher.js`).
 - `published/` — generated: recommend model, candidates, signed manifest. Never hand-edit; use the
   owning script.
