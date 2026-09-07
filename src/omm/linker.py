@@ -421,6 +421,8 @@ def _record_ownership(dst: Path, src: Path | None, kind: str) -> None:
     record.update({"device": stat.st_dev, "inode": stat.st_ino})
     if kind == "copy":
         record.update({"size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+        if src is not None:
+            record["source_identity"] = _copy_source_identity(src)
     if kind == "manifest":
         record["content_sha256"] = sha256_file(dst)
     _update_link_ownership(
@@ -513,6 +515,19 @@ def _owned_copy(path: Path, record: dict[str, object] | None = None) -> bool:
         and record.get("size") == stat.st_size
         and record.get("mtime_ns") == stat.st_mtime_ns
     )
+
+
+def _copy_source_identity(path: Path) -> list[int]:
+    """Detect a replaced or edited source without hashing multi-GB models."""
+    stat = path.stat()
+    return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns]
+
+
+def _copy_source_unchanged(src: Path, record: dict[str, object]) -> bool:
+    try:
+        return record.get("source_identity") == _copy_source_identity(src)
+    except OSError:
+        return False
 
 
 def _matches_requested_link(src: Path, dst: Path) -> bool:
@@ -712,9 +727,17 @@ def _link_file_impl(
         if record and record.get("source") == _link_key(src):
             if record.get("kind") == "symlink" and _owned_symlink(dst, record):
                 return "symlink"
-            if record.get("kind") == "hardlink" and _owned_hardlink(dst, record):
+            if (
+                record.get("kind") == "hardlink"
+                and _owned_hardlink(dst, record)
+                and _matches_requested_link(src, dst)
+            ):
                 return "hardlink"
-            if record.get("kind") == "copy" and _owned_copy(dst, record):
+            if (
+                record.get("kind") == "copy"
+                and _owned_copy(dst, record)
+                and _copy_source_unchanged(src, record)
+            ):
                 return "copy"
         if not unlink_owned_link(dst, expected_source=src, record=record):
             if record and record.get("kind") in {"symlink", "hardlink"}:
@@ -858,7 +881,8 @@ def link_custom_directory(
     force: bool = False,
 ) -> Path:
     """Expose a central GGUF in an arbitrary local application's model directory."""
-    destination = directory.expanduser() / gguf_path.name
+    # Persist a cwd-independent destination for later upgrade/uninstall.
+    destination = directory.expanduser().absolute() / gguf_path.name
     link_file(gguf_path, destination, on_copy=on_copy, force=force)
     return destination
 

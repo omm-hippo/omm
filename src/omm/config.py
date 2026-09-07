@@ -134,6 +134,13 @@ def ensure_omm_home() -> None:
 
 
 def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
+    # Every built-in setting is scalar. A damaged list/object must not make
+    # legacy-value lookups crash and prevent even `omm setting` from repairing
+    # the file. Preserve unknown extension keys and all other saved choices.
+    data = dict(data)
+    for key, default in DEFAULT_CONFIG.items():
+        if isinstance(data.get(key), (list, dict)):
+            data[key] = default
     if "telemetry_send_policy" not in data and "telemetry_opt_in" in data:
         data = {
             **data,

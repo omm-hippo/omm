@@ -82,6 +82,30 @@ def test_link_reports_clean_error_when_directory_cannot_be_created(isolated_omm_
     assert "Could not create" in result.stderr
 
 
+def test_relative_custom_directory_is_recorded_for_cleanup_from_other_cwd(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    filename = "model.gguf"
+    source = cli.MODELS_DIR / filename
+    source.write_bytes(b"model")
+    registry.save_registry({filename: {"linked": {}}})
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli.app, ["link", "custom-models"])
+
+    assert result.exit_code == 0, result.output
+    destination = tmp_path / "custom-models" / filename
+    entry = registry.load_registry()[filename]
+    assert entry["custom_links"] == [str(destination)]
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    assert cli._remove_one(filename, entry, ollama_tag="model") is True
+    assert not destination.exists()
+    assert not destination.is_symlink()
+
+
 def test_link_names_the_program_not_the_engine_key(isolated_omm_home, monkeypatch):
     """"lmstudio" is a registry key; "LM Studio" is what the program is
     called, and prose the user reads should say the latter."""

@@ -762,6 +762,26 @@ def test_smoke_registry_rejects_an_explicit_previous_version_equal_to_the_target
         )
 
 
+@pytest.mark.parametrize("published, expected", [
+    (["0.3.33", "0.3.41", "0.3.50"], "0.3.33"),
+    (["0.3.41", "0.3.50"], None),
+    (["0.3.33", "0.3.40-beta.1", "0.3.41", "latest"], "0.3.33"),
+])
+def test_previous_version_auto_selects_only_older_stable_versions(monkeypatch, published, expected):
+    monkeypatch.setattr(npm_release, "_published_versions", lambda registry: published)
+    assert npm_release._resolve_previous_version(
+        "0.3.41", "auto", "https://registry.example/"
+    ) == expected
+
+
+@pytest.mark.parametrize("previous", ["0.3.50", "latest", "0.3.40-beta.1"])
+def test_explicit_previous_version_must_describe_an_upgrade(previous):
+    with pytest.raises(npm_release.NpmReleaseError):
+        npm_release._resolve_previous_version(
+            "0.3.41", previous, "https://registry.example/"
+        )
+
+
 def test_assert_platform_package_moved_detects_a_stale_old_version(monkeypatch, tmp_path):
     stale_tree = json.dumps(
         {

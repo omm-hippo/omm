@@ -9,7 +9,14 @@ set -e
 PYPROJECT="pyproject.toml"
 NPM_LAUNCHER="packaging/npm/launcher/package.json"
 
-current=$(grep -m1 '^version = ' "$PYPROJECT" | sed -E 's/version = "([0-9]+)\.([0-9]+)\.([0-9]+)"/\1.\2.\3/')
+# The hook stages these files after updating them. Do not accidentally include
+# unrelated working-tree edits in a commit that only staged other files.
+if ! git diff --quiet -- "$PYPROJECT" "$NPM_LAUNCHER"; then
+    echo "Version hook: stage or set aside unstaged metadata changes before committing." >&2
+    exit 1
+fi
+
+current=$(grep -m1 '^version = ' "$PYPROJECT" | sed -E 's/version = "([0-9]+)\.([0-9]+)\.([0-9]+)"/\1.\2.\3/' | tr -d '\r')
 
 if git diff --cached -- "$PYPROJECT" | grep -q '^[+-]version = '; then
     # Manual bump: keep the version the commit sets, but still carry it
@@ -27,18 +34,27 @@ else
 fi
 
 if [ -f "$NPM_LAUNCHER" ]; then
-    # Keep the launcher "version" AND every "@omm-hippo/omm-<platform>" optional
-    # dependency equal to $next. npm_package.py validate requires them equal; the
-    # old hook rewrote only the top-level version line, so a commit that didn't
-    # touch it (merge commits especially) left the two drifted.
-    sed -E \
-        -e "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+\"/\"version\": \"$next\"/" \
-        -e "s/(\"@omm-hippo\/omm-[a-z0-9-]+\": \")[0-9]+\.[0-9]+\.[0-9]+\"/\1$next\"/" \
-        "$NPM_LAUNCHER" > "$NPM_LAUNCHER.tmp"
-    if cmp -s "$NPM_LAUNCHER" "$NPM_LAUNCHER.tmp"; then
-        rm -f "$NPM_LAUNCHER.tmp"
-    else
-        mv "$NPM_LAUNCHER.tmp" "$NPM_LAUNCHER"
-        git add "$NPM_LAUNCHER"
-    fi
+    # Updating the launcher's version alone leaves its five platform packages
+    # on the old release. Parse JSON so formatting cannot hide stale pins.
+    python_command=$(command -v python3 || command -v python)
+    "$python_command" - "$NPM_LAUNCHER" "$next" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+version = sys.argv[2]
+original = path.read_text(encoding="utf-8")
+manifest = json.loads(original)
+manifest["version"] = version
+for name in manifest.get("optionalDependencies", {}):
+    if name.startswith("@omm-hippo/omm-"):
+        manifest["optionalDependencies"][name] = version
+updated = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+if updated != original:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(updated, encoding="utf-8")
+    temporary.replace(path)
+PY
+    git add "$NPM_LAUNCHER"
 fi
