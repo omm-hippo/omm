@@ -88,6 +88,10 @@ def test_invalid_remote_does_not_replace_cache_and_falls_back(monkeypatch, tmp_p
             invalid["trees"] = []
             return invalid
 
+        @property
+        def content(self):
+            return json.dumps(self.json()).encode()
+
     monkeypatch.setattr(requests, "get", lambda *args, **kwargs: Response())
 
     assert predictor.load_model("https://example.test/model.json") == cached
@@ -174,3 +178,98 @@ def test_signed_fetch_caches_exact_verified_bytes_for_future_archive(monkeypatch
     archived = history / f"{hashlib.sha256(contents[0]).hexdigest()}.json"
     assert archived.read_bytes() == contents[0]
     assert cache_path.read_bytes() == contents[1]
+
+
+def test_validate_model_artifact_bounds_collection_and_total_tree_work(monkeypatch):
+    candidate = {
+        "repo_id": "org/model",
+        "filename": "model.gguf",
+    }
+    too_many_candidates = artifact()
+    monkeypatch.setattr(predictor, "MAX_CANDIDATES", 0)
+    too_many_candidates["candidates"] = [candidate]
+    with pytest.raises(ValueError, match="too many candidates"):
+        predictor.validate_model_artifact(too_many_candidates)
+
+    monkeypatch.setattr(predictor, "MAX_CANDIDATES", 100)
+    monkeypatch.setattr(predictor, "MAX_TREES", 0)
+    with pytest.raises(ValueError, match="too many trees"):
+        predictor.validate_model_artifact(artifact())
+
+    monkeypatch.setattr(predictor, "MAX_TREES", 100)
+    monkeypatch.setattr(predictor, "MAX_TOTAL_TREE_NODES", 2)
+    with pytest.raises(ValueError, match="too many tree nodes"):
+        predictor.validate_model_artifact(artifact())
+
+
+def test_fetch_rejects_streamed_artifact_beyond_byte_limit(monkeypatch, tmp_path):
+    cache_path = tmp_path / "recommend-model.json"
+    cached_bytes = json.dumps(artifact()).encode()
+    cache_path.write_bytes(cached_bytes)
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+    maximum = len(cached_bytes)
+    monkeypatch.setattr(predictor, "MAX_MODEL_ARTIFACT_BYTES", maximum)
+
+    class OversizedResponse:
+        headers = {}
+        closed = False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            yield b"x" * maximum
+            yield b"y"
+            raise AssertionError("reader did not stop at the limit")
+
+        def json(self):
+            raise AssertionError("unbounded response.json must not run")
+
+        def close(self):
+            self.closed = True
+
+    response = OversizedResponse()
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: response)
+
+    assert predictor.load_model("https://example.test/model.json") == artifact()
+    assert response.closed is True
+    assert json.loads(cache_path.read_text()) == artifact()
+
+
+def test_streaming_limit_applies_to_a_real_loopback_response(monkeypatch, tmp_path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    cached = artifact()
+    cached_bytes = json.dumps(cached).encode()
+    cache_path = tmp_path / "recommend-model.json"
+    cache_path.write_bytes(cached_bytes)
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+    monkeypatch.setattr(predictor, "MAX_MODEL_ARTIFACT_BYTES", len(cached_bytes))
+
+    body = b"x" * (len(cached_bytes) + 1)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except OSError:
+                pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/model.json"
+        assert predictor.load_model(url) == cached
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert cache_path.read_bytes() == cached_bytes
