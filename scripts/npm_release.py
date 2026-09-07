@@ -739,6 +739,8 @@ def _published_versions(registry: str) -> list[str]:
 
 
 def _version_key(value: str) -> tuple[int, ...]:
+    if npm_package.VERSION_PATTERN.fullmatch(value) is None:
+        raise NpmReleaseError(f"expected a stable OMM version, got {value!r}")
     return tuple(int(part) for part in value.split("."))
 
 
@@ -747,31 +749,32 @@ def _resolve_previous_version(
 ) -> str | None:
     """Turn `--previous-version` into a concrete version, or None to skip.
 
-    A literal value is returned as-is (after rejecting it matching
-    `version`). `"auto"` resolves to the highest published version other
-    than `version` itself, so CI does not need to know in advance what the
-    previous release was. Returns None -- meaning the upgrade smoke is
-    skipped -- only for `"auto"` with nothing to resolve to (first-ever
-    release, or every published version equals `version`); an explicit
-    literal value is never silently skipped.
+    A literal value must be an older stable version. `"auto"` selects the
+    highest published stable version below the target, including when an
+    old release job is rerun after newer releases have been published.
+    Returns None only when `"auto"` finds no older stable release.
     """
     if previous_version is None:
         return None
+    target = _version_key(version)
     if previous_version != "auto":
         if previous_version == version:
             raise NpmReleaseError("--previous-version must not equal --version")
+        if _version_key(previous_version) >= target:
+            raise NpmReleaseError("--previous-version must be older than --version")
         return previous_version
-    candidates = sorted(
-        (item for item in _published_versions(registry) if item != version),
-        key=_version_key,
-    )
+    candidates = [
+        item for item in _published_versions(registry)
+        if npm_package.VERSION_PATTERN.fullmatch(item) is not None
+        and _version_key(item) < target
+    ]
     if not candidates:
         print(
             f"No previously published {npm_package.LAUNCHER_NAME} version found "
             f"before {version}; skipping the upgrade smoke."
         )
         return None
-    resolved = candidates[-1]
+    resolved = max(candidates, key=_version_key)
     print(f"Resolved --previous-version auto to {resolved} for the upgrade smoke.")
     return resolved
 
@@ -864,7 +867,7 @@ def smoke_registry(
     """Install `version` from the registry and probe it.
 
     With `previous_version` set (a literal version, or `"auto"` to resolve
-    the latest published version other than `version`), first installs
+    the latest published stable version older than `version`), first installs
     `previous_version`, then upgrades the same global prefix to `version` in
     place -- see `_exercise_registry_upgrade` for what that proves and why.
     """
