@@ -26,6 +26,15 @@ token, so throughput is memory-bandwidth bound:
 tokens_per_sec <= memory_bandwidth_gb_per_s / active_weight_gb
 ```
 
+This is a hard ceiling only for the benchmark contract OMM currently emits:
+one non-speculative stream, with no batched decode. Speculative decoding can
+commit several tokens from one verification pass, and batched serving changes
+the per-token traffic model. If a future engine exposes either mode, telemetry
+must identify that decode mode and those rows need a separate ceiling before
+they enter training. Until then the current client does not produce such rows,
+so [issue #227](https://github.com/omm-hippo/omm/issues/227) remains a tracked
+integration boundary rather than an unused runtime branch.
+
 `active_weight_gb` is `active_parameter_count_b * quant_bits / 8`, falling
 back to the total parameter count and then to the file size, so mixture-of-
 experts rows are bounded by the weights actually read rather than by the

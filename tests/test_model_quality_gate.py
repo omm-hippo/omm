@@ -4,6 +4,7 @@ import math
 
 import pytest
 
+from scripts import model_quality_gate
 from scripts.model_quality_gate import (
     compare_artifacts,
     evaluate_artifact,
@@ -425,3 +426,36 @@ def test_compare_artifacts_ignores_fit_regression_with_too_few_negative_examples
     assert report["baseline"]["fit_false_positive_rate"] == 0.0
     assert report["passed"] is True
     assert report["failures"] == []
+
+
+def test_validate_artifact_enforces_shared_tree_work_limits(monkeypatch):
+    candidate = artifact(1.0)
+
+    monkeypatch.setattr(model_quality_gate, "MAX_TREES", 0)
+    with pytest.raises(ValueError, match="too many trees"):
+        model_quality_gate.validate_artifact(candidate, FEATURES)
+
+    monkeypatch.setattr(model_quality_gate, "MAX_TREES", 100)
+    monkeypatch.setattr(model_quality_gate, "MAX_TOTAL_TREE_NODES", 2)
+    branch = {
+        "feature": 0,
+        "threshold": 1.0,
+        "left": {"leaf": True, "value": 1.0},
+        "right": {"leaf": True, "value": 1.0},
+    }
+    candidate["trees"] = [branch]
+    with pytest.raises(ValueError, match="too many tree nodes"):
+        model_quality_gate.validate_artifact(candidate, FEATURES)
+
+    class MustNotBeInspected(dict):
+        def get(self, *args, **kwargs):
+            raise AssertionError("node budget was checked after reading an excess node")
+
+    branch["right"] = MustNotBeInspected()
+    with pytest.raises(ValueError, match="too many tree nodes"):
+        model_quality_gate.validate_artifact(candidate, FEATURES)
+
+    monkeypatch.setattr(model_quality_gate, "MAX_TOTAL_TREE_NODES", 100)
+    monkeypatch.setattr(model_quality_gate, "MAX_TREE_DEPTH", 1)
+    with pytest.raises(ValueError, match="maximum tree depth"):
+        model_quality_gate.validate_artifact(candidate, FEATURES)

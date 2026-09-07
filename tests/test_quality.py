@@ -2002,3 +2002,19 @@ def test_generate_lmstudio_ignores_a_ttft_that_is_not_shorter_than_generation(mo
     response = quality._generate_lmstudio("m", "hi", pack["generation"], 64, 1234)
 
     assert response["eval_duration"] == 2_000_000_000
+
+
+def test_numeric_answer_rejects_exponents_that_expand_without_bound():
+    assert quality._normalize_number("1e1000") is None
+    assert quality._normalize_number("1e-1000") is None
+    assert quality.parse_numeric_answer("FINAL: 1e1000") is None
+    assert quality.parse_numeric_answer("FINAL: -1.25e2") == "-125"
+
+
+def test_numeric_normalization_preserves_digits_beyond_decimal_context_precision():
+    first = "12345678901234567890123456781"
+    second = "12345678901234567890123456782"
+
+    assert quality._normalize_number(first) == first
+    assert quality._normalize_number(second) == second
+    assert quality._normalize_number(first) != quality._normalize_number(second)

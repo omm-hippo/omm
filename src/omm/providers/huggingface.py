@@ -105,10 +105,19 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
 
     try:
         entries = resp.json()
-        if not entries:
+        if not isinstance(entries, list):
             return None
-        lfs = entries[0].get("lfs", {})
-        return normalize_sha256(lfs.get("oid") or lfs.get("sha256"))
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_path = entry.get("path", entry.get("rfilename"))
+            if entry_path != filename:
+                continue
+            lfs = entry.get("lfs", {})
+            if not isinstance(lfs, dict):
+                return None
+            return normalize_sha256(lfs.get("oid") or lfs.get("sha256"))
+        return None
     except (ValueError, KeyError, TypeError, AttributeError, IndexError):
         return None
 
