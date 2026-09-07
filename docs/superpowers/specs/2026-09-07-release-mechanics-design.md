@@ -98,6 +98,25 @@ reviews they need a second approver:
 - branches section: beta needs 2 reviews; the `release:` commit bypasses the PR
   requirement.
 
+## Cutover runbook (after PR #286 and this PR merge)
+
+1. Create a third collaborator account on `omm-hippo/omm` (or reuse an existing
+   one that is neither the retrain author nor `LOCALFIT_APPROVAL_PAT`'s
+   account). Add its PAT as the repo secret `LOCALFIT_APPROVAL_PAT_2`.
+2. On the `beta` branch protection:
+   - `required_pull_request_reviews.required_approving_review_count`: 1 → 2.
+   - `bypass_pull_request_allowances.users`: add the release maintainers.
+   - Confirm a bypass user can push the `release:` commit with
+     `enforce_admins: true` still set. If GitHub blocks it, set
+     `enforce_admins: false` on `beta` (checks still gate PR merges via
+     `required_status_checks`) and note it here.
+3. First cut: `python scripts/cut_release.py --skip-ci-check` once (beta
+   protection's required-check list may not be populated yet); thereafter drop
+   the flag.
+4. Verify a nightly `train.yml` run: the two approvals land and the PR
+   auto-merges. If `LOCALFIT_APPROVAL_PAT_2` is missing the merge step blocks
+   loudly — that is the intended failure, not a silent skip.
+
 ## Testing
 
 - `test_cut_release.py`: next-version computation from pyproject; the CI-green
