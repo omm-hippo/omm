@@ -105,11 +105,29 @@ def test_bundled_quality_pack_is_versioned_bounded_and_attributed():
         ("FINAL: 18", "18"),
         ("work here\nFINAL = 70,000", "70000"),
         ("The result is 3.0", "3"),
+        ("FINAL: .5", "0.5"),
+        ("FINAL: -.5", "-0.5"),
+        ("FINAL: +.5", "0.5"),
+        ("FINAL: .5e2", "50"),
+        ("FINAL: +.5e-2", "0.005"),
+        ("FINAL: -.5E+2", "-50"),
+        ("FINAL: 5.e2", "500"),
+        ("The result is -.5", "-0.5"),
+        ("The result is .5e2.", "50"),
+        ("FINAL: .5, so this is the answer.", "0.5"),
+        ("FINAL: 5.", "5"),
+        ("FINAL: 1e2.", "100"),
         ("no numeric answer", None),
     ],
 )
 def test_parse_numeric_answer(response, expected):
     assert quality.parse_numeric_answer(response) == expected
+
+
+@pytest.mark.parametrize("answer", ["1e", "1e+", "1e-", ".5e+", "1e2.3", "1e2e3", "1e++2"])
+@pytest.mark.parametrize("prefix", ["FINAL: ", "The result is "])
+def test_parse_numeric_answer_rejects_incomplete_or_malformed_exponents(prefix, answer):
+    assert quality.parse_numeric_answer(prefix + answer) is None
 
 
 def test_quality_pack_rejects_duplicate_ids(tmp_path):
@@ -157,6 +175,40 @@ def test_evaluate_model_stores_parsed_answers_not_raw_text(monkeypatch):
     assert result["quality"]["raw_responses_stored"] is False
     assert all("response" not in item for item in result["quality"]["items"])
     assert result["speed"]["samples_tokens_per_sec"] == [100.0, 100.0]
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected", "predicted", "correct"),
+    [
+        (".5", "0.5", "0.5", True),
+        (".5", "5", "0.5", False),
+        ("-.5", "-0.5", "-0.5", True),
+        (".5e2", "50", "50", True),
+        ("1e+", "1", None, False),
+    ],
+)
+def test_evaluate_model_scores_fractional_and_invalid_exponent_answers(
+    monkeypatch, answer, expected, predicted, correct
+):
+    pack, _digest = quality.load_pack()
+    pack["items"] = [{**pack["items"][0], "expected": expected}]
+    monkeypatch.setattr(quality, "_model_metadata", lambda tag: {"capabilities": ["completion"]})
+    monkeypatch.setattr(
+        quality,
+        "_generate",
+        lambda *args, **kwargs: {
+            "response": f"FINAL: {answer}",
+            "eval_count": 10,
+            "eval_duration": 100_000_000,
+        },
+    )
+
+    result = quality.evaluate_model("fixture:latest", pack, speed_runs=1)
+
+    item = result["quality"]["items"][0]
+    assert item["predicted"] == predicted
+    assert item["correct"] is correct
+    assert result["quality"]["accuracy"] == (1.0 if correct else 0.0)
 
 
 def test_generate_omits_think_field_for_model_without_thinking_capability(monkeypatch):
