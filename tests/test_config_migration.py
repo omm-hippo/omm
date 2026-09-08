@@ -161,3 +161,26 @@ def test_non_finite_storage_counter_is_repaired(isolated_omm_home, invalid):
 def test_storage_counter_rejects_invalid_deltas(isolated_omm_home, invalid):
     with pytest.raises(ValueError, match="non-negative integer"):
         config.add_storage_saved_bytes(invalid)
+
+
+@pytest.mark.parametrize("field", ["model_url", "catalog_manifest_url", "memory_guard_policy"])
+@pytest.mark.parametrize("invalid", [[], {}])
+def test_container_valued_settings_recover_without_blocking_config_updates(
+    isolated_omm_home, field, invalid
+):
+    config.CONFIG_PATH.write_text(json.dumps({field: invalid, "usage_stats_policy": "never"}))
+
+    loaded = config.load_config()
+    updated = config.update_config(theme="light")
+
+    assert loaded[field] == config.DEFAULT_CONFIG[field]
+    assert updated["theme"] == "light"
+    assert updated["usage_stats_policy"] == "never"
+    assert config.load_config()[field] == config.DEFAULT_CONFIG[field]
+
+
+def test_container_repair_preserves_unknown_extension_settings(isolated_omm_home):
+    extension = {"nested": ["kept"]}
+    config.CONFIG_PATH.write_text(json.dumps({"extension": extension}))
+
+    assert config.load_config()["extension"] == extension

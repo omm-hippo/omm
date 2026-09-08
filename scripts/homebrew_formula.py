@@ -50,7 +50,6 @@ LICENSE = "MIT"
 # pyproject.toml's `requires-python` floor (>=3.10) - it is Homebrew
 # packaging policy, tracked here so `python_version` markers can be
 # evaluated against the interpreter Homebrew will actually use.
-HOMEBREW_PYTHON = "python@3.14"
 HOMEBREW_PYTHON_VERSION = (3, 14)
 
 # Homebrew-specific build/runtime deps needed to compile `cryptography`
@@ -193,8 +192,11 @@ def _marker_applies(marker: str, python_version: tuple[int, ...]) -> bool:
         )
     op = match.group("op")
     target = tuple(int(part) for part in match.group("value").split("."))
-    # Compare only as many components as the marker specifies.
-    lhs = python_version[: len(target)]
+    # PEP 440 pads release tuples with zeroes: 3.14 == 3.14.0, but
+    # truncating the interpreter would incorrectly make 3.14 == 3.
+    width = max(len(python_version), len(target))
+    lhs = python_version + (0,) * (width - len(python_version))
+    target += (0,) * (width - len(target))
     if op == "<":
         return lhs < target
     if op == "<=":
@@ -215,6 +217,7 @@ def parse_dependency_specs(
 ) -> tuple[list[Dependency], list[Excluded]]:
     included: list[Dependency] = []
     excluded: list[Excluded] = []
+    names: set[str] = set()
     for spec in specs:
         match = SPEC_PATTERN.fullmatch(spec.strip())
         if match is None:
@@ -227,6 +230,10 @@ def parse_dependency_specs(
         if marker is not None and not _marker_applies(marker, homebrew_python):
             excluded.append(Excluded(spec=spec.strip(), reason=marker.strip()))
             continue
+        normalized = normalize_resource_name(name)
+        if normalized in names:
+            raise HomebrewFormulaError(f"duplicate active dependency: {normalized}")
+        names.add(normalized)
         included.append(Dependency(name=name, version=version))
     return included, excluded
 
@@ -299,6 +306,14 @@ def latest_pypi_version(fetch: Fetcher = default_fetch_json) -> str:
     return by_tuple[max(published)]
 
 
+def _python_formula(python_version: tuple[int, ...]) -> str:
+    if len(python_version) != 2 or any(
+        type(part) is not int or part < 0 for part in python_version
+    ):
+        raise HomebrewFormulaError("Homebrew Python must have a major and minor version")
+    return "python@" + ".".join(map(str, python_version))
+
+
 def render_formula(
     version: str,
     *,
@@ -309,6 +324,7 @@ def render_formula(
     if not VERSION_PATTERN.fullmatch(version):
         raise HomebrewFormulaError(f"invalid OMM version: {version!r}")
 
+    python_formula = _python_formula(homebrew_python)
     deps, excluded = collect_dependencies(pyproject, homebrew_python=homebrew_python)
     main = resolve_resource(PYPI_PACKAGE_NAME, version, fetch)
 
@@ -331,7 +347,7 @@ def render_formula(
         lines.append(f'  depends_on "{dep}" => :build')
     for dep in RUNTIME_DEPENDS_ON:
         lines.append(f'  depends_on "{dep}"')
-    lines.append(f'  depends_on "{HOMEBREW_PYTHON}"')
+    lines.append(f'  depends_on "{python_formula}"')
     lines.append("")
     lines.append(f'  pypi_packages package_name: "{PYPI_PACKAGE_NAME}"')
     lines.append("")
@@ -340,7 +356,7 @@ def render_formula(
         lines.append(
             "  # Excluded from the resource list below - marker not satisfied for"
         )
-        lines.append(f"  # {HOMEBREW_PYTHON} (Homebrew's declared interpreter here):")
+        lines.append(f"  # {python_formula} (Homebrew's declared interpreter here):")
         for item in sorted(excluded, key=lambda e: e.spec):
             lines.append(f"  #   {item.spec}")
         lines.append("")
@@ -381,7 +397,11 @@ def _parse_existing_formula(
         )
     source = source_matches[0]
     resources: dict[str, Resource] = {}
-    for match in RESOURCE_PATTERN.finditer(text):
+    matches = list(RESOURCE_PATTERN.finditer(text))
+    declarations = list(re.finditer(r"^[ \t]*resource\b", text, re.MULTILINE))
+    if len(declarations) != len(matches):
+        raise HomebrewFormulaError("unsupported resource block in formula; refusing a partial check")
+    for match in matches:
         name = match.group("name")
         if name in resources:
             raise HomebrewFormulaError(f"duplicate resource in formula: {name}")
@@ -400,6 +420,14 @@ def check_formula(
 ) -> None:
     text = formula_path.read_text(encoding="utf-8")
     actual_version, actual_url, actual_sha256, actual_resources = _parse_existing_formula(text)
+    expected_python = _python_formula(homebrew_python)
+    python_declarations = re.findall(
+        r"^[ \t]*depends_on\s+[^\n]*\bpython[^\n]*$", text, re.MULTILINE,
+    )
+    if python_declarations != [f'  depends_on "{expected_python}"']:
+        raise HomebrewFormulaError(
+            f"Homebrew Python must be declared exactly once as {expected_python}"
+        )
 
     problems: list[str] = []
 

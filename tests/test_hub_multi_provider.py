@@ -100,3 +100,16 @@ def test_fetch_repo_files_routes_to_provider_module(monkeypatch):
 
     assert files == ["a.Q4_K_M.gguf", "a.Q8_0.gguf"]
     assert param_count_b == 7.0
+
+
+def test_fetch_repo_metadata_routes_to_provider_module(monkeypatch):
+    monkeypatch.setattr(huggingface, "fetch_repo_metadata", lambda repo_id: {"author": "hf"})
+    monkeypatch.setattr(modelscope, "fetch_repo_metadata", lambda repo_id: {"author": "ms"})
+
+    assert hub.fetch_repo_metadata("huggingface", "org/repo") == {"author": "hf"}
+    assert hub.fetch_repo_metadata("modelscope", "org/repo") == {"author": "ms"}
+
+
+def test_fetch_repo_metadata_rejects_an_unknown_provider():
+    with pytest.raises(ModelResolutionError):
+        hub.fetch_repo_metadata("nowhere", "org/repo")

@@ -189,6 +189,13 @@ def fetch_repo_files(provider: str, repo_id: str) -> tuple[list[str], float | No
     return _PROVIDER_MODULES[validate_provider(provider)].fetch_repo_files(repo_id)
 
 
+def fetch_repo_metadata(provider: str, repo_id: str) -> dict:
+    """Best-effort repo-level facts (author, downloads, likes, license, ...)
+    for a model that is not installed. Providers return {} rather than
+    raising, so callers can render whatever came back."""
+    return _PROVIDER_MODULES[validate_provider(provider)].fetch_repo_metadata(repo_id)
+
+
 def remote_file_size(provider: str, repo_id: str, filename: str) -> int | None:
     return _PROVIDER_MODULES[validate_provider(provider)].remote_file_size(repo_id, filename)
 

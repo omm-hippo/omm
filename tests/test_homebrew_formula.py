@@ -217,3 +217,64 @@ def test_normalize_resource_name_matches_pep503():
     assert homebrew_formula.normalize_resource_name("prompt_toolkit") == "prompt-toolkit"
     assert homebrew_formula.normalize_resource_name("Pygments") == "pygments"
     assert homebrew_formula.normalize_resource_name("typing_extensions") == "typing-extensions"
+
+
+@pytest.mark.parametrize("marker, expected", [
+    ("python_version > '3'", True),
+    ("python_version == '3'", False),
+    ("python_version == '3.14.0'", True),
+    ("python_version >= '3.14.0'", True),
+])
+def test_markers_compare_full_versions(marker, expected):
+    assert homebrew_formula._marker_applies(marker, (3, 14)) is expected
+
+
+def test_conflicting_normalized_dependency_names_are_rejected():
+    with pytest.raises(homebrew_formula.HomebrewFormulaError, match="duplicate"):
+        homebrew_formula.parse_dependency_specs([
+            "prompt_toolkit==3.0.52", "prompt-toolkit==3.0.53",
+        ])
+
+
+def test_render_uses_the_python_version_that_selects_resources(tmp_path):
+    text = homebrew_formula.render_formula(
+        "9.9.9", pyproject=write_fixture(tmp_path), fetch=fake_fetch,
+        homebrew_python=(3, 10),
+    )
+    assert 'depends_on "python@3.10"' in text
+    assert 'resource "tomli" do' in text
+
+
+@pytest.mark.parametrize("replacement", [
+    '  depends_on "python@3.10"',
+    '',
+    '  depends_on "python@3.14"\n  depends_on "python@3.10"',
+])
+def test_check_rejects_an_incompatible_python_declaration(tmp_path, replacement):
+    pyproject = write_fixture(tmp_path)
+    text = homebrew_formula.render_formula("9.9.9", pyproject=pyproject, fetch=fake_fetch)
+    formula = tmp_path / "omm.rb"
+    formula.write_text(text.replace('  depends_on "python@3.14"', replacement))
+    with pytest.raises(homebrew_formula.HomebrewFormulaError, match="Python"):
+        homebrew_formula.check_formula(
+            formula, "9.9.9", pyproject=pyproject, fetch=fake_fetch,
+            allow_version_lag=True,
+        )
+
+
+@pytest.mark.parametrize("extra", [
+    '  resource "extra" do\n    url "https://example.org/extra.tar.gz"\n  end\n',
+    "  resource 'extra' do\n    url 'https://example.org/extra.tar.gz'\n  end\n",
+    '  resource "extra" do\n    url "https://example.org/extra.tar.gz"\n'
+    '    sha256 "' + 'a' * 64 + '"\n    patch :DATA\n  end\n',
+])
+def test_check_does_not_ignore_unsupported_resource_blocks(tmp_path, extra):
+    pyproject = write_fixture(tmp_path)
+    text = homebrew_formula.render_formula("9.9.9", pyproject=pyproject, fetch=fake_fetch)
+    formula = tmp_path / "omm.rb"
+    formula.write_text(text.replace('  def install', extra + '\n  def install'))
+    with pytest.raises(homebrew_formula.HomebrewFormulaError, match="resource"):
+        homebrew_formula.check_formula(
+            formula, "9.9.9", pyproject=pyproject, fetch=fake_fetch,
+            allow_version_lag=True,
+        )

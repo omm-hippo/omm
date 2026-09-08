@@ -222,3 +222,66 @@ def test_malformed_file_list_shape_fails_closed(monkeypatch):
         modelscope.fetch_repo_files("org/repo")
     modelscope._list_repo_files.cache_clear()
     assert modelscope.remote_file_size("org/repo", "model.gguf") is None
+
+
+# Shape recorded from a live GET https://modelscope.cn/api/v1/models/
+# Qwen/Qwen2.5-7B-Instruct-GGUF (2026-09-01) - trimmed to the keys
+# fetch_repo_metadata reads.
+_METADATA_PAYLOAD = {
+    "Code": 200,
+    "Data": {
+        "Path": "Qwen",
+        "CreatedBy": "Cherrytest",
+        "Downloads": 206222,
+        "Stars": 76,
+        "License": "apache-2.0",
+        "BaseModel": ["Qwen/Qwen2.5-7B-Instruct"],
+        "ChineseName": "千问2.5-7B-Instruct-GGUF",
+        "LastUpdatedTime": 1786111709,
+    },
+}
+
+
+def test_fetch_repo_metadata_reads_the_live_payload_shape(monkeypatch):
+    monkeypatch.setattr(
+        requests, "get", lambda url, timeout: _FakeResponse(payload=_METADATA_PAYLOAD)
+    )
+
+    metadata = modelscope.fetch_repo_metadata("Qwen/Qwen2.5-7B-Instruct-GGUF")
+
+    assert metadata == {
+        "author": "Qwen",
+        "downloads": 206222,
+        "likes": 76,
+        "license": "apache-2.0",
+        "base_model": "Qwen/Qwen2.5-7B-Instruct",
+        "chinese_name": "千问2.5-7B-Instruct-GGUF",
+        "last_modified": "2026-08-07",
+        "url": "https://modelscope.cn/models/Qwen/Qwen2.5-7B-Instruct-GGUF",
+    }
+
+
+def test_fetch_repo_metadata_drops_the_unset_timestamp_sentinel(monkeypatch):
+    payload = {"Data": {**_METADATA_PAYLOAD["Data"], "LastUpdatedTime": -62135596800}}
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeResponse(payload=payload))
+
+    assert "last_modified" not in modelscope.fetch_repo_metadata("org/repo")
+
+
+def test_fetch_repo_metadata_omits_keys_the_repo_has_no_value_for(monkeypatch):
+    monkeypatch.setattr(
+        requests, "get", lambda url, timeout: _FakeResponse(payload={"Data": {}})
+    )
+
+    metadata = modelscope.fetch_repo_metadata("org/repo")
+
+    assert metadata == {"url": "https://modelscope.cn/models/org/repo"}
+
+
+def test_fetch_repo_metadata_returns_empty_instead_of_raising(monkeypatch):
+    def _explode(url, timeout):
+        raise requests.ConnectionError("offline")
+
+    monkeypatch.setattr(requests, "get", _explode)
+
+    assert modelscope.fetch_repo_metadata("org/repo") == {}

@@ -56,6 +56,21 @@ def test_remote_ingestion_requires_the_dedicated_token(monkeypatch):
     server_app.require_ingest(request, "Bearer secret")
 
 
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong", "Bearer \u00ff", "Bearer \ud55c\uae00"])
+def test_token_checks_reject_invalid_headers_without_server_errors(monkeypatch, authorization):
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")
+    monkeypatch.setenv("LOCALFIT_INGEST_TOKEN", "secret")
+    request = Request({"type": "http", "client": ("203.0.113.10", 1234), "headers": []})
+
+    for authorize in (
+        lambda: server_app.require_admin(authorization),
+        lambda: server_app.require_ingest(request, authorization),
+    ):
+        with pytest.raises(HTTPException) as rejected:
+            authorize()
+        assert rejected.value.status_code == 401
+
+
 def test_benchmark_event_accepts_v8_chip_score_fields():
     event = BenchmarkEvent(
         ram_gb=16,
