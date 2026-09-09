@@ -1,13 +1,24 @@
 # Contributing to omm
 
 Thank you for helping improve omm. Contributions can include bug reports,
-documentation, tests, runner compatibility work, packaging, and focused code
-changes.
+documentation, tests, runner compatibility work, packaging, focused code
+changes, and benchmark data.
 
 By participating, you agree to follow the
 [Code of Conduct](CODE_OF_CONDUCT.md). Report suspected vulnerabilities
 privately as described in [SECURITY.md](SECURITY.md), not in a public issue or
 pull request.
+
+## Contributing benchmark data (no code required)
+
+`omm contribute` repeatedly installs, benchmarks, and uploads models that fit
+your hardware, growing the dataset that trains the recommendation model. It is
+opt-in and anonymous: model names, file paths, and IP addresses are never sent.
+The recommendation model currently learns from a narrow range of machines, so
+runs on uncommon hardware (older GPUs, ARM boards, high-core-count CPUs, large
+unified-memory systems) are especially valuable. See [PRIVACY.md](PRIVACY.md)
+for the exact fields and [README.md](README.md) for disk-space and daemon
+handling.
 
 ## Development setup
 
