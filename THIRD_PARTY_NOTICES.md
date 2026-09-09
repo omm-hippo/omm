@@ -3,10 +3,9 @@
 `omm` is licensed under the [MIT License](LICENSE). It depends on the
 following third-party packages, all under permissive (non-copyleft) licenses.
 This list covers the `runtime`, `dev`, `server`, and `nvidia` dependency sets
-from `pyproject.toml` combined, at the versions pinned there (the set is
-version-frozen to the contest submission through 2026-09-06). Regenerate with
-`pip-licenses` from an environment built via
-`pip install -e ".[dev,server,nvidia]"` after the freeze lifts.
+from `pyproject.toml` combined, including their transitive closure. Regenerate
+with `pip-licenses` from an environment built via
+`pip install -e ".[dev,server,nvidia]"`.
 
 | Package | License |
 |---|---|
@@ -60,7 +59,7 @@ version-frozen to the contest submission through 2026-09-06). Regenerate with
 | wcwidth | MIT |
 
 `exceptiongroup` and `tomli` install only on Python < 3.11; `colorama` is
-pulled unconditionally by the frozen pin set (harmless on non-Windows).
+pulled transitively (via `click`) and is harmless on non-Windows.
 
 No dependency in this list carries a copyleft license (GPL/LGPL/AGPL) that
 would impose obligations on `omm`'s own MIT license.

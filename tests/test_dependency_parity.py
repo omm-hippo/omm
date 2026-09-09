@@ -17,8 +17,10 @@ def test_checked_in_binary_requirements_match_project_runtime_contract():
         "darwin-x64",
         "win32-x64",
     }
+    # pyproject.toml pins only a `cryptography>=` floor now, so both the Intel
+    # macOS pin and the mainline pin satisfy it directly - the darwin-x64
+    # VERSION_EXCEPTIONS entry is dormant, not applied.
     assert results["darwin-x64"].runtime_versions["cryptography"] == "48.0.0"
-    assert set(results["darwin-x64"].exceptions) == {"cryptography"}
     for target in (
         "linux-x64-gnu",
         "linux-arm64-gnu",
@@ -26,7 +28,8 @@ def test_checked_in_binary_requirements_match_project_runtime_contract():
         "win32-x64",
     ):
         assert results[target].runtime_versions["cryptography"] == "50.0.1"
-        assert results[target].exceptions == {}
+    for result in results.values():
+        assert result.exceptions == {}
 
 
 def test_checker_rejects_a_drifted_runtime_pin(tmp_path):
@@ -147,8 +150,10 @@ def test_homebrew_formula_checker_rejects_version_drift(tmp_path):
 
 def test_cli_checks_the_packaged_source_instead_of_the_tooling_project(tmp_path, capsys):
     source_project = tmp_path / "pyproject.toml"
+    # Tighten the click floor past the pin requirements-npm-binary.txt carries
+    # (click==8.5.0) so the checked-in binary graph no longer satisfies it.
     source_project.write_text(
-        dependency_parity.PYPROJECT.read_text().replace("click==8.5.0", "click==8.4.2")
+        dependency_parity.PYPROJECT.read_text().replace('"click>=8.1"', '"click>=9"')
     )
 
     result = dependency_parity.main(

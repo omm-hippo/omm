@@ -49,29 +49,28 @@ def fake_fetch(url: str) -> dict:
     return fake_release(name, version)
 
 
-FIXTURE_PYPROJECT = """\
-[project]
-name = "example-cli"
-version = "1.2.3"
-dependencies = [
-    "click==8.5.0",
-    "idna==3.19",
-    "tomli==2.4.1; python_version < '3.11'",
-]
+FIXTURE_REQUIREMENTS = """\
+build==1.5.0
+hatchling==1.32.0
+
+# Runtime graph mirrored from pyproject.toml.
+click==8.5.0
+idna==3.19
+tomli==2.4.1; python_version < '3.11'
 """
 
 
 def write_fixture(tmp_path: Path) -> Path:
-    path = tmp_path / "pyproject.toml"
-    path.write_text(FIXTURE_PYPROJECT, encoding="utf-8")
+    path = tmp_path / "requirements-npm-binary.txt"
+    path.write_text(FIXTURE_REQUIREMENTS, encoding="utf-8")
     return path
 
 
 def test_render_includes_pinned_dependencies_sorted(tmp_path):
-    pyproject = write_fixture(tmp_path)
+    requirements = write_fixture(tmp_path)
 
     text = homebrew_formula.render_formula(
-        "9.9.9", pyproject=pyproject, fetch=fake_fetch
+        "9.9.9", requirements=requirements, fetch=fake_fetch
     )
 
     click_index = text.index('resource "click" do')
@@ -82,71 +81,101 @@ def test_render_includes_pinned_dependencies_sorted(tmp_path):
     assert f'sha256 "{fake_sha256("omm-model", "9.9.9")}"' in text
 
 
+def test_render_omits_build_tools(tmp_path):
+    text = homebrew_formula.render_formula(
+        "9.9.9", requirements=write_fixture(tmp_path), fetch=fake_fetch
+    )
+
+    assert 'resource "build" do' not in text
+    assert 'resource "hatchling" do' not in text
+
+
 def test_render_excludes_marker_gated_dependency_with_a_comment(tmp_path):
-    pyproject = write_fixture(tmp_path)
+    requirements = write_fixture(tmp_path)
 
     text = homebrew_formula.render_formula(
-        "9.9.9", pyproject=pyproject, fetch=fake_fetch
+        "9.9.9", requirements=requirements, fetch=fake_fetch
     )
 
     assert 'resource "tomli" do' not in text
     assert "tomli==2.4.1; python_version < '3.11'" in text  # noted, not silently dropped
 
 
-def test_render_is_deterministic(tmp_path):
-    pyproject = write_fixture(tmp_path)
+def test_render_selects_the_mainline_pin_of_a_platform_split(tmp_path):
+    requirements = tmp_path / "requirements-npm-binary.txt"
+    requirements.write_text(
+        'cryptography==48.0.0; sys_platform == "darwin" and platform_machine == "x86_64"\n'
+        'cryptography==50.0.1; sys_platform != "darwin" or platform_machine != "x86_64"\n',
+        encoding="utf-8",
+    )
 
-    first = homebrew_formula.render_formula("9.9.9", pyproject=pyproject, fetch=fake_fetch)
-    second = homebrew_formula.render_formula("9.9.9", pyproject=pyproject, fetch=fake_fetch)
+    text = homebrew_formula.render_formula(
+        "9.9.9", requirements=requirements, fetch=fake_fetch
+    )
+
+    assert f'sha256 "{fake_sha256("cryptography", "50.0.1")}"' in text
+    assert f'sha256 "{fake_sha256("cryptography", "48.0.0")}"' not in text
+    assert 'cryptography==48.0.0; sys_platform == "darwin"' in text  # noted as excluded
+
+
+def test_render_is_deterministic(tmp_path):
+    requirements = write_fixture(tmp_path)
+
+    first = homebrew_formula.render_formula("9.9.9", requirements=requirements, fetch=fake_fetch)
+    second = homebrew_formula.render_formula("9.9.9", requirements=requirements, fetch=fake_fetch)
 
     assert first == second
 
 
-def test_unsupported_marker_fails_loudly(tmp_path):
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(
-        '[project]\nname = "example-cli"\nversion = "1.0.0"\n'
-        'dependencies = ["click==8.5.0; sys_platform == \'win32\'"]\n',
-        encoding="utf-8",
-    )
+def test_unparseable_requirement_fails_loudly(tmp_path):
+    requirements = tmp_path / "requirements-npm-binary.txt"
+    requirements.write_text("click @@ 8.5.0\n", encoding="utf-8")
 
-    with pytest.raises(homebrew_formula.HomebrewFormulaError, match="unsupported environment marker"):
-        homebrew_formula.render_formula("1.0.0", pyproject=pyproject, fetch=fake_fetch)
+    with pytest.raises(homebrew_formula.HomebrewFormulaError, match="unsupported dependency spec"):
+        homebrew_formula.render_formula("1.0.0", requirements=requirements, fetch=fake_fetch)
+
+
+def test_unpinned_dependency_fails_loudly(tmp_path):
+    requirements = tmp_path / "requirements-npm-binary.txt"
+    requirements.write_text("click>=8.1\n", encoding="utf-8")
+
+    with pytest.raises(homebrew_formula.HomebrewFormulaError, match="pinned with a single =="):
+        homebrew_formula.render_formula("1.0.0", requirements=requirements, fetch=fake_fetch)
 
 
 def test_check_passes_for_a_matching_formula(tmp_path):
-    pyproject = write_fixture(tmp_path)
+    requirements = write_fixture(tmp_path)
     formula = tmp_path / "omm.rb"
     formula.write_text(
-        homebrew_formula.render_formula("9.9.9", pyproject=pyproject, fetch=fake_fetch),
+        homebrew_formula.render_formula("9.9.9", requirements=requirements, fetch=fake_fetch),
         encoding="utf-8",
     )
 
     homebrew_formula.check_formula(
-        formula, "9.9.9", pyproject=pyproject, fetch=fake_fetch
+        formula, "9.9.9", requirements=requirements, fetch=fake_fetch
     )  # must not raise
 
 
 def test_check_detects_a_drifted_omm_version(tmp_path):
-    pyproject = write_fixture(tmp_path)
+    requirements = write_fixture(tmp_path)
     formula = tmp_path / "omm.rb"
     # Formula still pins the previous OMM release.
     formula.write_text(
-        homebrew_formula.render_formula("9.9.8", pyproject=pyproject, fetch=fake_fetch),
+        homebrew_formula.render_formula("9.9.8", requirements=requirements, fetch=fake_fetch),
         encoding="utf-8",
     )
 
     with pytest.raises(homebrew_formula.HomebrewFormulaError, match="OMM version"):
         homebrew_formula.check_formula(
-            formula, "9.9.9", pyproject=pyproject, fetch=fake_fetch
+            formula, "9.9.9", requirements=requirements, fetch=fake_fetch
         )
 
 
 def test_check_allow_version_lag_ignores_omm_version_drift(tmp_path):
-    pyproject = write_fixture(tmp_path)
+    requirements = write_fixture(tmp_path)
     formula = tmp_path / "omm.rb"
     formula.write_text(
-        homebrew_formula.render_formula("9.9.8", pyproject=pyproject, fetch=fake_fetch),
+        homebrew_formula.render_formula("9.9.8", requirements=requirements, fetch=fake_fetch),
         encoding="utf-8",
     )
 
@@ -154,16 +183,16 @@ def test_check_allow_version_lag_ignores_omm_version_drift(tmp_path):
     homebrew_formula.check_formula(
         formula,
         "9.9.9",
-        pyproject=pyproject,
+        requirements=requirements,
         fetch=fake_fetch,
         allow_version_lag=True,
     )
 
 
 def test_check_detects_a_drifted_sha256(tmp_path):
-    pyproject = write_fixture(tmp_path)
+    requirements = write_fixture(tmp_path)
     formula = tmp_path / "omm.rb"
-    text = homebrew_formula.render_formula("9.9.9", pyproject=pyproject, fetch=fake_fetch)
+    text = homebrew_formula.render_formula("9.9.9", requirements=requirements, fetch=fake_fetch)
     corrupted_sha256 = "0" * 64
     text = text.replace(fake_sha256("click", "8.5.0"), corrupted_sha256)
     formula.write_text(text, encoding="utf-8")
@@ -172,16 +201,16 @@ def test_check_detects_a_drifted_sha256(tmp_path):
         homebrew_formula.check_formula(
             formula,
             "9.9.9",
-            pyproject=pyproject,
+            requirements=requirements,
             fetch=fake_fetch,
             allow_version_lag=True,
         )
 
 
 def test_check_detects_a_missing_dependency(tmp_path):
-    pyproject = write_fixture(tmp_path)
+    requirements = write_fixture(tmp_path)
     formula = tmp_path / "omm.rb"
-    text = homebrew_formula.render_formula("9.9.9", pyproject=pyproject, fetch=fake_fetch)
+    text = homebrew_formula.render_formula("9.9.9", requirements=requirements, fetch=fake_fetch)
     block_start = text.index('  resource "idna" do')
     block_end = text.index("  end\n", block_start) + len("  end\n")
     text = text[:block_start] + text[block_end:]
@@ -191,7 +220,7 @@ def test_check_detects_a_missing_dependency(tmp_path):
         homebrew_formula.check_formula(
             formula,
             "9.9.9",
-            pyproject=pyproject,
+            requirements=requirements,
             fetch=fake_fetch,
             allow_version_lag=True,
         )
@@ -219,14 +248,19 @@ def test_normalize_resource_name_matches_pep503():
     assert homebrew_formula.normalize_resource_name("typing_extensions") == "typing-extensions"
 
 
-@pytest.mark.parametrize("marker, expected", [
-    ("python_version > '3'", True),
-    ("python_version == '3'", False),
-    ("python_version == '3.14.0'", True),
-    ("python_version >= '3.14.0'", True),
+@pytest.mark.parametrize("homebrew_python, tomli_included", [
+    ((3, 14), False),
+    ((3, 10), True),
 ])
-def test_markers_compare_full_versions(marker, expected):
-    assert homebrew_formula._marker_applies(marker, (3, 14)) is expected
+def test_python_version_markers_gate_on_the_homebrew_interpreter(
+    tmp_path, homebrew_python, tomli_included
+):
+    included, excluded = homebrew_formula.parse_dependency_specs(
+        ["tomli==2.4.1; python_version < '3.11'"], homebrew_python=homebrew_python
+    )
+    names = {dep.name for dep in included}
+    assert ("tomli" in names) is tomli_included
+    assert (not excluded) is tomli_included
 
 
 def test_conflicting_normalized_dependency_names_are_rejected():
@@ -238,7 +272,7 @@ def test_conflicting_normalized_dependency_names_are_rejected():
 
 def test_render_uses_the_python_version_that_selects_resources(tmp_path):
     text = homebrew_formula.render_formula(
-        "9.9.9", pyproject=write_fixture(tmp_path), fetch=fake_fetch,
+        "9.9.9", requirements=write_fixture(tmp_path), fetch=fake_fetch,
         homebrew_python=(3, 10),
     )
     assert 'depends_on "python@3.10"' in text
@@ -251,13 +285,13 @@ def test_render_uses_the_python_version_that_selects_resources(tmp_path):
     '  depends_on "python@3.14"\n  depends_on "python@3.10"',
 ])
 def test_check_rejects_an_incompatible_python_declaration(tmp_path, replacement):
-    pyproject = write_fixture(tmp_path)
-    text = homebrew_formula.render_formula("9.9.9", pyproject=pyproject, fetch=fake_fetch)
+    requirements = write_fixture(tmp_path)
+    text = homebrew_formula.render_formula("9.9.9", requirements=requirements, fetch=fake_fetch)
     formula = tmp_path / "omm.rb"
     formula.write_text(text.replace('  depends_on "python@3.14"', replacement))
     with pytest.raises(homebrew_formula.HomebrewFormulaError, match="Python"):
         homebrew_formula.check_formula(
-            formula, "9.9.9", pyproject=pyproject, fetch=fake_fetch,
+            formula, "9.9.9", requirements=requirements, fetch=fake_fetch,
             allow_version_lag=True,
         )
 
@@ -269,12 +303,12 @@ def test_check_rejects_an_incompatible_python_declaration(tmp_path, replacement)
     '    sha256 "' + 'a' * 64 + '"\n    patch :DATA\n  end\n',
 ])
 def test_check_does_not_ignore_unsupported_resource_blocks(tmp_path, extra):
-    pyproject = write_fixture(tmp_path)
-    text = homebrew_formula.render_formula("9.9.9", pyproject=pyproject, fetch=fake_fetch)
+    requirements = write_fixture(tmp_path)
+    text = homebrew_formula.render_formula("9.9.9", requirements=requirements, fetch=fake_fetch)
     formula = tmp_path / "omm.rb"
     formula.write_text(text.replace('  def install', extra + '\n  def install'))
     with pytest.raises(homebrew_formula.HomebrewFormulaError, match="resource"):
         homebrew_formula.check_formula(
-            formula, "9.9.9", pyproject=pyproject, fetch=fake_fetch,
+            formula, "9.9.9", requirements=requirements, fetch=fake_fetch,
             allow_version_lag=True,
         )
