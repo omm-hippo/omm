@@ -177,8 +177,31 @@ Use the GitHub issue templates. A useful bug report includes:
 - affected local runner and version, if applicable
 - exact command, expected behavior, actual behavior, and redacted logs
 
-## License
+## License and Developer Certificate of Origin
 
 Contributions are accepted under the project's [MIT License](LICENSE).
 Downloaded models and third-party runner applications retain their own
 licenses and terms.
+
+This project uses the [Developer Certificate of Origin](DCO) (DCO 1.1) to
+record that each contributor has the right to submit their contribution under
+the MIT License. It is a lightweight assertion, not a copyright-assignment or
+contributor-license agreement — you keep the copyright to your work.
+
+Certify the DCO by adding a `Signed-off-by` trailer to every commit, using a
+real name and an email address you can be reached at:
+
+```
+Signed-off-by: Your Name <you@example.com>
+```
+
+`git commit -s` (or `git commit --signoff`) appends this line automatically
+from your configured `user.name` / `user.email`. To sign off a branch of
+commits you already made, use `git rebase --signoff <base>`. Amend the last
+commit with `git commit --amend -s --no-edit`.
+
+The DCO sign-off is separate from the SSH commit signature described under
+[Trusted pull-request head](#trusted-pull-request-head): the signature proves
+who pushed the commit, the sign-off records the licensing certification. A
+maintainer may add a missing sign-off on your behalf before merge. This is
+not currently enforced by a CI check.
