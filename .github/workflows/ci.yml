@@ -151,7 +151,7 @@ jobs:
           "node scripts/test_firebase_rules.mjs"
 
   homebrew-formula:
-    name: Homebrew Formula matches the frozen dependency table
+    name: Homebrew Formula matches the runtime dependency graph
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -164,7 +164,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Compare Formula/omm.rb against pyproject.toml (issue #238)
+      - name: Install the marker evaluator
+        run: python -m pip install --disable-pip-version-check packaging
+      - name: Compare Formula/omm.rb against requirements-npm-binary.txt (issue #238)
         run: >-
           python scripts/homebrew_formula.py check
           --formula homebrew-omm/Formula/omm.rb
