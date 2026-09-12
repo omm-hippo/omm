@@ -72,6 +72,8 @@ from omm import (
     tuning,
     usage,
     version_check,
+    watch,
+    watch_service,
 )
 from omm import contribute as contribute_mod
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
@@ -420,6 +422,12 @@ upload_app = typer.Typer(
     rich_markup_mode=None,
 )
 setting_app.add_typer(upload_app)
+watch_app = typer.Typer(
+    name="auto-import",
+    help="Automatically adopt models that Ollama, LM Studio, and similar apps download natively into the omm hub in the background. Off by default. See PRIVACY.md.",
+    rich_markup_mode=None,
+)
+setting_app.add_typer(watch_app)
 engine_app = typer.Typer(
     name="engine",
     help="Install local AI runner programs (Ollama, LM Studio, etc.).",
@@ -1331,7 +1339,7 @@ def _remote_head_commit(ref: str = "main") -> str | None:
     return result.stdout.split()[0]
 
 
-_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check"}
+_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check", "_auto-import-run"}
 
 
 @app.command(name="_bg-version-check", hidden=True)
@@ -1341,6 +1349,15 @@ def _bg_version_check_cmd() -> None:
     command exiting; writes the result to the shared cache for a later
     `omm` invocation to pick up."""
     version_check.cached_remote_head(_remote_head_commit, _channel_branch(), installed=_installed_commit())
+
+
+@app.command(name="_auto-import-run", hidden=True)
+def _auto_import_run_cmd() -> None:
+    """Internal. Started by the OS service registered via
+    `omm setting auto-import enable` (see watch_service.py); blocks forever
+    watching every supported local AI app's model directory and adopting
+    new models into the omm hub."""
+    watch.run_watch_loop()
 
 
 def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
@@ -1362,7 +1379,7 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
     return opts.command_body_ran and not opts.quiet
 
 
-_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
+_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check", "_auto-import-run"}
 
 
 def _ask_setup_choice() -> str:
@@ -1479,6 +1496,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "contribute",
     "doctor",
     "_bg-version-check",
+    "_auto-import-run",
 }
 
 
@@ -7129,6 +7147,70 @@ def catalog_rollback() -> None:
     console.print(f"[success]Rolled back recommendation catalog from {selected.name}.[/success]")
 
 
+def _watch_dependencies_available() -> bool:
+    try:
+        import watchdog  # noqa: F401
+        import plyer  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@watch_app.command(name="enable")
+@global_flags
+def auto_import_enable() -> None:
+    """Turn on background auto-import: watches Ollama/LM Studio/etc. and
+    adopts new models into the omm hub without a prompt."""
+    if not _watch_dependencies_available():
+        err_console.print(
+            '[error]Missing dependency. Install with: pip install "omm-model\\[watch]"[/error]'
+        )
+        raise typer.Exit(1)
+    if watch_service.is_installed():
+        console.print("[muted]Auto-import is already enabled.[/muted]")
+        return
+    try:
+        watch_service.install()
+    except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
+        err_console.print(f"[error]Could not enable auto-import: {error}[/error]")
+        raise typer.Exit(1) from error
+    config_mod.update_config(auto_import_enabled=True)
+    console.print(
+        "[success]Auto-import enabled - it will run in the background from now on.[/success]"
+    )
+
+
+@watch_app.command(name="disable")
+@global_flags
+def auto_import_disable() -> None:
+    """Turn off background auto-import."""
+    if not watch_service.is_installed():
+        console.print("[muted]Auto-import is already disabled.[/muted]")
+        config_mod.update_config(auto_import_enabled=False)
+        return
+    try:
+        watch_service.uninstall()
+    except (OSError, subprocess.CalledProcessError) as error:
+        err_console.print(f"[error]Could not disable auto-import cleanly: {error}[/error]")
+        raise typer.Exit(1) from error
+    config_mod.update_config(auto_import_enabled=False)
+    console.print("[success]Auto-import disabled.[/success]")
+
+
+@watch_app.command(name="status")
+@global_flags
+def auto_import_status() -> None:
+    """Show whether background auto-import is enabled and registered with the OS."""
+    enabled = bool(load_config().get("auto_import_enabled"))
+    installed = watch_service.is_installed()
+    table = _table(title="Auto-import", show_header=False)
+    table.add_column("Field", style="label")
+    table.add_column("Value")
+    table.add_row("Setting", "enabled" if enabled else "disabled (default)")
+    table.add_row("OS service registered", "yes" if installed else "no")
+    console.print(table)
+
+
 def _upload_channel_menu() -> None:
     """Interactive picker for the three outbound-data channels, shared by
     bare `omm setting upload` and the `omm setting` menu's Upload entry.
@@ -7258,6 +7340,10 @@ def setting_menu(ctx: typer.Context) -> None:
                     questionary.Choice(
                         f"Memory guard (current: {memory_guard_policy})", value="memory-guard"
                     ),
+                    questionary.Choice(
+                        f"Auto-import (current: {'on' if current.get('auto_import_enabled') else 'off'})",
+                        value="auto-import",
+                    ),
                     questionary.Choice("← Back", value="back"),
                 ],
             )
@@ -7271,6 +7357,24 @@ def setting_menu(ctx: typer.Context) -> None:
                     "Endpoint (blank to keep current, 'none' to clear):"
                 ).ask()
                 configure_telemetry(endpoint=endpoint or None)
+            elif choice == "auto-import":
+                action = _ask_select(
+                    questionary.select(
+                        f"Auto-import (current: {'on' if current.get('auto_import_enabled') else 'off'}):",
+                        choices=[
+                            questionary.Choice("Turn on", value="enable"),
+                            questionary.Choice("Turn off", value="disable"),
+                            questionary.Choice("Show status", value="status"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
+                )
+                if action == "enable":
+                    auto_import_enable()
+                elif action == "disable":
+                    auto_import_disable()
+                elif action == "status":
+                    auto_import_status()
             elif choice == "upload":
                 _upload_channel_menu()
             elif choice == "version":
