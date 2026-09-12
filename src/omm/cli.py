@@ -2385,12 +2385,28 @@ def _verified_pipx_install_result(
     )
 
 
-def _remove_update_path(path: Path) -> None:
-    """Remove only one updater-owned scratch/backup path."""
+def _rmtree_retry_readonly(func, target, exc_info) -> None:
+    """`shutil.rmtree` error hook: a freshly-cloned `.git/objects` pack is
+    read-only on Windows, so plain unlink/rmdir fails on it. chmod once and
+    retry before giving up on this particular path."""
+    try:
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+    except OSError:
+        pass
+
+
+def _remove_update_path(path: Path) -> bool:
+    """Remove only one updater-owned scratch/backup path. Returns whether
+    the path is actually gone afterwards - callers doing a rollback must
+    not assume `ignore_errors=True` silently succeeded; on Windows a
+    just-cloned `.git/objects` pack (read-only) or another process/AV
+    scanner holding a handle open routinely leaves a partial tree behind."""
     if path.is_symlink() or path.is_file():
         path.unlink(missing_ok=True)
     else:
-        shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(path, onerror=_rmtree_retry_readonly)
+    return not path.exists()
 
 
 def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedProcess:
@@ -2487,9 +2503,32 @@ def _migrate_to_editable_install(branch: str = "main") -> subprocess.CompletedPr
         if install_succeeded:
             _remove_update_path(backup_dir)
         else:
-            _remove_update_path(SRC_DIR)
+            # An exception raised here (in a `finally`) would silently
+            # replace `result` above with this rollback failure, hiding the
+            # real pipx error the caller needs to see. `_remove_update_path`
+            # can leave SRC_DIR partially deleted on Windows (a just-cloned
+            # `.git/objects` pack file, or another process/AV scanner
+            # holding a handle open) - only rename the backup back into
+            # place once it's confirmed gone, and never let that rename
+            # itself escape.
+            removed = _remove_update_path(SRC_DIR)
             if had_existing_src and backup_dir.exists():
-                backup_dir.rename(SRC_DIR)
+                if not removed:
+                    err_console.print(
+                        f"[error]Update failed and couldn't fully remove {SRC_DIR} "
+                        f"to restore the previous install. It is intact at "
+                        f"{backup_dir} - to recover, delete {SRC_DIR} and rename "
+                        f"{backup_dir} to {SRC_DIR}.[/error]"
+                    )
+                else:
+                    try:
+                        backup_dir.rename(SRC_DIR)
+                    except OSError as restore_error:
+                        err_console.print(
+                            f"[error]Update failed and the previous install could not "
+                            f"be restored ({restore_error}). It is intact at "
+                            f"{backup_dir} - to recover, rename it to {SRC_DIR}.[/error]"
+                        )
 
 
 def _run_git(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -3773,11 +3812,17 @@ class _PreparedInstallArtifact:
 
 class InstallInterrupted(Exception):
     """Esc fired mid-download or mid-benchmark inside `_install_impl`,
-    whether that's a single `omm install` or `omm contribute`'s loop."""
+    whether that's a single `omm install` or `omm contribute`'s loop.
 
-    def __init__(self, filename: str) -> None:
+    `downloaded_now` says whether *this* call fetched new bytes before
+    being cancelled. When it is False - reinstalling a model that was
+    already fully installed before this attempt started - cleanup must
+    leave the existing file, links, and registry entry alone."""
+
+    def __init__(self, filename: str, downloaded_now: bool = False) -> None:
         super().__init__(filename)
         self.filename = filename
+        self.downloaded_now = downloaded_now
 
 
 class _Interrupted(Exception):
@@ -4579,7 +4624,30 @@ def _prepare_install_artifact(
         if force:
             # Keep the existing model intact if preflight rejects the new
             # download. Once accepted, force must not reuse old partial bytes.
-            _cleanup_incomplete_install(filename)
+            #
+            # Only actually delete the existing file here if the volume
+            # genuinely has no room for the new download without it. The
+            # preflight above already ran with `replace_existing=force`, so
+            # it may have passed purely on the *credit* of reclaiming
+            # dest's bytes - but plenty of volumes have room to spare
+            # without ever touching the old file. The downloader always
+            # lands new bytes in a `.part` and only atomically replaces
+            # `dest` on success (see downloader.py), so a valid, already-
+            # installed model must not be deleted before a download that
+            # hasn't even started - and might fail (network drop, ENOSPC
+            # elsewhere) - unless the space is actually required.
+            needs_reclaim = True
+            if size_bytes:
+                try:
+                    _ensure_install_disk_capacity(
+                        dest, size_bytes, include_download=True,
+                        only_engine=only_engine, replace_existing=False,
+                    )
+                    needs_reclaim = False
+                except InsufficientDiskSpaceError:
+                    needs_reclaim = True
+            if needs_reclaim:
+                _cleanup_incomplete_install(filename)
         try:
             if stop_event is not None:
                 download_file(
@@ -4647,6 +4715,7 @@ def _install_impl(
     benchmark_engine: str = "ollama",
     contribute_mode: bool = False,
     contribution_memory_estimate: contribute_memory.ContributionMemoryEstimate | None = None,
+    downloaded_state: dict | None = None,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -4658,7 +4727,15 @@ def _install_impl(
     unattended loop) - it selects which engine's daemon/eval/telemetry path
     runs. Plain `omm install` never passes it, so it always stays "ollama"
     there and every code path below behaves exactly as before this engine
-    parameter existed."""
+    parameter existed.
+
+    `downloaded_state`, when given, is a caller-owned dict this function
+    updates with `{"downloaded_now": ...}` as soon as that fact is known -
+    it lets a caller's `except KeyboardInterrupt:` (a bare console control
+    event this function does not itself catch) find out whether *this*
+    call actually fetched new bytes, so cancelling a reinstall of an
+    already-installed model never looks indistinguishable from cancelling
+    a fresh one."""
     opts = _global_opts()
     url, filename, repo_id = resolved.url, resolved.filename, resolved.repo_id
     try:
@@ -4726,6 +4803,8 @@ def _install_impl(
         return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
     sha256 = prepared.sha256
     downloaded_now = prepared.downloaded_now
+    if downloaded_state is not None:
+        downloaded_state["downloaded_now"] = downloaded_now
 
     ollama_tag = linker.sanitize_ollama_tag(filename)
     try:
@@ -5133,9 +5212,9 @@ def _install_impl(
                                 continue
                             raise
                 except _Interrupted as e:
-                    raise InstallInterrupted(filename) from e
+                    raise InstallInterrupted(filename, downloaded_now=downloaded_now) from e
                 except quality_mod.QualityEvaluationCancelled as e:
-                    raise InstallInterrupted(filename) from e
+                    raise InstallInterrupted(filename, downloaded_now=downloaded_now) from e
                 except quality_mod.QualityEvaluationError as error:
                     result = None
                     eval_error = error
@@ -5197,7 +5276,7 @@ def _install_impl(
                         )
                         engine_version = quality_mod.ollama_version()
                 except _Interrupted as e:
-                    raise InstallInterrupted(filename) from e
+                    raise InstallInterrupted(filename, downloaded_now=downloaded_now) from e
                 finally:
                     if not model_was_preloaded:
                         quality_mod.unload_model(ollama_tag)
@@ -5418,6 +5497,13 @@ def install(
 
     listener = _EscListener()
     listener.start()
+    # Populated by `_install_impl` as soon as it knows whether this call
+    # downloaded new bytes. A bare KeyboardInterrupt below is not raised by
+    # `_install_impl` itself (it doesn't catch that exception type), so this
+    # is the only way the handler can tell "cancelled a fresh download" apart
+    # from "cancelled a reinstall of an already-installed model" - the two
+    # must not be cleaned up the same way (see `_cleanup_interrupted_install`).
+    download_state: dict = {"downloaded_now": False}
     try:
         outcome = _install_impl(
             resolved,
@@ -5435,6 +5521,7 @@ def install(
             preferred_runtime=load_config().get("default_engine"),
             enforce_memory_guard=True,
             stop_event=listener.stop_event,
+            downloaded_state=download_state,
         )
     except DownloadError as error:
         errors.print_cli_error(err_console, str(error), fix=error.fix)
@@ -5443,7 +5530,7 @@ def install(
         errors.print_cli_error(err_console, str(error), fix=error.fix)
         raise typer.Exit(1) from error
     except InstallInterrupted as e:
-        _cleanup_interrupted_install(e.filename)
+        _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
         err_console.print("[warning]Cancelled.[/warning]")
         raise typer.Exit(0) from e
     except KeyboardInterrupt:
@@ -5451,8 +5538,13 @@ def install(
         # stop_event - it can land mid-download, mid-checksum, or mid-link
         # instead of at the _run_interruptible() checkpoints stop_event
         # covers. Route it through the same unload-before-delete cleanup so
-        # it doesn't strand a partial GGUF or a linked-but-unregistered file.
-        _cleanup_interrupted_install(resolved.filename)
+        # it doesn't strand a partial GGUF or a linked-but-unregistered file -
+        # but only actually remove anything if this call is the one that
+        # downloaded it (see `download_state` above and
+        # `_cleanup_interrupted_install`'s docstring).
+        _cleanup_interrupted_install(
+            resolved.filename, downloaded_now=download_state["downloaded_now"]
+        )
         raise
     finally:
         listener.stop_event.set()
@@ -5570,10 +5662,19 @@ def _remove_one(
         return True
     linked = entry.get("linked", {})
     cleared_links: dict[str, bool] = {}
+    engine_cleanup_failed = False
     if ollama_tag is None:
         ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
     if linked.get("ollama") and benchmark.ollama_daemon_reachable():
         quality_mod.ensure_model_unloaded(ollama_tag, max_wait_seconds=10)
+    if linked.get("lmstudio"):
+        # Same reasoning as the Ollama unload above: unlinking a model LM
+        # Studio still has open leaves the delete below racing a held
+        # Windows file handle. Best-effort (like the Ollama call) - a miss
+        # here still gets a real retry loop in `unlink_engine` below.
+        lmstudio_model = linker.resolve_lmstudio_model(entry.get("repo_id"), filename)
+        if lmstudio_model:
+            quality_mod.unload_model(lmstudio_model["model_key"], engine="lmstudio")
     for spec in linker.ENGINES:
         if linked.get(spec.key):
             try:
@@ -5588,17 +5689,48 @@ def _remove_one(
                     ),
                 )
                 cleared_links[spec.key] = False
-            except linker.LinkError as error:
+            except (linker.LinkError, OSError) as error:
+                # Not just LinkError: `_unlink_owned_link_with_retry`
+                # (Windows sharing-violation retry) re-raises a bare
+                # PermissionError once its retries are exhausted, and that
+                # is not a LinkError subclass. Catching only LinkError here
+                # let one stubborn engine's file handle crash this whole
+                # function - skipping every engine after it in this loop,
+                # the model-file removal below, and (via `uninstall all`'s
+                # unguarded loop) every model still queued behind this one,
+                # including its `pending_ollama_unlinks.flush()`.
                 err_console.print(
                     f"[warning]{filename}: {spec.label} cleanup skipped: {error}[/warning]"
                 )
+                # Leave this engine's key out of cleared_links (rather than
+                # forcing it False) and remember the failure below - the
+                # entry must stay in the registry with `linked[key]` still
+                # True, or a zombie manifest/blob at the engine has no
+                # recorded owner and no way to retry via `omm relink` /
+                # `omm uninstall` again.
+                engine_cleanup_failed = True
     # `omm link <directory>` records the exact destination.  It may be a
     # Windows hard link, so use the ownership-aware remover rather than ever
     # unlinking an arbitrary regular file at that path.
     remaining_custom_links: list[str] = []
     for destination in entry.get("custom_links", []):
         if isinstance(destination, str):
-            if not linker.unlink_owned_link(Path(destination), expected_source=dest):
+            try:
+                # `_unlink_owned_link_with_retry`, not the plain
+                # `unlink_owned_link`: a custom-directory app can hold this
+                # file's handle open too, and unlike the ENGINES loop above
+                # this call had no try/except at all - a Windows sharing
+                # violation here used to crash `_remove_one` outright.
+                removed_custom_link = linker._unlink_owned_link_with_retry(
+                    Path(destination), expected_source=dest
+                )
+            except OSError as error:
+                err_console.print(
+                    f"[warning]{filename}: custom link at {destination} cleanup "
+                    f"skipped: {error}[/warning]"
+                )
+                removed_custom_link = False
+            if not removed_custom_link:
                 remaining_custom_links.append(destination)
 
     removed_model = _unlink_with_retry(dest)
@@ -5613,6 +5745,19 @@ def _remove_one(
         err_console.print(
             f"[error]Could not remove {filename}; the registry entry was kept so "
             "you can close the program holding the file and retry.[/error]"
+        )
+        return False
+
+    if engine_cleanup_failed:
+        registry.upsert_entry(
+            filename,
+            linked=cleared_links,
+            custom_links=remaining_custom_links,
+        )
+        err_console.print(
+            f"[error]{filename}'s hub file was removed, but cleanup for a linked "
+            "engine failed above; the registry entry was kept so `omm uninstall "
+            f"{filename}` can retry it.[/error]"
         )
         return False
 
@@ -6285,7 +6430,30 @@ def _update_one(filename: str, entry: dict) -> str:
         return "skipped"
 
     ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
-    linked = _link_model(dest, repo_id, ollama_tag)
+    try:
+        linked = _link_model(dest, repo_id, ollama_tag)
+    except linker.InsufficientLinkSpaceError as error:
+        # The new bytes are already in place (`tmp.replace(dest)` above
+        # already succeeded), so the registry's old sha256/version/size
+        # would otherwise drift from what's actually on disk. `_link_model`
+        # itself already rolled back every link it created in this attempt
+        # before re-raising, so nothing from it survived - record `linked`
+        # as fully unlinked rather than keeping the stale pre-update values.
+        registry.upsert_entry(
+            filename,
+            sha256=new_sha256,
+            version=new_sha256[:7],
+            size_bytes=dest.stat().st_size,
+            installed_at=datetime.now(timezone.utc).isoformat(),
+            ollama_name=ollama_tag,
+            provider=provider,
+            linked={spec.key: False for spec in linker.ENGINES},
+        )
+        err_console.print(
+            f"[error]{filename}: updated on disk, but relinking failed ({error}). "
+            "Re-run `omm link` to restore its engine links.[/error]"
+        )
+        return "skipped"
     for destination in entry.get("custom_links") or []:
         if not isinstance(destination, str):
             continue
@@ -6523,7 +6691,17 @@ def upgrade(
 
         counts = {"updated": 0, "up_to_date": 0, "skipped": 0}
         for filename, entry in list(reg.items()):
-            counts[_update_one(filename, entry)] += 1
+            try:
+                counts[_update_one(filename, entry)] += 1
+            except Exception as error:
+                # `_update_one` handles its own expected failure modes
+                # internally and returns "skipped" for them; this is a
+                # last-resort net so one model's unexpected failure (a
+                # link-ownership lock timeout, a race with another omm
+                # process, ...) can't crash the whole batch with no summary
+                # line and leave every model after it unchecked.
+                err_console.print(f"[error]{filename}: update failed unexpectedly: {error}[/error]")
+                counts["skipped"] += 1
         console.print(
             f"[success]{counts['updated']} updated, {counts['up_to_date']} up to date, "
             f"{counts['skipped']} skipped.[/success]"
@@ -6828,6 +7006,18 @@ def configure_upload_usage(
     for the exact fields. Run with no flags to print the current policy and
     the exact payload that would be sent next."""
     from omm import usage
+
+    # `_upload_channel_menu` (and potentially other in-process callers)
+    # invokes this Typer command as a plain function; any keyword left
+    # unspecified binds to the declared `typer.Option(...)` default, an
+    # OptionInfo that is always truthy. Coerce defensively so an omitted
+    # `reset_id` can never be silently treated as `--reset-id`.
+    if not isinstance(enable, bool):
+        enable = False
+    if not isinstance(disable, bool):
+        disable = False
+    if not isinstance(reset_id, bool):
+        reset_id = False
 
     if enable and disable:
         err_console.print("[error]Choose one of --enable or --disable.[/error]")
@@ -7293,8 +7483,18 @@ def _upload_channel_menu() -> None:
                 )
                 if action in (None, "back"):
                     continue
+                # `configure_upload_usage` is a `@global_flags`-wrapped
+                # Typer command: calling it as a plain function skips
+                # Click's parsing, so any parameter left out here binds to
+                # its raw declared default - a `typer.Option(False, ...)`
+                # OptionInfo, always truthy (no __bool__/__len__). Leaving
+                # `reset_id` out therefore deleted and regenerated
+                # ~/.omm/client-id on every policy change made from this
+                # menu, not just an explicit `--reset-id`.
                 configure_upload_usage(
-                    enable=(action == "enable"), disable=(action == "disable")
+                    enable=(action == "enable"),
+                    disable=(action == "disable"),
+                    reset_id=False,
                 )
             elif channel == "crash":
                 action = _ask_select(
@@ -7674,6 +7874,13 @@ def link_models(
     `linked` flag. With a directory, reuse the central GGUF through
     zero-copy links when possible, with an explicit copy warning when Windows
     permissions and volume boundaries make that impossible."""
+    # `relink()` (and potentially other in-process callers) invokes this
+    # Typer command as a plain function; any keyword left unspecified binds
+    # to the declared `typer.Option(...)` default, an OptionInfo that is
+    # always truthy. Coerce defensively so an omitted `force` can never be
+    # silently treated as `--force`.
+    if not isinstance(force, bool):
+        force = False
     _validate_engine(engine)
     if directory is not None and engine is not None:
         err_console.print("[error]--engine only applies without a directory argument.[/error]")
@@ -7777,14 +7984,22 @@ def link_models(
                     err_console.print(f"[warning]{warning}[/warning]")
             except linker.LinkError as e:
                 err_console.print(f"[warning]{filename}: {spec.label} link skipped: {e}[/warning]")
+                # Record the failure as False, not just "absent" - registry's
+                # upsert_entry merges `linked` into the existing dict rather
+                # than replacing it, so leaving this key out would let a
+                # stale `linked[key]=True` from a previous successful link
+                # survive a link that now fails, and `omm list`/
+                # `_pick_run_engine` trust that flag verbatim.
+                new_linked[spec.key] = False
                 blocked.add(spec.key)
 
         if blocked != set(entry.get("link_blocked") or []):
             registry.upsert_entry(filename, link_blocked=sorted(blocked))
-        if changed:
+        if new_linked:
             registry.upsert_entry(filename, linked=new_linked, ollama_name=ollama_tag)
+        if changed:
             relinked_count += 1
-        elif blocked:
+        if blocked:
             skipped_conflict += 1
 
     engine_suffix = f" (--engine {engine})" if engine is not None else ""
@@ -7798,7 +8013,14 @@ def link_models(
 def relink() -> None:
     """Deprecated alias for `omm link`."""
     err_console.print("[warning]`omm relink` is deprecated; use `omm link`.[/warning]")
-    link_models(directory=None, engine=None)
+    # `link_models` is a `@global_flags`-wrapped Typer command: calling it as
+    # a plain function skips Click's parsing, so any parameter left out here
+    # binds to the raw declared default - a `typer.Option(False, ...)`
+    # `OptionInfo` object, which is always truthy (no `__bool__`/`__len__`).
+    # Leaving `force` out therefore ran every relink as `--force`, silently
+    # deleting any unowned file already sitting at the destination. Pass it
+    # explicitly so it's the real `False`.
+    link_models(directory=None, engine=None, force=False)
 
 
 @app.command(name="export")
@@ -8929,8 +9151,26 @@ class _DeferredContribution:
     attempts: int = 0
 
 
-def _cleanup_interrupted_install(filename: str) -> None:
-    """Unload first, then unlink/delete; required for Windows file handles."""
+def _cleanup_interrupted_install(filename: str, *, downloaded_now: bool = False) -> None:
+    """Unload first, then unlink/delete; required for Windows file handles.
+
+    `downloaded_now=False` (the safe default) means this cancelled attempt
+    never fetched new bytes - most commonly, re-running `omm install` on a
+    model that was already fully installed. In that case there is nothing
+    of *this run's own* to roll back: deleting the registry entry would
+    destroy a pre-existing model the user never asked to remove. Only clean
+    up this attempt's own partial-download leftovers. Full teardown
+    (unlink the central file, drop every engine link, remove the registry
+    entry) is reserved for the run that actually downloaded the model
+    itself before being cancelled.
+    """
+    if not downloaded_now:
+        try:
+            dest = _managed_model_path(filename)
+        except ModelResolutionError:
+            return
+        _cleanup_download_parts(dest)
+        return
     reg = registry.load_registry()
     found_name, entry = _lookup_entry(filename, reg)
     if entry:
@@ -9422,6 +9662,13 @@ def _run_contribution_loop(
         # can't have started a download yet, so a None here means "nothing to
         # clean up" - never fall back to a previous iteration's filename.
         filename: str | None = None
+        # See `install()`'s identically-named local: tells the bare
+        # KeyboardInterrupt handler below (which `_install_impl` cannot
+        # raise `InstallInterrupted` for itself) whether this candidate's
+        # bytes were actually fetched by this call, so a cancelled retry of
+        # an already-installed candidate never gets torn down as if it were
+        # a fresh download.
+        download_state: dict = {"downloaded_now": False}
         try:
             provider = validate_provider(candidate.get("provider") or "huggingface")
             repo_id = validate_repo_id(candidate["repo_id"])
@@ -9447,19 +9694,23 @@ def _run_contribution_loop(
                 contribution_memory_estimate=(
                     memory_plan.estimate if memory_plan is not None else None
                 ),
+                downloaded_state=download_state,
             )
         except InstallInterrupted as e:
-            _cleanup_interrupted_install(e.filename)
+            _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
             break
         except KeyboardInterrupt:
             # On Windows Ctrl+C is a console control event, not the Esc
             # listener's stop_event. It can interrupt download, checksum,
             # linking, or the isolated evaluator directly. Convert it to the
             # same unload-before-delete cleanup path while the active filename
-            # is still known instead of letting it escape and strand a GGUF.
+            # is still known instead of letting it escape and strand a GGUF -
+            # but only actually remove anything if this call downloaded it.
             stop_event.set()
             if filename is not None:
-                _cleanup_interrupted_install(filename)
+                _cleanup_interrupted_install(
+                    filename, downloaded_now=download_state["downloaded_now"]
+                )
             break
         except (DownloadError, ModelResolutionError, linker.LinkError) as e:
             err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
@@ -9499,6 +9750,7 @@ def _run_contribution_loop(
                 if daemon_ref is not None:
                     daemon_ref["proc"] = restarted
                 stats.daemon_restarts += 1
+                download_state = {"downloaded_now": False}
                 try:
                     outcome = _install_impl(
                         resolved,
@@ -9515,14 +9767,17 @@ def _run_contribution_loop(
                         contribution_memory_estimate=(
                             memory_plan.estimate if memory_plan is not None else None
                         ),
+                        downloaded_state=download_state,
                     )
                 except InstallInterrupted as e:
-                    _cleanup_interrupted_install(e.filename)
+                    _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
                     break
                 except KeyboardInterrupt:
                     stop_event.set()
                     if filename is not None:
-                        _cleanup_interrupted_install(filename)
+                        _cleanup_interrupted_install(
+                            filename, downloaded_now=download_state["downloaded_now"]
+                        )
                     break
                 except (DownloadError, linker.LinkError) as e:
                     err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
