@@ -112,6 +112,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.json",
     "default_engine": None,
     "external_scan_done": False,
+    # Whether `omm setting auto-import enable` has registered the background
+    # OS service (watch_service.py). Off by default - opt-in only, never
+    # touched by onboarding. The source of truth for "is it actually
+    # registered" is watch_service.is_installed(), not this flag; this flag
+    # is only what `omm setting auto-import status` shows as "the user's
+    # choice" versus the service being externally removed.
+    "auto_import_enabled": False,
     "catalog_manifest_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.manifest.json",
     "catalog_public_key": "p8uo6GFXDcg8Rp7/t8GGl5hwPsXhObY5vI1sll5KpaI=",
     "contribute_always_ack": False,
