@@ -5394,8 +5394,19 @@ def install(
     ),
 ) -> None:
     """Download a model into the central hub and link it into installed engines."""
+    # `_finish_recommendation` calls this as a plain function with only
+    # `model_name`, so every other parameter arrives as its Typer
+    # OptionInfo sentinel (all truthy) instead of the real default. Coerce
+    # them back before anything reads them - an unguarded `skip_unfit`
+    # silently turns a link/disk failure into a no-op install.
     if not isinstance(verify_runtime, (bool, type(None))):
         verify_runtime = None
+    if not isinstance(skip_unfit, bool):
+        skip_unfit = False
+    if not isinstance(force, bool):
+        force = False
+    if not isinstance(upload, (bool, type(None))):
+        upload = None
 
     model_name = _resolve_ref(model_name)
     try:
@@ -5456,13 +5467,21 @@ def install(
         return
 
     console.print(f"[success]Ω Installed {outcome.filename}[/success]")
-    if outcome.linked.get("ollama"):
-        console.print(f"  Ollama: [success]ollama run {outcome.ollama_tag}[/success]")
-    for spec in linker.ENGINES:
-        if spec.key != "ollama" and outcome.linked.get(spec.key):
-            console.print(f"  {spec.label}: visible in your local models list")
+    linked_labels = [
+        spec.label for spec in linker.ENGINES if outcome.linked.get(spec.key)
+    ]
+    if linked_labels:
+        count = len(linked_labels)
+        console.print(
+            f"  Linked into {count} local {'runner' if count == 1 else 'runners'}: "
+            f"{', '.join(linked_labels)}"
+        )
     console.print(f"  Uninstall with: [accent]omm uninstall {outcome.filename}[/accent]")
-    if any(outcome.linked.get(spec.key) for spec in linker.ENGINES):
+    if linked_labels:
+        # `omm run` starts the runner's daemon, picks an engine and resolves
+        # the real Ollama tag itself - a bare `ollama run <tag>` hint here
+        # dead-ends for beginners whenever the Ollama daemon is not already
+        # up (common on Linux without the systemd service).
         console.print(f"  Run it now: [accent]omm run {outcome.filename}[/accent]")
     _report_lmstudio_load_verification(outcome)
 

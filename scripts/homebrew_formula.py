@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
-"""Generate and verify the Homebrew Formula from the frozen ``pyproject.toml``.
+"""Generate and verify the Homebrew Formula from the pinned runtime graph.
 
 ``brew install omm-hippo/omm/omm`` has repeatedly drifted from the dependency
-table `pyproject.toml` actually pins (issue #238): a plain ``pip install`` /
-``npm install`` reproduces the frozen closure, but the Homebrew Formula's
-``resource`` stanzas were hand-bumped and fell behind.
+set OMM actually ships (issue #238): a plain ``pip install`` / ``npm install``
+reproduces a known-good closure, but the Homebrew Formula's ``resource`` stanzas
+were hand-bumped and fell behind.
 
-This module makes the Formula a generated artifact of ``pyproject.toml``
-instead of a second, independently maintained copy of the dependency table:
+This module makes the Formula a generated artifact of that closure instead of a
+second, independently maintained copy of the dependency table:
 
-- ``render``       build ``omm.rb`` text for a given OMM version from the
-                    current ``[project].dependencies`` closure, resolving
-                    each pin's sdist URL/sha256 from PyPI.
+- ``render``       build ``omm.rb`` text for a given OMM version from
+                    ``requirements-npm-binary.txt``, resolving each pin's sdist
+                    URL/sha256 from PyPI.
 - ``check``        compare an existing Formula file against what ``render``
                     would produce and fail loudly on any drift.
 - ``pypi-latest``  print the latest published, non-yanked ``omm-model``
                     version on PyPI.
 
-Only ``python_version`` markers are supported in ``[project].dependencies``
-(the same restriction ``omm update``'s ``_dependency_spec_applies`` imposes -
-see the freeze note in ``pyproject.toml``). A dependency whose marker excludes
-it for Homebrew's declared Python is left out of the generated resource list
-with an explanatory comment - never silently dropped without a trace.
+``requirements-npm-binary.txt`` is the curated, exactly-``==``-pinned runtime
+graph the standalone npm binary embeds. ``scripts/dependency_parity.py`` keeps
+it in lockstep with ``pyproject.toml``'s (now floating) dependency floors, so
+generating the Formula from the same file means ``brew install`` ships the
+identical dependency set as every other install path.
+
+Homebrew compiles every ``resource`` from its sdist (the Formula
+``depends_on "rust"`` / ``"openssl@3"`` to build ``cryptography`` / ``cffi``),
+so the wheel-availability caveats that split a few ``requirements-npm-binary.txt``
+pins by platform do not apply here - the generator always selects the mainline
+pin by evaluating markers against a concrete non-Intel-macOS environment. A pin
+excluded that way is listed in a Formula comment, never silently dropped.
 """
 
 from __future__ import annotations
@@ -36,9 +43,14 @@ from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from packaging.markers import default_environment
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
+NPM_BINARY_REQUIREMENTS = ROOT / "requirements-npm-binary.txt"
 
 PYPI_PACKAGE_NAME = "omm-model"
 CLASS_NAME = "Omm"
@@ -48,14 +60,21 @@ LICENSE = "MIT"
 
 # Homebrew's declared interpreter for this Formula. Not derivable from
 # pyproject.toml's `requires-python` floor (>=3.10) - it is Homebrew
-# packaging policy, tracked here so `python_version` markers can be
-# evaluated against the interpreter Homebrew will actually use.
+# packaging policy, tracked here so environment markers can be evaluated
+# against the interpreter Homebrew will actually use.
 HOMEBREW_PYTHON_VERSION = (3, 14)
 
+# Build-time-only tools listed in requirements-npm-binary.txt that are not part
+# of the runtime graph a Homebrew Formula ships as `resource` stanzas. Mirrors
+# scripts/dependency_parity.py BUILD_TOOL_NAMES.
+BUILD_TOOL_NAMES = frozenset(
+    {"build", "hatchling", "pyinstaller", "pyinstaller-hooks-contrib"}
+)
+
 # Homebrew-specific build/runtime deps needed to compile `cryptography`
-# (rust) and `cffi` (libffi) from source. Not present in pyproject.toml -
-# this is Homebrew packaging knowledge, mirrored from the tap's current
-# Formula/omm.rb rather than derived from the frozen dependency table.
+# (rust) and `cffi` (libffi) from source. Not present in the requirements
+# file - this is Homebrew packaging knowledge, mirrored from the tap's current
+# Formula/omm.rb.
 BUILD_DEPENDS_ON = ["pkgconf", "rust"]
 RUNTIME_DEPENDS_ON = ["libffi", "openssl@3"]
 
@@ -64,14 +83,6 @@ USER_AGENT = "omm-homebrew-formula-generator"
 
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-SPEC_PATTERN = re.compile(
-    r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)"
-    r"==(?P<version>[0-9][0-9A-Za-z.+!-]*)"
-    r"(?:\s*;\s*(?P<marker>.+))?$"
-)
-MARKER_PATTERN = re.compile(
-    r"^python_version\s*(?P<op><=|>=|==|!=|<|>)\s*'(?P<value>[0-9]+(?:\.[0-9]+)*)'$"
-)
 SOURCE_PATTERN = re.compile(
     r'^(?P<indent>  )url "(?P<url>https://files\.pythonhosted\.org/[^"\n]+/'
     r"omm_model-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz)\"\n"
@@ -88,7 +99,7 @@ RESOURCE_PATTERN = re.compile(
 
 
 class HomebrewFormulaError(RuntimeError):
-    """Raised when pyproject.toml, PyPI, or an existing Formula is unusable."""
+    """Raised when the requirements file, PyPI, or an existing Formula is unusable."""
 
 
 class Dependency(NamedTuple):
@@ -143,32 +154,50 @@ def pypi_release_url(name: str, version: str) -> str:
     return f"https://pypi.org/pypi/{quote(name, safe='')}/{quote(version, safe='')}/json"
 
 
-def read_dependency_specs(pyproject: Path = PYPROJECT) -> list[str]:
-    """Raw ``[project].dependencies`` entries, e.g. ``"click==8.5.0"``.
+def homebrew_marker_environment(
+    homebrew_python: tuple[int, ...] = HOMEBREW_PYTHON_VERSION,
+) -> dict[str, str]:
+    """The environment the generated Formula's single resource list targets.
 
-    This is the frozen closure spelled out by commit a8cfbde (issue #239):
-    every runtime dependency - direct and transitive - already listed flat,
-    each hard-pinned with ``==``. No separate "frozen set" helper exists
-    elsewhere in the repo to reuse; this list *is* the frozen set.
+    A concrete non-Intel-macOS interpreter: this makes
+    ``sys_platform == "darwin" and platform_machine == "x86_64"`` false, so a
+    pin guarded for that target alone drops out and the mainline pin wins.
     """
-    tomllib = _load_tomllib()
-    try:
-        with pyproject.open("rb") as handle:
-            document = tomllib.load(handle)
-    except OSError as error:
-        raise HomebrewFormulaError(f"cannot read {pyproject}: {error}") from error
-    except Exception as error:  # tomllib.TOMLDecodeError subclasses ValueError
-        raise HomebrewFormulaError(f"cannot parse {pyproject}: {error}") from error
+    minor = ".".join(str(part) for part in homebrew_python[:2])
+    full = ".".join(str(part) for part in homebrew_python)
+    if len(homebrew_python) < 3:
+        full = f"{full}.0"
+    environment = dict(default_environment())
+    environment.update(
+        {
+            "python_version": minor,
+            "python_full_version": full,
+            "implementation_version": full,
+            "sys_platform": "linux",
+            "platform_system": "Linux",
+            "platform_machine": "x86_64",
+            "os_name": "posix",
+        }
+    )
+    return environment
 
-    project = document.get("project") if isinstance(document, dict) else None
-    dependencies = project.get("dependencies") if isinstance(project, dict) else None
-    if not isinstance(dependencies, list) or not all(
-        isinstance(spec, str) and spec.strip() for spec in dependencies
-    ):
-        raise HomebrewFormulaError(
-            f"{pyproject} has no usable [project].dependencies list"
-        )
-    return list(dependencies)
+
+def read_dependency_specs(
+    requirements: Path = NPM_BINARY_REQUIREMENTS,
+) -> list[str]:
+    """Non-comment, non-blank entries of ``requirements-npm-binary.txt``."""
+    try:
+        lines = requirements.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise HomebrewFormulaError(f"cannot read {requirements}: {error}") from error
+    specs = [
+        entry
+        for entry in (line.strip() for line in lines)
+        if entry and not entry.startswith("#")
+    ]
+    if not specs:
+        raise HomebrewFormulaError(f"{requirements} lists no dependencies")
+    return specs
 
 
 def read_project_version(pyproject: Path = PYPROJECT) -> str:
@@ -182,68 +211,48 @@ def read_project_version(pyproject: Path = PYPROJECT) -> str:
     return version
 
 
-def _marker_applies(marker: str, python_version: tuple[int, ...]) -> bool:
-    match = MARKER_PATTERN.fullmatch(marker.strip())
-    if match is None:
-        # Fail loudly rather than silently keep or drop a dependency guarded
-        # by a marker shape this generator does not understand.
-        raise HomebrewFormulaError(
-            f"unsupported environment marker (refusing to guess): {marker!r}"
-        )
-    op = match.group("op")
-    target = tuple(int(part) for part in match.group("value").split("."))
-    # PEP 440 pads release tuples with zeroes: 3.14 == 3.14.0, but
-    # truncating the interpreter would incorrectly make 3.14 == 3.
-    width = max(len(python_version), len(target))
-    lhs = python_version + (0,) * (width - len(python_version))
-    target += (0,) * (width - len(target))
-    if op == "<":
-        return lhs < target
-    if op == "<=":
-        return lhs <= target
-    if op == ">":
-        return lhs > target
-    if op == ">=":
-        return lhs >= target
-    if op == "==":
-        return lhs == target
-    if op == "!=":
-        return lhs != target
-    raise HomebrewFormulaError(f"unsupported marker operator: {op!r}")  # pragma: no cover
-
-
 def parse_dependency_specs(
     specs: list[str], *, homebrew_python: tuple[int, ...] = HOMEBREW_PYTHON_VERSION
 ) -> tuple[list[Dependency], list[Excluded]]:
+    environment = homebrew_marker_environment(homebrew_python)
     included: list[Dependency] = []
     excluded: list[Excluded] = []
     names: set[str] = set()
     for spec in specs:
-        match = SPEC_PATTERN.fullmatch(spec.strip())
-        if match is None:
+        try:
+            requirement = Requirement(spec)
+        except InvalidRequirement as error:
             raise HomebrewFormulaError(
-                f"unsupported dependency spec (expected name==version[; marker]): {spec!r}"
-            )
-        name = match.group("name")
-        version = match.group("version")
-        marker = match.group("marker")
-        if marker is not None and not _marker_applies(marker, homebrew_python):
-            excluded.append(Excluded(spec=spec.strip(), reason=marker.strip()))
+                f"unsupported dependency spec: {spec!r} ({error})"
+            ) from error
+        if canonicalize_name(requirement.name) in BUILD_TOOL_NAMES:
             continue
-        normalized = normalize_resource_name(name)
+        if requirement.marker is not None and not requirement.marker.evaluate(environment):
+            excluded.append(Excluded(spec=spec, reason=str(requirement.marker)))
+            continue
+        specifiers = list(requirement.specifier)
+        if (
+            len(specifiers) != 1
+            or specifiers[0].operator != "=="
+            or specifiers[0].version.endswith("*")
+        ):
+            raise HomebrewFormulaError(
+                f"dependency must be pinned with a single ==: {spec!r}"
+            )
+        normalized = normalize_resource_name(requirement.name)
         if normalized in names:
             raise HomebrewFormulaError(f"duplicate active dependency: {normalized}")
         names.add(normalized)
-        included.append(Dependency(name=name, version=version))
+        included.append(Dependency(name=requirement.name, version=specifiers[0].version))
     return included, excluded
 
 
 def collect_dependencies(
-    pyproject: Path = PYPROJECT,
+    requirements: Path = NPM_BINARY_REQUIREMENTS,
     *,
     homebrew_python: tuple[int, ...] = HOMEBREW_PYTHON_VERSION,
 ) -> tuple[list[Dependency], list[Excluded]]:
-    specs = read_dependency_specs(pyproject)
+    specs = read_dependency_specs(requirements)
     return parse_dependency_specs(specs, homebrew_python=homebrew_python)
 
 
@@ -317,7 +326,7 @@ def _python_formula(python_version: tuple[int, ...]) -> str:
 def render_formula(
     version: str,
     *,
-    pyproject: Path = PYPROJECT,
+    requirements: Path = NPM_BINARY_REQUIREMENTS,
     fetch: Fetcher = default_fetch_json,
     homebrew_python: tuple[int, ...] = HOMEBREW_PYTHON_VERSION,
 ) -> str:
@@ -325,7 +334,7 @@ def render_formula(
         raise HomebrewFormulaError(f"invalid OMM version: {version!r}")
 
     python_formula = _python_formula(homebrew_python)
-    deps, excluded = collect_dependencies(pyproject, homebrew_python=homebrew_python)
+    deps, excluded = collect_dependencies(requirements, homebrew_python=homebrew_python)
     main = resolve_resource(PYPI_PACKAGE_NAME, version, fetch)
 
     lines: list[str] = []
@@ -413,7 +422,7 @@ def check_formula(
     formula_path: Path,
     version: str,
     *,
-    pyproject: Path = PYPROJECT,
+    requirements: Path = NPM_BINARY_REQUIREMENTS,
     fetch: Fetcher = default_fetch_json,
     homebrew_python: tuple[int, ...] = HOMEBREW_PYTHON_VERSION,
     allow_version_lag: bool = False,
@@ -442,7 +451,7 @@ def check_formula(
                 f"    expected: url={main.url} sha256={main.sha256}"
             )
 
-    deps, _excluded = collect_dependencies(pyproject, homebrew_python=homebrew_python)
+    deps, _excluded = collect_dependencies(requirements, homebrew_python=homebrew_python)
     expected_resources = {
         normalize_resource_name(dep.name): resolve_resource(dep.name, dep.version, fetch)
         for dep in deps
@@ -459,7 +468,7 @@ def check_formula(
     if missing:
         problems.append("missing from formula: " + ", ".join(missing))
     if extra:
-        problems.append("extra in formula (not in pyproject.toml): " + ", ".join(extra))
+        problems.append("extra in formula (not in requirements-npm-binary.txt): " + ", ".join(extra))
     for name in changed:
         problems.append(
             f"{name} pin drifted:\n"
@@ -479,14 +488,14 @@ def _parser() -> argparse.ArgumentParser:
     render_parser = subparsers.add_parser("render", help="Render omm.rb for a given OMM version")
     render_parser.add_argument("--version", required=True)
     render_parser.add_argument("--output", type=Path, default=None)
-    render_parser.add_argument("--pyproject", type=Path, default=PYPROJECT)
+    render_parser.add_argument("--requirements", type=Path, default=NPM_BINARY_REQUIREMENTS)
 
     check_parser = subparsers.add_parser(
-        "check", help="Verify an existing Formula matches pyproject.toml"
+        "check", help="Verify an existing Formula matches requirements-npm-binary.txt"
     )
     check_parser.add_argument("--formula", type=Path, required=True)
     check_parser.add_argument("--version", required=True)
-    check_parser.add_argument("--pyproject", type=Path, default=PYPROJECT)
+    check_parser.add_argument("--requirements", type=Path, default=NPM_BINARY_REQUIREMENTS)
     check_parser.add_argument(
         "--allow-version-lag",
         action="store_true",
@@ -502,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "render":
-            text = render_formula(args.version, pyproject=args.pyproject)
+            text = render_formula(args.version, requirements=args.requirements)
             if args.output is not None:
                 args.output.write_text(text, encoding="utf-8")
                 print(f"Wrote {args.output}")
@@ -512,10 +521,10 @@ def main(argv: list[str] | None = None) -> int:
             check_formula(
                 args.formula,
                 args.version,
-                pyproject=args.pyproject,
+                requirements=args.requirements,
                 allow_version_lag=args.allow_version_lag,
             )
-            print(f"{args.formula} matches {args.pyproject}")
+            print(f"{args.formula} matches {args.requirements}")
         elif args.command == "pypi-latest":
             print(latest_pypi_version())
         else:  # pragma: no cover - argparse constrains the command

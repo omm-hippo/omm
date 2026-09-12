@@ -257,6 +257,10 @@ def test_verify_lmstudio_memory_guard_block_prevents_runtime_load(isolated_omm_h
     )
     adapter = _LmStudioCliAdapter()
     monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    # Isolate from any real `lms` CLI/model list on the host machine - see
+    # test_compatibility_ref_uses_resolved_lmstudio_model_key above for why
+    # this must be mocked rather than left to fall through to a real lookup.
+    monkeypatch.setattr(cli.linker, "resolve_lmstudio_model", lambda repo_id, filename: None)
     monkeypatch.setattr(
         cli,
         "_guard_lmstudio_load",
@@ -283,6 +287,10 @@ def test_verify_lmstudio_memory_guard_allows_runtime_load(isolated_omm_home, mon
     )
     adapter = _LmStudioCliAdapter()
     monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    # Isolate from any real `lms` CLI/model list on the host machine - see
+    # test_compatibility_ref_uses_resolved_lmstudio_model_key above for why
+    # this must be mocked rather than left to fall through to a real lookup.
+    monkeypatch.setattr(cli.linker, "resolve_lmstudio_model", lambda repo_id, filename: None)
     guard_calls = []
     monkeypatch.setattr(
         cli,

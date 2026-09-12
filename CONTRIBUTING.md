@@ -1,21 +1,29 @@
 # Contributing to omm
 
 Thank you for helping improve omm. Contributions can include bug reports,
-documentation, tests, runner compatibility work, packaging, and focused code
-changes.
+documentation, tests, runner compatibility work, packaging, focused code
+changes, and benchmark data.
 
 By participating, you agree to follow the
 [Code of Conduct](CODE_OF_CONDUCT.md). Report suspected vulnerabilities
 privately as described in [SECURITY.md](SECURITY.md), not in a public issue or
 pull request.
 
+## Contributing benchmark data (no code required)
+
+`omm contribute` repeatedly installs, benchmarks, and uploads models that fit
+your hardware, growing the dataset that trains the recommendation model. It is
+opt-in and anonymous: model names, file paths, and IP addresses are never sent.
+The recommendation model currently learns from a narrow range of machines, so
+runs on uncommon hardware (older GPUs, ARM boards, high-core-count CPUs, large
+unified-memory systems) are especially valuable. See [PRIVACY.md](PRIVACY.md)
+for the exact fields and [README.md](README.md) for disk-space and daemon
+handling.
+
 ## Development setup
 
-The installed CLI supports Python 3.10 or newer. **Until 2026-09-06 the
-dependencies are version-frozen to the project's contest submission, and the
-`dev`/`server` extras in that frozen set require Python 3.12+** (`numpy==2.5.2`
-and its peers publish no 3.11 wheel). Use a 3.12+ interpreter for development
-during the freeze; the runtime-only install still works on 3.10/3.11.
+The package supports Python 3.10 or newer. The core CI test suite runs on
+Python 3.12; a separate job installs the runtime-only package on 3.11.
 
 ```sh
 git clone https://github.com/omm-hippo/omm.git
@@ -72,11 +80,11 @@ export OMM_HOME="$(mktemp -d)"  # macOS/Linux example
 
 ## Checks for the area you changed
 
-Core CI runs the test suite on Python 3.12 across Windows, macOS, and Ubuntu
-(3.11 until the 2026-09-06 dependency freeze lifts), plus a bare runtime install
-on 3.11, installer/uninstaller checks, a Linux container build, and Firebase
-rules tests. Path-scoped workflows may also run runner integration checks,
-npm packaging, Python/npm release builds, and the Windows portable build.
+Core CI runs the test suite on Python 3.12 across Windows, macOS, and Ubuntu,
+plus a bare runtime install on 3.11, installer/uninstaller checks, a Linux
+container build, and Firebase rules tests. Path-scoped workflows may also run
+runner integration checks, npm packaging, Python/npm release builds, and the
+Windows portable build.
 
 Run the checks relevant to your change before opening a pull request:
 
@@ -166,8 +174,31 @@ Use the GitHub issue templates. A useful bug report includes:
 - affected local runner and version, if applicable
 - exact command, expected behavior, actual behavior, and redacted logs
 
-## License
+## License and Developer Certificate of Origin
 
 Contributions are accepted under the project's [MIT License](LICENSE).
 Downloaded models and third-party runner applications retain their own
 licenses and terms.
+
+This project uses the [Developer Certificate of Origin](DCO) (DCO 1.1) to
+record that each contributor has the right to submit their contribution under
+the MIT License. It is a lightweight assertion, not a copyright-assignment or
+contributor-license agreement — you keep the copyright to your work.
+
+Certify the DCO by adding a `Signed-off-by` trailer to every commit, using a
+real name and an email address you can be reached at:
+
+```
+Signed-off-by: Your Name <you@example.com>
+```
+
+`git commit -s` (or `git commit --signoff`) appends this line automatically
+from your configured `user.name` / `user.email`. To sign off a branch of
+commits you already made, use `git rebase --signoff <base>`. Amend the last
+commit with `git commit --amend -s --no-edit`.
+
+The DCO sign-off is separate from the SSH commit signature described under
+[Trusted pull-request head](#trusted-pull-request-head): the signature proves
+who pushed the commit, the sign-off records the licensing certification. A
+maintainer may add a missing sign-off on your behalf before merge. This is
+not currently enforced by a CI check.

@@ -284,6 +284,27 @@ def test_install_quiet_suppresses_status_lines_but_keeps_the_result(isolated_omm
     assert "Installed" in result.stdout
 
 
+def test_install_hint_reports_linked_runner_count_and_points_at_omm_run(
+    isolated_omm_home, monkeypatch
+):
+    # The post-install hint must say how many runners the model was linked
+    # into, and steer the user to `omm run` rather than a bare
+    # `ollama run <tag>` that dead-ends when the Ollama daemon is down.
+    _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    result = runner.invoke(
+        cli.app, ["install", "tinyllama-1.1b-q4", "--no-verify-runtime"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Linked into 1 local runner: Ollama" in result.stdout
+    assert "omm run tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" in result.stdout
+    assert "ollama run" not in result.stdout
+
+
 def _handler_for(bindings, key):
     matches = [b for b in bindings.bindings if b.keys == (key,)]
     assert matches, f"expected a binding for {key!r}"
