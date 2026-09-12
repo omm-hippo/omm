@@ -783,6 +783,16 @@ def _link_file_impl(
         if platform.system() != "Windows":
             raise LinkError(f"Could not create symlink at {dst}: {error}.") from error
 
+    return _copy_fallback(src, dst, on_copy, errors)
+
+
+def _copy_fallback(
+    src: Path, dst: Path, on_copy: CopyReporter | None, errors: list[str]
+) -> str:
+    """Last-resort real copy shared by `_link_file_impl` and `export_file`,
+    used once neither a hard link (nor, for `_link_file_impl`, a symlink) is
+    possible. `errors` collects the failures tried before this so the final
+    `LinkError` explains the whole attempt chain."""
     try:
         try:
             source_size = src.stat().st_size
@@ -885,6 +895,64 @@ def link_custom_directory(
     destination = directory.expanduser().absolute() / gguf_path.name
     link_file(gguf_path, destination, on_copy=on_copy, force=force)
     return destination
+
+
+def export_file(
+    gguf_path: Path,
+    directory: Path,
+    *,
+    on_copy: CopyReporter | None = None,
+    force: bool = False,
+) -> Path:
+    """Place a standalone copy of a hub GGUF in `directory`, for deployment
+    or backup. Tries a hard link first (same volume, zero-copy), otherwise
+    falls back to a real copy - never a symlink, since a symlink into the
+    hub would break the moment the hub file is uninstalled or the export
+    is moved to another machine."""
+    dst = directory.expanduser().absolute() / gguf_path.name
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise LinkError(f"Could not create directory {dst.parent}: {error}") from error
+
+    if dst.exists() or dst.is_symlink():
+        record = _ownership_record(dst)
+        if record and record.get("source") == _link_key(gguf_path):
+            if (
+                record.get("kind") == "hardlink"
+                and _owned_hardlink(dst, record)
+                and _matches_requested_link(gguf_path, dst)
+            ):
+                return dst
+            if (
+                record.get("kind") == "copy"
+                and _owned_copy(dst, record)
+                and _copy_source_unchanged(gguf_path, record)
+            ):
+                return dst
+        if not unlink_owned_link(dst, expected_source=gguf_path, record=record):
+            if record and record.get("kind") in {"symlink", "hardlink"}:
+                raise LinkError(
+                    f"Refusing to replace an omm link for a different model at {dst}."
+                )
+            if not force:
+                raise LinkError(f"Refusing to replace unowned existing file at {dst}.")
+            dst.unlink()
+
+    errors: list[str] = []
+    try:
+        dst.hardlink_to(gguf_path)
+        try:
+            _record_hardlink(dst, gguf_path)
+        except Exception:
+            dst.unlink(missing_ok=True)
+            raise
+        return dst
+    except OSError as error:
+        errors.append(f"hard link: {error}")
+
+    _copy_fallback(gguf_path, dst, on_copy, errors)
+    return dst
 
 
 def unlink_custom_directory(filename: str, directory: Path) -> None:
