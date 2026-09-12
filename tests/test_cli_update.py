@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.progress import Progress
 from typer.testing import CliRunner
 
-from omm import cli
+from omm import cli, config
 
 runner = CliRunner()
 
@@ -1686,6 +1686,30 @@ def test_update_with_quiet_flag_does_not_crash(monkeypatch):
     result = runner.invoke(cli.app, ["update", "--quiet"])
 
     assert result.exit_code == 0, result.stdout
+
+
+def test_update_with_quiet_flag_stays_off_the_real_update_check_cache(monkeypatch):
+    """Regression: unlike test_update_refreshes_stale_cache_with_live_remote_head,
+    this test does not monkeypatch cli.version_check.record, so update()
+    calls the real version_check.record() and writes update_check.json -
+    and this test never requests isolated_omm_home either. Before that
+    fixture became autouse in conftest.py, config.OMM_HOME here resolved
+    to the developer's real home, and this test overwrote their actual
+    ~/.omm/update_check.json with a fake remote_head, silencing real
+    "Update available!" notices for up to the 30-minute TTL. Confirm
+    OMM_HOME still comes out isolated and the cache file lands there."""
+    same_commit = "abc1234" * 5 + "abc12345"
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_editable_install_uses_src", lambda *args: True)
+    monkeypatch.setattr(cli, "_installed_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: same_commit)
+    monkeypatch.setattr(cli, "_refresh_data", lambda: None)
+
+    result = runner.invoke(cli.app, ["update", "--quiet"])
+
+    assert result.exit_code == 0, result.stdout
+    assert config.OMM_HOME != Path.home() / ".omm"
+    assert (config.OMM_HOME / "update_check.json").exists()
 
 
 def test_pipx_app_names_strip_windows_launcher_suffix():
