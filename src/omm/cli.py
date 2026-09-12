@@ -424,7 +424,7 @@ upload_app = typer.Typer(
 setting_app.add_typer(upload_app)
 watch_app = typer.Typer(
     name="auto-import",
-    help="Automatically adopt models Ollama/LM Studio/etc. download natively into the omm hub in the background. Off by default. See PRIVACY.md.",
+    help="Automatically adopt models that Ollama, LM Studio, and similar apps download natively into the omm hub in the background. Off by default. See PRIVACY.md.",
     rich_markup_mode=None,
 )
 setting_app.add_typer(watch_app)
