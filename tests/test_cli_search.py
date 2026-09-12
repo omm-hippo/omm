@@ -1,10 +1,26 @@
 import json
+from pathlib import Path
 
 from typer.testing import CliRunner
 
-from omm import cli, search as search_mod
+from omm import cli, config, search as search_mod
 
 runner = CliRunner()
+
+
+def test_home_isolation_does_not_eagerly_create_the_omm_directory(tmp_path):
+    """Regression: conftest.py's autouse home-isolation fixture used to be
+    one fixture that both redirected config.OMM_HOME into tmp_path *and*
+    called config.ensure_omm_home() unconditionally, so merely running
+    under pytest created tmp_path/.omm even for a test that never asked
+    for isolation at all. That broke tests/test_cli_doctor.py's read-only-
+    registry checks, which assert nothing gets created on disk just from
+    reading a missing/corrupt file. The fixture is now split so only the
+    opt-in `isolated_omm_home` wrapper creates the directory; this test's
+    tmp_path is the same one the autouse half redirects config.OMM_HOME
+    into, so it fails immediately (no CLI invocation needed) if the
+    autouse half starts creating it again."""
+    assert not (tmp_path / ".omm").exists()
 
 
 def test_search_groups_results_by_family(monkeypatch):
@@ -60,6 +76,36 @@ def test_search_prints_numbered_refs_and_records_session(monkeypatch):
     assert result.exit_code == 0, result.stdout
     assert "[1] tinyllama-1.1b-q4" in result.stdout
     assert recorded == [["tinyllama-1.1b-q4"]]
+
+
+def test_search_without_session_mock_stays_off_the_real_home(monkeypatch):
+    """Regression: every other test in this file lets cli.session_cache
+    .record_results run for real instead of mocking it, so this test never
+    requests isolated_omm_home either - before that fixture became autouse
+    in conftest.py, config.OMM_HOME here resolved to the developer's real
+    home and search() overwrote their actual ~/.omm/session/<sha1>.json
+    numbered refs. Confirm OMM_HOME still comes out isolated and the
+    session file lands there instead of in the real home."""
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {
+                "name": "tinyllama-1.1b-q4",
+                "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+                "description": "Curated default",
+            },
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
+
+    result = runner.invoke(cli.app, ["search", "tiny"])
+
+    assert result.exit_code == 0, result.stdout
+    assert config.OMM_HOME != Path.home() / ".omm"
+    assert any((config.OMM_HOME / "session").glob("*.json"))
 
 
 def test_search_prints_install_shortcut_hint(monkeypatch):

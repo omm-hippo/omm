@@ -210,10 +210,23 @@ def _isolate_console_theme_state():
         console.no_color = no_color
 
 
-@pytest.fixture
-def isolated_omm_home(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def _isolate_omm_home_paths(tmp_path, monkeypatch):
     """Redirect all of omm's ~/.omm paths into a throwaway tmp_path so
-    tests never touch (or depend on) the real user home directory."""
+    tests never touch (or depend on) the real user home directory.
+
+    Autouse: every other safety-net fixture in this file is autouse, but
+    this one was a plain opt-in fixture (`isolated_omm_home`), so any
+    CliRunner-based test that forgot to request it ran cli.py's `_root`
+    prelude (config.load_config, telemetry/error_report/usage flush,
+    version_check, session_cache) against the developer's real ~/.omm.
+
+    Split out from `isolated_omm_home` on purpose: this half only
+    monkeypatches path attributes (no filesystem writes), so it can run
+    unconditionally without disturbing tests like test_cli_doctor.py's
+    read-only-registry checks that assert the home directory does *not*
+    get created as a side effect. `isolated_omm_home` below layers the
+    directory creation on top for tests that need it to already exist."""
     home = tmp_path / ".omm"
     models_dir = home / "models"
 
@@ -239,5 +252,14 @@ def isolated_omm_home(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog, "RECOMMEND_MODEL_PATH", config.RECOMMEND_MODEL_PATH)
     monkeypatch.setattr(catalog, "CATALOG_HISTORY_DIR", config.CATALOG_HISTORY_DIR)
 
-    config.ensure_omm_home()
     return home
+
+
+@pytest.fixture
+def isolated_omm_home(_isolate_omm_home_paths):
+    """Opt-in layer on top of the autouse path redirection above: also
+    creates the (already-isolated) home directory up front, for tests
+    that read the returned path or otherwise expect ~/.omm to exist
+    without going through cli.py's own `config.ensure_omm_home()` call."""
+    config.ensure_omm_home()
+    return _isolate_omm_home_paths
