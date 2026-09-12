@@ -191,6 +191,17 @@ subprocess/HTTP detail. Domain modules emit events via `logging.getLogger("omm.<
 `config.OMM_HOME` at call time). `linker.link_file` / `downloader.download_file` are thin
 logging wrappers over `_link_file_impl` / `_download_file_impl`.
 
+**Auto-import.** `omm setting auto-import enable` (off by default) registers a
+per-user background service (`watch_service.py` - launchd/systemd --user/Task
+Scheduler) that runs `omm _auto-import-run`, a hidden subcommand blocking in
+`watch.run_watch_loop()`. It watches every supported local AI app's model directory
+(`watch.watch_target_dirs()`) with `watchdog`, debounces bursts of filesystem events,
+waits for each candidate file's size to stop changing, then runs the same
+`scan_import.find_external_models` -> `group_by_hash` -> `adopt_group` pipeline
+`omm import` already uses (see Hub + link model above) and desktop-notifies via
+`notify.py`. `watchdog`/`plyer` are the `watch` optional extra - never a runtime
+dependency of a plain `omm` install.
+
 **CLI shape.** `cli.py` is a ~9,300-line Typer monolith (entry `omm.cli:main`). Startup speed
 matters: `questionary`, `requests`, `prompt_toolkit`, and `importlib.metadata` are lazy-imported
 inside functions to keep `omm help` near ~140ms — do not hoist them back to module scope. Tests
