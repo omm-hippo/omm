@@ -218,6 +218,31 @@ def test_link_file_skips_delete_recreate_when_already_linked(isolated_omm_home, 
     assert update_calls == []  # ownership registry never rewritten
 
 
+def test_relink_heals_stale_device_number_on_unchanged_symlink(
+    isolated_omm_home, tmp_path
+):
+    """A destination volume that gets remounted between two `omm link` runs
+    (e.g. every macOS reboot reassigns st_dev for the same APFS volume) must
+    not make omm treat its own untouched, correctly-targeted symlink as
+    belonging to a different model. The inode is still authoritative; only
+    the device number drifted."""
+    src = tmp_path / "model.gguf"
+    src.write_bytes(b"weights")
+    dst = tmp_path / "dst" / "model.gguf"
+
+    linker.link_file(src, dst)
+    record = linker._ownership_record(dst)
+    record["device"] = record["device"] + 1  # simulate a volume remount
+    linker._update_link_ownership(dst, record)
+
+    result = linker.link_file(src, dst)
+
+    assert result == "symlink"
+    assert dst.read_bytes() == b"weights"
+    healed = linker._ownership_record(dst)
+    assert healed["device"] == dst.lstat().st_dev
+
+
 @pytest.mark.parametrize("method", ["hardlink", "copy"])
 def test_relink_refreshes_replaced_source(isolated_omm_home, tmp_path, monkeypatch, method):
     monkeypatch.setattr(linker.platform, "system", lambda: "Windows")

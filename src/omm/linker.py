@@ -727,6 +727,15 @@ def _link_file_impl(
         if record and record.get("source") == _link_key(src):
             if record.get("kind") == "symlink" and _owned_symlink(dst, record):
                 return "symlink"
+            if record.get("kind") == "symlink" and _matches_requested_link(src, dst):
+                # The destination volume was remounted since this record was
+                # written (e.g. macOS reassigns st_dev for the same APFS
+                # volume on every reboot) - the recorded device/inode no
+                # longer match, but the symlink still targets exactly this
+                # source. Refresh the identity instead of treating an
+                # untouched, correct link as a foreign conflict.
+                _record_symlink(dst, src)
+                return "symlink"
             if (
                 record.get("kind") == "hardlink"
                 and _owned_hardlink(dst, record)
