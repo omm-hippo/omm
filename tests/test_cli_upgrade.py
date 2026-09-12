@@ -55,7 +55,7 @@ def test_upgrade_refreshes_registered_custom_destination(
     source.write_bytes(b"old-model")
     registry.save_registry({source.name: _entry(repo_id=None)})
     target = tmp_path / "custom-app"
-    linked = runner.invoke(cli.app, ["link", str(target)])
+    linked = runner.invoke(cli.app, ["link", "--to", str(target)])
     assert linked.exit_code == 0, linked.output
     destination = target / source.name
     monkeypatch.setattr(cli, "download_file", lambda url, path, **kw: Path(path).write_bytes(b"new-model"))
@@ -85,7 +85,7 @@ def test_upgrade_preserves_user_replacement_at_custom_destination(
     source.write_bytes(b"old-model")
     registry.save_registry({source.name: _entry(repo_id=None)})
     target = tmp_path / "custom-app"
-    linked = runner.invoke(cli.app, ["link", str(target)])
+    linked = runner.invoke(cli.app, ["link", "--to", str(target)])
     assert linked.exit_code == 0, linked.output
     destination = target / source.name
     destination.unlink()

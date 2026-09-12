@@ -427,8 +427,8 @@ omm list [--json] [--engine NAME]  # Show models installed via omm and their lin
 omm info <name> [--json]  # What a model is: source repo, version, size and run commands once installed; author, downloads, license and architecture for a search result
 omm upgrade <name> [--dry-run]  # Refresh a model against its source if it has changed since install (alias: up)
 omm upgrade [--yes] [--dry-run]  # Check every installed model for updates
-omm link [--engine NAME]  # Re-verify and repair installed-model links across supported runners
-omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
+omm link [models] [--engine NAME]  # Re-verify and repair installed-model links across supported runners; `models` is a comma-separated name/index list (omit for every model)
+omm link [models] --to <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
 omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 ```
 

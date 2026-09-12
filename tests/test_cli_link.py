@@ -36,13 +36,59 @@ def test_link_engine_bogus_value_errors(isolated_omm_home):
     assert "--engine must be one of" in result.stderr
 
 
-def test_link_engine_with_directory_errors(isolated_omm_home, tmp_path):
+def test_link_engine_with_to_errors(isolated_omm_home, tmp_path):
     registry.save_registry({"model.gguf": {"linked": {}}})
 
-    result = runner.invoke(cli.app, ["link", str(tmp_path / "custom"), "--engine", "ollama"])
+    result = runner.invoke(
+        cli.app, ["link", "--to", str(tmp_path / "custom"), "--engine", "ollama"]
+    )
 
     assert result.exit_code == 2
-    assert "--engine only applies without a directory argument" in result.stderr
+    assert "--engine only applies without --to" in result.stderr
+
+
+def test_link_comma_list_only_relinks_selected_models(isolated_omm_home, monkeypatch):
+    for filename in ("model-a.gguf", "model-b.gguf", "model-c.gguf"):
+        (cli.MODELS_DIR / filename).write_bytes(b"model")
+    registry.save_registry(
+        {name: {"linked": {}} for name in ("model-a.gguf", "model-b.gguf", "model-c.gguf")}
+    )
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key == "ollama")
+
+    calls = []
+    monkeypatch.setattr(
+        cli.linker,
+        "link_engine",
+        lambda key, dest, repo_id=None, ollama_tag=None, force=False: calls.append(dest.name),
+    )
+
+    result = runner.invoke(cli.app, ["link", "model-a.gguf,model-b.gguf", "--engine", "ollama"])
+
+    assert result.exit_code == 0, result.stdout
+    assert sorted(calls) == ["model-a.gguf", "model-b.gguf"]
+
+
+def test_link_comma_list_skips_unknown_model_and_still_links_the_rest(
+    isolated_omm_home, monkeypatch
+):
+    (cli.MODELS_DIR / "model-a.gguf").write_bytes(b"model")
+    registry.save_registry({"model-a.gguf": {"linked": {}}})
+    monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: key == "ollama")
+
+    calls = []
+    monkeypatch.setattr(
+        cli.linker,
+        "link_engine",
+        lambda key, dest, repo_id=None, ollama_tag=None, force=False: calls.append(dest.name),
+    )
+
+    result = runner.invoke(
+        cli.app, ["link", "model-a.gguf,nothing-here.gguf", "--engine", "ollama"]
+    )
+
+    assert result.exit_code == 1
+    assert "nothing-here.gguf is not installed via omm" in result.stderr
+    assert calls == ["model-a.gguf"]
 
 
 def test_link_custom_directory_links_every_registered_model(isolated_omm_home, tmp_path):
@@ -52,7 +98,7 @@ def test_link_custom_directory_links_every_registered_model(isolated_omm_home, t
     registry.save_registry({filename: {"linked": {}}})
     target = tmp_path / "custom-models"
 
-    result = runner.invoke(cli.app, ["link", str(target)])
+    result = runner.invoke(cli.app, ["link", "--to", str(target)])
 
     assert result.exit_code == 0, result.stdout
     destination = target / filename
@@ -76,7 +122,7 @@ def test_link_reports_clean_error_when_directory_cannot_be_created(isolated_omm_
 
     monkeypatch.setattr(Path, "mkdir", _flaky_mkdir)
 
-    result = runner.invoke(cli.app, ["link", str(target)])
+    result = runner.invoke(cli.app, ["link", "--to", str(target)])
 
     assert result.exit_code == 1
     assert "Could not create" in result.stderr
@@ -91,7 +137,7 @@ def test_relative_custom_directory_is_recorded_for_cleanup_from_other_cwd(
     registry.save_registry({filename: {"linked": {}}})
     monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(cli.app, ["link", "custom-models"])
+    result = runner.invoke(cli.app, ["link", "--to", "custom-models"])
 
     assert result.exit_code == 0, result.output
     destination = tmp_path / "custom-models" / filename
