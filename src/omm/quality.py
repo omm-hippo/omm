@@ -37,7 +37,10 @@ OLLAMA_HOST = "http://localhost:11434"
 MAX_PACK_BYTES = 1_000_000
 MAX_ITEMS = 100
 MAX_PROMPT_CHARS = 10_000
-_NUMBER_PATTERN = r"[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?"
+# Keep a leading decimal point and its sign in the answer. Consume malformed
+# exponent-shaped suffixes too: Decimal must reject the whole token instead
+# of accidentally grading its mantissa (e.g. `1e+` as `1`).
+_NUMBER_PATTERN = r"[-+]?(?:\d[\d,]*(?:\.\d*)?|\.\d+)(?:[eE][-+\d]*(?:\.\d+)*)*"
 _FINAL_NUMBER_RE = re.compile(rf"FINAL\s*[:=]\s*({_NUMBER_PATTERN})", re.IGNORECASE)
 _ANY_NUMBER_RE = re.compile(_NUMBER_PATTERN)
 
