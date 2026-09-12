@@ -15,6 +15,7 @@ Design: docs/superpowers/specs/2026-09-12-auto-import-watch-design.md
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -87,3 +88,51 @@ def run_once() -> list[scan_import.AdoptResult]:
             f"{result.filename} is now available to every installed local AI app.",
         )
     return results
+
+
+def _build_debounced_handler(on_settle):
+    """Return a watchdog FileSystemEventHandler that calls on_settle() once,
+    DEBOUNCE_SECONDS after the last filesystem event it saw - so a
+    multi-file download only triggers one scan pass, run after things have
+    quieted down rather than mid-download."""
+    from watchdog.events import FileSystemEventHandler
+
+    class _Handler(FileSystemEventHandler):
+        def __init__(self) -> None:
+            self._timer: threading.Timer | None = None
+            self._lock = threading.Lock()
+
+        def on_any_event(self, event) -> None:
+            with self._lock:
+                if self._timer is not None:
+                    self._timer.cancel()
+                self._timer = threading.Timer(DEBOUNCE_SECONDS, on_settle)
+                self._timer.daemon = True
+                self._timer.start()
+
+    return _Handler()
+
+
+def run_watch_loop() -> None:
+    """Entry point for `omm _auto-import-run`. Blocks forever; the OS
+    service registered via `omm setting auto-import enable`
+    (see watch_service.py) is what starts/stops this process, not the
+    user directly."""
+    from watchdog.observers import Observer
+
+    dirs = watch_target_dirs()
+    if not dirs:
+        log.info("No supported local AI app directories found; nothing to watch yet.")
+    handler = _build_debounced_handler(run_once)
+    observer = Observer()
+    for directory in dirs:
+        observer.schedule(handler, str(directory), recursive=True)
+    observer.start()
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        observer.stop()
+        observer.join()
