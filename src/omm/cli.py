@@ -72,6 +72,7 @@ from omm import (
     tuning,
     usage,
     version_check,
+    watch,
 )
 from omm import contribute as contribute_mod
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
@@ -1330,7 +1331,7 @@ def _remote_head_commit(ref: str = "main") -> str | None:
     return result.stdout.split()[0]
 
 
-_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check"}
+_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check", "_auto-import-run"}
 
 
 @app.command(name="_bg-version-check", hidden=True)
@@ -1340,6 +1341,15 @@ def _bg_version_check_cmd() -> None:
     command exiting; writes the result to the shared cache for a later
     `omm` invocation to pick up."""
     version_check.cached_remote_head(_remote_head_commit, _channel_branch(), installed=_installed_commit())
+
+
+@app.command(name="_auto-import-run", hidden=True)
+def _auto_import_run_cmd() -> None:
+    """Internal. Started by the OS service registered via
+    `omm setting auto-import enable` (see watch_service.py); blocks forever
+    watching every supported local AI app's model directory and adopting
+    new models into the omm hub."""
+    watch.run_watch_loop()
 
 
 def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
@@ -1361,7 +1371,7 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
     return opts.command_body_ran and not opts.quiet
 
 
-_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
+_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check", "_auto-import-run"}
 
 
 def _ask_setup_choice() -> str:
@@ -1478,6 +1488,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "contribute",
     "doctor",
     "_bg-version-check",
+    "_auto-import-run",
 }
 
 
