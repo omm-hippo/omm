@@ -72,6 +72,8 @@ from omm import (
     tuning,
     usage,
     version_check,
+    watch,
+    watch_service,
 )
 from omm import contribute as contribute_mod
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
@@ -420,6 +422,12 @@ upload_app = typer.Typer(
     rich_markup_mode=None,
 )
 setting_app.add_typer(upload_app)
+watch_app = typer.Typer(
+    name="auto-import",
+    help="Automatically adopt models that Ollama, LM Studio, and similar apps download natively into the omm hub in the background. Off by default. See PRIVACY.md.",
+    rich_markup_mode=None,
+)
+setting_app.add_typer(watch_app)
 engine_app = typer.Typer(
     name="engine",
     help="Install local AI runner programs (Ollama, LM Studio, etc.).",
@@ -679,7 +687,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "upgrade"]),
+    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "unlink", "info", "upgrade"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
     (
         "Maintenance",
@@ -691,6 +699,7 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "import",
             "cleanup",
             "link",
+            "export",
             "update",
             "log",
             "help",
@@ -941,15 +950,15 @@ def _reconcile_stale_link_records(reg: dict, installed: dict[str, bool]) -> list
     return cleaned
 
 
-def _validate_engine(engine: str | None) -> None:
-    """Shared `--engine` check for `list`/`link`: exits 2 with a usage
-    error when a value is given but isn't a known engine key."""
+def _validate_engine(engine: str | None, *, flag: str = "--engine") -> None:
+    """Shared engine-name check for `list`/`link`/`unlink`: exits 2 with a
+    usage error when a value is given but isn't a known engine key."""
     if engine is None:
         return
     valid_engines = {spec.key for spec in linker.ENGINES}
     if engine not in valid_engines:
         err_console.print(
-            f"[error]--engine must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/error]"
+            f"[error]{flag} must be one of: {', '.join(sorted(valid_engines))} (got '{engine}').[/error]"
         )
         raise typer.Exit(2)
 
@@ -1330,7 +1339,7 @@ def _remote_head_commit(ref: str = "main") -> str | None:
     return result.stdout.split()[0]
 
 
-_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check"}
+_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check", "_auto-import-run"}
 
 
 @app.command(name="_bg-version-check", hidden=True)
@@ -1340,6 +1349,15 @@ def _bg_version_check_cmd() -> None:
     command exiting; writes the result to the shared cache for a later
     `omm` invocation to pick up."""
     version_check.cached_remote_head(_remote_head_commit, _channel_branch(), installed=_installed_commit())
+
+
+@app.command(name="_auto-import-run", hidden=True)
+def _auto_import_run_cmd() -> None:
+    """Internal. Started by the OS service registered via
+    `omm setting auto-import enable` (see watch_service.py); blocks forever
+    watching every supported local AI app's model directory and adopting
+    new models into the omm hub."""
+    watch.run_watch_loop()
 
 
 def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
@@ -1361,7 +1379,7 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
     return opts.command_body_ran and not opts.quiet
 
 
-_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check"}
+_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check", "_auto-import-run"}
 
 
 def _ask_setup_choice() -> str:
@@ -1478,6 +1496,7 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "contribute",
     "doctor",
     "_bg-version-check",
+    "_auto-import-run",
 }
 
 
@@ -5675,6 +5694,56 @@ def remove(
         raise typer.Exit(1)
 
 
+@app.command(name="unlink")
+@global_flags
+def unlink(
+    filename: str = typer.Argument(..., autocompletion=complete_remove_filename),
+    engine: str = typer.Option(
+        ...,
+        "--runner",
+        autocompletion=complete_engine_key,
+        help="Runner to unlink from, or 'all'.",
+    ),
+) -> None:
+    """Remove a model's link from one runner (or every runner with --runner
+    all) without touching the hub file or its links into other runners."""
+    filename, entry = _lookup_entry(_resolve_ref(filename), registry.load_registry())
+    if entry is None:
+        _print_not_installed_error(filename)
+        raise typer.Exit(1)
+
+    linked = entry.get("linked", {})
+    if engine.lower() == "all":
+        targets = [spec.key for spec in linker.ENGINES if linked.get(spec.key)]
+        if not targets:
+            console.print(f"{filename} isn't linked into any runner.")
+            raise typer.Exit(0)
+    else:
+        _validate_engine(engine, flag="--runner")
+        if not linked.get(engine):
+            console.print(f"{filename} isn't linked into {_engine_label(engine)}.")
+            raise typer.Exit(0)
+        targets = [engine]
+
+    new_linked = dict(linked)
+    failed: list[str] = []
+    for key in targets:
+        try:
+            linker.unlink_engine(key, filename, entry)
+            new_linked[key] = False
+        except linker.LinkError as error:
+            err_console.print(f"[warning]{filename}: {_engine_label(key)} unlink skipped: {error}[/warning]")
+            failed.append(key)
+
+    registry.upsert_entry(filename, linked=new_linked)
+    unlinked = [k for k in targets if k not in failed]
+    if unlinked:
+        labels = ", ".join(_engine_label(k) for k in unlinked)
+        console.print(f"[success]Unlinked {filename} from {labels}.[/success]")
+    if failed:
+        raise typer.Exit(1)
+
+
 def _lookup_entry(filename: str, reg: dict) -> tuple[str, dict | None]:
     """Find a registry entry by exact filename, retrying with a `.gguf`
     suffix appended. On a miss the entry is None and the filename is the
@@ -7097,6 +7166,70 @@ def catalog_rollback() -> None:
     console.print(f"[success]Rolled back recommendation catalog from {selected.name}.[/success]")
 
 
+def _watch_dependencies_available() -> bool:
+    try:
+        import watchdog  # noqa: F401
+        import plyer  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@watch_app.command(name="enable")
+@global_flags
+def auto_import_enable() -> None:
+    """Turn on background auto-import: watches Ollama/LM Studio/etc. and
+    adopts new models into the omm hub without a prompt."""
+    if not _watch_dependencies_available():
+        err_console.print(
+            '[error]Missing dependency. Install with: pip install "omm-model\\[watch]"[/error]'
+        )
+        raise typer.Exit(1)
+    if watch_service.is_installed():
+        console.print("[muted]Auto-import is already enabled.[/muted]")
+        return
+    try:
+        watch_service.install()
+    except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
+        err_console.print(f"[error]Could not enable auto-import: {error}[/error]")
+        raise typer.Exit(1) from error
+    config_mod.update_config(auto_import_enabled=True)
+    console.print(
+        "[success]Auto-import enabled - it will run in the background from now on.[/success]"
+    )
+
+
+@watch_app.command(name="disable")
+@global_flags
+def auto_import_disable() -> None:
+    """Turn off background auto-import."""
+    if not watch_service.is_installed():
+        console.print("[muted]Auto-import is already disabled.[/muted]")
+        config_mod.update_config(auto_import_enabled=False)
+        return
+    try:
+        watch_service.uninstall()
+    except (OSError, subprocess.CalledProcessError) as error:
+        err_console.print(f"[error]Could not disable auto-import cleanly: {error}[/error]")
+        raise typer.Exit(1) from error
+    config_mod.update_config(auto_import_enabled=False)
+    console.print("[success]Auto-import disabled.[/success]")
+
+
+@watch_app.command(name="status")
+@global_flags
+def auto_import_status() -> None:
+    """Show whether background auto-import is enabled and registered with the OS."""
+    enabled = bool(load_config().get("auto_import_enabled"))
+    installed = watch_service.is_installed()
+    table = _table(title="Auto-import", show_header=False)
+    table.add_column("Field", style="label")
+    table.add_column("Value")
+    table.add_row("Setting", "enabled" if enabled else "disabled (default)")
+    table.add_row("OS service registered", "yes" if installed else "no")
+    console.print(table)
+
+
 def _upload_channel_menu() -> None:
     """Interactive picker for the three outbound-data channels, shared by
     bare `omm setting upload` and the `omm setting` menu's Upload entry.
@@ -7226,6 +7359,10 @@ def setting_menu(ctx: typer.Context) -> None:
                     questionary.Choice(
                         f"Memory guard (current: {memory_guard_policy})", value="memory-guard"
                     ),
+                    questionary.Choice(
+                        f"Auto-import (current: {'on' if current.get('auto_import_enabled') else 'off'})",
+                        value="auto-import",
+                    ),
                     questionary.Choice("← Back", value="back"),
                 ],
             )
@@ -7239,6 +7376,24 @@ def setting_menu(ctx: typer.Context) -> None:
                     "Endpoint (blank to keep current, 'none' to clear):"
                 ).ask()
                 configure_telemetry(endpoint=endpoint or None)
+            elif choice == "auto-import":
+                action = _ask_select(
+                    questionary.select(
+                        f"Auto-import (current: {'on' if current.get('auto_import_enabled') else 'off'}):",
+                        choices=[
+                            questionary.Choice("Turn on", value="enable"),
+                            questionary.Choice("Turn off", value="disable"),
+                            questionary.Choice("Show status", value="status"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
+                )
+                if action == "enable":
+                    auto_import_enable()
+                elif action == "disable":
+                    auto_import_disable()
+                elif action == "status":
+                    auto_import_status()
             elif choice == "upload":
                 _upload_channel_menu()
             elif choice == "version":
@@ -7644,6 +7799,85 @@ def relink() -> None:
     """Deprecated alias for `omm link`."""
     err_console.print("[warning]`omm relink` is deprecated; use `omm link`.[/warning]")
     link_models(directory=None, engine=None)
+
+
+@app.command(name="export")
+@global_flags
+def export_model(
+    filename: str = typer.Argument(..., autocompletion=complete_remove_filename),
+    destination: Path = typer.Argument(..., help="Directory to place the exported file in."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Reclaim a destination omm doesn't recognize as its own by "
+        "deleting it and exporting, instead of skipping it as a conflict.",
+    ),
+) -> None:
+    """Export a hub model to `destination` for deployment or backup: a hard
+    link when possible, otherwise a real copy. Never a symlink, so the
+    exported file keeps working after `omm uninstall` or on another
+    machine. Not tracked in the registry - uninstalling the source model
+    never touches an exported copy. Also writes a provenance/checksum
+    manifest sidecar next to it, so `omm import` on another machine
+    (including an air-gapped one) can restore the source repo, version, and
+    install date instead of treating the file as an anonymous import."""
+    filename, entry = _lookup_entry(_resolve_ref(filename), registry.load_registry())
+    if entry is None:
+        _print_not_installed_error(filename)
+        raise typer.Exit(1)
+    try:
+        source = _managed_model_path(filename)
+    except ModelResolutionError as error:
+        err_console.print(f"[error]{filename}: unsafe registry entry ({error}).[/error]")
+        raise typer.Exit(1) from error
+    if not source.exists():
+        err_console.print(f"[error]{filename}: hub file is missing.[/error]")
+        raise typer.Exit(1)
+
+    destination = destination.expanduser()
+
+    def report_copy(_source: Path, dest_path: Path, size_bytes: int) -> None:
+        console.print(
+            f"[muted]{size_bytes / 1024**3:.1f} GiB copied to {dest_path}; "
+            "a hard link wasn't possible (different volume).[/muted]"
+        )
+
+    try:
+        exported = linker.export_file(source, destination, on_copy=report_copy, force=force)
+    except linker.LinkError as error:
+        err_console.print(f"[error]{filename}: export failed: {error}[/error]")
+        raise typer.Exit(1) from error
+
+    scan_import.write_manifest(exported, _export_manifest_fields(filename, entry, source))
+    console.print(f"[success]Exported {filename} to {exported}.[/success]")
+
+
+def _export_manifest_fields(filename: str, entry: dict, source: Path) -> dict:
+    """Portable subset of a registry entry for the `omm export` sidecar -
+    only fields meaningful on a different machine. `linked`/`custom_links`/
+    `compatibility` are this machine's local state and don't travel."""
+    fields: dict = {"schema_version": 1, "filename": filename, "sha256": entry.get("sha256")}
+    for key in ("repo_id", "source", "version", "installed_at", "size_bytes"):
+        value = entry.get(key)
+        if value is not None:
+            fields[key] = value
+
+    from omm.gguf import read_gguf_metadata
+
+    try:
+        header = read_gguf_metadata(
+            source, {"general.architecture", "general.parameter_count"}
+        )
+    except (OSError, ValueError, struct.error):
+        header = {}
+    architecture = header.get("general.architecture")
+    if isinstance(architecture, str) and architecture:
+        fields["architecture"] = architecture
+    parameter_count = header.get("general.parameter_count")
+    if isinstance(parameter_count, int):
+        fields["parameter_count"] = parameter_count
+
+    return fields
 
 
 def _cleanup_incomplete_installs() -> int:

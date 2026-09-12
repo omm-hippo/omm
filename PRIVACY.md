@@ -104,3 +104,8 @@ The `error_reports` Realtime Database node is **not** publicly readable.
 `omm` keeps a local run log at `~/.omm/logs/` (one JSONL file per command plus a
 human-readable `history.log`), readable with `omm log`. It is for your own
 debugging and is never sent anywhere; the channels above do not read it.
+
+**Auto-import** (`omm setting auto-import enable`, off by default) watches local AI
+app directories on this machine and adopts new models into the omm hub in the
+background. It is a local filesystem automation only - nothing it does is uploaded
+or sent anywhere.
