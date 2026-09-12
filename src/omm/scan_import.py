@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from omm import linker, registry
+from omm.atomic import atomic_write_text
 from omm.config import MODELS_DIR, ensure_omm_home
 from omm.hashutil import sha256_file
 from omm.hub import ModelResolutionError, validate_model_filename
@@ -29,6 +30,15 @@ from omm.hub import ModelResolutionError, validate_model_filename
 log = logging.getLogger(__name__)
 
 _OLLAMA_MODEL_LAYER = "application/vnd.ollama.image.model"
+
+# Sidecar written by `omm export` next to the GGUF it copies out, so
+# `omm import <directory>` on another (possibly air-gapped) machine can
+# restore provenance/version/install-date instead of treating the file as
+# an anonymous import. Named by appending to the full filename (like the
+# `.part` download-in-progress convention) rather than replacing the
+# `.gguf` suffix, so it sorts next to the file it describes and can't be
+# mistaken for a second model.
+MANIFEST_SUFFIX = ".omm-manifest.json"
 
 # Engines identified by a manifest/tag rather than a real on-disk filename
 # (Ollama-format blobs, Jan's model.yml) - their display_name/path aren't a
@@ -50,6 +60,11 @@ class ExternalGguf:
     path: Path
     size_bytes: int
     sha256: str
+    # Populated only for `scan_directory` (the `omm import <path>` arg) when
+    # a verified `omm export` sidecar sits next to this file. `None` means
+    # "no manifest, or it didn't check out" - adopt_group() then falls back
+    # to today's no-provenance behavior, exactly as if this field didn't exist.
+    manifest: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -240,9 +255,72 @@ def scan_jan() -> list[ExternalGguf]:
     return found
 
 
+def manifest_path_for(gguf_path: Path) -> Path:
+    return gguf_path.with_name(gguf_path.name + MANIFEST_SUFFIX)
+
+
+def write_manifest(gguf_path: Path, fields: dict) -> Path:
+    """Write the `omm export` sidecar manifest next to `gguf_path`. Always
+    overwrites - the manifest is a plain data sidecar, not an
+    ownership-tracked link, so there's no conflict to detect."""
+    destination = manifest_path_for(gguf_path)
+    atomic_write_text(destination, json.dumps(fields, indent=2, sort_keys=True))
+    return destination
+
+
+def _load_verified_manifest(gguf_path: Path, sha256: str) -> dict | None:
+    """Read and sanity-check the sidecar next to `gguf_path`. Returns
+    `None` (never raises) on anything short of a well-formed manifest whose
+    checksum matches the file actually found - a missing, corrupt, or
+    tampered/stale manifest silently falls back to no provenance rather
+    than failing the whole import."""
+    manifest_path = manifest_path_for(gguf_path)
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, dict) or manifest.get("sha256") != sha256:
+        return None
+    return manifest
+
+
+def _manifest_from_group(group: ModelGroup) -> dict | None:
+    return next((loc.manifest for loc in group.locations if loc.manifest), None)
+
+
+def _manifest_str_field(manifest: dict, key: str) -> str | None:
+    """A manifest sidecar travels with the file across a trust boundary (a
+    different, possibly untrusted machine) - only its `sha256` was checked
+    against the actual bytes, so every other field needs its own type check
+    before it's allowed anywhere near registry.json."""
+    value = manifest.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _manifest_installed_at(manifest: dict) -> str | None:
+    value = manifest.get("installed_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return value
+
+
 def scan_directory(path: Path) -> list[ExternalGguf]:
-    """Real .gguf files under a user-supplied directory (`omm import PATH`)."""
-    return _scan_flat_dir("import", path)
+    """Real .gguf files under a user-supplied directory (`omm import PATH`).
+
+    Each file gets its `omm export`-written sidecar manifest attached when
+    one is present and its checksum matches, so `adopt_group` can restore
+    provenance across an air-gapped copy; otherwise the model is adopted
+    with no metadata, same as before manifests existed."""
+    found = _scan_flat_dir("import", path)
+    for item in found:
+        item.manifest = _load_verified_manifest(item.path, item.sha256)
+    return found
 
 
 def find_external_models(extra_path: Path | None = None) -> list[ExternalGguf]:
@@ -482,7 +560,8 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     else:
         ollama_tag = linker.sanitize_ollama_tag(filename)
         ollama_runtime_name = discovered_ollama_runtime_name
-        repo_id = None
+        manifest = _manifest_from_group(group)
+        repo_id = _manifest_str_field(manifest, "repo_id") if manifest else None
 
     # The locations found by the scan only cover the engine(s) the file
     # already sat in - mirror `install`'s behavior of also linking into
@@ -515,12 +594,13 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     else:
         fields = dict(
             sha256=group.sha256,
-            version=group.sha256[:7],
-            source="imported",
+            version=(manifest and _manifest_str_field(manifest, "version")) or group.sha256[:7],
+            source=(manifest and _manifest_str_field(manifest, "source")) or "imported",
             size_bytes=hub_path.stat().st_size,
-            installed_at=datetime.now(timezone.utc).isoformat(),
+            installed_at=(manifest and _manifest_installed_at(manifest))
+            or datetime.now(timezone.utc).isoformat(),
             ollama_name=ollama_tag,
-            repo_id=None,
+            repo_id=repo_id,
             linked=linked,
             custom_links=adopted_links,
         )

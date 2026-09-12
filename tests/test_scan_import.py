@@ -626,3 +626,128 @@ def test_adopt_group_removes_partial_hub_copy_when_move_fails(isolated_omm_home,
     assert external.read_bytes() == b"scanned bytes"
     assert not list((isolated_omm_home / "models").glob("*.gguf"))
     assert not list(tmp_path.glob(".model.gguf.omm-import-*"))
+
+
+def test_write_manifest_then_load_verified_manifest_round_trips(tmp_path):
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"payload")
+    digest = scan_import.sha256_file(gguf)
+
+    manifest_path = scan_import.write_manifest(
+        gguf, {"schema_version": 1, "sha256": digest, "repo_id": "org/repo"}
+    )
+
+    assert manifest_path == gguf.with_name("model.gguf.omm-manifest.json")
+    loaded = scan_import._load_verified_manifest(gguf, digest)
+    assert loaded == {"schema_version": 1, "sha256": digest, "repo_id": "org/repo"}
+
+
+def test_load_verified_manifest_rejects_sha256_mismatch(tmp_path):
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"payload")
+    scan_import.write_manifest(gguf, {"sha256": "not-the-real-hash", "repo_id": "org/repo"})
+
+    assert scan_import._load_verified_manifest(gguf, scan_import.sha256_file(gguf)) is None
+
+
+def test_load_verified_manifest_rejects_malformed_json(tmp_path):
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"payload")
+    scan_import.manifest_path_for(gguf).write_text("not json", encoding="utf-8")
+
+    assert scan_import._load_verified_manifest(gguf, scan_import.sha256_file(gguf)) is None
+
+
+def test_load_verified_manifest_returns_none_without_a_sidecar(tmp_path):
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"payload")
+
+    assert scan_import._load_verified_manifest(gguf, scan_import.sha256_file(gguf)) is None
+
+
+def test_scan_directory_attaches_verified_manifest_and_ignores_bad_one(tmp_path):
+    good = tmp_path / "good.gguf"
+    good.write_bytes(b"good payload")
+    scan_import.write_manifest(good, {"sha256": scan_import.sha256_file(good), "repo_id": "org/good"})
+
+    bad = tmp_path / "bad.gguf"
+    bad.write_bytes(b"bad payload")
+    scan_import.write_manifest(bad, {"sha256": "wrong", "repo_id": "org/bad"})
+
+    found = {item.path.name: item for item in scan_import.scan_directory(tmp_path)}
+    assert found["good.gguf"].manifest == {
+        "sha256": scan_import.sha256_file(good), "repo_id": "org/good"
+    }
+    assert found["bad.gguf"].manifest is None
+
+
+def test_adopt_group_restores_provenance_from_verified_manifest(isolated_omm_home, tmp_path):
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"scanned bytes")
+    digest = scan_import.sha256_file(external)
+    manifest = {
+        "schema_version": 1,
+        "sha256": digest,
+        "repo_id": "org/repo",
+        "source": "https://huggingface.co/org/repo",
+        "version": "abcdef1",
+        "installed_at": "2026-01-01T00:00:00+00:00",
+    }
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "import", "model.gguf", external, external.stat().st_size, digest, manifest=manifest
+            )
+        ],
+    )
+
+    scan_import.adopt_group(group)
+
+    entry = registry.load_registry()["model.gguf"]
+    assert entry["repo_id"] == "org/repo"
+    assert entry["source"] == "https://huggingface.co/org/repo"
+    assert entry["version"] == "abcdef1"
+    assert entry["installed_at"] == "2026-01-01T00:00:00+00:00"
+
+
+def test_adopt_group_ignores_manifest_fields_with_wrong_types(isolated_omm_home, tmp_path):
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"scanned bytes")
+    digest = scan_import.sha256_file(external)
+    manifest = {"sha256": digest, "repo_id": 12345, "installed_at": "not-a-date"}
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "import", "model.gguf", external, external.stat().st_size, digest, manifest=manifest
+            )
+        ],
+    )
+
+    scan_import.adopt_group(group)
+
+    entry = registry.load_registry()["model.gguf"]
+    assert entry["repo_id"] is None
+    assert entry["source"] == "imported"
+    assert entry["installed_at"] != "not-a-date"
+
+
+def test_adopt_group_without_manifest_behaves_as_before(isolated_omm_home, tmp_path):
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"scanned bytes")
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "import", "model.gguf", external, external.stat().st_size, digest
+            )
+        ],
+    )
+
+    scan_import.adopt_group(group)
+
+    entry = registry.load_registry()["model.gguf"]
+    assert entry["repo_id"] is None
+    assert entry["source"] == "imported"
