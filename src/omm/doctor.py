@@ -219,7 +219,9 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
         installed_version = "unknown"
     installation_status: DoctorStatus = (
         "FAIL"
-        if source is package_metadata.InstallSource.UNKNOWN or installed_version == "unknown"
+        if installed_version == "unknown"
+        else "WARN"
+        if source is package_metadata.InstallSource.UNKNOWN
         else "PASS"
     )
     checks.append(
