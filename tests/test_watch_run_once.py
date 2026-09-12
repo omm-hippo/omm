@@ -135,3 +135,64 @@ def test_run_once_skips_group_that_fails_adopt(isolated_omm_home, tmp_path, monk
 
     assert results == []
     assert notified == []
+
+
+def test_run_watch_loop_wires_observer_to_every_dir_and_stops_cleanly(monkeypatch):
+    """Integration check for the pieces run_once() and
+    _build_debounced_handler() already test individually: run_watch_loop()
+    must actually schedule the debounced handler on every watched
+    directory, start the observer, wire run_once as the settle callback,
+    and stop/join the observer on the way out rather than leaking the
+    watchdog thread."""
+    fake_dirs = [Path("/fake/ollama"), Path("/fake/lmstudio")]
+    monkeypatch.setattr(watch, "watch_target_dirs", lambda: fake_dirs)
+
+    on_settle_calls = []
+    fake_handler = object()
+
+    def fake_build_handler(on_settle):
+        on_settle_calls.append(on_settle)
+        return fake_handler
+
+    monkeypatch.setattr(watch, "_build_debounced_handler", fake_build_handler)
+
+    class FakeObserver:
+        instances = []
+
+        def __init__(self):
+            self.scheduled = []
+            self.started = False
+            self.stopped = False
+            self.joined = False
+            FakeObserver.instances.append(self)
+
+        def schedule(self, handler, path, recursive=True):
+            self.scheduled.append((handler, path, recursive))
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def join(self):
+            self.joined = True
+
+    monkeypatch.setattr("watchdog.observers.Observer", FakeObserver)
+
+    def fake_sleep(seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(watch.time, "sleep", fake_sleep)
+
+    watch.run_watch_loop()
+
+    assert on_settle_calls == [watch.run_once]
+    observer = FakeObserver.instances[0]
+    assert observer.scheduled == [
+        (fake_handler, str(fake_dirs[0]), True),
+        (fake_handler, str(fake_dirs[1]), True),
+    ]
+    assert observer.started is True
+    assert observer.stopped is True
+    assert observer.joined is True
