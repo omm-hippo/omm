@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "omm-model"
-version = "0.3.67"
+version = "0.3.68"
 description = "Open source Model Manager - a package manager for local LLMs (GGUF)"
 requires-python = ">=3.10"
 license = "MIT"
@@ -61,6 +61,8 @@ dev = [
     "httpx2==2.12.0",
     "uvicorn==0.52.4",
     "scikit-learn==1.9.0",
+    "watchdog>=4",
+    "plyer>=2.1",
     # transitive closure of the dev set
     "annotated-types==0.8.0",
     "anyio==4.14.2",
@@ -102,6 +104,10 @@ server = [
 # pynvml behind a broad try/except, so it's safe to omit entirely on
 # machines without an NVIDIA GPU - e.g. every Mac).
 nvidia = ["nvidia-ml-py==13.610.43"]
+# Background auto-import (omm setting auto-import enable): watches local AI
+# app directories and desktop-notifies on adopt. Optional - omm.watch/omm.notify
+# lazy-import both, so a plain `pip install omm-model` never needs either.
+watch = ["watchdog>=4", "plyer>=2.1"]
 
 [project.scripts]
 omm = "omm.cli:main"
