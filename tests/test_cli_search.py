@@ -3,7 +3,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from omm import cli, config, search as search_mod
+from omm import cli, config, search as search_mod, session_cache
 
 runner = CliRunner()
 
@@ -105,7 +105,11 @@ def test_search_without_session_mock_stays_off_the_real_home(monkeypatch):
 
     assert result.exit_code == 0, result.stdout
     assert config.OMM_HOME != Path.home() / ".omm"
-    assert any((config.OMM_HOME / "session").glob("*.json"))
+    # Whether a session file is written at all depends on the runner having
+    # a tty - session_cache is tty-scoped and _session_path() returns None
+    # under CI - so assert on where it would land, not on it existing.
+    session_path = session_cache._session_path()
+    assert session_path is None or config.OMM_HOME in session_path.parents
 
 
 def test_search_prints_install_shortcut_hint(monkeypatch):
