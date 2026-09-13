@@ -208,6 +208,86 @@ def test_link_without_force_flag_defaults_to_false(isolated_omm_home, monkeypatc
     assert seen_force == [False]
 
 
+def test_relink_does_not_leak_force_optioninfo_default(isolated_omm_home, monkeypatch):
+    """CRITICAL regression (audit #2): `relink()` calls `link_models` as a
+    plain function. Any keyword left out there binds to the raw
+    typer.Option(...)-declared default - an OptionInfo object, which is
+    always truthy (no __bool__/__len__). That silently turned every
+    `omm relink` into `--force`, deleting an unowned file at the
+    destination with no confirmation. Assert `link_engine` receives the
+    real `False`, not a merely-omitted/truthy sentinel."""
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    dest = cli.MODELS_DIR / filename
+    dest.write_bytes(b"fake-gguf")
+
+    registry.save_registry(
+        {
+            filename: {
+                "linked": {"ollama": False},
+                "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+                "ollama_name": "tinyllama",
+            }
+        }
+    )
+
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
+    for key in ("lmstudio", "jan", "anythingllm", "mstystudio", "textgenwebui", "koboldcpp"):
+        monkeypatch.setattr(linker, f"is_{key}_installed", lambda: False)
+
+    seen_force = []
+
+    def fake_link_engine(key, gguf_path, *, repo_id, ollama_tag, force=False):
+        seen_force.append(force)
+        return None
+
+    monkeypatch.setattr(linker, "link_engine", fake_link_engine)
+
+    result = runner.invoke(cli.app, ["relink"])
+
+    assert result.exit_code == 0, result.stdout
+    assert seen_force == [False]
+    assert seen_force[0] is False  # the real bool, not a truthy OptionInfo
+
+
+def test_link_error_resets_linked_flag_to_false(isolated_omm_home, monkeypatch):
+    """Regression (audit #9): a LinkError this run must flip `linked[key]`
+    to False, not merely leave it unset - registry.upsert_entry merges the
+    `linked` dict rather than replacing it, so omitting the key let a stale
+    True from a previous successful link survive a link that now fails,
+    and `omm list` / `_pick_run_engine` trust that flag verbatim."""
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    dest = cli.MODELS_DIR / filename
+    dest.write_bytes(b"fake-gguf")
+
+    registry.save_registry(
+        {
+            filename: {
+                "linked": {"ollama": True},
+                "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+                "ollama_name": "tinyllama",
+            }
+        }
+    )
+
+    monkeypatch.setattr(linker, "is_ollama_installed", lambda: True)
+    for key in ("lmstudio", "jan", "anythingllm", "mstystudio", "textgenwebui", "koboldcpp"):
+        monkeypatch.setattr(linker, f"is_{key}_installed", lambda: False)
+    monkeypatch.setattr(
+        linker,
+        "link_engine",
+        lambda *a, **k: (_ for _ in ()).throw(
+            linker.LinkError("Refusing to replace unowned existing file at ...")
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["link"])
+
+    assert result.exit_code == 0, result.stdout
+    updated = registry.load_registry()[filename]
+    assert updated["linked"]["ollama"] is False
+    assert "1 skipped (conflict)" in result.stdout
+
+
 def test_relink_with_empty_registry_reports_nothing_to_do(isolated_omm_home):
     result = runner.invoke(cli.app, ["relink"])
 

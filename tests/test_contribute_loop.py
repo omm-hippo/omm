@@ -172,7 +172,9 @@ def test_keyboard_interrupt_uses_owned_cleanup_path(isolated_omm_home, monkeypat
     )
     cleaned = []
     monkeypatch.setattr(
-        cli, "_cleanup_interrupted_install", lambda filename: cleaned.append(filename)
+        cli,
+        "_cleanup_interrupted_install",
+        lambda filename, downloaded_now=False: cleaned.append(filename),
     )
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
@@ -198,7 +200,9 @@ def test_keyboard_interrupt_before_download_starts_does_not_crash(isolated_omm_h
     )
     cleaned = []
     monkeypatch.setattr(
-        cli, "_cleanup_interrupted_install", lambda filename: cleaned.append(filename)
+        cli,
+        "_cleanup_interrupted_install",
+        lambda filename, downloaded_now=False: cleaned.append(filename),
     )
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
@@ -945,7 +949,14 @@ def test_contribution_stopped_cleans_up_and_breaks(isolated_omm_home, monkeypatc
     _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
-        raise cli.InstallInterrupted("model.gguf")
+        # downloaded_now=True: this candidate's bytes were actually fetched
+        # by *this* contribute attempt before being cancelled, so rolling
+        # it all the way back (unload + _remove_one) is correct here. A
+        # cancelled attempt that never downloaded anything new (the CRITICAL
+        # audit #1 fix) must NOT reach _remove_one - see
+        # test_keyboard_interrupt_uses_owned_cleanup_path and
+        # `_cleanup_interrupted_install`'s docstring.
+        raise cli.InstallInterrupted("model.gguf", downloaded_now=True)
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     events = []

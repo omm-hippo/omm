@@ -352,6 +352,85 @@ def test_upgrade_preserves_installed_file_when_link_volume_has_no_capacity(
     assert not (cli.MODELS_DIR / "model.gguf.update").exists()
 
 
+def test_upgrade_link_failure_after_swap_persists_new_hash_and_unlinks(
+    isolated_omm_home, monkeypatch
+):
+    """Regression (audit #7): `_update_one` calls `tmp.replace(dest)` (the
+    new bytes are already live) before relinking, but used to call
+    `_link_model` with no try/except at all. If relinking then raised
+    `linker.InsufficientLinkSpaceError` (e.g. another process filled the
+    link-destination volume right after the disk preflight passed), that
+    exception used to escape `_update_one` entirely - the registry kept the
+    *old* sha256/version/size (drifting from the file that's actually on
+    disk now) and the CLI died with a traceback instead of printing a
+    result."""
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"known-good")
+    registry.save_registry({"model.gguf": _entry(sha256="old-hash")})
+    new_content = b"new-content"
+    expected = hashlib.sha256(new_content).hexdigest()
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda *args: expected)
+    monkeypatch.setattr(
+        cli,
+        "download_file",
+        lambda url, path, **kwargs: Path(path).write_bytes(new_content),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_link_model",
+        lambda *a, **k: (_ for _ in ()).throw(
+            cli.linker.InsufficientLinkSpaceError("LM Studio volume is full")
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    # Must not crash - a traceback here used to replace any result line.
+    assert result.exit_code == 0, result.output
+    assert "relinking failed" in " ".join(result.stderr.split())
+    # The swap already happened; the file on disk is the new content.
+    assert dest.read_bytes() == new_content
+
+    updated = registry.load_registry()["model.gguf"]
+    # No drift: the registry must describe the file that's actually on
+    # disk now, not the pre-update one.
+    assert updated["sha256"] == expected
+    assert all(value is False for value in updated["linked"].values())
+
+
+def test_upgrade_all_continues_past_one_models_link_failure(isolated_omm_home, monkeypatch):
+    """Regression (audit #7): one candidate's unexpected failure during
+    `omm upgrade all` must not abort the whole batch before the later
+    models are even checked, and must not swallow the summary line."""
+    _no_engines(monkeypatch)
+    registry.save_registry(
+        {
+            "first.gguf": _entry(sha256="old-hash"),
+            "second.gguf": _entry(sha256="old-hash"),
+        }
+    )
+
+    calls = []
+
+    def fake_update_one(filename, entry):
+        calls.append(filename)
+        if filename == "first.gguf":
+            raise cli.linker.InsufficientLinkSpaceError("disk full")
+        return "up_to_date"
+
+    monkeypatch.setattr(cli, "_update_one", fake_update_one)
+
+    result = runner.invoke(cli.app, ["upgrade", "all", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    # Both models were attempted - the first one's failure didn't stop the
+    # loop before the second was even reached.
+    assert calls == ["first.gguf", "second.gguf"]
+    assert "1 up to date" in result.stdout
+    assert "1 skipped" in result.stdout
+
+
 def test_upgrade_repairs_tampered_local_file_even_when_registry_matches_remote(
     isolated_omm_home, monkeypatch
 ):

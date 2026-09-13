@@ -332,6 +332,84 @@ def test_unlink_ollama_ignores_content_sha256_mismatch(isolated_omm_home, tmp_pa
     assert manifest_path.exists()
 
 
+def test_unlink_ollama_raises_link_error_on_permission_denied_manifest(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """Regression for the MEDIUM audit finding: `unlink_ollama` used to
+    catch *any* OSError from the removal - including a permission error
+    deleting an owned, otherwise-removable manifest (or a store-lock
+    timeout) - and silently return False, indistinguishable from "there
+    was nothing owned here to remove". A caller that only preserves the
+    registry entry on a `LinkError` (cli.py's `_remove_one`) would then
+    delete the hub file and registry entry while the Ollama manifest (and
+    its blob) were still on disk, orphaning them forever."""
+    gguf_path = linker.MODELS_DIR / "model.gguf"
+    gguf_path.parent.mkdir(parents=True, exist_ok=True)
+    gguf_path.write_bytes(b"model-bytes")
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    tag = "model"
+    linker.link_ollama(gguf_path, tag, models_dir=models_dir)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / tag / "latest"
+    assert manifest_path.exists()
+
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *a, **k):
+        if self == manifest_path:
+            raise PermissionError("WinError 32")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    with pytest.raises(linker.LinkError):
+        linker.unlink_ollama(tag, models_dir=models_dir, expected_source=gguf_path)
+
+    # The failed removal must leave the manifest in place - not silently
+    # report False as if there had never been anything to remove.
+    assert manifest_path.exists()
+
+
+def test_unlink_ollama_batch_continues_after_one_manifest_permission_denied(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A permission error removing one model's manifest must not abort
+    cleanup of the rest of the batch, but it also must not be reported as
+    `True` for the failed one - that would tell the caller it's safe to
+    forget the model even though its Ollama manifest is still present."""
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    gguf_a = tmp_path / "a.gguf"
+    gguf_a.write_bytes(b"model-a")
+    gguf_b = tmp_path / "b.gguf"
+    gguf_b.write_bytes(b"model-b")
+    linker.link_ollama(gguf_a, "model-a", models_dir=models_dir)
+    linker.link_ollama(gguf_b, "model-b", models_dir=models_dir)
+    manifest_a = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model-a" / "latest"
+    manifest_b = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model-b" / "latest"
+
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *a, **k):
+        if self == manifest_a:
+            raise PermissionError("WinError 32")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    results = linker.unlink_ollama_batch(
+        [("model-a", gguf_a, None), ("model-b", gguf_b, None)], models_dir=models_dir
+    )
+
+    assert results == {"model-a": False, "model-b": True}
+    assert manifest_a.exists()
+    assert not manifest_b.exists()
+
+
 def test_unlink_ollama_batch_removes_each_model(isolated_omm_home, tmp_path, monkeypatch):
     monkeypatch.setattr(
         linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
@@ -920,7 +998,13 @@ def test_link_jan_raises_link_error_when_write_fails(tmp_path, monkeypatch):
         linker.link_jan(gguf_path, "model-id")
 
 
-def test_unlink_ollama_swallows_permission_error(isolated_omm_home, tmp_path, monkeypatch):
+def test_unlink_ollama_raises_on_permission_error_instead_of_swallowing(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """`unlink_ollama` used to swallow a permission error into a plain
+    `False`, indistinguishable from "nothing owned here to remove" - see
+    test_unlink_ollama_raises_link_error_on_permission_denied_manifest for
+    the full audit writeup. It must now raise `LinkError` instead."""
     models_dir = tmp_path / "ollama"
     monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
     source = tmp_path / "source.gguf"
@@ -929,7 +1013,8 @@ def test_unlink_ollama_swallows_permission_error(isolated_omm_home, tmp_path, mo
 
     monkeypatch.setattr(Path, "unlink", lambda self, missing_ok=False: (_ for _ in ()).throw(OSError("permission denied")))
 
-    linker.unlink_ollama("model", models_dir=models_dir)  # must not raise
+    with pytest.raises(linker.LinkError):
+        linker.unlink_ollama("model", models_dir=models_dir)
 
 
 def test_unlink_jan_swallows_permission_error(tmp_path, monkeypatch):

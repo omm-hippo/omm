@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 from typer.testing import CliRunner
 
-from omm import cli, linker
+from omm import cli, config, linker, registry
 from omm.engines import RuntimeHealth, RuntimeModel
 from omm.hardware import HardwareInfo
 from omm.hub import ResolvedModel
@@ -104,12 +104,16 @@ def test_install_esc_interrupt_cleans_up_and_exits_130(isolated_omm_home, monkey
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     cleaned = []
-    monkeypatch.setattr(cli, "_cleanup_interrupted_install", lambda name: cleaned.append(name))
+    monkeypatch.setattr(
+        cli,
+        "_cleanup_interrupted_install",
+        lambda name, downloaded_now=False: cleaned.append((name, downloaded_now)),
+    )
 
     result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
 
     assert result.exit_code == 0
-    assert cleaned == [filename]
+    assert cleaned == [(filename, False)]
     assert "Cancelled" in result.stderr
 
 
@@ -151,12 +155,103 @@ def test_install_keyboard_interrupt_cleans_up_partial_download(isolated_omm_home
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     cleaned = []
-    monkeypatch.setattr(cli, "_cleanup_interrupted_install", lambda name: cleaned.append(name))
+    monkeypatch.setattr(
+        cli,
+        "_cleanup_interrupted_install",
+        lambda name, downloaded_now=False: cleaned.append((name, downloaded_now)),
+    )
 
     result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
 
     assert result.exit_code == 130
-    assert cleaned == [filename]
+    assert cleaned == [(filename, False)]
+
+
+def _seed_existing_model(filename: str) -> None:
+    """Simulate a model that was fully installed by a *previous* `omm
+    install` run - a real central file plus a registry entry, both already
+    on disk before the run under test even starts."""
+    dest = config.MODELS_DIR / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"pre-existing-gguf-bytes")
+    registry.upsert_entry(
+        filename,
+        sha256="deadbeef",
+        version="deadbee",
+        source="https://example.com/x.gguf",
+        linked={"ollama": True},
+    )
+
+
+def test_install_esc_during_reinstall_of_existing_model_preserves_it(
+    isolated_omm_home, monkeypatch
+):
+    """CRITICAL regression (audit #1): cancelling a reinstall of a model
+    that was already fully installed - Esc during the benchmark - must
+    never delete the pre-existing central file, links, or registry entry.
+    Runs the real `_cleanup_interrupted_install`, not a stub, so the actual
+    fix (skip `_remove_one` unless this run downloaded new bytes) is what's
+    under test."""
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    _seed_existing_model(filename)
+    monkeypatch.setattr(
+        cli,
+        "resolve_model",
+        lambda name: ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo"),
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        # `_prepare_install_artifact`'s "already downloaded, skipping
+        # fetch" branch never sets downloaded_now True, so a benchmark-stage
+        # cancel on a reinstall must carry downloaded_now=False.
+        assert kwargs["stop_event"] is not None
+        raise cli.InstallInterrupted(filename, downloaded_now=False)
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    removed = []
+    monkeypatch.setattr(cli, "_remove_one", lambda name, entry: removed.append(name))
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+
+    assert result.exit_code == 0
+    assert removed == []  # the CRITICAL bug called _remove_one here
+    assert (config.MODELS_DIR / filename).exists()
+    assert registry.load_registry()[filename]["sha256"] == "deadbeef"
+
+
+def test_install_ctrl_c_during_reinstall_of_existing_model_preserves_it(
+    isolated_omm_home, monkeypatch
+):
+    """CRITICAL regression (audit #1), second repro: a bare KeyboardInterrupt
+    (Windows console Ctrl+C, e.g. at the "Load ... into Ollama memory?"
+    prompt) firing during a reinstall of an already-installed model must
+    also leave it alone - `install()`'s `download_state` never flips to
+    True because `_install_impl` cannot raise `InstallInterrupted` for a
+    plain KeyboardInterrupt."""
+    filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    _seed_existing_model(filename)
+    monkeypatch.setattr(
+        cli,
+        "resolve_model",
+        lambda name: ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo"),
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        assert kwargs["downloaded_state"] == {"downloaded_now": False}
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: False)
+    removed = []
+    monkeypatch.setattr(cli, "_remove_one", lambda name, entry: removed.append(name))
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+
+    assert result.exit_code == 130
+    assert removed == []
+    assert (config.MODELS_DIR / filename).exists()
+    assert registry.load_registry()[filename]["sha256"] == "deadbeef"
 
 
 def test_install_declined_runtime_load_skips_benchmark_and_upload(isolated_omm_home, monkeypatch):

@@ -292,16 +292,29 @@ def test_probe_range_support_not_capable_on_200(monkeypatch):
 
 
 def test_probe_range_support_handles_network_error(monkeypatch):
+    """A network error during the probe must not be conflated with "server
+    doesn't support Range" - it's raised as retryable so callers with an
+    existing `.part` + sidecar leave them in place instead of deleting
+    partial progress (see test_attempt_download_probe_failure_preserves_resume_state)."""
+
     def _raise(*a, **k):
         raise requests.RequestException("boom")
 
     monkeypatch.setattr(requests, "get", _raise)
 
-    total, capable, etag = downloader._probe_range_support("https://example.com/m.gguf")
+    with pytest.raises(downloader._RetryableDownloadError):
+        downloader._probe_range_support("https://example.com/m.gguf")
 
-    assert total == 0
-    assert capable is False
-    assert etag is None
+
+def test_probe_range_support_raises_on_rate_limit_status(monkeypatch):
+    """429/503 mean the probe didn't get an answer, not that Range is
+    unsupported - must be retryable, not silently treated as "no support"."""
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **k: _FakeResp(429, [], headers={})
+    )
+
+    with pytest.raises(downloader._RetryableDownloadError):
+        downloader._probe_range_support("https://example.com/m.gguf")
 
 
 def test_probe_range_support_accepts_200_with_matching_content_length(monkeypatch):
@@ -1020,6 +1033,47 @@ def test_download_parallel_resume_only_refetches_unfinished_ranges(tmp_path, mon
     assert dest.read_bytes() == payload
     assert requested_ranges == ["bytes=14-19"]  # never re-requested the completed range
     assert not sidecar.exists()
+
+
+def test_attempt_download_probe_failure_preserves_resume_state(tmp_path, monkeypatch):
+    """Regression for the HIGH audit finding: a resume probe that fails
+    transiently (network error / 429 / 503) must not be treated the same as
+    "server doesn't support Range" - `_attempt_download` must leave an
+    already-valid `.part` + sidecar in place and raise retryably, instead of
+    deleting the partial download it exists to protect."""
+    dest = tmp_path / "model.gguf"
+    part = dest.with_suffix(dest.suffix + ".part")
+    payload = bytes(range(20))
+    part.write_bytes(payload[:10] + b"\x00" * 10)
+
+    sidecar = downloader._sidecar_path(part)
+    etag = '"model-v1"'
+    state = {
+        "url": "https://example.com/model.gguf",
+        "etag": etag,
+        "total_size": 20,
+        "ranges": [
+            {"start": 0, "end": 9, "done": 10},
+            {"start": 10, "end": 19, "done": 0},
+        ],
+    }
+    sidecar.write_text(json.dumps(state))
+
+    def failing_probe(url):
+        raise downloader._RetryableDownloadError("probe network hiccup")
+
+    monkeypatch.setattr(downloader, "_probe_range_support", failing_probe)
+
+    with pytest.raises(downloader._RetryableDownloadError):
+        downloader._attempt_download(
+            "https://example.com/model.gguf", dest, part, None
+        )
+
+    # The whole point of the sidecar-resume path: a probe hiccup must not
+    # destroy bytes already on disk.
+    assert part.exists()
+    assert part.read_bytes() == payload[:10] + b"\x00" * 10
+    assert sidecar.exists()
 
 
 def test_download_parallel_falls_back_cleanly_on_non_network_download_error(tmp_path, monkeypatch):

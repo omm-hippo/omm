@@ -1,6 +1,7 @@
 import requests
 
 from omm.hub import remote_file_sha256
+from omm.providers.base import ModelResolutionError
 
 
 class _FakeResponse:
@@ -88,10 +89,17 @@ def test_remote_file_sha256_returns_none_when_path_missing(monkeypatch):
     assert remote_file_sha256("huggingface", "org/repo", "model.gguf") is None
 
 
-def test_remote_file_sha256_returns_none_on_request_error(monkeypatch):
+def test_remote_file_sha256_raises_on_request_error(monkeypatch):
+    # A transient request failure must stay distinguishable from a genuine
+    # "this file has no LFS hash" answer: None means only the latter now, so
+    # a rate limit or network blip no longer reads as an unverifiable model.
     def _raise(url, json, timeout):
         raise requests.RequestException("boom")
 
     monkeypatch.setattr(requests, "post", _raise)
 
-    assert remote_file_sha256("huggingface", "org/repo", "model.gguf") is None
+    try:
+        remote_file_sha256("huggingface", "org/repo", "model.gguf")
+        assert False, "expected ModelResolutionError"
+    except ModelResolutionError:
+        pass
