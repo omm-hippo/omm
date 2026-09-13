@@ -43,12 +43,12 @@ generation.
   Merge strategy is "create a merge commit" only (squash/rebase disabled — flattening breaks the
   SSH-signature chain that `omm update` verifies). If CI job names change, update the branch-protection
   `required_status_checks` contexts to match.
-- `beta` is unprotected and **must always be a superset of `main`**. `.github/workflows/sync-beta.yml`
-  auto-merges `origin/main` into `beta` on every push to `main`, SSH-signed by the retrain bot key
-  (in `allowed_signers`) so beta `omm update` clients verify it. It only needs a human when that
-  merge hits a conflict — the job fails loudly and you resolve it with a local `git merge origin/main`
-  → push. `branch-ancestry-check.yml` stays as the post-hoc safety net; it polls through a ~3-minute
-  grace window on a `main` push so it only goes red when `sync-beta.yml` genuinely couldn't catch up.
+- `beta` is unprotected and should stay roughly caught up with `main`, but there is no automated
+  enforcement — `sync-beta.yml` (auto-merge on push to `main`) and `branch-ancestry-check.yml` (the
+  post-hoc ancestry gate) were removed 2026-09-13 because teammates push straight to `main` often
+  enough that the auto-merge kept losing to version-bump conflicts (`pyproject.toml` /
+  `packaging/npm/launcher/package.json` patch numbers diverging) and going red on every push. Port
+  `main` into `beta` by hand with a local `git merge origin/main` → push when you notice drift.
   Most feature work targets `beta`.
 - **Committing freely is fine; pushing is always a separate explicit ask.** Wait for it every time.
 - The user runs multiple Claude sessions against this checkout at once. Re-check `git log -5` /
@@ -218,6 +218,6 @@ Check these before assuming undocumented intent behind a feature's shape.
 - `published/` — generated: recommend model, candidates, signed manifest. Never hand-edit; use the
   owning script.
 - `.github/workflows/` — `ci.yml` (6 required checks), `train.yml`, per-runner `ci-engine-*.yml`,
-  `trusted-head.yml` / `branch-ancestry-check.yml` (branch protection), `github-release.yml`
+  `trusted-head.yml` (branch protection), `github-release.yml`
   (asset-backed reusable Release publisher), release/npm/portable.
 - `demo/model-visualizer/` — standalone React demo of the RandomForest walk; not shipped.
