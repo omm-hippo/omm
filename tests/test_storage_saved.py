@@ -20,7 +20,7 @@ def test_add_storage_saved_bytes_accumulates(isolated_omm_home):
 
 
 def test_load_config_sanitizes_invalid_storage_saved_bytes(isolated_omm_home):
-    config.CONFIG_PATH.write_text(json.dumps({"storage_saved_bytes": -5}))
+    config.CONFIG_PATH.write_text(json.dumps({"storage_saved_bytes": -5}), encoding="utf-8")
 
     assert config.load_config()["storage_saved_bytes"] == 0
 

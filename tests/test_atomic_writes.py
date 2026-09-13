@@ -45,8 +45,8 @@ def test_config_parallel_updates_do_not_overwrite_each_other(isolated_omm_home):
 
 
 def test_corrupt_files_are_preserved_before_safe_fallback(isolated_omm_home):
-    config.CONFIG_PATH.write_text("{broken-config")
-    config.REGISTRY_PATH.write_text("{broken-registry")
+    config.CONFIG_PATH.write_text("{broken-config", encoding="utf-8")
+    config.REGISTRY_PATH.write_text("{broken-registry", encoding="utf-8")
 
     assert config.load_config()["telemetry_send_policy"] == "ask"
     assert registry.load_registry() == {}
@@ -66,7 +66,7 @@ def test_corrupt_backup_preserves_non_utf8_bytes_exactly(tmp_path):
 
 
 def test_registry_upsert_repairs_malformed_entry(isolated_omm_home):
-    config.REGISTRY_PATH.write_text('{"model.gguf": "broken"}')
+    config.REGISTRY_PATH.write_text('{"model.gguf": "broken"}', encoding="utf-8")
 
     registry.upsert_entry("model.gguf", size_bytes=12, linked={"ollama": True})
 

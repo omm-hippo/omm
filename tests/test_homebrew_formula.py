@@ -288,7 +288,7 @@ def test_check_rejects_an_incompatible_python_declaration(tmp_path, replacement)
     requirements = write_fixture(tmp_path)
     text = homebrew_formula.render_formula("9.9.9", requirements=requirements, fetch=fake_fetch)
     formula = tmp_path / "omm.rb"
-    formula.write_text(text.replace('  depends_on "python@3.14"', replacement))
+    formula.write_text(text.replace('  depends_on "python@3.14"', replacement), encoding="utf-8")
     with pytest.raises(homebrew_formula.HomebrewFormulaError, match="Python"):
         homebrew_formula.check_formula(
             formula, "9.9.9", requirements=requirements, fetch=fake_fetch,
@@ -306,7 +306,7 @@ def test_check_does_not_ignore_unsupported_resource_blocks(tmp_path, extra):
     requirements = write_fixture(tmp_path)
     text = homebrew_formula.render_formula("9.9.9", requirements=requirements, fetch=fake_fetch)
     formula = tmp_path / "omm.rb"
-    formula.write_text(text.replace('  def install', extra + '\n  def install'))
+    formula.write_text(text.replace('  def install', extra + '\n  def install'), encoding="utf-8")
     with pytest.raises(homebrew_formula.HomebrewFormulaError, match="resource"):
         homebrew_formula.check_formula(
             formula, "9.9.9", requirements=requirements, fetch=fake_fetch,

@@ -53,7 +53,7 @@ def test_parallel_first_reads_share_one_persisted_id(isolated_omm_home, monkeypa
         ids = list(pool.map(read_id, range(8)))
 
     assert len(set(ids)) == 1
-    assert config.CLIENT_ID_PATH.read_text().strip() == ids[0]
+    assert config.CLIENT_ID_PATH.read_text(encoding="utf-8").strip() == ids[0]
 
 
 def test_client_id_recovers_non_utf8_file(isolated_omm_home):
@@ -62,7 +62,7 @@ def test_client_id_recovers_non_utf8_file(isolated_omm_home):
     value = config.client_id()
 
     assert re.fullmatch(r"[0-9a-f]{32}", value)
-    assert config.CLIENT_ID_PATH.read_text().strip() == value
+    assert config.CLIENT_ID_PATH.read_text(encoding="utf-8").strip() == value
 
 
 def test_client_id_remains_best_effort_when_lock_is_busy(isolated_omm_home, monkeypatch):
