@@ -10,7 +10,7 @@ def test_fresh_install_starts_onboarding_incomplete(isolated_omm_home):
 
 
 def test_existing_config_missing_key_defaults_to_completed(isolated_omm_home):
-    config.CONFIG_PATH.write_text("{}\n")
+    config.CONFIG_PATH.write_text("{}\n", encoding="utf-8")
 
     cfg = config.load_config()
 
@@ -18,7 +18,7 @@ def test_existing_config_missing_key_defaults_to_completed(isolated_omm_home):
 
 
 def test_existing_config_with_other_keys_defaults_to_completed(isolated_omm_home):
-    config.CONFIG_PATH.write_text('{"update_channel": "beta"}\n')
+    config.CONFIG_PATH.write_text('{"update_channel": "beta"}\n', encoding="utf-8")
 
     cfg = config.load_config()
 

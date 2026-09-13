@@ -35,7 +35,7 @@ def test_load_model_with_change_note_flags_new_data_as_changed(monkeypatch, tmp_
 def test_load_model_with_change_note_flags_identical_refetch_as_unchanged(monkeypatch, tmp_path):
     cache_path = tmp_path / "recommend-model.json"
     expected = _artifact()
-    cache_path.write_text(json.dumps(expected))
+    cache_path.write_text(json.dumps(expected), encoding="utf-8")
     monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
     monkeypatch.setattr(predictor, "fetch_and_cache_model", lambda url: expected)
 
@@ -50,7 +50,7 @@ def test_load_model_with_change_note_unchanged_when_fetch_fails_and_falls_back_t
 ):
     cache_path = tmp_path / "recommend-model.json"
     expected = _artifact()
-    cache_path.write_text(json.dumps(expected))
+    cache_path.write_text(json.dumps(expected), encoding="utf-8")
     monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
 
     def _raise(url):

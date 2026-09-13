@@ -1006,7 +1006,7 @@ def test_download_parallel_resume_only_refetches_unfinished_ranges(tmp_path, mon
             {"start": 10, "end": 19, "done": 4},  # 4 bytes already landed
         ],
     }
-    sidecar.write_text(json.dumps(state))
+    sidecar.write_text(json.dumps(state), encoding="utf-8")
 
     requested_ranges = []
     monkeypatch.setattr(
@@ -1057,7 +1057,7 @@ def test_attempt_download_probe_failure_preserves_resume_state(tmp_path, monkeyp
             {"start": 10, "end": 19, "done": 0},
         ],
     }
-    sidecar.write_text(json.dumps(state))
+    sidecar.write_text(json.dumps(state), encoding="utf-8")
 
     def failing_probe(url):
         raise downloader._RetryableDownloadError("probe network hiccup")

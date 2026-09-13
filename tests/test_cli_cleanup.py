@@ -84,7 +84,7 @@ def test_cleanup_cleans_nested_partial_and_resume_metadata(isolated_omm_home, mo
     orphan_part = nested / "orphan.gguf.part"
     orphan_meta = nested / "orphan.gguf.part.meta"
     orphan_part.write_bytes(b"partial")
-    orphan_meta.write_text("{}")
+    orphan_meta.write_text("{}", encoding="utf-8")
 
     result = runner.invoke(cli.app, ["cleanup"])
 

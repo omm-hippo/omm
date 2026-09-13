@@ -15,7 +15,7 @@ def test_unaccepted_legacy_firebase_default_migrates_to_local(isolated_omm_home)
                 "telemetry_endpoint": config.LEGACY_FIREBASE_ENDPOINT,
             }
         )
-    )
+    , encoding="utf-8")
 
     loaded = config.load_config()
 
@@ -34,7 +34,7 @@ def test_explicit_legacy_firebase_opt_in_migrates_to_gateway(isolated_omm_home):
                 "telemetry_endpoint": config.LEGACY_FIREBASE_ENDPOINT,
             }
         )
-    )
+    , encoding="utf-8")
 
     loaded = config.load_config()
 
@@ -55,7 +55,7 @@ def test_already_migrated_firebase_legacy_config_moves_to_gateway(isolated_omm_h
                 "telemetry_backend": "firebase_legacy",
             }
         )
-    )
+    , encoding="utf-8")
 
     loaded = config.load_config()
 
@@ -72,7 +72,7 @@ def test_self_hosted_endpoint_is_left_alone(isolated_omm_home):
                 "telemetry_backend": "self_hosted",
             }
         )
-    )
+    , encoding="utf-8")
 
     loaded = config.load_config()
 
@@ -89,7 +89,7 @@ def test_already_gateway_config_is_idempotent(isolated_omm_home):
                 "telemetry_backend": "gateway",
             }
         )
-    )
+    , encoding="utf-8")
 
     loaded = config.load_config()
 
@@ -98,7 +98,7 @@ def test_already_gateway_config_is_idempotent(isolated_omm_home):
 
 
 def test_telemetry_opt_in_true_migrates_to_always_policy(isolated_omm_home):
-    config.CONFIG_PATH.write_text(json.dumps({"telemetry_opt_in": True}))
+    config.CONFIG_PATH.write_text(json.dumps({"telemetry_opt_in": True}), encoding="utf-8")
 
     loaded = config.load_config()
 
@@ -107,7 +107,7 @@ def test_telemetry_opt_in_true_migrates_to_always_policy(isolated_omm_home):
 
 
 def test_telemetry_opt_in_false_migrates_to_ask_policy(isolated_omm_home):
-    config.CONFIG_PATH.write_text(json.dumps({"telemetry_opt_in": False}))
+    config.CONFIG_PATH.write_text(json.dumps({"telemetry_opt_in": False}), encoding="utf-8")
 
     loaded = config.load_config()
 
@@ -124,7 +124,7 @@ def test_fresh_config_defaults_to_ask_policy(isolated_omm_home):
 
 def test_legacy_model_url_migrates_to_current_default(isolated_omm_home):
     for legacy_url in config.LEGACY_MODEL_URLS:
-        config.CONFIG_PATH.write_text(json.dumps({"model_url": legacy_url}))
+        config.CONFIG_PATH.write_text(json.dumps({"model_url": legacy_url}), encoding="utf-8")
 
         loaded = config.load_config()
 
@@ -133,7 +133,7 @@ def test_legacy_model_url_migrates_to_current_default(isolated_omm_home):
 
 def test_legacy_manifest_url_migrates_to_current_default(isolated_omm_home):
     for legacy_url in config.LEGACY_MANIFEST_URLS:
-        config.CONFIG_PATH.write_text(json.dumps({"catalog_manifest_url": legacy_url}))
+        config.CONFIG_PATH.write_text(json.dumps({"catalog_manifest_url": legacy_url}), encoding="utf-8")
 
         loaded = config.load_config()
 
@@ -143,7 +143,7 @@ def test_legacy_manifest_url_migrates_to_current_default(isolated_omm_home):
 def test_custom_model_url_is_preserved(isolated_omm_home):
     config.CONFIG_PATH.write_text(
         json.dumps({"model_url": "https://example.com/custom-model.json"})
-    )
+    , encoding="utf-8")
 
     loaded = config.load_config()
 
@@ -152,7 +152,7 @@ def test_custom_model_url_is_preserved(isolated_omm_home):
 
 @pytest.mark.parametrize("invalid", [float("nan"), float("inf"), float("-inf")])
 def test_non_finite_storage_counter_is_repaired(isolated_omm_home, invalid):
-    config.CONFIG_PATH.write_text(json.dumps({"storage_saved_bytes": invalid}))
+    config.CONFIG_PATH.write_text(json.dumps({"storage_saved_bytes": invalid}), encoding="utf-8")
 
     assert config.load_config()["storage_saved_bytes"] == 0
 
@@ -168,7 +168,7 @@ def test_storage_counter_rejects_invalid_deltas(isolated_omm_home, invalid):
 def test_container_valued_settings_recover_without_blocking_config_updates(
     isolated_omm_home, field, invalid
 ):
-    config.CONFIG_PATH.write_text(json.dumps({field: invalid, "usage_stats_policy": "never"}))
+    config.CONFIG_PATH.write_text(json.dumps({field: invalid, "usage_stats_policy": "never"}), encoding="utf-8")
 
     loaded = config.load_config()
     updated = config.update_config(theme="light")
@@ -181,6 +181,6 @@ def test_container_valued_settings_recover_without_blocking_config_updates(
 
 def test_container_repair_preserves_unknown_extension_settings(isolated_omm_home):
     extension = {"nested": ["kept"]}
-    config.CONFIG_PATH.write_text(json.dumps({"extension": extension}))
+    config.CONFIG_PATH.write_text(json.dumps({"extension": extension}), encoding="utf-8")
 
     assert config.load_config()["extension"] == extension

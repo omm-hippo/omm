@@ -64,7 +64,7 @@ def test_invalid_stored_memory_guard_values_fall_back_safely(isolated_omm_home):
                 "memory_guard_low_memory_seconds": "forever",
             }
         )
-    )
+    , encoding="utf-8")
 
     loaded = config.load_config()
 

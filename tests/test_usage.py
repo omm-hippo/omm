@@ -71,7 +71,7 @@ def test_flush_noop_before_interval(isolated_omm_home, monkeypatch):
     (config.OMM_HOME).mkdir(parents=True, exist_ok=True)
     (config.OMM_HOME / "usage-state.json").write_text(
         json.dumps({"last_sent": time.time()})
-    )
+    , encoding="utf-8")
     usage.record_run("install", "ok", None)
     calls = []
     monkeypatch.setattr(usage, "_post", lambda p: calls.append(p) or True)

@@ -21,10 +21,10 @@ def _managed_home(tmp_path: Path) -> tuple[Path, Path]:
         check=True,
     )
     (managed / "models").mkdir()
-    (managed / ".omm-managed").write_text("omm installer managed home v1\n")
-    (managed / "config.json").write_text("{}\n")
+    (managed / ".omm-managed").write_text("omm installer managed home v1\n", encoding="utf-8")
+    (managed / "config.json").write_text("{}\n", encoding="utf-8")
     sentinel = managed / "keep-me.txt"
-    sentinel.write_text("user-owned\n")
+    sentinel.write_text("user-owned\n", encoding="utf-8")
     return managed, sentinel
 
 
@@ -238,7 +238,7 @@ def test_powershell_purge_preserves_unknown_files_and_refuses_cwd(tmp_path):
     )
     assert result.returncode == 0, result.stderr or result.stdout
 
-    assert sentinel.read_text() == "user-owned\n"
+    assert sentinel.read_text(encoding="utf-8") == "user-owned\n"
     assert not (managed / "models").exists()
     assert not (managed / "sources").exists()
     assert not (managed / "config.json").exists()
@@ -279,7 +279,7 @@ def test_powershell_uninstaller_removes_only_installed_pipx_environments(tmp_pat
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
-    assert log.read_text().splitlines() == ["omm-model"]
+    assert log.read_text(encoding="utf-8").splitlines() == ["omm-model"]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell smoke test")
@@ -314,7 +314,7 @@ def test_posix_purge_preserves_unknown_files_and_shell_profiles(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     bashrc = home / ".bashrc"
-    bashrc.write_text('export PATH="$HOME/.local/bin:$PATH"\n')
+    bashrc.write_text('export PATH="$HOME/.local/bin:$PATH"\n', encoding="utf-8")
     env, _, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
     env["HOME"] = str(home)
 
@@ -327,8 +327,8 @@ def test_posix_purge_preserves_unknown_files_and_shell_profiles(tmp_path):
         text=True,
     )
 
-    assert sentinel.read_text() == "user-owned\n"
-    assert bashrc.read_text() == 'export PATH="$HOME/.local/bin:$PATH"\n'
+    assert sentinel.read_text(encoding="utf-8") == "user-owned\n"
+    assert bashrc.read_text(encoding="utf-8") == 'export PATH="$HOME/.local/bin:$PATH"\n'
     assert not (managed / "models").exists()
     assert not (managed / "sources").exists()
     assert not (managed / "config.json").exists()
@@ -349,10 +349,10 @@ def test_posix_purge_preserves_unknown_files_and_shell_profiles(tmp_path):
 def test_posix_data_only_purge_succeeds_without_pipx(tmp_path):
     managed = tmp_path / "custom-omm-home"
     (managed / "models").mkdir(parents=True)
-    (managed / ".omm-managed").write_text("omm installer managed home v1\n")
-    (managed / "config.json").write_text("{}\n")
+    (managed / ".omm-managed").write_text("omm installer managed home v1\n", encoding="utf-8")
+    (managed / "config.json").write_text("{}\n", encoding="utf-8")
     sentinel = managed / "keep-me.txt"
-    sentinel.write_text("user-owned\n")
+    sentinel.write_text("user-owned\n", encoding="utf-8")
     stub = tmp_path / "bin"
     stub.mkdir()
     for name in ("python3", "python", "pipx"):
@@ -372,7 +372,7 @@ def test_posix_data_only_purge_succeeds_without_pipx(tmp_path):
     assert not (managed / "models").exists()
     assert not (managed / "config.json").exists()
     assert not (managed / ".omm-managed").exists()
-    assert sentinel.read_text() == "user-owned\n"
+    assert sentinel.read_text(encoding="utf-8") == "user-owned\n"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell smoke test")
@@ -405,7 +405,7 @@ def test_posix_uninstaller_removes_only_installed_pipx_environments(
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
-    actual = log.read_text().splitlines() if log.exists() else []
+    actual = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     assert actual == expected_uninstalls
     assert not (managed / "sources").exists()
 

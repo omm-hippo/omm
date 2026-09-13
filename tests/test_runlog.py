@@ -10,7 +10,7 @@ def _jsonl_files(home: Path) -> list[Path]:
 
 
 def _only_jsonl_text(home: Path) -> str:
-    return next(iter(_jsonl_files(home))).read_text()
+    return next(iter(_jsonl_files(home))).read_text(encoding="utf-8")
 
 
 def test_start_finish_writes_wellformed_jsonl(isolated_omm_home):
@@ -24,7 +24,7 @@ def test_start_finish_writes_wellformed_jsonl(isolated_omm_home):
     assert len(files) == 1
     assert "_install.jsonl" in files[0].name
 
-    lines = files[0].read_text().splitlines()
+    lines = files[0].read_text(encoding="utf-8").splitlines()
     records = [json.loads(line) for line in lines]  # every line is valid JSON
     assert records[0]["event"] == "run_start"
     assert records[-1]["event"] == "run_end"
@@ -91,7 +91,7 @@ def test_history_block_appended_on_finish(isolated_omm_home):
         "linked", extra={"event": "link", "engine": "ollama", "method": "symlink"}
     )
     runlog.finish(0, "ok")
-    history = (config.OMM_HOME / "logs" / "history.log").read_text()
+    history = (config.OMM_HOME / "logs" / "history.log").read_text(encoding="utf-8")
     assert "omm install" in history
     assert "ok" in history
     assert ".jsonl" in history
@@ -104,7 +104,7 @@ def test_rebuild_history_orders_by_ts(isolated_omm_home):
     (config.OMM_HOME / "logs" / "history.log").unlink()
     count = runlog.rebuild_history()
     assert count == 2
-    rebuilt = (config.OMM_HOME / "logs" / "history.log").read_text()
+    rebuilt = (config.OMM_HOME / "logs" / "history.log").read_text(encoding="utf-8")
     assert rebuilt.index("omm list") < rebuilt.index("omm search")
 
 
@@ -126,7 +126,7 @@ def test_cli_main_writes_run_log(isolated_omm_home, monkeypatch):
         assert e.code in (0, None)
     files = _jsonl_files(config.OMM_HOME)
     assert len(files) == 1
-    records = [json.loads(line) for line in files[0].read_text().splitlines()]
+    records = [json.loads(line) for line in files[0].read_text(encoding="utf-8").splitlines()]
     assert records[0]["event"] == "run_start"
     assert records[-1]["event"] == "run_end"
     assert records[-1]["exit_code"] == 0

@@ -153,8 +153,8 @@ def test_cli_checks_the_packaged_source_instead_of_the_tooling_project(tmp_path,
     # Tighten the click floor past the pin requirements-npm-binary.txt carries
     # (click==8.5.0) so the checked-in binary graph no longer satisfies it.
     source_project.write_text(
-        dependency_parity.PYPROJECT.read_text().replace('"click>=8.1"', '"click>=9"')
-    )
+        dependency_parity.PYPROJECT.read_text(encoding="utf-8").replace('"click>=8.1"', '"click>=9"')
+    , encoding="utf-8")
 
     result = dependency_parity.main(
         ["--target", "win32-x64", "--pyproject", str(source_project)]
@@ -175,10 +175,10 @@ def test_release_builds_check_dependency_parity_before_freezing():
     workflows = dependency_parity.ROOT / ".github/workflows"
     if not workflows.is_dir():
         pytest.skip("GitHub workflow files are excluded from the Docker build context")
-    windows = (workflows / "windows-portable.yml").read_text()
+    windows = (workflows / "windows-portable.yml").read_text(encoding="utf-8")
     gate = "tooling/scripts/dependency_parity.py --target win32-x64 --pyproject source/pyproject.toml"
     assert windows.index(gate) < windows.index("python tooling/scripts/windows_portable.py build")
-    npm = (workflows / "npm-release.yml").read_text()
+    npm = (workflows / "npm-release.yml").read_text(encoding="utf-8")
     for job, target in (("platform", '${{ matrix.target }}'), ("windows", "win32-x64")):
         section = re.split(r"\n  [a-z][\w-]*:\n", npm.split(f"\n  {job}:\n", 1)[1])[0]
         assert "scripts/dependency_parity.py --target" in section

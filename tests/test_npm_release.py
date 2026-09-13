@@ -109,7 +109,7 @@ def test_bundle_rejects_unexpected_file_and_private_tarball(tmp_path):
 
 def test_launcher_tarball_must_match_reviewed_source(tmp_path):
     stage = npm_package.stage_launcher(tmp_path / "stage", publishable=True)
-    (stage / "lib" / "launcher.js").write_text("console.log('tampered');\n")
+    (stage / "lib" / "launcher.js").write_text("console.log('tampered');\n", encoding="utf-8")
     pack = tmp_path / "pack"
     pack.mkdir()
     _pack(stage, pack)

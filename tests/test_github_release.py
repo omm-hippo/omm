@@ -106,7 +106,7 @@ def publisher(tmp_path):
         pytest.skip("GitHub workflow files are excluded from the Docker build context")
     if os.name == "nt" or not shutil.which("bash") or not shutil.which("jq"):
         pytest.skip("publisher runs on Ubuntu and requires POSIX bash and jq")
-    script = workflow.read_text().split(
+    script = workflow.read_text(encoding="utf-8").split(
         "      - name: Publish only after all five immutable assets are present\n", 1
     )[1].split("        run: |\n", 1)[1].split("\n  verify-winget-install:", 1)[0]
     script = textwrap.dedent(script)
@@ -115,7 +115,7 @@ def publisher(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
-    gh.write_text(f"#!{sys.executable}\n" + FAKE_GH)
+    gh.write_text(f"#!{sys.executable}\n" + FAKE_GH, encoding="utf-8")
     gh.chmod(0o755)
     (bin_dir / "python").symlink_to(sys.executable)
     calls = []
@@ -130,7 +130,7 @@ def publisher(tmp_path):
         _bundle(working / "release-assets", asset_set)
         if omit_local_checksum:
             checksum = working / "release-assets/SHA256SUMS"
-            checksum.write_text(checksum.read_text().splitlines()[0] + "\n")
+            checksum.write_text(checksum.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
         output = working / "output"
         result = subprocess.run(
             ["bash", "-c", script],
@@ -149,7 +149,7 @@ def publisher(tmp_path):
             text=True,
             timeout=30,
         )
-        return result, output.read_text() if output.exists() else ""
+        return result, output.read_text(encoding="utf-8") if output.exists() else ""
 
     return destination, run
 
@@ -161,12 +161,12 @@ def test_publisher_waits_for_both_sets_and_supports_identical_reruns(publisher, 
     result, output = publish(first)
     assert result.returncode == 0, result.stderr
     assert output == "published=false\n"
-    assert json.loads((destination / "release.json").read_text())["draft"] is True
+    assert json.loads((destination / "release.json").read_text(encoding="utf-8"))["draft"] is True
 
     result, output = publish(second)
     assert result.returncode == 0, result.stderr
     assert output == "published=true\n"
-    assert json.loads((destination / "release.json").read_text())["draft"] is False
+    assert json.loads((destination / "release.json").read_text(encoding="utf-8"))["draft"] is False
     release_artifacts.validate_release_asset_checksums(destination / "assets", VERSION)
     before = {p.name: p.read_bytes() for p in (destination / "assets").iterdir()}
 
@@ -191,11 +191,11 @@ def test_publisher_rejects_missing_checksum_for_the_other_workflows_archive(publ
     result, _ = publish("python")
     assert result.returncode == 0, result.stderr
     manifest = destination / "assets/SHA256SUMS"
-    manifest.write_text(manifest.read_text().splitlines()[0] + "\n")
+    manifest.write_text(manifest.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
     result, output = publish("windows")
     assert result.returncode != 0
     assert "checksum file covers" in result.stderr
-    assert json.loads((destination / "release.json").read_text())["draft"] is True
+    assert json.loads((destination / "release.json").read_text(encoding="utf-8"))["draft"] is True
     assert output == ""
 
 
@@ -215,7 +215,7 @@ def test_publisher_rejects_corrupted_download(publisher):
     destination, publish = publisher
     result, output = publish("windows", corrupt_download=WINDOWS_ASSET)
     assert result.returncode != 0
-    assert json.loads((destination / "release.json").read_text())["draft"] is True
+    assert json.loads((destination / "release.json").read_text(encoding="utf-8"))["draft"] is True
     assert output == ""
 
 
@@ -223,7 +223,7 @@ def test_publisher_resumes_a_partially_uploaded_draft(publisher):
     destination, publish = publisher
     (destination / "release.json").write_text(
         json.dumps({"id": 7, "tag_name": f"v{VERSION}", "draft": True})
-    )
+    , encoding="utf-8")
     _bundle(destination / "assets", "python")
     (destination / "assets/SHA256SUMS").unlink()
     result, output = publish("python")
@@ -236,7 +236,7 @@ def test_publisher_refuses_to_extend_an_incomplete_public_release(publisher):
     destination, publish = publisher
     (destination / "release.json").write_text(
         json.dumps({"id": 7, "tag_name": f"v{VERSION}", "draft": False})
-    )
+    , encoding="utf-8")
     result, output = publish("windows")
     assert result.returncode != 0
     assert "refusing to modify" in result.stderr
@@ -248,7 +248,7 @@ def test_winget_verification_belongs_to_whichever_workflow_completes_the_release
     workflows = ROOT / ".github/workflows"
     if not workflows.is_dir():
         pytest.skip("GitHub workflow files are excluded from the Docker build context")
-    shared = (workflows / "github-release.yml").read_text()
+    shared = (workflows / "github-release.yml").read_text(encoding="utf-8")
     job = shared.split("\n  verify-winget-install:\n", 1)[1]
     assert "needs: release" in job
     assert "needs.release.outputs.published == 'true'" in job
@@ -259,7 +259,7 @@ def test_winget_verification_belongs_to_whichever_workflow_completes_the_release
     assert "winget install --manifest" in job
     assert "winget uninstall --manifest" in job
     for caller in ("release.yml", "windows-portable.yml"):
-        content = (workflows / caller).read_text()
+        content = (workflows / caller).read_text(encoding="utf-8")
         assert "uses: ./.github/workflows/github-release.yml" in content
         assert "\n  verify-winget-install:" not in content
 
@@ -276,7 +276,7 @@ def test_release_asset_checksums_detect_corruption(tmp_path, asset_set):
 def test_release_asset_checksums_reject_duplicate_entries(tmp_path):
     _bundle(tmp_path, "windows")
     manifest = tmp_path / f"{WINDOWS_ASSET}.sha256"
-    manifest.write_text(manifest.read_text() * 2)
+    manifest.write_text(manifest.read_text(encoding="utf-8") * 2, encoding="utf-8")
     with pytest.raises(release_artifacts.ReleaseValidationError, match="duplicate checksum"):
         release_artifacts.validate_release_asset_checksums(tmp_path, VERSION, "windows")
 

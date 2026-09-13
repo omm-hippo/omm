@@ -24,7 +24,7 @@ def _stub_successful_clone_then_failing_pipx(monkeypatch, tmp_clone: Path):
     def fake_run(args, **kwargs):
         if args[:2] == ["git", "clone"]:
             tmp_clone.mkdir(parents=True)
-            (tmp_clone / "marker").write_text("new source")
+            (tmp_clone / "marker").write_text("new source", encoding="utf-8")
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[-2:] == ["rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(args, 0, stdout="newcommit\n", stderr="")
@@ -85,7 +85,7 @@ def test_remove_update_path_reports_failure_instead_of_silently_ignoring_it(
     keeps this reproduction of "rmtree made no progress" portable."""
     stubborn = tmp_path / "stubborn"
     stubborn.mkdir()
-    (stubborn / "locked.txt").write_text("held open")
+    (stubborn / "locked.txt").write_text("held open", encoding="utf-8")
     monkeypatch.setattr(cli.shutil, "rmtree", lambda path, **kwargs: None)
 
     removed = cli._remove_update_path(stubborn)
@@ -104,7 +104,7 @@ def test_migrate_rollback_preserves_backup_and_original_pipx_error_when_removal_
     not lose the backup - the previous install stays recoverable."""
     src = tmp_path / "src"
     src.mkdir()
-    (src / "marker").write_text("old source")
+    (src / "marker").write_text("old source", encoding="utf-8")
     tmp_clone = tmp_path / "src.new"
     monkeypatch.setattr(cli, "SRC_DIR", src)
     monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
@@ -124,7 +124,7 @@ def test_migrate_rollback_preserves_backup_and_original_pipx_error_when_removal_
 
     backups = list(tmp_path.glob("src.previous-*"))
     assert len(backups) == 1
-    assert (backups[0] / "marker").read_text() == "old source"
+    assert (backups[0] / "marker").read_text(encoding="utf-8") == "old source"
 
 
 def test_migrate_rollback_restores_backup_when_removal_succeeds(monkeypatch, tmp_path):
@@ -133,7 +133,7 @@ def test_migrate_rollback_restores_backup_when_removal_succeeds(monkeypatch, tmp
     previous install keeps working, exactly as before this fix."""
     src = tmp_path / "src"
     src.mkdir()
-    (src / "marker").write_text("old source")
+    (src / "marker").write_text("old source", encoding="utf-8")
     tmp_clone = tmp_path / "src.new"
     monkeypatch.setattr(cli, "SRC_DIR", src)
     monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
@@ -142,5 +142,5 @@ def test_migrate_rollback_restores_backup_when_removal_succeeds(monkeypatch, tmp
     result = cli._migrate_to_editable_install()
 
     assert result.returncode == 1
-    assert (src / "marker").read_text() == "old source"
+    assert (src / "marker").read_text(encoding="utf-8") == "old source"
     assert list(tmp_path.glob("src.previous-*")) == []

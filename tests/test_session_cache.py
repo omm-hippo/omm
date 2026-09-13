@@ -145,7 +145,7 @@ def test_corrupted_cache_file_is_treated_as_empty(isolated_omm_home, monkeypatch
 
     session_dir = config.OMM_HOME / "session"
     for f in session_dir.iterdir():
-        f.write_text("{not valid json")
+        f.write_text("{not valid json", encoding="utf-8")
 
     assert session_cache.load_seen() == []
 
@@ -156,10 +156,10 @@ def test_invalid_cache_shapes_are_treated_as_empty(isolated_omm_home, monkeypatc
     assert path is not None
     path.parent.mkdir(parents=True)
 
-    path.write_text("[]")
+    path.write_text("[]", encoding="utf-8")
     assert session_cache.load_seen() == []
 
-    path.write_text('{"seen": "abc", "last_results": ["ok", 1]}')
+    path.write_text('{"seen": "abc", "last_results": ["ok", 1]}', encoding="utf-8")
     assert session_cache.load_seen() == []
     assert session_cache.load_last_results() == ["ok"]
 
