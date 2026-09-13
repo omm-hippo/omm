@@ -45,6 +45,18 @@ def test_parse_chip_score_does_not_infer_tiers_from_substrings():
     assert parse_chip_score("AMD Ryzen 7 7800X3D") == (7800.0, 1.0)
 
 
+def test_parse_chip_score_does_not_classify_intel_core_ultra_as_apple_ultra_tier():
+    # "Core Ultra" is Intel's brand name for the chip line, not an
+    # Apple-M-series-style "Ultra" tier bump - it must not be scored into
+    # the top tier bucket (3.0) alongside actual Apple M-series Ultra chips.
+    assert parse_chip_score("Intel(R) Core(TM) Ultra 7 155H") == (0.0, 0.0)
+
+
+def test_parse_chip_score_does_not_classify_ryzen_ai_max_as_apple_max_tier():
+    # Same issue for AMD's "Ryzen AI Max" line versus Apple's M-series "Max".
+    assert parse_chip_score("AMD Ryzen AI Max+ 395") == (0.0, 0.0)
+
+
 def _gguf_named_1b():
     return {
         "name": "Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_Q4_k_m.gguf",

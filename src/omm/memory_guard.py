@@ -477,9 +477,15 @@ class LMStudioManagedRuntime:
 
     @staticmethod
     def _adapter():
-        from omm.engines.lmstudio import LMStudioAdapter
+        from omm import linker
+        from omm.engines.lmstudio import DEFAULT_LMSTUDIO_URL, LMStudioAdapter
 
-        return LMStudioAdapter()
+        # Never assume the default 1234 - the port is user-configurable, and
+        # quality.py/cli.py already resolve it the same way. Fall back to the
+        # default only when the live port can't be determined.
+        port = linker.lmstudio_server_port()
+        base_url = f"http://127.0.0.1:{port}" if port is not None else DEFAULT_LMSTUDIO_URL
+        return LMStudioAdapter(base_url=base_url)
 
     def list_residents(self) -> tuple[ResidentModel, ...]:
         from omm.engines.base import RuntimeAdapterError, find_runtime_model

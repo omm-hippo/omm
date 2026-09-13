@@ -628,6 +628,109 @@ def test_adopt_group_removes_partial_hub_copy_when_move_fails(isolated_omm_home,
     assert not list(tmp_path.glob(".model.gguf.omm-import-*"))
 
 
+def test_adopt_group_restores_preferred_location_when_link_creation_fails(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """The preferred (single) location has already been moved into the hub
+    by the time its replacement link is attempted, and nothing is registered
+    yet - a link failure here used to strand the bytes as an unregistered
+    hub orphan while leaving the model missing from its original folder."""
+    payload = b"only copy of this model"
+    external = tmp_path / "model.gguf"
+    external.write_bytes(payload)
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "lmstudio", "model.gguf", external, len(payload), digest
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        scan_import.linker,
+        "link_file",
+        lambda *_: (_ for _ in ()).throw(linker.LinkError("no symlink support")),
+    )
+
+    with pytest.raises(linker.LinkError, match="no symlink support"):
+        scan_import.adopt_group(group)
+
+    assert external.read_bytes() == payload
+    assert not external.is_symlink()
+    assert not list(scan_import.MODELS_DIR.glob("*.gguf"))
+    assert "model.gguf" not in registry.load_registry()
+
+
+def test_adopt_group_converts_invalid_filename_to_link_error(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A filename that's legal on the source OS (e.g. a literal `:` on
+    Linux/macOS - not reproducible on-disk on this Windows test runner, so
+    validate_model_filename itself is faked to reject it) but rejected by
+    the hub's Windows-safe filename rules used to leak a bare
+    ModelResolutionError out of adopt_group instead of the LinkError callers
+    already know how to handle as a per-group import failure."""
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"colon in filename on the real source OS")
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "lmstudio", external.name, external, external.stat().st_size, digest
+            )
+        ],
+    )
+
+    def fake_validate(name):
+        raise scan_import.ModelResolutionError(f"illegal character in {name!r}")
+
+    monkeypatch.setattr(scan_import, "validate_model_filename", fake_validate)
+
+    with pytest.raises(linker.LinkError):
+        scan_import.adopt_group(group)
+
+    assert external.read_bytes() == b"colon in filename on the real source OS"
+    assert not list(scan_import.MODELS_DIR.glob("*.gguf"))
+
+
+def test_adopt_group_excludes_manifest_style_engine_paths_from_custom_links(
+    isolated_omm_home, tmp_path
+):
+    """custom_links is replayed verbatim by generic relink/unlink code
+    (cli._update_one / cli._remove_one) that doesn't know Ollama's own
+    content-addressed blob rules - an Ollama blob path must not end up
+    there, only in the engine-agnostic `linked` flag."""
+    payload = b"ollama blob bytes"
+    ollama_blob = tmp_path / "ollama-blobs" / "sha256-deadbeef"
+    ollama_blob.parent.mkdir(parents=True)
+    ollama_blob.write_bytes(payload)
+    lmstudio_dir = tmp_path / "lmstudio"
+    lmstudio_dir.mkdir()
+    lmstudio_path = lmstudio_dir / "model.gguf"
+    lmstudio_path.write_bytes(payload)
+
+    group = scan_import.ModelGroup(
+        sha256=scan_import.sha256_file(lmstudio_path),
+        locations=[
+            scan_import.ExternalGguf(
+                "ollama", "llama3:latest", ollama_blob, len(payload), "deadbeef"
+            ),
+            scan_import.ExternalGguf(
+                "lmstudio", "model.gguf", lmstudio_path, len(payload), "deadbeef"
+            ),
+        ],
+    )
+
+    result = scan_import.adopt_group(group)
+
+    entry = registry.load_registry()[result.filename]
+    assert str(ollama_blob) not in entry["custom_links"]
+    assert str(lmstudio_path) in entry["custom_links"]
+    assert entry["linked"]["ollama"] is True  # still tracked, just not as a custom link
+
+
 def test_write_manifest_then_load_verified_manifest_round_trips(tmp_path):
     gguf = tmp_path / "model.gguf"
     gguf.write_bytes(b"payload")

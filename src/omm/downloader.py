@@ -356,18 +356,29 @@ def _probe_range_support(url: str) -> tuple[int, bool, str | None]:
     200 instead of the RFC-correct 206; a 200 only counts as Range support
     when Content-Length matches the single byte we asked for, so a server
     that ignores Range and dumps the whole file with status 200 isn't
-    mistaken for one that sliced it."""
+    mistaken for one that sliced it.
+
+    Raises `_RetryableDownloadError` when the probe itself couldn't get a
+    clear answer (network error, or a rate-limit/service-unavailable status)
+    - as opposed to returning `(0, False, None)`, which means the probe
+    completed and the server genuinely doesn't honor Range. Callers must not
+    treat a failed probe as proof of "no Range support": doing so previously
+    caused a resumable `.part` + sidecar to be discarded on a transient
+    hiccup (see `_attempt_download`)."""
     import requests
 
     try:
         resp = _https_get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=30)
-    except requests.RequestException:
-        return 0, False, None
+    except requests.RequestException as e:
+        raise _RetryableDownloadError(f"Range-support probe failed: {e}") from e
     strong_etag = _strong_etag(resp.headers)
+    status = resp.status_code
     resp.close()
+    if status in (429, 503):
+        raise _RetryableDownloadError(f"Range-support probe returned HTTP {status}.")
     content_range = (resp.headers.get("Content-Range") or "").strip()
-    honored = resp.status_code == 206 or (
-        resp.status_code == 200 and resp.headers.get("Content-Length") == "1"
+    honored = status == 206 or (
+        status == 200 and resp.headers.get("Content-Length") == "1"
     )
     match = re.fullmatch(r"bytes 0-0/(\d+)", content_range)
     if honored and match is not None:
