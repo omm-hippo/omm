@@ -89,7 +89,7 @@ def test_autoremove_ollama_removes_broken_blob_and_its_manifest(isolated_omm_hom
                 "layers": [{"digest": f"sha256:{broken_digest_hex}", "size": 1}],
             }
         )
-    )
+    , encoding="utf-8")
     linker._record_ownership(broken_manifest, None, "manifest")
 
     live_manifest_dir = manifests_root / "alive-model"
@@ -102,7 +102,7 @@ def test_autoremove_ollama_removes_broken_blob_and_its_manifest(isolated_omm_hom
                 "layers": [{"digest": f"sha256:{live_digest_hex}", "size": 1}],
             }
         )
-    )
+    , encoding="utf-8")
 
     monkeypatch.setattr(linker, "ollama_models_dir", lambda: models_dir)
 
@@ -137,7 +137,7 @@ def test_autoremove_ollama_removes_unowned_broken_blob_and_manifest(isolated_omm
         pytest.skip("creating symlinks needs Developer Mode or elevation on this Windows host")
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "user" / "latest"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text(json.dumps({"layers": [{"digest": f"sha256:{digest}"}]}))
+    manifest.write_text(json.dumps({"layers": [{"digest": f"sha256:{digest}"}]}), encoding="utf-8")
 
     assert linker.autoremove_ollama(models_dir=models_dir) == (1, 1)
     assert not blob.is_symlink()
@@ -195,7 +195,7 @@ def test_autoremove_ollama_preserves_unowned_but_still_valid_blob_and_manifest(
         pytest.skip("creating symlinks needs Developer Mode or elevation on this Windows host")
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "user" / "latest"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text(json.dumps({"layers": [{"digest": f"sha256:{digest}"}]}))
+    manifest.write_text(json.dumps({"layers": [{"digest": f"sha256:{digest}"}]}), encoding="utf-8")
 
     assert linker.autoremove_ollama(models_dir=models_dir) == (0, 0)
     assert blob.is_symlink() and blob.exists()
@@ -233,7 +233,7 @@ def test_autoremove_ollama_skips_manifest_it_cannot_unlink(isolated_omm_home, tm
                 "layers": [{"digest": f"sha256:{broken_digest_hex}", "size": 1}],
             }
         )
-    )
+    , encoding="utf-8")
     linker._record_ownership(broken_manifest, None, "manifest")
 
     monkeypatch.setattr(linker, "ollama_models_dir", lambda: models_dir)

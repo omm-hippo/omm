@@ -6,7 +6,7 @@ from omm import config, registry, runlog
 
 def _records(home: Path):
     f = next(iter((home / "logs").glob("*.jsonl")))
-    return [json.loads(line) for line in f.read_text().splitlines()]
+    return [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines()]
 
 
 def _events(home: Path):
@@ -144,5 +144,5 @@ def test_http_detail_only_with_debug(isolated_omm_home, monkeypatch):
     runlog.finish(0, "ok")
     # newest jsonl is the debug run
     newest = sorted((config.OMM_HOME / "logs").glob("*.jsonl"))[-1]
-    events = [json.loads(line).get("event") for line in newest.read_text().splitlines()]
+    events = [json.loads(line).get("event") for line in newest.read_text(encoding="utf-8").splitlines()]
     assert "http" in events

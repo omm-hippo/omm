@@ -37,7 +37,7 @@ def test_get_id_token_signs_up_anonymously_when_no_cache(isolated_omm_home, monk
 
     assert token == "id-1"
     assert len(calls) == 1
-    cached = json.loads(_cache_file(isolated_omm_home).read_text())
+    cached = json.loads(_cache_file(isolated_omm_home).read_text(encoding="utf-8"))
     assert cached["id_token"] == "id-1"
     assert cached["refresh_token"] == "refresh-1"
 
@@ -46,7 +46,7 @@ def test_get_id_token_reuses_unexpired_cache_without_network_call(isolated_omm_h
     _cache_file(isolated_omm_home).parent.mkdir(parents=True, exist_ok=True)
     _cache_file(isolated_omm_home).write_text(
         json.dumps({"id_token": "cached", "refresh_token": "r", "expires_at": time.time() + 3600})
-    )
+    , encoding="utf-8")
     calls = []
     monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1))
 
@@ -58,7 +58,7 @@ def test_get_id_token_reuses_unexpired_cache_without_network_call(isolated_omm_h
 
 def test_get_id_token_ignores_non_object_cache(isolated_omm_home, monkeypatch):
     _cache_file(isolated_omm_home).parent.mkdir(parents=True, exist_ok=True)
-    _cache_file(isolated_omm_home).write_text("[]")
+    _cache_file(isolated_omm_home).write_text("[]", encoding="utf-8")
     monkeypatch.setattr(firebase_auth, "_sign_up_anonymously", lambda: None)
 
     assert firebase_auth.get_id_token() is None
@@ -74,7 +74,7 @@ def test_get_id_token_refreshes_when_cached_token_near_expiry(isolated_omm_home,
     _cache_file(isolated_omm_home).parent.mkdir(parents=True, exist_ok=True)
     _cache_file(isolated_omm_home).write_text(
         json.dumps({"id_token": "stale", "refresh_token": "refresh-1", "expires_at": time.time() + 1})
-    )
+    , encoding="utf-8")
 
     def fake_post(url, **kwargs):
         assert url == firebase_auth._SECURE_TOKEN_URL
@@ -86,7 +86,7 @@ def test_get_id_token_refreshes_when_cached_token_near_expiry(isolated_omm_home,
     token = firebase_auth.get_id_token()
 
     assert token == "fresh"
-    cached = json.loads(_cache_file(isolated_omm_home).read_text())
+    cached = json.loads(_cache_file(isolated_omm_home).read_text(encoding="utf-8"))
     assert cached["refresh_token"] == "refresh-2"
 
 
@@ -94,7 +94,7 @@ def test_get_id_token_falls_back_to_sign_up_when_refresh_fails(isolated_omm_home
     _cache_file(isolated_omm_home).parent.mkdir(parents=True, exist_ok=True)
     _cache_file(isolated_omm_home).write_text(
         json.dumps({"id_token": "stale", "refresh_token": "dead", "expires_at": time.time() + 1})
-    )
+    , encoding="utf-8")
     calls = []
 
     def fake_post(url, **kwargs):

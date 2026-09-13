@@ -18,7 +18,7 @@ def test_link_jan_writes_model_yaml_with_absolute_path(tmp_path, monkeypatch):
     config_path = linker.link_jan(gguf_path, "tinyllama-q4")
 
     assert config_path == tmp_path / "jan-models" / "tinyllama-q4" / "model.yml"
-    text = config_path.read_text()
+    text = config_path.read_text(encoding="utf-8")
     assert f"model_path: {json.dumps(str(gguf_path))}" in text
     assert 'name: "tinyllama-q4"' in text
     assert f"size_bytes: {len(b'fake-gguf-bytes')}" in text
@@ -35,7 +35,7 @@ def test_link_jan_escapes_quotes_in_model_path(tmp_path, monkeypatch):
 
     config_path = linker.link_jan(gguf_path, "quoted-model")
 
-    assert f"model_path: {json.dumps(str(gguf_path))}" in config_path.read_text()
+    assert f"model_path: {json.dumps(str(gguf_path))}" in config_path.read_text(encoding="utf-8")
     assert linker.read_jan_model_path(config_path) == str(gguf_path)
 
 
@@ -98,7 +98,7 @@ def test_link_jan_refuses_to_overwrite_unowned_manifest(
     with pytest.raises(linker.LinkError, match="unowned Jan manifest"):
         linker.link_jan(gguf_path, "tinyllama-q4")
 
-    assert config_path.read_text() == 'model_path: "/user/model.gguf"\nname: "user"\n'
+    assert config_path.read_text(encoding="utf-8") == 'model_path: "/user/model.gguf"\nname: "user"\n'
 
 
 def test_unlink_jan_preserves_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
@@ -690,7 +690,7 @@ def test_is_anythingllm_installed_detects_never_launched_install_on_linux(anythi
 
 
 def test_is_anythingllm_installed_detects_desktop_entry_on_linux(anythingllm_linux_env):
-    (anythingllm_linux_env / "applications" / "anythingllm.desktop").write_text("[Desktop Entry]\n")
+    (anythingllm_linux_env / "applications" / "anythingllm.desktop").write_text("[Desktop Entry]\n", encoding="utf-8")
     assert linker.is_anythingllm_installed() is True
 
 
@@ -1057,7 +1057,7 @@ def test_lms_cli_path_falls_back_to_bootstrap_location(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     lms_file = bin_dir / "lms"
-    lms_file.write_text("#!/bin/sh\n")
+    lms_file.write_text("#!/bin/sh\n", encoding="utf-8")
     assert linker._lms_cli_path() == str(lms_file)
 
 

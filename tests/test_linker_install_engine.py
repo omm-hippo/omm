@@ -663,7 +663,7 @@ def test_extract_textgenwebui_archive_handles_zip(tmp_path):
     assert result == dest_dir / "textgen-4.9"
     assert (result / "app" / "server.py").exists()
     assert (result / "user_data" / "models" / "place-your-models-here.txt").exists()
-    assert (result / "start.sh").read_text() == "#!/bin/sh\n"
+    assert (result / "start.sh").read_text(encoding="utf-8") == "#!/bin/sh\n"
     if sys.platform != "win32":
         # Windows has no POSIX executable bits; chmod only maps the writable
         # bit to its read-only file attribute there.
@@ -675,8 +675,8 @@ def test_extract_textgenwebui_archive_handles_tar_gz(tmp_path):
     else clause covering everything that isn't .zip)."""
     src_dir = tmp_path / "textgen-4.9"
     (src_dir / "app").mkdir(parents=True)
-    (src_dir / "app" / "server.py").write_text("# fake")
-    (src_dir / "start.sh").write_text("#!/bin/sh\n")
+    (src_dir / "app" / "server.py").write_text("# fake", encoding="utf-8")
+    (src_dir / "start.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     (src_dir / "start.sh").chmod(0o755)
 
     archive_path = tmp_path / "textgen-portable-4.9-linux-cpu.tar.gz"
@@ -690,7 +690,7 @@ def test_extract_textgenwebui_archive_handles_tar_gz(tmp_path):
 
     assert result == dest_dir / "textgen-4.9"
     assert (result / "app" / "server.py").exists()
-    assert (result / "start.sh").read_text() == "#!/bin/sh\n"
+    assert (result / "start.sh").read_text(encoding="utf-8") == "#!/bin/sh\n"
     if sys.platform != "win32":
         assert (result / "start.sh").stat().st_mode & 0o111 == 0o111
 

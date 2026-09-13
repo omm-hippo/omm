@@ -702,12 +702,12 @@ def test_candidate_whose_cooldown_has_lapsed_is_offered_again(isolated_omm_home,
     config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
     _seed_cooled_down_candidate("huggingface:o:a.gguf", "a.gguf")
     history = isolated_omm_home / "benchmark_history.json"
-    data = json.loads(history.read_text())
+    data = json.loads(history.read_text(encoding="utf-8"))
     stale = datetime.now(timezone.utc) - timedelta(
         hours=cli.benchmark_history.MACHINE_FAILURE_COOLDOWN_HOURS + 1
     )
     data["failures"]["huggingface:o:a.gguf"]["last_machine_failure_at"] = stale.isoformat()
-    history.write_text(json.dumps(data))
+    history.write_text(json.dumps(data), encoding="utf-8")
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(

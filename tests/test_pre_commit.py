@@ -36,7 +36,7 @@ def hook_repo(tmp_path, request):
         project.write_bytes(project.read_bytes().replace(b"\n", b"\r\n"))
     shutil.copy2(ROOT / "LICENSE", repo / "LICENSE")
     shutil.copytree(ROOT / MANIFEST.parent, repo / MANIFEST.parent)
-    (repo / "change.txt").write_text("initial\n")
+    (repo / "change.txt").write_text("initial\n", encoding="utf-8")
     git(repo, "init")
     git(repo, "config", "user.name", "Hook test")
     git(repo, "config", "user.email", "hook-test@example.invalid")
@@ -48,7 +48,7 @@ def hook_repo(tmp_path, request):
 
 
 def project_version(repo):
-    return re.search(r'^version = "([^"]+)"', (repo / "pyproject.toml").read_text(), re.M)[1]
+    return re.search(r'^version = "([^"]+)"', (repo / "pyproject.toml").read_text(encoding="utf-8"), re.M)[1]
 
 
 def assert_committed_versions(repo, expected):
@@ -78,11 +78,11 @@ def test_hook_keeps_committed_platform_versions_in_sync(hook_repo, manual):
         ))
         git(repo, "add", "pyproject.toml")
     if manual == "launcher-already-updated":
-        manifest = json.loads((repo / MANIFEST).read_text())
+        manifest = json.loads((repo / MANIFEST).read_text(encoding="utf-8"))
         manifest["version"] = expected
-        (repo / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n")
+        (repo / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         git(repo, "add", MANIFEST.as_posix())
-    (repo / "change.txt").write_text("changed\n")
+    (repo / "change.txt").write_text("changed\n", encoding="utf-8")
     git(repo, "add", "change.txt")
     git(repo, "commit", "-m", "exercise version hook")
     assert_committed_versions(repo, expected)
@@ -92,9 +92,9 @@ def test_hook_keeps_committed_platform_versions_in_sync(hook_repo, manual):
 def test_hook_does_not_stage_unrelated_unstaged_metadata(hook_repo, metadata):
     repo = hook_repo
     path = repo / metadata
-    path.write_text(path.read_text() + "\n")
+    path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     before = path.read_bytes()
-    (repo / "change.txt").write_text("changed\n")
+    (repo / "change.txt").write_text("changed\n", encoding="utf-8")
     git(repo, "add", "change.txt")
     result = git(repo, "commit", "-m", "keep separate metadata edits", check=False)
     assert result.returncode != 0

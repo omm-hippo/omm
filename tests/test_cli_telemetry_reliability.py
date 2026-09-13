@@ -77,7 +77,7 @@ def _log_outcomes(isolated_omm_home):
     log_path = isolated_omm_home / "telemetry.log"
     if not log_path.exists():
         return []
-    return [json.loads(line)["outcome"] for line in log_path.read_text().splitlines()]
+    return [json.loads(line)["outcome"] for line in log_path.read_text(encoding="utf-8").splitlines()]
 
 
 def test_declining_upload_confirm_logs_declined_by_user(isolated_omm_home, monkeypatch):
@@ -247,7 +247,7 @@ def test_setting_disable_does_not_flush_before_revoking_consent(
     )
     (isolated_omm_home / "telemetry_pending.json").write_text(
         json.dumps([{"model": "private"}])
-    )
+    , encoding="utf-8")
     post_calls = []
     monkeypatch.setattr(
         requests,
@@ -272,7 +272,7 @@ def test_setting_ask_does_not_flush_before_changing_consent(
     )
     (isolated_omm_home / "telemetry_pending.json").write_text(
         json.dumps([{"model": "private"}])
-    )
+    , encoding="utf-8")
     post_calls = []
     monkeypatch.setattr(
         requests,
@@ -297,7 +297,7 @@ def test_setting_clear_endpoint_does_not_flush_to_old_destination(
     )
     (isolated_omm_home / "telemetry_pending.json").write_text(
         json.dumps([{"model": "private"}])
-    )
+    , encoding="utf-8")
     post_calls = []
     monkeypatch.setattr(
         requests,

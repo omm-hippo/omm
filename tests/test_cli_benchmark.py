@@ -78,7 +78,7 @@ def test_benchmark_saves_local_report_and_asks_before_upload(isolated_omm_home, 
     assert "42.5 tok/s" in result.stdout
     paths = list(config.EVALUATIONS_DIR.glob("quality-*.json"))
     assert len(paths) == 1
-    assert json.loads(paths[0].read_text()) == _full_report()
+    assert json.loads(paths[0].read_text(encoding="utf-8")) == _full_report()
     assert "leaderboard" in result.stdout
     assert sent == []
 

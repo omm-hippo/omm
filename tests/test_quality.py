@@ -116,7 +116,7 @@ def test_quality_pack_rejects_duplicate_ids(tmp_path):
     pack, _digest = quality.load_pack()
     pack["items"][1]["id"] = pack["items"][0]["id"]
     path = tmp_path / "bad.json"
-    path.write_text(json.dumps(pack))
+    path.write_text(json.dumps(pack), encoding="utf-8")
 
     with pytest.raises(quality.QualityEvaluationError, match="unique"):
         quality.load_pack(path)
@@ -344,7 +344,7 @@ def test_write_evidence_replaces_atomically(tmp_path):
     path = tmp_path / "nested" / "evidence.json"
     quality.write_evidence({"schema_version": 1}, path)
 
-    assert json.loads(path.read_text()) == {"schema_version": 1}
+    assert json.loads(path.read_text(encoding="utf-8")) == {"schema_version": 1}
     assert not path.with_suffix(".json.tmp").exists()
 
 

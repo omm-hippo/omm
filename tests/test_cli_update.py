@@ -92,7 +92,7 @@ def test_install_spec_adds_nvidia_extra_on_non_darwin(monkeypatch):
 
 
 def test_omm_version_ignores_newer_src_when_install_is_not_editable(monkeypatch, tmp_path):
-    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.148"\n')
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.148"\n', encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(
         cli.package_metadata,
@@ -106,7 +106,7 @@ def test_omm_version_ignores_newer_src_when_install_is_not_editable(monkeypatch,
 
 
 def test_omm_version_reads_src_for_verified_editable_install(monkeypatch, tmp_path):
-    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.148"\n')
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.148"\n', encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(
         cli.package_metadata,
@@ -533,8 +533,8 @@ def test_verify_pipx_installation_checks_paths_metadata_apps_and_exact_versions(
     internal_bin.mkdir(parents=True)
     bin_dir.mkdir()
     internal_omm = internal_bin / "omm"
-    internal_omm.write_text("internal")
-    (internal_bin / "localfit-server").write_text("server")
+    internal_omm.write_text("internal", encoding="utf-8")
+    (internal_bin / "localfit-server").write_text("server", encoding="utf-8")
     (bin_dir / "omm").symlink_to(internal_omm)
     (bin_dir / "localfit-server").symlink_to(internal_bin / "localfit-server")
     snapshot = _pipx_snapshot(venvs_root)
@@ -584,8 +584,8 @@ def test_verify_pipx_installation_rejects_a_missing_secondary_app_link(
     internal_bin.mkdir(parents=True)
     bin_dir.mkdir()
     internal_omm = internal_bin / "omm"
-    internal_omm.write_text("internal")
-    (internal_bin / "localfit-server").write_text("server")
+    internal_omm.write_text("internal", encoding="utf-8")
+    (internal_bin / "localfit-server").write_text("server", encoding="utf-8")
     (bin_dir / "omm").symlink_to(internal_omm)
     snapshot = _pipx_snapshot(venvs_root)
     responses = iter(
@@ -830,12 +830,12 @@ def test_failed_new_install_rolls_back_all_legacy_apps_and_verifies_omm(
     exposed_bin.mkdir()
     internal_omm = legacy_bin / "omm"
     internal_server = legacy_bin / "localfit-server"
-    internal_omm.write_text("legacy omm")
-    internal_server.write_text("legacy server")
+    internal_omm.write_text("legacy omm", encoding="utf-8")
+    internal_server.write_text("legacy server", encoding="utf-8")
     exposed_omm = exposed_bin / "omm"
     exposed_server = exposed_bin / "localfit-server"
-    exposed_omm.write_text("unverified new omm")
-    exposed_server.write_text("unverified new server")
+    exposed_omm.write_text("unverified new omm", encoding="utf-8")
+    exposed_server.write_text("unverified new server", encoding="utf-8")
     snapshot = _pipx_snapshot(venvs_root)
     snapshot["venvs"]["omm"] = {
         "main_package": {
@@ -1187,7 +1187,7 @@ def test_remote_head_commit_parses_git_ls_remote_output(monkeypatch):
 def test_deps_satisfied_true_when_all_declared_deps_importable(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\ndependencies = [\n    "click>=8.1",\n    "rich>=13",\n]\n'
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "99.0")
 
@@ -1197,7 +1197,7 @@ def test_deps_satisfied_true_when_all_declared_deps_importable(tmp_path, monkeyp
 def test_deps_satisfied_false_when_a_declared_dep_is_missing(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\ndependencies = [\n    "click>=8.1",\n    "rich>=13",\n]\n'
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
 
     def _version(name):
@@ -1215,7 +1215,7 @@ def test_deps_satisfied_false_when_installed_version_is_below_new_minimum(
 ):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\ndependencies = ["click>=8.1"]\n'
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "8.0.9")
 
@@ -1242,7 +1242,7 @@ def test_deps_satisfied_ignores_dep_whose_marker_excludes_current_python(
         '    "click>=8.1",\n'
         '    "tomli>=2.0; python_version < \'3.11\'",\n'
         "]\n"
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(sys, "version_info", (3, 14, 0))
 
@@ -1264,7 +1264,7 @@ def test_deps_satisfied_still_checks_dep_whose_marker_includes_current_python(
         "dependencies = [\n"
         '    "tomli>=2.0; python_version < \'3.11\'",\n'
         "]\n"
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(sys, "version_info", (3, 10, 0))
 
@@ -1331,7 +1331,7 @@ def test_migrate_to_editable_install_clones_then_pipx_installs(monkeypatch, tmp_
     def fake_run(args, **kwargs):
         if args[:2] == ["git", "clone"]:
             Path(args[-1]).mkdir(parents=True)
-            (Path(args[-1]) / "marker").write_text("cloned")
+            (Path(args[-1]) / "marker").write_text("cloned", encoding="utf-8")
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[-2:] == ["rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(args, 0, stdout="newcommit\n", stderr="")
@@ -1369,14 +1369,14 @@ def test_migrate_to_editable_install_clones_then_pipx_installs(monkeypatch, tmp_
     ]
     assert verify_calls == [(tmp_clone, "newcommit", cli.trust.current_trust_anchor())]
     assert progress_calls == [["pipx", "install", "--force", "--editable", str(src)]]
-    assert (src / "marker").read_text() == "cloned"
+    assert (src / "marker").read_text(encoding="utf-8") == "cloned"
     assert not tmp_clone.exists()
 
 
 def test_migrate_restores_existing_src_when_pipx_install_fails(monkeypatch, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
-    (src / "marker").write_text("old source")
+    (src / "marker").write_text("old source", encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", src)
     monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
 
@@ -1384,7 +1384,7 @@ def test_migrate_restores_existing_src_when_pipx_install_fails(monkeypatch, tmp_
         if args[:2] == ["git", "clone"]:
             clone = Path(args[-1])
             clone.mkdir(parents=True)
-            (clone / "marker").write_text("new source")
+            (clone / "marker").write_text("new source", encoding="utf-8")
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[-2:] == ["rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(args, 0, stdout="newcommit\n", stderr="")
@@ -1401,7 +1401,7 @@ def test_migrate_restores_existing_src_when_pipx_install_fails(monkeypatch, tmp_
     result = cli._migrate_to_editable_install()
 
     assert result.returncode == 1
-    assert (src / "marker").read_text() == "old source"
+    assert (src / "marker").read_text(encoding="utf-8") == "old source"
     assert not (tmp_path / "src.new").exists()
     assert list(tmp_path.glob("src.previous-*")) == []
 
@@ -1409,14 +1409,14 @@ def test_migrate_restores_existing_src_when_pipx_install_fails(monkeypatch, tmp_
 def test_migrate_restores_existing_src_when_pipx_verification_fails(monkeypatch, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
-    (src / "marker").write_text("old source")
+    (src / "marker").write_text("old source", encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", src)
 
     def fake_run(args, **kwargs):
         if args[:2] == ["git", "clone"]:
             clone = Path(args[-1])
             clone.mkdir(parents=True)
-            (clone / "marker").write_text("new source")
+            (clone / "marker").write_text("new source", encoding="utf-8")
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[-2:] == ["rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(args, 0, stdout="newcommit\n", stderr="")
@@ -1439,7 +1439,7 @@ def test_migrate_restores_existing_src_when_pipx_verification_fails(monkeypatch,
 
     assert result.returncode == 1
     assert "failed exact verification" in result.stderr
-    assert (src / "marker").read_text() == "old source"
+    assert (src / "marker").read_text(encoding="utf-8") == "old source"
     assert list(tmp_path.glob("src.previous-*")) == []
 
 
@@ -1525,7 +1525,7 @@ def test_migrate_to_editable_install_preserves_existing_src_on_clone_failure(mon
     ModuleNotFoundError until the user reinstalled from scratch."""
     src = tmp_path / "src"
     src.mkdir()
-    (src / "marker").write_text("still here")
+    (src / "marker").write_text("still here", encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", src)
     monkeypatch.setattr(
         cli.subprocess,
@@ -1537,7 +1537,7 @@ def test_migrate_to_editable_install_preserves_existing_src_on_clone_failure(mon
     result = cli._migrate_to_editable_install()
 
     assert result.returncode == 1
-    assert (src / "marker").read_text() == "still here"
+    assert (src / "marker").read_text(encoding="utf-8") == "still here"
 
 
 def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):

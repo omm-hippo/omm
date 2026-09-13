@@ -7,7 +7,7 @@ from scripts import set_emergency_signal
 
 
 def _write_artifact(path, **extra):
-    path.write_text(json.dumps({"candidates": [], **extra}))
+    path.write_text(json.dumps({"candidates": [], **extra}), encoding="utf-8")
 
 
 def test_set_signal_adds_well_formed_emergency_field(tmp_path):
@@ -18,7 +18,7 @@ def test_set_signal_adds_well_formed_emergency_field(tmp_path):
         artifact_path, id_="2026-08-19-outage", message="Firebase is down.", fixed_in_version="0.3.0"
     )
 
-    artifact = json.loads(artifact_path.read_text())
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert artifact["emergency"] == {
         "id": "2026-08-19-outage",
         "message": "Firebase is down.",
@@ -34,7 +34,7 @@ def test_set_signal_omits_fixed_in_version_when_not_given(tmp_path):
 
     set_emergency_signal.set_signal(artifact_path, id_="x", message="Outage, no fix version yet.", fixed_in_version=None)
 
-    artifact = json.loads(artifact_path.read_text())
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert "fixed_in_version" not in artifact["emergency"]
 
 
@@ -44,7 +44,7 @@ def test_set_signal_preserves_other_top_level_keys(tmp_path):
 
     set_emergency_signal.set_signal(artifact_path, id_="x", message="msg", fixed_in_version=None)
 
-    artifact = json.loads(artifact_path.read_text())
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert artifact["model_version"] == 4
     assert artifact["trees"] == [{"leaf": True, "value": 1.0}]
     assert artifact["candidates"] == []
@@ -56,7 +56,7 @@ def test_clear_signal_removes_the_field(tmp_path):
 
     set_emergency_signal.clear_signal(artifact_path)
 
-    artifact = json.loads(artifact_path.read_text())
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert "emergency" not in artifact
 
 
@@ -66,7 +66,7 @@ def test_clear_signal_is_a_noop_when_absent(tmp_path, capsys):
 
     set_emergency_signal.clear_signal(artifact_path)
 
-    assert json.loads(artifact_path.read_text()) == {"candidates": []}
+    assert json.loads(artifact_path.read_text(encoding="utf-8")) == {"candidates": []}
     assert "nothing to clear" in capsys.readouterr().out.lower()
 
 
@@ -97,7 +97,7 @@ def test_set_signal_rejects_invalid_version_without_modifying_artifact(tmp_path)
 
 def test_set_signal_rejects_non_object_artifact(tmp_path):
     artifact_path = tmp_path / "recommend-model.json"
-    artifact_path.write_text("[]")
+    artifact_path.write_text("[]", encoding="utf-8")
 
     with pytest.raises(ValueError, match="JSON object"):
         set_emergency_signal.set_signal(
