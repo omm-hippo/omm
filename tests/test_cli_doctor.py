@@ -173,6 +173,48 @@ def test_installation_checks_verify_editable_source_commit_and_module(monkeypatc
     assert "pipx 1.16.7" in details
 
 
+def test_installation_checks_warn_not_fail_on_fork_origin_unknown_source(
+    monkeypatch, tmp_path
+):
+    # A fork/mirror clone installed editable has an origin outside the
+    # allowed-repository whitelist, so install_source() conservatively
+    # reports UNKNOWN even though the environment is perfectly healthy.
+    # That must surface as WARN (exit 0), never FAIL (exit 1).
+    source = tmp_path / "source"
+    module_path = source / "src" / "omm" / "cli.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("# fixture\n", encoding="utf-8")
+    (source / "pyproject.toml").write_text(
+        '[project]\nname = "omm-model"\nversion = "0.2.148"\n',
+        encoding="utf-8",
+    )
+    command_path = tmp_path / "bin" / "omm"
+    command_path.parent.mkdir()
+    command_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    command_path.chmod(0o755)
+
+    monkeypatch.setattr(
+        doctor.package_metadata,
+        "install_source",
+        lambda: doctor.package_metadata.InstallSource.UNKNOWN,
+    )
+    monkeypatch.setattr(doctor.package_metadata, "version", lambda: "0.2.148")
+    monkeypatch.setattr(
+        doctor.package_metadata,
+        "direct_url",
+        lambda: {"url": source.as_uri(), "dir_info": {"editable": True}},
+    )
+    monkeypatch.setattr(doctor, "_git_head", lambda path: "deadbeef" * 5)
+    monkeypatch.setattr(doctor, "_find_pipx", lambda: tmp_path / "pipx")
+    monkeypatch.setattr(doctor, "_pipx_version", lambda path: "1.16.7")
+
+    checks = doctor._installation_checks(module_path, command_path)
+
+    installation_check = next(check for check in checks if check.name == "installation")
+    assert installation_check.status == "WARN"
+    assert all(check.status != "FAIL" for check in checks)
+
+
 def test_installation_checks_fail_when_editable_source_does_not_supply_running_module(
     monkeypatch, tmp_path
 ):

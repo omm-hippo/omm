@@ -2150,8 +2150,15 @@ def _unlink_ollama_manifest_only(
         # manifest references its content digest.
         try:
             manifest_path.unlink()
-        except OSError:
-            return False, set()
+        except OSError as error:
+            # The manifest exists and is owned - this is a real failure to
+            # remove it (e.g. permission denied), not "nothing to remove".
+            # Returning False here would look identical to the latter and
+            # let a caller like `unlink_ollama` delete the hub file/registry
+            # entry while this manifest (and its blob) are still present.
+            raise LinkError(
+                f"Could not remove Ollama manifest {manifest_path}: {error}"
+            ) from error
         _update_link_ownership(manifest_path, None)
         try:
             manifest_path.parent.rmdir()
@@ -2191,7 +2198,16 @@ def unlink_ollama(
     expected_source: Path | None = None,
     expected_content_sha256: str | None = None,
 ) -> bool:
-    """Remove an owned Ollama manifest and now-unreferenced owned blobs."""
+    """Remove an owned Ollama manifest and now-unreferenced owned blobs.
+
+    Raises `LinkError` when the removal itself fails for a real reason -
+    the store lock timed out (`filelock.Timeout` is an `OSError` subclass)
+    or the manifest couldn't actually be deleted (e.g. permission denied).
+    `False` is reserved for "there was nothing owned here to remove".
+    Conflating the two previously let callers (see `_remove_one` in cli.py,
+    which only preserves the registry entry on a `LinkError`) delete the hub
+    file and registry entry while the Ollama manifest/blob were still
+    present, orphaning them permanently."""
     transaction_models_dir = models_dir if models_dir is not None else ollama_models_dir()
     try:
         with locked(_models_transaction_lock(transaction_models_dir)):
@@ -2201,8 +2217,10 @@ def unlink_ollama(
                 expected_source=expected_source,
                 expected_content_sha256=expected_content_sha256,
             )
-    except OSError:
-        return False
+    except (OSError, FileLockTimeout) as error:
+        raise LinkError(
+            f"Could not remove the Ollama registration for {model_name!r}: {error}"
+        ) from error
 
 
 def _unlink_ollama_unlocked(
@@ -2265,9 +2283,18 @@ def unlink_ollama_batch(
         with locked(_models_transaction_lock(models_dir)):
             all_digests: set[str] = set()
             for model_name, expected_source, expected_content_sha256 in validated_specs:
-                removed, model_digests = _unlink_ollama_manifest_only(
-                    model_name, models_dir, expected_source, expected_content_sha256
-                )
+                try:
+                    removed, model_digests = _unlink_ollama_manifest_only(
+                        model_name, models_dir, expected_source, expected_content_sha256
+                    )
+                except LinkError:
+                    # A real failure removing this one manifest (e.g.
+                    # permission denied) must not abort cleanup of the rest
+                    # of the batch - but it also must not report `True` (see
+                    # `unlink_ollama`'s docstring for why that distinction
+                    # matters). Leave it `False` and keep going.
+                    results[model_name] = False
+                    continue
                 results[model_name] = removed
                 if removed:
                     all_digests.update(model_digests)

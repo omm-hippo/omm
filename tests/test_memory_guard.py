@@ -388,6 +388,40 @@ class _FakeLmStudioAdapter:
         return UnloadResult(True)
 
 
+def test_lmstudio_runtime_adapter_uses_configured_port_not_hardcoded_default(monkeypatch):
+    from omm import linker
+
+    captured = {}
+
+    class _RecordingAdapter:
+        def __init__(self, base_url):
+            captured["base_url"] = base_url
+
+    monkeypatch.setattr(linker, "lmstudio_server_port", lambda: 1235)
+    monkeypatch.setattr("omm.engines.lmstudio.LMStudioAdapter", _RecordingAdapter)
+
+    guard.LMStudioManagedRuntime._adapter()
+
+    assert captured["base_url"] == "http://127.0.0.1:1235"
+
+
+def test_lmstudio_runtime_adapter_falls_back_to_default_port_when_unresolvable(monkeypatch):
+    from omm import linker
+
+    captured = {}
+
+    class _RecordingAdapter:
+        def __init__(self, base_url):
+            captured["base_url"] = base_url
+
+    monkeypatch.setattr(linker, "lmstudio_server_port", lambda: None)
+    monkeypatch.setattr("omm.engines.lmstudio.LMStudioAdapter", _RecordingAdapter)
+
+    guard.LMStudioManagedRuntime._adapter()
+
+    assert captured["base_url"] == "http://127.0.0.1:1234"
+
+
 def test_lmstudio_runtime_marks_registry_linked_models_owned_with_file_size():
     from omm.engines.base import RuntimeModel
 

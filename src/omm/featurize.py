@@ -64,6 +64,20 @@ _TIER_PATTERNS = {
     for word in _TIER_WORDS
 }
 
+# Brand names that happen to contain a tier word but aren't an Apple/NVIDIA
+# tier bump - e.g. Intel "Core Ultra" and AMD "Ryzen AI Max" are chip *lines*,
+# not an "Ultra"/"Max" variant of some other chip, so they must not be
+# scored into the top tier bucket alongside Apple's M-series Ultra/Max.
+_TIER_EXCLUDE_PATTERNS = {
+    # A trademark marker such as "(TM)" or "(R)" can sit between the brand
+    # word and the tier word (e.g. "Core(TM) Ultra"), so allow one optional
+    # parenthetical group there rather than matching literal whitespace only.
+    "ultra": re.compile(r"\bcore\b\s*(?:\([^)]*\)\s*)?\bultra\b", re.IGNORECASE),
+    "max": re.compile(
+        r"\bryzen\b\s*(?:\([^)]*\)\s*)?\bai\b\s*(?:\([^)]*\)\s*)?\bmax\b", re.IGNORECASE
+    ),
+}
+
 _CHIP_MODEL_RE = re.compile(
     r"\bM(\d+)\b|\b(?:i[3579]-?|Ryzen\s*\d\s*|RTX\s?|GTX\s?)(\d{3,5})",
     re.IGNORECASE,
@@ -273,7 +287,14 @@ def parse_chip_score(text: str) -> tuple[float, float]:
     # Apple's/NVIDIA's "Pro" tier and "Titan" as "Ti". Boundaries are based
     # on letters (not ``\b``) so compact names such as 7800X3D still match.
     tier = max(
-        (value for word, value in _TIER_WORDS.items() if _TIER_PATTERNS[word].search(text)),
+        (
+            value
+            for word, value in _TIER_WORDS.items()
+            if _TIER_PATTERNS[word].search(text)
+            and not (
+                word in _TIER_EXCLUDE_PATTERNS and _TIER_EXCLUDE_PATTERNS[word].search(text)
+            )
+        ),
         default=0.0,
     )
     return score, tier

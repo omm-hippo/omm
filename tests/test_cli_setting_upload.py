@@ -92,6 +92,32 @@ def test_setting_menu_upload_entry_reaches_usage_and_crash(isolated_omm_home, mo
     assert "Outbound data" in r.output
 
 
+def test_upload_menu_usage_disable_does_not_reset_client_id(isolated_omm_home, monkeypatch):
+    """Regression (audit #8): `_upload_channel_menu` called
+    `configure_upload_usage` as a plain function without `reset_id`, which
+    then bound to Typer's `typer.Option(False, "--reset-id", ...)` default -
+    an OptionInfo that is always truthy (no __bool__/__len__). That
+    silently deleted and regenerated ~/.omm/client-id on every usage-policy
+    change made from this menu, not just an explicit `--reset-id`."""
+    first_id = config.client_id()
+    _scripted_selects(monkeypatch, ["usage", "disable", "back"])
+    r = runner.invoke(cli.app, ["setting", "upload"])
+    assert r.exit_code == 0, r.output
+    assert config.load_config()["usage_stats_policy"] == "never"
+    assert config.client_id() == first_id
+    assert "New install id" not in r.output
+
+
+def test_upload_menu_usage_enable_does_not_reset_client_id(isolated_omm_home, monkeypatch):
+    first_id = config.client_id()
+    _scripted_selects(monkeypatch, ["usage", "enable", "back"])
+    r = runner.invoke(cli.app, ["setting", "upload"])
+    assert r.exit_code == 0, r.output
+    assert config.load_config()["usage_stats_policy"] == "enabled"
+    assert config.client_id() == first_id
+    assert "New install id" not in r.output
+
+
 def test_picker_survives_a_configure_error(isolated_omm_home, monkeypatch):
     # "always send benchmark" with no telemetry endpoint makes
     # configure_upload_benchmark raise typer.Exit; the picker must catch it

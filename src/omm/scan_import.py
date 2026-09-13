@@ -432,6 +432,12 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
 
     linked = {spec.key: False for spec in linker.ENGINES}
     adopted_links: list[str] = []
+    # Locations belonging to a manifest-style engine (Ollama content-addressed
+    # blobs, ...) are tracked via the `linked` flag above, not here - the
+    # engine's own linker code owns unlink/reclaim for those paths, and
+    # `custom_links` is later replayed verbatim by generic relink/unlink
+    # logic that doesn't know those rules.
+    custom_link_paths: list[str] = []
     bytes_saved = 0
     discovered_ollama_runtime_name = next(
         (
@@ -450,9 +456,17 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     else:
         preferred = next((loc for loc in group.locations if loc.engine not in _MANIFEST_STYLE_ENGINES), None)
         if preferred is not None:
-            filename = validate_model_filename(
-                unicodedata.normalize("NFC", preferred.path.name)
-            )
+            try:
+                filename = validate_model_filename(
+                    unicodedata.normalize("NFC", preferred.path.name)
+                )
+            except ModelResolutionError as e:
+                # A scanned filename can be legal on the source OS but
+                # rejected by the hub's (Windows-safe) filename rules (a
+                # literal `:`, a reserved device name, ...). Surface this as
+                # a LinkError so callers that already handle per-group link
+                # failures (rather than crashing the whole import) catch it.
+                raise linker.LinkError(str(e)) from e
         else:
             preferred = group.locations[0]
             filename = f"{linker.sanitize_ollama_tag(preferred.display_name)}.gguf"
@@ -542,8 +556,25 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             else:
                 quarantine.unlink()
         else:
-            link_kind = linker.link_file(hub_path, loc.path)
+            try:
+                link_kind = linker.link_file(hub_path, loc.path)
+            except Exception:
+                # This branch is reached for the preferred location right
+                # after its only copy was moved into hub_path above (nothing
+                # is registered yet at this point) - restore it there rather
+                # than raising with the bytes stranded as an unregistered
+                # hub orphan and the model missing from its original folder.
+                if (
+                    not existing_filename
+                    and loc is preferred
+                    and not loc.path.exists()
+                    and not loc.path.is_symlink()
+                ):
+                    hub_path.replace(loc.path)
+                raise
         adopted_links.append(str(loc.path))
+        if loc.engine not in _MANIFEST_STYLE_ENGINES:
+            custom_link_paths.append(str(loc.path))
         if was_real_file and link_kind != "copy":
             bytes_saved += loc.size_bytes
         if loc.engine in linked:
@@ -586,7 +617,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             if isinstance(raw_custom_links, list)
             else []
         )
-        custom_links.extend(path for path in adopted_links if path not in custom_links)
+        custom_links.extend(path for path in custom_link_paths if path not in custom_links)
         fields: dict[str, object] = {"linked": linked, "custom_links": custom_links}
         if ollama_runtime_name:
             fields["ollama_runtime_name"] = ollama_runtime_name
@@ -602,7 +633,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             ollama_name=ollama_tag,
             repo_id=repo_id,
             linked=linked,
-            custom_links=adopted_links,
+            custom_links=custom_link_paths,
         )
         if ollama_runtime_name:
             fields["ollama_runtime_name"] = ollama_runtime_name
