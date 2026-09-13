@@ -34,7 +34,7 @@ def test_record_calibration_stores_coarse_hardware_only(tmp_path):
 
     assert factor == 1.5
     assert calibration.calibration_factor(_hardware(), path) == 1.5
-    raw = path.read_text()
+    raw = path.read_text(encoding="utf-8")
     assert "private raw" not in raw
     assert json.loads(raw)["profiles"]["macos-ram-16-unified-16"]["sample_count"] == 1
 
@@ -52,13 +52,13 @@ def test_record_calibration_clamps_extreme_ratio(tmp_path):
 
 def test_invalid_profile_shapes_and_nonfinite_values_fall_back_safely(tmp_path):
     path = tmp_path / "calibration.json"
-    path.write_text("[]")
+    path.write_text("[]", encoding="utf-8")
     assert calibration.calibration_factor(_hardware(), path) == 1.0
 
     key = calibration.hardware_bucket(_hardware())
     path.write_text(
         json.dumps({"schema_version": 1, "profiles": {key: {"factor": math.nan}}})
-    )
+    , encoding="utf-8")
     assert calibration.calibration_factor(_hardware(), path) == 1.0
 
 
@@ -83,7 +83,7 @@ def test_corrupt_negative_sample_count_does_not_divide_by_zero(tmp_path):
                 "profiles": {key: {"factor": 2.0, "sample_count": -1}},
             }
         )
-    )
+    , encoding="utf-8")
 
     assert calibration.record_calibration(
         _hardware(),
@@ -115,6 +115,6 @@ def test_record_calibration_concurrent_writers_do_not_lose_updates(tmp_path):
         thread.join()
 
     assert not errors
-    raw = path.read_text()
+    raw = path.read_text(encoding="utf-8")
     payload = json.loads(raw)
     assert payload["profiles"]["macos-ram-16-unified-16"]["sample_count"] == 10

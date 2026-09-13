@@ -321,7 +321,7 @@ def test_full_report_queue_flush_does_not_remove_identical_new_append(
     sent = {"trigger": "crash", "error_message": "same"}
     reports = [sent, *({"trigger": "crash", "error_message": str(i)} for i in range(199))]
     pending_path = isolated_omm_home / "error_reports_pending.json"
-    pending_path.write_text(json.dumps(reports))
+    pending_path.write_text(json.dumps(reports), encoding="utf-8")
 
     def send_and_append(report, config_data=None):
         error_report._append_pending(dict(sent))

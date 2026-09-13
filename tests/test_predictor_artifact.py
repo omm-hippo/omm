@@ -76,7 +76,7 @@ def test_validate_model_artifact_rejects_pathologically_deep_tree_cleanly():
 def test_invalid_remote_does_not_replace_cache_and_falls_back(monkeypatch, tmp_path):
     cache_path = tmp_path / "recommend-model.json"
     cached = artifact()
-    cache_path.write_text(json.dumps(cached))
+    cache_path.write_text(json.dumps(cached), encoding="utf-8")
     monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
 
     class Response:
@@ -95,16 +95,16 @@ def test_invalid_remote_does_not_replace_cache_and_falls_back(monkeypatch, tmp_p
     monkeypatch.setattr(requests, "get", lambda *args, **kwargs: Response())
 
     assert predictor.load_model("https://example.test/model.json") == cached
-    assert json.loads(cache_path.read_text()) == cached
+    assert json.loads(cache_path.read_text(encoding="utf-8")) == cached
 
 
 def test_load_cached_model_returns_none_for_invalid_json_or_schema(monkeypatch, tmp_path):
     cache_path = tmp_path / "recommend-model.json"
     monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
-    cache_path.write_text("not json")
+    cache_path.write_text("not json", encoding="utf-8")
     assert predictor.load_cached_model() is None
 
-    cache_path.write_text(json.dumps({"candidates": []}))
+    cache_path.write_text(json.dumps({"candidates": []}), encoding="utf-8")
     assert predictor.load_cached_model() is None
 
 
@@ -233,7 +233,7 @@ def test_fetch_rejects_streamed_artifact_beyond_byte_limit(monkeypatch, tmp_path
 
     assert predictor.load_model("https://example.test/model.json") == artifact()
     assert response.closed is True
-    assert json.loads(cache_path.read_text()) == artifact()
+    assert json.loads(cache_path.read_text(encoding="utf-8")) == artifact()
 
 
 def test_streaming_limit_applies_to_a_real_loopback_response(monkeypatch, tmp_path):

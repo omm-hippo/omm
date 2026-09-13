@@ -26,7 +26,7 @@ def test_load_config_migrates_on_disk_null_catalog_config_to_signed_defaults(iso
     pre-existing install."""
     config.CONFIG_PATH.write_text(
         json.dumps({"catalog_manifest_url": None, "catalog_public_key": None})
-    )
+    , encoding="utf-8")
 
     loaded = config.load_config()
 
@@ -42,7 +42,7 @@ def test_load_config_does_not_override_explicit_catalog_trust(isolated_omm_home)
                 "catalog_public_key": "custom-key",
             }
         )
-    )
+    , encoding="utf-8")
 
     loaded = config.load_config()
 

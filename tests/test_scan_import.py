@@ -61,7 +61,7 @@ def _write_manifest(manifests_root, namespace, name, tag, digest_hex, size=100):
                 ],
             }
         )
-    )
+    , encoding="utf-8")
 
 
 def test_scan_ollama_skips_config_blobs_and_symlinks(tmp_path, monkeypatch):
@@ -118,7 +118,7 @@ def test_scan_ollama_skips_malformed_manifest_shapes(tmp_path, monkeypatch):
     models_dir = tmp_path / "ollama"
     manifests_root = models_dir / "manifests"
     manifests_root.mkdir(parents=True)
-    (manifests_root / "list.json").write_text("[]")
+    (manifests_root / "list.json").write_text("[]", encoding="utf-8")
     malformed_dir = manifests_root / "registry.ollama.ai" / "library" / "bad"
     malformed_dir.mkdir(parents=True)
     (malformed_dir / "latest").write_text(
@@ -134,7 +134,7 @@ def test_scan_ollama_skips_malformed_manifest_shapes(tmp_path, monkeypatch):
                 ]
             }
         )
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(scan_import.linker, "ollama_models_dir", lambda: models_dir)
 
     assert scan_import.scan_ollama() == []
