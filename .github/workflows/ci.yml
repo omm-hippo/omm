@@ -107,6 +107,36 @@ jobs:
       - name: Verify CLI entry point
         run: omm --help
 
+  non-ascii-path:
+    name: Tests from a non-ASCII path
+    runs-on: ubuntu-latest
+    steps:
+      # omm writes UTF-8 everywhere, but text I/O that omits `encoding=`
+      # decodes with the platform default instead - cp949 on a Korean
+      # Windows install. The run log records the working directory, so a
+      # checkout under a non-ASCII path is enough to surface the whole
+      # class. Keep this job checked out somewhere the ASCII jobs are not.
+      - uses: actions/checkout@v7
+        with:
+          path: "작업 공간/omm"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: "작업 공간/omm/pyproject.toml"
+      - name: Install Localfit test dependencies
+        working-directory: "작업 공간/omm"
+        run: python -m pip install -e ".[dev]" -r requirements-train.txt
+      - name: Reject text I/O that leaves the encoding to the platform
+        working-directory: "작업 공간/omm"
+        run: python scripts/check_text_encoding.py
+      - name: Run tests
+        working-directory: "작업 공간/omm"
+        run: python -m pytest -q
+      - name: Verify CLI entry point
+        working-directory: "작업 공간/omm"
+        run: omm --help
+
   bare-install:
     name: Verify CLI with only declared runtime dependencies
     runs-on: ubuntu-latest
