@@ -203,7 +203,11 @@ _QUOTED_ABS_PATH_RE = re.compile(r"""(['"])((?:/|[A-Za-z]:[\\/]|\\\\)[^'"\r\n]*)
 _BARE_WINDOWS_DIRS_RE = re.compile(
     r"(?<![\w\\/~])(?:[A-Za-z]:[\\/]|\\{1,2})(?:[^\\/\s:*?\"'<>|]+[\\/])+"
 )
-_BARE_POSIX_DIRS_RE = re.compile(r"(?:(?<![\w.~:/\\-])|(?<=file://))/(?:[^/\s'\"]+/)+")
+# `/api/...` is excluded: every engine route omm names in its own error
+# messages (Ollama /api/generate, LM Studio /api/v1/models, ...) starts
+# there. Those are fixed protocol paths, not a user's directories, and
+# which endpoint failed is the useful part of the report.
+_BARE_POSIX_DIRS_RE = re.compile(r"(?:(?<![\w.~:/\\-])|(?<=file://))/(?!api/)(?:[^/\s'\"]+/)+")
 
 
 def _mask_quoted_abs_path(match: re.Match) -> str:

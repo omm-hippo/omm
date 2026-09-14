@@ -513,3 +513,22 @@ def test_preview_shows_a_queued_report_rather_than_an_example(isolated_omm_home)
 
 def _unexpected_post(*args, **kwargs):
     raise AssertionError("a trigger must never perform a network call")
+
+
+def test_scrub_paths_keeps_engine_api_routes_but_masks_real_directories():
+    # Engine errors name the route that failed (Ollama /api/generate, LM Studio
+    # /api/v1/models/load). Those are protocol paths, not a user's directories,
+    # so the bare-path masking must leave them readable - while a real
+    # absolute directory chain is still reduced to its filename.
+    assert (
+        error_report.scrub_paths("Ollama /api/generate request failed")
+        == "Ollama /api/generate request failed"
+    )
+    assert (
+        error_report.scrub_paths("LM Studio /api/v1/models/load failed")
+        == "LM Studio /api/v1/models/load failed"
+    )
+    assert (
+        error_report.scrub_paths("open /srv/acme-corp/models/x.gguf failed")
+        == "open <path>/x.gguf failed"
+    )
