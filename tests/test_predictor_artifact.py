@@ -236,6 +236,47 @@ def test_fetch_rejects_streamed_artifact_beyond_byte_limit(monkeypatch, tmp_path
     assert json.loads(cache_path.read_text(encoding="utf-8")) == artifact()
 
 
+def test_fetch_returns_verified_artifact_when_cache_write_fails(monkeypatch, tmp_path):
+    cache_path = tmp_path / "recommend-model.json"
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return artifact()
+
+        @property
+        def content(self):
+            return json.dumps(artifact()).encode()
+
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: Response())
+
+    def failing_write(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(predictor, "atomic_write_text", failing_write)
+
+    assert predictor.fetch_and_cache_model("https://example.test/m.json") == artifact()
+    assert predictor.load_model("https://example.test/m.json") == artifact()
+
+
+def test_load_model_falls_back_to_cache_on_lock_timeout(monkeypatch, tmp_path):
+    import filelock
+
+    cache_path = tmp_path / "recommend-model.json"
+    cache_path.write_text(json.dumps(artifact()), encoding="utf-8")
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+
+    def raise_timeout(*args, **kwargs):
+        raise filelock.Timeout(str(cache_path))
+
+    monkeypatch.setattr(predictor, "fetch_and_cache_model", raise_timeout)
+
+    assert predictor.load_model("https://example.test/m.json") == artifact()
+
+
 def test_streaming_limit_applies_to_a_real_loopback_response(monkeypatch, tmp_path):
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

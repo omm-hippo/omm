@@ -352,36 +352,42 @@ def fetch_and_cache_model(
         # unverifiable and prevents the next refresh from archiving it as a
         # signed rollback point.
         verified_content = raw_content
-    RECOMMEND_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with locked(RECOMMEND_MODEL_PATH):
-        # Archive and replace under the same cross-process lock. Otherwise two
-        # simultaneous refreshes can both archive the old file, then overwrite
-        # one another without ever retaining the first fresh artifact.
+    provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
+        RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
+    )
+    try:
+        RECOMMEND_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with locked(RECOMMEND_MODEL_PATH):
+            # Archive and replace under the same cross-process lock. Otherwise two
+            # simultaneous refreshes can both archive the old file, then overwrite
+            # one another without ever retaining the first fresh artifact.
+            try:
+                current = validate_model_artifact(
+                    json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8"))
+                )
+            except (OSError, json.JSONDecodeError, RecursionError, ValueError):
+                current = None
+            if current is not None:
+                catalog.archive_current_artifact(
+                    artifact_path=RECOMMEND_MODEL_PATH,
+                    require_signed=bool(manifest_url and public_key),
+                )
+            if verified_content is not None:
+                atomic_write_bytes(RECOMMEND_MODEL_PATH, verified_content)
+            else:
+                atomic_write_text(RECOMMEND_MODEL_PATH, json.dumps(artifact) + "\n")
+            if manifest is not None and public_key is not None:
+                atomic_write_text(
+                    provenance_path,
+                    json.dumps({"manifest": manifest, "public_key": public_key}, sort_keys=True) + "\n",
+                )
+            else:
+                provenance_path.unlink(missing_ok=True)
+    except OSError:
         try:
-            current = validate_model_artifact(
-                json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8"))
-            )
-        except (OSError, json.JSONDecodeError, RecursionError, ValueError):
-            current = None
-        if current is not None:
-            catalog.archive_current_artifact(
-                artifact_path=RECOMMEND_MODEL_PATH,
-                require_signed=bool(manifest_url and public_key),
-            )
-        if verified_content is not None:
-            atomic_write_bytes(RECOMMEND_MODEL_PATH, verified_content)
-        else:
-            atomic_write_text(RECOMMEND_MODEL_PATH, json.dumps(artifact) + "\n")
-        provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
-            RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
-        )
-        if manifest is not None and public_key is not None:
-            atomic_write_text(
-                provenance_path,
-                json.dumps({"manifest": manifest, "public_key": public_key}, sort_keys=True) + "\n",
-            )
-        else:
             provenance_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     return artifact
 
 
@@ -411,7 +417,7 @@ def load_model(
             if manifest_url and public_key:
                 return fetch_and_cache_model(url, manifest_url, public_key)
             return fetch_and_cache_model(url)
-        except (requests.RequestException, RecursionError, ValueError):
+        except (requests.RequestException, RecursionError, ValueError, OSError):
             pass
     return load_cached_model()
 
