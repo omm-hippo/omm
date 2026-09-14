@@ -18,6 +18,34 @@ class _FakeResponse:
         return self._payload
 
 
+class _FakeErrorResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        raise requests.HTTPError(response=self)
+
+
+def test_fetch_repo_files_404_is_kind_not_found(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeErrorResponse(404))
+
+    try:
+        huggingface.fetch_repo_files("org/repo")
+        assert False, "expected ModelResolutionError"
+    except ModelResolutionError as e:
+        assert e.kind == "not_found"
+
+
+def test_fetch_repo_files_503_is_kind_unavailable(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeErrorResponse(503))
+
+    try:
+        huggingface.fetch_repo_files("org/repo")
+        assert False, "expected ModelResolutionError"
+    except ModelResolutionError as e:
+        assert e.kind == "unavailable"
+
+
 def test_fetch_repo_files_raises_model_resolution_error_on_bad_json(monkeypatch):
     monkeypatch.setattr(
         requests, "get", lambda url, timeout: _FakeResponse(json_error=ValueError("bad json"))

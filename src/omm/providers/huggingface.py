@@ -35,13 +35,18 @@ def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
             raise ModelResolutionError(
-                f"HF repo '{repo_id}' is private or gated - requires an access token."
+                f"HF repo '{repo_id}' is private or gated - requires an access token.",
+                kind="not_found",
             ) from e
         if status == 404:
-            raise ModelResolutionError(f"HF repo '{repo_id}' not found.") from e
-        raise ModelResolutionError(f"HF API request failed for '{repo_id}' ({status}).") from e
+            raise ModelResolutionError(f"HF repo '{repo_id}' not found.", kind="not_found") from e
+        raise ModelResolutionError(
+            f"HF API request failed for '{repo_id}' ({status}).", kind="unavailable"
+        ) from e
     except requests.RequestException as e:
-        raise ModelResolutionError(f"Could not reach Hugging Face for '{repo_id}': {e}") from e
+        raise ModelResolutionError(
+            f"Could not reach Hugging Face for '{repo_id}': {e}", kind="unavailable"
+        ) from e
 
     try:
         payload = resp.json()

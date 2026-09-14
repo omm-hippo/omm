@@ -23,7 +23,12 @@ import struct
 import unicodedata
 from urllib.parse import parse_qs, urlparse
 
-from omm.featurize import is_mmproj_filename, parse_param_count_billions, parse_quant_bits
+from omm.featurize import (
+    is_mmproj_filename,
+    is_shard_filename,
+    parse_param_count_billions,
+    parse_quant_bits,
+)
 from omm.gguf import read_gguf_metadata_bytes
 from omm.providers.base import AmbiguousModelError, AmbiguousProviderError, ModelResolutionError
 
@@ -51,6 +56,11 @@ _PROVIDER_MODULES: dict[str, object] = {
     "modelscope": modelscope,
 }
 
+_PROVIDER_LABELS: dict[str, str] = {
+    "huggingface": "HuggingFace",
+    "modelscope": "ModelScope",
+}
+
 
 @dataclass
 class ResolvedModel:
@@ -59,6 +69,10 @@ class ResolvedModel:
     repo_id: str | None  # None when installed from a direct URL (no known repo)
     provider: str | None = None  # None when the source provider is unknown
     expected_sha256: str | None = None
+    # Set when resolution fell back to a single provider because another
+    # provider could not be checked (outage) rather than confirmed absent -
+    # the CLI surfaces this so the fallback isn't silent. None otherwise.
+    note: str | None = None
 
 
 @dataclass
@@ -288,6 +302,12 @@ def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> Reso
         if not filename.lower().endswith(".gguf"):
             filename = f"{filename}.gguf"
         filename = validate_model_filename(filename)
+        if is_shard_filename(filename):
+            raise ModelResolutionError(
+                f"'{filename}' is one part of a split (multi-part) GGUF - "
+                "installing a single part does not give a usable model.",
+                fix="Split GGUF models are not supported yet; pick a single-file quant from the repo.",
+            )
         url = module.download_url(repo_id, filename)
         return ResolvedModel(url=url, filename=filename, repo_id=repo_id, provider=provider)
 
@@ -296,14 +316,23 @@ def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> Reso
         raise ModelResolutionError(f"No .gguf files found in {provider} repo '{repo_id}'.")
     model_candidates: list[str] = []
     seen_candidates: set[str] = set()
+    had_shards = False
     for candidate in candidates:
         validated = validate_model_filename(candidate)
         identity = validated.casefold()
-        if is_mmproj_filename(validated) or identity in seen_candidates:
+        if is_mmproj_filename(validated) or is_shard_filename(validated) or identity in seen_candidates:
+            if is_shard_filename(validated):
+                had_shards = True
             continue
         seen_candidates.add(identity)
         model_candidates.append(validated)
     if not model_candidates:
+        if had_shards:
+            raise ModelResolutionError(
+                f"{provider} repo '{repo_id}' only contains split (multi-part) GGUF "
+                "files, which omm cannot install yet.",
+                fix="Choose a repo that ships single-file quants.",
+            )
         raise ModelResolutionError(
             f"{provider} repo '{repo_id}' only contains a multimodal projector "
             "(mmproj) file, not a standalone model GGUF - nothing to install."
@@ -382,27 +411,49 @@ def resolve_model(model_name: str) -> ResolvedModel:
             # disambiguation needs an explicit "ms:org/repo:file.gguf" prefix.
             return _resolve_repo_ref("huggingface", repo_id, filename)
 
-        def _check_provider(provider: str) -> str | None:
+        def _check_provider(provider: str) -> tuple[str, bool, ModelResolutionError | None]:
             try:
                 candidates, _ = _PROVIDER_MODULES[provider].fetch_repo_files(repo_id)
-            except ModelResolutionError:
-                return None
-            return provider if candidates else None
+            except ModelResolutionError as e:
+                return provider, False, e
+            return provider, bool(candidates), None
 
         # Each provider needs its own repo-listing call, and the calls are
         # independent - fan them out instead of paying a sequential round
         # trip per provider (same class of fix as search.py's ModelScope
         # search parallelization).
         with ThreadPoolExecutor(max_workers=len(_PROVIDER_MODULES)) as executor:
-            matches = [
-                provider
-                for provider in executor.map(_check_provider, _PROVIDER_MODULES)
-                if provider is not None
-            ]
+            results = list(executor.map(_check_provider, _PROVIDER_MODULES))
+
+        matches = [provider for provider, found, _ in results if found]
+        # A `kind` of None means the stub/legacy caller didn't classify the
+        # failure - treat it as "not found" rather than "unavailable" so old
+        # tests/providers keep the pre-existing not-found behavior.
+        unavailable = [
+            (provider, error)
+            for provider, found, error in results
+            if not found and error is not None and error.kind == "unavailable"
+        ]
+
         if len(matches) > 1:
             raise AmbiguousProviderError(repo_id, matches)
         if len(matches) == 1:
-            return _resolve_repo_ref(matches[0], repo_id, None)
+            resolved = _resolve_repo_ref(matches[0], repo_id, None)
+            other_unavailable = [(p, e) for p, e in unavailable if p != matches[0]]
+            if other_unavailable:
+                provider, error = other_unavailable[0]
+                resolved.note = (
+                    f"{_PROVIDER_LABELS.get(provider, provider)} could not be checked "
+                    f"({error}); using {_PROVIDER_LABELS.get(matches[0], matches[0])}."
+                )
+            return resolved
+        if not matches and unavailable:
+            failed_names = ", ".join(_PROVIDER_LABELS.get(p, p) for p, _ in unavailable)
+            _, first_error = unavailable[0]
+            raise ModelResolutionError(
+                f"Could not check {failed_names} for '{repo_id}': {first_error}",
+                fix=f"Retry, or name the provider explicitly: hf:{repo_id} or ms:{repo_id}",
+            )
         raise ModelResolutionError(
             f"'{repo_id}' was not found on HuggingFace or ModelScope.",
             fix="Check the spelling, or search with `omm search <query>`.",

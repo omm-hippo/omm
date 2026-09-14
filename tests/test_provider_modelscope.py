@@ -70,8 +70,16 @@ def test_fetch_repo_files_filters_to_gguf_only(monkeypatch):
 
 def test_fetch_repo_files_404_raises_model_resolution_error(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(404, {}))
-    with pytest.raises(ModelResolutionError):
+    with pytest.raises(ModelResolutionError) as exc_info:
         modelscope.fetch_repo_files("org/does-not-exist")
+    assert exc_info.value.kind == "not_found"
+
+
+def test_fetch_repo_files_503_is_kind_unavailable(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(503, {}))
+    with pytest.raises(ModelResolutionError) as exc_info:
+        modelscope.fetch_repo_files("org/repo")
+    assert exc_info.value.kind == "unavailable"
 
 
 def test_download_url_builds_expected_query_string():
