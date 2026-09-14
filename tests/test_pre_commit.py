@@ -101,3 +101,30 @@ def test_hook_does_not_stage_unrelated_unstaged_metadata(hook_repo, metadata):
     assert "unstaged" in result.stderr.lower()
     assert path.read_bytes() == before
     assert git(repo, "diff", "--cached", "--name-only").stdout.splitlines() == ["change.txt"]
+
+
+def test_hook_explains_a_missing_interpreter_and_leaves_metadata_untouched(hook_repo):
+    repo = hook_repo
+    before = project_version(repo)
+    path_entries = [
+        entry for entry in os.environ["PATH"].split(os.pathsep)
+        if entry and not any(
+            (Path(entry) / name).exists()
+            for name in ("python", "python3", "python.exe", "python3.exe")
+        )
+    ]
+    stripped = os.pathsep.join(path_entries)
+    if shutil.which("git", path=stripped) is None or shutil.which("sed", path=stripped) is None:
+        pytest.skip("cannot remove python from PATH without also removing git/sed")
+    (repo / "change.txt").write_text("second\n", encoding="utf-8")
+    env = {**os.environ, "PATH": stripped, "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": os.devnull}
+    subprocess.run(["git", "add", "change.txt"], cwd=repo, check=True,
+                   capture_output=True, text=True, timeout=30, env=env)
+    done = subprocess.run(["git", "commit", "-m", "no interpreter"], cwd=repo,
+                          capture_output=True, text=True, timeout=30, env=env)
+    assert done.returncode != 0
+    assert "python3/python not found on PATH" in done.stderr
+    assert project_version(repo) == before
+    staged = git(repo, "diff", "--cached", "--name-only").stdout.split()
+    assert "pyproject.toml" not in staged
