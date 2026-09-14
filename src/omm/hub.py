@@ -237,26 +237,36 @@ def _remote_gguf_prefix_cached(
     import requests
 
     url = download_url(provider, repo_id, filename)
-    try:
-        with requests.get(
-            url,
-            headers={"Range": f"bytes=0-{max_prefix_bytes - 1}"},
-            stream=True,
-            timeout=(10, 30),
-        ) as response:
-            response.raise_for_status()
-            data = bytearray()
-            for chunk in response.iter_content(chunk_size=64 * 1024):
-                if not chunk:
-                    continue
-                remaining = max_prefix_bytes - len(data)
-                data.extend(chunk[:remaining])
-                if len(data) >= max_prefix_bytes:
-                    break
-    except requests.RequestException:
-        return None
+    with requests.get(
+        url,
+        headers={"Range": f"bytes=0-{max_prefix_bytes - 1}"},
+        stream=True,
+        timeout=(10, 30),
+    ) as response:
+        response.raise_for_status()
+        data = bytearray()
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            remaining = max_prefix_bytes - len(data)
+            data.extend(chunk[:remaining])
+            if len(data) >= max_prefix_bytes:
+                break
 
     return bytes(data) or None
+
+
+def _remote_gguf_prefix(provider: str, repo_id: str, filename: str, max_prefix_bytes: int) -> bytes | None:
+    """Cache only successes: lru_cache never memoizes a raised exception, so a
+    one-off timeout or 5xx is retried on the next call instead of sticking for
+    the life of the cache slot.
+    """
+    import requests
+
+    try:
+        return _remote_gguf_prefix_cached(provider, repo_id, filename, max_prefix_bytes)
+    except requests.RequestException:
+        return None
 
 
 def remote_gguf_metadata(
@@ -277,7 +287,7 @@ def remote_gguf_metadata(
     filename = validate_model_filename(filename)
     if not wanted_keys or max_prefix_bytes < 24 or max_prefix_bytes > 64 * 1024**2:
         return None
-    prefix = _remote_gguf_prefix_cached(provider, repo_id, filename, max_prefix_bytes)
+    prefix = _remote_gguf_prefix(provider, repo_id, filename, max_prefix_bytes)
     if prefix is None:
         return None
     try:
@@ -317,8 +327,14 @@ def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> Reso
     model_candidates: list[str] = []
     seen_candidates: set[str] = set()
     had_shards = False
+    unsafe_names = 0
     for candidate in candidates:
-        validated = validate_model_filename(candidate)
+        try:
+            validated = validate_model_filename(candidate)
+        except ModelResolutionError:
+            # 이 후보를 못 쓴다는 뜻이지 이 레포를 해석할 수 없다는 뜻이 아니다.
+            unsafe_names += 1
+            continue
         identity = validated.casefold()
         if is_mmproj_filename(validated) or is_shard_filename(validated) or identity in seen_candidates:
             if is_shard_filename(validated):
@@ -332,6 +348,12 @@ def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> Reso
                 f"{provider} repo '{repo_id}' only contains split (multi-part) GGUF "
                 "files, which omm cannot install yet.",
                 fix="Choose a repo that ships single-file quants.",
+            )
+        if unsafe_names:
+            raise ModelResolutionError(
+                f"{provider} repo '{repo_id}' has no installable .gguf file: "
+                f"{unsafe_names} file name(s) were rejected as unsafe.",
+                fix="Install a specific file instead: omm install <owner>/<repo>:<file>.gguf",
             )
         raise ModelResolutionError(
             f"{provider} repo '{repo_id}' only contains a multimodal projector "
@@ -397,6 +419,15 @@ def resolve_model(model_name: str) -> ResolvedModel:
             else:
                 repo_id, filename = rest, None
             return _resolve_repo_ref(provider, repo_id, filename)
+        # A valid prefix-less ref is 'owner/repository[:file]', so the text before
+        # the first ':' always contains '/'. Without one it can only have been meant
+        # as a provider prefix - say so instead of re-splitting the whole string and
+        # blaming the repo id.
+        if "/" not in prefix:
+            raise ModelResolutionError(
+                f"unknown provider prefix '{prefix}' in '{model_name}'.",
+                fix="Use 'hf:' or 'ms:', or drop the prefix: hf:org/repo:file.gguf",
+            )
 
     if "/" in model_name:
         if ":" in model_name:

@@ -200,3 +200,32 @@ def test_single_part_of_one_is_not_treated_as_shard(monkeypatch):
     resolved = hub.resolve_model("hf:org/repo")
 
     assert resolved.filename == "m-00001-of-00001.gguf"
+
+
+def test_unsafe_repo_filename_is_skipped_instead_of_failing_the_repo(monkeypatch):
+    _stub_fetch_repo_files(
+        monkeypatch,
+        huggingface,
+        {"org/repo": ["aux.gguf", "model-Q4_K_M.gguf"]},
+    )
+
+    resolved = hub.resolve_model("hf:org/repo")
+
+    assert resolved.filename == "model-Q4_K_M.gguf"
+
+
+def test_repo_with_only_unsafe_filenames_reports_how_many_were_rejected(monkeypatch):
+    _stub_fetch_repo_files(
+        monkeypatch,
+        huggingface,
+        {"org/repo": ["aux.gguf", "con.gguf"]},
+    )
+
+    with pytest.raises(ModelResolutionError, match="rejected as unsafe"):
+        hub.resolve_model("hf:org/repo")
+
+
+def test_unknown_provider_prefix_is_named_instead_of_blaming_the_repo_id():
+    for name in ("hg:bartowski/Llama-3-8B:model.Q4_K_M.gguf", "hg:org/repo"):
+        with pytest.raises(ModelResolutionError, match="unknown provider prefix"):
+            hub.resolve_model(name)
