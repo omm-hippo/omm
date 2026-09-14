@@ -88,7 +88,7 @@ uninstall_failed() {
 purge_owned_data() {
     # Delete only paths the application owns. Never recursively remove the
     # OMM_HOME container itself: a custom home may contain unrelated files.
-    for owned_dir in models evaluations catalog-history session logs locks; do
+    for owned_dir in models evaluations catalog-history model-archive session logs locks; do
         rm -rf "${RESOLVED_HOME:?}/$owned_dir"
     done
     for owned_file in \

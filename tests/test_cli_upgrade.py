@@ -591,3 +591,166 @@ def test_upgrade_single_model_dry_run_reports_without_checking(isolated_omm_home
     assert "Would check for updates: model.gguf" in result.stdout
     assert calls == []
     assert registry.load_registry()["model.gguf"]["sha256"] == "old-hash"
+
+
+# --- omm pin / archive-before-replace (issue #295) ---------------------
+
+
+def test_pin_marks_registry_without_copying_anything(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"bytes")
+    registry.save_registry({"model.gguf": _entry()})
+
+    result = runner.invoke(cli.app, ["pin", "model.gguf"])
+
+    assert result.exit_code == 0, result.output
+    assert registry.load_registry()["model.gguf"]["pinned"] is True
+    assert not cli.MODEL_ARCHIVE_DIR.exists() or not any(cli.MODEL_ARCHIVE_DIR.rglob("*"))
+
+
+def test_pin_unknown_model_errors(isolated_omm_home):
+    result = runner.invoke(cli.app, ["pin", "nothing-here.gguf"])
+
+    assert result.exit_code == 1
+    assert "is not installed via omm" in result.stderr
+
+
+def test_upgrade_without_pin_does_not_archive(isolated_omm_home, monkeypatch):
+    """Regression: an unpinned model's upgrade must not create an archive -
+    only `omm pin` opts a model into that storage cost."""
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    old_bytes = b"old-bytes"
+    dest.write_bytes(old_bytes)
+    registry.save_registry(
+        {"model.gguf": _entry(repo_id=None, sha256=hashlib.sha256(old_bytes).hexdigest())}
+    )
+    monkeypatch.setattr(cli, "download_file", lambda url, path, **kw: Path(path).write_bytes(b"new-bytes"))
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0, result.output
+    assert dest.read_bytes() == b"new-bytes"
+    assert not (cli.MODEL_ARCHIVE_DIR / "model.gguf").exists()
+    assert "archive" not in registry.load_registry()["model.gguf"]
+
+
+def test_upgrade_pinned_model_archives_old_version(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    old_bytes = b"old-bytes"
+    dest.write_bytes(old_bytes)
+    old_sha = hashlib.sha256(old_bytes).hexdigest()
+    registry.save_registry(
+        {"model.gguf": _entry(repo_id=None, sha256=old_sha, pinned=True)}
+    )
+    monkeypatch.setattr(cli, "download_file", lambda url, path, **kw: Path(path).write_bytes(b"new-bytes"))
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0, result.output
+    assert dest.read_bytes() == b"new-bytes"
+    archive_path = cli.MODEL_ARCHIVE_DIR / "model.gguf"
+    assert archive_path.read_bytes() == old_bytes
+    entry = registry.load_registry()["model.gguf"]
+    assert entry["archive"]["sha256"] == old_sha
+    assert entry["sha256"] == hashlib.sha256(b"new-bytes").hexdigest()
+    assert entry["pinned"] is True
+
+
+def test_upgrade_pinned_model_twice_keeps_a_single_archive_slot(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"v1")
+    registry.save_registry(
+        {"model.gguf": _entry(repo_id=None, sha256=hashlib.sha256(b"v1").hexdigest(), pinned=True)}
+    )
+
+    monkeypatch.setattr(cli, "download_file", lambda url, path, **kw: Path(path).write_bytes(b"v2"))
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+    assert result.exit_code == 0, result.output
+
+    monkeypatch.setattr(cli, "download_file", lambda url, path, **kw: Path(path).write_bytes(b"v3"))
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+    assert result.exit_code == 0, result.output
+
+    archive_path = cli.MODEL_ARCHIVE_DIR / "model.gguf"
+    assert archive_path.read_bytes() == b"v2"
+    assert dest.read_bytes() == b"v3"
+    assert sum(1 for p in cli.MODEL_ARCHIVE_DIR.rglob("*") if p.is_file()) == 1
+
+
+def test_upgrade_pinned_model_insufficient_archive_space_cancels_upgrade(
+    isolated_omm_home, monkeypatch
+):
+    """D3: when the archive copy can't be made (no hard link, no room for a
+    real copy), the whole upgrade is cancelled - the installed file is left
+    exactly as it was, and only the downloaded tmp file is discarded."""
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    old_bytes = b"old-bytes"
+    dest.write_bytes(old_bytes)
+    registry.save_registry(
+        {"model.gguf": _entry(repo_id=None, sha256=hashlib.sha256(old_bytes).hexdigest(), pinned=True)}
+    )
+    monkeypatch.setattr(cli, "download_file", lambda url, path, **kw: Path(path).write_bytes(b"new-bytes"))
+    monkeypatch.setattr(
+        Path, "hardlink_to", lambda *a, **k: (_ for _ in ()).throw(OSError("cross-drive"))
+    )
+    monkeypatch.setattr(cli.shutil, "disk_usage", lambda path: SimpleNamespace(free=0))
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0, result.output
+    assert "not enough disk space" in " ".join(result.stderr.split())
+    assert dest.read_bytes() == old_bytes
+    assert not (cli.MODELS_DIR / "model.gguf.update").exists()
+    assert not (cli.MODEL_ARCHIVE_DIR / "model.gguf").exists()
+
+
+def test_upgrade_pinned_model_skips_archive_when_installed_file_is_tampered(
+    isolated_omm_home, monkeypatch
+):
+    """D7: if the installed file doesn't match the registry's recorded
+    checksum, it isn't safe to call it "the pinned version" - skip the
+    archive (with a warning) but still let upgrade repair the file."""
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"tampered")
+    expected = hashlib.sha256(b"known-good").hexdigest()
+    registry.save_registry({"model.gguf": _entry(sha256=expected, pinned=True)})
+    monkeypatch.setattr(
+        cli, "remote_file_sha256", lambda provider, repo_id, filename: expected
+    )
+    monkeypatch.setattr(
+        cli, "download_file", lambda url, path, **kw: Path(path).write_bytes(b"known-good")
+    )
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0, result.output
+    assert "skipping archive" in " ".join(result.stderr.split())
+    assert dest.read_bytes() == b"known-good"
+    assert not (cli.MODEL_ARCHIVE_DIR / "model.gguf").exists()
+
+
+def test_upgrade_and_list_tolerate_entries_with_no_pin_or_archive_fields(
+    isolated_omm_home, monkeypatch
+):
+    """Old registries never had `pinned`/`archive` keys at all - both
+    `upgrade` and `list` must work exactly as before for such an entry."""
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"old-bytes")
+    entry = _entry(repo_id=None, sha256=hashlib.sha256(b"old-bytes").hexdigest())
+    assert "pinned" not in entry and "archive" not in entry
+    registry.save_registry({"model.gguf": entry})
+    monkeypatch.setattr(cli, "download_file", lambda url, path, **kw: Path(path).write_bytes(b"new-bytes"))
+
+    upgrade_result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+    assert upgrade_result.exit_code == 0, upgrade_result.output
+    assert dest.read_bytes() == b"new-bytes"
+
+    list_result = runner.invoke(cli.app, ["list"])
+    assert list_result.exit_code == 0, list_result.output
+    assert "pinned" not in list_result.stdout

@@ -71,6 +71,16 @@ def test_help_all_lists_every_command():
     assert "cleanup" in result.stdout
 
 
+def test_help_all_lists_pin_unpin_rollback():
+    # #295: model revision pin/rollback are top-level Core commands, next
+    # to upgrade/uninstall - not nested under `omm setting`.
+    result = runner.invoke(cli.app, ["help", "--all"])
+
+    assert result.exit_code == 0, result.stdout
+    for name in ("omm pin", "omm unpin", "omm rollback"):
+        assert name in result.stdout, f"missing command: {name}"
+
+
 def test_help_all_expands_nested_setting_subcommands():
     result = runner.invoke(cli.app, ["help", "--all"])
 

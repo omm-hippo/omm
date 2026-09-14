@@ -79,7 +79,7 @@ from omm import (
 from omm import contribute as contribute_mod
 from omm.atomic import locked
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
-from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
+from omm.config import MODEL_ARCHIVE_DIR, MODELS_DIR, OMM_HOME, load_config, save_config
 from omm.downloader import (
     DownloadCancelled,
     DownloadError,
@@ -704,7 +704,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "unlink", "info", "upgrade"]),
+    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "unlink", "info", "upgrade", "pin", "unpin", "rollback"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
     (
         "Maintenance",
@@ -5871,6 +5871,15 @@ def _remove_one(
         )
         return False
 
+    try:
+        archive = _archive_path(filename)
+    except ModelResolutionError:
+        archive = None
+    if archive is not None:
+        with locked(archive):
+            _unlink_with_retry(archive)
+            _unlink_with_retry(archive.with_name(archive.name + ".staging"))
+
     registry.remove_entry(filename)
     console.print(f"[success]Removed {filename}[/success]")
     return True
@@ -6451,6 +6460,124 @@ def _download_update(url: str, tmp: Path, filename: str) -> bool:
     return True
 
 
+def _archive_path(filename: str) -> Path:
+    """Resolve a registry filename to its slot in MODEL_ARCHIVE_DIR - the
+    one pinned-model backup `omm rollback` can restore (one slot per model;
+    a later archive overwrites the previous one). Mirrors
+    `_managed_model_path`'s escape check so a crafted registry filename
+    can't be used to write outside MODEL_ARCHIVE_DIR either."""
+    filename = validate_model_filename(filename)
+    root = MODEL_ARCHIVE_DIR.resolve()
+    candidate = MODEL_ARCHIVE_DIR / filename
+    if not candidate.resolve().is_relative_to(root):
+        raise ModelResolutionError(
+            f"model filename escapes the managed model archive: {filename}"
+        )
+    return candidate
+
+
+def _copy_or_hardlink_with_space_check(source: Path, staging: Path) -> bool:
+    """Populate `staging` (whose parent must already exist) with a copy of
+    `source`: a same-volume hard link when possible (no extra bytes used),
+    else a real byte copy after confirming `staging`'s volume has room for
+    one. Shared by archiving a pinned model before `upgrade` replaces it and
+    by `rollback` setting aside the current file before restoring the
+    archived one. Returns False (staging left absent) only when a real copy
+    was needed and there wasn't space for it."""
+    try:
+        staging.hardlink_to(source)
+        return True
+    except OSError:
+        pass
+    try:
+        needed = source.stat().st_size
+        free = shutil.disk_usage(linker.disk_usage_path(staging.parent)).free
+    except OSError:
+        return False
+    reserve = linker.disk_safety_reserve(needed)
+    if free < needed + reserve:
+        return False
+    shutil.copy2(source, staging)
+    return True
+
+
+def _archive_before_replace(filename: str, entry: dict, dest: Path) -> bool:
+    """Archive the about-to-be-replaced file for a pinned model into
+    MODEL_ARCHIVE_DIR before `_update_one` swaps in new bytes at `dest`.
+    (`rollback`'s own current-before-rollback archiving is a separate,
+    smaller sequence built from `_copy_or_hardlink_with_space_check` below -
+    this function always ends by overwriting the one archive slot with
+    `dest`'s current content, which would destroy the very version
+    `rollback` still needs to swap into `dest` if reused there directly.)
+
+    Tries a hard link first (same volume, no extra bytes); falls back to a
+    real copy only after confirming the archive volume has room. Returns
+    True to let the caller proceed with the replace - this covers a
+    successful archive as well as a deliberate, conservative decision *not*
+    to archive without blocking the caller (D7: the installed file's
+    checksum doesn't match the registry, so it isn't safe to call it "the
+    pinned version"). Returns False only when the archive volume is
+    actually out of space (or the swap into place itself fails) - the
+    caller must then abort entirely and leave the currently installed file
+    untouched (D3)."""
+    try:
+        archive = _archive_path(filename)
+    except ModelResolutionError:
+        # filename was already resolved via _managed_model_path by the
+        # caller, so this should not happen in practice - never block a
+        # replace over an archive-only path problem.
+        return True
+
+    expected_sha256 = entry.get("sha256")
+    try:
+        current_sha256 = sha256_file(dest)
+    except OSError:
+        return True
+    if expected_sha256 and current_sha256 != expected_sha256:
+        # D7: the installed file doesn't match what the registry says it
+        # is (tampered with, corrupted, or replaced outside omm). Don't
+        # archive it as "the pinned version" - warn and let the replace
+        # proceed (upgrade already repairs a tampered file in this case).
+        err_console.print(
+            f"[warning]{filename}: installed file does not match its recorded "
+            "checksum; skipping archive before replacing it.[/warning]"
+        )
+        return True
+
+    with locked(archive):
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        staging = archive.with_name(archive.name + ".staging")
+        staging.unlink(missing_ok=True)
+        try:
+            if not _copy_or_hardlink_with_space_check(dest, staging):
+                err_console.print(
+                    f"[error]{filename}: not enough disk space to archive the pinned "
+                    "version. Upgrade cancelled; the installed file was "
+                    "preserved.[/error]"
+                )
+                return False
+            _replace_with_retry(staging, archive)
+        except (OSError, DownloadError) as error:
+            err_console.print(
+                f"[error]{filename}: could not archive the pinned version ({error}). "
+                "Upgrade cancelled; the installed file was preserved.[/error]"
+            )
+            return False
+        finally:
+            staging.unlink(missing_ok=True)
+        registry.upsert_entry(
+            filename,
+            archive={
+                "sha256": current_sha256,
+                "version": entry.get("version") or current_sha256[:7],
+                "size_bytes": dest.stat().st_size,
+                "installed_at": entry.get("installed_at"),
+                "archived_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    return True
+
+
 def _update_one(filename: str, entry: dict) -> str:
     """Refresh one installed model against its source. Returns "updated",
     "up_to_date", or "skipped". HF-repo installs check a cheap remote hash
@@ -6536,6 +6663,16 @@ def _update_one(filename: str, entry: dict) -> str:
             _cleanup_download_parts(tmp)
             return "skipped"
 
+        if entry.get("pinned") and dest.is_file():
+            if not _archive_before_replace(filename, entry, dest):
+                # Out of disk space for the archive copy (D3): abort the
+                # upgrade entirely rather than replace an un-archivable
+                # pinned model - the installed file is left exactly as it
+                # was, only the downloaded tmp file is discarded.
+                tmp.unlink(missing_ok=True)
+                _cleanup_download_parts(tmp)
+                return "skipped"
+
         try:
             _replace_with_retry(tmp, dest)
         except (OSError, DownloadError) as e:
@@ -6543,41 +6680,38 @@ def _update_one(filename: str, entry: dict) -> str:
             tmp.unlink(missing_ok=True)
             return "skipped"
 
-        ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
-        try:
-            linked = _link_model(dest, repo_id, ollama_tag)
-        except linker.InsufficientLinkSpaceError as error:
-            # The new bytes are already in place (`tmp.replace(dest)` above
-            # already succeeded), so the registry's old sha256/version/size
-            # would otherwise drift from what's actually on disk. `_link_model`
-            # itself already rolled back every link it created in this attempt
-            # before re-raising, so nothing from it survived - record `linked`
-            # as fully unlinked rather than keeping the stale pre-update values.
-            registry.upsert_entry(
-                filename,
-                sha256=new_sha256,
-                version=new_sha256[:7],
-                size_bytes=dest.stat().st_size,
-                installed_at=datetime.now(timezone.utc).isoformat(),
-                ollama_name=ollama_tag,
-                provider=provider,
-                linked={spec.key: False for spec in linker.ENGINES},
-            )
-            err_console.print(
-                f"[error]{filename}: updated on disk, but relinking failed ({error}). "
-                "Re-run `omm link` to restore its engine links.[/error]"
-            )
-            return "skipped"
-        for destination in entry.get("custom_links") or []:
-            if not isinstance(destination, str):
-                continue
-            try:
-                linker.link_file(dest, Path(destination))
-            except (linker.LinkError, OSError) as error:
-                err_console.print(
-                    f"[warning]{filename}: custom link at {destination} could not be "
-                    f"refreshed: {error}[/warning]"
-                )
+        return _finalize_replaced_model(filename, entry, dest, new_sha256, provider, repo_id)
+    except KeyboardInterrupt:
+        _unlink_with_retry(tmp)
+        _cleanup_download_parts(tmp)
+        raise
+
+
+def _finalize_replaced_model(
+    filename: str,
+    entry: dict,
+    dest: Path,
+    new_sha256: str,
+    provider: str,
+    repo_id: str | None,
+) -> str:
+    """Relink and record the registry entry after new bytes have already
+    landed at `dest` (via `tmp.replace(dest)`/`_replace_with_retry`). Shared
+    tail of `_update_one` and `rollback` - both swap a model's bytes in
+    place and then need identical relink + registry bookkeeping. Returns
+    "updated" on success, "skipped" if relinking failed (the bytes on disk
+    are still the new ones; only the links/registry need `omm link` to
+    catch up)."""
+    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+    try:
+        linked = _link_model(dest, repo_id, ollama_tag)
+    except linker.InsufficientLinkSpaceError as error:
+        # The new bytes are already in place (`tmp.replace(dest)` above
+        # already succeeded), so the registry's old sha256/version/size
+        # would otherwise drift from what's actually on disk. `_link_model`
+        # itself already rolled back every link it created in this attempt
+        # before re-raising, so nothing from it survived - record `linked`
+        # as fully unlinked rather than keeping the stale pre-update values.
         registry.upsert_entry(
             filename,
             sha256=new_sha256,
@@ -6586,13 +6720,34 @@ def _update_one(filename: str, entry: dict) -> str:
             installed_at=datetime.now(timezone.utc).isoformat(),
             ollama_name=ollama_tag,
             provider=provider,
-            linked=linked,
+            linked={spec.key: False for spec in linker.ENGINES},
         )
-        return "updated"
-    except KeyboardInterrupt:
-        _unlink_with_retry(tmp)
-        _cleanup_download_parts(tmp)
-        raise
+        err_console.print(
+            f"[error]{filename}: updated on disk, but relinking failed ({error}). "
+            "Re-run `omm link` to restore its engine links.[/error]"
+        )
+        return "skipped"
+    for destination in entry.get("custom_links") or []:
+        if not isinstance(destination, str):
+            continue
+        try:
+            linker.link_file(dest, Path(destination))
+        except (linker.LinkError, OSError) as error:
+            err_console.print(
+                f"[warning]{filename}: custom link at {destination} could not be "
+                f"refreshed: {error}[/warning]"
+            )
+    registry.upsert_entry(
+        filename,
+        sha256=new_sha256,
+        version=new_sha256[:7],
+        size_bytes=dest.stat().st_size,
+        installed_at=datetime.now(timezone.utc).isoformat(),
+        ollama_name=ollama_tag,
+        provider=provider,
+        linked=linked,
+    )
+    return "updated"
 
 
 def _pick_run_engine(entry: dict, requested: str | None) -> str:
@@ -6843,6 +6998,191 @@ def upgrade(
         console.print(f"[success]{filename} updated to {_entry_version(fresh_entry)}.[/success]")
 
 
+@app.command()
+@global_flags
+def pin(
+    model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
+) -> None:
+    """Mark an installed model to be archived before its next `omm
+    upgrade`, so `omm rollback` can undo that upgrade afterwards. Nothing is
+    copied yet - GGUFs are large, so the archive is only made right before
+    upgrade actually replaces the file, not at pin time. `omm upgrade`
+    still replaces a pinned model same as any other; pin only decides
+    whether the version it replaces is kept."""
+    filename, entry = _lookup_entry(_resolve_ref(model_name), registry.load_registry())
+    if entry is None:
+        _print_not_installed_error(model_name)
+        raise typer.Exit(1)
+    if entry.get("pinned"):
+        console.print(f"[muted]{filename} is already pinned.[/muted]")
+        return
+    registry.upsert_entry(filename, pinned=True)
+    console.print(
+        f"[success]Pinned {filename}. Its next `omm upgrade` will archive the "
+        "current version first.[/success]"
+    )
+
+
+@app.command()
+@global_flags
+def unpin(
+    model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
+) -> None:
+    """Undo `omm pin`: a future `omm upgrade` stops archiving this model,
+    and any version already archived for it is deleted. Run `omm rollback`
+    first if you might still want that archived version."""
+    filename, entry = _lookup_entry(_resolve_ref(model_name), registry.load_registry())
+    if entry is None:
+        _print_not_installed_error(model_name)
+        raise typer.Exit(1)
+    if not entry.get("pinned") and not entry.get("archive"):
+        console.print(f"[muted]{filename} isn't pinned.[/muted]")
+        return
+    try:
+        archive = _archive_path(filename)
+    except ModelResolutionError:
+        archive = None
+    if archive is not None:
+        with locked(archive):
+            _unlink_with_retry(archive)
+            _unlink_with_retry(archive.with_name(archive.name + ".staging"))
+    registry.remove_fields(filename, "pinned", "archive")
+    console.print(f"[success]Unpinned {filename}.[/success]")
+
+
+@app.command()
+@global_flags
+def rollback(
+    model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
+) -> None:
+    """Restore a pinned model's archived version in place of the one
+    currently installed. The version it replaces takes over the archive
+    slot, so running `omm rollback` again swaps forward to it."""
+    reg = registry.load_registry()
+    filename, entry = _lookup_entry(_resolve_ref(model_name), reg)
+    if entry is None:
+        _print_not_installed_error(model_name)
+        raise typer.Exit(1)
+
+    archive_meta = entry.get("archive")
+    if not isinstance(archive_meta, dict) or not archive_meta.get("sha256"):
+        err_console.print(f"[error]No archived version for {filename}.[/error]")
+        raise typer.Exit(1)
+
+    try:
+        dest = _managed_model_path(filename)
+    except ModelResolutionError as error:
+        err_console.print(f"[error]{filename}: unsafe registry filename ({error}).[/error]")
+        raise typer.Exit(1) from error
+    try:
+        archive = _archive_path(filename)
+    except ModelResolutionError as error:
+        err_console.print(f"[error]{filename}: unsafe archive filename ({error}).[/error]")
+        raise typer.Exit(1) from error
+
+    if not archive.is_file():
+        err_console.print(f"[error]No archived version for {filename}.[/error]")
+        raise typer.Exit(1)
+    try:
+        archive_sha256 = sha256_file(archive)
+    except OSError as error:
+        err_console.print(f"[error]{filename}: could not read the archived version ({error}).[/error]")
+        raise typer.Exit(1) from error
+    if archive_sha256 != archive_meta["sha256"]:
+        err_console.print(
+            f"[error]{filename}: the archived version's checksum does not match the "
+            "registry record; refusing to roll back a possibly corrupted archive.[/error]"
+        )
+        raise typer.Exit(1)
+    if not dest.is_file():
+        err_console.print(
+            f"[error]{filename}: hub file is missing; reinstall it before rolling back.[/error]"
+        )
+        raise typer.Exit(1)
+
+    try:
+        provider = validate_provider(entry.get("provider") or "huggingface")
+    except ModelResolutionError as error:
+        err_console.print(f"[error]{filename}: unsafe registry provider ({error}).[/error]")
+        raise typer.Exit(1) from error
+    repo_id = entry.get("repo_id")
+    if repo_id:
+        try:
+            repo_id = validate_repo_id(repo_id)
+        except ModelResolutionError as error:
+            err_console.print(f"[error]{filename}: unsafe repository id ({error}).[/error]")
+            raise typer.Exit(1) from error
+
+    # Best-effort engine unload before the swap below, same ordering
+    # `_remove_one` uses: an engine still holding the file open would
+    # otherwise race the replace on Windows.
+    linked = entry.get("linked", {}) or {}
+    ollama_tag = entry.get("ollama_name") or linker.resolve_ollama_runtime_name(filename, entry)
+    if linked.get("ollama") and benchmark.ollama_daemon_reachable():
+        quality_mod.ensure_model_unloaded(ollama_tag, max_wait_seconds=10)
+    if linked.get("lmstudio"):
+        lmstudio_model = linker.resolve_lmstudio_model(entry.get("repo_id"), filename)
+        if lmstudio_model:
+            quality_mod.unload_model(lmstudio_model["model_key"], engine="lmstudio")
+
+    pre_rollback_sha256 = entry.get("sha256")
+    pre_rollback_size = _entry_size_bytes(filename, entry)
+
+    with locked(dest):
+        # D4 (swap): set the current-before-rollback file aside first (a
+        # same-volume hard link, same cheap trick `_archive_before_replace`
+        # uses), so it can take over the archive slot only *after* the
+        # archived bytes have safely made it into `dest` - never overwrite
+        # the one archive slot before its old content is somewhere safe.
+        rollback_staging = dest.with_name(dest.name + ".rollback-staging")
+        rollback_staging.unlink(missing_ok=True)
+        if not _copy_or_hardlink_with_space_check(dest, rollback_staging):
+            err_console.print(
+                f"[error]{filename}: not enough disk space to set the current "
+                "version aside; rollback cancelled.[/error]"
+            )
+            raise typer.Exit(1)
+        try:
+            _replace_with_retry(archive, dest)
+        except (OSError, DownloadError) as error:
+            rollback_staging.unlink(missing_ok=True)
+            err_console.print(f"[error]{filename}: rollback failed to finalize: {error}[/error]")
+            raise typer.Exit(1) from error
+
+        with locked(archive):
+            try:
+                _replace_with_retry(rollback_staging, archive)
+            except (OSError, DownloadError) as error:
+                # The rollback itself already succeeded (dest holds the
+                # restored bytes) - only moving the replaced version into
+                # the archive slot failed. Never delete it: say exactly
+                # where it landed instead, and drop the now-stale archive
+                # record rather than claim a slot that's actually empty.
+                err_console.print(
+                    f"[warning]{filename}: rolled back, but could not move the "
+                    f"replaced version into the archive slot ({error}). It was left "
+                    f"at {rollback_staging}.[/warning]"
+                )
+                registry.remove_fields(filename, "archive")
+            else:
+                registry.upsert_entry(
+                    filename,
+                    archive={
+                        "sha256": pre_rollback_sha256,
+                        "version": entry.get("version") or (pre_rollback_sha256 or "")[:7],
+                        "size_bytes": pre_rollback_size,
+                        "installed_at": entry.get("installed_at"),
+                        "archived_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+    result = _finalize_replaced_model(filename, entry, dest, archive_sha256, provider, repo_id)
+    if result == "skipped":
+        raise typer.Exit(1)
+    fresh_entry = registry.load_registry()[filename]
+    console.print(f"[success]{filename} rolled back to {_entry_version(fresh_entry)}.[/success]")
+
+
 def _prune_missing_models(reg: dict) -> dict:
     """Drop registry entries whose model file no longer exists on disk
     (e.g. deleted by hand outside omm) and persist the removal, so `list`
@@ -6900,6 +7240,8 @@ def list_models(
                 "filename": filename,
                 "size_bytes": entry.get("size_bytes", 0),
                 "linked": {spec.key: bool(entry.get("linked", {}).get(spec.key)) for spec in linker.ENGINES},
+                "pinned": bool(entry.get("pinned")),
+                "archived_size_bytes": (entry.get("archive") or {}).get("size_bytes"),
             }
             for idx, (filename, entry) in enumerate(reg.items(), start=1)
         ]
@@ -6917,9 +7259,12 @@ def list_models(
         size_gb = entry.get("size_bytes", 0) / (1024**3)
         linked = entry.get("linked", {})
         programs = [spec.label for spec in linker.ENGINES if linked.get(spec.key)]
-        table.add_row(
-            str(idx), filename, f"{size_gb:.2f} GB", ", ".join(programs) or "none"
-        )
+        label = f"{filename} [muted](pinned)[/muted]" if entry.get("pinned") else filename
+        size_label = f"{size_gb:.2f} GB"
+        archive_size = (entry.get("archive") or {}).get("size_bytes")
+        if _positive_finite_number(archive_size):
+            size_label += f" (+{archive_size / 1024**3:.2f} GB archived)"
+        table.add_row(str(idx), label, size_label, ", ".join(programs) or "none")
     console.print(table)
     session_cache.record_results(list(reg.keys()))
 
@@ -8249,6 +8594,47 @@ def _cleanup_incomplete_installs() -> int:
     return removed
 
 
+def _cleanup_orphan_archives() -> int:
+    """Reclaim leftover pin archives (`omm pin` / `omm upgrade` /
+    `omm rollback`, see MODEL_ARCHIVE_DIR): an archive whose model was
+    since removed from the registry (uninstalled by hand, or pruned by
+    `_prune_missing_models` after its hub file vanished outside omm - note
+    `unpin`/`omm uninstall` already delete their own archive directly, so
+    what's left here is only ever orphaned by something outside omm's own
+    commands), plus any `.staging` temp file left behind by an archive that
+    was interrupted mid-write. An archive still referenced by a registered
+    model - pinned or not - is left alone; only `omm unpin` or
+    `omm uninstall` remove those."""
+    if not MODEL_ARCHIVE_DIR.exists():
+        return 0
+    reg = registry.load_registry()
+    removed = 0
+    for path in MODEL_ARCHIVE_DIR.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if path.name.endswith(".staging"):
+            if _unlink_with_retry(path):
+                removed += 1
+            continue
+        try:
+            relative = path.relative_to(MODEL_ARCHIVE_DIR).as_posix()
+        except ValueError:
+            continue
+        if relative not in reg:
+            if _unlink_with_retry(path):
+                removed += 1
+    for directory in sorted(
+        (path for path in MODEL_ARCHIVE_DIR.rglob("*") if path.is_dir() and not path.is_symlink()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    return removed
+
+
 @app.command()
 @global_flags
 def cleanup() -> None:
@@ -8256,8 +8642,12 @@ def cleanup() -> None:
 
     Removes orphaned partial or unregistered .gguf downloads left behind by
     interrupted installs, plus symlinks in AI runner model directories whose
-    source .gguf was deleted without going through `omm uninstall`."""
+    source .gguf was deleted without going through `omm uninstall`. Also
+    reclaims orphaned `omm pin` archives (see MODEL_ARCHIVE_DIR) - an
+    archived version whose model is still registered, pinned or not, is
+    never touched here."""
     incomplete_removed = _cleanup_incomplete_installs()
+    archives_removed = _cleanup_orphan_archives()
 
     removed_by_engine: dict[str, int] = {}
     for spec in linker.ENGINES:
@@ -8274,13 +8664,15 @@ def cleanup() -> None:
         removed_by_engine["custom"] = custom_removed
     links_removed = sum(removed_by_engine.values())
 
-    if not incomplete_removed and not links_removed:
+    if not incomplete_removed and not archives_removed and not links_removed:
         console.print("[success]Nothing to clean up.[/success]")
         return
 
     parts: list[str] = []
     if incomplete_removed:
         parts.append(f"{incomplete_removed} incomplete install file(s)")
+    if archives_removed:
+        parts.append(f"{archives_removed} orphaned archive file(s)")
     if links_removed:
         parts.append(
             ", ".join(f"{count} broken {label} link(s)" for label, count in removed_by_engine.items())

@@ -241,11 +241,13 @@ def _isolate_omm_home_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CALIBRATION_PATH", home / "calibration.json")
     monkeypatch.setattr(config, "CATALOG_HISTORY_DIR", home / "catalog-history")
     monkeypatch.setattr(config, "CLIENT_ID_PATH", home / "client-id")
+    monkeypatch.setattr(config, "MODEL_ARCHIVE_DIR", home / "model-archive")
 
     monkeypatch.setattr(registry, "REGISTRY_PATH", config.REGISTRY_PATH)
     monkeypatch.setattr(linker, "LINK_OWNERSHIP_PATH", config.LINK_OWNERSHIP_PATH)
     monkeypatch.setattr(linker, "MODELS_DIR", models_dir)
     monkeypatch.setattr(cli, "MODELS_DIR", models_dir)
+    monkeypatch.setattr(cli, "MODEL_ARCHIVE_DIR", config.MODEL_ARCHIVE_DIR)
     monkeypatch.setattr(scan_import, "MODELS_DIR", models_dir)
     monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", config.RECOMMEND_MODEL_PATH)
     monkeypatch.setattr(calibration, "CALIBRATION_PATH", config.CALIBRATION_PATH)
