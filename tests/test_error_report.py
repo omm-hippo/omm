@@ -86,6 +86,37 @@ def test_scrub_paths_leaves_paths_without_a_user_component_alone():
     assert error_report.scrub_paths("") == ""
 
 
+def test_scrub_paths_removes_the_user_from_a_linux_file_url():
+    # The home-directory regex refuses a match preceded by `/`, and a file
+    # URL's third slash is exactly that - so this used to upload unchanged.
+    scrubbed = error_report.scrub_paths("file:///home/alice/.omm/models/x.gguf")
+
+    assert scrubbed == "file://~/.omm/models/x.gguf"
+    assert "alice" not in scrubbed
+
+
+def test_scrub_paths_removes_the_user_from_a_macos_file_url():
+    scrubbed = error_report.scrub_paths("could not read file:///Users/bob/Library/x")
+
+    assert scrubbed == "could not read file://~/Library/x"
+    assert "bob" not in scrubbed
+
+
+def test_scrub_paths_removes_the_user_from_a_localhost_file_url():
+    scrubbed = error_report.scrub_paths("file://localhost/home/alice/x.gguf")
+
+    assert scrubbed == "file://~/x.gguf"
+    assert "alice" not in scrubbed
+
+
+def test_scrub_paths_still_leaves_non_home_segments_named_home_alone():
+    # The file-URL fix must not loosen the plain-path rule: `home` that is
+    # not the start of a path, or sits under a relative path, is not a
+    # home directory.
+    assert error_report.scrub_paths("/opt/home/x.gguf") == "/opt/home/x.gguf"
+    assert error_report.scrub_paths("see ./home/carol/notes") == "see ./home/carol/notes"
+
+
 def test_endpoint_rejects_legacy_direct_firebase_destination():
     assert error_report.endpoint({"telemetry_endpoint": TELEMETRY_URL}) is None
 
