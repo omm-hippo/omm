@@ -567,6 +567,21 @@ def _dependency_version(tree: Any, name: str) -> str | None:
     return None
 
 
+def _installed_versions(tree: Any) -> set[str]:
+    """Collect every `version` string appearing anywhere in an `npm ls --json` tree."""
+    if not isinstance(tree, dict):
+        return set()
+    versions: set[str] = set()
+    version = tree.get("version")
+    if isinstance(version, str):
+        versions.add(version)
+    dependencies = tree.get("dependencies")
+    if isinstance(dependencies, dict):
+        for child in dependencies.values():
+            versions |= _installed_versions(child)
+    return versions
+
+
 def _assert_platform_package_moved(
     prefix: Path, target_package: str, previous_version: str, version: str
 ) -> None:
@@ -589,7 +604,7 @@ def _assert_platform_package_moved(
             f"npm ls reports {target_package}@{resolved!r} after upgrading to "
             f"{version!r}\nnpm ls:\n{result.stdout}"
         )
-    if previous_version in (result.stdout or ""):
+    if previous_version in _installed_versions(tree):
         raise NpmReleaseError(
             f"npm ls still mentions the old platform version {previous_version!r} "
             f"after upgrading {target_package} to {version!r}\nnpm ls:\n{result.stdout}"
