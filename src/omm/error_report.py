@@ -65,6 +65,12 @@ _DEFAULT_MAX_RETRIES_PER_FLUSH = 3
 # any fully-successful flush clears it immediately.
 _BACKOFF_INITIAL_SECONDS = 30
 _BACKOFF_MAX_SECONDS = 6 * 60 * 60
+# A single `flush_pending` call must not burn through an entire backlog of
+# reports one at a time against a gateway that is already failing - that is
+# what `_BACKOFF_*` is for at the *next* invocation. Bail out of the current
+# call after this many failures in a row so a large queue can't turn one
+# `omm contribute` run into minutes of doomed proof-of-work + HTTP attempts.
+_MAX_CONSECUTIVE_FLUSH_FAILURES = 3
 _MAX_MESSAGE_LENGTH = 2000
 _MAX_TYPE_LENGTH = 200
 _MAX_CATALOG_REF_LENGTH = 620
@@ -179,23 +185,59 @@ _POSIX_HOME_RE = re.compile(r"(?<![\w./])/(?:Users|home)/[^/\\\s:'\"]+")
 # `/opt/home/x`-style paths untouched.
 _FILE_URL_HOME_RE = re.compile(r"(?<=file://)(?:localhost)?/(?:Users|home)/[^/\\\s:'\"]+")
 _WINDOWS_HOME_RE = re.compile(
-    r"(?<![\w\\/])[A-Za-z]:\\Users\\[^\\/:\"\r\n]+(?=\\|$)",
+    r"(?<![\w\\/])[A-Za-z]:\\Users\\[^\\/:\"\r\n]+(?=\\|'|$)",
     re.IGNORECASE,
 )
 
+# Beyond a home directory, any other absolute/UNC path is masked down to its
+# final segment (the filename) so a message can name a file without naming
+# the project or person that owns the directories around it.
+#
+# Quoted form: OSError's str() always wraps its filename argument in quotes,
+# so the path (and any spaces in it) is captured whole and only its last
+# `/`- or `\`-separated segment survives.
+_QUOTED_ABS_PATH_RE = re.compile(r"""(['"])((?:/|[A-Za-z]:[\\/]|\\\\)[^'"\r\n]*)\1""")
+# Bare (unquoted) forms have no closing delimiter to bound the filename, so
+# the whole directory chain - including what would have been the filename -
+# is collapsed to a single "<path>/" marker instead.
+_BARE_WINDOWS_DIRS_RE = re.compile(
+    r"(?<![\w\\/~])(?:[A-Za-z]:[\\/]|\\{1,2})(?:[^\\/\s:*?\"'<>|]+[\\/])+"
+)
+_BARE_POSIX_DIRS_RE = re.compile(r"(?:(?<![\w.~:/\\-])|(?<=file://))/(?:[^/\s'\"]+/)+")
+
+
+def _mask_quoted_abs_path(match: re.Match) -> str:
+    quote = match.group(1)
+    parts = [part for part in re.split(r"[\\/]+", match.group(2)) if part]
+    if len(parts) <= 1:
+        return match.group(0)
+    return f"{quote}<path>/{parts[-1]}{quote}"
+
 
 def scrub_paths(text: str) -> str:
-    """Replace per-user home directories with `~` so a message can name a
-    file without naming its owner.
+    """Replace per-user home directories with `~`; mask any other absolute
+    path down to its directory (as `<path>`) and final filename.
 
-    Regex-only by design: this is a targeted username/home-prefix scrubber,
-    not general-purpose PII detection (see `docs/crash-reports.md`).
+    Regex-only by design: this is a targeted username/home-prefix/absolute-
+    path scrubber, not general-purpose PII detection (see
+    `docs/crash-reports.md`).
     """
     if not isinstance(text, str) or not text:
         return ""
+    # OSError's str() repr()-escapes its filename argument, doubling every
+    # backslash (e.g. `C:\Users\Carol` becomes `'C:\\Users\\Carol'` in the
+    # message) - normalize before the home/path regexes below, which expect
+    # single backslashes. A literal UNC double-backslash prefix
+    # (`\\srv\share`) collapses to a single backslash too, which
+    # `_BARE_WINDOWS_DIRS_RE` still matches.
+    text = text.replace("\\\\", "\\")
     scrubbed = _FILE_URL_HOME_RE.sub("~", text)
     scrubbed = _WINDOWS_HOME_RE.sub(r"~", scrubbed)
-    return _POSIX_HOME_RE.sub("~", scrubbed)
+    scrubbed = _POSIX_HOME_RE.sub("~", scrubbed)
+    scrubbed = _QUOTED_ABS_PATH_RE.sub(_mask_quoted_abs_path, scrubbed)
+    scrubbed = _BARE_WINDOWS_DIRS_RE.sub("<path>/", scrubbed)
+    scrubbed = _BARE_POSIX_DIRS_RE.sub("<path>/", scrubbed)
+    return scrubbed
 
 
 def _log_path():
@@ -630,11 +672,19 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH, force: bool
             if not to_retry:
                 return 0
             sent = 0
+            attempted = 0
+            consecutive_failures = 0
             sent_indices: list[int] = []
             for index, report in enumerate(to_retry):
+                attempted += 1
                 if _post_report(report, config_data):
                     sent += 1
                     sent_indices.append(index)
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures >= _MAX_CONSECUTIVE_FLUSH_FAILURES:
+                        break
             if sent_indices:
                 with locked(path, timeout=30):
                     still_pending = _read_pending_unlocked(path)
@@ -647,7 +697,7 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH, force: bool
                         path,
                         json.dumps(still_pending[-_MAX_PENDING_REPORTS:]),
                     )
-            _record_flush_outcome(attempted=len(to_retry), sent=sent)
+            _record_flush_outcome(attempted=attempted, sent=sent)
             return sent
     except (OSError, FileLockTimeout):
         return 0

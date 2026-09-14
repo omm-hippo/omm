@@ -81,8 +81,8 @@ def test_scrub_paths_handles_every_platform_in_one_message():
     assert scrubbed == r"tried ~/a, ~/b and ~\c"
 
 
-def test_scrub_paths_leaves_paths_without_a_user_component_alone():
-    assert error_report.scrub_paths("/opt/models/x.gguf") == "/opt/models/x.gguf"
+def test_scrub_paths_masks_directories_outside_home():
+    assert error_report.scrub_paths("/opt/models/x.gguf") == "<path>/x.gguf"
     assert error_report.scrub_paths("") == ""
 
 
@@ -113,7 +113,7 @@ def test_scrub_paths_still_leaves_non_home_segments_named_home_alone():
     # The file-URL fix must not loosen the plain-path rule: `home` that is
     # not the start of a path, or sits under a relative path, is not a
     # home directory.
-    assert error_report.scrub_paths("/opt/home/x.gguf") == "/opt/home/x.gguf"
+    assert error_report.scrub_paths("/opt/home/x.gguf") == "<path>/x.gguf"
     assert error_report.scrub_paths("see ./home/carol/notes") == "see ./home/carol/notes"
 
 
@@ -451,6 +451,44 @@ def test_flush_rejects_invalid_retry_limits_without_sending(
 
     assert error_report.flush_pending(max_retries=max_retries) == 0
     assert error_report.pending_count() == 1
+
+
+def test_flush_stops_after_consecutive_failures_and_keeps_the_rest_queued(
+    isolated_omm_home, monkeypatch
+):
+    _write_config(error_report_send_policy="always")
+    for i in range(10):
+        error_report._append_pending({"trigger": "crash", "error_message": str(i)})
+    calls = []
+    monkeypatch.setattr(
+        error_report,
+        "_post_report",
+        lambda report, config_data=None: calls.append(report) or False,
+    )
+
+    assert error_report.flush_pending(max_retries=10, force=True) == 0
+
+    assert len(calls) == error_report._MAX_CONSECUTIVE_FLUSH_FAILURES
+    assert error_report.pending_count() == 10
+
+
+def test_flush_consecutive_failure_counter_resets_on_a_success(
+    isolated_omm_home, monkeypatch
+):
+    _write_config(error_report_send_policy="always")
+    for i in range(7):
+        error_report._append_pending({"trigger": "crash", "error_message": str(i)})
+    results = iter([False, False, True, False, False, False, True])
+    calls = []
+
+    def fake_post(report, config_data=None):
+        calls.append(report)
+        return next(results)
+
+    monkeypatch.setattr(error_report, "_post_report", fake_post)
+
+    assert error_report.flush_pending(max_retries=10, force=True) == 1
+    assert len(calls) == 6
 
 
 def test_discarding_the_queue_reports_how_many_were_dropped(isolated_omm_home):
