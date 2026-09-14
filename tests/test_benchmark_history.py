@@ -241,3 +241,49 @@ def test_corrupt_history_is_backed_up_before_being_reset(isolated_omm_home):
     backups = list(isolated_omm_home.glob("benchmark_history.json.corrupt-*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == "{not json"
+
+
+def test_mistyped_section_is_backed_up_before_being_overwritten(isolated_omm_home):
+    path = isolated_omm_home / "benchmark_history.json"
+    original = json.dumps({"entries": ["legacy"], "failures": {}}).encode("utf-8")
+    path.write_bytes(original)
+
+    benchmark_history.record_benchmarked(
+        "a:x.gguf", repo_id="a", filename="x.gguf", sha256="s", tokens_per_sec=1.0
+    )
+
+    backups = list(isolated_omm_home.glob("benchmark_history.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+
+    # A missing key (older-format file) is not corruption - no backup.
+    path.write_text(json.dumps({"entries": {}}), encoding="utf-8")
+    benchmark_history.loaded_refs()
+    assert list(isolated_omm_home.glob("benchmark_history.json.corrupt-*")) == backups
+
+
+def test_record_functions_swallow_lock_failures(isolated_omm_home, monkeypatch):
+    from contextlib import contextmanager
+
+    from filelock import Timeout
+
+    @contextmanager
+    def boom(*a, **k):
+        raise Timeout(str(a[0]))
+        yield
+
+    monkeypatch.setattr(benchmark_history, "locked", boom)
+
+    assert (
+        benchmark_history.record_benchmarked(
+            "a:x.gguf", repo_id="a", filename="x.gguf", sha256="s", tokens_per_sec=1.0
+        )
+        is None
+    )
+    assert (
+        benchmark_history.record_benchmark_failure(
+            "a:x.gguf", repo_id="a", filename="x.gguf", reason="out_of_memory"
+        )
+        is None
+    )
+    assert benchmark_history.loaded_refs() == set()
