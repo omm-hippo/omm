@@ -1966,3 +1966,10 @@ def test_calibration_report_is_redacted_reproducible_and_restores_policy():
         train_model.MIN_OUTLIER_SAMPLE_SIZE,
         train_model.LOW_SIDE_OUTLIER_POLICY,
     ) == original
+
+
+def test_intentional_exclusions_have_one_definition():
+    from scripts import model_quality_gate
+
+    assert train_model.INTENTIONALLY_EXCLUDED_REASONS is model_quality_gate.INTENTIONALLY_EXCLUDED_REASONS
+    assert "no_hardware_identity_pre_v6_schema" in train_model.INTENTIONALLY_EXCLUDED_REASONS
