@@ -12,6 +12,14 @@ case "${1:-}" in
     *) echo "Usage: uninstall.sh [--purge]" >&2; exit 2 ;;
 esac
 
+case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*)
+        echo "Windows detected. Run the native PowerShell uninstaller instead:" >&2
+        echo "  irm https://omm.run/uninstall.ps1 | iex" >&2
+        exit 1
+        ;;
+esac
+
 case "$OMM_HOME" in
     /*) ;;
     *) echo "Refusing non-absolute OMM_HOME: $OMM_HOME" >&2; exit 1 ;;
@@ -329,8 +337,8 @@ if pipx_snapshot_has_environment omm; then
        verify_omm_pipx_environment omm omm 1; then
         LEGACY_IS_OMM=1
     else
-        echo "Preserving unrelated pipx environment 'omm'." >&2
-        echo "Resolve the pipx environment-name conflict manually before uninstalling OMM." >&2
+        echo "Preserving pipx environment 'omm': it could not be verified as an OMM install." >&2
+        echo "It may be an unrelated package named 'omm', or an old OMM install whose source checkout was deleted or whose OMM_HOME moved. If it is your old OMM install, run 'pipx uninstall omm', then rerun this script." >&2
         uninstall_failed
     fi
 fi

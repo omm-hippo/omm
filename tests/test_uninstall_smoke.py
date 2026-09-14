@@ -590,8 +590,8 @@ def test_posix_uninstaller_preserves_unrelated_omm_environment(tmp_path, install
 
     assert result.returncode != 0
     assert not log.exists()
-    assert "Preserving unrelated pipx environment 'omm'" in result.stderr
-    assert "environment-name conflict" in result.stderr
+    assert "could not be verified as an OMM install" in result.stderr
+    assert "source checkout was deleted" in result.stderr
     assert (managed / "sources").is_dir()
     command = subprocess.run(["omm", "--version"], env=env, capture_output=True, text=True)
     assert command.returncode == 0
