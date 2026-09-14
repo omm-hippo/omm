@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_pr_description.py"
+ROOT = Path(__file__).resolve().parents[1]
+_SCRIPT = ROOT / "scripts" / "check_pr_description.py"
 _spec = importlib.util.spec_from_file_location("check_pr_description", _SCRIPT)
 check = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = check
@@ -134,3 +135,60 @@ def test_main_reads_environment_and_writes_summary(tmp_path, monkeypatch, capsys
 
     monkeypatch.setenv("PR_BODY", "no headings at all")
     assert check.main() == 1
+
+
+def test_workflow_runs_the_base_copy_of_the_script():
+    workflow_path = ROOT / ".github" / "workflows" / "pr-description-check.yml"
+    if not workflow_path.is_file():
+        pytest.skip("GitHub workflows are excluded from the runtime Docker image")
+    workflow = workflow_path.read_text(encoding="utf-8")
+    assert "ref: ${{ github.event.pull_request.base.sha }}" in workflow
+    assert "persist-credentials: false" in workflow
+    assert "run: python scripts/check_pr_description.py" in workflow
+    assert (
+        "PR_HEAD_SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}"
+        in workflow
+    )
+
+
+@pytest.mark.parametrize(
+    "head_ref", ["beta", "retrain/20260903-074624", "emergency-signal/20260903-074624"]
+)
+def test_fork_branch_names_do_not_earn_an_exemption(head_ref):
+    verdict = check.evaluate("", author="outsider", head_ref=head_ref, head_same_repo=False)
+    assert not verdict.exempt and not verdict.ok
+
+
+def test_bot_author_is_exempt_even_from_a_fork():
+    verdict = check.evaluate("", author="github-actions[bot]", head_ref="anything", head_same_repo=False)
+    assert verdict.exempt
+
+
+def test_main_reads_the_same_repo_flag(monkeypatch, capsys):
+    monkeypatch.setenv("PR_BODY", "")
+    monkeypatch.setenv("PR_AUTHOR", "outsider")
+    monkeypatch.setenv("PR_HEAD_REF", "beta")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setenv("PR_HEAD_SAME_REPO", "false")
+    assert check.main() == 1
+    monkeypatch.setenv("PR_HEAD_SAME_REPO", "true")
+    assert check.main() == 0
+
+
+def test_one_heading_cannot_satisfy_all_four_sections():
+    body = "## 한줄 요약 배경 무엇을 바꿨나 어떻게 확인했나\n가나다라마바사아자차카타파하\n"
+    verdict = check.evaluate(body, author="outsider", head_ref="feat/x")
+    assert not verdict.ok
+    for wanted in ("배경", "무엇을 바꿨나", "어떻게 확인했나"):
+        assert f"`## {wanted}` 제목이 없습니다." in verdict.problems
+
+
+def test_narrative_hangul_is_counted_once_per_section():
+    body = (
+        "## 한줄 요약\n가나다라마\n\n"
+        "## 배경\n가나다라마\n\n"
+        "## 무엇을 바꿨나\n가나다라마\n\n"
+        "## 어떻게 확인했나\npytest -q\n"
+    )
+    verdict = check.evaluate(body, author="outsider", head_ref="feat/x")
+    assert any("한글 15자" in problem for problem in verdict.problems)
