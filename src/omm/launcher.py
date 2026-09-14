@@ -216,6 +216,15 @@ _TEXTGEN_START_SCRIPTS = {
     "Linux": "start_linux.sh",
 }
 
+# On Windows, start_windows.bat runs through cmd.exe (CreateProcess has no
+# native .bat execution), and list2cmdline does not escape any of these for
+# cmd's own parser - so a model filename containing one could inject
+# arguments or commands into the batch file instead of being passed through
+# as a literal --model= value. hub.validate_model_filename accepts all of
+# them (it only rejects backslash, control chars, ':', '.', '..', reserved
+# names, and a non-.gguf suffix), so this must be enforced here instead.
+_WINDOWS_CMD_UNSAFE_CHARS = frozenset('&|<>^%!"()')
+
 
 def launch_textgenwebui(model_filename: str) -> LaunchResult:
     root = linker.find_textgenwebui_root()
@@ -226,6 +235,13 @@ def launch_textgenwebui(model_filename: str) -> LaunchResult:
         return LaunchResult(
             False,
             f"No start script found in {root}. Start text-generation-webui yourself and pick "
+            f"{model_filename} from its Model tab.",
+        )
+    if platform.system() == "Windows" and _WINDOWS_CMD_UNSAFE_CHARS.intersection(model_filename):
+        return LaunchResult(
+            False,
+            f"{model_filename} contains characters that Windows cmd.exe would interpret, so omm "
+            f"will not pass it to {script.name}. Start text-generation-webui yourself and pick "
             f"{model_filename} from its Model tab.",
         )
     # Bind the value with `=` so a legitimate filename beginning with `-`
