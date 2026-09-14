@@ -327,6 +327,30 @@ def test_install_global_yes_consents_to_runtime_load_without_a_tty(
     assert result.exit_code == 0, result.stdout
 
 
+def test_install_global_yes_without_tty_finishes_without_upload_prompt(
+    isolated_omm_home, monkeypatch
+):
+    """`--yes` answers the runtime-load consent, not the data-upload prompt -
+    those are separate questions. Without a TTY (as under CliRunner) the
+    upload prompt must not even be attempted, `--no-upload` or not."""
+    _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(
+        cli,
+        "_ask_confirm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("prompted")),
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+    calls = []
+    monkeypatch.setattr(cli, "_report_telemetry", lambda *a, **k: calls.append((a, k)))
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Installed" in result.stdout
+    assert calls == []
+
+
 def test_install_threads_quiet_and_no_color_into_download_file(isolated_omm_home, monkeypatch):
     # --quiet/--no-color must reach download_file() so its progress bar and
     # retry warning respect them too, not just cli.py's own console (see #80).

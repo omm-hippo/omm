@@ -144,6 +144,30 @@ def test_update_migrates_when_not_yet_migrated_even_if_commit_matches(monkeypatc
     assert "updated" in result.stdout.lower()
 
 
+def test_perform_update_refuses_while_another_update_holds_the_lock(monkeypatch):
+    """Two concurrent `omm update` invocations must not race over SRC_DIR -
+    the second one gives up immediately (timeout=0) instead of doing any
+    actual migration/pull work while another process holds the lock."""
+    from omm import config
+    from omm.atomic import locked
+
+    migrate_calls = []
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: migrate_calls.append("src_head") or None)
+    monkeypatch.setattr(
+        cli,
+        "_migrate_to_editable_install",
+        lambda *a, **k: migrate_calls.append("migrate")
+        or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+
+    with locked(config.OMM_HOME / "locks" / "self-update"):
+        result = cli._perform_update("main")
+
+    assert result.returncode == 1
+    assert "already running" in result.stderr
+    assert migrate_calls == []
+
+
 @pytest.mark.parametrize(
     ("source", "command"),
     [
@@ -964,6 +988,56 @@ def test_update_reports_error_when_git_update_fails(monkeypatch):
     assert result.exit_code == 1
     assert "fetch failed" in result.stderr
     assert refresh_calls == []
+
+
+def test_update_shows_git_upgrade_hint_when_merge_tree_unavailable(monkeypatch):
+    """A merge-commit update can only be verified with git 2.38+ (`git
+    merge-tree --write-tree`). When trust.verify_update reports that,
+    `omm update` must point the user at upgrading git, not just print the
+    raw stderr."""
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr=(
+                "merge commit abc1234 can only be verified with git 2.38+ "
+                "(git merge-tree --write-tree); found git 2.34. Upgrade git and rerun."
+            ),
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "git 2.38+" in result.stderr
+    assert "Upgrade git" in result.stderr
+
+
+def test_update_shows_reinstall_hint_on_signature_failure(monkeypatch):
+    """A stale installed copy of trust.verify_update may permanently reject
+    a legitimate update - only a reinstall (which re-fetches current
+    verification logic) can recover, so `omm update` must say so."""
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="commit abc1234 has an unauthenticated signature"
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "Reinstalling picks up current verification" in result.stderr
 
 
 def test_update_reports_error_when_pipx_missing(monkeypatch):

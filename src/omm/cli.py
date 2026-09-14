@@ -26,6 +26,7 @@ from urllib.parse import unquote, urlsplit
 
 import click
 import typer
+from filelock import Timeout as FileLockTimeout
 from rich.console import Console
 from rich.markup import escape
 from rich.padding import Padding
@@ -76,12 +77,15 @@ from omm import (
     watch_service,
 )
 from omm import contribute as contribute_mod
+from omm.atomic import locked
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
 from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
 from omm.downloader import (
     DownloadCancelled,
     DownloadError,
     InsufficientDiskSpaceError,
+    _download_lock_path,
+    _replace_with_retry,
     _sidecar_path,
     download_file,
 )
@@ -662,7 +666,9 @@ def _root(
     _maybe_auto_import(ctx)
     # A setting command may revoke consent or change the destination, so do
     # not send queued telemetry before the requested mutation takes effect.
-    if ctx.invoked_subcommand != "setting":
+    # Hidden background children/services are not a user-issued command
+    # either, so they must not flush queued uploads on the user's behalf.
+    if ctx.invoked_subcommand not in _SKIP_QUEUED_UPLOAD_SUBCOMMANDS:
         resent = telemetry.flush_pending()
         if resent and not (opts.json or opts.quiet):
             err_console.print(
@@ -1348,7 +1354,16 @@ def _bg_version_check_cmd() -> None:
     so the `git ls-remote` round trip survives the short-lived parent
     command exiting; writes the result to the shared cache for a later
     `omm` invocation to pick up."""
-    version_check.cached_remote_head(_remote_head_commit, _channel_branch(), installed=_installed_commit())
+    # The child only ever runs when the parent (mark_checking - cache stale,
+    # or mark_reconfirming - installed moved) already decided a refresh is
+    # needed. On the reconfirm path the cache is still fresh, so respecting
+    # the default TTL here would make `_fresh()` short-circuit and the child
+    # would refresh nothing. ttl_seconds=0 makes `_fresh()` always False, so
+    # this always fetches and overwrites {checked_at, remote_head, installed}
+    # (which also clears checking_since).
+    version_check.cached_remote_head(
+        _remote_head_commit, _channel_branch(), ttl_seconds=0, installed=_installed_commit()
+    )
 
 
 @app.command(name="_auto-import-run", hidden=True)
@@ -1498,6 +1513,10 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "_bg-version-check",
     "_auto-import-run",
 }
+
+# Hidden background children/services are not a user-issued command, so they
+# must not flush the queued-upload channels (telemetry/error_report/usage).
+_SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {"setting", "_bg-version-check", "_auto-import-run"}
 
 
 def _maybe_auto_import(ctx: typer.Context) -> None:
@@ -2601,6 +2620,22 @@ def _git_update_src(branch: str = "main", *, same_branch: bool = True) -> subpro
 
 
 def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.CompletedProcess:
+    """Serialize `_perform_update_unlocked` behind a self-update lock so two
+    concurrent `omm update` (or channel switch) invocations can't race each
+    other over SRC_DIR."""
+    try:
+        with locked(config_mod.OMM_HOME / "locks" / "self-update", timeout=0):
+            return _perform_update_unlocked(branch, same_branch=same_branch)
+    except FileLockTimeout:
+        return subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr="Another `omm update` is already running. Wait for it to finish and retry.",
+        )
+
+
+def _perform_update_unlocked(branch: str, *, same_branch: bool = True) -> subprocess.CompletedProcess:
     """Shared by `omm update` and `omm setting version` (channel switch):
     migrate-or-pull SRC_DIR onto `branch`, reinstalling via pipx only if
     dependencies changed or the editable environment still carries OMM's
@@ -2813,6 +2848,30 @@ def doctor() -> None:
         raise typer.Exit(1)
 
 
+def _print_reinstall_hint() -> None:
+    """A stale installed copy of trust.verify_update can permanently reject a
+    legitimate update it predates the logic for (see the module docstring's
+    CAUTION) - no update from within this same stale copy can fix that. A
+    full reinstall re-fetches install.sh/install.ps1 fresh, which always
+    carries current verification logic, so it recovers independently of the
+    stuck install."""
+    if platform.system() == "Windows":
+        err_console.print(
+            "\n[muted]If this channel is legitimate, the installed copy of omm may "
+            "be too old to verify it. Reinstalling picks up current verification "
+            "logic:[/muted]\n"
+            "  [Net.ServicePointManager]::SecurityProtocol = "
+            "[Net.SecurityProtocolType]::Tls12; irm https://omm.run/install.ps1 | iex"
+        )
+    else:
+        err_console.print(
+            "\n[muted]If this channel is legitimate, the installed copy of omm may "
+            "be too old to verify it. Reinstalling picks up current verification "
+            "logic:[/muted]\n"
+            "  curl -fsSL https://omm.run/install.sh | sh"
+        )
+
+
 @app.command()
 @global_flags
 def update() -> None:
@@ -2838,6 +2897,15 @@ def update() -> None:
     result = _perform_update(branch)
     if result.returncode != 0:
         err_console.print(f"[error]Update failed:[/error]\n{result.stderr}")
+        stderr = result.stderr or ""
+        if "git 2.38+" in stderr:
+            err_console.print(
+                "\n[muted]This merge commit can only be verified with git 2.38+ "
+                "(git merge-tree --write-tree). Upgrade git to 2.38 or newer "
+                "(on Ubuntu 22.04, e.g. the git-core PPA), then rerun `omm update`.[/muted]"
+            )
+        elif "signature" in stderr.lower() or "trust chain" in stderr.lower():
+            _print_reinstall_hint()
         raise typer.Exit(1)
 
     after = _version_line(_installed_commit())
@@ -3037,7 +3105,11 @@ def _ask_confirm(message: str, default: bool = False) -> bool:
 
 def _ask_upload_choice(prompt: str) -> str:
     """The telemetry-upload confirm, split out from _resolve_upload_decision
-    so tests can stub it without going through a real terminal prompt."""
+    so tests can stub it without going through a real terminal prompt.
+    Never prompts without a real terminal, and `--yes` is not consent to
+    send data - it answers "no" in either case."""
+    if not _stdin_is_tty() or _global_opts().yes:
+        return "no"
     return _ask_single_key(
         prompt,
         [("y", "Yes", "yes"), ("n", "No", "no"), ("a", "Always", "always")],
@@ -4647,7 +4719,14 @@ def _prepare_install_artifact(
                 except InsufficientDiskSpaceError:
                     needs_reclaim = True
             if needs_reclaim:
-                _cleanup_incomplete_install(filename)
+                try:
+                    with locked(_download_lock_path(dest), timeout=0):
+                        _cleanup_incomplete_install(filename)
+                except FileLockTimeout as error:
+                    raise DownloadError(
+                        f"Another download is already writing {dest}. "
+                        "Wait for it to finish and retry."
+                    ) from error
         try:
             if stop_event is not None:
                 download_file(
@@ -5605,6 +5684,16 @@ def _cleanup_incomplete_install(filename: str) -> bool:
     return cleaned
 
 
+def _unlink_unless_download_active(path: Path, lock_target: Path) -> bool:
+    """Delete `path` unless an active download holds the lock for `lock_target`."""
+    try:
+        with locked(_download_lock_path(lock_target), timeout=0):
+            path.unlink()
+    except OSError:
+        return False
+    return True
+
+
 def _unlink_with_retry(path: Path, *, attempts: int = 8) -> bool:
     """Bounded Windows handle-release retry; return whether the path is gone."""
     for attempt in range(attempts):
@@ -6356,89 +6445,115 @@ def _update_one(filename: str, entry: dict) -> str:
         err_console.print(f"[error]{filename}: unsafe registry provider ({error}).[/error]")
         return "skipped"
     old_sha256 = entry.get("sha256")
-    tmp = dest.with_name(dest.name + ".update")
+    try:
+        tmp = dest.with_name(dest.name + ".update")
 
-    if repo_id:
+        if repo_id:
+            try:
+                repo_id = validate_repo_id(repo_id)
+            except ModelResolutionError as error:
+                err_console.print(f"[error]{filename}: unsafe repository id ({error}).[/error]")
+                return "skipped"
+            remote_sha256 = remote_file_sha256(provider, repo_id, filename)
+            if remote_sha256 is None:
+                err_console.print(
+                    f"[warning]{filename}: could not check for updates "
+                    "(no repo/LFS info), skipped.[/warning]"
+                )
+                return "skipped"
+            if (
+                remote_sha256 == old_sha256
+                and dest.is_file()
+                and sha256_file(dest) == remote_sha256
+            ):
+                return "up_to_date"
+
+            url = download_url(provider, repo_id, filename)
+            if not _download_update(url, tmp, filename):
+                return "skipped"
+            new_sha256 = sha256_file(tmp)
+            if new_sha256 != remote_sha256:
+                err_console.print(
+                    f"[error]{filename}: downloaded SHA-256 does not match provider metadata; "
+                    "the installed file was preserved.[/error]"
+                )
+                tmp.unlink(missing_ok=True)
+                return "skipped"
+        else:
+            source = entry.get("source")
+            if not source:
+                err_console.print(f"[warning]{filename}: no source URL on record, skipped.[/warning]")
+                return "skipped"
+
+            if not _download_update(source, tmp, filename):
+                return "skipped"
+
+            new_sha256 = sha256_file(tmp)
+            if (
+                new_sha256 == old_sha256
+                and dest.is_file()
+                and sha256_file(dest) == new_sha256
+            ):
+                tmp.unlink(missing_ok=True)
+                return "up_to_date"
         try:
-            repo_id = validate_repo_id(repo_id)
-        except ModelResolutionError as error:
-            err_console.print(f"[error]{filename}: unsafe repository id ({error}).[/error]")
-            return "skipped"
-        remote_sha256 = remote_file_sha256(provider, repo_id, filename)
-        if remote_sha256 is None:
-            err_console.print(
-                f"[warning]{filename}: could not check for updates "
-                "(no repo/LFS info), skipped.[/warning]"
+            _ensure_install_disk_capacity(
+                dest,
+                tmp.stat().st_size,
+                include_download=False,
+                only_engine=None,
             )
-            return "skipped"
-        if (
-            remote_sha256 == old_sha256
-            and dest.is_file()
-            and sha256_file(dest) == remote_sha256
-        ):
-            return "up_to_date"
-
-        url = download_url(provider, repo_id, filename)
-        if not _download_update(url, tmp, filename):
-            return "skipped"
-        new_sha256 = sha256_file(tmp)
-        if new_sha256 != remote_sha256:
+        except (InsufficientDiskSpaceError, OSError) as error:
             err_console.print(
-                f"[error]{filename}: downloaded SHA-256 does not match provider metadata; "
-                "the installed file was preserved.[/error]"
+                f"[error]{filename}: update cannot be linked safely: {error}. "
+                "The installed file was preserved.[/error]"
             )
             tmp.unlink(missing_ok=True)
-            return "skipped"
-    else:
-        source = entry.get("source")
-        if not source:
-            err_console.print(f"[warning]{filename}: no source URL on record, skipped.[/warning]")
+            _cleanup_download_parts(tmp)
             return "skipped"
 
-        if not _download_update(source, tmp, filename):
-            return "skipped"
-
-        new_sha256 = sha256_file(tmp)
-        if (
-            new_sha256 == old_sha256
-            and dest.is_file()
-            and sha256_file(dest) == new_sha256
-        ):
+        try:
+            _replace_with_retry(tmp, dest)
+        except (OSError, DownloadError) as e:
+            err_console.print(f"[error]{filename}: update failed to finalize: {e}[/error]")
             tmp.unlink(missing_ok=True)
-            return "up_to_date"
-    try:
-        _ensure_install_disk_capacity(
-            dest,
-            tmp.stat().st_size,
-            include_download=False,
-            only_engine=None,
-        )
-    except (InsufficientDiskSpaceError, OSError) as error:
-        err_console.print(
-            f"[error]{filename}: update cannot be linked safely: {error}. "
-            "The installed file was preserved.[/error]"
-        )
-        tmp.unlink(missing_ok=True)
-        _cleanup_download_parts(tmp)
-        return "skipped"
+            return "skipped"
 
-    try:
-        tmp.replace(dest)
-    except OSError as e:
-        err_console.print(f"[error]{filename}: update failed to finalize: {e}[/error]")
-        tmp.unlink(missing_ok=True)
-        return "skipped"
-
-    ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
-    try:
-        linked = _link_model(dest, repo_id, ollama_tag)
-    except linker.InsufficientLinkSpaceError as error:
-        # The new bytes are already in place (`tmp.replace(dest)` above
-        # already succeeded), so the registry's old sha256/version/size
-        # would otherwise drift from what's actually on disk. `_link_model`
-        # itself already rolled back every link it created in this attempt
-        # before re-raising, so nothing from it survived - record `linked`
-        # as fully unlinked rather than keeping the stale pre-update values.
+        ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
+        try:
+            linked = _link_model(dest, repo_id, ollama_tag)
+        except linker.InsufficientLinkSpaceError as error:
+            # The new bytes are already in place (`tmp.replace(dest)` above
+            # already succeeded), so the registry's old sha256/version/size
+            # would otherwise drift from what's actually on disk. `_link_model`
+            # itself already rolled back every link it created in this attempt
+            # before re-raising, so nothing from it survived - record `linked`
+            # as fully unlinked rather than keeping the stale pre-update values.
+            registry.upsert_entry(
+                filename,
+                sha256=new_sha256,
+                version=new_sha256[:7],
+                size_bytes=dest.stat().st_size,
+                installed_at=datetime.now(timezone.utc).isoformat(),
+                ollama_name=ollama_tag,
+                provider=provider,
+                linked={spec.key: False for spec in linker.ENGINES},
+            )
+            err_console.print(
+                f"[error]{filename}: updated on disk, but relinking failed ({error}). "
+                "Re-run `omm link` to restore its engine links.[/error]"
+            )
+            return "skipped"
+        for destination in entry.get("custom_links") or []:
+            if not isinstance(destination, str):
+                continue
+            try:
+                linker.link_file(dest, Path(destination))
+            except (linker.LinkError, OSError) as error:
+                err_console.print(
+                    f"[warning]{filename}: custom link at {destination} could not be "
+                    f"refreshed: {error}[/warning]"
+                )
         registry.upsert_entry(
             filename,
             sha256=new_sha256,
@@ -6447,34 +6562,13 @@ def _update_one(filename: str, entry: dict) -> str:
             installed_at=datetime.now(timezone.utc).isoformat(),
             ollama_name=ollama_tag,
             provider=provider,
-            linked={spec.key: False for spec in linker.ENGINES},
+            linked=linked,
         )
-        err_console.print(
-            f"[error]{filename}: updated on disk, but relinking failed ({error}). "
-            "Re-run `omm link` to restore its engine links.[/error]"
-        )
-        return "skipped"
-    for destination in entry.get("custom_links") or []:
-        if not isinstance(destination, str):
-            continue
-        try:
-            linker.link_file(dest, Path(destination))
-        except (linker.LinkError, OSError) as error:
-            err_console.print(
-                f"[warning]{filename}: custom link at {destination} could not be "
-                f"refreshed: {error}[/warning]"
-            )
-    registry.upsert_entry(
-        filename,
-        sha256=new_sha256,
-        version=new_sha256[:7],
-        size_bytes=dest.stat().st_size,
-        installed_at=datetime.now(timezone.utc).isoformat(),
-        ollama_name=ollama_tag,
-        provider=provider,
-        linked=linked,
-    )
-    return "updated"
+        return "updated"
+    except KeyboardInterrupt:
+        _unlink_with_retry(tmp)
+        _cleanup_download_parts(tmp)
+        raise
 
 
 def _pick_run_engine(entry: dict, requested: str | None) -> str:
@@ -7139,27 +7233,7 @@ def configure_version(
             err_console.print(f"[error]Channel switch failed:[/error]\n{result.stderr}")
             stderr_lower = (result.stderr or "").lower()
             if "signature" in stderr_lower or "trust chain" in stderr_lower:
-                # A stale installed copy of trust.verify_update can permanently
-                # reject a legitimate branch switch it predates the logic for
-                # (see the module docstring's CAUTION) - no update from within
-                # this same stale copy can fix that. A full reinstall re-fetches
-                # install.sh fresh, which always carries current verification
-                # logic, so it recovers independently of the stuck install.
-                if platform.system() == "Windows":
-                    err_console.print(
-                        "\n[muted]If this channel is legitimate, the installed copy of omm may "
-                        "be too old to verify it. Reinstalling picks up current verification "
-                        "logic:[/muted]\n"
-                        "  [Net.ServicePointManager]::SecurityProtocol = "
-                        "[Net.SecurityProtocolType]::Tls12; irm https://omm.run/install.ps1 | iex"
-                    )
-                else:
-                    err_console.print(
-                        "\n[muted]If this channel is legitimate, the installed copy of omm may "
-                        "be too old to verify it. Reinstalling picks up current verification "
-                        "logic:[/muted]\n"
-                        "  curl -fsSL https://omm.run/install.sh | sh"
-                    )
+                _print_reinstall_hint()
             raise typer.Exit(1)
         current = config_mod.update_config(update_channel=requested)
         latest = _remote_head_commit(branch)
@@ -8112,6 +8186,14 @@ def _cleanup_incomplete_installs() -> int:
         if not path.is_file() or path.is_symlink():
             continue
         relative = path.relative_to(MODELS_DIR).as_posix()
+        if relative.endswith(
+            (".gguf.update.part.ranges.json", ".gguf.update.part.meta", ".gguf.update.part", ".gguf.update")
+        ):
+            lock_target = MODELS_DIR / relative[: relative.rfind(".gguf.update") + len(".gguf.update")]
+            if not _unlink_unless_download_active(path, lock_target):
+                continue
+            removed += 1
+            continue
         registry_filename: str | None = None
         companion_part: Path | None = None
         if relative.endswith(".gguf.part.ranges.json"):
@@ -8128,9 +8210,7 @@ def _cleanup_incomplete_installs() -> int:
             registry_filename not in reg
             or (companion_part is not None and not companion_part.exists())
         ):
-            try:
-                path.unlink()
-            except OSError:
+            if not _unlink_unless_download_active(path, MODELS_DIR / registry_filename):
                 continue
             removed += 1
     for directory in sorted(
@@ -9546,6 +9626,7 @@ def _run_contribution_loop(
     consecutive_daemon_failures = 0
     benchmark_failure_counts: dict[str, int] = {}
     deferred: dict[str, _DeferredContribution] = {}
+    post_download_memory_failures: dict[str, int] = {}
     gpu_state: dict = {"force_cpu": False}
     engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
     while not stop_event.is_set():
@@ -9566,7 +9647,9 @@ def _run_contribution_loop(
                     break
                 time.sleep(_DAEMON_RESTART_BACKOFF_SECONDS)
                 continue
-            if daemon_ref is not None:
+            if daemon_ref is not None and (
+                engine != "lmstudio" or daemon_ref.get("proc") is not None
+            ):
                 daemon_ref["proc"] = restarted
             stats.daemon_restarts += 1
             consecutive_daemon_failures = 0
@@ -9747,7 +9830,9 @@ def _run_contribution_loop(
                     engine=engine,
                 )
             else:
-                if daemon_ref is not None:
+                if daemon_ref is not None and (
+                    engine != "lmstudio" or daemon_ref.get("proc") is not None
+                ):
                     daemon_ref["proc"] = restarted
                 stats.daemon_restarts += 1
                 download_state = {"downloaded_now": False}
@@ -9792,7 +9877,10 @@ def _run_contribution_loop(
             if entry:
                 _remove_one(found_name, entry)
             item = deferred.setdefault(ref_str, _DeferredContribution(candidate))
-            item.attempts += 1
+            post_download_memory_failures[ref_str] = (
+                post_download_memory_failures.get(ref_str, 0) + 1
+            )
+            item.attempts = max(item.attempts + 1, post_download_memory_failures[ref_str])
             if item.attempts == 1:
                 stats.deferred_low_memory += 1
             out_of_retries = item.attempts >= _MAX_CANDIDATE_MEMORY_DEFERRALS
@@ -10147,7 +10235,15 @@ def contribute(
 
         after_count = _telemetry_row_count(endpoint) if endpoint else None
         duration = time.monotonic() - start_time
-        covered_candidates = len(queue.history_refs)
+        current = [
+            c
+            for c in artifact["candidates"]
+            if isinstance(c, dict) and c.get("repo_id") and c.get("filename")
+        ]
+        covered_candidates = sum(
+            1 for c in current if contribute_mod.matches_history(c, queue.history_refs)
+        )
+        succeeded = benchmark_history.loaded_refs()
         _print_contribution_summary(
             stats,
             duration,
@@ -10155,7 +10251,7 @@ def contribute(
             after_count,
             total_candidates=total_candidates,
             covered_candidates=covered_candidates,
-            succeeded_candidates=len(benchmark_history.loaded_refs()),
+            succeeded_candidates=sum(1 for c in current if contribute_mod.matches_history(c, succeeded)),
             engine=engine,
         )
         if stats.exhausted:
@@ -10234,6 +10330,13 @@ def main() -> None:
     Brackets `app()` with the local run log (`runlog`): every invocation
     leaves a `~/.omm/logs/<ts>_<pid>_<cmd>.jsonl` and a `history.log` block.
     `runlog` swallows its own errors, so it never changes the outcome here."""
+    if os.name == "nt":
+        # CreateProcess otherwise searches the current directory before PATH
+        # for a bare executable name (git, pipx, ollama, ...), so a planted
+        # exe in an untrusted cwd can run instead of the real one before any
+        # verification even happens. Child processes inherit this, which is
+        # harmless. setdefault leaves an operator's own setting alone.
+        os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
     runlog.start(sys.argv[1:])
     exit_code, outcome, exc_name = 0, "ok", None
     try:

@@ -216,6 +216,66 @@ def test_upgrade_direct_url_install_reports_skipped_when_finalize_fails(isolated
     assert not (cli.MODELS_DIR / "model.gguf.update").exists()
 
 
+def test_upgrade_keyboard_interrupt_removes_update_temp(isolated_omm_home, monkeypatch):
+    """Ctrl-C mid-update must not leave `.gguf.update`/`.update.part` litter
+    behind, and must never touch the still-good installed `dest`."""
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"old-bytes")
+    entry = _entry(repo_id=None, sha256="old-hash")
+
+    def fake_download(url, path, **_kw):
+        Path(path).write_bytes(b"x")
+        Path(path).with_name(Path(path).name + ".part").write_bytes(b"p")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli._update_one("model.gguf", entry)
+
+    assert not (cli.MODELS_DIR / "model.gguf.update").exists()
+    assert not (cli.MODELS_DIR / "model.gguf.update.part").exists()
+    assert dest.read_bytes() == b"old-bytes"
+
+
+def test_upgrade_retries_transient_sharing_violation_on_final_swap(isolated_omm_home, monkeypatch):
+    """A transient Windows sharing violation on the final rename (e.g. an AV
+    scanner briefly holding the handle) must be retried instead of reported
+    as a hard failure - the same retry `downloader.download_file` already
+    gets on a fresh install."""
+    import omm.downloader as dl
+
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"old-bytes")
+    registry.save_registry({"model.gguf": _entry(repo_id=None, sha256="old-hash")})
+
+    def fake_download(url, path, **_kw):
+        Path(path).write_bytes(b"brand-new-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+    monkeypatch.setattr(dl.time, "sleep", lambda s: None)
+
+    real_replace = Path.replace
+    attempts = {"count": 0}
+
+    def flaky_replace(self, target):
+        if self.name == "model.gguf.update":
+            attempts["count"] += 1
+            if attempts["count"] <= 2:
+                raise PermissionError("sharing violation")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0, result.output
+    assert "updated to" in result.stdout
+    assert dest.read_bytes() == b"brand-new-bytes"
+
+
 def test_upgrade_all_confirmation_cancelled_leaves_registry_untouched(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
     registry.save_registry({"model.gguf": _entry()})
