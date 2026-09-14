@@ -123,7 +123,14 @@ function resolvePlatformPackage(options = {}) {
   const resolvePackage = options.resolvePackage || require.resolve;
   const manifestPath = resolveManifestPath(resolvePackage, target);
 
-  const root = fs.realpathSync(path.dirname(manifestPath));
+  let root;
+  try {
+    root = fs.realpathSync(path.dirname(manifestPath));
+  } catch (error) {
+    throw new LauncherError(
+      `Cannot read the ${target.package} package directory: ${describe(error)}. ${REINSTALL}`,
+    );
+  }
   const manifest = readManifest(manifestPath, target.package);
   const metadata = manifest.omm;
   if (
@@ -139,25 +146,47 @@ function resolvePlatformPackage(options = {}) {
     !/^[0-9a-f]{64}$/.test(metadata.sha256)
   ) {
     throw new LauncherError(
-      `The installed ${target.package} metadata does not match @omm-hippo/omm ${launcherManifest.version}.`,
+      `The installed ${target.package} metadata does not match @omm-hippo/omm ${launcherManifest.version}. ${REINSTALL}`,
     );
   }
   if (target.libc && !exactArray(manifest.libc, target.libc)) {
-    throw new LauncherError(`The installed ${target.package} libc metadata is invalid.`);
+    throw new LauncherError(`The installed ${target.package} libc metadata is invalid. ${REINSTALL}`);
   }
 
   const binaryPath = path.join(root, target.binary);
-  const stat = fs.lstatSync(binaryPath);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new LauncherError(`The ${target.package} executable must be a regular file.`);
+  let stat;
+  try {
+    stat = fs.lstatSync(binaryPath);
+  } catch (error) {
+    throw new LauncherError(
+      `Cannot read the ${target.package} executable ${target.binary}: ${describe(error)}. ${REINSTALL}`,
+    );
   }
-  const binary = fs.realpathSync(binaryPath);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new LauncherError(`The ${target.package} executable must be a regular file. ${REINSTALL}`);
+  }
+  let binary;
+  try {
+    binary = fs.realpathSync(binaryPath);
+  } catch (error) {
+    throw new LauncherError(
+      `Cannot read the ${target.package} executable ${target.binary}: ${describe(error)}. ${REINSTALL}`,
+    );
+  }
   const relative = path.relative(root, binary);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new LauncherError(`The ${target.package} executable escapes its package root.`);
+    throw new LauncherError(`The ${target.package} executable escapes its package root. ${REINSTALL}`);
   }
-  if (sha256File(binary) !== metadata.sha256) {
-    throw new LauncherError(`The ${target.package} executable checksum is invalid.`);
+  let digest;
+  try {
+    digest = sha256File(binary);
+  } catch (error) {
+    throw new LauncherError(
+      `Cannot read the ${target.package} executable ${target.binary}: ${describe(error)}. ${REINSTALL}`,
+    );
+  }
+  if (digest !== metadata.sha256) {
+    throw new LauncherError(`The ${target.package} executable checksum is invalid. ${REINSTALL}`);
   }
   return { root, binary, manifest, target };
 }

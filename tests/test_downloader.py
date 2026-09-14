@@ -1190,6 +1190,55 @@ def test_download_file_parallel_path_converts_enospc_write_error_to_insufficient
     assert dest.with_suffix(dest.suffix + ".part").exists()
 
 
+def test_download_parallel_truncate_enospc_becomes_insufficient_disk_space_error(tmp_path, monkeypatch):
+    """ENOSPC raised by the pre-allocating `truncate()` call in `_download_parallel`
+    must also convert to InsufficientDiskSpaceError, with no retry/fallback."""
+    monkeypatch.setattr(downloader, "_MIN_PARALLEL_TOTAL", 10)
+    monkeypatch.setattr(downloader, "_MIN_CHUNK_SIZE", 5)
+    payload = bytes(range(40))
+    server = _FakeRangeServer(payload)
+    monkeypatch.setattr(requests, "get", server)
+
+    class _NoSpaceOnTruncateFile:
+        def __init__(self, path, mode):
+            self.path = path
+            self.mode = mode
+            self.file = None
+
+        def __enter__(self):
+            self.file = open(self.path, self.mode)
+            return self
+
+        def __exit__(self, *exc_info):
+            if self.file:
+                self.file.close()
+            return False
+
+        def truncate(self, size=None):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def seek(self, pos):
+            return self.file.seek(pos)
+
+        def write(self, data):
+            return self.file.write(data)
+
+    original_open = Path.open
+
+    def fake_open(self, mode="r", *args, **kwargs):
+        if "b" in mode and self.name.endswith(".part"):
+            return _NoSpaceOnTruncateFile(self, mode)
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+
+    dest = tmp_path / "model.gguf"
+    with pytest.raises(downloader.InsufficientDiskSpaceError):
+        downloader.download_file("https://example.com/model.gguf", dest)
+
+    assert server.requests == ["bytes=0-0"]
+
+
 def _render_bar(completed, total, console_width, min_width=10, max_width=60):
     column = downloader.HashBarColumn(min_width=min_width, max_width=max_width)
     bar = column.render(SimpleNamespace(completed=completed, total=total))
@@ -1372,7 +1421,31 @@ def test_write_sidecar_retries_transient_permission_error(tmp_path, monkeypatch)
     assert written["ranges"][0]["done"] == 3
 
 
-def _run_range_worker(tmp_path, payload_chunks, monkeypatch, *, raise_after_chunk=None):
+def test_write_sidecar_removes_its_temp_file_when_replace_keeps_failing(tmp_path, monkeypatch):
+    """If every replace attempt fails (e.g. the file stays locked), the
+    write must not leave `<sidecar>.ranges.json.tmp` behind for good -
+    that's an orphan cleanup code needs to know how to find otherwise."""
+    monkeypatch.setattr(downloader.time, "sleep", lambda _seconds: None)
+
+    def always_fails(self, target):
+        raise PermissionError(13, "sharing violation")
+
+    monkeypatch.setattr(Path, "replace", always_fails)
+
+    sidecar_path = tmp_path / "m.gguf.part.ranges.json"
+    with pytest.raises(PermissionError):
+        downloader._write_sidecar(
+            sidecar_path,
+            "https://x",
+            '"etag"',
+            10,
+            [{"start": 0, "end": 9, "done": 3}],
+        )
+
+    assert not (tmp_path / "m.gguf.part.ranges.json.tmp").exists()
+
+
+def _run_range_worker(tmp_path, payload_chunks, monkeypatch, *, raise_after_chunk=None, abort_event=None):
     """Drive `_download_range_worker` directly over a single full-file range,
     without going through `download_file`'s multi-worker orchestration."""
     payload = b"".join(payload_chunks)
@@ -1425,6 +1498,7 @@ def _run_range_worker(tmp_path, payload_chunks, monkeypatch, *, raise_after_chun
         lock,
         errors,
         None,
+        abort_event,
     )
 
     return part_path, sidecar_path, range_state, errors
@@ -1459,6 +1533,124 @@ def test_range_worker_batches_sidecar_commits_below_chunk_count(tmp_path, monkey
     assert len(write_calls) == 1
     written = json.loads(sidecar_path.read_text(encoding="utf-8"))
     assert written["ranges"][0]["done"] == range_state["done"]
+
+
+def test_range_worker_stops_early_without_adding_an_error_when_aborted(tmp_path, monkeypatch):
+    """When a sibling range worker has already failed fatally, this worker
+    must stop at the next chunk boundary without raising or recording a
+    second error - `errors[0]` should stay the sibling's real failure. The
+    `finally` block must still commit progress made before the abort."""
+    chunks = [b"a" * 4, b"b" * 4]
+    payload = b"".join(chunks)
+    total_size = len(payload)
+    part_path = tmp_path / "model.gguf.part"
+    part_path.write_bytes(b"\0" * total_size)
+    sidecar_path = tmp_path / "model.gguf.part.ranges.json"
+
+    class _StreamingFakeResp(_FakeResp):
+        def iter_content(self, chunk_size):
+            yield from chunks
+
+    def fake_get(url, headers=None, stream=True, timeout=30, **kwargs):
+        return _StreamingFakeResp(
+            206,
+            chunks,
+            headers={
+                "Content-Range": f"bytes 0-{total_size - 1}/{total_size}",
+                "ETag": '"v1"',
+            },
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    abort_event = threading.Event()
+
+    def update_and_abort(*a, **k):
+        # Simulate a sibling worker failing right after this worker's
+        # first chunk is accounted for.
+        abort_event.set()
+
+    progress = SimpleNamespace(update=update_and_abort)
+    range_state = {"start": 0, "end": total_size - 1, "done": 0}
+    ranges_state = [range_state]
+    errors: list[Exception] = []
+    lock = threading.Lock()
+
+    downloader._download_range_worker(
+        "https://example.com/model.gguf",
+        part_path,
+        sidecar_path,
+        range_state,
+        ranges_state,
+        total_size,
+        '"v1"',
+        progress,
+        "task",
+        lock,
+        errors,
+        None,
+        abort_event,
+    )
+
+    assert errors == []
+    assert range_state["done"] == len(chunks[0])
+    written = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert written["ranges"][0]["done"] == range_state["done"]
+
+
+def test_range_worker_failure_sets_the_abort_event(tmp_path, monkeypatch):
+    """A worker's own fatal failure (e.g. a response ETag that doesn't match
+    the strong ETag the download started with) must set the shared
+    abort_event so sibling workers can stop early instead of finishing."""
+    chunks = [b"a" * 4]
+    payload = b"".join(chunks)
+    total_size = len(payload)
+    part_path = tmp_path / "model.gguf.part"
+    part_path.write_bytes(b"\0" * total_size)
+    sidecar_path = tmp_path / "model.gguf.part.ranges.json"
+
+    class _StreamingFakeResp(_FakeResp):
+        def iter_content(self, chunk_size):
+            yield from chunks
+
+    def fake_get(url, headers=None, stream=True, timeout=30, **kwargs):
+        return _StreamingFakeResp(
+            206,
+            chunks,
+            headers={
+                "Content-Range": f"bytes 0-{total_size - 1}/{total_size}",
+                "ETag": '"other"',
+            },
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    progress = SimpleNamespace(update=lambda *a, **k: None)
+    range_state = {"start": 0, "end": total_size - 1, "done": 0}
+    ranges_state = [range_state]
+    errors: list[Exception] = []
+    lock = threading.Lock()
+    abort_event = threading.Event()
+
+    downloader._download_range_worker(
+        "https://example.com/model.gguf",
+        part_path,
+        sidecar_path,
+        range_state,
+        ranges_state,
+        total_size,
+        '"v1"',
+        progress,
+        "task",
+        lock,
+        errors,
+        None,
+        abort_event,
+    )
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], downloader.DownloadError)
+    assert abort_event.is_set()
 
 
 def test_range_worker_fsyncs_data_before_writing_sidecar(tmp_path, monkeypatch):

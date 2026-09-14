@@ -47,6 +47,7 @@ from omm.featurize import (  # noqa: E402
 from omm.atomic import atomic_write_text, locked  # noqa: E402
 from omm.hardware import BUSY_CPU_PERCENT  # noqa: E402
 from scripts.model_quality_gate import (  # noqa: E402
+    INTENTIONALLY_EXCLUDED_REASONS,
     InsufficientTelemetryError,
     compare_artifacts,
     selection_context_key,
@@ -254,18 +255,6 @@ def _direct_bounded_number(value, minimum: float, maximum: float) -> float | Non
 #: healthy daemon. "transient_error" says nothing about fit and is excluded
 #: from every dataset below.
 V7_OUTCOMES = ("success", "model_unfit", "performance_unfit", "transient_error")
-
-#: Rejection reasons meaning "this row was correctly routed elsewhere, not
-#: that the data is malformed." validate_dataset() excludes these from its
-#: rejection-rate gate for exactly that reason.
-INTENTIONALLY_EXCLUDED_REASONS = frozenset({
-    "model_unfit_excluded_from_regression",
-    "performance_unfit_excluded_from_regression",
-    "transient_error_excluded",
-    "pressured_measurement_excluded",
-    "unstable_measurement_excluded",
-    "loaded_measurement_excluded",
-})
 
 #: Physical-plausibility bounds (issue #134). database.rules.json can reject
 #: malformed telemetry (wrong types, out-of-range single fields, unknown

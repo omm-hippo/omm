@@ -2,7 +2,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from omm import cli, linker
+from omm import cli, downloader, linker
 
 runner = CliRunner()
 
@@ -75,6 +75,28 @@ def test_cleanup_cleans_up_orphaned_part_and_gguf_files(isolated_omm_home, monke
     assert "2 incomplete install file(s)" in result.stdout
     assert not orphan_part.exists()
     assert not orphan_full.exists()
+
+
+def test_cleanup_removes_orphan_sidecar_temp_file(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    orphan_tmp = cli.MODELS_DIR / "orphan.gguf.part.ranges.json.tmp"
+    orphan_tmp.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["cleanup"])
+
+    assert result.exit_code == 0, result.stdout
+    assert not orphan_tmp.exists()
+
+    # Recreate it and hold the download lock for the target model: cleanup
+    # must not touch a `.tmp` sidecar another process is actively writing.
+    orphan_tmp.write_text("{}", encoding="utf-8")
+    lock_target = cli.MODELS_DIR / "orphan.gguf"
+    with downloader.locked(downloader._download_lock_path(lock_target)):
+        result = runner.invoke(cli.app, ["cleanup"])
+
+    assert result.exit_code == 0, result.stdout
+    assert orphan_tmp.exists()
 
 
 def test_cleanup_cleans_nested_partial_and_resume_metadata(isolated_omm_home, monkeypatch):

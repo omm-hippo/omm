@@ -32,7 +32,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-portable-${{ github.ref }}
+  group: windows-portable-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

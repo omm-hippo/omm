@@ -38,6 +38,9 @@ class _FakeListener:
     def start(self):
         self.stop_event.set()
 
+    def stop(self, timeout: float = 1.0) -> None:
+        self.stop_event.set()
+
 
 def test_contribute_refuses_to_start_when_model_volume_has_less_than_ten_gib(
     isolated_omm_home, monkeypatch

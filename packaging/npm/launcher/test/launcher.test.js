@@ -73,6 +73,16 @@ function fixture(t, overrides = {}, options = {}) {
   };
 }
 
+function ommMeta(overrides = {}, content = "standalone omm") {
+  return {
+    distribution: "omm-model",
+    target: "darwin-arm64",
+    binary: "bin/omm",
+    sha256: crypto.createHash("sha256").update(content).digest("hex"),
+    ...overrides,
+  };
+}
+
 function resolveFixture(installed, extra = {}) {
   return resolvePlatformPackage({
     platform: "darwin",
@@ -143,10 +153,63 @@ test("resolvePlatformPackage rejects version and target mismatches", (t) => {
   const wrongVersion = fixture(t, { version: "9.9.9" });
   assert.throws(() => resolveFixture(wrongVersion), /metadata does not match/);
 
-  const wrongTarget = fixture(t, {
-    omm: { distribution: "omm-model", target: "darwin-x64", binary: "bin/omm" },
-  });
+  const wrongTarget = fixture(t, { omm: ommMeta({ target: "darwin-x64" }) });
   assert.throws(() => resolveFixture(wrongTarget), /metadata does not match/);
+});
+
+test("resolvePlatformPackage reports version and target mismatches with a recovery command", (t) => {
+  const installed = fixture(t, { version: "9.9.9" });
+  const stderr = collector();
+  assert.equal(runFixture(installed, { stderr }), 1);
+  assert.match(stderr.text, /npm install --global @omm-hippo\/omm/);
+  assert.equal(stderr.text.trimEnd().split("\n").length, 1);
+});
+
+test("resolvePlatformPackage rejects every identity mismatch", (t) => {
+  const cases = [
+    { name: "@omm-hippo/omm-darwin-x64" },
+    { os: ["linux"] },
+    { cpu: ["x64"] },
+    { os: ["darwin", "linux"] },
+    { omm: ommMeta({ distribution: "omm" }) },
+    { omm: ommMeta({ binary: "bin/other" }) },
+  ];
+  for (const overrides of cases) {
+    const installed = fixture(t, overrides);
+    assert.throws(() => resolveFixture(installed), /metadata does not match/);
+  }
+});
+
+test("resolvePlatformPackage accepts a matching glibc target and rejects musl", (t) => {
+  const glibcReport = { getReport: () => ({ header: { glibcVersionRuntime: "2.39" } }) };
+  const linuxOverrides = (libc) => ({
+    name: "@omm-hippo/omm-linux-x64-gnu",
+    os: ["linux"],
+    cpu: ["x64"],
+    libc,
+    omm: ommMeta({ target: "linux-x64-gnu" }),
+  });
+  const good = fixture(t, linuxOverrides(["glibc"]));
+  assert.doesNotThrow(() =>
+    resolvePlatformPackage({
+      platform: "linux",
+      arch: "x64",
+      report: glibcReport,
+      resolvePackage: good.resolvePackage,
+    }),
+  );
+
+  const badLibc = fixture(t, linuxOverrides(["musl"]));
+  assert.throws(
+    () =>
+      resolvePlatformPackage({
+        platform: "linux",
+        arch: "x64",
+        report: glibcReport,
+        resolvePackage: badLibc.resolvePackage,
+      }),
+    /libc metadata is invalid/,
+  );
 });
 
 test("resolvePlatformPackage rejects an absent or non-hex declared checksum", (t) => {
@@ -207,6 +270,19 @@ test("resolvePlatformPackage rejects a bin directory symlinked outside the packa
   }
 
   assert.throws(() => resolveFixture(installed), /escapes its package root/);
+});
+
+test("a missing platform-package binary reports a recovery command", (t) => {
+  const installed = fixture(t);
+  fs.rmSync(installed.binary, { force: true });
+  const stderr = collector();
+  assert.equal(runFixture(installed, { stderr }), 1);
+  assert.match(
+    stderr.text,
+    /Cannot read the @omm-hippo\/omm-darwin-arm64 executable bin\/omm/,
+  );
+  assert.match(stderr.text, /npm install --global @omm-hippo\/omm/);
+  assert.equal(stderr.text.trimEnd().split("\n").length, 1);
 });
 
 test("run forwards argv and verified npm ownership metadata without a shell", (t) => {
