@@ -487,10 +487,12 @@ def _install_filesystem_fixture(engine: str) -> list[Path]:
         binary = root / "koboldcpp-ci-fixture"
         if binary.exists() or binary.is_symlink():
             _fail(f"refusing to replace existing CI fixture path: {binary}")
+        models_dir = binary.parent / "models"
+        models_dir_preexisted = models_dir.exists() or models_dir.is_symlink()
         binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         binary.chmod(0o755)
         linker.find_koboldcpp_binary.cache_clear()
-        return [binary.parent / "models", binary]
+        return [binary] if models_dir_preexisted else [models_dir, binary]
     if engine == "textgenwebui":
         app_root = root / "text-generation-webui-ci-fixture"
         if app_root.exists() or app_root.is_symlink():

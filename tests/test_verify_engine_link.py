@@ -48,6 +48,36 @@ def test_filesystem_fixture_verifier_is_scoped_and_cleans_up(tmp_path, engine):
     assert not (omm_home / "apps" / "lmstudio-models-ci-fixture").exists()
 
 
+def test_koboldcpp_filesystem_fixture_preserves_a_preexisting_models_dir(tmp_path):
+    omm_home = tmp_path / "omm-home"
+    models_dir = omm_home / "apps" / "models"
+    models_dir.mkdir(parents=True)
+    preserved = models_dir / "preserve-me.txt"
+    preserved.write_text("keep", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["OMM_HOME"] = str(omm_home)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/verify_engine_link.py",
+            "koboldcpp",
+            "--filesystem-fixture",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert preserved.exists()
+    assert not (omm_home / "apps" / "koboldcpp-ci-fixture").exists()
+
+
 def test_flat_engine_verifier_accepts_hardlinks_and_owned_copy_shape(tmp_path):
     source = tmp_path / "source.gguf"
     source.write_bytes(b"GGUF fixture")
