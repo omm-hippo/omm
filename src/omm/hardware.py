@@ -583,7 +583,9 @@ def _scan_windows_gpu() -> tuple[str | None, float | None, float | None]:
         if "intel" in lowered:
             # Intel Arc A/B-series names denote discrete adapters; generic
             # "Intel Arc Graphics", Iris, and UHD are integrated/shared.
-            return re.search(r"\barc\s+[ab]\d", lowered) is None
+            normalized = re.sub(r"\((?:tm|r)\)|[™®]", " ", lowered)
+            normalized = " ".join(normalized.split())
+            return re.search(r"\barc\s+(?:pro\s+)?[ab]\d", normalized) is None
         return "radeon(tm) graphics" in lowered or "radeon graphics" == lowered.strip()
 
     # Hybrid laptops often enumerate the integrated adapter first. Prefer a
