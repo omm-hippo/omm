@@ -1341,3 +1341,31 @@ def test_download_file_refuses_a_concurrent_writer(
     with downloader.locked(downloader._download_lock_path(dest)):
         with pytest.raises(downloader.DownloadError, match="already writing"):
             downloader.download_file("https://example.com/model.gguf", dest)
+
+
+def test_write_sidecar_retries_transient_permission_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader.time, "sleep", lambda _seconds: None)
+
+    real_replace = Path.replace
+    attempts = {"count": 0}
+
+    def flaky_replace(self, target):
+        if self.name.endswith(".ranges.json.tmp"):
+            attempts["count"] += 1
+            if attempts["count"] <= 2:
+                raise PermissionError(13, "sharing violation")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+
+    sidecar_path = tmp_path / "m.gguf.part.ranges.json"
+    downloader._write_sidecar(
+        sidecar_path,
+        "https://x",
+        '"etag"',
+        10,
+        [{"start": 0, "end": 9, "done": 3}],
+    )
+
+    written = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert written["ranges"][0]["done"] == 3

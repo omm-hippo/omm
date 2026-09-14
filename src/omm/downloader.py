@@ -183,7 +183,14 @@ def _write_sidecar(
             },
             f,
         )
-    tmp.replace(sidecar_path)
+    for attempt in range(8):
+        try:
+            tmp.replace(sidecar_path)
+            return
+        except PermissionError:
+            if attempt == 7:
+                raise
+            time.sleep(min(0.025 * (2**attempt), 0.5))
 
 
 def _valid_parallel_state(state: object, total_size: int) -> bool:
@@ -466,13 +473,20 @@ def _download_range_worker(
                 with lock:
                     range_state["done"] += len(chunk)
                     progress.update(task_id, advance=len(chunk))
-                    _write_sidecar(
-                        sidecar_path,
-                        url,
-                        strong_etag,
-                        total_size,
-                        ranges_state,
-                    )
+                    try:
+                        _write_sidecar(
+                            sidecar_path,
+                            url,
+                            strong_etag,
+                            total_size,
+                            ranges_state,
+                        )
+                    except PermissionError:
+                        # Sidecar commit failure is not a download failure: `done`
+                        # is already reflected in memory and will be committed
+                        # again on the next chunk. A stale sidecar just means we
+                        # re-download a bit on resume, which is safe.
+                        pass
                 if stop_check is not None and stop_check():
                     raise DownloadCancelled("interrupted by user")
         if written != expected_len:
