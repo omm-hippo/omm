@@ -236,6 +236,10 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
     assert "actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661" in workflow
 
+    attest_start = workflow.index("- name: Attest the portable archive")
+    attest_block = workflow[attest_start:workflow.index("actions/attest-build-provenance@", attest_start)]
+    assert "if: github.event_name != 'pull_request'" in attest_block
+
 
 def test_windows_portable_requirements_are_exactly_pinned():
     requirements = (
