@@ -66,6 +66,34 @@ def test_discard_pending(isolated_omm_home, monkeypatch):
     assert usage.pending_count() == 0
 
 
+def test_discard_pending_count_matches_what_it_deletes(isolated_omm_home, monkeypatch):
+    """discard_pending's returned count must match what it actually deletes.
+    It must not compute the count via a separate call to the (lockable,
+    racy) _read_pending - if it did, a row appended by another process
+    between that count and the unlink would vanish uncounted."""
+    _enable(monkeypatch)
+    usage.record_run("install", "ok", None)
+    real_read_pending = usage._read_pending
+    fired = []
+
+    def racing():
+        if not fired:
+            fired.append(1)
+            usage.record_run("list", "ok", None)
+        return real_read_pending()
+
+    monkeypatch.setattr(usage, "_read_pending", racing)
+
+    n = usage.discard_pending()
+
+    # discard_pending bypasses the (now-racing) _read_pending entirely, so
+    # it only ever counts/deletes what was there when it took the lock -
+    # the row racing() appends afterwards (observed via pending_count(),
+    # which does go through _read_pending) survives untouched.
+    assert n == 1
+    assert usage.pending_count() == 1
+
+
 def test_flush_noop_before_interval(isolated_omm_home, monkeypatch):
     _enable(monkeypatch)
     (config.OMM_HOME).mkdir(parents=True, exist_ok=True)
@@ -156,3 +184,23 @@ def test_gpu_vendor_does_not_mistake_model_numbers_for_apple_chips():
         "Something else": "other",
     }
     assert {name: usage._gpu_vendor(name) for name in expected} == expected
+
+
+def test_flush_keeps_rows_recorded_while_sending(isolated_omm_home, monkeypatch):
+    _enable(monkeypatch)
+    usage.record_run("install", "ok", None)
+    sent = []
+
+    def fake_post(payload):
+        sent.append(payload)
+        usage.record_run("list", "ok", None)
+        return True
+
+    monkeypatch.setattr(usage, "_post", fake_post)
+
+    assert usage.flush_pending(force=True) is True
+    assert sent[0]["commands"] == {"install ok": 1}
+    assert usage.pending_count() == 1
+    assert json.loads(
+        (config.OMM_HOME / "usage-pending.json").read_text(encoding="utf-8")
+    ) == [{"c": "list", "o": "ok"}]

@@ -74,17 +74,23 @@ def _recording_enabled_read_only() -> bool:
 # --- collection --------------------------------------------------------
 
 
+def _read_pending_unlocked(path) -> list[dict]:
+    try:
+        if not path.exists():
+            return []
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(loaded, list):
+        return []
+    return [r for r in loaded if isinstance(r, dict)][-_PENDING_MAX:]
+
+
 def _read_pending() -> list[dict]:
     try:
         with locked(_pending_path(), timeout=10):
-            path = _pending_path()
-            if not path.exists():
-                return []
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(loaded, list):
-            return []
-        return [r for r in loaded if isinstance(r, dict)][-_PENDING_MAX:]
-    except (OSError, ValueError, FileLockTimeout):
+            return _read_pending_unlocked(_pending_path())
+    except (OSError, FileLockTimeout):
         return []
 
 
@@ -118,11 +124,12 @@ def pending_count() -> int:
 
 
 def discard_pending() -> int:
+    path = _pending_path()
     try:
-        n = pending_count()
-        with locked(_pending_path(), timeout=10):
-            _pending_path().unlink(missing_ok=True)
-        return n
+        with locked(path, timeout=10):
+            n = len(_read_pending_unlocked(path))
+            path.unlink(missing_ok=True)
+            return n
     except (OSError, FileLockTimeout):
         return 0
 
@@ -214,11 +221,13 @@ def _aggregate(rows: list[dict]) -> tuple[dict, dict]:
     )
 
 
-def build_payload() -> dict:
+def build_payload(rows: list[dict] | None = None) -> dict:
     """Snapshot + aggregated tally of pending rows. Used by the sender and
-    by ``omm setting upload usage``'s dry-run preview."""
+    by ``omm setting upload usage``'s dry-run preview. ``rows`` lets a caller
+    pass an already-taken snapshot so it aggregates and later clears exactly
+    the same rows, instead of re-reading a queue that may have grown."""
     payload = _snapshot()
-    commands, errors = _aggregate(_read_pending())
+    commands, errors = _aggregate(_read_pending() if rows is None else rows)
     payload["commands"] = commands
     if errors:
         payload["errors"] = errors
@@ -324,6 +333,29 @@ def _post(payload: dict) -> bool:
     return _post_to(config.USAGE_GATEWAY_ENDPOINT, payload)
 
 
+def _remove_sent_rows(snapshot: list[dict]) -> None:
+    """Remove exactly the rows in ``snapshot`` from the pending queue,
+    leaving any row appended (by ``record_run``) while the send was in
+    flight. Mirrors telemetry/error_report, which use the same
+    read-snapshot-then-diff pattern to avoid discarding a queue that grew
+    during a slow PoW-signed POST."""
+    if not snapshot:
+        return
+    from omm.telemetry import _remove_sent_snapshot_entries
+
+    path = _pending_path()
+    try:
+        with locked(path, timeout=10):
+            current = _read_pending_unlocked(path)
+            remaining = _remove_sent_snapshot_entries(current, snapshot, list(range(len(snapshot))))
+            if remaining:
+                atomic_write_text(path, json.dumps(remaining[-_PENDING_MAX:]))
+            else:
+                path.unlink(missing_ok=True)
+    except (OSError, FileLockTimeout):
+        pass
+
+
 def flush_pending(force: bool = False) -> bool:
     """Send one batch if opted in, past the 24h interval, and not backing
     off. Clears pending + stamps state on success. One POST per call.
@@ -349,8 +381,8 @@ def flush_pending(force: bool = False) -> bool:
                 last = float(_read_state().get("last_sent", 0) or 0)
                 if time.time() - last < _FLUSH_INTERVAL_S:
                     return False
-            if _post(build_payload()):
-                discard_pending()
+            if _post(build_payload(rows)):
+                _remove_sent_rows(rows)
                 _stamp_state()
                 _clear_backoff()
                 return True
