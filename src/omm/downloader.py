@@ -157,6 +157,11 @@ def _sidecar_path(part_path: Path) -> Path:
     return part_path.with_name(part_path.name + ".ranges.json")
 
 
+def _sidecar_tmp_path(sidecar_path: Path) -> Path:
+    """Temp file `_write_sidecar` replaces into place; cleanup code must know this name too."""
+    return sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
+
+
 def _download_lock_path(dest: Path) -> Path:
     """A lock proxy outside the model directory, keyed by absolute target."""
     key = str(dest.expanduser().absolute())
@@ -183,43 +188,46 @@ def _write_sidecar(
     # half-written JSON file that would poison the next resume attempt.
     # fsynced before the rename so the *state* this file records is itself
     # durable, not just atomically swapped in.
-    tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "url": url,
-                "etag": strong_etag,
-                "total_size": total_size,
-                "ranges": ranges,
-            },
-            f,
-        )
-        f.flush()
-        os.fsync(f.fileno())
-    for attempt in range(8):
-        try:
-            tmp.replace(sidecar_path)
-            break
-        except PermissionError:
-            if attempt == 7:
-                raise
-            time.sleep(min(0.025 * (2**attempt), 0.5))
-    # Directory fsync is best-effort, same as atomic._replace_temporary:
-    # unsupported on some Windows filesystems, and the file-level fsync
-    # above already covers the content that matters for a resume.
+    tmp = _sidecar_tmp_path(sidecar_path)
     try:
-        descriptor = os.open(sidecar_path.parent, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:
-        pass
-    finally:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "url": url,
+                    "etag": strong_etag,
+                    "total_size": total_size,
+                    "ranges": ranges,
+                },
+                f,
+            )
+            f.flush()
+            os.fsync(f.fileno())
+        for attempt in range(8):
+            try:
+                tmp.replace(sidecar_path)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(min(0.025 * (2**attempt), 0.5))
+        # Directory fsync is best-effort, same as atomic._replace_temporary:
+        # unsupported on some Windows filesystems, and the file-level fsync
+        # above already covers the content that matters for a resume.
         try:
-            os.close(descriptor)
+            descriptor = os.open(sidecar_path.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(descriptor)
         except OSError:
             pass
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _valid_parallel_state(state: object, total_size: int) -> bool:
@@ -436,6 +444,7 @@ def _download_range_worker(
     lock: threading.Lock,
     errors: list[Exception],
     stop_check: Callable[[], bool] | None,
+    abort_event: threading.Event | None = None,
 ) -> None:
     start = range_state["start"]
     end = range_state["end"]
@@ -538,6 +547,11 @@ def _download_range_worker(
                             or time.monotonic() - last_commit_at >= _SIDECAR_COMMIT_SECONDS
                         ):
                             _commit_progress()
+                    if abort_event is not None and abort_event.is_set():
+                        # Another range already failed fatally - stop now and add no
+                        # second error, so `errors[0]` stays the real cause. The outer
+                        # `finally` still commits `done` to the sidecar.
+                        return
                     if stop_check is not None and stop_check():
                         raise DownloadCancelled("interrupted by user")
             finally:
@@ -555,6 +569,8 @@ def _download_range_worker(
             )
     except Exception as e:  # noqa: BLE001 - collected and re-raised by the caller
         errors.append(e)
+        if abort_event is not None:
+            abort_event.set()
     finally:
         if resp is not None:
             resp.close()
@@ -577,6 +593,7 @@ def _run_range_workers(
     parallel, updating the sidecar after every chunk so a future resume
     only has to fetch what's still missing."""
     lock = threading.Lock()
+    abort_event = threading.Event()
     errors: list[Exception] = []
     completed = sum(r["done"] for r in ranges_state)
     pending = [r for r in ranges_state if r["done"] < (r["end"] - r["start"] + 1)]
@@ -602,6 +619,7 @@ def _run_range_workers(
                         lock,
                         errors,
                         stop_check,
+                        abort_event,
                     )
                     for r in pending
                 ]
@@ -647,8 +665,16 @@ def _download_parallel(
 ) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     _part_metadata_path(part_path).unlink(missing_ok=True)
-    with part_path.open("wb") as f:
-        f.truncate(total_size)
+    try:
+        with part_path.open("wb") as f:
+            f.truncate(total_size)
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            raise InsufficientDiskSpaceError(
+                f"Not enough disk space to download {part_path.name}.",
+                fix="Free up disk space and retry.",
+            ) from e
+        raise
 
     ranges_state = [{"start": start, "end": end, "done": 0} for start, end in _plan_ranges(total_size, thread_count)]
     _write_sidecar(sidecar_path, url, strong_etag, total_size, ranges_state)
