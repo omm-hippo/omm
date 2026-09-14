@@ -1729,14 +1729,42 @@ def _link_ollama_unlocked(
         # reject and misattribute to a genuine version incompatibility,
         # permanently poisoning `_manifest_format_known_good` for a
         # transient race rather than a real format drift.
+        previous_manifest: bytes | None = None
+        previous_mode: int | None = None
+        previous_source: Path | None = None
         with locked(_engine_path_lock(manifest_path)):
             if manifest_path.exists() or manifest_path.is_symlink():
                 # Re-checked under the manifest lock: another process may
                 # have published here since the pre-check above.
                 if not _manifest_owned_or_matches(manifest_path, gguf_path, model_sha256):
                     raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
-                manifest_path.unlink()
-                _update_link_ownership(manifest_path, None)
+                if manifest_path.is_file() and not manifest_path.is_symlink():
+                    # Back up the existing registration so a failure below
+                    # (disk full, interrupted write, corrupted read-back) can
+                    # restore it instead of leaving the model unregistered.
+                    # atomic_write_text below replaces via os.replace(), so
+                    # there is no need to unlink first.
+                    previous_manifest = manifest_path.read_bytes()
+                    previous_mode = stat_module.S_IMODE(manifest_path.stat().st_mode)
+                    rec = _ownership_record(manifest_path)
+                    src = rec.get("source") if rec else None
+                    previous_source = Path(src) if isinstance(src, str) else None
+                else:
+                    manifest_path.unlink()
+                    _update_link_ownership(manifest_path, None)
+
+            def _restore_previous() -> None:
+                if previous_manifest is None:
+                    manifest_path.unlink(missing_ok=True)
+                    return
+                try:
+                    atomic_write_bytes(manifest_path, previous_manifest)
+                    if platform.system() != "Windows":
+                        manifest_path.chmod(previous_mode)
+                    _record_ownership(manifest_path, previous_source, "manifest")
+                except OSError:
+                    pass
+
             atomic_write_text(manifest_path, manifest_json)
             # atomic_write_text's tempfile.mkstemp() defaults to mode 0600
             # (owner read/write only), which os.replace() carries straight
@@ -1753,19 +1781,19 @@ def _link_ollama_unlocked(
             try:
                 written_back = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, ValueError) as e:
-                manifest_path.unlink(missing_ok=True)
+                _restore_previous()
                 raise LinkError(
                     f"Ollama manifest for {model_name} did not read back intact after write: {e}."
                 ) from e
             if written_back != manifest:
-                manifest_path.unlink(missing_ok=True)
+                _restore_previous()
                 raise LinkError(
                     f"Ollama manifest for {model_name} was corrupted during write (concurrent writer?)."
                 )
             try:
                 _record_ownership(manifest_path, gguf_path, "manifest")
             except OSError:
-                manifest_path.unlink(missing_ok=True)
+                _restore_previous()
                 raise
     except PermissionError as e:
         # A systemd-managed Ollama's models dir can be owned by a different

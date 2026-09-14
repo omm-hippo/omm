@@ -1,3 +1,4 @@
+import errno
 import json
 import platform
 import struct
@@ -619,6 +620,68 @@ def test_ollama_force_preserves_unowned_manifest(isolated_omm_home, tmp_path, mo
         linker.link_ollama(source, "model", models_dir=models_dir, force=True)
 
     assert manifest.read_text(encoding="utf-8") == "stale manifest, no ownership record"
+
+
+def test_relink_failure_before_manifest_write_keeps_existing_registration(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A relink that fails before the manifest is actually replaced must
+    leave the previous, working registration in place rather than deleting
+    it up front and then failing to write the replacement."""
+    source = tmp_path / "m.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+
+    linker.link_ollama(source, "model", models_dir=models_dir)
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    original = manifest.read_bytes()
+
+    monkeypatch.setattr(linker, "_ollama_link_already_current", lambda *a, **k: False)
+    real = linker.atomic_write_text
+
+    def failing(path, content):
+        if path.name == "latest":
+            raise OSError(errno.ENOSPC, "No space left")
+        return real(path, content)
+
+    monkeypatch.setattr(linker, "atomic_write_text", failing)
+
+    with pytest.raises(linker.LinkError):
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert manifest.read_bytes() == original
+    assert linker._owned_manifest(manifest)
+
+
+def test_relink_readback_failure_restores_previous_manifest(isolated_omm_home, tmp_path, monkeypatch):
+    """If the just-written manifest doesn't read back intact (torn write /
+    concurrent writer), the previous registration must be restored instead
+    of left deleted."""
+    source = tmp_path / "m.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+
+    linker.link_ollama(source, "model", models_dir=models_dir)
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    original = manifest.read_bytes()
+
+    monkeypatch.setattr(linker, "_ollama_link_already_current", lambda *a, **k: False)
+    real = linker.atomic_write_text
+
+    def failing(path, content):
+        if path.name == "latest":
+            return real(path, "{")
+        return real(path, content)
+
+    monkeypatch.setattr(linker, "atomic_write_text", failing)
+
+    with pytest.raises(linker.LinkError):
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert manifest.read_bytes() == original
+    assert linker._owned_manifest(manifest)
 
 
 def test_link_file_raises_link_error_when_mkdir_fails(tmp_path, monkeypatch):
