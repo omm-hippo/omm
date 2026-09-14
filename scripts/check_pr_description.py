@@ -32,9 +32,10 @@ MIN_HANGUL = 40
 # PRs created by automation carry no human-readable context to enforce.
 BOT_LOGIN_SUFFIX = "[bot]"
 BOT_LOGINS = {"omm-retrain-bot"}
-# train.yml opens `retrain/<timestamp>` PRs; the beta -> main sync PR has head `beta`.
+# train.yml opens `retrain/<timestamp>` PRs; the beta -> main sync PR has head `beta`;
+# emergency-signal.yml opens `emergency-signal/<timestamp>` PRs.
 EXEMPT_HEAD_BRANCHES = {"beta"}
-EXEMPT_HEAD_PREFIXES = ("retrain/",)
+EXEMPT_HEAD_PREFIXES = ("retrain/", "emergency-signal/")
 
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.S)

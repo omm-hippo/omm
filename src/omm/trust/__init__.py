@@ -29,12 +29,14 @@ calling out loudly in release notes.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 MIN_GIT_VERSION = (2, 34)  # first release with SSH commit-signature support
+MIN_MERGE_TREE_GIT_VERSION = (2, 38)  # first release with git merge-tree --write-tree
 TRUST_ANCHOR_REPO_PATH = "src/omm/trust/allowed_signers"
 
 # Every `subprocess.run` in this module decodes with these. git writes its
@@ -67,7 +69,7 @@ def current_trust_anchor() -> Path | None:
     return path if path.is_file() else None
 
 
-def _git_version_ok() -> bool:
+def _git_version() -> tuple[int, int] | None:
     try:
         result = subprocess.run(
             ["git", "--version"],
@@ -78,16 +80,33 @@ def _git_version_ok() -> bool:
             timeout=5,
         )
     except (subprocess.TimeoutExpired, OSError):
-        return False
+        return None
     # "git version 2.43.0" (sometimes "2.43.0.windows.1" etc.)
     parts = result.stdout.split()
     if getattr(result, "returncode", 0) != 0 or len(parts) < 3:
-        return False
+        return None
     try:
         major, minor = (int(p) for p in parts[2].split(".")[:2])
     except ValueError:
-        return False
-    return (major, minor) >= MIN_GIT_VERSION
+        return None
+    return (major, minor)
+
+
+def _git_version_ok() -> bool:
+    version = _git_version()
+    return version is not None and version >= MIN_GIT_VERSION
+
+
+def _forbid_cwd_executable_lookup() -> None:
+    """On Windows, CreateProcess searches the current directory before PATH
+    for a bare executable name (git, ssh-keygen, ...) - a planted `git.exe`
+    sitting in a freshly cloned repo's working directory would otherwise run
+    as this process on the very first bare `git` call, before any signature
+    is ever checked. Setting this env var (once; inherited by every child
+    process afterward) disables that search. A no-op on POSIX, where the
+    shell never searches the CWD for a bare name. `setdefault` leaves an
+    existing value alone - any value at all disables the CWD search."""
+    os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
 
 
 def _signing_commit(repo_dir: Path, commit: str) -> str:
@@ -164,6 +183,7 @@ def verify_commit(
     may use :func:`verified_install_commit` to select the signed parent, and
     updates use :func:`verify_update` to validate every merge result.
     """
+    _forbid_cwd_executable_lookup()
     if allowed_signers is None:
         return True, "no trust anchor bundled with the current install yet (one-time bootstrap pass-through)"
     if not _git_version_ok():
@@ -175,6 +195,7 @@ def verified_install_commit(
     repo_dir: Path, commit: str, allowed_signers: Path | None
 ) -> tuple[str | None, str]:
     """Return the exact signed commit that a fresh install may execute."""
+    _forbid_cwd_executable_lookup()
     ok, message = verify_commit(repo_dir, commit, allowed_signers)
     if ok:
         return commit, message
@@ -233,6 +254,13 @@ def _verify_lineage_commit(
     signed, signed_message = _verify_signature(repo_dir, parents[1], allowed_signers)
     if not signed:
         return False, signed_message
+    version = _git_version()
+    if version is None or version < MIN_MERGE_TREE_GIT_VERSION:
+        found = ".".join(map(str, version)) if version else "unknown"
+        return False, (
+            f"merge commit {commit[:7]} can only be verified with git 2.38+ "
+            f"(git merge-tree --write-tree); found git {found}. Upgrade git and rerun."
+        )
     if not _deterministic_merge_tree_matches(repo_dir, commit, parents):
         return False, f"merge commit {commit[:7]} has an unauthenticated merge-result tree"
     return True, f"merge commit {commit[:7]} deterministically matches signed parent {parents[1][:7]}"
@@ -298,7 +326,11 @@ def verify_update(
     was already checked out and verified at some earlier point on the way to
     the installed commit (git's hash-chained history makes that commit's
     bytes exactly what they always were), so there is nothing left to verify
-    - accept it directly rather than reject a deliberate, informed downgrade.
+    - accept it directly rather than reject a deliberate, informed downgrade,
+    but only once the ancestor's own tree is authenticated - an exact
+    signature, or a two-parent merge whose second parent is signed and whose
+    tree `git merge-tree` reproduces exactly - using the anchor as it stands
+    right now.
 
     Otherwise, every commit on the first-parent path from a trusted base
     commit is verified. That base is the installed commit itself when it is
@@ -310,6 +342,7 @@ def verify_update(
     when their second parent is trusted and ``git merge-tree`` reproduces the
     exact target tree.
     """
+    _forbid_cwd_executable_lookup()
     if current_commit and target_commit == current_commit:
         # Nothing to update: the target is the commit already checked out
         # and running. Re-verifying it would reject the common case where
@@ -324,10 +357,25 @@ def verify_update(
             return False, "could not compare target and installed commit ancestry"
         if target_is_ancestor:
             if not same_branch:
-                return (
-                    True,
-                    f"commit {target_commit[:7]} already verified as part of the "
-                    "installed history",
+                if ok:
+                    return True, (
+                        f"commit {target_commit[:7]} signature verified "
+                        "(ancestor of the installed commit)"
+                    )
+                parents = _parents(repo_dir, target_commit)
+                if allowed_signers is not None and len(parents) == 2:
+                    verified, message = _verify_lineage_commit(
+                        repo_dir, target_commit, parents[0], allowed_signers
+                    )
+                    if verified:
+                        return True, message
+                    return False, (
+                        f"channel switch target {target_commit[:7]} is not "
+                        f"authenticated: {message}"
+                    )
+                return False, (
+                    f"channel switch target {target_commit[:7]} is not "
+                    f"authenticated: {direct_message}"
                 )
             return False, "target commit is older than the installed commit"
     if ok or allowed_signers is None:

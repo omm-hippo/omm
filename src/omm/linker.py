@@ -263,6 +263,9 @@ def _linux_install_artifact_exists(install_dirs: Sequence[Path], desktop_entry_g
     return False
 
 
+_LMSTUDIO_WINDOWS_INSTALL_DIRS = ("LM Studio", "lm-studio", "lmstudio")
+
+
 def is_lmstudio_installed() -> bool:
     # A headless llmster install (the `lms` CLI + daemon, no GUI) is a
     # real, usable install with no app bundle at all - check it first.
@@ -270,7 +273,14 @@ def is_lmstudio_installed() -> bool:
         return True
     if platform.system() == "Darwin":
         return _app_bundle_installed("LM Studio")
-    return lmstudio_home_dir().exists()
+    if lmstudio_home_dir().exists():
+        return True
+    if platform.system() == "Windows":
+        # electron-builder NSIS writes %LOCALAPPDATA%\Programs\LM Studio and a
+        # Start Menu shortcut at install time; ~/.lmstudio and lms.exe only
+        # appear on first run.
+        return _windows_install_artifact_exists(_LMSTUDIO_WINDOWS_INSTALL_DIRS, "LM Studio*.lnk")
+    return False
 
 
 def find_ollama_executable() -> Path | None:
@@ -1635,7 +1645,15 @@ def _link_ollama_unlocked(
             elif model_blob.is_symlink():
                 raise LinkError(f"Refusing broken Ollama model blob symlink: {model_blob}.")
             else:
-                link_file(gguf_path, model_blob, on_copy=on_copy)
+                try:
+                    link_file(gguf_path, model_blob, on_copy=on_copy)
+                except LinkError as error:
+                    if isinstance(error.__cause__, PermissionError):
+                        # Re-raise the original PermissionError so the outer
+                        # `except PermissionError` (issue #117) can drive the
+                        # native-create fallback or attach its fix hint.
+                        raise error.__cause__ from None
+                    raise
 
         # Mirrors the config produced by `ollama create` for a bare GGUF (no
         # Modelfile TEMPLATE override): a single model layer, config mediaType
@@ -1803,9 +1821,11 @@ def _ollama_cli_version() -> str | None:
 
 
 def _manifest_format_known_good(ollama_version: str) -> bool | None:
-    """True/False if this exact Ollama version was already probed; None if
-    unknown (never checked, or the cache is for a different version - an
-    Ollama upgrade can change the manifest shape)."""
+    """True/False if this exact Ollama version was already confirmed
+    compatible/incompatible; None if unknown (never checked, the cache is
+    for a different version - an Ollama upgrade can change the manifest
+    shape -, or incompatibility is still unconfirmed pending a second
+    distinct model failure - see _record_manifest_format_result)."""
     path = _ollama_manifest_compat_cache_path()
     if not path.exists():
         return None
@@ -1821,12 +1841,55 @@ def _manifest_format_known_good(ollama_version: str) -> bool | None:
     return compatible if isinstance(compatible, bool) else None
 
 
-def _record_manifest_format_result(ollama_version: str, compatible: bool) -> None:
+def _record_manifest_format_result(ollama_version: str, compatible: bool, model_name: str) -> None:
+    """Cache a manifest-format probe result for `ollama_version`.
+
+    A single rejection is not trusted on its own - a transient CLI/daemon
+    hiccup on one model used to permanently disable zero-copy linking for
+    every model afterwards. Only two *distinct* models failing under the
+    same Ollama version confirms real format incompatibility (compatible =
+    False); a lone failure is recorded as unconfirmed (compatible = None)
+    so the next model still gets a fresh zero-copy attempt. Any accepted
+    result clears the failure history and confirms compatibility outright.
+    """
     path = _ollama_manifest_compat_cache_path()
-    content = json.dumps({"ollama_version": ollama_version, "compatible": compatible})
     try:
         with locked(path):
+            if compatible:
+                content = json.dumps({"ollama_version": ollama_version, "compatible": True})
+                atomic_write_text(path, content)
+                return
+            previous_compatible: object = None
+            previous_failures: list[str] = []
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = None
+            if isinstance(existing, dict) and existing.get("ollama_version") == ollama_version:
+                previous_compatible = existing.get("compatible")
+                raw_failures = existing.get("failures")
+                if isinstance(raw_failures, list):
+                    previous_failures = [f for f in raw_failures if isinstance(f, str)]
+            failures = list(previous_failures)
+            if model_name not in failures:
+                failures.append(model_name)
+            confirmed = len(set(failures)) >= 2
+            content = json.dumps(
+                {
+                    "ollama_version": ollama_version,
+                    "compatible": False if confirmed else None,
+                    "failures": failures,
+                }
+            )
             atomic_write_text(path, content)
+            if confirmed and previous_compatible is not False:
+                log.warning(
+                    "Ollama %s rejected omm's manifest for multiple models (%s) - "
+                    "falling back to native `ollama create` for future links until "
+                    "Ollama's manifest format is confirmed compatible again.",
+                    ollama_version,
+                    ", ".join(sorted(set(failures))),
+                )
     except OSError:
         pass
 
@@ -2062,7 +2125,7 @@ def _ensure_ollama_accepts(
     accepted = _ollama_accepts_manifest(model_name)
     if accepted is None:
         return has_chat_template
-    _record_manifest_format_result(ollama_version, accepted)
+    _record_manifest_format_result(ollama_version, accepted, model_name)
     if accepted:
         return has_chat_template
     # Remove the rejected hand-written manifest and its omm-owned model
@@ -2476,12 +2539,27 @@ def jan_models_dir() -> Path:
     return jan_app_dir() / "data" / "llamacpp" / "models"
 
 
+_JAN_WINDOWS_INSTALL_DIRS = ("Jan", "jan")
+
+
 def is_jan_installed() -> bool:
     system = platform.system()
     if system == "Darwin":
         return _app_bundle_installed("Jan")
     if jan_app_dir().exists():
         return True
+    if system == "Windows":
+        if _windows_install_artifact_exists(_JAN_WINDOWS_INSTALL_DIRS, "Jan.lnk"):
+            return True
+        # Tauri NSIS per-user default install lands at %LOCALAPPDATA%\<productName>,
+        # outside the helper's own Programs root.
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            try:
+                return any(p.suffix.lower() == ".exe" for p in (Path(local) / "Jan").iterdir())
+            except OSError:
+                return False
+        return False
     if system == "Linux" and shutil.which("flatpak") is not None:
         # jan_app_dir() (~/.config/Jan) is only created the first time Jan
         # actually launches - a flatpak install that succeeded but was
@@ -2512,7 +2590,7 @@ def _jan_model_yaml_path(model_id: str) -> Path:
     return jan_models_dir() / model_id / "model.yml"
 
 
-def link_jan(gguf_path: Path, model_id: str) -> Path:
+def link_jan(gguf_path: Path, model_id: str, *, force: bool = False) -> Path:
     """Register `gguf_path` with Jan by writing a model.yml manifest that
     points model_path straight at it - no symlink needed, since Jan's own
     local-file import does the same (stores the absolute path as-is)."""
@@ -2535,12 +2613,27 @@ def link_jan(gguf_path: Path, model_id: str) -> Path:
             if not config_path.parent.resolve().is_relative_to(root.resolve()):
                 raise LinkError("Refusing Jan manifest path outside the models directory.")
             config_path.parent.mkdir(parents=True, exist_ok=True)
-            if config_path.exists() and not _owned_manifest(
-                config_path, expected_source=gguf_path
-            ):
-                raise LinkError(
-                    f"Refusing to replace unowned Jan manifest at {config_path}."
-                )
+            if config_path.exists():
+                record = _ownership_record(config_path)
+                if not _owned_manifest(config_path, expected_source=gguf_path, record=record):
+                    recorded = None if config_path.is_symlink() else read_jan_model_path(config_path)
+                    if recorded is not None and _link_key(Path(recorded)) == _link_key(gguf_path):
+                        # Already points at this model (Jan's UI rewrote fields
+                        # like ctx_size) - keep the current manifest rather than
+                        # clobbering user settings.
+                        return config_path
+                    owned_by_other = (
+                        _owned_manifest(config_path, record=record)
+                        and record.get("source") not in (None, _link_key(gguf_path))
+                    )
+                    if owned_by_other:
+                        raise LinkError(
+                            f"Refusing to replace an omm Jan manifest for a different model at {config_path}."
+                        )
+                    if not force:
+                        raise LinkError(
+                            f"Refusing to replace unowned Jan manifest at {config_path}."
+                        )
             atomic_write_text(config_path, content)
             try:
                 _record_ownership(config_path, gguf_path, "manifest")
@@ -3547,7 +3640,7 @@ def link_engine(
     elif key == "lmstudio":
         link_lmstudio(gguf_path, repo_id, on_copy=report_copy, force=force)
     elif key == "jan":
-        link_jan(gguf_path, ollama_tag)
+        link_jan(gguf_path, ollama_tag, force=force)
     elif key == "anythingllm":
         link_ollama(
             gguf_path,

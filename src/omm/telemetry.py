@@ -36,6 +36,14 @@ _MAX_FAILURE_DETAIL_LENGTH = 300
 _POW_DIFFICULTY_PREFIX_LENGTH = 5
 _POW_DIFFICULTY_PREFIX = "0" * _POW_DIFFICULTY_PREFIX_LENGTH
 
+# A gateway that is down or misconfigured must not make every single `omm`
+# command pay a proof-of-work solve plus an HTTP round trip for a send that
+# is going to fail anyway. Consecutive failures push the next attempt out
+# exponentially, capped at `_BACKOFF_MAX_SECONDS`; any fully-successful
+# flush clears it immediately. Mirrors `omm.error_report`'s backoff.
+_BACKOFF_INITIAL_SECONDS = 30
+_BACKOFF_MAX_SECONDS = 6 * 60 * 60
+
 
 @dataclass(frozen=True)
 class SendStatus:
@@ -72,6 +80,48 @@ def _pending_path():
 
 def last_failed_path():
     return config.OMM_HOME / "telemetry_last_failed.json"
+
+
+def _backoff_path():
+    return config.OMM_HOME / "telemetry_backoff.json"
+
+
+def _read_backoff() -> dict[str, Any]:
+    path = _backoff_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_backoff(data: dict[str, Any]) -> None:
+    try:
+        atomic_write_text(_backoff_path(), json.dumps(data))
+    except OSError:
+        pass
+
+
+def _backoff_active() -> bool:
+    next_attempt_at = _read_backoff().get("next_attempt_at")
+    return isinstance(next_attempt_at, (int, float)) and time.time() < next_attempt_at
+
+
+def _record_flush_outcome(*, attempted: int, sent: int) -> None:
+    """Widen the cooldown on a partial/total failure, clear it on a clean
+    flush. `attempted` excludes calls that never reached the network (no
+    pending events, or already inside an active cooldown)."""
+    if attempted == 0:
+        return
+    if sent == attempted:
+        if _backoff_path().exists():
+            _write_backoff({})
+        return
+    failures = int(_read_backoff().get("consecutive_failures", 0)) + 1
+    delay = min(_BACKOFF_INITIAL_SECONDS * (2 ** (failures - 1)), _BACKOFF_MAX_SECONDS)
+    _write_backoff({"consecutive_failures": failures, "next_attempt_at": time.time() + delay})
 
 
 def last_send_status() -> SendStatus | None:
@@ -352,6 +402,8 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH) -> int:
     # callback runs before the setting subcommand body.
     if load_config().get("telemetry_send_policy") != "always":
         return 0
+    if _backoff_active():
+        return 0
     path = _pending_path()
     try:
         # Serialize flushers with each other, but do not hold the queue lock
@@ -383,6 +435,7 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH) -> int:
                         path,
                         json.dumps(still_pending[-_MAX_PENDING_EVENTS:]),
                     )
+            _record_flush_outcome(attempted=len(to_retry), sent=resent)
             return resent
     except (OSError, FileLockTimeout):
         return 0

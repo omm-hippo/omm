@@ -291,27 +291,37 @@ $PipxEnvironment = "omm-model"
 $LegacyPipxEnvironment = "omm"
 
 function Get-PipxSnapshot {
+    # pipx's own `list --json` returns 1 (EXIT_CODE_LIST_PROBLEM) whenever any
+    # venv on the machine is unhealthy - printing the full snapshot for every
+    # *other* venv first, and simply omitting the broken one. Treating exit 1
+    # as failure here would refuse to install because of a venv omm has never
+    # heard of. Accept exit 1 only when stdout actually parsed as a snapshot;
+    # any other nonzero exit code still fails closed.
     $previousErrorActionPreference = $ErrorActionPreference
     $previousNativePref = $PSNativeCommandUseErrorActionPreference
-    $ok = $false
+    $exitCode = 1
     $output = @()
     try {
         $ErrorActionPreference = "Continue"
         $PSNativeCommandUseErrorActionPreference = $false
         $output = @(Invoke-Pipx list --json 2>$null)
-        $ok = $LASTEXITCODE -eq 0
+        $exitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
         $PSNativeCommandUseErrorActionPreference = $previousNativePref
     }
-    if (-not $ok) {
+    if ($exitCode -ne 0 -and $exitCode -ne 1) {
         throw "Could not inspect existing pipx environments; refusing an unsafe migration."
     }
     try {
-        return (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine) | ConvertFrom-Json
+        $snapshot = (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine) | ConvertFrom-Json
     } catch {
         throw "Could not parse pipx environment metadata; refusing an unsafe migration."
     }
+    if ($null -eq $snapshot -or $null -eq $snapshot.venvs -or $null -eq $snapshot.pipx_spec_version) {
+        throw "Could not inspect existing pipx environments; refusing an unsafe migration."
+    }
+    return $snapshot
 }
 
 function Test-PipxSnapshotEnvironment {
@@ -398,7 +408,11 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-distribution, omm_home, require_source, expected_version = sys.argv[1:]
+args = sys.argv[1:]
+if len(args) not in (3, 4):
+    raise SystemExit(1)
+distribution, omm_home, require_source = args[:3]
+expected_version = args[3] if len(args) == 4 else ""
 try:
     dist = importlib.metadata.distribution(distribution)
 except importlib.metadata.PackageNotFoundError:
@@ -612,6 +626,14 @@ $PythonExecutable = (Invoke-Python -c "import sys; print(sys.executable)").Trim(
 $PipxLocalVenvs = ([string](Invoke-Pipx environment --value PIPX_LOCAL_VENVS)).Trim()
 $PipxBinDir = ([string](Invoke-Pipx environment --value PIPX_BIN_DIR)).Trim()
 $PipxSnapshot = Get-PipxSnapshot
+foreach ($envName in @($LegacyPipxEnvironment, $PipxEnvironment)) {
+    $envDir = Join-Path $PipxLocalVenvs $envName
+    if ((Test-Path -LiteralPath $envDir -PathType Container) -and -not (Test-PipxSnapshotEnvironment $PipxSnapshot $envName)) {
+        Write-Error ("pipx reports the '$envName' environment as broken (see 'pipx list'). Repair or remove it, " +
+            "then rerun this installer; models under OMM_HOME are not affected.")
+        exit 1
+    }
+}
 $LegacyPipxPresent = Test-PipxSnapshotEnvironment $PipxSnapshot $LegacyPipxEnvironment
 if ($LegacyPipxPresent -and (
     -not (Test-PipxSnapshotIdentity $PipxSnapshot $LegacyPipxEnvironment $LegacyPipxEnvironment) -or

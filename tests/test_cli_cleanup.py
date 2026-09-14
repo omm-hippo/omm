@@ -109,6 +109,53 @@ def test_cleanup_leaves_registered_files_alone(isolated_omm_home, monkeypatch):
     assert kept.exists()
 
 
+def test_cleanup_skips_partial_owned_by_active_download(isolated_omm_home, monkeypatch):
+    """A `.part` is only ever orphaned once the download that owns it has
+    given up the download lock - `cleanup` must not delete one an active
+    download is still writing, even though it looks unregistered/orphaned
+    from the registry's point of view alone."""
+    from omm import downloader
+
+    _no_engines(monkeypatch)
+    cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    orphan_part = cli.MODELS_DIR / "orphan.gguf.part"
+    orphan_part.write_bytes(b"partial")
+
+    with downloader.locked(downloader._download_lock_path(cli.MODELS_DIR / "orphan.gguf")):
+        result = runner.invoke(cli.app, ["cleanup"])
+
+    assert result.exit_code == 0, result.stdout
+    assert orphan_part.exists()
+
+
+def test_cleanup_removes_interrupted_upgrade_leftovers(isolated_omm_home, monkeypatch):
+    """`omm upgrade`'s temp files (`<name>.gguf.update`, `.update.part`,
+    `.update.part.meta`) are always orphans once left behind - regardless of
+    whether the underlying model is registered - and must not survive
+    `cleanup`, while the real installed model must."""
+    from omm import registry
+
+    _no_engines(monkeypatch)
+    cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    registry.save_registry({"model.gguf": {"linked": {"lmstudio": False, "ollama": False}}})
+    installed = cli.MODELS_DIR / "model.gguf"
+    installed.write_bytes(b"installed-bytes")
+    update = cli.MODELS_DIR / "model.gguf.update"
+    update.write_bytes(b"stale-update")
+    update_part = cli.MODELS_DIR / "model.gguf.update.part"
+    update_part.write_bytes(b"stale-part")
+    update_part_meta = cli.MODELS_DIR / "model.gguf.update.part.meta"
+    update_part_meta.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["cleanup"])
+
+    assert result.exit_code == 0, result.stdout
+    assert not update.exists()
+    assert not update_part.exists()
+    assert not update_part_meta.exists()
+    assert installed.exists()
+
+
 def test_cleanup_tolerates_permission_error_removing_incomplete_file(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
     cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)

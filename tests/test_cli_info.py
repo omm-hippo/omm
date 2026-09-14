@@ -254,6 +254,46 @@ def test_info_reports_a_reference_no_provider_could_resolve(isolated_omm_home, m
     assert "not found" in result.stderr
 
 
+def test_info_escapes_provider_markup_in_metadata(isolated_omm_home, monkeypatch):
+    _stub_remote(
+        monkeypatch,
+        metadata={
+            "base_model": "[bold]SAFE[/bold]",
+            "license": "[link=https://evil.example]mit[/link]",
+        },
+    )
+
+    result = runner.invoke(cli.app, ["info", "org/repo"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "[bold]SAFE[/bold]" in result.stdout
+    assert "[link=https://evil.example]" in result.stdout
+
+
+def test_info_warns_when_resolution_falls_back_with_a_note(isolated_omm_home, monkeypatch):
+    resolved = _resolved(note="HuggingFace is unreachable; resolved via ModelScope instead.")
+    monkeypatch.setattr(cli, "resolve_model", lambda name: resolved)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 4 * 1024**3)
+    monkeypatch.setattr(cli, "fetch_repo_metadata", lambda provider, repo_id: {})
+
+    result = runner.invoke(cli.app, ["info", "org/repo"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "HuggingFace is unreachable; resolved via ModelScope instead." in result.stderr
+
+
+def test_info_does_not_warn_when_resolution_has_no_note(isolated_omm_home, monkeypatch):
+    resolved = _resolved()
+    monkeypatch.setattr(cli, "resolve_model", lambda name: resolved)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 4 * 1024**3)
+    monkeypatch.setattr(cli, "fetch_repo_metadata", lambda provider, repo_id: {})
+
+    result = runner.invoke(cli.app, ["info", "org/repo"])
+
+    assert result.exit_code == 0, result.stdout
+    assert result.stderr == ""
+
+
 def test_info_does_not_print_the_fit_card(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.linker, "is_engine_installed", lambda key: False)
     registry.save_registry({"model.gguf": _entry()})

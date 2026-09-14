@@ -62,6 +62,26 @@ def upsert_entry(filename: str, **fields: Any) -> None:
     )
 
 
+def remove_fields(filename: str, *keys: str) -> None:
+    """Drop top-level keys from one entry (e.g. `pinned`/`archive`) -
+    `upsert_entry` can only set/merge fields, never delete one, since a
+    missing key in its `**fields` is indistinguishable from "don't touch
+    this field". No-op if the entry or a key is already absent."""
+    ensure_omm_home()
+    with locked(REGISTRY_PATH):
+        registry = load_registry()
+        entry = registry.get(filename)
+        if not isinstance(entry, dict):
+            return
+        for key in keys:
+            entry.pop(key, None)
+        _save_registry_unlocked(registry)
+    log.info(
+        "registry remove-fields %s", filename,
+        extra={"event": "registry-remove-fields", "model": filename, "fields": sorted(keys)},
+    )
+
+
 def record_compatibility(filename: str, engine: str, result: dict[str, Any]) -> None:
     """Atomically store one engine result without replacing sibling engines."""
     ensure_omm_home()

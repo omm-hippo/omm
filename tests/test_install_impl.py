@@ -914,6 +914,19 @@ def test_resolve_upload_decision_ask_falls_back_to_confirm(isolated_omm_home, mo
     assert cli._resolve_upload_decision("other") is False
 
 
+def test_resolve_upload_decision_ask_without_tty_returns_false_without_prompt(
+    isolated_omm_home, monkeypatch
+):
+    """A non-interactive process (e.g. a hidden background child) must not
+    block on - or silently answer - a data-upload prompt it can't actually
+    show. `_ask_upload_choice` is left unstubbed so a regression that moves
+    the guard elsewhere would hang on the real (patched-out) prompt."""
+    cli.config_mod.update_config(telemetry_send_policy="ask")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+
+    assert cli._resolve_upload_decision("p") is False
+
+
 def test_resolve_upload_decision_always_choice_persists_policy_and_uploads(isolated_omm_home, monkeypatch):
     cli.config_mod.update_config(telemetry_send_policy="ask")
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "always")
@@ -1676,6 +1689,53 @@ def test_force_deletes_existing_model_when_reclaiming_is_actually_needed(
 
     assert dest_existed_at_download_time == [False]
     assert destination.read_bytes() == b"fresh-bytes"
+
+
+def test_force_reclaim_does_not_delete_partial_owned_by_active_download(
+    isolated_omm_home, monkeypatch
+):
+    """When a force reclaim is actually needed (see the test above), it must
+    not blow away a `.part` another download is actively writing - the
+    reclaim now takes the same download lock the downloader itself holds,
+    so it either waits (not here, timeout=0) or refuses instead of stomping
+    on live bytes."""
+    from omm import downloader
+
+    destination = cli.MODELS_DIR / "model.gguf"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"existing-complete-model")
+    part_path = destination.with_name(destination.name + ".part")
+    part_path.write_bytes(b"partial-bytes-in-flight")
+
+    def fake_capacity(dest, size_bytes, *, include_download, only_engine, replace_existing=False):
+        if include_download and not replace_existing:
+            raise cli.InsufficientDiskSpaceError("not enough free space")
+
+    monkeypatch.setattr(cli, "_ensure_install_disk_capacity", fake_capacity)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 1024)
+    monkeypatch.setattr(cli, "sha256_file", lambda _path: "expected-sha")
+    monkeypatch.setattr(
+        cli, "download_file", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no download"))
+    )
+
+    with downloader.locked(downloader._download_lock_path(destination)):
+        with pytest.raises(cli.DownloadError):
+            cli._prepare_install_artifact(
+                url="https://example.test/model.gguf",
+                filename="model.gguf",
+                repo_id="org/repo",
+                provider="huggingface",
+                dest=destination,
+                expected_sha256="expected-sha",
+                force=True,
+                skip_unfit=False,
+                stop_event=None,
+                only_engine=None,
+                opts=cli.GlobalOptions(),
+            )
+
+    assert part_path.exists()
+    assert destination.exists()
 
 
 def test_without_force_skips_fetch_when_already_present(isolated_omm_home, monkeypatch):

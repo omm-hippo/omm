@@ -97,6 +97,25 @@ def test_flush_keeps_pending_on_failure(isolated_omm_home, monkeypatch):
     assert usage.pending_count() == 1
 
 
+def test_concurrent_flush_sends_the_daily_batch_once(isolated_omm_home, monkeypatch):
+    _enable(monkeypatch)
+    usage.record_run("install", "ok", None)
+    calls = []
+
+    def fake_post(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            # Simulate a second process racing the same flush while this
+            # one is mid-send - it must back off immediately rather than
+            # sending a second copy of the same daily batch.
+            usage.flush_pending()
+        return True
+
+    monkeypatch.setattr(usage, "_post", fake_post)
+    assert usage.flush_pending() is True
+    assert len(calls) == 1
+
+
 def test_flush_noop_when_policy_unset(isolated_omm_home, monkeypatch):
     # opted out: even with pending rows written under an earlier consent
     _enable(monkeypatch)

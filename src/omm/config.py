@@ -33,6 +33,11 @@ RECOMMEND_MODEL_PATH = OMM_HOME / "recommend-model.json"
 EVALUATIONS_DIR = OMM_HOME / "evaluations"
 CALIBRATION_PATH = OMM_HOME / "calibration.json"
 CATALOG_HISTORY_DIR = OMM_HOME / "catalog-history"
+# One archived revision per pinned model (`omm pin`), kept outside MODELS_DIR
+# so `omm cleanup`'s unregistered-*.gguf sweep of the hub never treats an
+# archived copy as an orphan download. See cli.py's _archive_path /
+# _archive_before_replace / rollback.
+MODEL_ARCHIVE_DIR = OMM_HOME / "model-archive"
 # Stable random per-install id for anonymous usage stats. Its own file, never
 # config.json - config gets copied between machines and this must not travel
 # with it. See omm.usage and config.client_id().

@@ -22,8 +22,9 @@ class ModelResolutionError(Exception):
     cause+fix error format (issue #191) - callers that don't have one
     just omit it and get the old single-message behavior."""
 
-    def __init__(self, message: str, *, fix: str | None = None):
+    def __init__(self, message: str, *, fix: str | None = None, kind: str | None = None):
         self.fix = fix
+        self.kind = kind
         super().__init__(message)
 
 

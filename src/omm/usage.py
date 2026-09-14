@@ -327,25 +327,34 @@ def _post(payload: dict) -> bool:
 def flush_pending(force: bool = False) -> bool:
     """Send one batch if opted in, past the 24h interval, and not backing
     off. Clears pending + stamps state on success. One POST per call.
-    Swallows all errors; returns whether it sent."""
+    Swallows all errors; returns whether it sent.
+
+    Guarded by a non-blocking flush lock: two `omm` processes racing to
+    send the same daily batch (e.g. a foreground command and a detached
+    background child both starting up at once) must not both post it. A
+    process that loses the race gives up immediately instead of waiting,
+    so this never stalls a user-facing command.
+    """
     try:
         if policy() != "enabled":
             return False
-        rows = _read_pending()
-        if not rows and not force:
+        path = _pending_path()
+        with locked(path.with_name(f"{path.name}.flush"), timeout=0):
+            rows = _read_pending()
+            if not rows and not force:
+                return False
+            if not force:
+                if _backoff_active():
+                    return False
+                last = float(_read_state().get("last_sent", 0) or 0)
+                if time.time() - last < _FLUSH_INTERVAL_S:
+                    return False
+            if _post(build_payload()):
+                discard_pending()
+                _stamp_state()
+                _clear_backoff()
+                return True
+            _set_backoff(6 * 3600)
             return False
-        if not force:
-            if _backoff_active():
-                return False
-            last = float(_read_state().get("last_sent", 0) or 0)
-            if time.time() - last < _FLUSH_INTERVAL_S:
-                return False
-        if _post(build_payload()):
-            discard_pending()
-            _stamp_state()
-            _clear_backoff()
-            return True
-        _set_backoff(6 * 3600)
-        return False
     except Exception:
         return False

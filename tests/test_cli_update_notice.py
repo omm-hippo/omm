@@ -28,12 +28,37 @@ def test_bg_version_check_cmd_delegates_to_cached_remote_head(monkeypatch):
     monkeypatch.setattr(
         cli.version_check,
         "cached_remote_head",
-        lambda fetch, *a, **k: calls.append((fetch, k.get("installed"))) or "new_sha",
+        lambda fetch, *a, **k: calls.append((fetch, k.get("installed"), k.get("ttl_seconds")))
+        or "new_sha",
     )
 
     cli._bg_version_check_cmd()
 
-    assert calls == [(cli._remote_head_commit, "old_sha")]
+    assert calls == [(cli._remote_head_commit, "old_sha", 0)]
+
+
+def test_bg_version_check_child_does_not_flush_queued_uploads(isolated_omm_home, monkeypatch):
+    """The hidden `_bg-version-check` child is spawned by `_root`'s prelude
+    itself, not issued by the user, so it must not flush queued telemetry/
+    error-report/usage uploads on the user's behalf (see
+    _SKIP_QUEUED_UPLOAD_SUBCOMMANDS in _root()). usage.flush_pending() is
+    wrapped in a bare `except Exception: pass` in `_root`, so an
+    AssertionError there would be silently swallowed either way - use a
+    call-recording stub for it instead of one that throws."""
+    for mod in (cli.telemetry, cli.error_report):
+        monkeypatch.setattr(
+            mod,
+            "flush_pending",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("no flush")),
+        )
+    usage_calls = []
+    monkeypatch.setattr(cli.usage, "flush_pending", lambda *a, **k: usage_calls.append(1))
+    monkeypatch.setattr(cli.version_check, "cached_remote_head", lambda *a, **k: None)
+
+    result = runner.invoke(cli.app, ["_bg-version-check"])
+
+    assert result.exit_code == 0, result.stdout
+    assert usage_calls == []
 
 
 def test_maybe_start_update_check_skips_for_update_subcommand(monkeypatch):
@@ -158,6 +183,32 @@ def test_maybe_start_update_check_skips_reconfirm_spawn_when_already_in_flight(m
     cli._maybe_start_update_check(ctx)
 
     assert ctx.close_callbacks == []
+
+
+def test_reconfirm_child_refreshes_a_fresh_cache_after_installed_moved(
+    isolated_omm_home, monkeypatch
+):
+    """End-to-end: the parent's cache is fresh but `installed` has moved
+    since it was written, so it spawns a reconfirm child. That child must
+    actually refresh the cache (ttl_seconds=0) instead of seeing its own
+    fresh cache and returning without fetching - otherwise the stale
+    `checked_against` (here "A") would never get updated to the real
+    current commit ("B") and the update notice stays suppressed until the
+    30-minute TTL expires on its own."""
+    from omm import version_check
+
+    version_check.record("C", ref=cli._channel_branch(), installed="A")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "B")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda ref="main": "C")
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *a, **k: cli._bg_version_check_cmd())
+    ctx = _FakeCtx("list", cli.GlobalOptions())
+
+    cli._maybe_start_update_check(ctx)
+
+    fresh, latest, checked_against = version_check.cached_remote_head_if_fresh(
+        cli._channel_branch()
+    )
+    assert (fresh, latest, checked_against) == (True, "C", "B")
 
 
 def test_maybe_start_update_check_spawns_detached_child_when_stale_and_not_in_flight(monkeypatch):

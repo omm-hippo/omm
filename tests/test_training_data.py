@@ -654,6 +654,88 @@ def test_fetch_real_rows_rejects_insecure_remote_url_before_sending_token(monkey
     assert calls == []
 
 
+def test_fetch_real_rows_raises_on_http_error(monkeypatch):
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "super-secret-token")
+
+    class _FailingResponse:
+        def raise_for_status(self):
+            raise train_model.requests.HTTPError("401")
+
+        def json(self):
+            raise AssertionError("json() should not be called after raise_for_status fails")
+
+    monkeypatch.setattr(train_model.requests, "get", lambda *a, **k: _FailingResponse())
+
+    with pytest.raises(train_model.TelemetryFetchError) as excinfo:
+        train_model.fetch_real_rows("https://collector.example/v1/benchmarks/export")
+
+    assert "super-secret-token" not in str(excinfo.value)
+
+
+def test_fetch_real_rows_raises_on_unparseable_body(monkeypatch):
+    class _UnparseableResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(train_model.requests, "get", lambda *a, **k: _UnparseableResponse())
+
+    with pytest.raises(train_model.TelemetryFetchError):
+        train_model.fetch_real_rows("https://collector.example/v1/benchmarks/export")
+
+
+def test_quality_gate_fails_loudly_when_telemetry_fetch_fails(tmp_path, monkeypatch):
+    output = tmp_path / "model.json"
+
+    def _raise_fetch_error(_url):
+        raise train_model.TelemetryFetchError("couldn't fetch telemetry from https://collector.example/x: boom")
+
+    monkeypatch.setattr(train_model, "fetch_real_rows", _raise_fetch_error)
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[], offline=False, telemetry_url="https://collector.example/x",
+            output=output, baseline=tmp_path / "baseline.json", quality_gate=True,
+            minimum_real_configurations=0, maximum_rejection_rate=0.25, holdout_fraction=0.2,
+            quality_report=None, minimum_fit_negative_examples=5,
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        train_model.main()
+
+    assert not output.exists()
+
+
+def test_offline_false_non_gate_run_continues_after_a_fetch_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(train_model, "load_candidates", lambda: [])
+    monkeypatch.setattr(
+        train_model,
+        "synthetic_rows_from_rules",
+        lambda: ([[0.0] * len(train_model.FEATURE_ORDER)], [0.0]),
+    )
+
+    def _raise_fetch_error(_url):
+        raise train_model.TelemetryFetchError("couldn't fetch telemetry from https://collector.example/x: boom")
+
+    monkeypatch.setattr(train_model, "fetch_real_rows", _raise_fetch_error)
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[], offline=False, telemetry_url="https://collector.example/x",
+            output=tmp_path / "model.json", baseline=None, quality_gate=False,
+            minimum_real_configurations=0, maximum_rejection_rate=0.25, holdout_fraction=0.2,
+            quality_report=None, minimum_fit_negative_examples=5,
+        ),
+    )
+
+    train_model.main()  # must not raise: only --quality-gate escalates a fetch failure
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -821,6 +903,53 @@ def test_quality_gate_regression_republishes_baseline_unchanged(tmp_path, monkey
     assert set(candidate_kwargs["sample_weight"][1:]) == {
         train_model.QUALITY_GATE_REAL_WEIGHT
     }
+
+
+def test_quality_gate_single_selection_context_republishes_baseline_unchanged(tmp_path, monkeypatch):
+    # validate_dataset() passes (minimum_real_configurations=0), but only one
+    # selection context exists - stable_holdout_split() is the one that must
+    # soft-skip here, not validate_dataset().
+    telemetry = tmp_path / "telemetry.json"
+    telemetry.write_text(json.dumps([_v6_row(10)]), encoding="utf-8")
+    output = tmp_path / "model.json"
+    output.write_text("incumbent-output", encoding="utf-8")
+    baseline = tmp_path / "baseline.json"
+    monkeypatch.setattr(train_model, "load_candidates", lambda: [])
+    X, y = train_model.real_rows_to_training_data(json.loads(telemetry.read_text(encoding="utf-8")))
+    baseline.write_text(
+        json.dumps(
+            train_model.train_artifact(
+                X, y, sample_weight=None, training_mode="telemetry", bootstrap_method=None,
+                real_rows=[], telemetry_audit={"unique_configurations": len(X)},
+                input_sources=[], evaluation=None,
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        train_model,
+        "synthetic_rows_from_rules",
+        lambda: ([X[0]], [0.0]),
+    )
+    monkeypatch.setattr(train_model, "validate_dataset", lambda *a, **k: None)
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[telemetry], offline=True, telemetry_url="", output=output,
+            baseline=baseline, quality_gate=True, minimum_real_configurations=0,
+            maximum_rejection_rate=0.25, holdout_fraction=0.2, quality_report=tmp_path / "q.json",
+            minimum_fit_negative_examples=5,
+        ),
+    )
+
+    train_model.main()  # must not raise: a single selection context is a soft skip
+
+    assert output.read_text(encoding="utf-8") == baseline.read_text(encoding="utf-8")
+    report = json.loads((tmp_path / "q.json").read_text(encoding="utf-8"))
+    assert report["skipped"] is True
+    assert report["passed"] is False
+    assert "two selection contexts" in report["reason"]
 
 
 def test_quality_gate_publishes_hybrid_artifact_after_pass(tmp_path, monkeypatch):

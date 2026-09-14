@@ -1148,7 +1148,15 @@ def test_link_ollama_falls_back_to_native_create_when_show_rejects_manifest(
     # native import, so peak usage is one extra copy and no stale blob leaks.
     assert {path.name for path in (models_dir / "blobs").iterdir()} == {"sha256-native"}
     cache = json.loads((home / "ollama_manifest_compat.json").read_text(encoding="utf-8"))
-    assert cache == {"ollama_version": "ollama version is 9.9.9", "compatible": False}
+    # A single rejected model doesn't confirm incompatibility outright (see
+    # test_manifest_format_result_requires_two_distinct_model_failures) - it's
+    # recorded as unconfirmed so the next model still gets a fresh zero-copy
+    # attempt, while this model still falls back to native create above.
+    assert cache == {
+        "ollama_version": "ollama version is 9.9.9",
+        "compatible": None,
+        "failures": ["model"],
+    }
     # Ownership must be recorded even though omm never wrote this manifest
     # itself, or unlink_ollama/autoremove_ollama would refuse to clean it up.
     linker.unlink_ollama("model", models_dir=models_dir)
@@ -1242,6 +1250,85 @@ def test_link_ollama_falls_back_to_native_create_on_permission_error(
     assert manifest_path.exists()
 
 
+def _patch_link_file_denies_blob_link(monkeypatch, models_dir):
+    real_link_file = linker.link_file
+
+    def denying_link_file(src, dst, **kwargs):
+        if dst.parent == models_dir / "blobs":
+            try:
+                raise PermissionError(13, "Permission denied", str(dst))
+            except PermissionError as e:
+                raise linker.LinkError(f"Could not create symlink at {dst}: {e}.") from e
+        return real_link_file(src, dst, **kwargs)
+
+    monkeypatch.setattr(linker, "link_file", denying_link_file)
+
+
+def test_link_ollama_native_create_when_blob_link_denied_with_existing_blobs_dir(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A LinkError raised deep inside link_file (issue #117's systemd case,
+    reached via a PermissionError from the symlink/hardlink/copy fallback
+    chain) must still reach the outer `except PermissionError` in
+    _link_ollama_unlocked so the native-create fallback runs, instead of
+    escaping as an unhandled LinkError."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    calls = []
+
+    def run_ollama(cmd, **kwargs):
+        calls.append(cmd[1] if len(cmd) > 1 else cmd[0])
+        if cmd[1:] == ["--version"]:
+            return _FakeResult(stdout="ollama version is 1.2.3")
+        if cmd[1] == "create":
+            manifest = (
+                models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+            )
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(
+                '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.ollama.image.model",'
+                '"digest":"sha256:native"}]}'
+            , encoding="utf-8")
+            return _FakeResult(returncode=0)
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    models_dir = _stub_ollama_env(monkeypatch, tmp_path, run_ollama)
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
+    )
+    home = tmp_path / ".omm"
+    monkeypatch.setattr(config, "OMM_HOME", home)
+
+    (models_dir / "blobs").mkdir(parents=True)
+    _patch_link_file_denies_blob_link(monkeypatch, models_dir)
+
+    result = linker.link_ollama(source, "model")
+
+    assert result is True
+    assert "create" in calls
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    assert manifest_path.exists()
+
+
+def test_link_ollama_explicit_models_dir_blob_link_denied_has_fix(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+
+    def run_ollama(cmd, **kwargs):
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    models_dir = _stub_ollama_env(monkeypatch, tmp_path, run_ollama)
+    (models_dir / "blobs").mkdir(parents=True)
+    _patch_link_file_denies_blob_link(monkeypatch, models_dir)
+
+    with pytest.raises(linker.LinkError) as excinfo:
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert "writable" in (excinfo.value.fix or "")
+
+
 def test_link_ollama_treats_unreachable_daemon_as_unverified_not_incompatible(
     isolated_omm_home, tmp_path, monkeypatch
 ):
@@ -1265,6 +1352,49 @@ def test_link_ollama_treats_unreachable_daemon_as_unverified_not_incompatible(
     assert not (home / "ollama_manifest_compat.json").exists()
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     assert manifest_path.exists()  # omm's own hand-rolled manifest, untouched
+
+
+def test_manifest_format_result_stays_unconfirmed_after_one_model_failure(
+    isolated_omm_home,
+):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is None
+    cache = json.loads(linker._ollama_manifest_compat_cache_path().read_text(encoding="utf-8"))
+    assert cache == {
+        "ollama_version": "ollama version is 9.9.9",
+        "compatible": None,
+        "failures": ["model-a"],
+    }
+
+
+def test_manifest_format_result_confirms_after_two_distinct_model_failures(
+    isolated_omm_home,
+):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-b")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is False
+
+
+def test_manifest_format_result_success_clears_prior_failures(isolated_omm_home):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+    linker._record_manifest_format_result("ollama version is 9.9.9", True, "model-b")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is True
+    cache = json.loads(linker._ollama_manifest_compat_cache_path().read_text(encoding="utf-8"))
+    assert cache == {"ollama_version": "ollama version is 9.9.9", "compatible": True}
+
+
+def test_manifest_format_result_repeated_same_model_failure_does_not_confirm(
+    isolated_omm_home,
+):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is None
+    cache = json.loads(linker._ollama_manifest_compat_cache_path().read_text(encoding="utf-8"))
+    assert cache["failures"] == ["model-a"]
 
 
 def test_link_ollama_explicit_models_dir_never_calls_ollama_cli(

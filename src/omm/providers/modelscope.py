@@ -46,38 +46,43 @@ def _list_repo_files(repo_id: str, timeout: float = 15) -> list[dict]:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
             raise ModelResolutionError(
-                f"ModelScope repo '{repo_id}' is private or gated - requires an access token."
+                f"ModelScope repo '{repo_id}' is private or gated - requires an access token.",
+                kind="not_found",
             ) from e
         if status == 404:
-            raise ModelResolutionError(f"ModelScope repo '{repo_id}' not found.") from e
+            raise ModelResolutionError(
+                f"ModelScope repo '{repo_id}' not found.", kind="not_found"
+            ) from e
         raise ModelResolutionError(
-            f"ModelScope API request failed for '{repo_id}' ({status})."
+            f"ModelScope API request failed for '{repo_id}' ({status}).", kind="unavailable"
         ) from e
     except ValueError as e:
         # requests.exceptions.JSONDecodeError subclasses both RequestException
         # and ValueError - this branch must come first or a non-JSON body
         # gets the misleading "could not reach" message instead of this one.
         raise ModelResolutionError(
-            f"ModelScope API response was not valid JSON for '{repo_id}': {e}"
+            f"ModelScope API response was not valid JSON for '{repo_id}': {e}", kind="unavailable"
         ) from e
     except requests.RequestException as e:
-        raise ModelResolutionError(f"Could not reach ModelScope for '{repo_id}': {e}") from e
+        raise ModelResolutionError(
+            f"Could not reach ModelScope for '{repo_id}': {e}", kind="unavailable"
+        ) from e
 
     if not isinstance(payload, dict):
         raise ModelResolutionError(
-            f"ModelScope API returned an unexpected response for '{repo_id}'."
+            f"ModelScope API returned an unexpected response for '{repo_id}'.", kind="unavailable"
         )
     data = payload.get("Data")
     if data is None:
         return []
     if not isinstance(data, dict):
         raise ModelResolutionError(
-            f"ModelScope API returned invalid Data for '{repo_id}'."
+            f"ModelScope API returned invalid Data for '{repo_id}'.", kind="unavailable"
         )
     files = data.get("Files", [])
     if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
         raise ModelResolutionError(
-            f"ModelScope API returned an invalid file list for '{repo_id}'."
+            f"ModelScope API returned an invalid file list for '{repo_id}'.", kind="unavailable"
         )
     return files
 

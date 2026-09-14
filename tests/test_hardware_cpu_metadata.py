@@ -1,6 +1,8 @@
 from io import StringIO
 from types import SimpleNamespace
 
+import pytest
+
 from omm import hardware
 
 
@@ -219,15 +221,26 @@ def test_windows_hybrid_gpu_prefers_discrete_and_registry_vram(monkeypatch):
     assert free is None
 
 
-def test_windows_discrete_intel_arc_is_not_treated_as_shared(monkeypatch):
+@pytest.mark.parametrize(
+    ("name", "ram_gb", "expected"),
+    [
+        ("Intel(R) Arc(TM) A770 Graphics", 16, 16.0),
+        ("Intel(R) Arc(TM) B580 Graphics", 12, 12.0),
+        ("Intel(R) Arc(TM) Pro A60 Graphics", 12, 12.0),
+        ("Intel Arc A770", 16, 16.0),
+        ("Intel(R) Arc(TM) Graphics", 2, None),
+        ("Intel(R) Arc(TM) 140V GPU (16GB)", 2, None),
+    ],
+)
+def test_windows_discrete_intel_arc_is_not_treated_as_shared(monkeypatch, name, ram_gb, expected):
     monkeypatch.setattr(
         hardware,
         "_windows_cim",
-        lambda *_: [{"Name": "Intel Arc A770", "AdapterRAM": 16 * 1024**3}],
+        lambda *_: [{"Name": name, "AdapterRAM": ram_gb * 1024**3}],
     )
     monkeypatch.setattr(hardware, "_windows_registry_gpus", lambda: [])
 
-    name, total, _ = hardware._scan_windows_gpu()
+    got_name, total, _ = hardware._scan_windows_gpu()
 
-    assert name == "Intel Arc A770"
-    assert total == 16.0
+    assert got_name == name
+    assert total == expected

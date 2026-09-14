@@ -359,6 +359,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Attest the portable archive
+        if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3.1.0
         with:
           subject-path: release-assets/omm-windows-x64-${{ steps.identity.outputs.version }}.zip
