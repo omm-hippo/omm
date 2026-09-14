@@ -22,14 +22,43 @@ def test_windows_finds_documented_ollama_location(tmp_path, monkeypatch):
     assert benchmark.find_ollama_executable() == executable
 
 
-def test_start_ollama_daemon_windows_sets_new_process_group_flag(monkeypatch):
+def test_start_ollama_daemon_windows_sets_new_process_group_flag_with_console(monkeypatch):
     """CREATE_NEW_PROCESS_GROUP is required for stop_ollama_daemon's
-    CTRL_BREAK_EVENT to target only the daemon, not omm's own console."""
+    CTRL_BREAK_EVENT to target only the daemon, not omm's own console. When
+    omm's own parent has a real console, CREATE_NO_WINDOW is skipped."""
     monkeypatch.setattr(benchmark.platform, "system", lambda: "Windows")
     monkeypatch.setattr(benchmark, "find_ollama_executable", lambda: Path("ollama.exe"))
     monkeypatch.setattr(benchmark.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
     monkeypatch.setattr(benchmark.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
     monkeypatch.setattr(benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(benchmark, "_windows_parent_has_console", lambda: True)
+    popen_calls = []
+
+    class _FakeProc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(
+        benchmark.subprocess,
+        "Popen",
+        lambda *a, **k: (popen_calls.append(k), _FakeProc())[1],
+    )
+
+    benchmark.start_ollama_daemon()
+
+    assert len(popen_calls) == 1
+    assert popen_calls[0]["creationflags"] == 0x00000200
+
+
+def test_start_ollama_daemon_windows_sets_no_window_flag_without_console(monkeypatch):
+    """Without a console of its own, omm's parent gets CREATE_NO_WINDOW too,
+    so the daemon doesn't pop up a visible console window."""
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(benchmark, "find_ollama_executable", lambda: Path("ollama.exe"))
+    monkeypatch.setattr(benchmark.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(benchmark.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
+    monkeypatch.setattr(benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(benchmark, "_windows_parent_has_console", lambda: False)
     popen_calls = []
 
     class _FakeProc:
@@ -85,6 +114,8 @@ def test_stop_ollama_daemon_windows_falls_back_when_ctrl_break_fails(monkeypatch
     calls = []
 
     class _FakeProc:
+        pid = 1234
+
         def poll(self):
             return None
 
@@ -94,12 +125,66 @@ def test_stop_ollama_daemon_windows_falls_back_when_ctrl_break_fails(monkeypatch
         def terminate(self):
             calls.append("terminate")
 
+        def kill(self):
+            calls.append("kill")
+
         def wait(self, timeout=None):
             return 0
 
+    run_calls = []
+
+    def fake_run(argv, **kwargs):
+        run_calls.append(argv)
+        return __import__("types").SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(benchmark.subprocess, "run", fake_run)
+
     benchmark.stop_ollama_daemon(_FakeProc())
 
-    assert calls == ["terminate"]
+    assert run_calls == [["taskkill", "/PID", "1234", "/T", "/F"]]
+    assert "terminate" not in calls
+
+
+def test_stop_ollama_daemon_windows_tree_kills_after_graceful_timeout(monkeypatch):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        benchmark,
+        "signal",
+        __import__("types").SimpleNamespace(CTRL_BREAK_EVENT="CTRL_BREAK"),
+    )
+    calls = []
+    wait_calls = {"n": 0}
+
+    class _FakeProc:
+        pid = 1234
+
+        def poll(self):
+            return None
+
+        def send_signal(self, sig):
+            calls.append(("send_signal", sig))
+
+        def kill(self):
+            calls.append(("kill",))
+
+        def wait(self, timeout=None):
+            wait_calls["n"] += 1
+            if wait_calls["n"] == 1:
+                raise benchmark.subprocess.TimeoutExpired("ollama", 10)
+            return 0
+
+    run_calls = []
+
+    def fake_run(argv, **kwargs):
+        run_calls.append(argv)
+        return __import__("types").SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(benchmark.subprocess, "run", fake_run)
+
+    benchmark.stop_ollama_daemon(_FakeProc())
+
+    assert run_calls == [["taskkill", "/PID", "1234", "/T", "/F"]]
+    assert ("kill",) not in calls
 
 
 def test_start_failure_keeps_original_reason(monkeypatch):
