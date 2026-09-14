@@ -172,6 +172,12 @@ def enabled(config_data: dict[str, Any] | None = None) -> bool:
 # anchored on the user directory itself so `/home/models` (a path with no
 # user component) is left alone.
 _POSIX_HOME_RE = re.compile(r"(?<![\w./])/(?:Users|home)/[^/\\\s:'\"]+")
+# The lookbehind above refuses a home directory preceded by `/`, so the
+# third slash of `file:///home/alice/...` let a file URL through with the
+# username intact. Match the URL form on its own - an optional `localhost`
+# authority included - rather than loosening that lookbehind, which keeps
+# `/opt/home/x`-style paths untouched.
+_FILE_URL_HOME_RE = re.compile(r"(?<=file://)(?:localhost)?/(?:Users|home)/[^/\\\s:'\"]+")
 _WINDOWS_HOME_RE = re.compile(
     r"(?<![\w\\/])[A-Za-z]:\\Users\\[^\\/:\"\r\n]+(?=\\|$)",
     re.IGNORECASE,
@@ -187,7 +193,8 @@ def scrub_paths(text: str) -> str:
     """
     if not isinstance(text, str) or not text:
         return ""
-    scrubbed = _WINDOWS_HOME_RE.sub(r"~", text)
+    scrubbed = _FILE_URL_HOME_RE.sub("~", text)
+    scrubbed = _WINDOWS_HOME_RE.sub(r"~", scrubbed)
     return _POSIX_HOME_RE.sub("~", scrubbed)
 
 
