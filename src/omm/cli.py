@@ -79,7 +79,7 @@ from omm import (
 from omm import contribute as contribute_mod
 from omm.atomic import locked
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
-from omm.config import MODEL_ARCHIVE_DIR, MODELS_DIR, OMM_HOME, load_config, save_config
+from omm.config import MODEL_ARCHIVE_DIR, MODELS_DIR, OMM_HOME, load_config
 from omm.downloader import (
     DownloadCancelled,
     DownloadError,
@@ -870,11 +870,11 @@ def help_cmd(
 
 
 def _install_spec() -> str:
-    """NVIDIA VRAM detection is dead weight on Mac (no NVIDIA GPUs since
-    2016) - only pull that extra in on other platforms, mirroring
-    install.sh. Points at the persistent local clone (SRC_DIR) rather than
-    the git URL directly, since omm installs it --editable."""
-    if platform.system() == "Darwin":
+    """Editable spec for the persistent local clone (SRC_DIR). Adds the
+    [nvidia] extra only when an NVIDIA driver is actually present
+    (nvidia-smi on PATH) - the same probe install.sh and install.ps1
+    use, so a pipx repair never adds an extra the installer omitted."""
+    if shutil.which("nvidia-smi") is None:
         return str(SRC_DIR)
     return f"{SRC_DIR}[nvidia]"
 
@@ -1543,8 +1543,7 @@ def _maybe_auto_import(ctx: typer.Context) -> None:
         return
     if not sys.stdin.isatty():
         return
-    config["external_scan_done"] = True
-    save_config(config)
+    config_mod.update_config(external_scan_done=True)
     _run_import_flow()
 
 

@@ -1,3 +1,5 @@
+import types
+
 from typer.testing import CliRunner
 
 from omm import cli, config, watch, watch_service
@@ -79,6 +81,28 @@ def test_auto_import_run_is_hidden_from_help():
     result = runner.invoke(cli.app, ["help", "--all"])
 
     assert "_auto-import-run" not in result.stdout
+
+
+def test_first_run_scan_flag_preserves_concurrent_setting_change(isolated_omm_home, monkeypatch):
+    """_maybe_auto_import must not clobber a config change committed by
+    another process between its load and its write of external_scan_done."""
+    config.update_config(usage_stats_policy="enabled", external_scan_done=False)
+    monkeypatch.setattr(cli, "_run_import_flow", lambda *a, **k: None)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    real = cli.load_config
+
+    def racing_load():
+        snap = real()
+        config.update_config(usage_stats_policy="never")
+        return snap
+
+    monkeypatch.setattr(cli, "load_config", racing_load)
+
+    cli._maybe_auto_import(types.SimpleNamespace(invoked_subcommand="list"))
+
+    saved = config.load_config()
+    assert saved["external_scan_done"] is True
+    assert saved["usage_stats_policy"] == "never"
 
 
 def test_auto_import_run_skips_update_check_onboarding_and_import_offer(
