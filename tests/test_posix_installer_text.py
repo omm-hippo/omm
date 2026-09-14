@@ -177,8 +177,12 @@ def test_discard_unreferenced_new_source_only_when_nothing_points_at_it(tmp_path
     script_path = tmp_path / "discard.sh"
     script_path.write_text(function_text + "\n", encoding="utf-8")
 
+    cases = iter(range(100))
+
     def run(*, new_present: str, previous_src_dir: str, has_env: bool) -> bool:
-        src_dir = tmp_path / f"src-{new_present}-{previous_src_dir or 'none'}-{has_env}"
+        # A plain counter, not the arguments: previous_src_dir is a path, and
+        # its slashes would turn the name into subdirectories that do not exist.
+        src_dir = tmp_path / f"src-{next(cases)}"
         src_dir.mkdir()
         harness = f"""
 set -eu
