@@ -84,6 +84,7 @@ _CHIP_MODEL_RE = re.compile(
 )
 
 _MMPROJ_RE = re.compile(r"mmproj", re.IGNORECASE)
+_SHARD_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 _GPT_OSS_SIZE_RE = re.compile(
     r"(?:^|[/_.:-])gpt[-_.]?oss(?:[-_.:]|$).*?(20|120)[Bb](?=[-_.:]|$)",
     re.IGNORECASE,
@@ -101,6 +102,16 @@ def is_mmproj_filename(filename: str) -> bool:
     auto-pick or rank a repo's .gguf files should exclude them rather than
     let one outrank or stand in for the real model quants."""
     return bool(_MMPROJ_RE.search(filename))
+
+
+def is_shard_filename(filename: str) -> bool:
+    """True for one part of a split (multi-part) GGUF, e.g.
+    "model-00001-of-00002.gguf". A "-00001-of-00001" file is the whole model
+    under a split-style name, not actually split, so it is not a shard."""
+    match = _SHARD_RE.search(filename)
+    if not match:
+        return False
+    return int(match.group(2)) > 1
 
 
 def parse_param_count_billions(text: str) -> float | None:

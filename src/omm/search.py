@@ -10,7 +10,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 from omm import hub, predictor
-from omm.featurize import is_mmproj_filename
+from omm.featurize import is_mmproj_filename, is_shard_filename
 from omm.providers import modelscope
 
 HF_SEARCH_API = "https://huggingface.co/api/models"
@@ -59,7 +59,6 @@ def _claims_fake_provenance(text: str) -> bool:
     )
 
 
-_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}")
 _PREFERRED_QUANT_RE = re.compile(r"Q4_K_M", re.IGNORECASE)
 
 
@@ -78,7 +77,7 @@ def pick_gguf_file(siblings: list[dict]) -> str | None:
         if (
             isinstance(filename, str)
             and filename.lower().endswith(".gguf")
-            and not _SHARD_RE.search(filename)
+            and not is_shard_filename(filename)
             and not is_mmproj_filename(filename)
         ):
             gguf_files.append(filename)
