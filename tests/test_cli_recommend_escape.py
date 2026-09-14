@@ -1,3 +1,5 @@
+import threading
+import time
 from unittest.mock import MagicMock
 from types import SimpleNamespace
 
@@ -194,3 +196,32 @@ def test_esc_listener_posix_skips_reading_while_foreground_prompt_active(monkeyp
 
     assert calls["select"] == 0
     assert calls["sleep"] == 3
+
+
+def test_esc_listener_stop_joins_its_worker_thread():
+    """`stop()` must wait for the worker to actually observe the stop
+    signal and exit, not just set the event and return - a daemon thread
+    abandoned at interpreter shutdown never gets to restore termios."""
+    listener = cli._EscListener()
+    finished = threading.Event()
+
+    def worker():
+        while not listener.stop_event.is_set():
+            time.sleep(0.01)
+        finished.set()
+
+    listener._thread = threading.Thread(target=worker, daemon=True)
+    listener._thread.start()
+
+    listener.stop()
+
+    assert finished.is_set()
+    assert not listener._thread.is_alive()
+
+
+def test_esc_listener_stop_is_a_noop_when_the_thread_never_started():
+    listener = cli._EscListener()
+
+    listener.stop()  # must not raise even though _thread is still None
+
+    assert listener.stop_event.is_set()

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from omm import cli, registry
+from omm import cli, downloader, registry
 
 runner = CliRunner()
 
@@ -144,6 +144,41 @@ def test_remove_cleans_up_unregistered_complete_download(isolated_omm_home):
 
     assert result.exit_code == 0, result.stdout
     assert not dest.exists()
+
+
+def test_uninstall_keeps_part_files_owned_by_an_active_download(isolated_omm_home):
+    filename = "m.gguf"
+    dest = cli.MODELS_DIR / filename
+    cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"x")
+    part = cli.MODELS_DIR / "m.gguf.part"
+    part.write_bytes(b"p")
+    sidecar = cli.MODELS_DIR / "m.gguf.part.ranges.json"
+    sidecar.write_text("{}", encoding="utf-8")
+    registry.save_registry({filename: {"linked": {"lmstudio": False, "ollama": False}}})
+
+    with downloader.locked(downloader._download_lock_path(dest)):
+        result = runner.invoke(cli.app, ["uninstall", filename])
+
+    assert result.exit_code == 0, result.stdout
+    assert registry.load_registry() == {}
+    assert not dest.exists()
+    assert part.exists()
+    assert sidecar.exists()
+
+
+def test_uninstall_unregistered_does_not_delete_an_active_downloads_part(isolated_omm_home):
+    part = cli.MODELS_DIR / "ghost.gguf.part"
+    cli.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    part.write_bytes(b"partial")
+
+    dest = cli.MODELS_DIR / "ghost.gguf"
+    with downloader.locked(downloader._download_lock_path(dest)):
+        result = runner.invoke(cli.app, ["uninstall", "ghost.gguf"])
+
+    assert result.exit_code == 1
+    assert part.exists()
+    assert "Another download" in result.stdout + result.stderr
 
 
 def test_uninstall_unregistered_part_dry_run_does_not_delete(isolated_omm_home, monkeypatch):

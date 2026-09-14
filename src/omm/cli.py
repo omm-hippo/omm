@@ -87,6 +87,7 @@ from omm.downloader import (
     _download_lock_path,
     _replace_with_retry,
     _sidecar_path,
+    _sidecar_tmp_path,
     download_file,
 )
 from omm.engines import RuntimeAdapterError, RuntimeModelRef, find_runtime_model
@@ -5646,7 +5647,7 @@ def install(
         )
         raise
     finally:
-        listener.stop_event.set()
+        listener.stop()
 
     if outcome.skipped_unfit:
         console.print(
@@ -5677,10 +5678,10 @@ def install(
     _report_lmstudio_load_verification(outcome)
 
 
-def _download_part_paths(destination: Path) -> tuple[Path, Path, Path]:
+def _download_part_paths(destination: Path) -> tuple[Path, Path, Path, Path]:
     part = destination.with_suffix(destination.suffix + ".part")
     metadata = part.with_name(f"{part.name}.meta")
-    return part, _sidecar_path(part), metadata
+    return part, _sidecar_path(part), metadata, _sidecar_tmp_path(_sidecar_path(part))
 
 
 def _cleanup_download_parts(destination: Path) -> bool:
@@ -5692,12 +5693,27 @@ def _cleanup_download_parts(destination: Path) -> bool:
     return cleaned
 
 
-def _cleanup_incomplete_install(filename: str) -> bool:
+def _cleanup_download_parts_unless_active(destination: Path) -> bool:
+    """Like `_cleanup_download_parts`, but never touches the trio another
+    process's in-flight download owns - `downloader.download_file` holds
+    `_download_lock_path(dest)` for exactly that window."""
+    try:
+        with locked(_download_lock_path(destination), timeout=0):
+            return _cleanup_download_parts(destination)
+    except FileLockTimeout:
+        return False
+
+
+def _cleanup_incomplete_install(filename: str, *, respect_download_lock: bool = False) -> bool:
     try:
         dest = _managed_model_path(filename)
     except ModelResolutionError:
         return False
-    cleaned = _cleanup_download_parts(dest)
+    cleaned = (
+        _cleanup_download_parts_unless_active(dest)
+        if respect_download_lock
+        else _cleanup_download_parts(dest)
+    )
     if dest.exists():
         _unlink_with_retry(dest)
         cleaned = cleaned or not dest.exists()
@@ -5843,7 +5859,7 @@ def _remove_one(
                 remaining_custom_links.append(destination)
 
     removed_model = _unlink_with_retry(dest)
-    _cleanup_download_parts(dest)
+    _cleanup_download_parts_unless_active(dest)
 
     if not removed_model:
         registry.upsert_entry(
@@ -5944,9 +5960,16 @@ def remove(
                 raise typer.Exit(0)
             _print_not_installed_error(filename)
             raise typer.Exit(1)
-        if _cleanup_incomplete_install(filename):
+        if _cleanup_incomplete_install(filename, respect_download_lock=True):
             console.print(f"[success]Cleaned up incomplete install of {filename}[/success]")
             raise typer.Exit(0)
+        if dest.exists() or part.exists():
+            errors.print_cli_error(
+                err_console,
+                f"Another download is currently writing {filename}.",
+                fix="Wait for it to finish (or stop it) and retry.",
+            )
+            raise typer.Exit(1)
         _print_not_installed_error(filename)
         raise typer.Exit(1)
 
@@ -8555,9 +8578,21 @@ def _cleanup_incomplete_installs() -> int:
             continue
         relative = path.relative_to(MODELS_DIR).as_posix()
         if relative.endswith(
-            (".gguf.update.part.ranges.json", ".gguf.update.part.meta", ".gguf.update.part", ".gguf.update")
+            (
+                ".gguf.update.part.ranges.json",
+                ".gguf.update.part.meta",
+                ".gguf.update.part",
+                ".gguf.update",
+                ".gguf.update.part.ranges.json.tmp",
+            )
         ):
             lock_target = MODELS_DIR / relative[: relative.rfind(".gguf.update") + len(".gguf.update")]
+            if not _unlink_unless_download_active(path, lock_target):
+                continue
+            removed += 1
+            continue
+        if relative.endswith(".gguf.part.ranges.json.tmp"):
+            lock_target = MODELS_DIR / relative[: -len(".part.ranges.json.tmp")]
             if not _unlink_unless_download_active(path, lock_target):
                 continue
             removed += 1
@@ -9980,6 +10015,16 @@ class _EscListener:
         self._thread = threading.Thread(target=target, daemon=True)
         self._thread.start()
 
+    def stop(self, timeout: float = 1.0) -> None:
+        """Signal *and wait*: the POSIX worker restores termios in its
+        `raw_mode` __exit__, and a daemon thread abandoned at interpreter
+        shutdown never runs that __exit__ - which leaves the user's shell
+        with echo and canonical mode off."""
+        self.stop_event.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+
     def _run_windows(self) -> None:
         """Poll Esc without consuming Ctrl+C or any other console input.
 
@@ -10651,7 +10696,7 @@ def contribute(
                 engine=engine,
             )
         finally:
-            listener.stop_event.set()
+            listener.stop()
 
         cleanup()
 
