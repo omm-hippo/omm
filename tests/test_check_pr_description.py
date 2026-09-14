@@ -109,11 +109,17 @@ def test_headings_inside_code_fences_are_ignored():
         ("omm-retrain-bot", "retrain/20260903-074624"),
         ("minigu5", "retrain/20260903-074624"),
         ("minigu5", "beta"),
+        ("minigu5", "emergency-signal/20260903-074624"),
     ],
 )
 def test_bot_and_sync_prs_are_exempt(author, head_ref):
     verdict = check.evaluate("", author=author, head_ref=head_ref)
     assert verdict.ok and verdict.exempt
+
+
+def test_emergency_signal_prefix_must_include_the_slash():
+    verdict = check.evaluate("", author="someone", head_ref="emergency-signalx")
+    assert not verdict.exempt
 
 
 def test_main_reads_environment_and_writes_summary(tmp_path, monkeypatch, capsys):
