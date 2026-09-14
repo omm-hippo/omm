@@ -122,6 +122,37 @@ def test_quality_pack_rejects_duplicate_ids(tmp_path):
         quality.load_pack(path)
 
 
+@pytest.mark.parametrize(
+    "template",
+    [
+        'Answer as JSON {"a": 1}. {question}',
+        "{question} {}",
+        "{question} {0}",
+        "{question} }",
+        "Q {question} {",
+    ],
+)
+def test_quality_pack_rejects_stray_braces_in_prompt_template(tmp_path, template):
+    pack, _digest = quality.load_pack()
+    pack["prompt_template"] = template
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps(pack), encoding="utf-8")
+
+    with pytest.raises(quality.QualityEvaluationError, match="other braces"):
+        quality.load_pack(path)
+
+
+def test_quality_pack_allows_literal_braces_around_question(tmp_path):
+    pack, _digest = quality.load_pack()
+    pack["prompt_template"] = '{{"a": 1}} {question}'
+    path = tmp_path / "ok.json"
+    path.write_text(json.dumps(pack), encoding="utf-8")
+
+    loaded, _digest = quality.load_pack(path)
+
+    assert loaded["prompt_template"].format(question="x") == '{"a": 1} x'
+
+
 def test_evaluate_model_stores_parsed_answers_not_raw_text(monkeypatch):
     pack, _digest = quality.load_pack()
     monkeypatch.setattr(
@@ -1104,6 +1135,34 @@ def test_evaluate_tag_once_passes_only_supported_optional_keywords(monkeypatch):
     assert calls == [("model:latest", 3, {"num_ctx": 2048})]
 
 
+def test_lmstudio_failure_entry_omits_attempted_runtime(monkeypatch):
+    monkeypatch.setattr(quality, "_model_metadata", lambda tag, **k: {"parameter_size": "7B"})
+
+    def failing(tag, pack, speed_runs=3, **kwargs):
+        raise quality.QualityEvaluationError(
+            "oom", failure_reason=quality.FAILURE_REASON_OUT_OF_MEMORY
+        )
+
+    monkeypatch.setattr(quality, "evaluate_model", failing)
+    monkeypatch.setattr(quality, "unload_model", lambda tag, **k: True)
+    pack, _digest = quality.load_pack()
+
+    entry = quality._evaluate_tag_once(
+        "model-key", _hardware(), pack, 3,
+        engine="lmstudio", lmstudio_port=1234, lmstudio_model={},
+    )
+
+    assert entry["outcome"] == "model_unfit"
+    assert "attempted_runtime" not in entry
+
+    control = quality._evaluate_tag_once(
+        "model-key", _hardware(), pack, 3,
+        engine="ollama", lmstudio_port=1234, lmstudio_model={},
+    )
+
+    assert "attempted_runtime" in control
+
+
 def test_confirm_mode_second_attempt_succeeds_reports_real_success(monkeypatch):
     """2. Confirmation mode, first timeout then a real success: outcome is
     success with a genuine measurement, never a fabricated speed."""
@@ -1912,6 +1971,45 @@ def test_collect_evidence_lmstudio_recovers_from_daemon_crash_mid_batch(monkeypa
     assert [m["tag"] for m in report["models"]] == ["model:one", "model:two"]
     assert any("restart" in event.lower() for event in events)
     assert any("LM Studio" in event for event in events)
+
+
+@pytest.mark.parametrize(
+    ("initial_proc", "expected_proc"),
+    [
+        (None, None),
+        (True, True),
+    ],
+)
+def test_collect_evidence_lmstudio_restart_does_not_claim_user_owned_server(
+    monkeypatch, initial_proc, expected_proc
+):
+    """A daemon_ref["proc"] of None means omm doesn't own the running LM
+    Studio server. Restart succeeding must not promote it to True - that
+    would make a later cleanup stop the user's own server. When omm already
+    owns the handle (True), restart keeps owning it."""
+    reachable_calls = {"count": 0}
+
+    def fake_reachable():
+        reachable_calls["count"] += 1
+        return reachable_calls["count"] != 1
+
+    monkeypatch.setattr(quality.linker, "lmstudio_daemon_reachable", fake_reachable)
+    monkeypatch.setattr(quality.linker, "start_lmstudio_daemon", lambda: True)
+    monkeypatch.setattr(quality.linker, "lmstudio_server_port", lambda: 1234)
+    monkeypatch.setattr(
+        quality, "evaluate_model",
+        lambda tag, pack, speed_runs=3, **kwargs: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag, **kwargs: True)
+    daemon_ref = {"proc": initial_proc}
+
+    quality.collect_evidence(
+        ["model:one"], _hardware(), engine="lmstudio",
+        lmstudio_models={"model:one": {}},
+        daemon_ref=daemon_ref,
+    )
+
+    assert daemon_ref["proc"] is expected_proc
 
 
 def test_collect_evidence_lmstudio_gives_up_after_max_daemon_restart_failures(monkeypatch):
