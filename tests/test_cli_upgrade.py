@@ -677,7 +677,7 @@ def test_upgrade_pinned_model_twice_keeps_a_single_archive_slot(isolated_omm_hom
     archive_path = cli.MODEL_ARCHIVE_DIR / "model.gguf"
     assert archive_path.read_bytes() == b"v2"
     assert dest.read_bytes() == b"v3"
-    assert sum(1 for p in cli.MODEL_ARCHIVE_DIR.rglob("*") if p.is_file()) == 1
+    assert sum(1 for p in cli.MODEL_ARCHIVE_DIR.rglob("*") if p.is_file() and not p.name.endswith(".lock")) == 1
 
 
 def test_upgrade_pinned_model_insufficient_archive_space_cancels_upgrade(

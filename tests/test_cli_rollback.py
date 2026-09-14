@@ -320,3 +320,20 @@ def test_cleanup_preserves_archive_of_a_registered_but_unpinned_model(
 
     assert result.exit_code == 0, result.output
     assert archive_path.exists()
+
+
+def test_cleanup_never_reclaims_an_archive_lock_file(isolated_omm_home):
+    # filelock leaves `<archive>.lock` behind on POSIX. It has no registry
+    # entry, so it looks like an orphan - but deleting one another process
+    # holds would let a second process lock a fresh inode at the same time.
+    cli.MODEL_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    orphan = cli.MODEL_ARCHIVE_DIR / "orphan.gguf"
+    lock = cli.MODEL_ARCHIVE_DIR / "orphan.gguf.lock"
+    orphan.write_bytes(b"old")
+    lock.write_bytes(b"")
+
+    cli._cleanup_orphan_archives()
+
+    assert not orphan.exists()
+    assert lock.exists()
+

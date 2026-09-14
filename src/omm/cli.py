@@ -8612,6 +8612,11 @@ def _cleanup_orphan_archives() -> int:
     for path in MODEL_ARCHIVE_DIR.rglob("*"):
         if not path.is_file() or path.is_symlink():
             continue
+        # filelock leaves `<archive>.lock` behind on POSIX. Deleting one while
+        # another process holds it would let a second process take the same
+        # lock on a new inode, so lock files are never reclaimed here.
+        if path.name.endswith(".lock"):
+            continue
         if path.name.endswith(".staging"):
             if _unlink_with_retry(path):
                 removed += 1
@@ -10748,13 +10753,10 @@ def main() -> None:
     Brackets `app()` with the local run log (`runlog`): every invocation
     leaves a `~/.omm/logs/<ts>_<pid>_<cmd>.jsonl` and a `history.log` block.
     `runlog` swallows its own errors, so it never changes the outcome here."""
-    if os.name == "nt":
-        # CreateProcess otherwise searches the current directory before PATH
-        # for a bare executable name (git, pipx, ollama, ...), so a planted
-        # exe in an untrusted cwd can run instead of the real one before any
-        # verification even happens. Child processes inherit this, which is
-        # harmless. setdefault leaves an operator's own setting alone.
-        os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
+    # On Windows a planted exe in an untrusted cwd could otherwise run in place
+    # of git/pipx/ollama before any verification happens. Shared with trust so
+    # there is one implementation; harmless on POSIX.
+    trust._forbid_cwd_executable_lookup()
     runlog.start(sys.argv[1:])
     exit_code, outcome, exc_name = 0, "ok", None
     try:
