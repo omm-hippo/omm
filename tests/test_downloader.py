@@ -1,6 +1,7 @@
 import errno
 import io
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1369,3 +1370,162 @@ def test_write_sidecar_retries_transient_permission_error(tmp_path, monkeypatch)
 
     written = json.loads(sidecar_path.read_text(encoding="utf-8"))
     assert written["ranges"][0]["done"] == 3
+
+
+def _run_range_worker(tmp_path, payload_chunks, monkeypatch, *, raise_after_chunk=None):
+    """Drive `_download_range_worker` directly over a single full-file range,
+    without going through `download_file`'s multi-worker orchestration."""
+    payload = b"".join(payload_chunks)
+    total_size = len(payload)
+    part_path = tmp_path / "model.gguf.part"
+    part_path.write_bytes(b"\0" * total_size)
+    sidecar_path = tmp_path / "model.gguf.part.ranges.json"
+
+    delivered = []
+
+    def chunks_with_optional_failure():
+        for i, chunk in enumerate(payload_chunks):
+            delivered.append(chunk)
+            yield chunk
+            if raise_after_chunk is not None and i == raise_after_chunk:
+                raise requests.exceptions.ChunkedEncodingError("connection reset")
+
+    class _StreamingFakeResp(_FakeResp):
+        def iter_content(self, chunk_size):
+            yield from chunks_with_optional_failure()
+
+    def fake_get(url, headers=None, stream=True, timeout=30, **kwargs):
+        return _StreamingFakeResp(
+            206,
+            payload_chunks,
+            headers={
+                "Content-Range": f"bytes 0-{total_size - 1}/{total_size}",
+                "ETag": '"v1"',
+            },
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    range_state = {"start": 0, "end": total_size - 1, "done": 0}
+    ranges_state = [range_state]
+    progress = SimpleNamespace(update=lambda *a, **k: None)
+    errors: list[Exception] = []
+    lock = threading.Lock()
+
+    downloader._download_range_worker(
+        "https://example.com/model.gguf",
+        part_path,
+        sidecar_path,
+        range_state,
+        ranges_state,
+        total_size,
+        '"v1"',
+        progress,
+        "task",
+        lock,
+        errors,
+        None,
+    )
+
+    return part_path, sidecar_path, range_state, errors
+
+
+def test_range_worker_batches_sidecar_commits_below_chunk_count(tmp_path, monkeypatch):
+    """Every chunk used to trigger its own sidecar rewrite. Batching by size
+    or elapsed time must make fewer sidecar writes than there are chunks,
+    while still ending with the sidecar and the file in sync."""
+    chunks = [bytes([i % 256]) * 500 for i in range(10)]
+    monkeypatch.setattr(downloader, "_SIDECAR_COMMIT_BYTES", 10**9)
+    monkeypatch.setattr(downloader, "_SIDECAR_COMMIT_SECONDS", 10**9)
+
+    write_calls = []
+    real_write_sidecar = downloader._write_sidecar
+
+    def counting_write_sidecar(*a, **k):
+        write_calls.append(1)
+        return real_write_sidecar(*a, **k)
+
+    monkeypatch.setattr(downloader, "_write_sidecar", counting_write_sidecar)
+
+    part_path, sidecar_path, range_state, errors = _run_range_worker(
+        tmp_path, chunks, monkeypatch
+    )
+
+    assert errors == []
+    assert part_path.read_bytes() == b"".join(chunks)
+    assert range_state["done"] == len(b"".join(chunks))
+    # A huge threshold means nothing is committed mid-loop - only the single
+    # final commit in the `finally` block fires.
+    assert len(write_calls) == 1
+    written = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert written["ranges"][0]["done"] == range_state["done"]
+
+
+def test_range_worker_fsyncs_data_before_writing_sidecar(tmp_path, monkeypatch):
+    """A commit must make the data durable before it makes the sidecar
+    (state) durable, or a crash between the two could resume past bytes
+    that were never actually flushed to disk."""
+    chunks = [b"a" * 100, b"b" * 100]
+    # Commit after every chunk, to observe ordering per commit.
+    monkeypatch.setattr(downloader, "_SIDECAR_COMMIT_BYTES", 1)
+    monkeypatch.setattr(downloader, "_SIDECAR_COMMIT_SECONDS", 10**9)
+
+    order = []
+    real_fsync = downloader.os.fsync
+    real_write_sidecar = downloader._write_sidecar
+
+    def recording_fsync(fd):
+        order.append("fsync")
+        return real_fsync(fd)
+
+    def recording_write_sidecar(*a, **k):
+        order.append("sidecar")
+        return real_write_sidecar(*a, **k)
+
+    monkeypatch.setattr(downloader.os, "fsync", recording_fsync)
+    monkeypatch.setattr(downloader, "_write_sidecar", recording_write_sidecar)
+
+    part_path, sidecar_path, range_state, errors = _run_range_worker(
+        tmp_path, chunks, monkeypatch
+    )
+
+    assert errors == []
+    assert order  # at least one commit happened
+    # Every "sidecar" entry must be preceded by a "fsync" for the *data*
+    # file - i.e. the sequence never contains "sidecar" before any "fsync".
+    first_sidecar = order.index("sidecar")
+    assert "fsync" in order[:first_sidecar] or order[0] == "fsync"
+    for i, kind in enumerate(order):
+        if kind == "sidecar":
+            assert order[i - 1] == "fsync"
+
+
+def test_range_worker_commits_once_more_on_exception(tmp_path, monkeypatch):
+    """A worker that dies mid-range (network drop) must still durably commit
+    whatever it already wrote, instead of leaving `done` only in memory."""
+    chunks = [b"a" * 100, b"b" * 100, b"c" * 100]
+    # Never commit mid-loop - only the final, exception-triggered commit.
+    monkeypatch.setattr(downloader, "_SIDECAR_COMMIT_BYTES", 10**9)
+    monkeypatch.setattr(downloader, "_SIDECAR_COMMIT_SECONDS", 10**9)
+
+    write_calls = []
+    real_write_sidecar = downloader._write_sidecar
+
+    def counting_write_sidecar(*a, **k):
+        write_calls.append(1)
+        return real_write_sidecar(*a, **k)
+
+    monkeypatch.setattr(downloader, "_write_sidecar", counting_write_sidecar)
+
+    part_path, sidecar_path, range_state, errors = _run_range_worker(
+        tmp_path, chunks, monkeypatch, raise_after_chunk=1
+    )
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], requests.exceptions.ChunkedEncodingError)
+    # Two chunks (200 bytes) landed before the drop - the final commit must
+    # have recorded exactly that, not left it uncommitted.
+    assert range_state["done"] == 200
+    assert len(write_calls) == 1
+    written = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert written["ranges"][0]["done"] == 200
