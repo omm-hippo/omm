@@ -5,24 +5,49 @@ set -eu
 
 REPO_URL="https://github.com/omm-hippo/omm.git"
 OMM_HOME="${OMM_HOME:-$HOME/.omm}"
-SOURCES_DIR="$OMM_HOME/sources"
 case "$OMM_HOME" in
     /*) ;;
     *) echo "Refusing non-absolute OMM_HOME: $OMM_HOME" >&2; exit 1 ;;
 esac
-case "$OMM_HOME" in
-    ""|/|"$HOME"|"$HOME"/) echo "Refusing unsafe OMM_HOME: $OMM_HOME" >&2; exit 1 ;;
-esac
-if [ -d "$OMM_HOME" ]; then
-    resolved_omm_home=$(cd -P -- "$OMM_HOME" && pwd -P)
-    current_dir=$(pwd -P)
-    case "$current_dir" in
-        "$resolved_omm_home"|"$resolved_omm_home"/*)
-            echo "Refusing OMM_HOME that contains the current directory: $resolved_omm_home" >&2
-            exit 1
-            ;;
-    esac
+
+# Resolves $1 to an absolute path with every "." / ".." / "//" and symlink
+# in its *existing* leading portion collapsed, even when $1 itself does not
+# exist yet - walking up to the nearest existing ancestor, resolving that
+# with `cd -P`, then reattaching the not-yet-existing tail. A "." or ".."
+# component in that not-yet-existing tail is refused rather than guessed at.
+resolve_existing_prefix() {
+    target="$1"
+    suffix=""
+    while [ ! -d "$target" ]; do
+        case "$(basename -- "$target")" in
+            .|..) return 1 ;;
+        esac
+        suffix="/$(basename -- "$target")$suffix"
+        parent=$(dirname -- "$target")
+        [ "$parent" = "$target" ] && return 1
+        target="$parent"
+    done
+    resolved=$(cd -P -- "$target" && pwd -P) || return 1
+    printf '%s%s\n' "${resolved%/}" "$suffix"
+}
+
+if ! RESOLVED_OMM_HOME=$(resolve_existing_prefix "$OMM_HOME"); then
+    echo "Refusing unresolvable OMM_HOME: $OMM_HOME" >&2
+    exit 1
 fi
+RESOLVED_HOME_DIR=$(cd -P -- "$HOME" && pwd -P)
+case "$RESOLVED_OMM_HOME" in
+    ""|/|"$RESOLVED_HOME_DIR") echo "Refusing unsafe OMM_HOME: $OMM_HOME" >&2; exit 1 ;;
+esac
+OMM_HOME="$RESOLVED_OMM_HOME"
+SOURCES_DIR="$OMM_HOME/sources"
+current_dir=$(pwd -P)
+case "$current_dir" in
+    "$OMM_HOME"|"$OMM_HOME"/*)
+        echo "Refusing OMM_HOME that contains the current directory: $OMM_HOME" >&2
+        exit 1
+        ;;
+esac
 
 case "$(uname -s 2>/dev/null || true)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -265,6 +290,24 @@ else
         echo "git not found, installing it via $PACKAGE_MANAGER..."
         install_system_packages "$PACKAGE_MANAGER" git ca-certificates
     fi
+    # Debian's git only Recommends ssh-client (and apt-get above runs with
+    # --no-install-recommends); apk/pacman git do not depend on openssh at
+    # all. Without ssh-keygen, git's default gpg.ssh.program has nothing to
+    # run and verify_commit_signature fails with a message that never
+    # mentions the real cause.
+    if ! command -v ssh-keygen >/dev/null 2>&1; then
+        if [ -z "$PACKAGE_MANAGER" ]; then
+            echo "ssh-keygen (OpenSSH client) not found and no supported package manager was found; it is required to verify omm's commit signatures." >&2
+            exit 1
+        fi
+        echo "ssh-keygen not found (needed to verify commit signatures), installing it via $PACKAGE_MANAGER..."
+        case "$PACKAGE_MANAGER" in
+            apt-get) install_system_packages "$PACKAGE_MANAGER" openssh-client ;;
+            dnf|yum) install_system_packages "$PACKAGE_MANAGER" openssh-clients ;;
+            pacman) install_system_packages "$PACKAGE_MANAGER" openssh ;;
+            apk) install_system_packages "$PACKAGE_MANAGER" openssh-keygen ;;
+        esac
+    fi
 fi
 
 PY=$(find_supported_python || true)
@@ -275,6 +318,11 @@ fi
 
 if ! command -v git >/dev/null 2>&1; then
     echo "git not found after dependency bootstrap (needed to fetch omm from GitHub)." >&2
+    exit 1
+fi
+
+if ! command -v ssh-keygen >/dev/null 2>&1; then
+    echo "ssh-keygen not found after dependency bootstrap (install the OpenSSH client; needed to verify commit signatures)." >&2
     exit 1
 fi
 
@@ -454,7 +502,23 @@ PY
 }
 
 refresh_pipx_snapshot() {
-    PIPX_SNAPSHOT=$(run_pipx list --json 2>/dev/null)
+    # pipx's own `list --json` returns 1 (EXIT_CODE_LIST_PROBLEM) whenever any
+    # venv on the machine is unhealthy - printing the full snapshot for every
+    # *other* venv first, and simply omitting the broken one. Treating exit 1
+    # as failure here would refuse to install because of a venv omm has never
+    # heard of. Accept exit 1 only when stdout actually parsed as a snapshot;
+    # any other nonzero exit (or unparsable stdout) still fails closed.
+    if PIPX_SNAPSHOT=$(run_pipx list --json 2>/dev/null); then
+        return 0
+    else
+        pipx_status=$?
+    fi
+    [ "$pipx_status" -eq 1 ] || return 1
+    printf '%s' "$PIPX_SNAPSHOT" | "$PY" -c \
+        'import json, sys
+d = json.load(sys.stdin)
+raise SystemExit(0 if isinstance(d, dict) and "pipx_spec_version" in d and isinstance(d.get("venvs"), dict) else 1)' \
+        2>/dev/null
 }
 
 verify_installed_omm_model() {
@@ -583,6 +647,12 @@ if ! refresh_pipx_snapshot; then
     echo "Could not inspect existing pipx environments; refusing an unsafe migration." >&2
     exit 1
 fi
+for env_name in "$LEGACY_PIPX_ENV" "$PIPX_ENV"; do
+    if [ -d "$PIPX_LOCAL_VENVS/$env_name" ] && ! pipx_snapshot_has_environment "$env_name"; then
+        echo "pipx reports the '$env_name' environment as broken (see 'pipx list'). Repair or remove it, then rerun this installer; models under OMM_HOME are not affected." >&2
+        exit 1
+    fi
+done
 
 LEGACY_PIPX_PRESENT=0
 if pipx_snapshot_has_environment "$LEGACY_PIPX_ENV"; then

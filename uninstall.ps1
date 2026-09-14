@@ -21,6 +21,33 @@ if ((Test-Path -LiteralPath $resolvedHome -PathType Container) -and $resolvedHom
     throw "Refusing unrecognized custom OMM_HOME (missing .omm-managed): $resolvedHome"
 }
 
+# -Purge deletes the models/ hub directly; it never runs linker.py's unlink
+# logic, so a non-empty link-ownership.json means omm still has models
+# linked into local engines (Ollama manifests, KoboldCpp/text-generation-
+# webui/AnythingLLM/Msty hardlinks or symlinks). Deleting the hub out from
+# under those links would break or orphan them. Checked before any pipx
+# mutation or file deletion. A missing file, an empty/whitespace-only file,
+# unparsable JSON (linker.py's own loader treats that the same way - see
+# _load_link_ownership), and "{}" are all treated as "nothing linked".
+$linkOwnershipFile = Join-Path $resolvedHome "link-ownership.json"
+if ($Purge -and (Test-Path -LiteralPath $linkOwnershipFile -PathType Leaf)) {
+    $linkOwnershipCount = 0
+    try {
+        $linkOwnershipRaw = Get-Content -Raw -LiteralPath $linkOwnershipFile
+        if ($linkOwnershipRaw -and $linkOwnershipRaw.Trim()) {
+            $linkOwnershipJson = $linkOwnershipRaw | ConvertFrom-Json
+            if ($null -ne $linkOwnershipJson) {
+                $linkOwnershipCount = @($linkOwnershipJson.PSObject.Properties).Count
+            }
+        }
+    } catch {
+        $linkOwnershipCount = 0
+    }
+    if ($linkOwnershipCount -gt 0) {
+        throw "omm still has models linked into your engines. Run 'omm uninstall all' first, then re-run with -Purge."
+    }
+}
+
 $PipxCommand = $null
 $pipxCandidates = @()
 $python = Get-Command python -ErrorAction SilentlyContinue
@@ -65,7 +92,7 @@ function Stop-UninstallPreservingSources {
 function Remove-OmmOwnedData {
     # Delete only paths the application owns. A custom OMM_HOME may contain
     # unrelated files, so never recursively delete the container itself.
-    foreach ($name in @("models", "evaluations", "catalog-history", "session")) {
+    foreach ($name in @("models", "evaluations", "catalog-history", "session", "logs", "locks")) {
         $target = Join-Path $resolvedHome $name
         if (Test-Path -LiteralPath $target) {
             Remove-Item -LiteralPath $target -Recurse -Force
@@ -75,7 +102,11 @@ function Remove-OmmOwnedData {
         "config.json", "models.json", "link-ownership.json", "rules.json",
         "recommend-model.json", "calibration.json", "benchmark_history.json",
         "contribute_state.json", "telemetry.log", "telemetry_pending.json",
-        "update_check.json", ".omm-managed"
+        "update_check.json", "client-id", "firebase_auth.json", "error_reports.log",
+        "error_reports_pending.json", "error_reports_backoff.json",
+        "usage-pending.json", "usage-state.json", "usage-backoff.json", "usage.log",
+        "telemetry_last_failed.json", "telemetry_backoff.json",
+        "ollama_manifest_compat.json"
     )
     foreach ($name in $ownedFiles) {
         foreach ($candidate in @((Join-Path $resolvedHome $name), (Join-Path $resolvedHome ($name + ".lock")))) {
@@ -84,11 +115,31 @@ function Remove-OmmOwnedData {
             }
         }
     }
+    # Flush locks held around a pending-upload file's rewrite; see
+    # telemetry.py/error_report.py (path.with_name(name + ".flush"), which
+    # `locked()` then suffixes with ".lock").
+    foreach ($name in @("telemetry_pending.json.flush.lock", "error_reports_pending.json.flush.lock")) {
+        $candidate = Join-Path $resolvedHome $name
+        if (Test-Path -LiteralPath $candidate) {
+            Remove-Item -LiteralPath $candidate -Force
+        }
+    }
     $ownedJson = $ownedFiles | Where-Object { $_ -like "*.json" }
     foreach ($name in $ownedJson) {
         Get-ChildItem -LiteralPath $resolvedHome -File -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -like ($name + ".corrupt-*") -or $_.Name -like ("." + $name + ".*.tmp")
         } | Remove-Item -Force
+    }
+    # .omm-managed must survive while src/sources are still present (e.g. a
+    # locked file blocked their removal above) - otherwise a retry would hit
+    # the "unrecognized custom OMM_HOME (missing .omm-managed)" guard.
+    $hasSourceCheckout = (Test-Path -LiteralPath (Join-Path $resolvedHome "src")) -or
+        (Test-Path -LiteralPath (Join-Path $resolvedHome "sources"))
+    if (-not $hasSourceCheckout) {
+        $marker = Join-Path $resolvedHome ".omm-managed"
+        if (Test-Path -LiteralPath $marker) {
+            Remove-Item -LiteralPath $marker -Force
+        }
     }
     if (Test-Path -LiteralPath $resolvedHome) {
         $remaining = Get-ChildItem -LiteralPath $resolvedHome -Force -ErrorAction Stop | Select-Object -First 1
@@ -386,6 +437,7 @@ foreach ($pipxEnvironment in @("omm", "omm-model")) {
     $removed += $pipxEnvironment
 }
 
+$uninstallPendingMarker = Join-Path $resolvedHome ".omm-uninstall-pending"
 if ($removed.Count -gt 0) {
     try { $PipxSnapshot = Get-PipxSnapshot } catch { Stop-UninstallPreservingSources ([string]$_) }
     foreach ($pipxEnvironment in $removed) {
@@ -393,19 +445,37 @@ if ($removed.Count -gt 0) {
             Stop-UninstallPreservingSources "pipx still reports $pipxEnvironment after uninstall."
         }
     }
-} elseif ((Test-Path -LiteralPath (Join-Path $resolvedHome "src")) -or (Test-Path -LiteralPath (Join-Path $resolvedHome "sources"))) {
+    # Marks that the pipx environment(s) are verified gone, so a retry (e.g.
+    # after a locked source file blocked removal below) does not hit the
+    # "no verified OMM pipx environment was removed" guard just because this
+    # run's own removal already emptied the pipx snapshot.
+    if (Test-Path -LiteralPath $resolvedHome -PathType Container) {
+        Set-Content -LiteralPath $uninstallPendingMarker -Value "omm uninstall pending v1" -Encoding Ascii
+    }
+} elseif (
+    ((Test-Path -LiteralPath (Join-Path $resolvedHome "src")) -or (Test-Path -LiteralPath (Join-Path $resolvedHome "sources"))) -and
+    -not (Test-Path -LiteralPath $uninstallPendingMarker -PathType Leaf)
+) {
     Stop-UninstallPreservingSources "No verified OMM pipx environment was removed; refusing to remove source checkouts."
 }
 # A failed best-effort pipx probe must not leak its native exit code into a
 # caller such as a GitHub Actions pwsh step after cleanup itself succeeds.
 $global:LASTEXITCODE = 0
 
+$sourceRemovalFailed = $false
 foreach ($name in @("src", "sources")) {
     $target = Join-Path $resolvedHome $name
     if (Test-Path -LiteralPath $target) {
         try { Remove-Item -LiteralPath $target -Recurse -Force }
-        catch { Write-Warning "Could not remove $target (an omm process may still be running): $_" }
+        catch {
+            Write-Warning "Could not remove $target (an omm process may still be running): $_"
+            $sourceRemovalFailed = $true
+        }
     }
+}
+if (-not $sourceRemovalFailed -and (Test-Path -LiteralPath $uninstallPendingMarker -PathType Leaf)) {
+    # Nothing left for the marker to protect once removal has succeeded.
+    Remove-Item -LiteralPath $uninstallPendingMarker -Force
 }
 
 if ($Purge) {
@@ -413,3 +483,4 @@ if ($Purge) {
 } else {
     Write-Host "Removed omm. Models and settings remain in $resolvedHome (use -Purge to remove them)."
 }
+if ($sourceRemovalFailed) { exit 1 }
