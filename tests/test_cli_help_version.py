@@ -99,6 +99,25 @@ def test_help_all_hints_at_flags_option():
     assert "--flags" in result.stdout
 
 
+def test_help_command_keeps_click_default_and_required_markers():
+    # rich's markup=True by default would swallow "[default: 40]"/"[required]"
+    # as (unknown, dropped) markup tags instead of printing them literally.
+    log_result = runner.invoke(cli.app, ["help", "log"])
+    assert log_result.exit_code == 0, log_result.stdout
+    assert "[default: 40]" in log_result.stdout
+
+    install_result = runner.invoke(cli.app, ["help", "install"])
+    assert install_result.exit_code == 0, install_result.stdout
+    assert "[required]" in install_result.stdout
+
+
+def test_help_all_flags_keeps_default_markers():
+    result = runner.invoke(cli.app, ["help", "--all", "--flags"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "[default: 40]" in result.stdout
+
+
 def test_help_all_flags_expands_each_command_option_list():
     result = runner.invoke(cli.app, ["help", "--all", "--flags"])
 

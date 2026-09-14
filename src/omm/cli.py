@@ -90,11 +90,12 @@ from omm.downloader import (
     download_file,
 )
 from omm.engines import RuntimeAdapterError, RuntimeModelRef, find_runtime_model
-from omm.engines.lmstudio import LMStudioAdapter
+from omm.engines.lmstudio import DEFAULT_LMSTUDIO_URL, LMStudioAdapter
 from omm.engines.ollama import OllamaAdapter
 from omm.hardware import (
     BUSY_CPU_PERCENT,
     HardwareInfo,
+    VRAM_MODEL_CAP_RATIO,
     WindowsCommitInfo,
     available_ram_gb,
     calculate_memory_budget,
@@ -214,7 +215,17 @@ _JSON_CAPABLE = {
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
-_YES_CAPABLE = {"install", "import", "uninstall", "upgrade", "contribute", "recommend", "benchmark"}
+_YES_CAPABLE = {
+    "install",
+    "import",
+    "uninstall",
+    "upgrade",
+    "contribute",
+    "recommend",
+    "benchmark",
+    "verify",
+    "run",
+}
 
 
 def _global_opts() -> GlobalOptions:
@@ -754,7 +765,7 @@ def _print_command_flags(root_ctx: click.Context, name: str, cmd_obj: click.Comm
     grid.add_column(no_wrap=True)
     grid.add_column()
     for opts, help_text in records:
-        grid.add_row(f"    {opts}", help_text)
+        grid.add_row(f"    {escape(opts)}", escape(help_text))
     console.print(grid)
 
 
@@ -845,7 +856,7 @@ def help_cmd(
         if all:
             _print_full_command_reference(root_ctx, show_flags=flags)
             raise typer.Exit(0)
-        console.print(root_ctx.get_help())
+        console.print(root_ctx.get_help(), markup=False, highlight=False)
         raise typer.Exit(0)
 
     cmd_obj = root_ctx.command.get_command(root_ctx, command)
@@ -854,7 +865,7 @@ def help_cmd(
         raise typer.Exit(1)
 
     sub_ctx = cmd_obj.make_context(command, [], parent=root_ctx, resilient_parsing=True)
-    console.print(cmd_obj.get_help(sub_ctx))
+    console.print(cmd_obj.get_help(sub_ctx), markup=False, highlight=False)
 
 
 
@@ -3496,10 +3507,11 @@ def recommend(
             pass
 
     has_gpu = info.vram_total_gb is not None
-    available_gb = min(
-        calculate_memory_budget(info).install_budget_gb,
-        predictor.profile_memory_cap_gb(info, profile),
-    )
+    profile_cap = predictor.profile_memory_cap_gb(info, profile)
+    if has_gpu and not info.unified_memory:
+        available_gb = min(info.vram_total_gb * VRAM_MODEL_CAP_RATIO, profile_cap)
+    else:
+        available_gb = min(calculate_memory_budget(info).install_budget_gb, profile_cap)
 
     rule_list = rules_mod.load_rules()
     matches = rules_mod.matching_rules(rule_list, available_gb, has_gpu=has_gpu)
@@ -3720,7 +3732,7 @@ def _resolve_model_interactive(model_name: str) -> ResolvedModel:
     # the final call below lets its error surface instead of looping.
     for _ in range(2):
         try:
-            return resolve_model(model_name)
+            return _warn_on_resolution_note(resolve_model(model_name))
         except AmbiguousProviderError as e:
             choices = [
                 questionary.Choice(title=provider, value=provider) for provider in e.providers
@@ -3740,7 +3752,16 @@ def _resolve_model_interactive(model_name: str) -> ResolvedModel:
                 err_console.print("[warning]Cancelled.[/warning]")
                 raise typer.Exit(0) from e
             model_name = f"{e.provider}:{e.repo_id}:{chosen}"
-    return resolve_model(model_name)
+    return _warn_on_resolution_note(resolve_model(model_name))
+
+
+def _warn_on_resolution_note(resolved: ResolvedModel) -> ResolvedModel:
+    """Surface a provider-level caveat attached during resolution (e.g. a
+    provider fell back to another one because of an outage) instead of
+    silently installing/inspecting the fallback as if nothing happened."""
+    if resolved.note:
+        err_console.print(f"[warning]{escape(resolved.note)}[/warning]")
+    return resolved
 
 
 def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
@@ -6000,7 +6021,9 @@ def _compatibility_adapter(engine: str):
     if engine == "ollama":
         return OllamaAdapter()
     if engine == "lmstudio":
-        return LMStudioAdapter()
+        port = linker.lmstudio_server_port()
+        base_url = f"http://127.0.0.1:{port}" if port is not None else DEFAULT_LMSTUDIO_URL
+        return LMStudioAdapter(base_url=base_url)
     raise ValueError(f"unsupported verification engine: {engine}")
 
 
@@ -6122,6 +6145,7 @@ def verify(
     first unless --yes) and stops it again afterward, unless --keep-loaded
     left the model loaded on it.
     """
+    yes = yes or _global_opts().yes
     model_name = _resolve_ref(model_name)
     filename, entry = _lookup_entry(model_name, registry.load_registry())
     if entry is None:
@@ -6265,7 +6289,7 @@ def _fit_hint(ref: str) -> str:
     """`omm info` used to end in the `omm fit` memory card. It stopped, so
     that the two commands answer different questions - this points at the
     one that still answers "will it run here?"."""
-    return f"[muted]Run `omm fit {ref}` to see whether it fits this PC.[/muted]"
+    return f"[muted]Run `omm fit {escape(ref)}` to see whether it fits this PC.[/muted]"
 
 
 def _info_not_installed(model_name: str, json_output: bool) -> None:
@@ -6281,7 +6305,7 @@ def _info_not_installed(model_name: str, json_output: bool) -> None:
         resolved = _resolve_model_interactive(model_name)
     except ModelResolutionError as error:
         _print_not_installed_error(model_name)
-        err_console.print(f"[muted]{error}[/muted]")
+        err_console.print(f"[muted]{escape(str(error))}[/muted]")
         raise typer.Exit(1) from error
 
     provider = resolved.provider or "huggingface"
@@ -6305,7 +6329,7 @@ def _info_not_installed(model_name: str, json_output: bool) -> None:
         )
         return
 
-    table = _table(title=resolved.filename, show_header=False)
+    table = _table(title=escape(resolved.filename), show_header=False)
     table.add_column("Field", style="label")
     table.add_column("Value")
     table.add_row("Repo", resolved.repo_id or "(direct URL)")
@@ -6314,7 +6338,7 @@ def _info_not_installed(model_name: str, json_output: bool) -> None:
         table.add_row("Size", f"{size_bytes / (1024**3):.2f} GB")
     for label, key in _REMOTE_INFO_ROWS:
         if key in metadata:
-            table.add_row(label, _format_metadata_value(key, metadata[key]))
+            table.add_row(label, escape(_format_metadata_value(key, metadata[key])))
     table.add_row("Status", "not installed")
     console.print(table)
 
@@ -6324,7 +6348,7 @@ def _info_not_installed(model_name: str, json_output: bool) -> None:
         )
         or model_name
     )
-    console.print(f"[muted]Install with: omm install {ref}[/muted]")
+    console.print(f"[muted]Install with: omm install {escape(ref)}[/muted]")
     console.print(_fit_hint(ref))
 
 
@@ -8959,6 +8983,8 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     reason = model.get("failure_reason")
     if outcome not in ("model_unfit", "transient_error", "performance_unfit") or not isinstance(reason, str):
         return False
+    if reason not in quality_mod.FAILURE_REASONS:
+        return False
     if outcome == "performance_unfit":
         # Only ever upload a well-formed confirmation verdict: exactly 2
         # attempts and a real, positive timeout value. Anything else means
@@ -9058,7 +9084,7 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     # not a live introspection - a model that never loaded can't be found
     # in /api/ps. Only attach it when every field is well-formed.
     attempted_runtime = model.get("attempted_runtime")
-    if isinstance(attempted_runtime, dict):
+    if event.get("engine") != "lmstudio" and isinstance(attempted_runtime, dict):
         fields = ("context_length", "gpu_offload_percent", "cpu_threads", "num_batch")
         if all(
             isinstance(attempted_runtime.get(key), int) and not isinstance(attempted_runtime[key], bool)
