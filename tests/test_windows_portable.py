@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import stat
 import sys
@@ -59,6 +60,15 @@ def test_pyinstaller_command_copies_distribution_metadata_and_package_data(tmp_p
     assert command[-1] == str(entry)
 
 
+class _WindowsOs:
+    """`os` as seen from windows_portable on a Windows host."""
+
+    name = "nt"
+
+    def __getattr__(self, attr):
+        return getattr(os, attr)
+
+
 def test_build_uses_the_checked_in_entry_and_pinned_environment(tmp_path, monkeypatch):
     calls = []
 
@@ -68,7 +78,10 @@ def test_build_uses_the_checked_in_entry_and_pinned_environment(tmp_path, monkey
         (tmp_path / "dist" / "omm.exe").write_bytes(b"MZ")
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(windows_portable.os, "name", "nt")
+    # Patch the module's view of `os`, not `os.name` itself: pathlib picks
+    # PosixPath/WindowsPath from the global `os.name`, so flipping it would
+    # break every Path() call on Linux/macOS for the rest of the test.
+    monkeypatch.setattr(windows_portable, "os", _WindowsOs())
     monkeypatch.setattr(windows_portable.importlib.metadata, "version", lambda _n: "1.2.3")
     monkeypatch.setattr(windows_portable, "validate_executable", lambda *a: None)
     monkeypatch.setattr(windows_portable.subprocess, "run", fake_run)
