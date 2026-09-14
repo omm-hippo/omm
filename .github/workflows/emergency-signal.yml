@@ -108,3 +108,5 @@ jobs:
             --body "Triggered manually via workflow_dispatch by @${{ github.actor }}. See the workflow run for the exact message/fixed_in_version inputs." \
             --base main --head "$branch")
           gh pr merge "$pr_url" --auto --merge
+          echo "::warning::Emergency PR $pr_url needs 1 approving review before it lands on main"
+          echo "Emergency PR $pr_url needs 1 approving review before it lands on main." >> "$GITHUB_STEP_SUMMARY"
