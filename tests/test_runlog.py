@@ -108,6 +108,34 @@ def test_rebuild_history_orders_by_ts(isolated_omm_home):
     assert rebuilt.index("omm list") < rebuilt.index("omm search")
 
 
+def test_rebuild_history_does_not_drop_a_concurrent_append(isolated_omm_home, monkeypatch):
+    """rebuild_history's read-every-jsonl-then-replace must hold the same
+    lock _append_history uses, or a finish() landing between the read and
+    the replace gets silently overwritten."""
+    import threading
+
+    import omm.atomic as atomic_mod
+
+    runlog.start(["list"])
+    runlog.finish(0, "ok")
+    real = atomic_mod.atomic_write_text
+
+    def racing(path, content):
+        t = threading.Thread(target=runlog._append_history, args=("INJECTED-BLOCK\n",))
+        t.start()
+        t.join(timeout=1.0)
+        real(path, content)
+        racing.thread = t
+
+    monkeypatch.setattr(atomic_mod, "atomic_write_text", racing)
+
+    runlog.rebuild_history()
+
+    racing.thread.join(timeout=15)
+    history = (config.OMM_HOME / "logs" / "history.log").read_text(encoding="utf-8")
+    assert "INJECTED-BLOCK" in history
+
+
 def test_read_history_grep_and_lines(isolated_omm_home):
     for name in ("list", "search", "install"):
         runlog.start([name])

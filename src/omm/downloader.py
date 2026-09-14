@@ -16,6 +16,7 @@ import errno
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -52,6 +53,14 @@ _CHUNK_SIZE = 1024 * 1024
 _DEFAULT_THREADS = 4
 _MIN_CHUNK_SIZE = 8 * 1024 * 1024  # minimum work per thread
 _MIN_PARALLEL_TOTAL = 20 * 1024 * 1024  # below this, not worth parallelizing
+
+# How often each range worker durably commits its progress: fsyncing the
+# data it just wrote, then rewriting the sidecar. Every chunk would make the
+# sidecar (state) durable at roughly the same rate as the data itself, with
+# no gain in resume accuracy worth the extra fsyncs - so commits are batched
+# by whichever of these comes first. Module-level so tests can shrink them.
+_SIDECAR_COMMIT_BYTES = 64 * 1024 * 1024
+_SIDECAR_COMMIT_SECONDS = 2.0
 
 _err_console = Console(stderr=True, highlight=False)
 
@@ -172,6 +181,8 @@ def _write_sidecar(
 ) -> None:
     # Write-to-temp-then-rename so a crash mid-write can't leave behind a
     # half-written JSON file that would poison the next resume attempt.
+    # fsynced before the rename so the *state* this file records is itself
+    # durable, not just atomically swapped in.
     tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(
@@ -183,14 +194,32 @@ def _write_sidecar(
             },
             f,
         )
+        f.flush()
+        os.fsync(f.fileno())
     for attempt in range(8):
         try:
             tmp.replace(sidecar_path)
-            return
+            break
         except PermissionError:
             if attempt == 7:
                 raise
             time.sleep(min(0.025 * (2**attempt), 0.5))
+    # Directory fsync is best-effort, same as atomic._replace_temporary:
+    # unsupported on some Windows filesystems, and the file-level fsync
+    # above already covers the content that matters for a resume.
+    try:
+        descriptor = os.open(sidecar_path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
 
 
 def _valid_parallel_state(state: object, total_size: int) -> bool:
@@ -450,45 +479,75 @@ def _download_range_worker(
                 f"{response_etag!r} did not preserve {strong_etag!r}"
             )
         written = 0
+        pending_commit_bytes = 0
+        last_commit_at = time.monotonic()
         with part_path.open("r+b") as f:
             f.seek(resume_offset)
-            for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
-                if not chunk:
-                    continue
-                if written + len(chunk) > expected_len:
-                    raise DownloadError(
-                        f"Range bytes={resume_offset}-{end} returned more than "
-                        f"{expected_len} bytes."
-                    )
+
+            def _commit_progress() -> None:
+                # Data first, state second: the bytes this commit is about
+                # to record as `done` must already be durable on disk before
+                # the sidecar says so, or a crash between the two could
+                # resume past data that was never actually written.
+                nonlocal pending_commit_bytes, last_commit_at
                 try:
-                    f.write(chunk)
-                except OSError as e:
-                    if e.errno == errno.ENOSPC:
-                        raise InsufficientDiskSpaceError(
-                            f"Not enough disk space to download {part_path.name}.",
-                            fix="Free up disk space and retry.",
-                        ) from e
-                    raise
-                written += len(chunk)
-                with lock:
-                    range_state["done"] += len(chunk)
-                    progress.update(task_id, advance=len(chunk))
-                    try:
-                        _write_sidecar(
-                            sidecar_path,
-                            url,
-                            strong_etag,
-                            total_size,
-                            ranges_state,
+                    f.flush()
+                    os.fsync(f.fileno())
+                    _write_sidecar(
+                        sidecar_path,
+                        url,
+                        strong_etag,
+                        total_size,
+                        ranges_state,
+                    )
+                except PermissionError:
+                    # Commit failure is not a download failure: `done` is
+                    # already reflected in memory and will be committed
+                    # again on the next chunk (or the final commit below).
+                    # A stale sidecar just means we re-download a bit on
+                    # resume, which is safe.
+                    pass
+                pending_commit_bytes = 0
+                last_commit_at = time.monotonic()
+
+            try:
+                for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
+                    if not chunk:
+                        continue
+                    if written + len(chunk) > expected_len:
+                        raise DownloadError(
+                            f"Range bytes={resume_offset}-{end} returned more than "
+                            f"{expected_len} bytes."
                         )
-                    except PermissionError:
-                        # Sidecar commit failure is not a download failure: `done`
-                        # is already reflected in memory and will be committed
-                        # again on the next chunk. A stale sidecar just means we
-                        # re-download a bit on resume, which is safe.
-                        pass
-                if stop_check is not None and stop_check():
-                    raise DownloadCancelled("interrupted by user")
+                    try:
+                        f.write(chunk)
+                    except OSError as e:
+                        if e.errno == errno.ENOSPC:
+                            raise InsufficientDiskSpaceError(
+                                f"Not enough disk space to download {part_path.name}.",
+                                fix="Free up disk space and retry.",
+                            ) from e
+                        raise
+                    written += len(chunk)
+                    with lock:
+                        range_state["done"] += len(chunk)
+                        progress.update(task_id, advance=len(chunk))
+                        pending_commit_bytes += len(chunk)
+                        if (
+                            pending_commit_bytes >= _SIDECAR_COMMIT_BYTES
+                            or time.monotonic() - last_commit_at >= _SIDECAR_COMMIT_SECONDS
+                        ):
+                            _commit_progress()
+                    if stop_check is not None and stop_check():
+                        raise DownloadCancelled("interrupted by user")
+            finally:
+                # Whether the loop finished, raised, or was cancelled, don't
+                # leave progress durably written to `done` in memory but not
+                # yet to the sidecar - that gap is exactly what batching
+                # commits would otherwise reopen.
+                with lock:
+                    if pending_commit_bytes:
+                        _commit_progress()
         if written != expected_len:
             raise _RetryableDownloadError(
                 f"Range bytes={resume_offset}-{end} returned {written} bytes; "

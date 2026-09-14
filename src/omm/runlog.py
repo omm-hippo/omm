@@ -274,20 +274,30 @@ def rebuild_history() -> int:
     ordered by ``run_start`` ts. Returns the run count. Swallows errors
     (returns 0)."""
     try:
-        from omm.atomic import atomic_write_text
+        from omm.atomic import atomic_write_text, locked
 
-        blocks = []
-        for f in sorted(_logs_dir().glob("*.jsonl")):
-            records = _records_of(f)
-            if not records:
-                continue
-            blocks.append(_summarize(records, detail_name=f.name))
-        blocks.sort(key=lambda b: b.split("  omm", 1)[0])
-        atomic_write_text(
-            _history_path(),
-            _BLOCK_SEP.join(blocks) + (_BLOCK_SEP if blocks else ""),
-        )
-        return len(blocks)
+        # Held across the read of every *.jsonl and the final replace: a
+        # concurrent _append_history (same lock) must not be able to append
+        # to history.log between this function's read and its replace, or
+        # that block would be silently overwritten and lost.
+        with locked(_history_path(), timeout=10):
+            blocks = []
+            for f in sorted(_logs_dir().glob("*.jsonl")):
+                if f == _RUN_PATH:
+                    # This process's own in-progress run: finish() will add
+                    # its real block once the command completes, so counting
+                    # it here would only duplicate it as a bare "unknown".
+                    continue
+                records = _records_of(f)
+                if not records:
+                    continue
+                blocks.append(_summarize(records, detail_name=f.name))
+            blocks.sort(key=lambda b: b.split("  omm", 1)[0])
+            atomic_write_text(
+                _history_path(),
+                _BLOCK_SEP.join(blocks) + (_BLOCK_SEP if blocks else ""),
+            )
+            return len(blocks)
     except Exception:
         return 0
 

@@ -3,6 +3,23 @@
 param([switch]$Purge)
 $ErrorActionPreference = "Stop"
 
+# `irm ... | iex` runs this script's text inside the caller's own PowerShell
+# session, so a bare `exit` would close that session's window along with any
+# recovery message just printed above it. $PSCommandPath is only set when the
+# script actually runs as a file (tests, CI, a saved copy) - use that to tell
+# the two execution modes apart and only hard-`exit` in the file case.
+$OmmRunAsFile = [bool]$PSCommandPath
+function Exit-OmmFailure {
+    if ($OmmRunAsFile) { exit 1 } else { throw "omm uninstaller failed; see the messages above." }
+}
+
+# Mirror install.sh/uninstall.sh: only a fully qualified OMM_HOME is
+# accepted. GetFullPath would resolve a relative, "~", drive-relative
+# ("C:omm") or root-relative ("\omm") value against the process's .NET
+# current directory, not the real hub.
+if ($env:OMM_HOME -and -not ($env:OMM_HOME -match '^[A-Za-z]:[\\/]' -or $env:OMM_HOME -match '^[\\/]{2}[^\\/]')) {
+    throw "Refusing non-absolute OMM_HOME: $env:OMM_HOME"
+}
 $OmmHome = if ($env:OMM_HOME) { $env:OMM_HOME } else { Join-Path $env:USERPROFILE ".omm" }
 $resolvedHome = [IO.Path]::GetFullPath($OmmHome).TrimEnd('\')
 $profileHome = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
@@ -86,7 +103,7 @@ function Stop-UninstallPreservingSources {
         [Console]::Error.WriteLine("No pipx uninstall mutation was attempted, so the existing command was left unchanged.")
     }
     [Console]::Error.WriteLine("Recovery: repair pipx, run 'pipx uninstall omm-model' (and 'pipx uninstall omm' only if it is OMM), then rerun this script.")
-    exit 1
+    Exit-OmmFailure
 }
 
 function Remove-OmmOwnedData {
@@ -420,8 +437,8 @@ if ($hasNew -and -not $newIsOmm) {
     Stop-UninstallPreservingSources "The omm-model environment could not be verified as OMM; it was preserved."
 }
 if ($hasLegacy -and -not $legacyIsOmm) {
-    Write-Warning "Preserving unrelated pipx environment 'omm'."
-    Stop-UninstallPreservingSources "Resolve the pipx environment-name conflict manually before uninstalling OMM."
+    Write-Warning "Preserving pipx environment 'omm': it could not be verified as an OMM install."
+    Stop-UninstallPreservingSources "It may be an unrelated package named 'omm', or an old OMM install whose source checkout was deleted or whose OMM_HOME moved. If it is your old OMM install, run 'pipx uninstall omm', then rerun this script."
 }
 
 $removed = @()
@@ -483,4 +500,4 @@ if ($Purge) {
 } else {
     Write-Host "Removed omm. Models and settings remain in $resolvedHome (use -Purge to remove them)."
 }
-if ($sourceRemovalFailed) { exit 1 }
+if ($sourceRemovalFailed) { Exit-OmmFailure }

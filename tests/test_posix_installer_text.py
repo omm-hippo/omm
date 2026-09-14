@@ -55,7 +55,7 @@ def test_unix_installer_bootstraps_ssh_keygen_for_signature_verification():
     assert "openssh ;;" in script
     assert "openssh-keygen ;;" in script
     assert script.index("ssh-keygen not found after dependency bootstrap") < script.index(
-        "git clone --filter=blob:none"
+        "clone --filter=blob:none"
     )
 
 
@@ -134,3 +134,129 @@ refresh_pipx_snapshot
     assert run("", 1) != 0
     assert run(valid_json, 2) != 0
     assert run("{}", 1) != 0
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh function under test")
+def test_signing_commit_falls_through_when_rev_list_itself_fails(tmp_path):
+    """Mirrors trust._signing_commit's fail-closed behavior: if `git rev-list
+    --parents` itself errors (e.g. a corrupted object store right after
+    clone), signing_commit must not let `set -e` kill the whole script via
+    the `parents=$(...)` assignment - it must fall through to returning the
+    commit as-is, so the caller's own verify_commit_signature + cleanup
+    still runs."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    function_text = _extract_function(script, "signing_commit() {")
+    script_path = tmp_path / "signing_commit.sh"
+    script_path.write_text(function_text + "\n", encoding="utf-8")
+
+    def run(git_stub: str) -> str:
+        harness = f"""
+set -eu
+git() {{ {git_stub}; }}
+. {shlex.quote(str(script_path))}
+r=$(signing_commit abc /nonexistent)
+echo "R=$r"
+"""
+        result = subprocess.run(["sh", "-c", harness], capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.stdout.strip()
+
+    assert run("return 128") == "R=abc"
+    assert run("echo 'c p1 p2'") == "R=p2"
+    assert run("echo 'c p1'") == "R=abc"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh function under test")
+def test_discard_unreferenced_new_source_only_when_nothing_points_at_it(tmp_path):
+    """A fresh checkout nothing points at (new pipx install failed before it
+    was ever exposed, and no legacy checkout was displaced) would otherwise
+    survive a failed install and block the uninstaller's "No verified OMM
+    pipx environment was removed" guard on a later, unrelated run."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    function_text = _extract_function(script, "discard_unreferenced_new_source() {")
+    script_path = tmp_path / "discard.sh"
+    script_path.write_text(function_text + "\n", encoding="utf-8")
+
+    cases = iter(range(100))
+
+    def run(*, new_present: str, previous_src_dir: str, has_env: bool) -> bool:
+        # A plain counter, not the arguments: previous_src_dir is a path, and
+        # its slashes would turn the name into subdirectories that do not exist.
+        src_dir = tmp_path / f"src-{next(cases)}"
+        src_dir.mkdir()
+        harness = f"""
+set -eu
+NEW_PIPX_PRESENT={shlex.quote(new_present)}
+PREVIOUS_SRC_DIR={shlex.quote(previous_src_dir)}
+PIPX_ENV=omm-model
+SRC_DIR={shlex.quote(str(src_dir))}
+refresh_pipx_snapshot() {{ return 0; }}
+pipx_snapshot_has_environment() {{ [ {"1" if has_env else "0"} = 1 ]; }}
+. {shlex.quote(str(script_path))}
+discard_unreferenced_new_source
+"""
+        result = subprocess.run(["sh", "-c", harness], capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return not src_dir.exists()
+
+    assert run(new_present="0", previous_src_dir="", has_env=False) is True
+    assert run(new_present="1", previous_src_dir="", has_env=False) is False
+    assert run(new_present="0", previous_src_dir="/some/prior", has_env=False) is False
+    assert run(new_present="0", previous_src_dir="", has_env=True) is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh function under test")
+def test_ensure_pipx_bin_path_escapes_shell_metacharacters_and_stays_idempotent(tmp_path):
+    """A PIPX_BIN_DIR containing `$` or a backtick must not be interpolated
+    when the profile is later sourced, and the idempotency check (grep) must
+    look for the same escaped text that was actually written - otherwise a
+    path with those characters gets a duplicate PATH line appended on every
+    rerun."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    function_text = _extract_function(script, "ensure_pipx_bin_path() {")
+    script_path = tmp_path / "ensure_pipx_bin_path.sh"
+    script_path.write_text(function_text + "\n", encoding="utf-8")
+
+    def run(home: Path, pipx_bin_dir: Path, uname_output: str, rcfile_name: str, *, runs: int = 2):
+        harness = f"""
+set -eu
+uname() {{ echo {shlex.quote(uname_output)}; }}
+SHELL=/bin/bash
+HOME={shlex.quote(str(home))}
+PIPX_BIN_DIR={shlex.quote(str(pipx_bin_dir))}
+. {shlex.quote(str(script_path))}
+for i in $(seq 1 {runs}); do ensure_pipx_bin_path; done
+"""
+        result = subprocess.run(
+            ["sh", "-c", harness],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={"PATH": os.environ["PATH"]},
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        rcfile = home / rcfile_name
+        content = rcfile.read_text(encoding="utf-8")
+        assert content.count("# Added by omm installer") == 1
+        sourced = subprocess.run(
+            ["sh", "-c", f'. {shlex.quote(str(rcfile))}; printf %s "$PATH"'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={"PATH": "/usr/bin:/bin"},
+        )
+        assert sourced.returncode == 0, sourced.stderr
+        assert sourced.stdout.startswith(str(pipx_bin_dir) + ":")
+        assert list(home.iterdir()) == [rcfile]
+
+    home1 = tmp_path / "home-linux"
+    home1.mkdir()
+    run(home1, home1 / 'a$b`c"d\\e' / "bin", "Linux", ".bashrc")
+
+    home2 = tmp_path / "home-darwin"
+    home2.mkdir()
+    run(home2, home2 / 'a$b`c"d\\e' / "bin", "Darwin", ".zprofile")
+
+    home3 = tmp_path / "home-backslash"
+    home3.mkdir()
+    run(home3, home3 / "x\\y" / "bin", "Linux", ".bashrc")

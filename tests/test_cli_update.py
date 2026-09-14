@@ -79,14 +79,17 @@ class _FakeProc:
         return self._returncode
 
 
-def test_install_spec_points_at_src_dir_on_darwin(monkeypatch):
-    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+def test_install_spec_omits_nvidia_extra_without_nvidia_smi(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     assert cli._install_spec() == str(cli.SRC_DIR)
 
 
-def test_install_spec_adds_nvidia_extra_on_non_darwin(monkeypatch):
-    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
+def test_install_spec_adds_nvidia_extra_when_nvidia_smi_present(monkeypatch):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
+    )
 
     assert cli._install_spec() == f"{cli.SRC_DIR}[nvidia]"
 
