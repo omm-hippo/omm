@@ -17,13 +17,15 @@ def test_enable_reports_missing_dependency(isolated_omm_home, monkeypatch):
     assert config.load_config()["auto_import_enabled"] is False
 
 
-def test_enable_hint_points_pipx_installs_at_pipx_inject(isolated_omm_home, monkeypatch):
+def test_enable_hint_points_pipx_installs_at_pipx_inject(isolated_omm_home, monkeypatch, tmp_path):
     """`pip install "omm-model[watch]"` never reaches a pipx venv (no pip of
     its own), which is how a Windows user could install it and still be told
     to install it on every retry."""
     monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
     monkeypatch.setattr(cli.sys, "frozen", False, raising=False)
-    monkeypatch.setattr(cli.sys, "prefix", r"C:\Users\me\pipx\venvs\omm-model")
+    # The pipx environment name is the venv directory name; build it with the
+    # host's own separators so the test means the same thing on every OS.
+    monkeypatch.setattr(cli.sys, "prefix", str(tmp_path / "pipx" / "venvs" / "omm-model"))
     monkeypatch.setattr(
         cli.package_metadata, "install_source", lambda: cli.package_metadata.InstallSource.PIPX
     )
