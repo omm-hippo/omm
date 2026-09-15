@@ -117,7 +117,7 @@ function Remove-OmmOwnedData {
     }
     $ownedFiles = @(
         "config.json", "models.json", "link-ownership.json", "rules.json",
-        "recommend-model.json", "calibration.json", "benchmark_history.json",
+        "recommend-model.json", "recommend-provider-facts.json", "calibration.json", "benchmark_history.json",
         "contribute_state.json", "telemetry.log", "telemetry_pending.json",
         "update_check.json", "client-id", "firebase_auth.json", "error_reports.log",
         "error_reports_pending.json", "error_reports_backoff.json",
