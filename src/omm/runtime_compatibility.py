@@ -101,5 +101,12 @@ def verify_and_record(
     **kwargs,
 ) -> CompatibilityResult:
     result = verify_runtime(adapter, model, **kwargs)
-    registry.record_compatibility(filename, adapter.key, result.registry_payload())
+    try:
+        registry.record_compatibility(filename, adapter.key, result.registry_payload())
+    except KeyError:
+        # A concurrent `omm remove` can drop the entry while this probe runs
+        # (load up to 120s + generate up to 300s). There is nothing left to
+        # annotate; the probe result itself is still honest, and a normal
+        # concurrent operation must not end in a traceback + crash report.
+        pass
     return result

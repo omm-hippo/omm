@@ -110,6 +110,9 @@ def test_yes_on_supported_command_does_not_warn(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "resolve_model", lambda name: (_ for _ in ()).throw(
         cli.ModelResolutionError("nope")
     ))
+    # The failure path prints install suggestions, which would fetch the
+    # recommendation catalog - keep this test off the network.
+    monkeypatch.setattr(cli, "_print_install_suggestions", lambda query: None)
 
     result = runner.invoke(cli.app, ["install", "no-such-model", "--yes"])
 
@@ -130,6 +133,9 @@ def test_yes_capability_is_judged_independently_for_same_named_nested_command(
     monkeypatch.setattr(cli, "resolve_model", lambda name: (_ for _ in ()).throw(
         cli.ModelResolutionError("nope")
     ))
+    # The failure path prints install suggestions, which would fetch the
+    # recommendation catalog - keep this test off the network.
+    monkeypatch.setattr(cli, "_print_install_suggestions", lambda query: None)
     top_level = runner.invoke(cli.app, ["install", "no-such-model", "--yes"])
     assert "has no effect" not in top_level.stderr
 
@@ -161,6 +167,9 @@ def test_yes_warning_is_not_emitted_when_prog_name_has_exe_suffix(isolated_omm_h
     monkeypatch.setattr(cli, "resolve_model", lambda name: (_ for _ in ()).throw(
         cli.ModelResolutionError("nope")
     ))
+    # The failure path prints install suggestions, which would fetch the
+    # recommendation catalog - keep this test off the network.
+    monkeypatch.setattr(cli, "_print_install_suggestions", lambda query: None)
 
     result = runner.invoke(
         cli.app, ["install", "no-such-model", "--yes"], prog_name="omm.exe"

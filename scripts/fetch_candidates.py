@@ -107,6 +107,35 @@ def curated_candidates() -> list[dict]:
     ]
 
 
+def _existing_supersedes() -> dict[tuple[str, str, str], list[str]]:
+    """`supersedes` is the only field of published/candidates.json that a
+    human hand-curates. main() rewrites the whole file every nightly run, so
+    without carrying this forward, a manually-added lineage would silently
+    disappear on the next scheduled train.yml run."""
+    if not OUTPUT_PATH.exists():
+        return {}
+    try:
+        previous = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(previous, list):
+        return {}
+    carried: dict[tuple[str, str, str], list[str]] = {}
+    for item in previous:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("supersedes")
+        if not isinstance(value, list) or not all(
+            isinstance(name, str) and name.strip() for name in value
+        ):
+            continue
+        repo_id, filename = item.get("repo_id"), item.get("filename")
+        if not isinstance(repo_id, str) or not isinstance(filename, str):
+            continue
+        carried[(item.get("provider") or "huggingface", repo_id, filename)] = value
+    return carried
+
+
 def main() -> None:
     # HF and ModelScope are independent network sources - fetch concurrently.
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -125,37 +154,50 @@ def main() -> None:
             print(f"Warning: ModelScope fetch failed ({e}), skipping.")
             modelscope_candidates = []
 
-    seen_keys: set[tuple[str, str]] = set()
-    candidates = []
-    for c in curated_candidates() + trending + modelscope_candidates:
-        if not isinstance(c, dict):
-            print("Warning: skipping a malformed non-object candidate.")
-            continue
-        repo_id = c.get("repo_id")
-        filename = c.get("filename")
-        name = c.get("name")
-        description = c.get("description")
-        provider = c.get("provider") or "huggingface"
-        if (
-            not isinstance(repo_id, str)
-            or not repo_id
-            or not isinstance(filename, str)
-            or not filename
-            or not isinstance(name, str)
-            or not name
-            or (description is not None and not isinstance(description, str))
-            or provider not in {"huggingface", "modelscope"}
-        ):
-            print("Warning: skipping a candidate with invalid coordinates or provider.")
-            continue
-        key = (provider, repo_id)
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        candidates.append(c)
-
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with locked(OUTPUT_PATH):
+        # Read the previous file's manually-curated `supersedes` lineage
+        # (and write the new file) inside the same lock so a concurrent
+        # writer can't slip in between the read and the write.
+        supersedes_by_key = _existing_supersedes()
+
+        seen_keys: set[tuple[str, str]] = set()
+        candidates = []
+        for c in curated_candidates() + trending + modelscope_candidates:
+            if not isinstance(c, dict):
+                print("Warning: skipping a malformed non-object candidate.")
+                continue
+            repo_id = c.get("repo_id")
+            filename = c.get("filename")
+            name = c.get("name")
+            description = c.get("description")
+            provider = c.get("provider") or "huggingface"
+            if (
+                not isinstance(repo_id, str)
+                or not repo_id
+                or not isinstance(filename, str)
+                or not filename
+                or not isinstance(name, str)
+                or not name
+                or (description is not None and not isinstance(description, str))
+                or provider not in {"huggingface", "modelscope"}
+            ):
+                print("Warning: skipping a candidate with invalid coordinates or provider.")
+                continue
+            key = (provider, repo_id)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            # Carry forward a hand-curated `supersedes` lineage only when the
+            # (provider, repo_id, filename) coordinates match exactly - if
+            # trending re-ranking changed the filename for this repo_id, the
+            # old lineage may no longer describe the new file, so don't
+            # guess (see D-SUPERSEDES-PERSIST).
+            carried = supersedes_by_key.get((provider, repo_id, filename))
+            if carried and "supersedes" not in c:
+                c = dict(c, supersedes=carried)
+            candidates.append(c)
+
         atomic_write_text(OUTPUT_PATH, json.dumps(candidates, indent=2) + "\n")
     print(
         f"Wrote {OUTPUT_PATH} ({len(candidates)} candidates, {len(trending)} from HF trending, "

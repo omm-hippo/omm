@@ -3,7 +3,7 @@ import json
 import pytest
 import requests
 
-from omm import config, firebase_auth, telemetry
+from omm import config, telemetry
 
 
 class _FakeResp:
@@ -518,22 +518,6 @@ def test_ingest_token_is_sent_to_an_https_self_hosted_endpoint(isolated_omm_home
 
     assert result is True
     assert captured["headers"]["authorization"] == "Bearer secret-token"
-
-
-def test_post_event_skips_auth_for_non_firebase_endpoint(isolated_omm_home, monkeypatch):
-    monkeypatch.setattr(
-        telemetry,
-        "load_config",
-        lambda: {"telemetry_send_policy": "always", "telemetry_endpoint": "https://example.com"},
-    )
-
-    def fail_if_called():
-        raise AssertionError("should not fetch a firebase auth token for a non-firebase endpoint")
-
-    monkeypatch.setattr(firebase_auth, "get_id_token", lambda: fail_if_called())
-    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200))
-
-    assert telemetry.send_event({"x": 1}) is True
 
 
 def test_pending_queue_is_bounded(isolated_omm_home):

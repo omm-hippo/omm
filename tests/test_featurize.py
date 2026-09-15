@@ -57,6 +57,15 @@ def test_parse_chip_score_does_not_classify_ryzen_ai_max_as_apple_max_tier():
     assert parse_chip_score("AMD Ryzen AI Max+ 395") == (0.0, 0.0)
 
 
+def test_parse_chip_score_does_not_rank_maxq_laptop_gpus_above_their_desktop_part():
+    """'with Max-Q Design' is a lower-TGP laptop variant, so it must not
+    outrank the desktop part with the same model number."""
+    assert parse_chip_score("NVIDIA GeForce RTX 3080 Ti") == (3080.0, 1.0)
+    assert parse_chip_score("NVIDIA GeForce RTX 3080 Ti with Max-Q Design") == (3080.0, 1.0)
+    assert parse_chip_score("NVIDIA GeForce RTX 2070 with Max-Q Design") == (2070.0, 0.0)
+    assert parse_chip_score("NVIDIA GeForce RTX 3080 Max-Q") == (3080.0, 0.0)
+
+
 def _gguf_named_1b():
     return {
         "name": "Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking_Q4_k_m.gguf",

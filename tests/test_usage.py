@@ -30,18 +30,26 @@ def test_build_payload_shape(isolated_omm_home, monkeypatch):
     usage.record_run("install", "failed", "DownloadError")
     usage.record_run("search", "ok", None)
     p = usage.build_payload()
-    for key in (
+    # Exact set, not just presence: a new field in usage._snapshot() must
+    # fail here so the consent text, PRIVACY.md and the worker whitelist
+    # get updated with it.
+    assert set(p) == {
         "schema_version", "client_id", "client_version", "install_source",
-        "os_name", "cpu_arch", "ram_gb_bucket", "vram_gb_bucket",
-        "gpu_vendor", "recorded_at", "update_channel",
-    ):
-        assert key in p, key
+        "os_name", "os_version", "cpu_arch", "ram_gb_bucket", "vram_gb_bucket",
+        "gpu_vendor", "recorded_at", "update_channel", "commands", "errors",
+    }
     assert p["schema_version"] == 1
     assert isinstance(p["ram_gb_bucket"], str)
     assert p["commands"]["install ok"] == 1
     assert p["commands"]["install failed"] == 1
     assert p["commands"]["search ok"] == 1
     assert p["errors"]["install DownloadError"] == 1
+
+
+def test_build_payload_omits_errors_when_no_run_failed(isolated_omm_home, monkeypatch):
+    _enable(monkeypatch)
+    usage.record_run("install", "ok", None)
+    assert "errors" not in usage.build_payload()
 
 
 def test_build_payload_preview_does_not_create_client_id(isolated_omm_home):
@@ -189,6 +197,10 @@ def test_gpu_vendor_does_not_mistake_model_numbers_for_apple_chips():
         "Intel Iris Xe": "intel",
         None: "none",
         "Something else": "other",
+        "NVIDIA Tesla M4": "nvidia",
+        "Tesla M6": "nvidia",
+        "NVIDIA GRID M6-8Q": "nvidia",
+        "Apple M3 Max": "apple",
     }
     assert {name: usage._gpu_vendor(name) for name in expected} == expected
 

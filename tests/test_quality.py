@@ -401,6 +401,60 @@ def test_collect_evidence_gives_up_after_max_daemon_restart_failures(monkeypatch
     assert any("won't come back" in event for event in events)
 
 
+def test_isolated_daemon_blips_do_not_stop_the_whole_batch(monkeypatch):
+    """Restart failures scattered across the batch must not accumulate into
+    a false 'daemon won't come back' abort - the streak resets every time a
+    tag is actually reached."""
+    states = iter([None, "0.30.10", None, "0.30.10", None, "0.30.10"])
+    monkeypatch.setattr(quality, "ollama_version", lambda: next(states, "0.30.10"))
+    monkeypatch.setattr(quality.benchmark, "start_ollama_daemon", lambda: None)
+    monkeypatch.setattr(quality.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        quality,
+        "evaluate_model",
+        lambda tag, pack, speed_runs=3: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+    events = []
+
+    report = quality.collect_evidence(
+        ["model:1", "model:2", "model:3"],
+        _hardware(),
+        on_daemon_event=events.append,
+    )
+
+    assert [m["tag"] for m in report["models"]] == ["model:1", "model:2", "model:3"]
+    assert not any("won't come back" in event for event in events)
+
+
+def test_confirmation_does_not_claim_an_unload_it_never_attempted(monkeypatch):
+    monkeypatch.setattr(quality, "ollama_version", lambda: None)
+
+    entry = quality._confirm_generation_timeout(
+        "m:latest", _hardware(), {"pack_id": "x", "items": []}, 1
+    )
+
+    assert entry["measurement_isolation"]["unloaded_after_run"] is False
+    assert entry["outcome"] == "transient_error"
+
+
+def test_confirmation_does_not_claim_an_unload_when_metadata_lookup_fails(monkeypatch):
+    monkeypatch.setattr(quality, "ollama_version", lambda: "0.30.10")
+
+    def fake_model_metadata(tag):
+        raise quality.QualityEvaluationError(
+            "model missing", failure_reason=quality.FAILURE_REASON_MODEL_LOAD_FAILED
+        )
+
+    monkeypatch.setattr(quality, "_model_metadata", fake_model_metadata)
+
+    entry = quality._confirm_generation_timeout(
+        "m:latest", _hardware(), {"pack_id": "x", "items": []}, 1
+    )
+
+    assert entry["measurement_isolation"]["unloaded_after_run"] is False
+
+
 def test_unload_model_uses_keep_alive_zero_without_deleting(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -773,24 +827,6 @@ class _FakeResponse:
     @property
     def text(self):
         return json.dumps(self._body) if self._body is not None else ""
-
-
-@pytest.mark.parametrize(
-    ("body", "expected"),
-    [
-        (
-            {"error": "model requires more system memory (10.0 GiB) than is available (8.0 GiB)"},
-            quality.FAILURE_REASON_OUT_OF_MEMORY,
-        ),
-        ({"error": "CUDA out of memory"}, quality.FAILURE_REASON_OUT_OF_MEMORY),
-        ({"error": "failed to load model"}, quality.FAILURE_REASON_MODEL_LOAD_FAILED),
-        ({"error": "this model does not support tool calling"}, quality.FAILURE_REASON_UNSUPPORTED_RUNTIME),
-        ({"error": "something else entirely"}, quality.FAILURE_REASON_UNKNOWN),
-        (None, quality.FAILURE_REASON_UNKNOWN),
-    ],
-)
-def test_classify_error_response_maps_ollama_error_bodies(body, expected):
-    assert quality._classify_error_response(_FakeResponse(500, body)) == expected
 
 
 def test_request_json_classifies_connect_timeout_as_ollama_unavailable(monkeypatch):

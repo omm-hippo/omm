@@ -57,3 +57,25 @@ def test_no_windows_only_module_imported_at_module_scope():
         "Windows-only modules imported at module scope - move the import "
         "inside the function that needs it:\n" + "\n".join(offenders)
     )
+
+
+_STARTUP_LAZY_MODULES = frozenset({"importlib.metadata"})
+
+
+def test_no_startup_lazy_module_imported_at_module_scope():
+    """CLAUDE.md documents ``importlib.metadata`` as one of the modules
+    lazy-imported inside functions to keep ``omm help`` near ~140ms. A
+    module-scope import anywhere under ``src/omm`` would hoist that cost
+    back onto every ``import omm``, not just the commands that need it."""
+    src_root = Path(__file__).resolve().parent.parent / "src" / "omm"
+    offenders = []
+    for path in sorted(src_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for lineno, name in _module_scope_imports(tree):
+            if name in _STARTUP_LAZY_MODULES:
+                relpath = path.relative_to(src_root.parent.parent)
+                offenders.append(f"{relpath.as_posix()}:{lineno}: {name}")
+    assert not offenders, (
+        "Startup-lazy modules imported at module scope - move the import "
+        "inside the function that needs it:\n" + "\n".join(offenders)
+    )

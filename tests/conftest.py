@@ -74,6 +74,19 @@ def _loopback_socket_address(address: object) -> bool:
         return False
 
 
+class ExternalNetworkBlocked(BaseException):
+    """Raised when a unit test attempts a real non-loopback connection.
+
+    Deliberately NOT an Exception subclass: production code wraps its
+    senders in defensive `except Exception` blocks (usage.flush_pending
+    returns False on anything, and cli.py's prelude swallows it again),
+    which silently ate an AssertionError and let a real POST attempt
+    finish green. pytest still reports a BaseException as a failure, and
+    click's CliRunner only catches Exception, so this propagates out of
+    CliRunner.invoke too.
+    """
+
+
 @pytest.fixture(autouse=True)
 def _block_unmocked_external_network(monkeypatch):
     """Fail any unit test that attempts a real non-loopback connection.
@@ -88,12 +101,12 @@ def _block_unmocked_external_network(monkeypatch):
 
     def guarded_connect(sock, address):
         if not _loopback_socket_address(address):
-            raise AssertionError(f"unit test attempted external network access: {address!r}")
+            raise ExternalNetworkBlocked(f"unit test attempted external network access: {address!r}")
         return original_connect(sock, address)
 
     def guarded_connect_ex(sock, address):
         if not _loopback_socket_address(address):
-            raise AssertionError(f"unit test attempted external network access: {address!r}")
+            raise ExternalNetworkBlocked(f"unit test attempted external network access: {address!r}")
         return original_connect_ex(sock, address)
 
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
