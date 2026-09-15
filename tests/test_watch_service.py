@@ -30,7 +30,11 @@ def test_darwin_install_writes_plist_and_loads_it(fake_home, isolated_omm_home, 
 
     wrapper_path = watch_service._launchd_wrapper_path()
     assert str(wrapper_path) in content
-    assert wrapper_path.stat().st_mode & 0o111  # executable
+    if sys.platform != "win32":
+        # Windows has no Unix permission bits to chmod onto st_mode; this
+        # branch is only ever run for real on macOS anyway (Darwin here is
+        # simulated via monkeypatch, not the actual host OS).
+        assert wrapper_path.stat().st_mode & 0o111  # executable
     wrapper_content = wrapper_path.read_text(encoding="utf-8")
     assert sys.executable in wrapper_content
 
