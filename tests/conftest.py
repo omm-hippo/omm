@@ -6,6 +6,7 @@ import errno
 import ipaddress
 import os
 import socket
+import time
 
 import pytest
 
@@ -87,6 +88,41 @@ class ExternalNetworkBlocked(BaseException):
     """
 
 
+# Windows takes ~2 s to report ECONNREFUSED on loopback (Linux answers at
+# once), and install/benchmark paths probe the Ollama and LM Studio ports
+# several times per command. Remembering a refused port for a minute turns
+# those repeated 2 s waits into an immediate refusal - the same outcome the
+# code under test sees on Linux - which is where most of the Windows
+# suite's extra ~14 minutes went.
+_REFUSED_LOOPBACK_PORTS: dict[tuple[str, int], float] = {}
+_REFUSAL_MEMORY_SECONDS = 60.0
+_REFUSED_ERRNOS = frozenset({errno.ECONNREFUSED, 10061})
+
+
+def _loopback_port_key(address) -> tuple[str, int] | None:
+    if not isinstance(address, tuple) or len(address) < 2:
+        return None
+    host, port = address[0], address[1]
+    if not isinstance(host, str) or not isinstance(port, int):
+        return None
+    return host, port
+
+
+@pytest.fixture(autouse=True)
+def _no_powershell_hardware_probes(request, monkeypatch):
+    """Keep hardware.scan_hardware() from spawning PowerShell in unit tests.
+
+    On Windows each Get-CimInstance round trip costs 2-5 s and install paths
+    scan hardware more than once, so tests that never asked for real
+    hardware paid 5-10 s apiece. hardware.py already treats a None probe
+    result as "unknown", which is also what CI's GPU-less runners report.
+    tests/test_windows_cim_encoding.py exercises the real PowerShell
+    encoding path on purpose and keeps it."""
+    if request.node.fspath.basename == "test_windows_cim_encoding.py":
+        return
+    monkeypatch.setattr(hardware, "_powershell_json", lambda *args, **kwargs: None)
+
+
 @pytest.fixture(autouse=True)
 def _block_unmocked_external_network(monkeypatch):
     """Fail any unit test that attempts a real non-loopback connection.
@@ -98,19 +134,50 @@ def _block_unmocked_external_network(monkeypatch):
     """
     original_connect = socket.socket.connect
     original_connect_ex = socket.socket.connect_ex
+    original_bind = socket.socket.bind
+
+    def _remembered_refusal(address):
+        key = _loopback_port_key(address)
+        if key is None:
+            return False
+        stamp = _REFUSED_LOOPBACK_PORTS.get(key)
+        return stamp is not None and time.monotonic() - stamp < _REFUSAL_MEMORY_SECONDS
+
+    def _remember_refusal(address):
+        key = _loopback_port_key(address)
+        if key is not None:
+            _REFUSED_LOOPBACK_PORTS[key] = time.monotonic()
 
     def guarded_connect(sock, address):
         if not _loopback_socket_address(address):
             raise ExternalNetworkBlocked(f"unit test attempted external network access: {address!r}")
-        return original_connect(sock, address)
+        if _remembered_refusal(address):
+            raise ConnectionRefusedError(errno.ECONNREFUSED, "loopback port refused earlier in this run")
+        try:
+            return original_connect(sock, address)
+        except ConnectionRefusedError:
+            _remember_refusal(address)
+            raise
 
     def guarded_connect_ex(sock, address):
         if not _loopback_socket_address(address):
             raise ExternalNetworkBlocked(f"unit test attempted external network access: {address!r}")
-        return original_connect_ex(sock, address)
+        if _remembered_refusal(address):
+            return errno.ECONNREFUSED
+        result = original_connect_ex(sock, address)
+        if result in _REFUSED_ERRNOS:
+            _remember_refusal(address)
+        return result
+
+    def guarded_bind(sock, address):
+        # A test that starts a local server on a port refused moments ago
+        # must not inherit the cached refusal.
+        _REFUSED_LOOPBACK_PORTS.pop(_loopback_port_key(address), None)
+        return original_bind(sock, address)
 
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
     monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+    monkeypatch.setattr(socket.socket, "bind", guarded_bind)
 
 
 @pytest.fixture(autouse=True)
