@@ -3463,7 +3463,7 @@ def recommend(
                 key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
                 reverse=True,
             )
-            viable = within_profile[:10]
+            viable = within_profile
         elif usable:
             # Nothing in the usable set clears the profile's RAM ceiling -
             # relax the profile rather than show nothing.
@@ -3476,11 +3476,14 @@ def recommend(
                 key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
                 reverse=True,
             )
-            viable = usable[:10]
+            viable = usable
         else:
             # Nothing clears the usable-speed floor (very weak hardware) - fall
             # back to the fastest candidates available rather than show nothing.
-            viable = [(c, speed) for c, speed in ranked if speed > 0][:10]
+            viable = [(c, speed) for c, speed in ranked if speed > 0]
+        from omm.recommend_selection import shortlist
+
+        viable = shortlist(viable)
         if not viable:
             err_console.print("[error]No model is predicted to run on this hardware.[/error]")
             raise typer.Exit(1)

@@ -14,6 +14,7 @@ from rich.text import Text
 
 from omm import linker, predictor, recommend_status
 from omm.hardware import HardwareInfo, calculate_memory_budget
+from omm.recommend_selection import model_label, quantization_label, variant_warning
 
 ACCENT = "accent"
 SUCCESS = "success"
@@ -75,12 +76,6 @@ def __getattr__(name: str):
         )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-_SPECIAL_VARIANT_WORDS = (
-    "abliterated",
-    "heretic",
-    "nsfw",
-    "uncensored",
-)
 _CAUTION_REASON = "Specialized or uncensored variant"
 
 
@@ -119,17 +114,14 @@ def humanize_model_name(candidate: dict) -> str:
         or candidate.get("name")
         or "Unknown model"
     )
-    source = source.rsplit("/", 1)[-1]
-    source = re.sub(r"\.gguf$", "", source, flags=re.IGNORECASE)
-    source = re.sub(r"[-_.]gguf$", "", source, flags=re.IGNORECASE)
-    source = re.sub(
-        r"(?i)(?:[-_.](?:UD[-_.])?(?:I?Q[1-8]|BF16|FP16|F16|FP32|F32)"
-        r"(?:[-_.][A-Z0-9]+)*)$",
-        "",
-        source,
-    )
-    source = re.sub(r"[-_]+", " ", source)
-    return re.sub(r"\s+", " ", source).strip() or "Unknown model"
+    label = model_label(source)
+    repository_label = model_label(str(candidate.get("repo_id") or ""))
+    if label.casefold() in {"ggml model", "gguf model", "model", "weights"}:
+        label = repository_label or label
+    elif repository_label.casefold().startswith(label.casefold() + " "):
+        # A repository-only fine-tune/decoding suffix must stay visible.
+        label = repository_label
+    return label or "Unknown model"
 
 
 def _candidate_text(candidate: dict) -> str:
@@ -139,13 +131,7 @@ def _candidate_text(candidate: dict) -> str:
 
 
 def _warning(candidate: dict) -> str | None:
-    text = _candidate_text(candidate)
-    if any(word in text for word in _SPECIAL_VARIANT_WORDS):
-        return (
-            f"{_CAUTION_REASON}. Review its model card and behavior before "
-            "installing."
-        )
-    return None
+    return variant_warning(candidate)
 
 
 def _use_case(candidate: dict) -> str:
@@ -393,6 +379,20 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
     repository_text = Text()
     repository_text.append("Repository  ", style=f"bold {MUTED}")
     repository_text.append(repository, style=MUTED)
+    provider = row.candidate.get("provider")
+    source = (
+        "ModelScope" if provider == "modelscope" else
+        "Hugging Face" if provider == "huggingface" or row.candidate.get("repo_id") else
+        "Curated catalog"
+    )
+    package_text = Text()
+    package_text.append("Source  ", style=f"bold {MUTED}")
+    package_text.append(source, style=MUTED)
+    package_text.append("    Quantization  ", style=f"bold {MUTED}")
+    package_text.append(quantization_label(row.candidate), style=MUTED)
+    filename_text = Text()
+    filename_text.append("File  ", style=f"bold {MUTED}")
+    filename_text.append(str(row.candidate.get("filename") or "Unknown"), style=MUTED)
 
     console.print()
     console.print(
@@ -405,6 +405,8 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
                 metrics,
                 Text(""),
                 repository_text,
+                package_text,
+                filename_text,
             ),
             title=Text(row.display_name, style=f"bold {ACCENT}"),
             title_align="left",

@@ -31,6 +31,13 @@ def test_humanize_model_name_removes_gguf_and_quantization_noise():
     assert recommend_ui.humanize_model_name(candidate) == "Meta Llama 3.1 8B Instruct"
 
 
+def test_generic_filename_uses_repository_model_name():
+    assert recommend_ui.humanize_model_name({
+        "repo_id": "ZhipuAI/glm-edge-4b-chat-gguf",
+        "filename": "ggml-model-Q4_K_M.gguf",
+    }) == "glm edge 4b chat"
+
+
 def test_build_rows_adds_human_context_and_special_variant_warning():
     candidate = {
         "filename": "Gemma-3-1B-Heretic-Uncensored-Q4_K_M.gguf",
@@ -57,6 +64,17 @@ def test_build_rows_names_modelscope_download_source_correctly():
     [row] = recommend_ui.build_rows([(candidate, 20.0)], ["ms:org/model"])
 
     assert row.description == "Popular on ModelScope with 1,000 downloads."
+
+
+def test_repo_only_decoding_variant_gets_caution_instead_of_best_fit():
+    candidate = {
+        "filename": "Qwen3.6-27B-Q4_K_M.gguf",
+        "repo_id": "unsloth/Qwen3.6-27B-MTP-GGUF",
+    }
+    [row] = recommend_ui.build_rows([(candidate, 6.0)], ["model"])
+    assert row.display_name == "Qwen3.6 27B MTP"
+    assert row.badge == "⚠ CAUTION"
+    assert "runner requirements" in row.warning
 
 
 def test_build_rows_rejects_mismatched_refs_instead_of_silently_truncating():
@@ -92,6 +110,25 @@ def test_recommend_screen_renders_hardware_table_and_selected_detail():
     assert "Llama 3.2 1B Instruct" in rendered
     assert "Predicted to run comfortably on this PC" in rendered
     assert "bartowski/Llama-3.2-1B-Instruct-GGUF" in rendered
+    assert "Hugging Face" in rendered
+    assert "Quantization  Q4_K_M" in rendered
+    assert candidate["filename"] in rendered
+
+
+def test_modelscope_detail_shows_selected_dynamic_quantization_and_source():
+    candidate = {
+        "filename": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+        "repo_id": "unsloth/Qwen3.8-27B-GGUF",
+        "provider": "modelscope",
+    }
+    [row] = recommend_ui.build_rows([(candidate, 6.0)], ["ms:unsloth/model"])
+    output = StringIO()
+    console = Console(file=output, width=120, theme=theme_mod.build_rich_theme("dark"))
+    recommend_ui.print_detail(console, _hardware(), row)
+    rendered = output.getvalue()
+    assert "ModelScope" in rendered
+    assert "Quantization  UD-Q4_K_M" in rendered
+    assert candidate["filename"] in rendered
 
 
 def test_narrow_choice_hides_memory_column_without_losing_status():

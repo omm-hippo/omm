@@ -461,6 +461,63 @@ def _two_candidates():
     return small, big
 
 
+@pytest.mark.parametrize("path", ["profile", "relaxed", "slow"])
+def test_recommend_shortlist_dedupes_and_demotes_variants_in_every_path(
+    monkeypatch, isolated_omm_home, path
+):
+    def candidate(model, uploader="org"):
+        return {
+            "repo_id": f"{uploader}/{model}-GGUF",
+            "filename": f"{model}-Q4_K_M.gguf",
+            "size_bytes": 1024**3,
+        }
+
+    special = candidate("Qwen3.8-27B-Uncensored")
+    normal = candidate("Qwen3.8-27B")
+    mirrors = [candidate("Qwen3.8-27B", str(i)) for i in range(12)]
+    installed = candidate("gpt-oss-20b")
+    candidates = [special, normal, *mirrors, installed]
+    artifact = {"candidates": candidates}
+    speed = 2.0 if path == "slow" else 6.0
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(cli, "_load_recommendation_with_change_note", lambda config: (artifact, False))
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [(c, speed) for c in candidates])
+    if path == "relaxed":
+        monkeypatch.setattr(cli.predictor, "filter_by_profile", lambda *args: [])
+    monkeypatch.setattr(
+        cli.recommend_status, "detect_installation_statuses",
+        lambda rows: [cli.recommend_status.InstallationStatus(c == installed) for c in rows],
+    )
+    monkeypatch.setattr(cli, "install", lambda ref: pytest.fail("JSON must not install"))
+
+    result = runner.invoke(cli.app, ["recommend", "--json", "--profile", "dedicated"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert [r["name"] for r in rows] == ["Qwen3.8 27B", "gpt oss 20b", "Qwen3.8 27B Uncensored"]
+    assert rows[0]["ref"] == "org/Qwen3.8-27B-GGUF:Qwen3.8-27B-Q4_K_M.gguf"
+    assert rows[1]["installed"] is True
+    assert rows[2]["warning"]
+
+
+def test_recommend_yes_chooses_normal_candidate_before_specialized(monkeypatch, isolated_omm_home):
+    special = {"repo_id": "org/Qwen3-8B-MTP-GGUF", "filename": "Qwen3-8B-MTP-Q4_K_M.gguf"}
+    normal = {"repo_id": "org/Qwen3-4B-GGUF", "filename": "Qwen3-4B-Q4_K_M.gguf"}
+    artifact = {"candidates": [special, normal]}
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(cli, "_load_recommendation_with_change_note", lambda config: (artifact, False))
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [(special, 30.0), (normal, 20.0)])
+    installed_refs = []
+    monkeypatch.setattr(cli, "install", installed_refs.append)
+
+    result = runner.invoke(cli.app, ["recommend", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert installed_refs == ["org/Qwen3-4B-GGUF:Qwen3-4B-Q4_K_M.gguf"]
+
+
 def test_recommend_json_defaults_to_balanced_profile_and_filters_by_it(
     monkeypatch, isolated_omm_home
 ):
