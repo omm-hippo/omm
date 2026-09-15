@@ -345,6 +345,28 @@ def _link_key(path: Path) -> str:
     return str(path.expanduser().absolute())
 
 
+def _ownership_keys_are_case_insensitive() -> bool:
+    """NTFS itself is case-insensitive; the typed string is not.
+    One seam so read, write and delete share a single policy (and so
+    tests can exercise the policy without faking the platform)."""
+    return platform.system() == "Windows"
+
+
+def _existing_ownership_key(
+    records: dict[str, dict[str, object]], key: str, *, case_insensitive: bool
+) -> str | None:
+    """The key `records` already stores for this path, or None."""
+    if key in records:
+        return key
+    if not case_insensitive:
+        return None
+    folded = key.casefold()
+    for other_key in records:
+        if other_key.casefold() == folded:
+            return other_key
+    return None
+
+
 def _engine_path_lock(path: Path) -> Path:
     """Lock proxy for a path inside an engine-owned directory (e.g. Ollama's
     blobs/manifests dirs). `locked()` places a `.lock` sibling right next to
@@ -386,9 +408,12 @@ def _update_link_ownership(path: Path, ownership: dict[str, object] | None) -> N
     key = _link_key(path)
     with locked(LINK_OWNERSHIP_PATH):
         records = _load_link_ownership()
-        if ownership is None:
-            records.pop(key, None)
-        else:
+        existing = _existing_ownership_key(
+            records, key, case_insensitive=_ownership_keys_are_case_insensitive()
+        )
+        if existing is not None:
+            records.pop(existing, None)
+        if ownership is not None:
             records[key] = ownership
         atomic_write_text(LINK_OWNERSHIP_PATH, json.dumps(records, indent=2) + "\n")
 
@@ -409,8 +434,11 @@ def _bulk_clear_link_ownership(paths: Sequence[Path]) -> None:
     keys = [_link_key(path) for path in paths]
     with locked(LINK_OWNERSHIP_PATH):
         records = _load_link_ownership()
+        insensitive = _ownership_keys_are_case_insensitive()
         for key in keys:
-            records.pop(key, None)
+            existing = _existing_ownership_key(records, key, case_insensitive=insensitive)
+            if existing is not None:
+                records.pop(existing, None)
         atomic_write_text(LINK_OWNERSHIP_PATH, json.dumps(records, indent=2) + "\n")
 
 
@@ -465,15 +493,10 @@ def _ownership_record(path: Path) -> dict[str, object] | None:
     provably for this exact path.
     """
     records = _load_link_ownership()
-    key = _link_key(path)
-    record = records.get(key)
-    if record is not None or platform.system() != "Windows":
-        return record
-    folded = key.casefold()
-    for other_key, other_record in records.items():
-        if other_key.casefold() == folded:
-            return other_record
-    return None
+    existing = _existing_ownership_key(
+        records, _link_key(path), case_insensitive=_ownership_keys_are_case_insensitive()
+    )
+    return records.get(existing) if existing is not None else None
 
 
 def _owned_hardlink(path: Path, record: dict[str, object] | None = None) -> bool:
@@ -1593,7 +1616,7 @@ def _link_ollama_unlocked(
         # correct native path instead of hashing the whole file and writing
         # a manifest that's just going to be thrown away.
         _fallback_to_native_create_under_model_lock(gguf_path, model_name, models_dir)
-        return True
+        return has_chat_template
 
     if ollama_version is None or _manifest_format_known_good(ollama_version) is True:
         manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name / "latest"
@@ -1810,7 +1833,7 @@ def _link_ollama_unlocked(
                 ),
             ) from e
         _fallback_to_native_create_under_model_lock(gguf_path, model_name, models_dir)
-        return True
+        return has_chat_template
     except OSError as e:
         raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
 
@@ -2065,13 +2088,15 @@ def _fallback_to_native_create_unlocked(
         except (OSError, ValueError):
             return []
 
-    def cleanup_transaction() -> None:
+    def cleanup_transaction() -> int:
         blobs_to_remove = transaction_blobs()
         # Reclaim partial replacement bytes before restoring the small
         # manifest, so a disk-full import can still recover its old tag.
+        removed = 0
         for blob in blobs_to_remove:
             try:
                 blob.unlink(missing_ok=True)
+                removed += 1
             except OSError:
                 pass
         try:
@@ -2091,6 +2116,7 @@ def _fallback_to_native_create_unlocked(
                     f"Could not restore the previous Ollama registration at {manifest_path}: "
                     f"{error}. The previous model blobs were preserved."
                 ) from error
+        return removed
 
     with tempfile.TemporaryDirectory() as tmp:
         modelfile = Path(tmp) / "Modelfile"
@@ -2105,11 +2131,16 @@ def _fallback_to_native_create_unlocked(
                 timeout=600,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
-            cleanup_transaction()
+            removed = cleanup_transaction()
             if isinstance(e, OSError) and _is_disk_full_error(e):
                 raise InsufficientLinkSpaceError(
                     f"Ollama ran out of disk space while importing {model_name}. "
-                    "New transaction files were removed."
+                    + (
+                        "New transaction files were removed."
+                        if removed
+                        else "Ollama may have left partial files in "
+                        f"{models_dir / 'blobs'}; omm could not identify them safely."
+                    )
                 ) from e
             raise LinkError(f"Could not regenerate Ollama manifest for {model_name}: {e}") from e
     new_blobs = transaction_blobs()
@@ -2117,12 +2148,17 @@ def _fallback_to_native_create_unlocked(
         # The native importer is not transactional. Remove only files that
         # appeared during this omm-owned invocation, never pre-existing user
         # blobs. This is especially important after ENOSPC.
-        cleanup_transaction()
+        removed = cleanup_transaction()
         stderr = result.stderr.strip()
         if "no space left" in stderr.lower() or "disk full" in stderr.lower():
             raise InsufficientLinkSpaceError(
                 f"Ollama ran out of disk space while importing {model_name}. "
-                "New transaction files were removed."
+                + (
+                    "New transaction files were removed."
+                    if removed
+                    else "Ollama may have left partial files in "
+                    f"{models_dir / 'blobs'}; omm could not identify them safely."
+                )
             )
         raise LinkError(
             f"Ollama rejected {model_name} even via native `ollama create`: {stderr}"
@@ -2162,7 +2198,7 @@ def _ensure_ollama_accepts(
     # remain orphaned forever.
     _unlink_ollama_unlocked(model_name, models_dir=models_dir)
     _fallback_to_native_create_under_model_lock(gguf_path, model_name, models_dir)
-    return True
+    return has_chat_template
 
 
 def _manifest_blob_digests(manifest: dict) -> set[str]:
@@ -2460,7 +2496,15 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
         # once used to reload and rewrite the whole on-disk registry that many
         # times over for no observable difference in the end state.
         cleared_paths: list[Path] = []
-        for blob in blobs_dir.iterdir():
+        try:
+            blob_entries = list(blobs_dir.iterdir())
+        except OSError:
+            # Same systemd-owned-store case the native-create path already
+            # guards (see _fallback_to_native_create_unlocked): the dir
+            # stats fine but this process may not list it. Nothing can be
+            # cleaned here, and one engine must not abort `omm cleanup`.
+            return (0, 0)
+        for blob in blob_entries:
             if blob.is_symlink() and not blob.exists():
                 try:
                     blob.unlink()

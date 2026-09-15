@@ -185,6 +185,20 @@ def test_record_compatibility_rejects_missing_registry_entry(isolated_omm_home):
         registry.record_compatibility("missing.gguf", "ollama", {"status": "failed"})
 
 
+def test_verify_and_record_tolerates_an_entry_removed_mid_probe(isolated_omm_home):
+    registry.save_registry({})  # a concurrent `omm remove` finished mid-probe
+
+    result = runtime_compatibility.verify_and_record(
+        "model.gguf",
+        _FakeAdapter(),
+        RuntimeModelRef("model"),
+        now=lambda: datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.status == "passed"  # no exception propagates
+    assert registry.load_registry() == {}  # the missing entry is not resurrected
+
+
 def test_probe_failure_reason_survives_a_failed_unload():
     result = _verify(_FakeAdapter(generate_reason="out_of_memory", unloads=False))
 

@@ -1,6 +1,9 @@
+import json
+
 import requests
 
 from omm import search as search_mod
+from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES
 
 
 class _Resp:
@@ -11,8 +14,15 @@ class _Resp:
 
     def __init__(self, payload):
         self._payload = payload
+        self.headers = {}
+        # read_bounded_json_response reads `.content` (no iter_content on
+        # these fakes), not `.json()`.
+        self.content = json.dumps(payload).encode("utf-8")
 
     def raise_for_status(self):
+        pass
+
+    def close(self):
         pass
 
     def json(self):
@@ -134,6 +144,10 @@ def test_search_huggingface_filters_out_fake_provenance_repos(monkeypatch):
                 },
             ]
 
+        @property
+        def content(self):
+            return json.dumps(self.json()).encode("utf-8")
+
     monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
 
     results = search_mod.search_huggingface("mistral")
@@ -172,6 +186,10 @@ def test_search_huggingface_picks_a_concrete_filename_for_multi_quant_repos(monk
                 },
             ]
 
+        @property
+        def content(self):
+            return json.dumps(self.json()).encode("utf-8")
+
     monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
 
     results = search_mod.search_huggingface("granite")
@@ -186,6 +204,10 @@ def test_search_huggingface_skips_repos_with_no_matching_gguf_file(monkeypatch):
 
         def json(self):
             return [{"id": "some-org/no-gguf-here", "siblings": [{"rfilename": "README.md"}]}]
+
+        @property
+        def content(self):
+            return json.dumps(self.json()).encode("utf-8")
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
 
@@ -548,3 +570,23 @@ def test_search_huggingface_results_are_tagged_huggingface(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(payload))
     results = search_mod.search_huggingface("query")
     assert results[0]["provider"] == "huggingface"
+
+
+class _OversizedResponse:
+    """Declares a Content-Length past MAX_PROVIDER_RESPONSE_BYTES - the
+    bounded reader must reject it before ever touching the body."""
+
+    headers = {"Content-Length": str(MAX_PROVIDER_RESPONSE_BYTES + 1)}
+    content = b"[]"
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_search_huggingface_returns_empty_list_when_response_exceeds_size_limit(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _OversizedResponse())
+
+    assert search_mod.search_huggingface("qwen") == []

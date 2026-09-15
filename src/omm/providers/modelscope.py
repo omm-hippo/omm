@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from urllib.parse import quote_plus
 
+from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES, read_bounded_json_response
 from omm.providers.base import (
     ModelResolutionError,
     coerce_count,
@@ -39,9 +40,12 @@ def _list_repo_files(repo_id: str, timeout: float = 15) -> list[dict]:
             MS_REPO_FILES.format(repo_id=repo_id),
             params={"Revision": "master", "Recursive": "True"},
             timeout=timeout,
+            stream=True,
         )
         resp.raise_for_status()
-        payload = resp.json()
+        payload = read_bounded_json_response(
+            resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="ModelScope repo listing"
+        )[0]
     except requests.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
@@ -126,9 +130,11 @@ def fetch_repo_metadata(repo_id: str) -> dict:
     import requests
 
     try:
-        resp = requests.get(MS_MODEL.format(repo_id=repo_id), timeout=15)
+        resp = requests.get(MS_MODEL.format(repo_id=repo_id), timeout=15, stream=True)
         resp.raise_for_status()
-        payload = resp.json()
+        payload = read_bounded_json_response(
+            resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="ModelScope repo metadata"
+        )[0]
     except (requests.RequestException, ValueError):
         return {}
     data = payload.get("Data") if isinstance(payload, dict) else None

@@ -481,11 +481,15 @@ def require_ingest(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> None:
-    host = request.client.host if request.client is not None else ""
-    if host in {"127.0.0.1", "::1", "localhost", "testclient"}:
-        return
     expected = os.getenv("LOCALFIT_INGEST_TOKEN")
+    host = request.client.host if request.client is not None else ""
     if not expected:
+        # No token configured: loopback-only ingestion, exactly as before.
+        # request.client.host is the TCP peer, which a same-host reverse
+        # proxy replaces with a loopback address - so once a token exists it
+        # is required regardless of peer address rather than trusted away.
+        if host in {"127.0.0.1", "::1", "localhost", "testclient"}:
+            return
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="LOCALFIT_INGEST_TOKEN is required for remote ingestion",

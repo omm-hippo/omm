@@ -10,6 +10,7 @@ import shutil
 import site
 import subprocess
 import sys
+import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -87,6 +88,16 @@ def _read_registry_read_only(path: Path) -> tuple[dict | None, str | None]:
 def _pipx_candidate_paths() -> tuple[Path, ...]:
     executable = "pipx.exe" if platform.system() == "Windows" else "pipx"
     candidates: list[Path] = []
+    # CPython's nt_user scheme puts user scripts in
+    # {USER_BASE}\Python<XY>\Scripts, not {USER_BASE}\Scripts, so the
+    # hand-built Windows path below never exists. Ask sysconfig first and
+    # keep the old candidates as a fallback for odd environments.
+    try:
+        user_scripts = sysconfig.get_path("scripts", f"{os.name}_user")
+    except (AttributeError, KeyError, TypeError, ValueError):
+        user_scripts = None
+    if user_scripts:
+        candidates.append(Path(user_scripts) / executable)
     try:
         candidates.append(
             Path(site.USER_BASE)
@@ -351,7 +362,7 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
 
 
 def _registered_ollama_tags(registry_data: dict) -> list[tuple[str, str, str]]:
-    mappings: list[tuple[str, str, str]] = []
+    survivors: list[tuple[str, dict, str, object, object]] = []
     for filename, raw_entry in registry_data.items():
         if not isinstance(filename, str) or not isinstance(raw_entry, dict):
             continue
@@ -371,10 +382,28 @@ def _registered_ollama_tags(registry_data: dict) -> list[tuple[str, str, str]]:
         ):
             continue
         stored_tag = stored.strip() if isinstance(stored, str) else ""
+        survivors.append((filename, raw_entry, stored_tag, runtime, stored))
+
+    # Resolve every legacy entry in one pass: the single-entry API walks
+    # the whole Ollama manifest tree per entry that has no cached
+    # `ollama_runtime_name` (see issue #181), and `omm doctor` iterates
+    # the entire registry. cli.py already uses the batch form.
+    to_resolve = [
+        (filename, raw_entry)
+        for filename, raw_entry, _stored_tag, runtime, stored in survivors
+        if isinstance(runtime, str) or isinstance(stored, str)
+    ]
+    try:
+        resolved = linker.resolve_ollama_runtime_names_batch(to_resolve)
+    except (OSError, TypeError, ValueError):
+        resolved = {}
+
+    mappings: list[tuple[str, str, str]] = []
+    for filename, _raw_entry, stored_tag, runtime, stored in survivors:
         if isinstance(runtime, str) or isinstance(stored, str):
-            try:
-                runtime_tag = linker.resolve_ollama_runtime_name(filename, raw_entry)
-            except (OSError, TypeError, ValueError):
+            runtime_tag = resolved.get(filename)
+            if runtime_tag is None:
+                # Same fallback the per-entry call had on failure.
                 runtime_tag = runtime.strip() if isinstance(runtime, str) else stored_tag
         else:
             runtime_tag = ""

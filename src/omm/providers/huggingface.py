@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 from urllib.parse import quote
 
+from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES, read_bounded_json_response
 from omm.providers.base import (
     ModelResolutionError,
     coerce_count,
@@ -29,7 +30,7 @@ def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
     import requests
 
     try:
-        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15)
+        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15, stream=True)
         resp.raise_for_status()
     except requests.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
@@ -49,7 +50,9 @@ def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
         ) from e
 
     try:
-        payload = resp.json()
+        payload = read_bounded_json_response(
+            resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="HF repo listing"
+        )[0]
         siblings = payload.get("siblings", [])
         filenames = [s["rfilename"] for s in siblings]
         if any(not isinstance(filename, str) for filename in filenames):
@@ -84,12 +87,15 @@ def fetch_repo_param_count_b(repo_id: str) -> float | None:
     import requests
 
     try:
-        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15)
+        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15, stream=True)
         resp.raise_for_status()
     except requests.RequestException:
         return None
     try:
-        return _parse_gguf_total_params(resp.json())
+        payload = read_bounded_json_response(
+            resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="HF repo listing"
+        )[0]
+        return _parse_gguf_total_params(payload)
     except (ValueError, TypeError, AttributeError):
         return None
 
@@ -118,9 +124,11 @@ def fetch_repo_metadata(repo_id: str) -> dict:
     import requests
 
     try:
-        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15)
+        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15, stream=True)
         resp.raise_for_status()
-        payload = resp.json()
+        payload = read_bounded_json_response(
+            resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="HF repo metadata"
+        )[0]
     except (requests.RequestException, ValueError):
         return {}
     if not isinstance(payload, dict):
@@ -172,6 +180,7 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
             HF_PATHS_INFO.format(repo_id=repo_id),
             json={"paths": [filename]},
             timeout=15,
+            stream=True,
         )
         resp.raise_for_status()
     except requests.RequestException as e:
@@ -180,7 +189,9 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
         ) from e
 
     try:
-        entries = resp.json()
+        entries = read_bounded_json_response(
+            resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="HF paths-info response"
+        )[0]
         if not isinstance(entries, list):
             return None
         for entry in entries:

@@ -289,51 +289,6 @@ def parse_numeric_answer(response: str) -> str | None:
     return _normalize_number(matches[-1]) if matches else None
 
 
-_OOM_MARKERS = (
-    "out of memory", "requires more system memory", "requires more than",
-    "not enough memory", "cuda out of memory", "insufficient memory",
-    "requires more available memory",
-)
-# Deliberately maps to the transient lane (FAILURE_REASON_MODEL_LOAD_FAILED
-# is in TRANSIENT_ERROR_REASONS, not MODEL_UNFIT_REASONS): "failed to load"
-# covers a missing/undownloaded file, a corrupted one, or any other
-# undiagnosed load error just as often as a real hardware mismatch, so it
-# is never treated as proof the model doesn't fit this machine.
-_MODEL_LOAD_FAILED_MARKERS = (
-    "failed to load", "unable to load", "no slots available", "not found",
-    "invalid model", "could not load",
-)
-_UNSUPPORTED_RUNTIME_MARKERS = ("does not support", "not supported", "unsupported")
-
-
-def _classify_error_response(response) -> str:
-    """Best-effort classification from Ollama's own error body.
-
-    Only used to pick a fixed enum value locally - the message text itself
-    is discarded and never forwarded to telemetry.
-    """
-    message = ""
-    try:
-        body = response.json()
-        if isinstance(body, dict):
-            message = str(body.get("error", ""))
-    except ValueError:
-        pass
-    if not message:
-        try:
-            message = response.text[:2000]
-        except Exception:
-            message = ""
-    lowered = message.lower()
-    if any(marker in lowered for marker in _OOM_MARKERS):
-        return FAILURE_REASON_OUT_OF_MEMORY
-    if any(marker in lowered for marker in _MODEL_LOAD_FAILED_MARKERS):
-        return FAILURE_REASON_MODEL_LOAD_FAILED
-    if any(marker in lowered for marker in _UNSUPPORTED_RUNTIME_MARKERS):
-        return FAILURE_REASON_UNSUPPORTED_RUNTIME
-    return FAILURE_REASON_UNKNOWN
-
-
 def _request_json(
     method: str, path: str, payload: dict | None = None, timeout: int = DEFAULT_GENERATION_TIMEOUT_SECONDS
 ) -> dict:
@@ -1393,13 +1348,14 @@ def _confirm_generation_timeout(
                 "Ollama daemon was not reachable before the confirmation attempt",
                 failure_reason=FAILURE_REASON_OLLAMA_UNAVAILABLE,
             ),
-            None, None, True,
+            # Nothing was unloaded here - the daemon was never reached.
+            None, None, False,
         )
     # 7. Same model still available.
     try:
         _model_metadata(tag)
     except QualityEvaluationError as error:
-        return _build_failure_entry(tag, error, None, None, True)
+        return _build_failure_entry(tag, error, None, None, False)
     # Explicitly unload and prove it via bounded /api/ps polling - never
     # trust a fixed sleep as evidence the first generation actually ended
     # inside Ollama. Unload *failure* itself is never a model_unfit/
@@ -1548,6 +1504,10 @@ def collect_evidence(
             if engine == "lmstudio":
                 lmstudio_port = linker.lmstudio_server_port()
         cursor += 1
+        # Reaching a tag at all means the daemon is answering again, so the
+        # restart-failure streak is over - the cap below counts *consecutive*
+        # failures (see _MAX_CONSECUTIVE_DAEMON_FAILURES), not a batch total.
+        consecutive_daemon_failures = 0
         if on_model_start is not None:
             on_model_start(tag, cursor, total)
         if engine == "lmstudio":

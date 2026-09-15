@@ -208,6 +208,21 @@ def test_autoremove_ollama_returns_zero_when_blobs_dir_missing(tmp_path, monkeyp
     assert linker.autoremove_ollama() == (0, 0)
 
 
+def test_autoremove_ollama_survives_a_blobs_dir_it_cannot_list(isolated_omm_home, tmp_path, monkeypatch):
+    models_dir = tmp_path / "ollama"
+    blobs = models_dir / "blobs"
+    blobs.mkdir(parents=True)
+    real_iterdir = Path.iterdir
+
+    def denying_iterdir(self):
+        if self == blobs:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", denying_iterdir)
+    assert linker.autoremove_ollama(models_dir=models_dir) == (0, 0)
+
+
 def test_autoremove_ollama_skips_manifest_it_cannot_unlink(isolated_omm_home, tmp_path, monkeypatch):
     models_dir = tmp_path / "ollama"
     blobs_dir = models_dir / "blobs"

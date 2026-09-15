@@ -56,6 +56,21 @@ def test_remote_ingestion_requires_the_dedicated_token(monkeypatch):
     server_app.require_ingest(request, "Bearer secret")
 
 
+def test_loopback_ingestion_still_needs_the_token_when_one_is_configured(monkeypatch):
+    request = Request({"type": "http", "client": ("127.0.0.1", 1234), "headers": []})
+    monkeypatch.setenv("LOCALFIT_INGEST_TOKEN", "secret")
+    with pytest.raises(HTTPException) as rejected:
+        server_app.require_ingest(request, None)
+    assert rejected.value.status_code == 401
+    server_app.require_ingest(request, "Bearer secret")
+
+
+def test_loopback_ingestion_is_open_when_no_token_is_configured(monkeypatch):
+    monkeypatch.delenv("LOCALFIT_INGEST_TOKEN", raising=False)
+    request = Request({"type": "http", "client": ("127.0.0.1", 1234), "headers": []})
+    server_app.require_ingest(request, None)  # no exception
+
+
 @pytest.mark.parametrize("authorization", [None, "Bearer wrong", "Bearer \u00ff", "Bearer \ud55c\uae00"])
 def test_token_checks_reject_invalid_headers_without_server_errors(monkeypatch, authorization):
     monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")

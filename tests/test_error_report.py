@@ -317,7 +317,6 @@ def test_flush_sends_queued_reports_to_the_derived_endpoint(isolated_omm_home, m
     monkeypatch.setattr(
         requests, "post", lambda url, **kwargs: calls.append((url, kwargs)) or _FakeResp(200)
     )
-    monkeypatch.setattr("omm.firebase_auth.get_id_token", lambda: "token")
 
     sent = error_report.flush_pending()
 
@@ -371,7 +370,6 @@ def test_flush_keeps_a_failed_report_queued_for_a_later_run(isolated_omm_home, m
     _write_config(error_report_send_policy="always")
     error_report.queue_report(RuntimeError("boom"), trigger="crash")
     monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(500, "server error"))
-    monkeypatch.setattr("omm.firebase_auth.get_id_token", lambda: "token")
 
     assert error_report.flush_pending() == 0
     assert error_report.pending_count() == 1
@@ -386,7 +384,6 @@ def test_flush_backs_off_after_a_failure_instead_of_retrying_every_call(
     monkeypatch.setattr(
         requests, "post", lambda *a, **k: calls.append(1) or _FakeResp(500, "server error")
     )
-    monkeypatch.setattr("omm.firebase_auth.get_id_token", lambda: "token")
 
     assert error_report.flush_pending() == 0
     assert len(calls) == 1
@@ -402,7 +399,6 @@ def test_flush_clears_backoff_once_a_send_succeeds(isolated_omm_home, monkeypatc
     _write_config(error_report_send_policy="always")
     error_report.queue_report(RuntimeError("boom"), trigger="crash")
     monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(500, "server error"))
-    monkeypatch.setattr("omm.firebase_auth.get_id_token", lambda: "token")
     error_report.flush_pending()
 
     monkeypatch.setattr(error_report, "_backoff_active", lambda: False)
@@ -425,7 +421,6 @@ def test_flush_sends_the_backlog_once_a_run_grants_consent(isolated_omm_home, mo
     _write_config(error_report_send_policy="ask")
     error_report.queue_report(RuntimeError("boom"), trigger="crash")
     monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200))
-    monkeypatch.setattr("omm.firebase_auth.get_id_token", lambda: "token")
 
     assert error_report.flush_pending(force=True) == 1
 

@@ -84,6 +84,43 @@ def test_card_never_overflows_a_narrow_terminal():
     assert all(len(line) <= 40 for line in out.splitlines()), out
 
 
+def test_card_rows_stay_on_one_line_in_a_narrow_terminal():
+    """The bar/legend were built at BAR_MIN=24 while the Panel was capped to
+    the real console width, so anything under ~30 columns wrapped them."""
+    import re
+
+    out = re.sub(r"\x1b\[[0-9;]*m", "", _render(_hw(), size_gb=4.07, width=28))
+    lines = out.splitlines()
+    assert all(len(line) <= 28 for line in lines), out
+    assert sum(1 for line in lines if "█" in line) == 1, out  # one bar line
+    assert sum(1 for line in lines if "free" in line) == 1, out  # one legend line
+
+
+def test_marker_tick_lands_on_the_model_segment_end_even_when_the_label_does_not_fit():
+    """A small model on a big idle machine puts the tick a few columns in;
+    the full-length label used to push it well to the right."""
+    hw = HardwareInfo(
+        os_name="Linux", os_version="6", cpu="x", ram_total_gb=256.0,
+        ram_available_gb=244.0, unified_memory=False,
+        gpu_name=None, vram_total_gb=None, vram_free_gb=None,
+    )
+    budget = calculate_memory_budget(hw)
+    required = 2.4
+    line = fit_ui._marker_line(72, hw, budget, required, 2.0).plain
+    in_use = hw.ram_total_gb - hw.ram_available_gb
+    end_gb = in_use + budget.ram_safety_reserve_gb + required
+    col = min(72, max(1, int(round(72 * end_gb / hw.ram_total_gb))))
+    assert line.index("┃") == col - 1, line
+    assert len(line) <= 72
+
+
+def test_marker_label_still_sits_left_of_the_tick_when_it_fits():
+    hw = _hw()
+    line = fit_ui._marker_line(62, hw, calculate_memory_budget(hw), 4.9, 4.07).plain
+    assert line.endswith("4.07 GB MODEL ┃")
+    assert len(line) <= 62
+
+
 def test_fit_command_uses_registry_size_for_installed_models(isolated_omm_home, monkeypatch):
     registry.save_registry({"model.gguf": {"size_bytes": 4 * 1024**3, "linked": {}}})
     monkeypatch.setattr(cli, "scan_hardware", _hw)

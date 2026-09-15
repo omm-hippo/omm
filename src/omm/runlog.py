@@ -90,14 +90,27 @@ def scrub_url(value: str) -> str:
 def _scrub_argv(argv: list[str]) -> list[str]:
     """Keep flags and the registered subcommand; replace every other token
     with ``<arg>`` so queries / model ids / paths / URLs never land in the
-    log."""
+    log. Also strips the value out of a ``--opt=value`` token."""
     known = _registered_command_names()
     out = []
+    subcommand_seen = False
     for token in argv:
-        if token.startswith("-") or token in known:
-            out.append(token)
-        else:
-            out.append("<arg>")
+        if token.startswith("-"):
+            # click/Typer accept `--opt=value` as ONE token, so keeping the
+            # token whole leaks the value this function promises to drop
+            # (e.g. `omm setting telemetry --endpoint=https://tok@host/x`).
+            name, separator, _value = token.partition("=")
+            out.append(f"{name}=<arg>" if separator else token)
+            continue
+        if not subcommand_seen:
+            # Only the FIRST non-flag token is the subcommand. A later
+            # positional that happens to spell a command name (`omm search
+            # install`) is user text and must still be scrubbed.
+            subcommand_seen = True
+            if token in known:
+                out.append(token)
+                continue
+        out.append("<arg>")
     return out
 
 
@@ -145,6 +158,7 @@ def start(argv: list[str]) -> None:
     global _HANDLER, _RUN_STARTED_AT, _RUN_PATH
     if _HANDLER is not None:
         return
+    handler: logging.Handler | None = None
     try:
         _RUN_STARTED_AT = time.monotonic()
         cmd = subcommand_of(argv)
@@ -163,17 +177,34 @@ def start(argv: list[str]) -> None:
             logger.setLevel(handler.level)
         _HANDLER = handler
 
+        try:
+            # A deleted working directory makes os.getcwd() raise; the run
+            # log must not be the thing that breaks the command.
+            cwd = str(Path.cwd())
+        except OSError:
+            cwd = None
+
         _write_record(
             {
                 "ts": _now_iso(),
                 "event": "run_start",
                 "omm_version": _omm_version_safe(),
                 "pid": os.getpid(),
-                "cwd": str(Path.cwd()),
+                "cwd": cwd,
                 "argv": _scrub_argv(argv),
             }
         )
     except Exception:
+        # The handler may already be attached; dropping only the globals
+        # would leave it on the "omm" logger for the life of the process
+        # (finish() skips cleanup once _HANDLER is None) and let a second
+        # start() attach a duplicate that double-writes every record.
+        if handler is not None:
+            try:
+                logging.getLogger(_LOGGER_NAME).removeHandler(handler)
+                handler.close()
+            except Exception:
+                pass
         _HANDLER = None
         _RUN_PATH = None
 

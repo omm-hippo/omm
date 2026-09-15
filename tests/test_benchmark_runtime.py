@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from omm import benchmark
@@ -185,6 +186,31 @@ def test_stop_ollama_daemon_windows_tree_kills_after_graceful_timeout(monkeypatc
 
     assert run_calls == [["taskkill", "/PID", "1234", "/T", "/F"]]
     assert ("kill",) not in calls
+
+
+def test_stop_ollama_daemon_posix_tolerates_a_process_that_never_reaps(monkeypatch):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Linux")
+    calls = []
+
+    class _FakeProc:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def kill(self):
+            calls.append("kill")
+
+        def wait(self, timeout=None):
+            calls.append(("wait", timeout))
+            raise subprocess.TimeoutExpired("ollama", timeout)
+
+    benchmark.stop_ollama_daemon(_FakeProc())  # must not raise TimeoutExpired
+
+    assert calls == ["terminate", ("wait", 10), "kill", ("wait", 5)]
 
 
 def test_start_failure_keeps_original_reason(monkeypatch):
