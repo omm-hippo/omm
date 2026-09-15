@@ -1315,6 +1315,14 @@ def load_candidates() -> list[dict]:
         description = candidate.get("description")
         if description is not None and not isinstance(description, str):
             raise ValueError(f"candidate {index} description must be a string")
+        supersedes = candidate.get("supersedes")
+        if supersedes is not None and (
+            not isinstance(supersedes, list)
+            or not all(isinstance(name, str) and name.strip() for name in supersedes)
+        ):
+            raise ValueError(
+                f"candidate {index} supersedes must be a list of non-empty name strings"
+            )
         key = (provider, candidate["repo_id"], candidate["filename"])
         if key in seen:
             raise ValueError(f"candidate {index} duplicates an earlier model")
