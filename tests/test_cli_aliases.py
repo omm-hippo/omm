@@ -20,7 +20,7 @@ def test_ls_alias_resolves_to_list(isolated_omm_home):
 def test_up_alias_resolves_to_upgrade(isolated_omm_home):
     result = runner.invoke(cli.app, ["up", "--help"])
     assert result.exit_code == 0, result.stdout
-    assert "Refresh an installed model" in result.stdout
+    assert "Look for a better model" in result.stdout
 
 
 def test_aliases_do_not_appear_in_help_all(isolated_omm_home):

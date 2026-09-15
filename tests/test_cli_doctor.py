@@ -1,4 +1,5 @@
 import json
+import platform
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -132,6 +133,23 @@ def test_find_pipx_uses_executable_fallback_outside_path(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor, "_pipx_candidate_paths", lambda: (pipx,))
 
     assert doctor._find_pipx() == pipx
+
+
+def test_pipx_candidates_use_the_interpreter_user_scripts_scheme():
+    """{USER_BASE}\\Scripts does not exist on Windows - CPython's nt_user
+    scheme is {USER_BASE}\\Python<XY>\\Scripts - so the candidate list must
+    come from sysconfig, not from a hand-built path."""
+    import os
+    import sysconfig
+
+    expected = Path(sysconfig.get_path("scripts", f"{os.name}_user"))
+    names = {os.path.normcase(str(p.parent.absolute())) for p in doctor._pipx_candidate_paths()}
+    assert os.path.normcase(str(expected.absolute())) in names
+
+
+def test_pipx_candidates_keep_the_local_bin_fallback():
+    executable = "pipx.exe" if platform.system() == "Windows" else "pipx"
+    assert (Path.home() / ".local" / "bin" / executable) in doctor._pipx_candidate_paths()
 
 
 def test_installation_checks_verify_editable_source_commit_and_module(monkeypatch, tmp_path):
@@ -327,24 +345,52 @@ def test_ollama_checks_compare_saved_runtime_tags_with_actual_api_tags(monkeypat
     assert all("intentionally-unlinked" not in check.name for check in checks)
 
 
-def test_registered_ollama_tags_use_legacy_manifest_resolution(monkeypatch):
+def test_registered_ollama_tags_resolve_every_entry_in_one_batch(monkeypatch):
+    """Single-entry resolution re-walks the Ollama manifest tree per legacy
+    entry (issue #181); doctor iterates the whole registry, so it must use
+    the batch API like cli.py does."""
     calls = []
 
-    def fake_resolve(filename, entry):
-        calls.append((filename, entry))
-        return "qwen3:4b"
+    def fake_batch(entries, **kwargs):
+        entries = list(entries)
+        calls.append([name for name, _entry in entries])
+        return {name: "qwen3:4b" for name, _entry in entries}
 
-    monkeypatch.setattr(doctor.linker, "resolve_ollama_runtime_name", fake_resolve)
+    monkeypatch.setattr(doctor.linker, "resolve_ollama_runtime_names_batch", fake_batch)
+
+    def _boom(*a, **k):
+        raise AssertionError("doctor must not use the per-entry resolver")
+
+    monkeypatch.setattr(doctor.linker, "resolve_ollama_runtime_name", _boom)
+    entries = {
+        "qwen3-4b.gguf": {"linked": {"ollama": True}, "ollama_name": "qwen3-4b", "sha256": "a" * 64},
+        "other-4b.gguf": {"linked": {"ollama": True}, "ollama_name": "other-4b", "sha256": "b" * 64},
+    }
+
+    mappings = doctor._registered_ollama_tags(entries)
+
+    assert mappings == [
+        ("qwen3-4b.gguf", "qwen3-4b", "qwen3:4b"),
+        ("other-4b.gguf", "other-4b", "qwen3:4b"),
+    ]
+    assert calls == [["qwen3-4b.gguf", "other-4b.gguf"]]  # exactly one batch call
+
+
+def test_registered_ollama_tags_fall_back_to_stored_names_when_the_batch_fails(monkeypatch):
+    def fake_batch(entries, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(doctor.linker, "resolve_ollama_runtime_names_batch", fake_batch)
     entry = {
         "linked": {"ollama": True},
-        "ollama_name": "qwen3-4b",
+        "ollama_name": "stored",
+        "ollama_runtime_name": " qwen3:4b ",
         "sha256": "a" * 64,
     }
 
-    mappings = doctor._registered_ollama_tags({"qwen3-4b.gguf": entry})
+    mappings = doctor._registered_ollama_tags({"f.gguf": entry})
 
-    assert mappings == [("qwen3-4b.gguf", "qwen3-4b", "qwen3:4b")]
-    assert calls == [("qwen3-4b.gguf", entry)]
+    assert mappings == [("f.gguf", "stored", "qwen3:4b")]
 
 
 def test_ollama_api_tags_uses_exact_read_only_tags_endpoint(monkeypatch):

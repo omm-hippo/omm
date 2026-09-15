@@ -29,8 +29,21 @@ MAX_TOTAL_TREE_NODES = 250_000
 MAX_CANDIDATES = 4_096
 
 
+def is_leaf(node: dict[str, Any]) -> bool:
+    """A node is a leaf only when `leaf` is exactly the JSON `true` literal.
+
+    `json.loads` only ever produces `True` for `true`, so every artifact the
+    exporter writes is unaffected. Keeping the evaluator's judgement identical
+    to the validators' (predictor._validate_artifact,
+    scripts/model_quality_gate._validate_tree) means a node they accepted as a
+    branch is never evaluated as a leaf - which used to raise KeyError:
+    'value', or silently skip the whole subtree.
+    """
+    return node.get("leaf") is True
+
+
 def predict_tree(node: dict[str, Any], features: list[float]) -> float:
-    while not node.get("leaf"):
+    while not is_leaf(node):
         value = features[node["feature"]]
         node = node["left"] if value <= node["threshold"] else node["right"]
     return node["value"]

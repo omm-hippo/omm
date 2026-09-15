@@ -73,8 +73,15 @@ _TIER_EXCLUDE_PATTERNS = {
     # word and the tier word (e.g. "Core(TM) Ultra"), so allow one optional
     # parenthetical group there rather than matching literal whitespace only.
     "ultra": re.compile(r"\bcore\b\s*(?:\([^)]*\)\s*)?\bultra\b", re.IGNORECASE),
+    # NVIDIA's "with Max-Q Design" laptop variants run at a lower TGP than
+    # the desktop part with the same model number, so scoring them into the
+    # "Max" tier inverts this feature's order (desktop "3080 Ti" 1.0 vs
+    # laptop "3080 Ti Max-Q" 2.0). The letter-based boundary in
+    # _TIER_PATTERNS treats the hyphen as a boundary, so exclude it here.
     "max": re.compile(
-        r"\bryzen\b\s*(?:\([^)]*\)\s*)?\bai\b\s*(?:\([^)]*\)\s*)?\bmax\b", re.IGNORECASE
+        r"\bryzen\b\s*(?:\([^)]*\)\s*)?\bai\b\s*(?:\([^)]*\)\s*)?\bmax\b"
+        r"|\bmax\s*-?\s*q\b",
+        re.IGNORECASE,
     ),
 }
 

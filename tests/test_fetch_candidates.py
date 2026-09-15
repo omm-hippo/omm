@@ -5,8 +5,11 @@ test_search.py's HF-fetching tests."""
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -179,6 +182,160 @@ def test_main_dedupes_by_provider_and_repo_id(monkeypatch, tmp_path):
     # Same repo_id, different provider - both must survive the dedupe.
     assert len(written) == 2
     assert {c["provider"] for c in written} == {"huggingface", "modelscope"}
+
+
+def test_main_carries_forward_manual_supersedes(monkeypatch, tmp_path):
+    output_path = tmp_path / "candidates.json"
+    output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "org/repo",
+                    "repo_id": "org/repo",
+                    "filename": "a.gguf",
+                    "description": "old",
+                    "provider": "huggingface",
+                    "supersedes": ["old-name"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fetch_candidates, "OUTPUT_PATH", output_path)
+    monkeypatch.setattr(fetch_candidates, "curated_candidates", lambda: [])
+    monkeypatch.setattr(
+        fetch_candidates,
+        "fetch_trending_candidates",
+        lambda: [
+            {
+                "name": "org/repo",
+                "repo_id": "org/repo",
+                "filename": "a.gguf",
+                "description": "new",
+                "provider": "huggingface",
+            }
+        ],
+    )
+    monkeypatch.setattr(fetch_candidates, "fetch_modelscope_candidates", lambda: [])
+
+    fetch_candidates.main()
+
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert len(written) == 1
+    assert written[0]["supersedes"] == ["old-name"]
+    # The rest of the (fresher) candidate is otherwise untouched.
+    assert written[0]["description"] == "new"
+
+
+def test_main_does_not_carry_supersedes_to_a_different_filename(monkeypatch, tmp_path):
+    output_path = tmp_path / "candidates.json"
+    output_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "org/repo",
+                    "repo_id": "org/repo",
+                    "filename": "a.gguf",
+                    "description": "old",
+                    "provider": "huggingface",
+                    "supersedes": ["old-name"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fetch_candidates, "OUTPUT_PATH", output_path)
+    monkeypatch.setattr(fetch_candidates, "curated_candidates", lambda: [])
+    monkeypatch.setattr(
+        fetch_candidates,
+        "fetch_trending_candidates",
+        lambda: [
+            {
+                # Same repo_id, but the trending re-rank picked a different
+                # file this time - the old lineage must not be guessed onto it.
+                "name": "org/repo",
+                "repo_id": "org/repo",
+                "filename": "b.gguf",
+                "description": "new",
+                "provider": "huggingface",
+            }
+        ],
+    )
+    monkeypatch.setattr(fetch_candidates, "fetch_modelscope_candidates", lambda: [])
+
+    fetch_candidates.main()
+
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert len(written) == 1
+    assert "supersedes" not in written[0]
+
+
+@pytest.mark.parametrize(
+    "previous_supersedes",
+    ["not-a-list", ["ok", 123], ["ok", ""], 5],
+)
+def test_main_ignores_malformed_supersedes_in_previous_file(
+    monkeypatch, tmp_path, previous_supersedes
+):
+    output_path = tmp_path / "candidates.json"
+    previous_item = {
+        "name": "org/repo",
+        "repo_id": "org/repo",
+        "filename": "a.gguf",
+        "description": "old",
+        "provider": "huggingface",
+        "supersedes": previous_supersedes,
+    }
+    output_path.write_text(json.dumps([previous_item]), encoding="utf-8")
+    monkeypatch.setattr(fetch_candidates, "OUTPUT_PATH", output_path)
+    monkeypatch.setattr(fetch_candidates, "curated_candidates", lambda: [])
+    monkeypatch.setattr(
+        fetch_candidates,
+        "fetch_trending_candidates",
+        lambda: [
+            {
+                "name": "org/repo",
+                "repo_id": "org/repo",
+                "filename": "a.gguf",
+                "description": "new",
+                "provider": "huggingface",
+            }
+        ],
+    )
+    monkeypatch.setattr(fetch_candidates, "fetch_modelscope_candidates", lambda: [])
+
+    fetch_candidates.main()
+
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert len(written) == 1
+    assert "supersedes" not in written[0]
+
+
+def test_main_survives_unreadable_previous_candidates_file(monkeypatch, tmp_path):
+    output_path = tmp_path / "candidates.json"
+    output_path.write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(fetch_candidates, "OUTPUT_PATH", output_path)
+    monkeypatch.setattr(fetch_candidates, "curated_candidates", lambda: [])
+    monkeypatch.setattr(
+        fetch_candidates,
+        "fetch_trending_candidates",
+        lambda: [
+            {
+                "name": "org/repo",
+                "repo_id": "org/repo",
+                "filename": "a.gguf",
+                "description": "new",
+                "provider": "huggingface",
+            }
+        ],
+    )
+    monkeypatch.setattr(fetch_candidates, "fetch_modelscope_candidates", lambda: [])
+
+    fetch_candidates.main()
+
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert len(written) == 1
+    assert "supersedes" not in written[0]
 
 
 def test_main_skips_malformed_source_candidate_before_publication(monkeypatch, tmp_path):

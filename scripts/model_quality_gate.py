@@ -11,6 +11,7 @@ from omm.mltree import (
     MAX_TOTAL_TREE_NODES,
     MAX_TREE_DEPTH,
     MAX_TREES,
+    is_leaf,
     predict_ensemble,
 )
 
@@ -46,7 +47,7 @@ def _validate_tree(tree: Any, feature_count: int, path: str, node_budget: int) -
             raise ValueError(f"{node_path} exceeds maximum tree depth")
         if not isinstance(node, dict):
             raise ValueError(f"{node_path} must be an object")
-        if node.get("leaf") is True:
+        if is_leaf(node):
             _finite_number(node.get("value"), f"{node_path}.value")
             continue
         feature = node.get("feature")

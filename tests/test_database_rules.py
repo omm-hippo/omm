@@ -92,3 +92,9 @@ def test_firebase_rules_deny_direct_telemetry_writes():
     documented source of truth cf-worker/src/validate.ts is ported from."""
     event = _rules()["telemetry"]["$event"]
     assert event[".write"] is False
+
+
+def test_firebase_rules_declare_no_unused_telemetry_index():
+    """scripts/train_model.py queries orderBy "$key" only; a declared
+    .indexOn would imply a recency query that does not exist."""
+    assert ".indexOn" not in _rules()["telemetry"]
