@@ -594,10 +594,23 @@ def test_contribute_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monke
     assert result.exit_code == 0, result.stdout
 
 
-def test_contribute_without_yes_errors_without_a_tty(isolated_omm_home):
+def test_contribute_without_yes_errors_without_a_tty(isolated_omm_home, monkeypatch):
+    # Reach the real confirmation guard without depending on installed
+    # engines or fetching a live catalog during this command-level test.
+    candidate = {"repo_id": "org/Model-1B", "filename": "Model-1B-Q4_K_M.gguf"}
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(cli, "_ensure_engine_running", lambda *args, **kwargs: ("ollama", None))
+    monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: ({"pack_id": "test"}, False))
+    monkeypatch.setattr(cli, "_load_recommendation_with_change_note", lambda config: ({"candidates": [candidate]}, False))
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.contribute_mod, "ContributionQueue", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "_ensure_contribute_candidate_memory", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    monkeypatch.setattr(cli, "_run_contribution_loop", lambda *args, **kwargs: pytest.fail("must not start without confirmation"))
     result = runner.invoke(cli.app, ["contribute"])
 
     assert result.exit_code == 1
+    assert "interactive terminal" in result.stderr
 
 
 def test_contribute_loads_quality_pack_and_passes_it_to_loop(isolated_omm_home, monkeypatch):
