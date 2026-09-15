@@ -1210,7 +1210,7 @@ def test_skipped_low_disk_candidate_counted_and_not_deleted(isolated_omm_home, m
 def test_print_contribution_summary_includes_low_disk_skip_count(capsys):
     stats = cli._ContributionStats(benchmarked=[], skipped_unfit=1, skipped_low_disk=2)
 
-    cli._print_contribution_summary(stats, 12.0, None, None)
+    cli._print_contribution_summary(stats, 12.0)
 
     captured = capsys.readouterr()
     assert "not enough disk space): 2" in captured.out
@@ -1219,7 +1219,7 @@ def test_print_contribution_summary_includes_low_disk_skip_count(capsys):
 def test_print_contribution_summary_includes_pre_download_memory_skip_count(capsys):
     stats = cli._ContributionStats(benchmarked=[], skipped_low_memory=3)
 
-    cli._print_contribution_summary(stats, 12.0, None, None)
+    cli._print_contribution_summary(stats, 12.0)
 
     captured = capsys.readouterr()
     assert "Still blocked after bounded memory retries: 3" in captured.out
