@@ -78,6 +78,14 @@ export OMM_HOME="$(mktemp -d)"  # macOS/Linux example
 - `.github/workflows/` — CI, package, release, and training automation
 - `docs/` — design notes and validation evidence
 
+## Releasing
+
+Merging to `main` does not publish anything. A maintainer pushes a signed
+`vX.Y.Z` tag, and that tag push drives PyPI, npm, the GitHub Release, the
+Windows portable build, and the Homebrew Tap notification. The step-by-step
+runbook, the automatic pipeline, and what to do when a job fails are in
+[docs/release-process.md](docs/release-process.md).
+
 ## Checks for the area you changed
 
 Core CI runs the test suite on Python 3.12 across Windows, macOS, and Ubuntu,
