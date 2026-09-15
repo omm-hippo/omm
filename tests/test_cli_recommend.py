@@ -43,7 +43,7 @@ def test_recommend_rechecks_fit_with_cached_provider_file_size(monkeypatch, isol
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [(c, 10) for c in artifact["candidates"]])
     recommend_facts._path().write_text(json.dumps({"version": 1, "repos": {
         recommend_facts._key(large): {"fetched_at": time.time(), "metadata": {"pipeline_tag": "text-generation"}, "files": {large["filename"]: 4683074240}}
-    }}))
+    }}), encoding="utf-8")
     monkeypatch.setattr(recommend_facts, "fetch", lambda *args: pytest.fail("ordinary recommend must not fetch provider facts"))
     result = runner.invoke(cli.app, ["recommend", "--profile", "minimal", "--json"])
     assert result.exit_code == 0, result.output

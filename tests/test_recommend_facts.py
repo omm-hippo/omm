@@ -72,10 +72,10 @@ def test_cache_is_separate_bounded_and_expires(isolated_omm_home):
         "fresh": {"fetched_at": time.time(), "files": {}},
         "old": {"fetched_at": time.time()-facts.TTL_SECONDS-1},
         "bad": {"fetched_at": True},
-    }}))
+    }}), encoding="utf-8")
     assert set(facts.load()) == {"fresh", "old"}
     assert config.RECOMMEND_MODEL_PATH.read_bytes() == b"signed bytes remain unchanged"
-    facts._path().write_text("[1]")
+    facts._path().write_text("[1]", encoding="utf-8")
     assert facts.load() == {}
 
 
