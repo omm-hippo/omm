@@ -10,18 +10,21 @@ name: Build Windows portable release
   push:
     tags:
       - "v*"
+  # pyproject.toml and src/** are deliberately absent from the pull_request
+  # filter: the pre-commit hook bumps the version in pyproject.toml on every
+  # commit, which made this release validation (a dozen-plus jobs) run on
+  # every PR. Source changes are still validated by the tag-push run before
+  # anything is published.
   pull_request:
     paths:
       - ".github/workflows/github-release.yml"
       - ".github/workflows/windows-portable.yml"
-      - "pyproject.toml"
       - "requirements-windows-portable.txt"
       - "scripts/winget_manifest.py"
       - "scripts/windows_portable.py"
       - "scripts/release_artifacts.py"
       - "scripts/dependency_parity.py"
       - "tests/test_dependency_parity.py"
-      - "src/**"
       - "tests/test_winget_manifest.py"
       - "tests/test_windows_portable.py"
       - "tests/test_release_artifacts.py"

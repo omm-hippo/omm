@@ -10,11 +10,15 @@ name: Build, verify, and publish npm release
   push:
     tags:
       - "v*"
+  # pyproject.toml and src/** are deliberately absent from the pull_request
+  # filter: the pre-commit hook bumps the version in pyproject.toml on every
+  # commit, which made this release validation (a dozen-plus jobs) run on
+  # every PR. Source changes are still validated by the tag-push run before
+  # anything is published, and by npm-package.yml on PRs that touch cli.py.
   pull_request:
     paths:
       - ".github/workflows/npm-release.yml"
       - "packaging/npm/**"
-      - "pyproject.toml"
       - "requirements-npm-binary.txt"
       - "requirements-windows-portable.txt"
       - "scripts/npm_binary.py"
@@ -25,7 +29,6 @@ name: Build, verify, and publish npm release
       - "scripts/dependency_parity.py"
       - "tests/test_dependency_parity.py"
       - "scripts/windows_portable.py"
-      - "src/**"
       - "tests/test_npm_binary.py"
       - "tests/test_npm_package.py"
       - "tests/test_npm_release.py"
