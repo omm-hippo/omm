@@ -29,6 +29,7 @@ from omm.mltree import (
     MAX_TOTAL_TREE_NODES,
     MAX_TREE_DEPTH,
     MAX_TREES,
+    is_leaf,
     predict_ensemble_range,
 )
 from omm.tuning import RuntimeProfile, recommend_runtime_settings
@@ -116,7 +117,7 @@ def validate_model_artifact(artifact: object) -> dict:
                 raise ValueError("tree exceeds maximum depth")
             if not isinstance(node, dict):
                 raise ValueError("tree nodes must be objects")
-            if node.get("leaf") is True:
+            if is_leaf(node):
                 value = node.get("value")
                 if (
                     isinstance(value, bool)

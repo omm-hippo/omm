@@ -865,6 +865,39 @@ def test_failed_native_ollama_import_removes_new_blobs_and_manifest(
     assert not manifest.exists()
 
 
+def test_failed_native_import_does_not_claim_it_removed_files_it_could_not_find(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A failed native `ollama create` that never got as far as publishing a
+    manifest leaves cleanup_transaction() with nothing it can identify as
+    "ours" (transaction_blobs() only trusts blobs the new manifest
+    references). The error message must not claim a removal that didn't
+    happen."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    blob = models_dir / "blobs" / "sha256-native"
+
+    def run_ollama(cmd, **kwargs):
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"partial native copy")
+        # No manifest written - the real failure ordering: blobs land on
+        # disk before `ollama create` publishes the manifest.
+        return _FakeResult(returncode=1, stderr="no space left on device")
+
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/ollama")
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
+    )
+    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+
+    with pytest.raises(linker.InsufficientLinkSpaceError) as excinfo:
+        linker._fallback_to_native_create(source, "model", models_dir)
+
+    assert "were removed" not in str(excinfo.value)
+    assert "may have left partial files" in str(excinfo.value)
+
+
 @pytest.mark.parametrize("failure", ["before-write", "after-write", "timeout", "os-error"])
 def test_failed_native_ollama_replacement_restores_previous_registration(
     isolated_omm_home, tmp_path, monkeypatch, failure
@@ -1200,7 +1233,7 @@ def test_link_ollama_falls_back_to_native_create_when_show_rejects_manifest(
 
     result = linker.link_ollama(source, "model")
 
-    assert result is True
+    assert result is False  # stubbed metadata has no tokenizer.chat_template
     assert len(create_calls) == 1
     assert subprocess_options
     assert all(options["encoding"] == "utf-8" for options in subprocess_options)
@@ -1255,9 +1288,45 @@ def test_link_ollama_short_circuits_straight_to_fallback_when_already_known_bad(
 
     result = linker.link_ollama(source, "model")
 
-    assert result is True
+    assert result is False  # stubbed metadata has no tokenizer.chat_template
     assert "show" not in calls  # never probes again once known bad
     assert "create" in calls
+
+
+def test_native_create_fallback_reports_the_real_chat_template_flag(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """The native-create fallback paths must report whether the source GGUF
+    actually has an embedded chat template, not a hardcoded True."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    calls = []
+
+    def run_ollama(cmd, **kwargs):
+        calls.append(cmd[1] if len(cmd) > 1 else cmd[0])
+        if cmd[1:] == ["--version"]:
+            return _FakeResult(stdout="ollama version is 9.9.9")
+        if cmd[1] == "create":
+            manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text('{"native": true}', encoding="utf-8")
+            return _FakeResult(returncode=0)
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    models_dir = _stub_ollama_env(monkeypatch, tmp_path, run_ollama)
+    monkeypatch.setattr(
+        linker,
+        "read_gguf_metadata",
+        lambda *_: {"general.architecture": "llama", "tokenizer.chat_template": "{{ .Prompt }}"},
+    )
+    home = tmp_path / ".omm"
+    monkeypatch.setattr(config, "OMM_HOME", home)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "ollama_manifest_compat.json").write_text(
+        '{"ollama_version": "ollama version is 9.9.9", "compatible": false}'
+    , encoding="utf-8")
+
+    assert linker.link_ollama(source, "model") is True
 
 
 def test_link_ollama_falls_back_to_native_create_on_permission_error(
@@ -1307,7 +1376,7 @@ def test_link_ollama_falls_back_to_native_create_on_permission_error(
 
     result = linker.link_ollama(source, "model")
 
-    assert result is True
+    assert result is False  # stubbed metadata has no tokenizer.chat_template
     assert "create" in calls
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     assert manifest_path.exists()
@@ -1367,7 +1436,7 @@ def test_link_ollama_native_create_when_blob_link_denied_with_existing_blobs_dir
 
     result = linker.link_ollama(source, "model")
 
-    assert result is True
+    assert result is False  # stubbed metadata has no tokenizer.chat_template
     assert "create" in calls
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     assert manifest_path.exists()

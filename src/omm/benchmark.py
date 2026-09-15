@@ -184,7 +184,14 @@ def stop_ollama_daemon(proc: subprocess.Popen) -> None:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait(timeout=5)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # SIGKILL was delivered; an unreaped process stuck in
+                # uninterruptible I/O must not abort the caller's cleanup
+                # (contribute's finally also flushes error reports). Same
+                # tolerance _kill_windows_process_tree already has.
+                pass
 
 
 def benchmark_ollama(tag: str, options: dict | None = None) -> float | None:

@@ -72,13 +72,6 @@ ERROR_REPORTS_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/
 # stream is opt-in and off by default (see omm.usage, usage_stats_policy in
 # DEFAULT_CONFIG below, and PRIVACY.md).
 USAGE_GATEWAY_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/usage"
-# Public client identifier for the `localfit-8ab57` Firebase project - not a
-# secret. Firebase Web API keys are safe to ship in client code (they only
-# identify the project to Google's Identity Toolkit; actual access is
-# governed by the RTDB security rules, not this key). Used solely to sign in
-# anonymously so telemetry writes carry `auth != null`, as the RTDB rules
-# require - see omm.firebase_auth.
-FIREBASE_WEB_API_KEY = "AIzaSyBlnr7Qhu4H4z93X1jUpJDyuNz4D5tyca4"
 # model_url has gone through two GitHub org renames (minigu5/Localfit ->
 # minigu5/Omm -> omm-hippo/omm) plus one artifact rename (recommend-model.json
 # -> localfit-recommend-model.json). It's never user-settable, so any config
@@ -240,6 +233,18 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _remove_legacy_firebase_auth_cache() -> None:
+    # One-shot best-effort cleanup: the anonymous Firebase Auth module this
+    # cached a long-lived refresh token for was removed (no send path has
+    # reached it since the Cloudflare Worker gateway became the only
+    # writer). Never raise - a leftover file on a machine that can't be
+    # written to right now is not worth blocking config loads over.
+    try:
+        (OMM_HOME / "firebase_auth.json").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _read_config_data() -> dict[str, Any]:
     """Read saved fields, preserving corrupt bytes before falling back."""
     if not CONFIG_PATH.exists():
@@ -257,6 +262,7 @@ def _read_config_data() -> dict[str, Any]:
 
 def load_config() -> dict[str, Any]:
     ensure_omm_home()
+    _remove_legacy_firebase_auth_cache()
     if not CONFIG_PATH.exists():
         with locked(CONFIG_PATH):
             # A concurrent setting command may have initialized the file

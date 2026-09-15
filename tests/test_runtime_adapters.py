@@ -555,3 +555,24 @@ def test_classifies_gpu_driver_crash(message):
 )
 def test_does_not_classify_ordinary_failures_as_gpu_driver_crash(message):
     assert LoopbackJsonClient._is_gpu_driver_crash(message.casefold()) is False
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("model requires more system memory (10.0 gib) than is available", "out_of_memory"),
+        ("cuda out of memory", "out_of_memory"),
+        ("this model does not support tool calling", "unsupported_runtime"),
+        ("model not found, try pulling it first", "model_not_visible"),
+        ("failed to load model", "load_failed"),
+        ("something else entirely", "unknown"),
+        ("", "unknown"),
+    ],
+)
+def test_loopback_client_classifies_error_bodies(message, expected):
+    assert LoopbackJsonClient._classify(message, "unknown") == expected
+
+
+def test_response_message_returns_empty_string_for_a_body_that_is_not_json():
+    response = SimpleNamespace(json=lambda: (_ for _ in ()).throw(ValueError()))
+    assert LoopbackJsonClient._response_message(response) == ""
