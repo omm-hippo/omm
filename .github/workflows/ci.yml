@@ -96,7 +96,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -112,6 +112,50 @@ jobs:
         run: python -m pytest -q
       - name: Verify CLI entry point
         run: omm --help
+
+  python-windows:
+    # One windows-latest runner needs ~17 minutes for the suite that Linux
+    # finishes in 3, and it is the long pole of every pull request. Run it
+    # as four parallel slices (tests/conftest.py reads OMM_TEST_SHARD) and
+    # let the gate job below carry the check name branch protection requires.
+    name: Windows tests (shard ${{ matrix.shard }}/4)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Localfit test dependencies
+        run: python -m pip install -e ".[dev]" -r requirements-train.txt
+      - name: Run tests
+        env:
+          OMM_TEST_SHARD: ${{ matrix.shard }}/4
+        run: python -m pytest -q --durations=15 --durations-min=2
+      - name: Verify CLI entry point
+        run: omm --help
+
+  python-windows-gate:
+    # Keeps the single "Python 3.12 on windows-latest" context that the main
+    # branch protection rule requires, now backed by the four shards above.
+    name: Python 3.12 on windows-latest
+    needs: python-windows
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every Windows shard succeeded
+        env:
+          RESULT: ${{ needs.python-windows.result }}
+        run: |
+          echo "Windows shards: $RESULT"
+          test "$RESULT" = "success"
 
   non-ascii-path:
     name: Tests from a non-ASCII path
