@@ -153,16 +153,20 @@ def _gpu_vendor(gpu_name: str | None) -> str:
     if not gpu_name:
         return "none"
     low = gpu_name.lower()
-    # Apple chips are "M1".."M5" as a standalone token; a bare substring
-    # check also matched model numbers like "Quadro M2000M" or "FirePro M4000".
-    if "apple" in low or re.search(r"(?<![a-z0-9])m[1-9](?![a-z0-9])", low):
+    if "apple" in low:
         return "apple"
-    if any(m in low for m in ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla")):
+    if any(m in low for m in ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla", "grid")):
         return "nvidia"
-    if any(m in low for m in ("amd", "radeon", "rx ")):
+    if any(m in low for m in ("amd", "radeon", "rx ", "firepro")):
         return "amd"
     if any(m in low for m in ("intel", "arc", "iris", "uhd")):
         return "intel"
+    # Apple's own names are a bare "M1".."M9" token ("M4 Max"). Check this
+    # only after the vendor tokens above: NVIDIA ships real products whose
+    # name ends in a bare M-number ("Tesla M4", "Tesla M6", "GRID M6-8Q"),
+    # and an early return here labelled those machines "apple".
+    if re.search(r"(?<![a-z0-9])m[1-9](?![a-z0-9])", low):
+        return "apple"
     return "other"
 
 
