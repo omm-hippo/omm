@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import fetch_candidates  # noqa: E402
+from omm import recommend_metadata, recommend_ui  # noqa: E402
 
 
 class _FakeResponse:
@@ -22,6 +23,29 @@ class _FakeResponse:
 
     def json(self):
         return self.payload
+
+
+def test_provider_metadata_survives_fetch_publish_and_display(monkeypatch, tmp_path):
+    import json
+
+    payload = [{
+        "id": "org/model-7b", "siblings": [{"rfilename": "model-7b-Q4_K_M.gguf"}],
+        "pipeline_tag": "text-generation", "tags": ["vision", "summarization", "function-calling"],
+    }]
+    monkeypatch.setattr(fetch_candidates.requests, "get", lambda *args, **kwargs: _FakeResponse(payload))
+    monkeypatch.setattr(fetch_candidates, "curated_candidates", lambda: [])
+    monkeypatch.setattr(fetch_candidates, "fetch_modelscope_candidates", lambda: [])
+    output = tmp_path / "candidates.json"
+    monkeypatch.setattr(fetch_candidates, "OUTPUT_PATH", output)
+
+    fetch_candidates.main()
+
+    [candidate] = json.loads(output.read_text(encoding="utf-8"))
+    [row] = recommend_ui.build_rows([(candidate, 20.0)], ["test"])
+    assert row.model_type == "VLM"
+    assert row.use_case == "Documents"
+    assert row.features == ("Tool use",)
+    assert recommend_metadata.classify(candidate).type_source == "Catalog metadata"
 
 
 def test_fetch_trending_candidates_rejects_non_list_payload(monkeypatch):

@@ -395,6 +395,11 @@ def test_search_modelscope_filters_to_gguf_tagged_repos_and_picks_a_file(monkeyp
     assert results[0]["repo_id"] == "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
     assert results[0]["filename"] == "qwen2.5-0.5b-instruct-q4_k_m.gguf"
     assert results[0]["provider"] == "modelscope"
+    assert results[0]["tags"] == ["library:gguf", "task:text-generation"]
+
+    from omm.recommend_metadata import classify
+
+    assert classify(results[0]).model_type == "LLM"
 
 
 def test_search_modelscope_skips_fake_provenance_repos(monkeypatch):

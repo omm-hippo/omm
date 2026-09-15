@@ -9,16 +9,32 @@ By participating, you agree to follow the
 privately as described in [SECURITY.md](SECURITY.md), not in a public issue or
 pull request.
 
+## Choose a contribution
+
+| You want to help with | Start here |
+| --- | --- |
+| A bug, installation problem, or feature request | [Issue templates](https://github.com/omm-hippo/omm/issues/new/choose) |
+| Documentation or code | [Development setup](#development-setup), then [Pull request workflow](#pull-request-workflow) |
+| Recommendation data from your hardware | [Contributing benchmark data](#contributing-benchmark-data-no-code-required) |
+| A suspected vulnerability | [Private security reporting](SECURITY.md#reporting-a-vulnerability) |
+| A community conduct concern | [Code of Conduct reporting](CODE_OF_CONDUCT.md#reporting-an-issue) |
+
 ## Contributing benchmark data (no code required)
 
 `omm contribute` repeatedly installs, benchmarks, and uploads models that fit
 your hardware, growing the dataset that trains the recommendation model. It is
-opt-in and anonymous: model names, file paths, and IP addresses are never sent.
-The recommendation model currently learns from a narrow range of machines, so
-runs on uncommon hardware (older GPUs, ARM boards, high-core-count CPUs, large
-unified-memory systems) are especially valuable. See [PRIVACY.md](PRIVACY.md)
-for the exact fields and [README.md](README.md) for disk-space and daemon
-handling.
+opt-in. Benchmark records include model identifiers, available source and
+file metadata, hardware characteristics, and measurement results. The hosted
+benchmark dataset is publicly readable; do not treat contributions as private
+model inventory. File paths and generated model text are excluded from the
+payload. Usage statistics and crash reports have separate controls.
+
+Runs on varied hardware help broaden the dataset. Before starting, review
+[PRIVACY.md](PRIVACY.md#1-benchmark-telemetry--omm-setting-upload-benchmark)
+and the [disk-space and daemon behavior](README.md#scripting). The command
+downloads models and performs sustained local computation. Use
+`omm setting upload benchmark --ask` to request consent for each contribution
+session, or `--disable` to prevent benchmark uploads.
 
 ## Development setup
 
@@ -50,19 +66,32 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]" -r requirements-train.txt
 ```
 
-Run the core checks:
+Run the core checks with disposable home, model-hub, and cache directories.
+Some update tests resolve paths from the home directory when Python imports
+the CLI, so changing only `OMM_HOME` is not sufficient to protect an existing
+installation. On macOS/Linux, run from the repository root:
 
 ```sh
-python -m pytest -q
-omm --help
+test_root="$(mktemp -d)"
+mkdir -p "$test_root/home" "$test_root/cache"
+env HOME="$test_root/home" OMM_HOME="$test_root/home/.omm" \
+  XDG_CACHE_HOME="$test_root/cache" PYTHONPATH="$PWD/src" \
+  python -m pytest -q
+env HOME="$test_root/home" OMM_HOME="$test_root/home/.omm" \
+  XDG_CACHE_HOME="$test_root/cache" PYTHONPATH="$PWD/src" \
+  python -m omm.cli --help
 ```
 
-Use a temporary `OMM_HOME` for manual development checks so local models and
-settings are not mixed with test state:
+On Windows, use a disposable PowerShell session or CI environment and set
+`HOME`, `USERPROFILE`, `OMM_HOME`, `APPDATA`, `LOCALAPPDATA`, and
+`XDG_CACHE_HOME` to directories under a dedicated temporary root **before**
+starting Python. Set `PYTHONPATH` to the checkout's `src` directory. Close
+that session after testing so these overrides do not affect later commands.
 
-```sh
-export OMM_HOME="$(mktemp -d)"  # macOS/Linux example
-```
+The examples below assume this isolation is in place. Do not run install or
+uninstall scripts against your daily installation as a test. Exercise local
+fixtures, mocks, or a disposable VM for paths that install software, start
+runners, or register background services.
 
 ## Project layout
 
@@ -141,22 +170,41 @@ SSH allowed-signers file from the protected base branch. Direct pushes to
 `main` remain disabled.
 
 External contributors do not need a maintainer signing key. After review, a
-maintainer supplies the final trusted SSH-signed tip before merge. Once that
-tip is signed, do not use GitHub's **Update branch** button or add another
-commit: either action changes the exact head and requires a new trusted
-signature.
+maintainer supplies the final trusted SSH-signed tip before merge. Every
+subsequent commit changes that tip and must pass the check again. To catch up
+with the base branch, a maintainer merges it locally and signs the resulting
+commit with an allowed SSH key. GitHub's **Update branch** button creates a
+web-flow-signed commit that does not satisfy this repository's SSH trust
+anchor.
 
-Maintainers can verify the current tip locally with:
+Maintainers can update the PR branch locally, with their configured SSH
+signing key:
 
 ```sh
+git fetch origin main
+git merge --no-ff -S origin/main
+```
+
+Verify the tip against the allowed signers from the protected base, rather
+than a copy the PR could have changed (macOS/Linux example):
+
+```sh
+trusted_signers="$(mktemp)"
+git show origin/main:src/omm/trust/allowed_signers > "$trusted_signers"
 git -c gpg.format=ssh \
-  -c gpg.ssh.allowedSignersFile=src/omm/trust/allowed_signers \
+  -c gpg.ssh.allowedSignersFile="$trusted_signers" \
   verify-commit HEAD
+rm "$trusted_signers"
 ```
 
 The required GitHub check is `Trusted PR head / Trusted PR head` from
 `.github/workflows/trusted-head.yml`. Do not bypass or weaken it to merge a
 change.
+
+If a web-flow-signed commit is already the tip, first inspect its changes,
+then add a trusted SSH-signed follow-up commit and verify that exact head.
+An empty endorsement commit is sufficient when no code changes are needed.
+Preserve the shared branch history and let CI run on the new head.
 
 ## Commit messages
 

@@ -7,13 +7,15 @@ import re
 from dataclasses import dataclass
 
 from rich import box
+from rich.cells import cell_len, set_cell_size
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from omm import linker, predictor, recommend_status
+from omm import linker, predictor, recommend_metadata, recommend_status
 from omm.hardware import HardwareInfo, calculate_memory_budget
+from omm.recommend_selection import model_label, quantization_label, variant_warning
 
 ACCENT = "accent"
 SUCCESS = "success"
@@ -75,12 +77,6 @@ def __getattr__(name: str):
         )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-_SPECIAL_VARIANT_WORDS = (
-    "abliterated",
-    "heretic",
-    "nsfw",
-    "uncensored",
-)
 _CAUTION_REASON = "Specialized or uncensored variant"
 
 
@@ -97,14 +93,18 @@ class RecommendationRow:
     description: str
     warning: str | None
     installation: recommend_status.InstallationStatus
+    model_type: str
+    type_source: str
+    use_case_source: str
+    features: tuple[str, ...]
 
 
 def _clip(value: str, width: int) -> str:
-    if len(value) <= width:
+    if cell_len(value) <= width:
         return value
     if width <= 1:
-        return value[:width]
-    return value[: width - 1].rstrip() + "…"
+        return set_cell_size(value, max(0, width))
+    return set_cell_size(value, width - 1).rstrip() + "…"
 
 
 def _prompt_style(style: str) -> str:
@@ -119,17 +119,14 @@ def humanize_model_name(candidate: dict) -> str:
         or candidate.get("name")
         or "Unknown model"
     )
-    source = source.rsplit("/", 1)[-1]
-    source = re.sub(r"\.gguf$", "", source, flags=re.IGNORECASE)
-    source = re.sub(r"[-_.]gguf$", "", source, flags=re.IGNORECASE)
-    source = re.sub(
-        r"(?i)(?:[-_.](?:UD[-_.])?(?:I?Q[1-8]|BF16|FP16|F16|FP32|F32)"
-        r"(?:[-_.][A-Z0-9]+)*)$",
-        "",
-        source,
-    )
-    source = re.sub(r"[-_]+", " ", source)
-    return re.sub(r"\s+", " ", source).strip() or "Unknown model"
+    label = model_label(source)
+    repository_label = model_label(str(candidate.get("repo_id") or ""))
+    if label.casefold() in {"ggml model", "gguf model", "model", "weights"}:
+        label = repository_label or label
+    elif repository_label.casefold().startswith(label.casefold() + " "):
+        # A repository-only fine-tune/decoding suffix must stay visible.
+        label = repository_label
+    return label or "Unknown model"
 
 
 def _candidate_text(candidate: dict) -> str:
@@ -139,26 +136,7 @@ def _candidate_text(candidate: dict) -> str:
 
 
 def _warning(candidate: dict) -> str | None:
-    text = _candidate_text(candidate)
-    if any(word in text for word in _SPECIAL_VARIANT_WORDS):
-        return (
-            f"{_CAUTION_REASON}. Review its model card and behavior before "
-            "installing."
-        )
-    return None
-
-
-def _use_case(candidate: dict) -> str:
-    tokens = set(re.split(r"[^a-z0-9]+", _candidate_text(candidate)))
-    if {"coder", "coding", "code"} & tokens:
-        return "Coding"
-    if {"reasoning", "thinking"} & tokens:
-        return "Reasoning"
-    if {"embed", "embedding", "embeddings"} & tokens:
-        return "Embeddings"
-    if {"chat", "instruct", "it"} & tokens:
-        return "General chat"
-    return "General purpose"
+    return variant_warning(candidate)
 
 
 def _description(candidate: dict) -> str:
@@ -187,6 +165,7 @@ def build_rows(
     for index, ((candidate, speed), value, installation) in enumerate(
         zip(ranked, values, installations)
     ):
+        labels = recommend_metadata.classify(candidate)
         warning = _warning(candidate)
         curated = str(candidate.get("description") or "").lower() == "curated default"
         if installation.installed:
@@ -210,10 +189,14 @@ def build_rows(
                 badge=badge,
                 badge_style=badge_style,
                 memory_gb=predictor.estimate_required_memory_gb(candidate),
-                use_case=_use_case(candidate),
+                use_case=labels.use_case,
                 description=_description(candidate),
                 warning=warning,
                 installation=installation,
+                model_type=labels.model_type,
+                type_source=labels.type_source,
+                use_case_source=labels.use_case_source,
+                features=labels.features,
             )
         )
     return rows
@@ -293,23 +276,23 @@ def print_screen(
     console.print(choice_header(console.size.width))
 
 
-def _choice_widths(width: int) -> tuple[int, int, int, int]:
+def _choice_widths(width: int) -> tuple[int, int, int, int, int]:
     # questionary adds four cells of picker chrome before every choice. Keep
     # the choice itself within the remaining width so the final column is not
-    # clipped by prompt_toolkit. At medium widths, preserve the full 15-cell
-    # "General purpose" label by borrowing space from the model column.
-    if width < 61:
-        return max(10, width - 28), 11, 0, 0
-    if width < 84:
-        return max(18, width - 43), 11, 0, 15
-    model = max(24, min(40, width - 58))
-    return model, 13, 13, 15
+    # clipped by prompt_toolkit. Hide memory, then purpose, then type as
+    # space runs out; the selected-model detail always includes both labels.
+    badge, type_width = 11, 10 if width >= 48 else 0
+    memory, use = (13 if width >= 88 else 0), (12 if width >= 68 else 0)
+    model = max(1, min(40, width - 4 - badge - 13 - type_width - memory - use))
+    return model, badge, type_width, memory, use
 
 
 def choice_header(width: int) -> Text:
-    model_width, badge_width, memory_width, use_width = _choice_widths(width)
+    model_width, badge_width, type_width, memory_width, use_width = _choice_widths(width)
     header = Text("   ")
     header.append("MODEL".ljust(model_width), style=f"bold {MUTED}")
+    if type_width:
+        header.append("TYPE".ljust(type_width), style=f"bold {MUTED}")
     header.append("STATUS".ljust(badge_width), style=f"bold {MUTED}")
     header.append("SPEED".ljust(13), style=f"bold {MUTED}")
     if memory_width:
@@ -320,17 +303,21 @@ def choice_header(width: int) -> Text:
 
 
 def choice_title(row: RecommendationRow, width: int) -> list[tuple[str, str]]:
-    model_width, badge_width, memory_width, use_width = _choice_widths(width)
+    model_width, badge_width, type_width, memory_width, use_width = _choice_widths(width)
     speed = f"~{row.speed:.0f} tok/s" if row.speed is not None else "Rules match"
     memory = f"~{row.memory_gb:.1f} GB" if row.memory_gb is not None else "Unknown"
     parts = [
         (
             _prompt_style("bold"),
-            _clip(row.display_name, model_width - 1).ljust(model_width),
+            set_cell_size(_clip(row.display_name, model_width - 1), model_width),
         ),
+    ]
+    if type_width:
+        parts.append(("", row.model_type.ljust(type_width)))
+    parts.extend([
         (_prompt_style(row.badge_style), _clip(row.badge, badge_width - 1).ljust(badge_width)),
         (_prompt_style(f"fg:{_ROW_METRIC}"), speed.ljust(13)),
-    ]
+    ])
     if memory_width:
         parts.append((_prompt_style(f"fg:{_ROW_SIZE}"), memory.ljust(memory_width)))
     if use_width:
@@ -393,6 +380,34 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
     repository_text = Text()
     repository_text.append("Repository  ", style=f"bold {MUTED}")
     repository_text.append(repository, style=MUTED)
+    provider = row.candidate.get("provider")
+    source = (
+        "ModelScope" if provider == "modelscope" else
+        "Hugging Face" if provider == "huggingface" or row.candidate.get("repo_id") else
+        "Curated catalog"
+    )
+    package_text = Text()
+    package_text.append("Source  ", style=f"bold {MUTED}")
+    package_text.append(source, style=MUTED)
+    package_text.append("    Quantization  ", style=f"bold {MUTED}")
+    package_text.append(quantization_label(row.candidate), style=MUTED)
+    filename_text = Text()
+    filename_text.append("File  ", style=f"bold {MUTED}")
+    filename_text.append(str(row.candidate.get("filename") or "Unknown"), style=MUTED)
+
+    labels = Text()
+    labels.append("TYPE  ", style=f"bold {MUTED}")
+    labels.append(f"{row.model_type}  ·  {row.type_source}", style="value")
+    labels.append("\nBEST FOR  ", style=f"bold {MUTED}")
+    labels.append(f"{row.use_case}  ·  {row.use_case_source}", style="value")
+    if row.features:
+        labels.append("\nDECLARED FEATURES  ", style=f"bold {MUTED}")
+        labels.append(", ".join(row.features), style="value")
+    labels.append(
+        "\nLabels describe declared tasks; quality and runtime support are not verified."
+        "\nUnknown / — means there is not enough metadata to classify the model.",
+        style=MUTED,
+    )
 
     console.print()
     console.print(
@@ -404,7 +419,11 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
                 Text(""),
                 metrics,
                 Text(""),
+                labels,
+                Text(""),
                 repository_text,
+                package_text,
+                filename_text,
             ),
             title=Text(row.display_name, style=f"bold {ACCENT}"),
             title_align="left",
