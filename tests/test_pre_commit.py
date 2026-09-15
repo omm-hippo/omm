@@ -36,7 +36,7 @@ def hook_repo(tmp_path, request):
         project.write_bytes(project.read_bytes().replace(b"\n", b"\r\n"))
     shutil.copy2(ROOT / "LICENSE", repo / "LICENSE")
     shutil.copytree(ROOT / MANIFEST.parent, repo / MANIFEST.parent)
-    (repo / "change.txt").write_text("initial\n")
+    (repo / "change.txt").write_text("initial\n", encoding="utf-8")
     git(repo, "init")
     git(repo, "config", "user.name", "Hook test")
     git(repo, "config", "user.email", "hook-test@example.invalid")
@@ -48,7 +48,7 @@ def hook_repo(tmp_path, request):
 
 
 def project_version(repo):
-    return re.search(r'^version = "([^"]+)"', (repo / "pyproject.toml").read_text(), re.M)[1]
+    return re.search(r'^version = "([^"]+)"', (repo / "pyproject.toml").read_text(encoding="utf-8"), re.M)[1]
 
 
 def assert_committed_versions(repo, expected):
@@ -78,11 +78,11 @@ def test_hook_keeps_committed_platform_versions_in_sync(hook_repo, manual):
         ))
         git(repo, "add", "pyproject.toml")
     if manual == "launcher-already-updated":
-        manifest = json.loads((repo / MANIFEST).read_text())
+        manifest = json.loads((repo / MANIFEST).read_text(encoding="utf-8"))
         manifest["version"] = expected
-        (repo / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n")
+        (repo / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         git(repo, "add", MANIFEST.as_posix())
-    (repo / "change.txt").write_text("changed\n")
+    (repo / "change.txt").write_text("changed\n", encoding="utf-8")
     git(repo, "add", "change.txt")
     git(repo, "commit", "-m", "exercise version hook")
     assert_committed_versions(repo, expected)
@@ -92,12 +92,39 @@ def test_hook_keeps_committed_platform_versions_in_sync(hook_repo, manual):
 def test_hook_does_not_stage_unrelated_unstaged_metadata(hook_repo, metadata):
     repo = hook_repo
     path = repo / metadata
-    path.write_text(path.read_text() + "\n")
+    path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     before = path.read_bytes()
-    (repo / "change.txt").write_text("changed\n")
+    (repo / "change.txt").write_text("changed\n", encoding="utf-8")
     git(repo, "add", "change.txt")
     result = git(repo, "commit", "-m", "keep separate metadata edits", check=False)
     assert result.returncode != 0
     assert "unstaged" in result.stderr.lower()
     assert path.read_bytes() == before
     assert git(repo, "diff", "--cached", "--name-only").stdout.splitlines() == ["change.txt"]
+
+
+def test_hook_explains_a_missing_interpreter_and_leaves_metadata_untouched(hook_repo):
+    repo = hook_repo
+    before = project_version(repo)
+    path_entries = [
+        entry for entry in os.environ["PATH"].split(os.pathsep)
+        if entry and not any(
+            (Path(entry) / name).exists()
+            for name in ("python", "python3", "python.exe", "python3.exe")
+        )
+    ]
+    stripped = os.pathsep.join(path_entries)
+    if shutil.which("git", path=stripped) is None or shutil.which("sed", path=stripped) is None:
+        pytest.skip("cannot remove python from PATH without also removing git/sed")
+    (repo / "change.txt").write_text("second\n", encoding="utf-8")
+    env = {**os.environ, "PATH": stripped, "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": os.devnull}
+    subprocess.run(["git", "add", "change.txt"], cwd=repo, check=True,
+                   capture_output=True, text=True, timeout=30, env=env)
+    done = subprocess.run(["git", "commit", "-m", "no interpreter"], cwd=repo,
+                          capture_output=True, text=True, timeout=30, env=env)
+    assert done.returncode != 0
+    assert "python3/python not found on PATH" in done.stderr
+    assert project_version(repo) == before
+    staged = git(repo, "diff", "--cached", "--name-only").stdout.split()
+    assert "pyproject.toml" not in staged

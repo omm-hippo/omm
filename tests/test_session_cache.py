@@ -145,7 +145,7 @@ def test_corrupted_cache_file_is_treated_as_empty(isolated_omm_home, monkeypatch
 
     session_dir = config.OMM_HOME / "session"
     for f in session_dir.iterdir():
-        f.write_text("{not valid json")
+        f.write_text("{not valid json", encoding="utf-8")
 
     assert session_cache.load_seen() == []
 
@@ -156,10 +156,10 @@ def test_invalid_cache_shapes_are_treated_as_empty(isolated_omm_home, monkeypatc
     assert path is not None
     path.parent.mkdir(parents=True)
 
-    path.write_text("[]")
+    path.write_text("[]", encoding="utf-8")
     assert session_cache.load_seen() == []
 
-    path.write_text('{"seen": "abc", "last_results": ["ok", 1]}')
+    path.write_text('{"seen": "abc", "last_results": ["ok", 1]}', encoding="utf-8")
     assert session_cache.load_seen() == []
     assert session_cache.load_last_results() == ["ok"]
 
@@ -180,6 +180,33 @@ def test_concurrent_session_updates_do_not_lose_seen_refs(
         thread.join()
 
     assert set(session_cache.load_seen()) == {f"model-{i}" for i in range(20)}
+
+
+def test_reused_tty_name_in_a_new_shell_session_does_not_inherit_results(
+    isolated_omm_home, monkeypatch
+):
+    # Linux devpts reassigns a closed pty's number to a brand-new shell
+    # session almost immediately, so the tty name alone must not be treated
+    # as a stable session boundary - a new shell (new session leader pid)
+    # must not inherit a previous shell's last_results even on the same
+    # pts number.
+    _fake_tty(monkeypatch, "/dev/pts/3")
+    monkeypatch.setattr(session_cache.os, "getsid", lambda pid: 1000, raising=False)
+    session_cache.record_results(["old-a", "old-b"])
+
+    monkeypatch.setattr(session_cache.os, "getsid", lambda pid: 2000, raising=False)
+    assert session_cache.load_last_results() == []
+
+
+def test_same_session_leader_still_shares_results_on_reused_tty(
+    isolated_omm_home, monkeypatch
+):
+    _fake_tty(monkeypatch, "/dev/pts/3")
+    monkeypatch.setattr(session_cache.os, "getsid", lambda pid: 1000, raising=False)
+    session_cache.record_results(["old-a", "old-b"])
+
+    monkeypatch.setattr(session_cache.os, "getsid", lambda pid: 1000, raising=False)
+    assert session_cache.load_last_results() == ["old-a", "old-b"]
 
 
 def test_lock_timeout_is_a_silent_best_effort_noop(isolated_omm_home, monkeypatch):

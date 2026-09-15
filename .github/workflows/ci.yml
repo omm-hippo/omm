@@ -20,7 +20,9 @@ jobs:
     name: Windows PowerShell script syntax
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Parse installer and uninstaller with Windows PowerShell 5.1
         shell: pwsh
         run: |
@@ -63,7 +65,9 @@ jobs:
     name: POSIX installer syntax
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Parse installer, uninstaller, and version hook
         run: |
           sh -n install.sh
@@ -95,8 +99,10 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -107,12 +113,45 @@ jobs:
       - name: Verify CLI entry point
         run: omm --help
 
+  non-ascii-path:
+    name: Tests from a non-ASCII path
+    runs-on: ubuntu-latest
+    steps:
+      # omm writes UTF-8 everywhere, but text I/O that omits `encoding=`
+      # decodes with the platform default instead - cp949 on a Korean
+      # Windows install. The run log records the working directory, so a
+      # checkout under a non-ASCII path is enough to surface the whole
+      # class. Keep this job checked out somewhere the ASCII jobs are not.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: "작업 공간/omm"
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: "작업 공간/omm/pyproject.toml"
+      - name: Install Localfit test dependencies
+        working-directory: "작업 공간/omm"
+        run: python -m pip install -e ".[dev]" -r requirements-train.txt
+      - name: Reject text I/O that leaves the encoding to the platform
+        working-directory: "작업 공간/omm"
+        run: python scripts/check_text_encoding.py
+      - name: Run tests
+        working-directory: "작업 공간/omm"
+        run: python -m pytest -q
+      - name: Verify CLI entry point
+        working-directory: "작업 공간/omm"
+        run: omm --help
+
   bare-install:
     name: Verify CLI with only declared runtime dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - name: Install omm with no dev/server extras (mirrors a real pipx/curl install)
@@ -124,7 +163,9 @@ jobs:
     name: Reproducible Linux container
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build test image
         run: docker build --tag localfit-test .
       - name: Run test image
@@ -135,11 +176,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:
           node-version: "22"
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: "21"
@@ -150,21 +193,48 @@ jobs:
           --project demo-localfit
           "node scripts/test_firebase_rules.mjs"
 
+  cf-worker:
+    name: Telemetry gateway (cf-worker) tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: cf-worker
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cf-worker/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run vitest
+        run: npm test
+      - name: Type-check
+        run: npx tsc -p tsconfig.json
+
   homebrew-formula:
-    name: Homebrew Formula matches the frozen dependency table
+    name: Homebrew Formula matches the runtime dependency graph
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Check out the Homebrew Tap (read-only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: omm-hippo/homebrew-omm
           path: homebrew-omm
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Compare Formula/omm.rb against pyproject.toml (issue #238)
+      - name: Install the marker evaluator
+        run: python -m pip install --disable-pip-version-check packaging
+      - name: Compare Formula/omm.rb against requirements-npm-binary.txt (issue #238)
         run: >-
           python scripts/homebrew_formula.py check
           --formula homebrew-omm/Formula/omm.rb

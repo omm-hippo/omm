@@ -38,6 +38,9 @@ class _FakeListener:
     def start(self):
         self.stop_event.set()
 
+    def stop(self, timeout: float = 1.0) -> None:
+        self.stop_event.set()
+
 
 def test_contribute_refuses_to_start_when_model_volume_has_less_than_ten_gib(
     isolated_omm_home, monkeypatch
@@ -367,6 +370,64 @@ def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_ho
     assert "2/3 candidates covered" in result.stdout
     state = cli.contribute_state.load()
     assert state["total_candidates"] == 3
+    assert state["covered_candidates"] == 2
+
+
+def test_exhausted_session_coverage_ignores_history_outside_current_catalog(
+    isolated_omm_home, monkeypatch
+):
+    """`loaded_refs`/`queue.history_refs` can carry refs for models no
+    longer in the current catalog (a sibling quant that got dropped, or a
+    different repo entirely) - the printed coverage and the persisted
+    `covered_candidates` must count only refs that actually match a
+    candidate in *this* run's artifact, not the raw size of the history
+    set."""
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url, *a, **k: (
+            {
+                "trees": [{}],
+                "candidates": [
+                    {"repo_id": "o", "filename": "a.gguf"},
+                    {"repo_id": "o", "filename": "b.gguf"},
+                    {"repo_id": "o", "filename": "c.gguf"},
+                ],
+            },
+            False,
+        ),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    monkeypatch.setattr(
+        cli.benchmark_history,
+        "loaded_refs",
+        lambda: {
+            "huggingface:o:a.gguf",
+            "huggingface:o:b.gguf",
+            "huggingface:o:sibling.gguf",
+            "huggingface:other:x.gguf",
+        },
+    )
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
+
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None, engine="ollama"):
+        return cli._ContributionStats(benchmarked=[], skipped_unfit=1, exhausted=True)
+
+    monkeypatch.setattr(cli, "_run_contribution_loop", fake_loop)
+    monkeypatch.setattr(cli, "cleanup", lambda: None)
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 0, result.stdout
+    normalized_stdout = " ".join(result.stdout.split())
+    assert "2/3 candidates covered" in normalized_stdout
+    assert "2 of them successfully" in normalized_stdout
+    state = cli.contribute_state.load()
     assert state["covered_candidates"] == 2
 
 
@@ -702,12 +763,12 @@ def test_candidate_whose_cooldown_has_lapsed_is_offered_again(isolated_omm_home,
     config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
     _seed_cooled_down_candidate("huggingface:o:a.gguf", "a.gguf")
     history = isolated_omm_home / "benchmark_history.json"
-    data = json.loads(history.read_text())
+    data = json.loads(history.read_text(encoding="utf-8"))
     stale = datetime.now(timezone.utc) - timedelta(
         hours=cli.benchmark_history.MACHINE_FAILURE_COOLDOWN_HOURS + 1
     )
     data["failures"]["huggingface:o:a.gguf"]["last_machine_failure_at"] = stale.isoformat()
-    history.write_text(json.dumps(data))
+    history.write_text(json.dumps(data), encoding="utf-8")
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(

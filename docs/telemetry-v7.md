@@ -259,7 +259,7 @@ events, the rollout order matters:
    minimum enforced in code; `validate_dataset`'s rejection-rate gate is
    the one place v7 volume matters, and it already excludes
    intentionally-routed `model_unfit`/`performance_unfit`/`transient_error`
-   rows from that calculation (see `_INTENTIONALLY_EXCLUDED_REASONS` in
+   rows from that calculation (see `INTENTIONALLY_EXCLUDED_REASONS` in
    `model_quality_gate.py`) so a healthy stream of failure telemetry can
    never look like bad data and block training.
 

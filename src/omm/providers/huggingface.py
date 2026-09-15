@@ -35,13 +35,18 @@ def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
             raise ModelResolutionError(
-                f"HF repo '{repo_id}' is private or gated - requires an access token."
+                f"HF repo '{repo_id}' is private or gated - requires an access token.",
+                kind="not_found",
             ) from e
         if status == 404:
-            raise ModelResolutionError(f"HF repo '{repo_id}' not found.") from e
-        raise ModelResolutionError(f"HF API request failed for '{repo_id}' ({status}).") from e
+            raise ModelResolutionError(f"HF repo '{repo_id}' not found.", kind="not_found") from e
+        raise ModelResolutionError(
+            f"HF API request failed for '{repo_id}' ({status}).", kind="unavailable"
+        ) from e
     except requests.RequestException as e:
-        raise ModelResolutionError(f"Could not reach Hugging Face for '{repo_id}': {e}") from e
+        raise ModelResolutionError(
+            f"Could not reach Hugging Face for '{repo_id}': {e}", kind="unavailable"
+        ) from e
 
     try:
         payload = resp.json()
@@ -153,8 +158,11 @@ def download_url(repo_id: str, filename: str) -> str:
 
 def remote_file_sha256(repo_id: str, filename: str) -> str | None:
     """Current LFS sha256 of `filename` in `repo_id`'s main branch, via HF's
-    paths-info API. Returns None if the request fails, the file isn't
-    listed, or it isn't stored as LFS."""
+    paths-info API. Returns None only once the request itself succeeded but
+    the file isn't listed or isn't stored as LFS - i.e. the provider truly
+    has no hash to give. A failed request (timeout, rate limit, 5xx, DNS)
+    raises ModelResolutionError instead, so callers don't mistake a transient
+    outage for "no digest available" and hard-fail an otherwise-good repo."""
     import requests
 
     try:
@@ -164,8 +172,10 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
             timeout=15,
         )
         resp.raise_for_status()
-    except requests.RequestException:
-        return None
+    except requests.RequestException as e:
+        raise ModelResolutionError(
+            f"Could not verify {filename}'s digest with Hugging Face: {e}"
+        ) from e
 
     try:
         entries = resp.json()

@@ -73,7 +73,7 @@ def test_one_shot_forced_failure_is_not_queued_for_unattended_retry(
 
     assert telemetry.send_event({"x": 1}, force=True) is False
     assert not (isolated_omm_home / "telemetry_pending.json").exists()
-    diagnostic = json.loads((isolated_omm_home / "telemetry_last_failed.json").read_text())
+    diagnostic = json.loads((isolated_omm_home / "telemetry_last_failed.json").read_text(encoding="utf-8"))
     assert diagnostic["event"] == {"x": 1}
     assert diagnostic["failure"]["outcome"] == "send_failed_network"
 
@@ -132,7 +132,7 @@ def test_contribute_does_not_retry_permanent_401_and_saves_exact_payload(
     assert status.status_code == 401
     assert status.detail == "Permission denied"
     assert status.retryable is False
-    diagnostic = json.loads((isolated_omm_home / "telemetry_last_failed.json").read_text())
+    diagnostic = json.loads((isolated_omm_home / "telemetry_last_failed.json").read_text(encoding="utf-8"))
     assert diagnostic["event"] == event
     assert diagnostic["failure"]["status_code"] == 401
 
@@ -184,7 +184,7 @@ def test_send_event_logs_sent_ok_on_success(isolated_omm_home, monkeypatch):
 
     telemetry.send_event({"x": 1})
 
-    lines = (isolated_omm_home / "telemetry.log").read_text().splitlines()
+    lines = (isolated_omm_home / "telemetry.log").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["outcome"] == "sent_ok"
 
@@ -204,9 +204,9 @@ def test_send_event_queues_and_logs_on_network_failure(isolated_omm_home, monkey
     result = telemetry.send_event({"model": "x"})
 
     assert result is False
-    pending = json.loads((isolated_omm_home / "telemetry_pending.json").read_text())
+    pending = json.loads((isolated_omm_home / "telemetry_pending.json").read_text(encoding="utf-8"))
     assert pending == [{"model": "x"}]
-    log_lines = (isolated_omm_home / "telemetry.log").read_text().splitlines()
+    log_lines = (isolated_omm_home / "telemetry.log").read_text(encoding="utf-8").splitlines()
     assert json.loads(log_lines[0])["outcome"] == "send_failed_network"
 
 
@@ -221,9 +221,9 @@ def test_send_event_queues_and_logs_on_http_error(isolated_omm_home, monkeypatch
     result = telemetry.send_event({"model": "y"})
 
     assert result is False
-    pending = json.loads((isolated_omm_home / "telemetry_pending.json").read_text())
+    pending = json.loads((isolated_omm_home / "telemetry_pending.json").read_text(encoding="utf-8"))
     assert pending == [{"model": "y"}]
-    log_lines = (isolated_omm_home / "telemetry.log").read_text().splitlines()
+    log_lines = (isolated_omm_home / "telemetry.log").read_text(encoding="utf-8").splitlines()
     assert json.loads(log_lines[0])["outcome"] == "send_failed_http_500"
 
 
@@ -237,13 +237,13 @@ def test_flush_pending_resends_and_clears_on_success(isolated_omm_home, monkeypa
     )
     (isolated_omm_home / "telemetry_pending.json").write_text(
         json.dumps([{"model": "a"}, {"model": "b"}])
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200))
 
     resent = telemetry.flush_pending()
 
     assert resent == 2
-    assert json.loads((isolated_omm_home / "telemetry_pending.json").read_text()) == []
+    assert json.loads((isolated_omm_home / "telemetry_pending.json").read_text(encoding="utf-8")) == []
 
 
 def test_flush_preserves_event_appended_while_send_is_in_progress(
@@ -253,7 +253,7 @@ def test_flush_preserves_event_appended_while_send_is_in_progress(
         telemetry_endpoint="https://example.com", telemetry_send_policy="always"
     )
     pending_path = isolated_omm_home / "telemetry_pending.json"
-    pending_path.write_text(json.dumps([{"model": "old"}]))
+    pending_path.write_text(json.dumps([{"model": "old"}]), encoding="utf-8")
 
     def send_and_append(event):
         telemetry._append_pending({"model": "new"})
@@ -262,7 +262,7 @@ def test_flush_preserves_event_appended_while_send_is_in_progress(
     monkeypatch.setattr(telemetry, "_post_event", send_and_append)
 
     assert telemetry.flush_pending() == 1
-    assert json.loads(pending_path.read_text()) == [{"model": "new"}]
+    assert json.loads(pending_path.read_text(encoding="utf-8")) == [{"model": "new"}]
 
 
 def test_full_queue_flush_does_not_remove_identical_new_append(
@@ -274,7 +274,7 @@ def test_full_queue_flush_does_not_remove_identical_new_append(
     sent = {"model": "same"}
     events = [sent, *({"model": str(index)} for index in range(999))]
     pending_path = isolated_omm_home / "telemetry_pending.json"
-    pending_path.write_text(json.dumps(events))
+    pending_path.write_text(json.dumps(events), encoding="utf-8")
 
     def send_and_append(event):
         telemetry._append_pending(dict(sent))
@@ -283,7 +283,7 @@ def test_full_queue_flush_does_not_remove_identical_new_append(
     monkeypatch.setattr(telemetry, "_post_event", send_and_append)
 
     assert telemetry.flush_pending(max_retries=1) == 1
-    pending = json.loads(pending_path.read_text())
+    pending = json.loads(pending_path.read_text(encoding="utf-8"))
     assert len(pending) == telemetry._MAX_PENDING_EVENTS
     assert pending[-1] == sent
     assert pending.count(sent) == 1
@@ -293,13 +293,48 @@ def test_flush_pending_keeps_events_that_still_fail(isolated_omm_home, monkeypat
     config.update_config(
         telemetry_endpoint="https://example.com", telemetry_send_policy="always"
     )
-    (isolated_omm_home / "telemetry_pending.json").write_text(json.dumps([{"model": "a"}]))
+    (isolated_omm_home / "telemetry_pending.json").write_text(json.dumps([{"model": "a"}]), encoding="utf-8")
     monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(500))
 
     resent = telemetry.flush_pending()
 
     assert resent == 0
-    assert json.loads((isolated_omm_home / "telemetry_pending.json").read_text()) == [{"model": "a"}]
+    assert json.loads((isolated_omm_home / "telemetry_pending.json").read_text(encoding="utf-8")) == [{"model": "a"}]
+
+
+def test_flush_pending_backs_off_after_a_failure(isolated_omm_home, monkeypatch):
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="always"
+    )
+    (isolated_omm_home / "telemetry_pending.json").write_text(
+        json.dumps([{"model": "a"}]), encoding="utf-8"
+    )
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or _FakeResp(500))
+
+    assert telemetry.flush_pending() == 0
+    # A second call arriving immediately after (e.g. the next `omm` command)
+    # must not pay another proof-of-work solve + HTTP round trip while the
+    # cooldown from the first failure is still active.
+    assert telemetry.flush_pending() == 0
+    assert len(calls) == 1
+
+
+def test_flush_pending_clears_backoff_once_a_send_succeeds(isolated_omm_home, monkeypatch):
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="always"
+    )
+    (isolated_omm_home / "telemetry_pending.json").write_text(
+        json.dumps([{"model": "a"}]), encoding="utf-8"
+    )
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(500))
+    telemetry.flush_pending()
+
+    monkeypatch.setattr(telemetry, "_backoff_active", lambda: False)
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200))
+
+    assert telemetry.flush_pending() == 1
+    assert telemetry._read_backoff() == {}
 
 
 def test_flush_pending_caps_attempts_per_call(isolated_omm_home, monkeypatch):
@@ -307,7 +342,7 @@ def test_flush_pending_caps_attempts_per_call(isolated_omm_home, monkeypatch):
         telemetry_endpoint="https://example.com", telemetry_send_policy="always"
     )
     events = [{"model": str(i)} for i in range(5)]
-    (isolated_omm_home / "telemetry_pending.json").write_text(json.dumps(events))
+    (isolated_omm_home / "telemetry_pending.json").write_text(json.dumps(events), encoding="utf-8")
     calls = []
     monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or _FakeResp(200))
 
@@ -315,7 +350,7 @@ def test_flush_pending_caps_attempts_per_call(isolated_omm_home, monkeypatch):
 
     assert resent == 3
     assert len(calls) == 3
-    remaining = json.loads((isolated_omm_home / "telemetry_pending.json").read_text())
+    remaining = json.loads((isolated_omm_home / "telemetry_pending.json").read_text(encoding="utf-8"))
     assert len(remaining) == 2
 
 
@@ -327,11 +362,11 @@ def test_flush_pending_rejects_invalid_retry_limits(
         telemetry_endpoint="https://example.com", telemetry_send_policy="always"
     )
     pending_path = isolated_omm_home / "telemetry_pending.json"
-    pending_path.write_text(json.dumps([{"model": "private"}]))
+    pending_path.write_text(json.dumps([{"model": "private"}]), encoding="utf-8")
     monkeypatch.setattr(requests, "post", lambda *a, **k: pytest.fail("must not send"))
 
     assert telemetry.flush_pending(max_retries=max_retries) == 0
-    assert json.loads(pending_path.read_text()) == [{"model": "private"}]
+    assert json.loads(pending_path.read_text(encoding="utf-8")) == [{"model": "private"}]
 
 
 def test_flush_pending_never_sends_after_user_opts_out(isolated_omm_home, monkeypatch):
@@ -339,13 +374,13 @@ def test_flush_pending_never_sends_after_user_opts_out(isolated_omm_home, monkey
         telemetry_endpoint="https://example.com", telemetry_send_policy="never"
     )
     pending_path = isolated_omm_home / "telemetry_pending.json"
-    pending_path.write_text(json.dumps([{"model": "private"}]))
+    pending_path.write_text(json.dumps([{"model": "private"}]), encoding="utf-8")
     calls = []
     monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or _FakeResp(200))
 
     assert telemetry.flush_pending() == 0
     assert calls == []
-    assert json.loads(pending_path.read_text()) == [{"model": "private"}]
+    assert json.loads(pending_path.read_text(encoding="utf-8")) == [{"model": "private"}]
 
 
 def test_post_event_skips_the_closed_direct_firebase_endpoint(isolated_omm_home, monkeypatch):
@@ -367,7 +402,7 @@ def test_post_event_skips_the_closed_direct_firebase_endpoint(isolated_omm_home,
 
     assert result is False
     assert calls == []
-    log_lines = (isolated_omm_home / "telemetry.log").read_text().splitlines()
+    log_lines = (isolated_omm_home / "telemetry.log").read_text(encoding="utf-8").splitlines()
     assert json.loads(log_lines[0])["outcome"] == "skipped_legacy_endpoint"
 
 
@@ -418,7 +453,7 @@ def test_post_event_reports_gateway_rejection(isolated_omm_home, monkeypatch):
     result = telemetry.send_event({"x": 1})
 
     assert result is False
-    log_lines = (isolated_omm_home / "telemetry.log").read_text().splitlines()
+    log_lines = (isolated_omm_home / "telemetry.log").read_text(encoding="utf-8").splitlines()
     assert json.loads(log_lines[0])["outcome"] == "send_failed_http_400"
 
 
@@ -441,6 +476,6 @@ def test_post_event_skips_auth_for_non_firebase_endpoint(isolated_omm_home, monk
 def test_pending_queue_is_bounded(isolated_omm_home):
     telemetry._save_pending([{"id": index} for index in range(telemetry._MAX_PENDING_EVENTS + 5)])
 
-    pending = json.loads((isolated_omm_home / "telemetry_pending.json").read_text())
+    pending = json.loads((isolated_omm_home / "telemetry_pending.json").read_text(encoding="utf-8"))
     assert len(pending) == telemetry._MAX_PENDING_EVENTS
     assert pending[0] == {"id": 5}

@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -61,7 +62,7 @@ def _write_manifest(manifests_root, namespace, name, tag, digest_hex, size=100):
                 ],
             }
         )
-    )
+    , encoding="utf-8")
 
 
 def test_scan_ollama_skips_config_blobs_and_symlinks(tmp_path, monkeypatch):
@@ -118,7 +119,7 @@ def test_scan_ollama_skips_malformed_manifest_shapes(tmp_path, monkeypatch):
     models_dir = tmp_path / "ollama"
     manifests_root = models_dir / "manifests"
     manifests_root.mkdir(parents=True)
-    (manifests_root / "list.json").write_text("[]")
+    (manifests_root / "list.json").write_text("[]", encoding="utf-8")
     malformed_dir = manifests_root / "registry.ollama.ai" / "library" / "bad"
     malformed_dir.mkdir(parents=True)
     (malformed_dir / "latest").write_text(
@@ -134,7 +135,7 @@ def test_scan_ollama_skips_malformed_manifest_shapes(tmp_path, monkeypatch):
                 ]
             }
         )
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(scan_import.linker, "ollama_models_dir", lambda: models_dir)
 
     assert scan_import.scan_ollama() == []
@@ -160,6 +161,28 @@ def test_scan_lmstudio_skips_symlinks(tmp_path, monkeypatch):
     assert len(found) == 1
     assert found[0].path == real_file
     assert found[0].display_name == "model.gguf"
+
+
+def test_scan_lmstudio_skips_omm_owned_hardlink(isolated_omm_home, tmp_path, monkeypatch):
+    hub = scan_import.MODELS_DIR / "m.gguf"
+    hub.write_bytes(b"hub-bytes")
+
+    base = tmp_path / "lms"
+    dst = base / "pub" / "repo" / "m.gguf"
+    dst.parent.mkdir(parents=True)
+    os.link(hub, dst)
+    linker._record_hardlink(dst, hub)
+
+    other_dir = base / "pub2" / "repo2"
+    other_dir.mkdir(parents=True)
+    other = other_dir / "other.gguf"
+    other.write_bytes(b"unmanaged-bytes")
+
+    monkeypatch.setattr(scan_import.linker, "lmstudio_models_dir", lambda: base)
+
+    found = scan_import.scan_lmstudio()
+
+    assert [item.path for item in found] == [other]
 
 
 def test_flat_scan_accepts_case_insensitive_gguf_suffix(tmp_path):
@@ -269,6 +292,19 @@ def test_scan_jan_resolves_absolute_and_relative_model_paths(tmp_path, monkeypat
     assert by_name["abs-entry"].path == absolute_gguf
     assert by_name["rel-entry"].path == rel_gguf
     assert all(item.engine == "jan" for item in found)
+
+
+def test_scan_jan_skips_hub_file(isolated_omm_home, tmp_path, monkeypatch):
+    jan_app_dir = tmp_path / "Jan"
+    jan_models_dir = jan_app_dir / "data" / "llamacpp" / "models"
+    monkeypatch.setattr(scan_import.linker, "jan_app_dir", lambda: jan_app_dir)
+    monkeypatch.setattr(scan_import.linker, "jan_models_dir", lambda: jan_models_dir)
+
+    hub = scan_import.MODELS_DIR / "m.gguf"
+    hub.write_bytes(b"hub-bytes")
+    linker.link_jan(hub, "m")
+
+    assert scan_import.scan_jan() == []
 
 
 def test_group_by_hash_merges_identical_files_across_engines(tmp_path):
@@ -488,6 +524,39 @@ def test_adopt_group_reuses_existing_hub_copy_for_same_hash(isolated_omm_home, t
     assert entry["ollama_runtime_name"] == "existing:latest"
 
 
+def test_adopt_group_does_not_count_existing_hardlink_to_hub_as_saved(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    payload = b"already hardlinked to the hub"
+    digest = "cafef00d" * 8
+    hub_file = scan_import.MODELS_DIR / "existing.gguf"
+    hub_file.write_bytes(payload)
+    registry.upsert_entry(
+        "existing.gguf",
+        sha256=digest,
+        version=digest[:7],
+        source="https://example.com/existing.gguf",
+        size_bytes=len(payload),
+        installed_at="2026-01-01T00:00:00+00:00",
+        linked={},
+    )
+
+    external = tmp_path / "ext.gguf"
+    os.link(hub_file, external)  # no ownership record
+
+    monkeypatch.setattr(linker, "is_engine_installed", lambda key: False)
+
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[scan_import.ExternalGguf("lmstudio", "ext.gguf", external, len(payload), digest)],
+    )
+
+    result = scan_import.adopt_group(group)
+
+    assert result.bytes_saved == 0
+    assert external.samefile(hub_file)
+
+
 def test_adopt_group_reimports_when_registry_entry_is_a_ghost(isolated_omm_home, tmp_path):
     """Registry can carry a stale entry whose hub file was deleted by hand
     (e.g. outside omm). adopt_group must not trust that entry as a live
@@ -626,3 +695,231 @@ def test_adopt_group_removes_partial_hub_copy_when_move_fails(isolated_omm_home,
     assert external.read_bytes() == b"scanned bytes"
     assert not list((isolated_omm_home / "models").glob("*.gguf"))
     assert not list(tmp_path.glob(".model.gguf.omm-import-*"))
+
+
+def test_adopt_group_restores_preferred_location_when_link_creation_fails(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """The preferred (single) location has already been moved into the hub
+    by the time its replacement link is attempted, and nothing is registered
+    yet - a link failure here used to strand the bytes as an unregistered
+    hub orphan while leaving the model missing from its original folder."""
+    payload = b"only copy of this model"
+    external = tmp_path / "model.gguf"
+    external.write_bytes(payload)
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "lmstudio", "model.gguf", external, len(payload), digest
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        scan_import.linker,
+        "link_file",
+        lambda *_: (_ for _ in ()).throw(linker.LinkError("no symlink support")),
+    )
+
+    with pytest.raises(linker.LinkError, match="no symlink support"):
+        scan_import.adopt_group(group)
+
+    assert external.read_bytes() == payload
+    assert not external.is_symlink()
+    assert not list(scan_import.MODELS_DIR.glob("*.gguf"))
+    assert "model.gguf" not in registry.load_registry()
+
+
+def test_adopt_group_converts_invalid_filename_to_link_error(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A filename that's legal on the source OS (e.g. a literal `:` on
+    Linux/macOS - not reproducible on-disk on this Windows test runner, so
+    validate_model_filename itself is faked to reject it) but rejected by
+    the hub's Windows-safe filename rules used to leak a bare
+    ModelResolutionError out of adopt_group instead of the LinkError callers
+    already know how to handle as a per-group import failure."""
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"colon in filename on the real source OS")
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "lmstudio", external.name, external, external.stat().st_size, digest
+            )
+        ],
+    )
+
+    def fake_validate(name):
+        raise scan_import.ModelResolutionError(f"illegal character in {name!r}")
+
+    monkeypatch.setattr(scan_import, "validate_model_filename", fake_validate)
+
+    with pytest.raises(linker.LinkError):
+        scan_import.adopt_group(group)
+
+    assert external.read_bytes() == b"colon in filename on the real source OS"
+    assert not list(scan_import.MODELS_DIR.glob("*.gguf"))
+
+
+def test_adopt_group_excludes_manifest_style_engine_paths_from_custom_links(
+    isolated_omm_home, tmp_path
+):
+    """custom_links is replayed verbatim by generic relink/unlink code
+    (cli._update_one / cli._remove_one) that doesn't know Ollama's own
+    content-addressed blob rules - an Ollama blob path must not end up
+    there, only in the engine-agnostic `linked` flag."""
+    payload = b"ollama blob bytes"
+    ollama_blob = tmp_path / "ollama-blobs" / "sha256-deadbeef"
+    ollama_blob.parent.mkdir(parents=True)
+    ollama_blob.write_bytes(payload)
+    lmstudio_dir = tmp_path / "lmstudio"
+    lmstudio_dir.mkdir()
+    lmstudio_path = lmstudio_dir / "model.gguf"
+    lmstudio_path.write_bytes(payload)
+
+    group = scan_import.ModelGroup(
+        sha256=scan_import.sha256_file(lmstudio_path),
+        locations=[
+            scan_import.ExternalGguf(
+                "ollama", "llama3:latest", ollama_blob, len(payload), "deadbeef"
+            ),
+            scan_import.ExternalGguf(
+                "lmstudio", "model.gguf", lmstudio_path, len(payload), "deadbeef"
+            ),
+        ],
+    )
+
+    result = scan_import.adopt_group(group)
+
+    entry = registry.load_registry()[result.filename]
+    assert str(ollama_blob) not in entry["custom_links"]
+    assert str(lmstudio_path) in entry["custom_links"]
+    assert entry["linked"]["ollama"] is True  # still tracked, just not as a custom link
+
+
+def test_write_manifest_then_load_verified_manifest_round_trips(tmp_path):
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"payload")
+    digest = scan_import.sha256_file(gguf)
+
+    manifest_path = scan_import.write_manifest(
+        gguf, {"schema_version": 1, "sha256": digest, "repo_id": "org/repo"}
+    )
+
+    assert manifest_path == gguf.with_name("model.gguf.omm-manifest.json")
+    loaded = scan_import._load_verified_manifest(gguf, digest)
+    assert loaded == {"schema_version": 1, "sha256": digest, "repo_id": "org/repo"}
+
+
+def test_load_verified_manifest_rejects_sha256_mismatch(tmp_path):
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"payload")
+    scan_import.write_manifest(gguf, {"sha256": "not-the-real-hash", "repo_id": "org/repo"})
+
+    assert scan_import._load_verified_manifest(gguf, scan_import.sha256_file(gguf)) is None
+
+
+def test_load_verified_manifest_rejects_malformed_json(tmp_path):
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"payload")
+    scan_import.manifest_path_for(gguf).write_text("not json", encoding="utf-8")
+
+    assert scan_import._load_verified_manifest(gguf, scan_import.sha256_file(gguf)) is None
+
+
+def test_load_verified_manifest_returns_none_without_a_sidecar(tmp_path):
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"payload")
+
+    assert scan_import._load_verified_manifest(gguf, scan_import.sha256_file(gguf)) is None
+
+
+def test_scan_directory_attaches_verified_manifest_and_ignores_bad_one(tmp_path):
+    good = tmp_path / "good.gguf"
+    good.write_bytes(b"good payload")
+    scan_import.write_manifest(good, {"sha256": scan_import.sha256_file(good), "repo_id": "org/good"})
+
+    bad = tmp_path / "bad.gguf"
+    bad.write_bytes(b"bad payload")
+    scan_import.write_manifest(bad, {"sha256": "wrong", "repo_id": "org/bad"})
+
+    found = {item.path.name: item for item in scan_import.scan_directory(tmp_path)}
+    assert found["good.gguf"].manifest == {
+        "sha256": scan_import.sha256_file(good), "repo_id": "org/good"
+    }
+    assert found["bad.gguf"].manifest is None
+
+
+def test_adopt_group_restores_provenance_from_verified_manifest(isolated_omm_home, tmp_path):
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"scanned bytes")
+    digest = scan_import.sha256_file(external)
+    manifest = {
+        "schema_version": 1,
+        "sha256": digest,
+        "repo_id": "org/repo",
+        "source": "https://huggingface.co/org/repo",
+        "version": "abcdef1",
+        "installed_at": "2026-01-01T00:00:00+00:00",
+    }
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "import", "model.gguf", external, external.stat().st_size, digest, manifest=manifest
+            )
+        ],
+    )
+
+    scan_import.adopt_group(group)
+
+    entry = registry.load_registry()["model.gguf"]
+    assert entry["repo_id"] == "org/repo"
+    assert entry["source"] == "https://huggingface.co/org/repo"
+    assert entry["version"] == "abcdef1"
+    assert entry["installed_at"] == "2026-01-01T00:00:00+00:00"
+
+
+def test_adopt_group_ignores_manifest_fields_with_wrong_types(isolated_omm_home, tmp_path):
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"scanned bytes")
+    digest = scan_import.sha256_file(external)
+    manifest = {"sha256": digest, "repo_id": 12345, "installed_at": "not-a-date"}
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "import", "model.gguf", external, external.stat().st_size, digest, manifest=manifest
+            )
+        ],
+    )
+
+    scan_import.adopt_group(group)
+
+    entry = registry.load_registry()["model.gguf"]
+    assert entry["repo_id"] is None
+    assert entry["source"] == "imported"
+    assert entry["installed_at"] != "not-a-date"
+
+
+def test_adopt_group_without_manifest_behaves_as_before(isolated_omm_home, tmp_path):
+    external = tmp_path / "model.gguf"
+    external.write_bytes(b"scanned bytes")
+    digest = scan_import.sha256_file(external)
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[
+            scan_import.ExternalGguf(
+                "import", "model.gguf", external, external.stat().st_size, digest
+            )
+        ],
+    )
+
+    scan_import.adopt_group(group)
+
+    entry = registry.load_registry()["model.gguf"]
+    assert entry["repo_id"] is None
+    assert entry["source"] == "imported"

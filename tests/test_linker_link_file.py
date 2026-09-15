@@ -1,3 +1,4 @@
+import errno
 import json
 import platform
 import struct
@@ -511,7 +512,7 @@ def test_ollama_preserves_unowned_manifest_and_existing_blob(isolated_omm_home, 
     blob.write_bytes(b"user blob")
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text("user manifest")
+    manifest.write_text("user manifest", encoding="utf-8")
 
     with pytest.raises(
         linker.LinkError,
@@ -519,7 +520,7 @@ def test_ollama_preserves_unowned_manifest_and_existing_blob(isolated_omm_home, 
     ):
         linker.link_ollama(source, "model", models_dir=models_dir)
     assert blob.read_bytes() == b"user blob"
-    assert manifest.read_text() == "user manifest"
+    assert manifest.read_text(encoding="utf-8") == "user manifest"
 
 
 def test_link_ollama_recovers_orphan_via_matching_content_sha256(
@@ -613,12 +614,74 @@ def test_ollama_force_preserves_unowned_manifest(isolated_omm_home, tmp_path, mo
     monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text("stale manifest, no ownership record")
+    manifest.write_text("stale manifest, no ownership record", encoding="utf-8")
 
     with pytest.raises(linker.LinkError, match="unowned Ollama manifest"):
         linker.link_ollama(source, "model", models_dir=models_dir, force=True)
 
-    assert manifest.read_text() == "stale manifest, no ownership record"
+    assert manifest.read_text(encoding="utf-8") == "stale manifest, no ownership record"
+
+
+def test_relink_failure_before_manifest_write_keeps_existing_registration(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A relink that fails before the manifest is actually replaced must
+    leave the previous, working registration in place rather than deleting
+    it up front and then failing to write the replacement."""
+    source = tmp_path / "m.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+
+    linker.link_ollama(source, "model", models_dir=models_dir)
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    original = manifest.read_bytes()
+
+    monkeypatch.setattr(linker, "_ollama_link_already_current", lambda *a, **k: False)
+    real = linker.atomic_write_text
+
+    def failing(path, content):
+        if path.name == "latest":
+            raise OSError(errno.ENOSPC, "No space left")
+        return real(path, content)
+
+    monkeypatch.setattr(linker, "atomic_write_text", failing)
+
+    with pytest.raises(linker.LinkError):
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert manifest.read_bytes() == original
+    assert linker._owned_manifest(manifest)
+
+
+def test_relink_readback_failure_restores_previous_manifest(isolated_omm_home, tmp_path, monkeypatch):
+    """If the just-written manifest doesn't read back intact (torn write /
+    concurrent writer), the previous registration must be restored instead
+    of left deleted."""
+    source = tmp_path / "m.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+
+    linker.link_ollama(source, "model", models_dir=models_dir)
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    original = manifest.read_bytes()
+
+    monkeypatch.setattr(linker, "_ollama_link_already_current", lambda *a, **k: False)
+    real = linker.atomic_write_text
+
+    def failing(path, content):
+        if path.name == "latest":
+            return real(path, "{")
+        return real(path, content)
+
+    monkeypatch.setattr(linker, "atomic_write_text", failing)
+
+    with pytest.raises(linker.LinkError):
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert manifest.read_bytes() == original
+    assert linker._owned_manifest(manifest)
 
 
 def test_link_file_raises_link_error_when_mkdir_fails(tmp_path, monkeypatch):
@@ -723,7 +786,7 @@ def test_owned_manifest_trusts_legacy_record_without_content_sha256(
     key as a guaranteed content mismatch - that would make every manifest
     linked before that date permanently unowned."""
     manifest_path = tmp_path / "latest"
-    manifest_path.write_text('{"schemaVersion": 2}')
+    manifest_path.write_text('{"schemaVersion": 2}', encoding="utf-8")
     stat = manifest_path.stat()
     linker._update_link_ownership(
         manifest_path,
@@ -737,9 +800,9 @@ def test_owned_manifest_rejects_content_changed_since_recorded(
     isolated_omm_home, tmp_path
 ):
     manifest_path = tmp_path / "latest"
-    manifest_path.write_text('{"schemaVersion": 2}')
+    manifest_path.write_text('{"schemaVersion": 2}', encoding="utf-8")
     linker._record_ownership(manifest_path, None, "manifest")
-    manifest_path.write_text('{"schemaVersion": 2, "tampered": true}')
+    manifest_path.write_text('{"schemaVersion": 2, "tampered": true}', encoding="utf-8")
 
     assert linker._owned_manifest(manifest_path) is False
 
@@ -754,7 +817,7 @@ def test_native_ollama_import_refuses_to_start_without_model_plus_reserve(
         models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     )
     existing_manifest.parent.mkdir(parents=True, exist_ok=True)
-    existing_manifest.write_text('{"existing": true}')
+    existing_manifest.write_text('{"existing": true}', encoding="utf-8")
     linker._record_ownership(existing_manifest, None, "manifest")
     monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/ollama")
     monkeypatch.setattr(linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=1))
@@ -767,7 +830,7 @@ def test_native_ollama_import_refuses_to_start_without_model_plus_reserve(
     with pytest.raises(linker.InsufficientLinkSpaceError, match="real copy"):
         linker._fallback_to_native_create(source, "model", models_dir)
 
-    assert existing_manifest.read_text() == '{"existing": true}'
+    assert existing_manifest.read_text(encoding="utf-8") == '{"existing": true}'
 
 
 def test_failed_native_ollama_import_removes_new_blobs_and_manifest(
@@ -785,7 +848,7 @@ def test_failed_native_ollama_import_removes_new_blobs_and_manifest(
         blob.write_bytes(b"partial native copy")
         unrelated_blob.write_bytes(b"another Ollama operation")
         manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text('{"layers":[{"digest":"sha256:native"}]}')
+        manifest.write_text('{"layers":[{"digest":"sha256:native"}]}', encoding="utf-8")
         return _FakeResult(returncode=1, stderr="no space left on device")
 
     monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/ollama")
@@ -826,7 +889,7 @@ def test_failed_native_ollama_replacement_restores_previous_registration(
         if failure != "before-write":
             new_blob.write_bytes(b"partial replacement")
             manifest.parent.mkdir(parents=True, exist_ok=True)
-            manifest.write_text('{"layers":[{"digest":"sha256:new"}]}')
+            manifest.write_text('{"layers":[{"digest":"sha256:new"}]}', encoding="utf-8")
         if failure == "timeout":
             raise linker.subprocess.TimeoutExpired(cmd, 600)
         if failure == "os-error":
@@ -866,10 +929,10 @@ def test_successful_native_ollama_replacement_reclaims_only_unreferenced_old_blo
     root = models_dir / "manifests" / "registry.ollama.ai" / "library"
     manifest = root / "model" / "latest"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text('{"layers":[{"digest":"sha256:old"},{"digest":"sha256:shared"}]}')
+    manifest.write_text('{"layers":[{"digest":"sha256:old"},{"digest":"sha256:shared"}]}', encoding="utf-8")
     other_manifest = root / "user-model" / "latest"
     other_manifest.parent.mkdir()
-    other_manifest.write_text('{"layers":[{"digest":"sha256:shared"}]}')
+    other_manifest.write_text('{"layers":[{"digest":"sha256:shared"}]}', encoding="utf-8")
     for blob in (old_blob, shared_blob):
         linker._record_ownership(blob, None, "copy")
     linker._record_ownership(manifest, source, "manifest")
@@ -878,7 +941,7 @@ def test_successful_native_ollama_replacement_reclaims_only_unreferenced_old_blo
         # The previous model remains recoverable until native import succeeds.
         assert old_blob.read_bytes() == b"old weights"
         new_blob.write_bytes(b"replacement weights")
-        manifest.write_text('{"layers":[{"digest":"sha256:new"}]}')
+        manifest.write_text('{"layers":[{"digest":"sha256:new"}]}', encoding="utf-8")
         return _FakeResult(returncode=0)
 
     monkeypatch.setattr(linker, "find_ollama_executable", lambda: Path("/fixture/ollama"))
@@ -931,7 +994,7 @@ def test_link_ollama_repairs_cached_config_blob_permissions(
             / "library"
             / "first"
             / "latest"
-        ).read_text()
+        ).read_text(encoding="utf-8")
     )
     config_blob = models_dir / "blobs" / first_manifest["config"]["digest"].replace(":", "-")
     config_blob.chmod(0o600)
@@ -957,7 +1020,7 @@ def test_successful_native_ollama_blob_is_reclaimed_on_unlink(
         manifest.write_text(
             '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.ollama.image.model",'
             '"digest":"sha256:native"}]}'
-        )
+        , encoding="utf-8")
         return _FakeResult(returncode=0)
 
     monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/ollama")
@@ -1032,7 +1095,7 @@ def test_link_ollama_reclaims_manifest_left_by_native_fallback(
         manifest.write_text(
             '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.ollama.image.model",'
             '"digest":"sha256:native"}]}'
-        )
+        , encoding="utf-8")
         return _FakeResult(returncode=0)
 
     monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/ollama")
@@ -1047,7 +1110,7 @@ def test_link_ollama_reclaims_manifest_left_by_native_fallback(
     linker.link_ollama(source, "model", models_dir=models_dir)
 
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
-    written = json.loads(manifest_path.read_text())
+    written = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert written["layers"][0]["digest"] == f"sha256:{linker.sha256_file(source)}"
 
 
@@ -1068,7 +1131,7 @@ def test_link_ollama_skips_show_call_when_version_already_cached_compatible(
     cache_path = tmp_path / ".omm" / "ollama_manifest_compat.json"
     monkeypatch.setattr(config, "OMM_HOME", tmp_path / ".omm")
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text('{"ollama_version": "ollama version is 9.9.9", "compatible": true}')
+    cache_path.write_text('{"ollama_version": "ollama version is 9.9.9", "compatible": true}', encoding="utf-8")
 
     result = linker.link_ollama(source, "model")
 
@@ -1096,7 +1159,7 @@ def test_link_ollama_records_compatible_after_successful_show_probe(
 
     linker.link_ollama(source, "model")
 
-    cache = json.loads((home / "ollama_manifest_compat.json").read_text())
+    cache = json.loads((home / "ollama_manifest_compat.json").read_text(encoding="utf-8"))
     assert cache == {"ollama_version": "ollama version is 9.9.9", "compatible": True}
 
 
@@ -1127,7 +1190,7 @@ def test_link_ollama_falls_back_to_native_create_when_show_rejects_manifest(
             manifest.write_text(
                 '{"layers":[{"mediaType":"application/vnd.ollama.image.model",'
                 '"digest":"sha256:native"}]}'
-            )
+            , encoding="utf-8")
             return _FakeResult(returncode=0)
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
@@ -1143,12 +1206,20 @@ def test_link_ollama_falls_back_to_native_create_when_show_rejects_manifest(
     assert all(options["encoding"] == "utf-8" for options in subprocess_options)
     assert all(options["errors"] == "replace" for options in subprocess_options)
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
-    assert json.loads(manifest_path.read_text())["layers"][0]["digest"] == "sha256:native"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["layers"][0]["digest"] == "sha256:native"
     # The rejected hand-written model/config blobs were removed before the
     # native import, so peak usage is one extra copy and no stale blob leaks.
     assert {path.name for path in (models_dir / "blobs").iterdir()} == {"sha256-native"}
-    cache = json.loads((home / "ollama_manifest_compat.json").read_text())
-    assert cache == {"ollama_version": "ollama version is 9.9.9", "compatible": False}
+    cache = json.loads((home / "ollama_manifest_compat.json").read_text(encoding="utf-8"))
+    # A single rejected model doesn't confirm incompatibility outright (see
+    # test_manifest_format_result_requires_two_distinct_model_failures) - it's
+    # recorded as unconfirmed so the next model still gets a fresh zero-copy
+    # attempt, while this model still falls back to native create above.
+    assert cache == {
+        "ollama_version": "ollama version is 9.9.9",
+        "compatible": None,
+        "failures": ["model"],
+    }
     # Ownership must be recorded even though omm never wrote this manifest
     # itself, or unlink_ollama/autoremove_ollama would refuse to clean it up.
     linker.unlink_ollama("model", models_dir=models_dir)
@@ -1170,7 +1241,7 @@ def test_link_ollama_short_circuits_straight_to_fallback_when_already_known_bad(
         if cmd[1] == "create":
             manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
             manifest.parent.mkdir(parents=True, exist_ok=True)
-            manifest.write_text('{"native": true}')
+            manifest.write_text('{"native": true}', encoding="utf-8")
             return _FakeResult(returncode=0)
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
@@ -1180,7 +1251,7 @@ def test_link_ollama_short_circuits_straight_to_fallback_when_already_known_bad(
     home.mkdir(parents=True, exist_ok=True)
     (home / "ollama_manifest_compat.json").write_text(
         '{"ollama_version": "ollama version is 9.9.9", "compatible": false}'
-    )
+    , encoding="utf-8")
 
     result = linker.link_ollama(source, "model")
 
@@ -1214,7 +1285,7 @@ def test_link_ollama_falls_back_to_native_create_on_permission_error(
             manifest.write_text(
                 '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.ollama.image.model",'
                 '"digest":"sha256:native"}]}'
-            )
+            , encoding="utf-8")
             return _FakeResult(returncode=0)
         raise AssertionError(f"unexpected subprocess call: {cmd}")
 
@@ -1242,6 +1313,85 @@ def test_link_ollama_falls_back_to_native_create_on_permission_error(
     assert manifest_path.exists()
 
 
+def _patch_link_file_denies_blob_link(monkeypatch, models_dir):
+    real_link_file = linker.link_file
+
+    def denying_link_file(src, dst, **kwargs):
+        if dst.parent == models_dir / "blobs":
+            try:
+                raise PermissionError(13, "Permission denied", str(dst))
+            except PermissionError as e:
+                raise linker.LinkError(f"Could not create symlink at {dst}: {e}.") from e
+        return real_link_file(src, dst, **kwargs)
+
+    monkeypatch.setattr(linker, "link_file", denying_link_file)
+
+
+def test_link_ollama_native_create_when_blob_link_denied_with_existing_blobs_dir(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A LinkError raised deep inside link_file (issue #117's systemd case,
+    reached via a PermissionError from the symlink/hardlink/copy fallback
+    chain) must still reach the outer `except PermissionError` in
+    _link_ollama_unlocked so the native-create fallback runs, instead of
+    escaping as an unhandled LinkError."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    calls = []
+
+    def run_ollama(cmd, **kwargs):
+        calls.append(cmd[1] if len(cmd) > 1 else cmd[0])
+        if cmd[1:] == ["--version"]:
+            return _FakeResult(stdout="ollama version is 1.2.3")
+        if cmd[1] == "create":
+            manifest = (
+                models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+            )
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(
+                '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.ollama.image.model",'
+                '"digest":"sha256:native"}]}'
+            , encoding="utf-8")
+            return _FakeResult(returncode=0)
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    models_dir = _stub_ollama_env(monkeypatch, tmp_path, run_ollama)
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
+    )
+    home = tmp_path / ".omm"
+    monkeypatch.setattr(config, "OMM_HOME", home)
+
+    (models_dir / "blobs").mkdir(parents=True)
+    _patch_link_file_denies_blob_link(monkeypatch, models_dir)
+
+    result = linker.link_ollama(source, "model")
+
+    assert result is True
+    assert "create" in calls
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    assert manifest_path.exists()
+
+
+def test_link_ollama_explicit_models_dir_blob_link_denied_has_fix(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+
+    def run_ollama(cmd, **kwargs):
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    models_dir = _stub_ollama_env(monkeypatch, tmp_path, run_ollama)
+    (models_dir / "blobs").mkdir(parents=True)
+    _patch_link_file_denies_blob_link(monkeypatch, models_dir)
+
+    with pytest.raises(linker.LinkError) as excinfo:
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert "writable" in (excinfo.value.fix or "")
+
+
 def test_link_ollama_treats_unreachable_daemon_as_unverified_not_incompatible(
     isolated_omm_home, tmp_path, monkeypatch
 ):
@@ -1265,6 +1415,49 @@ def test_link_ollama_treats_unreachable_daemon_as_unverified_not_incompatible(
     assert not (home / "ollama_manifest_compat.json").exists()
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     assert manifest_path.exists()  # omm's own hand-rolled manifest, untouched
+
+
+def test_manifest_format_result_stays_unconfirmed_after_one_model_failure(
+    isolated_omm_home,
+):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is None
+    cache = json.loads(linker._ollama_manifest_compat_cache_path().read_text(encoding="utf-8"))
+    assert cache == {
+        "ollama_version": "ollama version is 9.9.9",
+        "compatible": None,
+        "failures": ["model-a"],
+    }
+
+
+def test_manifest_format_result_confirms_after_two_distinct_model_failures(
+    isolated_omm_home,
+):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-b")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is False
+
+
+def test_manifest_format_result_success_clears_prior_failures(isolated_omm_home):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+    linker._record_manifest_format_result("ollama version is 9.9.9", True, "model-b")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is True
+    cache = json.loads(linker._ollama_manifest_compat_cache_path().read_text(encoding="utf-8"))
+    assert cache == {"ollama_version": "ollama version is 9.9.9", "compatible": True}
+
+
+def test_manifest_format_result_repeated_same_model_failure_does_not_confirm(
+    isolated_omm_home,
+):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is None
+    cache = json.loads(linker._ollama_manifest_compat_cache_path().read_text(encoding="utf-8"))
+    assert cache["failures"] == ["model-a"]
 
 
 def test_link_ollama_explicit_models_dir_never_calls_ollama_cli(
@@ -1296,10 +1489,10 @@ def test_link_ollama_refused_at_manifest_writes_no_blobs(isolated_omm_home, tmp_
     monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text("stale manifest, no ownership record")
+    manifest.write_text("stale manifest, no ownership record", encoding="utf-8")
 
     with pytest.raises(linker.LinkError, match="unowned Ollama manifest"):
         linker.link_ollama(source, "model", models_dir=models_dir)
 
     assert not (models_dir / "blobs").exists()
-    assert manifest.read_text() == "stale manifest, no ownership record"
+    assert manifest.read_text(encoding="utf-8") == "stale manifest, no ownership record"

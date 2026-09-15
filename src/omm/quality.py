@@ -15,6 +15,7 @@ import multiprocessing
 import platform
 import re
 import statistics
+import string
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -205,6 +206,19 @@ def load_pack(path: Path | None = None) -> tuple[dict, str]:
         raise QualityEvaluationError("prompt_template must contain {question} exactly once")
     if len(template) > MAX_PROMPT_CHARS:
         raise QualityEvaluationError("prompt_template is too long")
+    try:
+        fields = [
+            (name, spec, conv)
+            for _lit, name, spec, conv in string.Formatter().parse(template)
+            if name is not None
+        ]
+    except ValueError:
+        fields = None
+    if fields != [("question", "", None)]:
+        raise QualityEvaluationError(
+            "prompt_template must contain {question} exactly once and no other braces"
+            " (write literal braces as {{ and }})"
+        )
     generation = pack.get("generation")
     if not isinstance(generation, dict):
         raise QualityEvaluationError("quality pack requires generation settings")
@@ -1319,7 +1333,9 @@ def _evaluate_tag_once(
             "Model evaluation returned no result",
             failure_reason=FAILURE_REASON_UNKNOWN,
         )
-        return _build_failure_entry(tag, failure, metadata, profile, unloaded)
+        return _build_failure_entry(
+            tag, failure, metadata, profile if engine == "ollama" else None, unloaded
+        )
     result["outcome"] = "success"
     result["measurement_isolation"] = {
         "unloaded_after_run": unloaded,
@@ -1506,7 +1522,15 @@ def collect_evidence(
             else:
                 restarted = benchmark.start_ollama_daemon()
                 restart_failed = restarted is None
-            if not restart_failed and daemon_ref is not None:
+            # LM Studio's daemon handle is a boolean sentinel, not an owned
+            # process, and its stop path targets it by name - promoting a
+            # server this run doesn't own to True here would let a later
+            # cleanup stop the user's own already-running LM Studio.
+            if (
+                not restart_failed
+                and daemon_ref is not None
+                and (engine != "lmstudio" or daemon_ref.get("proc") is not None)
+            ):
                 daemon_ref["proc"] = restarted
             if restart_failed:
                 consecutive_daemon_failures += 1

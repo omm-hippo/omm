@@ -303,7 +303,9 @@ If you say yes, once a day omm sends ONE batch containing:
   - which commands you ran and whether they succeeded
 It never sends model names, search terms, file paths, your IP, or hostname.
 
-Saying yes also turns on crash reports (you're asked before each one is sent).
+Saying yes also turns on crash reports: they stay on this machine until your
+next `omm contribute`, which shows you one and asks once before sending the
+queued ones.
 
 Default is OFF. Change any time with `omm setting upload`.
 Full details: https://github.com/omm-hippo/omm/blob/main/PRIVACY.md"""

@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from omm import cli
 from omm.hardware import HardwareInfo
+from omm.hub import ResolvedModel
 
 runner = CliRunner()
 
@@ -76,6 +77,77 @@ def test_recommend_builds_choice_values_via_exact_install_ref(monkeypatch, isola
     assert captured_choices[0].value == "ms:org/repo:model.gguf"
     assert captured_options["pointer"] == "❯"
     assert "Enter select" in captured_options["instruction"]
+
+
+def test_static_rules_fallback_filters_gpu_host_on_vram_budget(monkeypatch, isolated_omm_home):
+    """A discrete-GPU (non-unified-memory) host's static-rules budget must
+    be judged against VRAM, not RAM * profile ratio - rules.matching_rules
+    compares `available_gb` to each rule's `min_vram_gb` whenever
+    `has_gpu` is True."""
+    dgpu_hardware = HardwareInfo(
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=32,
+        ram_available_gb=28,
+        unified_memory=False,
+        gpu_name="GPU",
+        vram_total_gb=4,
+        vram_free_gb=4,
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: dgpu_hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (None, False)
+    )
+    captured = {}
+    monkeypatch.setattr(
+        cli.rules_mod,
+        "matching_rules",
+        lambda rules, available_gb, has_gpu: (
+            captured.update(gb=available_gb, gpu=has_gpu),
+            [],
+        )[1],
+    )
+
+    result = runner.invoke(cli.app, ["recommend", "--json"])
+
+    assert result.exit_code == 1
+    assert captured["gpu"] is True
+    assert captured["gb"] == pytest.approx(3.6)
+
+
+def test_static_rules_fallback_unified_memory_uses_ram_budget(monkeypatch, isolated_omm_home):
+    unified_hardware = HardwareInfo(
+        os_name="Darwin",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=32,
+        ram_available_gb=28,
+        unified_memory=True,
+        gpu_name="GPU",
+        vram_total_gb=32,
+        vram_free_gb=32,
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: unified_hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (None, False)
+    )
+    captured = {}
+    monkeypatch.setattr(
+        cli.rules_mod,
+        "matching_rules",
+        lambda rules, available_gb, has_gpu: (
+            captured.update(gb=available_gb, gpu=has_gpu),
+            [],
+        )[1],
+    )
+
+    result = runner.invoke(cli.app, ["recommend", "--json"])
+
+    assert result.exit_code == 1
+    assert captured["gb"] == pytest.approx(32 * 0.45)
 
 
 def test_recommend_quiet_suppresses_status_lines(monkeypatch, isolated_omm_home):
@@ -185,6 +257,58 @@ def test_recommend_yes_installs_top_candidate_without_prompting(monkeypatch, iso
 
     assert result.exit_code == 0, result.stdout
     assert installed == ["ms:org/repo:model.gguf"]
+
+
+def test_recommend_install_does_not_leak_typer_option_sentinels(
+    monkeypatch, isolated_omm_home
+):
+    """`_finish_recommendation` calls `install()` as a plain function with
+    only the model name, so `skip_unfit`/`force`/`upload` used to reach
+    `_install_impl` as truthy Typer OptionInfo objects. A truthy
+    `skip_unfit` silently turns a link/disk failure into a no-op install."""
+    candidate = {
+        "name": "org/repo",
+        "repo_id": "org/repo",
+        "filename": "model.gguf",
+        "provider": "huggingface",
+        "description": "test",
+    }
+    artifact = {"candidates": [candidate]}
+
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor, "rank_candidates", lambda artifact, hw: [(candidate, 42.0)]
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+    monkeypatch.setattr(
+        cli,
+        "_resolve_model_interactive",
+        lambda name: ResolvedModel(
+            url="https://example.com/model.gguf",
+            filename="model.gguf",
+            repo_id="org/repo",
+        ),
+    )
+
+    seen = {}
+
+    def fake_install_impl(resolved, **kwargs):
+        seen.update(kwargs)
+        return cli.InstallOutcome("model.gguf", "org/repo", linked={"ollama": True})
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+
+    result = runner.invoke(cli.app, ["recommend", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert seen["skip_unfit"] is False
+    assert seen["force"] is False
+    assert seen["auto_upload"] is False
+    assert seen["no_upload"] is False
 
 
 def test_recommend_yes_skips_installed_top_candidate(monkeypatch, isolated_omm_home):

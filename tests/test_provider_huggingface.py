@@ -18,6 +18,34 @@ class _FakeResponse:
         return self._payload
 
 
+class _FakeErrorResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        raise requests.HTTPError(response=self)
+
+
+def test_fetch_repo_files_404_is_kind_not_found(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeErrorResponse(404))
+
+    try:
+        huggingface.fetch_repo_files("org/repo")
+        assert False, "expected ModelResolutionError"
+    except ModelResolutionError as e:
+        assert e.kind == "not_found"
+
+
+def test_fetch_repo_files_503_is_kind_unavailable(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeErrorResponse(503))
+
+    try:
+        huggingface.fetch_repo_files("org/repo")
+        assert False, "expected ModelResolutionError"
+    except ModelResolutionError as e:
+        assert e.kind == "unavailable"
+
+
 def test_fetch_repo_files_raises_model_resolution_error_on_bad_json(monkeypatch):
     monkeypatch.setattr(
         requests, "get", lambda url, timeout: _FakeResponse(json_error=ValueError("bad json"))
@@ -50,6 +78,23 @@ def test_remote_file_sha256_returns_none_on_bad_json(monkeypatch):
     )
 
     assert huggingface.remote_file_sha256("org/repo", "model.gguf") is None
+
+
+def test_remote_file_sha256_raises_on_request_failure_instead_of_returning_none(monkeypatch):
+    # A transient failure (timeout, 429, 5xx, DNS) must be distinguishable
+    # from a legitimate "no LFS hash" result - both used to collapse to None,
+    # which made `omm install` hard-fail with "did not provide a SHA-256
+    # digest" on a simple rate limit or network blip.
+    def _raise_timeout(url, json, timeout):
+        raise requests.Timeout("timed out")
+
+    monkeypatch.setattr(requests, "post", _raise_timeout)
+
+    try:
+        huggingface.remote_file_sha256("org/repo", "model.gguf")
+        assert False, "expected ModelResolutionError"
+    except ModelResolutionError:
+        pass
 
 
 def test_fetch_repo_param_count_never_raises_on_malformed_gguf_metadata(monkeypatch):

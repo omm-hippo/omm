@@ -532,6 +532,45 @@ def test_launch_textgenwebui_windows_omits_bash_prefix(monkeypatch, tmp_path):
     assert spawned == [[str(tmp_path / "start_windows.bat"), "--model=m.gguf"]]
 
 
+@pytest.mark.parametrize(
+    "model_filename",
+    [
+        "qwen&calc.gguf",
+        "a|b.gguf",
+        "a%TEMP%b.gguf",
+        "a^b.gguf",
+        "a!b.gguf",
+        "a>b.gguf",
+        "a(1).gguf",
+    ],
+)
+def test_launch_textgenwebui_windows_refuses_cmd_metacharacters(monkeypatch, tmp_path, model_filename):
+    monkeypatch.setattr(launcher.platform, "system", lambda: "Windows")
+    (tmp_path / "start_windows.bat").write_text("", encoding="utf-8")
+    monkeypatch.setattr(linker, "find_textgenwebui_root", _cached(lambda: tmp_path))
+    spawned = []
+    monkeypatch.setattr(launcher, "_spawn_detached", lambda args, cwd=None: spawned.append(args))
+
+    result = launcher.launch_textgenwebui(model_filename)
+
+    assert not result.ok
+    assert spawned == []
+    assert "Model tab" in result.message
+
+
+def test_launch_textgenwebui_linux_allows_cmd_metacharacters(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher.platform, "system", lambda: "Linux")
+    (tmp_path / "start_linux.sh").write_text("", encoding="utf-8")
+    monkeypatch.setattr(linker, "find_textgenwebui_root", _cached(lambda: tmp_path))
+    spawned = []
+    monkeypatch.setattr(launcher, "_spawn_detached", lambda args, cwd=None: spawned.append(args))
+
+    result = launcher.launch_textgenwebui("qwen&calc.gguf")
+
+    assert result.ok
+    assert spawned == [["bash", str(tmp_path / "start_linux.sh"), "--model=qwen&calc.gguf"]]
+
+
 def test_launch_textgenwebui_spawn_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher.platform, "system", lambda: "Linux")
     (tmp_path / "start_linux.sh").write_text("", encoding="utf-8")

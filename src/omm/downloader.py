@@ -16,6 +16,7 @@ import errno
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -52,6 +53,14 @@ _CHUNK_SIZE = 1024 * 1024
 _DEFAULT_THREADS = 4
 _MIN_CHUNK_SIZE = 8 * 1024 * 1024  # minimum work per thread
 _MIN_PARALLEL_TOTAL = 20 * 1024 * 1024  # below this, not worth parallelizing
+
+# How often each range worker durably commits its progress: fsyncing the
+# data it just wrote, then rewriting the sidecar. Every chunk would make the
+# sidecar (state) durable at roughly the same rate as the data itself, with
+# no gain in resume accuracy worth the extra fsyncs - so commits are batched
+# by whichever of these comes first. Module-level so tests can shrink them.
+_SIDECAR_COMMIT_BYTES = 64 * 1024 * 1024
+_SIDECAR_COMMIT_SECONDS = 2.0
 
 _err_console = Console(stderr=True, highlight=False)
 
@@ -148,6 +157,11 @@ def _sidecar_path(part_path: Path) -> Path:
     return part_path.with_name(part_path.name + ".ranges.json")
 
 
+def _sidecar_tmp_path(sidecar_path: Path) -> Path:
+    """Temp file `_write_sidecar` replaces into place; cleanup code must know this name too."""
+    return sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
+
+
 def _download_lock_path(dest: Path) -> Path:
     """A lock proxy outside the model directory, keyed by absolute target."""
     key = str(dest.expanduser().absolute())
@@ -172,18 +186,48 @@ def _write_sidecar(
 ) -> None:
     # Write-to-temp-then-rename so a crash mid-write can't leave behind a
     # half-written JSON file that would poison the next resume attempt.
-    tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "url": url,
-                "etag": strong_etag,
-                "total_size": total_size,
-                "ranges": ranges,
-            },
-            f,
-        )
-    tmp.replace(sidecar_path)
+    # fsynced before the rename so the *state* this file records is itself
+    # durable, not just atomically swapped in.
+    tmp = _sidecar_tmp_path(sidecar_path)
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "url": url,
+                    "etag": strong_etag,
+                    "total_size": total_size,
+                    "ranges": ranges,
+                },
+                f,
+            )
+            f.flush()
+            os.fsync(f.fileno())
+        for attempt in range(8):
+            try:
+                tmp.replace(sidecar_path)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(min(0.025 * (2**attempt), 0.5))
+        # Directory fsync is best-effort, same as atomic._replace_temporary:
+        # unsupported on some Windows filesystems, and the file-level fsync
+        # above already covers the content that matters for a resume.
+        try:
+            descriptor = os.open(sidecar_path.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _valid_parallel_state(state: object, total_size: int) -> bool:
@@ -356,18 +400,29 @@ def _probe_range_support(url: str) -> tuple[int, bool, str | None]:
     200 instead of the RFC-correct 206; a 200 only counts as Range support
     when Content-Length matches the single byte we asked for, so a server
     that ignores Range and dumps the whole file with status 200 isn't
-    mistaken for one that sliced it."""
+    mistaken for one that sliced it.
+
+    Raises `_RetryableDownloadError` when the probe itself couldn't get a
+    clear answer (network error, or a rate-limit/service-unavailable status)
+    - as opposed to returning `(0, False, None)`, which means the probe
+    completed and the server genuinely doesn't honor Range. Callers must not
+    treat a failed probe as proof of "no Range support": doing so previously
+    caused a resumable `.part` + sidecar to be discarded on a transient
+    hiccup (see `_attempt_download`)."""
     import requests
 
     try:
         resp = _https_get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=30)
-    except requests.RequestException:
-        return 0, False, None
+    except requests.RequestException as e:
+        raise _RetryableDownloadError(f"Range-support probe failed: {e}") from e
     strong_etag = _strong_etag(resp.headers)
+    status = resp.status_code
     resp.close()
+    if status in (429, 503):
+        raise _RetryableDownloadError(f"Range-support probe returned HTTP {status}.")
     content_range = (resp.headers.get("Content-Range") or "").strip()
-    honored = resp.status_code == 206 or (
-        resp.status_code == 200 and resp.headers.get("Content-Length") == "1"
+    honored = status == 206 or (
+        status == 200 and resp.headers.get("Content-Length") == "1"
     )
     match = re.fullmatch(r"bytes 0-0/(\d+)", content_range)
     if honored and match is not None:
@@ -389,6 +444,7 @@ def _download_range_worker(
     lock: threading.Lock,
     errors: list[Exception],
     stop_check: Callable[[], bool] | None,
+    abort_event: threading.Event | None = None,
 ) -> None:
     start = range_state["start"]
     end = range_state["end"]
@@ -432,29 +488,20 @@ def _download_range_worker(
                 f"{response_etag!r} did not preserve {strong_etag!r}"
             )
         written = 0
+        pending_commit_bytes = 0
+        last_commit_at = time.monotonic()
         with part_path.open("r+b") as f:
             f.seek(resume_offset)
-            for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
-                if not chunk:
-                    continue
-                if written + len(chunk) > expected_len:
-                    raise DownloadError(
-                        f"Range bytes={resume_offset}-{end} returned more than "
-                        f"{expected_len} bytes."
-                    )
+
+            def _commit_progress() -> None:
+                # Data first, state second: the bytes this commit is about
+                # to record as `done` must already be durable on disk before
+                # the sidecar says so, or a crash between the two could
+                # resume past data that was never actually written.
+                nonlocal pending_commit_bytes, last_commit_at
                 try:
-                    f.write(chunk)
-                except OSError as e:
-                    if e.errno == errno.ENOSPC:
-                        raise InsufficientDiskSpaceError(
-                            f"Not enough disk space to download {part_path.name}.",
-                            fix="Free up disk space and retry.",
-                        ) from e
-                    raise
-                written += len(chunk)
-                with lock:
-                    range_state["done"] += len(chunk)
-                    progress.update(task_id, advance=len(chunk))
+                    f.flush()
+                    os.fsync(f.fileno())
                     _write_sidecar(
                         sidecar_path,
                         url,
@@ -462,8 +509,59 @@ def _download_range_worker(
                         total_size,
                         ranges_state,
                     )
-                if stop_check is not None and stop_check():
-                    raise DownloadCancelled("interrupted by user")
+                except PermissionError:
+                    # Commit failure is not a download failure: `done` is
+                    # already reflected in memory and will be committed
+                    # again on the next chunk (or the final commit below).
+                    # A stale sidecar just means we re-download a bit on
+                    # resume, which is safe.
+                    pass
+                pending_commit_bytes = 0
+                last_commit_at = time.monotonic()
+
+            try:
+                for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
+                    if not chunk:
+                        continue
+                    if written + len(chunk) > expected_len:
+                        raise DownloadError(
+                            f"Range bytes={resume_offset}-{end} returned more than "
+                            f"{expected_len} bytes."
+                        )
+                    try:
+                        f.write(chunk)
+                    except OSError as e:
+                        if e.errno == errno.ENOSPC:
+                            raise InsufficientDiskSpaceError(
+                                f"Not enough disk space to download {part_path.name}.",
+                                fix="Free up disk space and retry.",
+                            ) from e
+                        raise
+                    written += len(chunk)
+                    with lock:
+                        range_state["done"] += len(chunk)
+                        progress.update(task_id, advance=len(chunk))
+                        pending_commit_bytes += len(chunk)
+                        if (
+                            pending_commit_bytes >= _SIDECAR_COMMIT_BYTES
+                            or time.monotonic() - last_commit_at >= _SIDECAR_COMMIT_SECONDS
+                        ):
+                            _commit_progress()
+                    if abort_event is not None and abort_event.is_set():
+                        # Another range already failed fatally - stop now and add no
+                        # second error, so `errors[0]` stays the real cause. The outer
+                        # `finally` still commits `done` to the sidecar.
+                        return
+                    if stop_check is not None and stop_check():
+                        raise DownloadCancelled("interrupted by user")
+            finally:
+                # Whether the loop finished, raised, or was cancelled, don't
+                # leave progress durably written to `done` in memory but not
+                # yet to the sidecar - that gap is exactly what batching
+                # commits would otherwise reopen.
+                with lock:
+                    if pending_commit_bytes:
+                        _commit_progress()
         if written != expected_len:
             raise _RetryableDownloadError(
                 f"Range bytes={resume_offset}-{end} returned {written} bytes; "
@@ -471,6 +569,8 @@ def _download_range_worker(
             )
     except Exception as e:  # noqa: BLE001 - collected and re-raised by the caller
         errors.append(e)
+        if abort_event is not None:
+            abort_event.set()
     finally:
         if resp is not None:
             resp.close()
@@ -493,6 +593,7 @@ def _run_range_workers(
     parallel, updating the sidecar after every chunk so a future resume
     only has to fetch what's still missing."""
     lock = threading.Lock()
+    abort_event = threading.Event()
     errors: list[Exception] = []
     completed = sum(r["done"] for r in ranges_state)
     pending = [r for r in ranges_state if r["done"] < (r["end"] - r["start"] + 1)]
@@ -518,6 +619,7 @@ def _run_range_workers(
                         lock,
                         errors,
                         stop_check,
+                        abort_event,
                     )
                     for r in pending
                 ]
@@ -563,8 +665,16 @@ def _download_parallel(
 ) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     _part_metadata_path(part_path).unlink(missing_ok=True)
-    with part_path.open("wb") as f:
-        f.truncate(total_size)
+    try:
+        with part_path.open("wb") as f:
+            f.truncate(total_size)
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            raise InsufficientDiskSpaceError(
+                f"Not enough disk space to download {part_path.name}.",
+                fix="Free up disk space and retry.",
+            ) from e
+        raise
 
     ranges_state = [{"start": start, "end": end, "done": 0} for start, end in _plan_ranges(total_size, thread_count)]
     _write_sidecar(sidecar_path, url, strong_etag, total_size, ranges_state)

@@ -12,6 +12,14 @@ case "${1:-}" in
     *) echo "Usage: uninstall.sh [--purge]" >&2; exit 2 ;;
 esac
 
+case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*)
+        echo "Windows detected. Run the native PowerShell uninstaller instead:" >&2
+        echo "  irm https://omm.run/uninstall.ps1 | iex" >&2
+        exit 1
+        ;;
+esac
+
 case "$OMM_HOME" in
     /*) ;;
     *) echo "Refusing non-absolute OMM_HOME: $OMM_HOME" >&2; exit 1 ;;
@@ -43,6 +51,22 @@ if [ -d "$RESOLVED_HOME" ] && [ "$RESOLVED_HOME" != "$RESOLVED_DEFAULT" ] && [ !
     exit 1
 fi
 
+# --purge deletes the models/ hub directly; it never runs linker.py's
+# unlink logic, so a non-empty link-ownership.json means omm still has
+# models linked into local engines (Ollama manifests, KoboldCpp/text-gen-
+# webui/AnythingLLM/Msty hardlinks or symlinks). Deleting the hub out from
+# under those links would break or orphan them. Checked before any pipx
+# mutation or file deletion, using only the shell (no Python dependency
+# assumed yet at this point in the script). A missing file, an empty file,
+# a whitespace-only file, and "{}" are all treated as "nothing linked".
+if [ "$PURGE" = "1" ] && [ -f "$RESOLVED_HOME/link-ownership.json" ]; then
+    link_ownership_content=$(tr -d '[:space:]' < "$RESOLVED_HOME/link-ownership.json")
+    if [ -n "$link_ownership_content" ] && [ "$link_ownership_content" != "{}" ]; then
+        echo "omm still has models linked into your engines. Run 'omm uninstall all' first, then re-run with --purge." >&2
+        exit 1
+    fi
+fi
+
 PIPX_AVAILABLE=0
 if command -v python3 >/dev/null 2>&1 && python3 -m pipx --version >/dev/null 2>&1; then
     run_pipx() { python3 -m pipx "$@"; }
@@ -72,21 +96,35 @@ uninstall_failed() {
 purge_owned_data() {
     # Delete only paths the application owns. Never recursively remove the
     # OMM_HOME container itself: a custom home may contain unrelated files.
-    for owned_dir in models evaluations catalog-history session; do
+    for owned_dir in models evaluations catalog-history model-archive session logs locks; do
         rm -rf "${RESOLVED_HOME:?}/$owned_dir"
     done
     for owned_file in \
         config.json models.json link-ownership.json rules.json \
         recommend-model.json calibration.json benchmark_history.json \
         contribute_state.json telemetry.log telemetry_pending.json \
-        update_check.json .omm-managed; do
+        update_check.json client-id firebase_auth.json error_reports.log \
+        error_reports_pending.json error_reports_backoff.json \
+        usage-pending.json usage-state.json usage-backoff.json usage.log \
+        telemetry_last_failed.json telemetry_backoff.json \
+        ollama_manifest_compat.json; do
         rm -f "$RESOLVED_HOME/$owned_file" "$RESOLVED_HOME/$owned_file.lock"
     done
+    # Flush locks held around a pending-upload file's rewrite; see
+    # telemetry.py/error_report.py (path.with_name(name + ".flush"), which
+    # `locked()` then suffixes with ".lock").
+    rm -f "$RESOLVED_HOME/telemetry_pending.json.flush.lock" "$RESOLVED_HOME/error_reports_pending.json.flush.lock"
     # Corrupt backups and interrupted atomic writes use these application-
     # owned suffixes. Limit cleanup to the known JSON filenames above.
-    for owned_json in config.json models.json link-ownership.json rules.json recommend-model.json calibration.json benchmark_history.json contribute_state.json telemetry_pending.json update_check.json; do
+    for owned_json in config.json models.json link-ownership.json rules.json recommend-model.json calibration.json benchmark_history.json contribute_state.json telemetry_pending.json update_check.json firebase_auth.json error_reports_pending.json error_reports_backoff.json usage-pending.json usage-state.json usage-backoff.json telemetry_last_failed.json telemetry_backoff.json ollama_manifest_compat.json; do
         rm -f "$RESOLVED_HOME/$owned_json".corrupt-* "$RESOLVED_HOME/.$owned_json".*.tmp
     done
+    # .omm-managed must survive while src/sources are still present (e.g. a
+    # locked file blocked their removal above) - otherwise a retry would hit
+    # the "unrecognized custom OMM_HOME (missing .omm-managed)" guard.
+    if [ ! -e "$RESOLVED_HOME/src" ] && [ ! -e "$RESOLVED_HOME/sources" ]; then
+        rm -f "$RESOLVED_HOME/.omm-managed"
+    fi
     rmdir "$RESOLVED_HOME" 2>/dev/null || true
     echo "Removed omm models, settings, and cached data. Unrelated files in $RESOLVED_HOME were preserved."
 }
@@ -299,8 +337,8 @@ if pipx_snapshot_has_environment omm; then
        verify_omm_pipx_environment omm omm 1; then
         LEGACY_IS_OMM=1
     else
-        echo "Preserving unrelated pipx environment 'omm'." >&2
-        echo "Resolve the pipx environment-name conflict manually before uninstalling OMM." >&2
+        echo "Preserving pipx environment 'omm': it could not be verified as an OMM install." >&2
+        echo "It may be an unrelated package named 'omm', or an old OMM install whose source checkout was deleted or whose OMM_HOME moved. If it is your old OMM install, run 'pipx uninstall omm', then rerun this script." >&2
         uninstall_failed
     fi
 fi
@@ -336,15 +374,28 @@ if [ "$REMOVED_ANY" = "1" ]; then
         echo "pipx still reports an OMM environment after uninstall." >&2
         uninstall_failed
     fi
-elif [ -e "$RESOLVED_HOME/src" ] || [ -e "$RESOLVED_HOME/sources" ]; then
+    # Marks that the pipx environment(s) are verified gone, so a retry (e.g.
+    # after a locked source file blocked removal below) does not hit the
+    # "no verified OMM pipx environment was removed" guard just because this
+    # run's own removal already emptied the pipx snapshot.
+    [ -d "$RESOLVED_HOME" ] && printf '%s\n' 'omm uninstall pending v1' > "$RESOLVED_HOME/.omm-uninstall-pending"
+elif { [ -e "$RESOLVED_HOME/src" ] || [ -e "$RESOLVED_HOME/sources" ]; } && [ ! -f "$RESOLVED_HOME/.omm-uninstall-pending" ]; then
     echo "No verified OMM pipx environment was removed; refusing to remove source checkouts." >&2
     uninstall_failed
 fi
 
-rm -rf "$RESOLVED_HOME/src" "$RESOLVED_HOME/sources"
+SOURCE_REMOVAL_FAILED=0
+if rm -rf "$RESOLVED_HOME/src" "$RESOLVED_HOME/sources"; then
+    # Nothing left for the marker to protect once removal has succeeded.
+    rm -f "$RESOLVED_HOME/.omm-uninstall-pending"
+else
+    echo "Could not remove source checkouts under $RESOLVED_HOME (an omm process may still be running). Close it and rerun this script." >&2
+    SOURCE_REMOVAL_FAILED=1
+fi
 
 if [ "$PURGE" = "1" ]; then
     purge_owned_data
 else
     echo "Removed omm. Models and settings remain in $RESOLVED_HOME (use --purge to remove them)."
 fi
+[ "$SOURCE_REMOVAL_FAILED" = 0 ] || exit 1

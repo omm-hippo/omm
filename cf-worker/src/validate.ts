@@ -27,6 +27,10 @@ function str(e: TelemetryEvent, key: string): string {
   return typeof v === "string" ? v : "";
 }
 
+function isStr(e: TelemetryEvent, key: string): boolean {
+  return typeof e[key] === "string";
+}
+
 function bool(e: TelemetryEvent, key: string): boolean | undefined {
   const v = e[key];
   return typeof v === "boolean" ? v : undefined;
@@ -75,7 +79,7 @@ const FIELD_VALIDATORS: Record<string, FieldValidator> = {
   },
   model_repo_id: (e) => {
     const v = str(e, "model_repo_id");
-    return v.length <= 512 && !looksLikePathOrControlChars(v);
+    return isStr(e, "model_repo_id") && v.length <= 512 && !looksLikePathOrControlChars(v);
   },
   model_provider: (e) => str(e, "model_provider").length > 0 && str(e, "model_provider").length <= 64,
   model_size_bytes: (e) => num(e, "model_size_bytes") > 0 && num(e, "model_size_bytes") <= 1099511627776,
@@ -120,7 +124,7 @@ const FIELD_VALIDATORS: Record<string, FieldValidator> = {
   sample_count: (e) => isInt(num(e, "sample_count")) && num(e, "sample_count") >= 1 && num(e, "sample_count") <= 10,
   tokens_per_sec_min: (e) => num(e, "tokens_per_sec_min") >= 0 && num(e, "tokens_per_sec_min") <= 1000,
   tokens_per_sec_max: (e) => num(e, "tokens_per_sec_max") >= 0 && num(e, "tokens_per_sec_max") <= 1000,
-  runtime_profile: (e) => str(e, "runtime_profile").length <= 32,
+  runtime_profile: (e) => isStr(e, "runtime_profile") && str(e, "runtime_profile").length <= 32,
   context_length: (e) =>
     isInt(num(e, "context_length")) && num(e, "context_length") >= 256 && num(e, "context_length") <= 131072,
   gpu_offload_percent: (e) =>
@@ -146,9 +150,9 @@ const FIELD_VALIDATORS: Record<string, FieldValidator> = {
   quality_total: (e) =>
     isInt(num(e, "quality_total")) && num(e, "quality_total") >= 1 && num(e, "quality_total") <= 100,
   quality_accuracy: (e) => num(e, "quality_accuracy") >= 0 && num(e, "quality_accuracy") <= 1,
-  os: (e) => num(e, "benchmark_version") < 3 && str(e, "os").length <= 128,
-  cpu: (e) => num(e, "benchmark_version") < 3 && str(e, "cpu").length <= 256,
-  gpu: (e) => num(e, "benchmark_version") < 3 && str(e, "gpu").length <= 256,
+  os: (e) => num(e, "benchmark_version") < 3 && isStr(e, "os") && str(e, "os").length <= 128,
+  cpu: (e) => num(e, "benchmark_version") < 3 && isStr(e, "cpu") && str(e, "cpu").length <= 256,
+  gpu: (e) => num(e, "benchmark_version") < 3 && isStr(e, "gpu") && str(e, "gpu").length <= 256,
   measurement_profile: (e) => str(e, "measurement_profile") === "contribute-v1",
   measurement_quality: (e) =>
     ["clean", "pressured", "unstable", "loaded"].includes(str(e, "measurement_quality")),

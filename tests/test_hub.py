@@ -98,6 +98,43 @@ def test_remote_prefix_cache_has_a_bounded_memory_footprint():
     assert hub._remote_gguf_prefix_cached.cache_info().maxsize == 4
 
 
+def test_transient_prefix_failure_is_not_cached(monkeypatch):
+    import requests
+
+    calls = {"n": 0}
+
+    def flaky_get(url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise requests.exceptions.ConnectionError("boom")
+        return _StreamingResponse([_gguf_architecture_prefix()])
+
+    monkeypatch.setattr(requests, "get", flaky_get)
+    hub._remote_gguf_prefix_cached.cache_clear()
+
+    try:
+        first = hub.remote_gguf_metadata(
+            "huggingface",
+            "org/repo",
+            "model.gguf",
+            {"general.architecture"},
+            max_prefix_bytes=1024,
+        )
+        second = hub.remote_gguf_metadata(
+            "huggingface",
+            "org/repo",
+            "model.gguf",
+            {"general.architecture"},
+            max_prefix_bytes=1024,
+        )
+
+        assert first is None
+        assert second == {"general.architecture": "llama"}
+        assert calls["n"] == 2
+    finally:
+        hub._remote_gguf_prefix_cached.cache_clear()
+
+
 def test_resolve_model_bare_repo_with_filename_makes_zero_network_calls(monkeypatch):
     """org/repo:filename with no provider prefix is the most common install
     form and was zero-network-call in the pre-multi-provider hub.py: the

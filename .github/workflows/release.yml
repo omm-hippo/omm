@@ -318,7 +318,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Render omm.rb from the frozen pyproject.toml (issue #238)
+      - name: Install the marker evaluator
+        run: python -m pip install --disable-pip-version-check packaging
+      - name: Render omm.rb from requirements-npm-binary.txt (issue #238)
         env:
           VERSION: ${{ needs.build.outputs.version }}
         run: >-

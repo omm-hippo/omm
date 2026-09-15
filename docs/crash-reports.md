@@ -5,9 +5,10 @@ model fails to load, a daemon dies, or omm itself crashes, that information
 scrolls past on one console and is gone. Error reports let you hand a small,
 scrubbed description of such a failure back to the project.
 
-They are **off unless you turn them on**. There is no "on by default", no
-first-run default, and no wizard question that could be answered by
-accident. This is the one setting in omm where the default differs from
+They are **off unless you turn them on**. There is no "on by default" and no
+first-run default. The setup wizard's data-sharing question can set this to
+`ask` (never `always`); nothing is sent until an `omm contribute` run asks
+you. This is the one setting in omm where the default differs from
 telemetry's `ask`: telemetry uploads anonymous numbers, error reports carry
 text, and text needs a stricter door.
 
@@ -75,8 +76,9 @@ attaching something new fails at the server instead of quietly collecting it.
 - **Your username, and any absolute path.** `/Users/<name>/...`,
   `/home/<name>/...`, and `C:\Users\<name>\...` are rewritten to `~` by
   `error_report.scrub_paths()` before a message is queued, previewed, or
-  uploaded. Model references are catalog coordinates, never the file on
-  your disk.
+  uploaded. Any other absolute or UNC path is masked down to `<path>` for
+  its directories, keeping only the final filename. Model references are
+  catalog coordinates, never the file on your disk.
 - **Tracebacks.** The traceback of a crash stays in your terminal, where
   you need it. It is the single richest source of local paths and library
   internals, and it is not worth the exposure; the exception type, message,

@@ -81,9 +81,40 @@ def test_scrub_paths_handles_every_platform_in_one_message():
     assert scrubbed == r"tried ~/a, ~/b and ~\c"
 
 
-def test_scrub_paths_leaves_paths_without_a_user_component_alone():
-    assert error_report.scrub_paths("/opt/models/x.gguf") == "/opt/models/x.gguf"
+def test_scrub_paths_masks_directories_outside_home():
+    assert error_report.scrub_paths("/opt/models/x.gguf") == "<path>/x.gguf"
     assert error_report.scrub_paths("") == ""
+
+
+def test_scrub_paths_removes_the_user_from_a_linux_file_url():
+    # The home-directory regex refuses a match preceded by `/`, and a file
+    # URL's third slash is exactly that - so this used to upload unchanged.
+    scrubbed = error_report.scrub_paths("file:///home/alice/.omm/models/x.gguf")
+
+    assert scrubbed == "file://~/.omm/models/x.gguf"
+    assert "alice" not in scrubbed
+
+
+def test_scrub_paths_removes_the_user_from_a_macos_file_url():
+    scrubbed = error_report.scrub_paths("could not read file:///Users/bob/Library/x")
+
+    assert scrubbed == "could not read file://~/Library/x"
+    assert "bob" not in scrubbed
+
+
+def test_scrub_paths_removes_the_user_from_a_localhost_file_url():
+    scrubbed = error_report.scrub_paths("file://localhost/home/alice/x.gguf")
+
+    assert scrubbed == "file://~/x.gguf"
+    assert "alice" not in scrubbed
+
+
+def test_scrub_paths_still_leaves_non_home_segments_named_home_alone():
+    # The file-URL fix must not loosen the plain-path rule: `home` that is
+    # not the start of a path, or sits under a relative path, is not a
+    # home directory.
+    assert error_report.scrub_paths("/opt/home/x.gguf") == "<path>/x.gguf"
+    assert error_report.scrub_paths("see ./home/carol/notes") == "see ./home/carol/notes"
 
 
 def test_endpoint_rejects_legacy_direct_firebase_destination():
@@ -321,7 +352,7 @@ def test_full_report_queue_flush_does_not_remove_identical_new_append(
     sent = {"trigger": "crash", "error_message": "same"}
     reports = [sent, *({"trigger": "crash", "error_message": str(i)} for i in range(199))]
     pending_path = isolated_omm_home / "error_reports_pending.json"
-    pending_path.write_text(json.dumps(reports))
+    pending_path.write_text(json.dumps(reports), encoding="utf-8")
 
     def send_and_append(report, config_data=None):
         error_report._append_pending(dict(sent))
@@ -422,6 +453,44 @@ def test_flush_rejects_invalid_retry_limits_without_sending(
     assert error_report.pending_count() == 1
 
 
+def test_flush_stops_after_consecutive_failures_and_keeps_the_rest_queued(
+    isolated_omm_home, monkeypatch
+):
+    _write_config(error_report_send_policy="always")
+    for i in range(10):
+        error_report._append_pending({"trigger": "crash", "error_message": str(i)})
+    calls = []
+    monkeypatch.setattr(
+        error_report,
+        "_post_report",
+        lambda report, config_data=None: calls.append(report) or False,
+    )
+
+    assert error_report.flush_pending(max_retries=10, force=True) == 0
+
+    assert len(calls) == error_report._MAX_CONSECUTIVE_FLUSH_FAILURES
+    assert error_report.pending_count() == 10
+
+
+def test_flush_consecutive_failure_counter_resets_on_a_success(
+    isolated_omm_home, monkeypatch
+):
+    _write_config(error_report_send_policy="always")
+    for i in range(7):
+        error_report._append_pending({"trigger": "crash", "error_message": str(i)})
+    results = iter([False, False, True, False, False, False, True])
+    calls = []
+
+    def fake_post(report, config_data=None):
+        calls.append(report)
+        return next(results)
+
+    monkeypatch.setattr(error_report, "_post_report", fake_post)
+
+    assert error_report.flush_pending(max_retries=10, force=True) == 1
+    assert len(calls) == 6
+
+
 def test_discarding_the_queue_reports_how_many_were_dropped(isolated_omm_home):
     _write_config(error_report_send_policy="always")
     error_report.queue_report(RuntimeError("one"), trigger="crash")
@@ -444,3 +513,22 @@ def test_preview_shows_a_queued_report_rather_than_an_example(isolated_omm_home)
 
 def _unexpected_post(*args, **kwargs):
     raise AssertionError("a trigger must never perform a network call")
+
+
+def test_scrub_paths_keeps_engine_api_routes_but_masks_real_directories():
+    # Engine errors name the route that failed (Ollama /api/generate, LM Studio
+    # /api/v1/models/load). Those are protocol paths, not a user's directories,
+    # so the bare-path masking must leave them readable - while a real
+    # absolute directory chain is still reduced to its filename.
+    assert (
+        error_report.scrub_paths("Ollama /api/generate request failed")
+        == "Ollama /api/generate request failed"
+    )
+    assert (
+        error_report.scrub_paths("LM Studio /api/v1/models/load failed")
+        == "LM Studio /api/v1/models/load failed"
+    )
+    assert (
+        error_report.scrub_paths("open /srv/acme-corp/models/x.gguf failed")
+        == "open <path>/x.gguf failed"
+    )

@@ -109,7 +109,7 @@ def test_bundle_rejects_unexpected_file_and_private_tarball(tmp_path):
 
 def test_launcher_tarball_must_match_reviewed_source(tmp_path):
     stage = npm_package.stage_launcher(tmp_path / "stage", publishable=True)
-    (stage / "lib" / "launcher.js").write_text("console.log('tampered');\n")
+    (stage / "lib" / "launcher.js").write_text("console.log('tampered');\n", encoding="utf-8")
     pack = tmp_path / "pack"
     pack.mkdir()
     _pack(stage, pack)
@@ -807,6 +807,76 @@ def test_assert_platform_package_moved_detects_a_stale_old_version(monkeypatch, 
     with pytest.raises(npm_release.NpmReleaseError, match="reports .*0.3.33.* after upgrading"):
         npm_release._assert_platform_package_moved(
             tmp_path / "prefix", "@omm-hippo/omm-win32-x64", "0.3.33", "0.3.41"
+        )
+
+
+def test_assert_platform_package_moved_accepts_a_previous_version_that_is_a_string_prefix(
+    monkeypatch, tmp_path
+):
+    # previous_version "0.4.1" is a substring of the current version "0.4.10"
+    # everywhere it appears in the tree - a naive substring check would
+    # falsely flag this tree as still mentioning the old version.
+    tree = json.dumps(
+        {
+            "dependencies": {
+                npm_package.LAUNCHER_NAME: {
+                    "version": "0.4.10",
+                    "resolved": "https://registry.npmjs.org/@omm-hippo/omm/-/omm-0.4.10.tgz",
+                    "dependencies": {
+                        "@omm-hippo/omm-win32-x64": {
+                            "version": "0.4.10",
+                            "resolved": (
+                                "https://registry.npmjs.org/@omm-hippo/omm-win32-x64/-/"
+                                "omm-win32-x64-0.4.10.tgz"
+                            ),
+                        },
+                    },
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(
+        npm_release,
+        "_run",
+        lambda *args, **kwargs: npm_release.subprocess.CompletedProcess(
+            [], 0, stdout=tree, stderr=""
+        ),
+    )
+
+    npm_release._assert_platform_package_moved(
+        tmp_path / "prefix", "@omm-hippo/omm-win32-x64", "0.4.1", "0.4.10"
+    )
+
+
+def test_assert_platform_package_moved_detects_a_leftover_nested_old_version(
+    monkeypatch, tmp_path
+):
+    tree = json.dumps(
+        {
+            "dependencies": {
+                npm_package.LAUNCHER_NAME: {
+                    "version": "0.4.10",
+                    "dependencies": {
+                        "@omm-hippo/omm-win32-x64": {"version": "0.4.10"},
+                        "some-other-dependency": {"version": "0.4.1"},
+                    },
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(
+        npm_release,
+        "_run",
+        lambda *args, **kwargs: npm_release.subprocess.CompletedProcess(
+            [], 0, stdout=tree, stderr=""
+        ),
+    )
+
+    with pytest.raises(npm_release.NpmReleaseError, match="still mentions the old platform version"):
+        npm_release._assert_platform_package_moved(
+            tmp_path / "prefix", "@omm-hippo/omm-win32-x64", "0.4.1", "0.4.10"
         )
 
 

@@ -336,7 +336,7 @@ def write_checksums(dist_dir: Path) -> Path:
     _validate_dist_contents(dist_dir, archives, require_checksums=False)
     destination = dist_dir / CHECKSUMS_FILENAME
     lines = [f"{_sha256(path)}  {path.name}" for path in sorted(archives)]
-    destination.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    destination.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return destination
 
 

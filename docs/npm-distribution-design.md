@@ -37,7 +37,8 @@ blocked, or the platform is unsupported. `--omit=optional` does not reproduce
 this: on a bare global install spec, npm 11.12.1 and 11.19.0 both still install
 the matching platform package, since optional deps of a dependency are not
 pruned by that flag. `packaging/npm/launcher/test/launcher.test.js` simulates
-absence directly by deleting the platform package directory.
+absence by injecting a `resolvePackage` stub that throws `MODULE_NOT_FOUND`, and asserts
+that a present-but-broken package is never reported as missing.
 
 The launcher checks package name, OMM version, OS, CPU, libc where relevant,
 target identifier, and binary containment before starting the executable. It

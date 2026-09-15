@@ -33,6 +33,11 @@ RECOMMEND_MODEL_PATH = OMM_HOME / "recommend-model.json"
 EVALUATIONS_DIR = OMM_HOME / "evaluations"
 CALIBRATION_PATH = OMM_HOME / "calibration.json"
 CATALOG_HISTORY_DIR = OMM_HOME / "catalog-history"
+# One archived revision per pinned model (`omm pin`), kept outside MODELS_DIR
+# so `omm cleanup`'s unregistered-*.gguf sweep of the hub never treats an
+# archived copy as an orphan download. See cli.py's _archive_path /
+# _archive_before_replace / rollback.
+MODEL_ARCHIVE_DIR = OMM_HOME / "model-archive"
 # Stable random per-install id for anonymous usage stats. Its own file, never
 # config.json - config gets copied between machines and this must not travel
 # with it. See omm.usage and config.client_id().
@@ -112,6 +117,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "model_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.json",
     "default_engine": None,
     "external_scan_done": False,
+    # Whether `omm setting auto-import enable` has registered the background
+    # OS service (watch_service.py). Off by default - opt-in only, never
+    # touched by onboarding. The source of truth for "is it actually
+    # registered" is watch_service.is_installed(), not this flag; this flag
+    # is only what `omm setting auto-import status` shows as "the user's
+    # choice" versus the service being externally removed.
+    "auto_import_enabled": False,
     "catalog_manifest_url": "https://raw.githubusercontent.com/omm-hippo/omm/main/published/localfit-recommend-model.manifest.json",
     "catalog_public_key": "p8uo6GFXDcg8Rp7/t8GGl5hwPsXhObY5vI1sll5KpaI=",
     "contribute_always_ack": False,

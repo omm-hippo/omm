@@ -2,7 +2,8 @@
 be referenced later by number and pulled into Tab-completion, without any
 in-memory state - Tab-completion runs as a fresh process on every keypress,
 so state has to survive on disk. Best-effort only: never raises out of this
-module. TTY-scoped so two terminal windows never see each other's results.
+module. TTY-scoped (tty + session leader) so two terminal windows never see
+each other's results.
 """
 
 from __future__ import annotations
@@ -29,6 +30,19 @@ def _session_path() -> Path | None:
     # fd 0 itself is a real tty.
     try:
         session_key = os.ttyname(0)
+        # A closed pty's number can be reassigned to a brand-new shell
+        # session immediately (Linux devpts does this), so the tty name
+        # alone is not a reliable session boundary: a freshly opened
+        # terminal window can inherit a previous window's last_results.
+        # Mix in the session leader pid (the shell that owns this tty) so
+        # a new shell session gets a new key even when the pts number is
+        # reused.
+        getsid = getattr(os, "getsid", None)
+        if getsid is not None:
+            try:
+                session_key = f"{session_key}:{getsid(0)}"
+            except OSError:
+                pass
     except OSError:
         # Not a real tty (piped input, CI, non-interactive) - no session.
         return None

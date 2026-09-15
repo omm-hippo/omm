@@ -20,7 +20,7 @@ def test_refresh_rules_with_change_note_flags_new_data_as_changed(monkeypatch, t
 
 def test_refresh_rules_with_change_note_flags_identical_refetch_as_unchanged(monkeypatch, tmp_path):
     rules_path = tmp_path / "rules.json"
-    rules_path.write_text(json.dumps([RULE]))
+    rules_path.write_text(json.dumps([RULE]), encoding="utf-8")
     monkeypatch.setattr(rules_mod, "RULES_PATH", rules_path)
     monkeypatch.setattr(rules_mod, "fetch_rules", lambda url: [RULE])
 
@@ -32,7 +32,7 @@ def test_refresh_rules_with_change_note_flags_identical_refetch_as_unchanged(mon
 
 def test_load_rules_falls_back_to_defaults_on_corrupt_file(monkeypatch, tmp_path):
     rules_path = tmp_path / "rules.json"
-    rules_path.write_text("{not valid json")
+    rules_path.write_text("{not valid json", encoding="utf-8")
     monkeypatch.setattr(rules_mod, "RULES_PATH", rules_path)
 
     rules = rules_mod.load_rules()
@@ -46,7 +46,7 @@ def test_refresh_rules_with_change_note_treats_corrupt_previous_file_as_no_prior
     monkeypatch, tmp_path
 ):
     rules_path = tmp_path / "rules.json"
-    rules_path.write_text("{not valid json")
+    rules_path.write_text("{not valid json", encoding="utf-8")
     monkeypatch.setattr(rules_mod, "RULES_PATH", rules_path)
     monkeypatch.setattr(rules_mod, "fetch_rules", lambda url: [RULE])
 
@@ -90,7 +90,7 @@ def test_fetch_rules_writes_atomically(monkeypatch, tmp_path):
 
 def test_load_rules_falls_back_when_cached_shape_is_invalid(monkeypatch, tmp_path):
     rules_path = tmp_path / "rules.json"
-    rules_path.write_text('{"not": "a list"}')
+    rules_path.write_text('{"not": "a list"}', encoding="utf-8")
     monkeypatch.setattr(rules_mod, "RULES_PATH", rules_path)
 
     assert rules_mod.load_rules() == rules_mod.DEFAULT_RULES
@@ -99,7 +99,7 @@ def test_load_rules_falls_back_when_cached_shape_is_invalid(monkeypatch, tmp_pat
 
 def test_fetch_rules_rejects_invalid_rules_without_replacing_cache(monkeypatch, tmp_path):
     rules_path = tmp_path / "rules.json"
-    rules_path.write_text(json.dumps([RULE]))
+    rules_path.write_text(json.dumps([RULE]), encoding="utf-8")
     monkeypatch.setattr(rules_mod, "RULES_PATH", rules_path)
 
     import requests
@@ -115,4 +115,4 @@ def test_fetch_rules_rejects_invalid_rules_without_replacing_cache(monkeypatch, 
 
     with pytest.raises(ValueError):
         rules_mod.fetch_rules("https://example.test/rules.json")
-    assert json.loads(rules_path.read_text()) == [RULE]
+    assert json.loads(rules_path.read_text(encoding="utf-8")) == [RULE]

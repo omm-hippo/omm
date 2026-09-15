@@ -28,10 +28,9 @@ generation.
 
 - PyPI package `omm-model`; import package `omm`; entry points `omm` and `localfit-server`.
 - Working dir is `/Users/shinmingyu/Project/Localfit`; the GitHub repo name is `omm` (do not confuse).
-- Python 3.10+; CI test job pins 3.12, bare-runtime-install job pins 3.11 (was all 3.11 —
-  moved while deps are frozen to the contest report through 2026-09-06; see the freeze note in
-  `pyproject.toml`). Stack: Typer CLI, Hatch build, `questionary` TUI, `cryptography`,
-  `filelock`. `scikit-learn` is CI/training-only, never a runtime dependency.
+- Python 3.10+; CI test job pins 3.12, bare-runtime-install job pins 3.11. Stack: Typer CLI,
+  Hatch build, `questionary` TUI, `cryptography`, `filelock`. `scikit-learn` is CI/training-only,
+  never a runtime dependency.
 
 ## Repo, branches, workflow — read before any git operation
 
@@ -44,12 +43,12 @@ generation.
   Merge strategy is "create a merge commit" only (squash/rebase disabled — flattening breaks the
   SSH-signature chain that `omm update` verifies). If CI job names change, update the branch-protection
   `required_status_checks` contexts to match.
-- `beta` is unprotected and **must always be a superset of `main`**. `.github/workflows/sync-beta.yml`
-  auto-merges `origin/main` into `beta` on every push to `main`, SSH-signed by the retrain bot key
-  (in `allowed_signers`) so beta `omm update` clients verify it. It only needs a human when that
-  merge hits a conflict — the job fails loudly and you resolve it with a local `git merge origin/main`
-  → push. `branch-ancestry-check.yml` stays as the post-hoc safety net; it polls through a ~3-minute
-  grace window on a `main` push so it only goes red when `sync-beta.yml` genuinely couldn't catch up.
+- `beta` is unprotected and should stay roughly caught up with `main`, but there is no automated
+  enforcement — `sync-beta.yml` (auto-merge on push to `main`) and `branch-ancestry-check.yml` (the
+  post-hoc ancestry gate) were removed 2026-09-13 because teammates push straight to `main` often
+  enough that the auto-merge kept losing to version-bump conflicts (`pyproject.toml` /
+  `packaging/npm/launcher/package.json` patch numbers diverging) and going red on every push. Port
+  `main` into `beta` by hand with a local `git merge origin/main` → push when you notice drift.
   Most feature work targets `beta`.
 - **Committing freely is fine; pushing is always a separate explicit ask.** Wait for it every time.
 - The user runs multiple Claude sessions against this checkout at once. Re-check `git log -5` /
@@ -167,8 +166,10 @@ This does not submit the manifest to the WinGet community repository.
 **Telemetry.** `benchmark.py` measures real tokens/sec via Ollama's `/api/generate`;
 `contribute.py` runs an unattended benchmark loop (auto start/stop of the Ollama daemon under
 `--yes`) and uploads rows. Data goes to Firebase RTDB project `localfit-8ab57`, `telemetry` node,
-through the `cf-worker/` Cloudflare Worker gateway. `database.rules.json` enforces the schema per
-`benchmark_version` (currently v8/v9; older versions grandfathered) and is emulator-tested in CI.
+through the `cf-worker/` Cloudflare Worker gateway. `cf-worker/src/validate.ts` is what enforces the
+telemetry schema at runtime (the Worker writes with a rules-bypassing service token, tested by the
+cf-worker vitest job in CI); `database.rules.json` keeps `.write` denied and is the documented
+source of truth to diff against - its emulator test only proves the direct write path is closed.
 `src/localfit_server/` (FastAPI) is an optional self-hostable collector — not the primary path.
 Three separate opt-in outbound channels share the `cf-worker/` PoW gateway, each its own
 RTDB node + `database.rules.json` block + `validate.ts` validator: `telemetry` (benchmark
@@ -191,6 +192,17 @@ subprocess/HTTP detail. Domain modules emit events via `logging.getLogger("omm.<
 `config.OMM_HOME` at call time). `linker.link_file` / `downloader.download_file` are thin
 logging wrappers over `_link_file_impl` / `_download_file_impl`.
 
+**Auto-import.** `omm setting auto-import enable` (off by default) registers a
+per-user background service (`watch_service.py` - launchd/systemd --user/Task
+Scheduler) that runs `omm _auto-import-run`, a hidden subcommand blocking in
+`watch.run_watch_loop()`. It watches every supported local AI app's model directory
+(`watch.watch_target_dirs()`) with `watchdog`, debounces bursts of filesystem events,
+waits for each candidate file's size to stop changing, then runs the same
+`scan_import.find_external_models` -> `group_by_hash` -> `adopt_group` pipeline
+`omm import` already uses (see Hub + link model above) and desktop-notifies via
+`notify.py`. `watchdog`/`plyer` are the `watch` optional extra - never a runtime
+dependency of a plain `omm` install.
+
 **CLI shape.** `cli.py` is a ~9,300-line Typer monolith (entry `omm.cli:main`). Startup speed
 matters: `questionary`, `requests`, `prompt_toolkit`, and `importlib.metadata` are lazy-imported
 inside functions to keep `omm help` near ~140ms — do not hoist them back to module scope. Tests
@@ -208,6 +220,6 @@ Check these before assuming undocumented intent behind a feature's shape.
 - `published/` — generated: recommend model, candidates, signed manifest. Never hand-edit; use the
   owning script.
 - `.github/workflows/` — `ci.yml` (6 required checks), `train.yml`, per-runner `ci-engine-*.yml`,
-  `trusted-head.yml` / `branch-ancestry-check.yml` (branch protection), `github-release.yml`
+  `trusted-head.yml` (branch protection), `github-release.yml`
   (asset-backed reusable Release publisher), release/npm/portable.
 - `demo/model-visualizer/` — standalone React demo of the RandomForest walk; not shipped.

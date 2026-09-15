@@ -151,7 +151,7 @@ def test_main_dedupes_by_provider_and_repo_id(monkeypatch, tmp_path):
 
     import json
 
-    written = json.loads(output_path.read_text())
+    written = json.loads(output_path.read_text(encoding="utf-8"))
     # Same repo_id, different provider - both must survive the dedupe.
     assert len(written) == 2
     assert {c["provider"] for c in written} == {"huggingface", "modelscope"}
@@ -172,4 +172,4 @@ def test_main_skips_malformed_source_candidate_before_publication(monkeypatch, t
 
     import json
 
-    assert json.loads(output_path.read_text()) == []
+    assert json.loads(output_path.read_text(encoding="utf-8")) == []

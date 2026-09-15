@@ -164,15 +164,33 @@ def validate_executable(executable: Path, version: str) -> None:
         raise WindowsPortableError("portable command help probe failed")
 
 
+def installed_distribution_version() -> str:
+    try:
+        return importlib.metadata.version(DISTRIBUTION_NAME)
+    except importlib.metadata.PackageNotFoundError as error:
+        raise WindowsPortableError(
+            f"install {DISTRIBUTION_NAME} before building the Windows portable executable"
+        ) from error
+
+
 def build_windows_portable(version: str, output_dir: Path) -> Path:
     _version_parts(version)
     if os.name != "nt":
         raise WindowsPortableError("the Windows portable executable must be built on Windows")
-    installed_version = importlib.metadata.version(DISTRIBUTION_NAME)
+    installed_version = installed_distribution_version()
     if installed_version != version:
         raise WindowsPortableError(
             f"installed {DISTRIBUTION_NAME} is {installed_version}, expected {version}"
         )
+
+    try:
+        from . import npm_binary
+    except ImportError:  # Direct execution from the scripts directory.
+        import npm_binary  # type: ignore[no-redef]
+
+    entry_script = npm_binary.ENTRY_SCRIPT
+    if not entry_script.is_file():
+        raise WindowsPortableError(f"missing checked-in entry script: {entry_script}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     executable = output_dir / EXECUTABLE_NAME
@@ -180,16 +198,12 @@ def build_windows_portable(version: str, output_dir: Path) -> Path:
         raise WindowsPortableError(f"refusing to overwrite existing executable: {executable}")
     with tempfile.TemporaryDirectory(prefix="omm-windows-portable-") as temporary:
         work_dir = Path(temporary)
-        entry_script = work_dir / "omm_entry.py"
-        entry_script.write_text(
-            "from omm.cli import main\n\nif __name__ == '__main__':\n    main()\n",
-            encoding="utf-8",
-        )
         version_file = work_dir / "version_info.txt"
         version_file.write_text(windows_version_resource(version), encoding="utf-8")
         subprocess.run(
             pyinstaller_command(entry_script, version_file, output_dir, work_dir),
             check=True,
+            env=npm_binary.build_environment(),
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
 
@@ -241,7 +255,7 @@ def package_windows_portable(
         bundle.writestr(_zip_info(EXECUTABLE_NAME, 0o755), executable_bytes)
         bundle.writestr(_zip_info(LICENSE_NAME, 0o644), license_bytes)
 
-    checksum.write_text(f"{sha256(archive)}  {archive.name}\n", encoding="ascii")
+    checksum.write_text(f"{sha256(archive)}  {archive.name}\n", encoding="ascii", newline="\n")
     verify_windows_archive(archive, version)
     return archive, checksum
 

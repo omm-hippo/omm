@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from omm import linker, registry
+from omm.atomic import atomic_write_text
 from omm.config import MODELS_DIR, ensure_omm_home
 from omm.hashutil import sha256_file
 from omm.hub import ModelResolutionError, validate_model_filename
@@ -29,6 +30,15 @@ from omm.hub import ModelResolutionError, validate_model_filename
 log = logging.getLogger(__name__)
 
 _OLLAMA_MODEL_LAYER = "application/vnd.ollama.image.model"
+
+# Sidecar written by `omm export` next to the GGUF it copies out, so
+# `omm import <directory>` on another (possibly air-gapped) machine can
+# restore provenance/version/install-date instead of treating the file as
+# an anonymous import. Named by appending to the full filename (like the
+# `.part` download-in-progress convention) rather than replacing the
+# `.gguf` suffix, so it sorts next to the file it describes and can't be
+# mistaken for a second model.
+MANIFEST_SUFFIX = ".omm-manifest.json"
 
 # Engines identified by a manifest/tag rather than a real on-disk filename
 # (Ollama-format blobs, Jan's model.yml) - their display_name/path aren't a
@@ -50,6 +60,11 @@ class ExternalGguf:
     path: Path
     size_bytes: int
     sha256: str
+    # Populated only for `scan_directory` (the `omm import <path>` arg) when
+    # a verified `omm export` sidecar sits next to this file. `None` means
+    # "no manifest, or it didn't check out" - adopt_group() then falls back
+    # to today's no-provenance behavior, exactly as if this field didn't exist.
+    manifest: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +120,20 @@ def _is_safe_registry_filename(filename: object, resolver) -> bool:
     return True
 
 
+def _is_omm_owned_link(path: Path) -> bool:
+    record = linker._ownership_record(path)
+    if not record:
+        return False
+    source = record.get("source")
+    if not isinstance(source, str) or not Path(source).exists():
+        return False  # 허브 원본이 사라졌으면 이 파일이 유일한 사본이므로 import 대상으로 남긴다
+    return (
+        linker._owned_hardlink(path, record)
+        or linker._owned_symlink(path, record)
+        or linker._owned_copy(path, record)
+    )
+
+
 def _scan_ollama_format(engine: str, models_dir: Path) -> list[ExternalGguf]:
     """Real (non-symlink) model-layer blobs for any Ollama-format engine
     (system Ollama, or AnythingLLM's bundled instance at its own
@@ -150,6 +179,8 @@ def _scan_ollama_format(engine: str, models_dir: Path) -> list[ExternalGguf]:
         blob = blobs_dir / f"sha256-{digest}"
         if not blob.is_file() or blob.is_symlink():
             continue
+        if _is_omm_owned_link(blob):
+            continue
         try:
             size = blob.stat().st_size
         except OSError:
@@ -175,6 +206,8 @@ def _scan_flat_dir(engine: str, base: Path) -> list[ExternalGguf]:
     found = []
     for path in _iter_gguf_files(base):
         if not path.is_file() or path.is_symlink():
+            continue
+        if _is_omm_owned_link(path):
             continue
         try:
             found.append(
@@ -225,6 +258,8 @@ def scan_jan() -> list[ExternalGguf]:
             model_path = jan_data_dir / model_path
         if not model_path.is_file() or model_path.is_symlink():
             continue
+        if model_path.resolve().is_relative_to(MODELS_DIR.resolve()):
+            continue
         try:
             found.append(
                 ExternalGguf(
@@ -240,9 +275,72 @@ def scan_jan() -> list[ExternalGguf]:
     return found
 
 
+def manifest_path_for(gguf_path: Path) -> Path:
+    return gguf_path.with_name(gguf_path.name + MANIFEST_SUFFIX)
+
+
+def write_manifest(gguf_path: Path, fields: dict) -> Path:
+    """Write the `omm export` sidecar manifest next to `gguf_path`. Always
+    overwrites - the manifest is a plain data sidecar, not an
+    ownership-tracked link, so there's no conflict to detect."""
+    destination = manifest_path_for(gguf_path)
+    atomic_write_text(destination, json.dumps(fields, indent=2, sort_keys=True))
+    return destination
+
+
+def _load_verified_manifest(gguf_path: Path, sha256: str) -> dict | None:
+    """Read and sanity-check the sidecar next to `gguf_path`. Returns
+    `None` (never raises) on anything short of a well-formed manifest whose
+    checksum matches the file actually found - a missing, corrupt, or
+    tampered/stale manifest silently falls back to no provenance rather
+    than failing the whole import."""
+    manifest_path = manifest_path_for(gguf_path)
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, dict) or manifest.get("sha256") != sha256:
+        return None
+    return manifest
+
+
+def _manifest_from_group(group: ModelGroup) -> dict | None:
+    return next((loc.manifest for loc in group.locations if loc.manifest), None)
+
+
+def _manifest_str_field(manifest: dict, key: str) -> str | None:
+    """A manifest sidecar travels with the file across a trust boundary (a
+    different, possibly untrusted machine) - only its `sha256` was checked
+    against the actual bytes, so every other field needs its own type check
+    before it's allowed anywhere near registry.json."""
+    value = manifest.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _manifest_installed_at(manifest: dict) -> str | None:
+    value = manifest.get("installed_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return value
+
+
 def scan_directory(path: Path) -> list[ExternalGguf]:
-    """Real .gguf files under a user-supplied directory (`omm import PATH`)."""
-    return _scan_flat_dir("import", path)
+    """Real .gguf files under a user-supplied directory (`omm import PATH`).
+
+    Each file gets its `omm export`-written sidecar manifest attached when
+    one is present and its checksum matches, so `adopt_group` can restore
+    provenance across an air-gapped copy; otherwise the model is adopted
+    with no metadata, same as before manifests existed."""
+    found = _scan_flat_dir("import", path)
+    for item in found:
+        item.manifest = _load_verified_manifest(item.path, item.sha256)
+    return found
 
 
 def find_external_models(extra_path: Path | None = None) -> list[ExternalGguf]:
@@ -354,6 +452,12 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
 
     linked = {spec.key: False for spec in linker.ENGINES}
     adopted_links: list[str] = []
+    # Locations belonging to a manifest-style engine (Ollama content-addressed
+    # blobs, ...) are tracked via the `linked` flag above, not here - the
+    # engine's own linker code owns unlink/reclaim for those paths, and
+    # `custom_links` is later replayed verbatim by generic relink/unlink
+    # logic that doesn't know those rules.
+    custom_link_paths: list[str] = []
     bytes_saved = 0
     discovered_ollama_runtime_name = next(
         (
@@ -372,9 +476,17 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     else:
         preferred = next((loc for loc in group.locations if loc.engine not in _MANIFEST_STYLE_ENGINES), None)
         if preferred is not None:
-            filename = validate_model_filename(
-                unicodedata.normalize("NFC", preferred.path.name)
-            )
+            try:
+                filename = validate_model_filename(
+                    unicodedata.normalize("NFC", preferred.path.name)
+                )
+            except ModelResolutionError as e:
+                # A scanned filename can be legal on the source OS but
+                # rejected by the hub's (Windows-safe) filename rules (a
+                # literal `:`, a reserved device name, ...). Surface this as
+                # a LinkError so callers that already handle per-group link
+                # failures (rather than crashing the whole import) catch it.
+                raise linker.LinkError(str(e)) from e
         else:
             preferred = group.locations[0]
             filename = f"{linker.sanitize_ollama_tag(preferred.display_name)}.gguf"
@@ -435,6 +547,12 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
         if loc.path.resolve() == hub_path.resolve():
             continue
         was_real_file = loc.path.is_file() and not loc.path.is_symlink()
+        shares_hub_file = False
+        if was_real_file:
+            try:
+                shares_hub_file = loc.path.samefile(hub_path)
+            except OSError:
+                pass
         if was_real_file:
             # Keep the external copy recoverable until the replacement link
             # exists. A same-directory rename is atomic on Windows/NTFS and
@@ -464,9 +582,26 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             else:
                 quarantine.unlink()
         else:
-            link_kind = linker.link_file(hub_path, loc.path)
+            try:
+                link_kind = linker.link_file(hub_path, loc.path)
+            except Exception:
+                # This branch is reached for the preferred location right
+                # after its only copy was moved into hub_path above (nothing
+                # is registered yet at this point) - restore it there rather
+                # than raising with the bytes stranded as an unregistered
+                # hub orphan and the model missing from its original folder.
+                if (
+                    not existing_filename
+                    and loc is preferred
+                    and not loc.path.exists()
+                    and not loc.path.is_symlink()
+                ):
+                    hub_path.replace(loc.path)
+                raise
         adopted_links.append(str(loc.path))
-        if was_real_file and link_kind != "copy":
+        if loc.engine not in _MANIFEST_STYLE_ENGINES:
+            custom_link_paths.append(str(loc.path))
+        if was_real_file and not shares_hub_file and link_kind != "copy":
             bytes_saved += loc.size_bytes
         if loc.engine in linked:
             linked[loc.engine] = True
@@ -482,7 +617,8 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     else:
         ollama_tag = linker.sanitize_ollama_tag(filename)
         ollama_runtime_name = discovered_ollama_runtime_name
-        repo_id = None
+        manifest = _manifest_from_group(group)
+        repo_id = _manifest_str_field(manifest, "repo_id") if manifest else None
 
     # The locations found by the scan only cover the engine(s) the file
     # already sat in - mirror `install`'s behavior of also linking into
@@ -507,7 +643,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
             if isinstance(raw_custom_links, list)
             else []
         )
-        custom_links.extend(path for path in adopted_links if path not in custom_links)
+        custom_links.extend(path for path in custom_link_paths if path not in custom_links)
         fields: dict[str, object] = {"linked": linked, "custom_links": custom_links}
         if ollama_runtime_name:
             fields["ollama_runtime_name"] = ollama_runtime_name
@@ -515,14 +651,15 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
     else:
         fields = dict(
             sha256=group.sha256,
-            version=group.sha256[:7],
-            source="imported",
+            version=(manifest and _manifest_str_field(manifest, "version")) or group.sha256[:7],
+            source=(manifest and _manifest_str_field(manifest, "source")) or "imported",
             size_bytes=hub_path.stat().st_size,
-            installed_at=datetime.now(timezone.utc).isoformat(),
+            installed_at=(manifest and _manifest_installed_at(manifest))
+            or datetime.now(timezone.utc).isoformat(),
             ollama_name=ollama_tag,
-            repo_id=None,
+            repo_id=repo_id,
             linked=linked,
-            custom_links=adopted_links,
+            custom_links=custom_link_paths,
         )
         if ollama_runtime_name:
             fields["ollama_runtime_name"] = ollama_runtime_name

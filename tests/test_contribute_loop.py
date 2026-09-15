@@ -172,7 +172,9 @@ def test_keyboard_interrupt_uses_owned_cleanup_path(isolated_omm_home, monkeypat
     )
     cleaned = []
     monkeypatch.setattr(
-        cli, "_cleanup_interrupted_install", lambda filename: cleaned.append(filename)
+        cli,
+        "_cleanup_interrupted_install",
+        lambda filename, downloaded_now=False: cleaned.append(filename),
     )
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
@@ -198,7 +200,9 @@ def test_keyboard_interrupt_before_download_starts_does_not_crash(isolated_omm_h
     )
     cleaned = []
     monkeypatch.setattr(
-        cli, "_cleanup_interrupted_install", lambda filename: cleaned.append(filename)
+        cli,
+        "_cleanup_interrupted_install",
+        lambda filename, downloaded_now=False: cleaned.append(filename),
     )
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
@@ -301,6 +305,55 @@ def test_real_queue_contract_bounds_memory_deferrals(isolated_omm_home, monkeypa
     assert stats.deferred_low_memory == 1
     assert stats.skipped_low_memory == 1
     assert stats.exhausted is False
+
+
+def test_post_download_memory_block_budget_survives_safe_preflight(
+    isolated_omm_home, monkeypatch
+):
+    """A candidate that always clears the pre-download memory guard
+    (decision=None) but then reports `memory_allocation_blocked` after every
+    download must still be bounded by `_MAX_CANDIDATE_MEMORY_DEFERRALS` -
+    the post-download failure count must not be reset by the `deferred.pop`
+    that runs whenever a candidate is judged SAFE pre-download, since that
+    pop happens on every single pass here."""
+    candidate = _candidate(filename="model.gguf")
+    queue = _DeferredFakeQueue(candidate)
+    stop_event = threading.Event()
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "_DEFERRED_MEMORY_RECHECK_SECONDS", 0.0)
+    monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", lambda candidate, **kwargs: None)
+    _seed_registry_entry("model.gguf")
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    calls = []
+
+    def fake_install_impl(resolved, **kwargs):
+        calls.append(1)
+        if len(calls) > cli._MAX_CANDIDATE_MEMORY_DEFERRALS + 2:
+            # Safety net against the pre-fix infinite loop: the failure
+            # counter never reached the cap, so the queue kept re-releasing
+            # this candidate for another attempt forever.
+            stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"ollama": True, "lmstudio": False},
+            tokens_per_sec=None,
+            telemetry_sent=False,
+            failure_reason="memory_allocation_blocked",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    recorded = []
+    monkeypatch.setattr(
+        cli.benchmark_history, "record_benchmark_failure", lambda *a, **k: recorded.append(1)
+    )
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert len(calls) == cli._MAX_CANDIDATE_MEMORY_DEFERRALS
+    assert len(recorded) == 1
+    assert stats.skipped_low_memory == 1
 
 
 def test_start_memory_preflight_aborts_when_every_pending_candidate_is_blocked(
@@ -837,7 +890,11 @@ def test_dead_lmstudio_daemon_is_restarted_before_next_candidate(isolated_omm_ho
     """Mirrors test_dead_daemon_is_restarted_before_next_candidate for the
     LM Studio engine: the loop's daemon-health check must dispatch to
     linker.lmstudio_daemon_reachable/start_lmstudio_daemon, not the Ollama
-    functions, when engine="lmstudio"."""
+    functions, when engine="lmstudio". Unlike Ollama's real process handle,
+    LM Studio's daemon_ref is only a boolean sentinel and `_stop_engine_daemon`
+    stops it by name - so a restart must not promote `daemon_ref["proc"]` to
+    True when it started out None (unowned), or the loop would later stop a
+    user-owned LM Studio server it never started."""
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
@@ -879,9 +936,48 @@ def test_dead_lmstudio_daemon_is_restarted_before_next_candidate(isolated_omm_ho
     )
 
     assert restarted == [1]
-    assert daemon_ref["proc"] is True
+    assert daemon_ref["proc"] is None
     assert stats.daemon_restarts == 1
     assert stats.benchmarked == [("model", 42.0)]
+
+
+def test_dead_lmstudio_daemon_restart_updates_an_already_owned_handle(
+    isolated_omm_home, monkeypatch
+):
+    """Companion to the test above: when `daemon_ref["proc"]` already holds
+    an owned handle (not None) before the restart, the guard must not block
+    the (harmless) refresh - only the None-to-True promotion is unsafe."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    _seed_registry_entry("model.gguf")
+
+    reachable_calls = [False, True]
+    monkeypatch.setattr(
+        cli.linker, "lmstudio_daemon_reachable", lambda: reachable_calls.pop(0)
+    )
+    monkeypatch.setattr(cli.linker, "start_lmstudio_daemon", lambda: True)
+
+    def fake_install_impl(resolved, **kwargs):
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": True, "ollama": False},
+            tokens_per_sec=42.0,
+            telemetry_sent=True,
+            sha256="deadbeef",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    daemon_ref = {"proc": True}
+    cli._run_contribution_loop(
+        queue, stop_event, refetch=None, daemon_ref=daemon_ref, engine="lmstudio"
+    )
+
+    assert daemon_ref["proc"] is True
 
 
 def test_daemon_that_wont_come_back_aborts_loop_instead_of_spinning(isolated_omm_home, monkeypatch):
@@ -945,7 +1041,14 @@ def test_contribution_stopped_cleans_up_and_breaks(isolated_omm_home, monkeypatc
     _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
-        raise cli.InstallInterrupted("model.gguf")
+        # downloaded_now=True: this candidate's bytes were actually fetched
+        # by *this* contribute attempt before being cancelled, so rolling
+        # it all the way back (unload + _remove_one) is correct here. A
+        # cancelled attempt that never downloaded anything new (the CRITICAL
+        # audit #1 fix) must NOT reach _remove_one - see
+        # test_keyboard_interrupt_uses_owned_cleanup_path and
+        # `_cleanup_interrupted_install`'s docstring.
+        raise cli.InstallInterrupted("model.gguf", downloaded_now=True)
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     events = []

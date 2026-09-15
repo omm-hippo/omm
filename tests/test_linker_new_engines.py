@@ -18,7 +18,7 @@ def test_link_jan_writes_model_yaml_with_absolute_path(tmp_path, monkeypatch):
     config_path = linker.link_jan(gguf_path, "tinyllama-q4")
 
     assert config_path == tmp_path / "jan-models" / "tinyllama-q4" / "model.yml"
-    text = config_path.read_text()
+    text = config_path.read_text(encoding="utf-8")
     assert f"model_path: {json.dumps(str(gguf_path))}" in text
     assert 'name: "tinyllama-q4"' in text
     assert f"size_bytes: {len(b'fake-gguf-bytes')}" in text
@@ -35,7 +35,7 @@ def test_link_jan_escapes_quotes_in_model_path(tmp_path, monkeypatch):
 
     config_path = linker.link_jan(gguf_path, "quoted-model")
 
-    assert f"model_path: {json.dumps(str(gguf_path))}" in config_path.read_text()
+    assert f"model_path: {json.dumps(str(gguf_path))}" in config_path.read_text(encoding="utf-8")
     assert linker.read_jan_model_path(config_path) == str(gguf_path)
 
 
@@ -98,7 +98,78 @@ def test_link_jan_refuses_to_overwrite_unowned_manifest(
     with pytest.raises(linker.LinkError, match="unowned Jan manifest"):
         linker.link_jan(gguf_path, "tinyllama-q4")
 
-    assert config_path.read_text() == 'model_path: "/user/model.gguf"\nname: "user"\n'
+    assert config_path.read_text(encoding="utf-8") == 'model_path: "/user/model.gguf"\nname: "user"\n'
+
+
+def test_link_jan_accepts_manifest_rewritten_by_jan_for_same_model(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"x")
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+
+    config_path = linker.link_jan(gguf_path, "m")
+    config_path.write_text(
+        f"model_path: {json.dumps(str(gguf_path))}\nname: \"m\"\nctx_size: 8192\n",
+        encoding="utf-8",
+    )
+
+    result = linker.link_jan(gguf_path, "m")
+
+    assert result == config_path
+    assert "ctx_size: 8192" in config_path.read_text(encoding="utf-8")
+
+
+def test_link_jan_force_reclaims_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
+    gguf_path = tmp_path / "tinyllama-q4.gguf"
+    gguf_path.write_bytes(b"x")
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    config_path = models_dir / "tinyllama-q4" / "model.yml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('model_path: "/user/model.gguf"\nname: "user"\n', encoding="utf-8")
+
+    result = linker.link_jan(gguf_path, "tinyllama-q4", force=True)
+
+    assert result == config_path
+    assert linker.read_jan_model_path(config_path) == str(gguf_path)
+
+
+def test_link_jan_force_still_refuses_other_models_manifest(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    first = tmp_path / "first.gguf"
+    first.write_bytes(b"first")
+    second = tmp_path / "second.gguf"
+    second.write_bytes(b"second")
+
+    config_path = linker.link_jan(first, "tag")
+    original = config_path.read_bytes()
+
+    with pytest.raises(linker.LinkError, match="Refusing to replace"):
+        linker.link_jan(second, "tag", force=True)
+
+    assert config_path.read_bytes() == original
+
+
+def test_link_engine_passes_force_to_jan(isolated_omm_home, tmp_path, monkeypatch):
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"x")
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: tmp_path / "jan-models")
+    captured = {}
+
+    def fake_link_jan(gguf, model_id, *, force=False):
+        captured["force"] = force
+        return tmp_path / "jan-models" / model_id / "model.yml"
+
+    monkeypatch.setattr(linker, "link_jan", fake_link_jan)
+
+    linker.link_engine("jan", gguf_path, repo_id=None, ollama_tag="m", force=True)
+
+    assert captured["force"] is True
 
 
 def test_unlink_jan_preserves_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
@@ -330,6 +401,84 @@ def test_unlink_ollama_ignores_content_sha256_mismatch(isolated_omm_home, tmp_pa
 
     assert removed is False
     assert manifest_path.exists()
+
+
+def test_unlink_ollama_raises_link_error_on_permission_denied_manifest(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """Regression for the MEDIUM audit finding: `unlink_ollama` used to
+    catch *any* OSError from the removal - including a permission error
+    deleting an owned, otherwise-removable manifest (or a store-lock
+    timeout) - and silently return False, indistinguishable from "there
+    was nothing owned here to remove". A caller that only preserves the
+    registry entry on a `LinkError` (cli.py's `_remove_one`) would then
+    delete the hub file and registry entry while the Ollama manifest (and
+    its blob) were still on disk, orphaning them forever."""
+    gguf_path = linker.MODELS_DIR / "model.gguf"
+    gguf_path.parent.mkdir(parents=True, exist_ok=True)
+    gguf_path.write_bytes(b"model-bytes")
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    tag = "model"
+    linker.link_ollama(gguf_path, tag, models_dir=models_dir)
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / tag / "latest"
+    assert manifest_path.exists()
+
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *a, **k):
+        if self == manifest_path:
+            raise PermissionError("WinError 32")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    with pytest.raises(linker.LinkError):
+        linker.unlink_ollama(tag, models_dir=models_dir, expected_source=gguf_path)
+
+    # The failed removal must leave the manifest in place - not silently
+    # report False as if there had never been anything to remove.
+    assert manifest_path.exists()
+
+
+def test_unlink_ollama_batch_continues_after_one_manifest_permission_denied(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A permission error removing one model's manifest must not abort
+    cleanup of the rest of the batch, but it also must not be reported as
+    `True` for the failed one - that would tell the caller it's safe to
+    forget the model even though its Ollama manifest is still present."""
+    monkeypatch.setattr(
+        linker, "read_gguf_metadata", lambda path, keys: {"general.architecture": "llama"}
+    )
+    models_dir = tmp_path / "ollama"
+    gguf_a = tmp_path / "a.gguf"
+    gguf_a.write_bytes(b"model-a")
+    gguf_b = tmp_path / "b.gguf"
+    gguf_b.write_bytes(b"model-b")
+    linker.link_ollama(gguf_a, "model-a", models_dir=models_dir)
+    linker.link_ollama(gguf_b, "model-b", models_dir=models_dir)
+    manifest_a = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model-a" / "latest"
+    manifest_b = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model-b" / "latest"
+
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *a, **k):
+        if self == manifest_a:
+            raise PermissionError("WinError 32")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    results = linker.unlink_ollama_batch(
+        [("model-a", gguf_a, None), ("model-b", gguf_b, None)], models_dir=models_dir
+    )
+
+    assert results == {"model-a": False, "model-b": True}
+    assert manifest_a.exists()
+    assert not manifest_b.exists()
 
 
 def test_unlink_ollama_batch_removes_each_model(isolated_omm_home, tmp_path, monkeypatch):
@@ -612,7 +761,7 @@ def test_is_anythingllm_installed_detects_never_launched_install_on_linux(anythi
 
 
 def test_is_anythingllm_installed_detects_desktop_entry_on_linux(anythingllm_linux_env):
-    (anythingllm_linux_env / "applications" / "anythingllm.desktop").write_text("[Desktop Entry]\n")
+    (anythingllm_linux_env / "applications" / "anythingllm.desktop").write_text("[Desktop Entry]\n", encoding="utf-8")
     assert linker.is_anythingllm_installed() is True
 
 
@@ -705,6 +854,56 @@ def test_is_anythingllm_installed_reflects_app_bundle_on_darwin(tmp_path, monkey
     (tmp_path / "Applications").mkdir()
     (tmp_path / "Applications" / "AnythingLLM.app").mkdir()
     assert linker.is_anythingllm_installed() is True
+
+
+# --- Jan Windows install detection --------------------------------------
+
+
+@pytest.fixture
+def jan_windows_env(tmp_path, monkeypatch):
+    """Point every Jan Windows probe at tmp_path. Unset the remaining
+    install-location variables so a real Jan on the machine running the
+    tests can't decide the outcome."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker, "jan_app_dir", lambda: tmp_path / "Roaming" / "Jan")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    for variable in ("ProgramFiles", "ProgramFiles(x86)", "ProgramData"):
+        monkeypatch.delenv(variable, raising=False)
+    return tmp_path
+
+
+def test_is_jan_installed_false_when_nothing_present_on_windows(jan_windows_env):
+    assert linker.is_jan_installed() is False
+
+
+@pytest.mark.parametrize("install_dir_name", ["Jan", "jan"])
+def test_is_jan_installed_detects_never_launched_install_under_programs_on_windows(
+    jan_windows_env, install_dir_name
+):
+    program_dir = jan_windows_env / "Local" / "Programs" / install_dir_name
+    program_dir.mkdir(parents=True)
+    (program_dir / "Jan.exe").write_bytes(b"")
+    assert linker.is_jan_installed() is True
+
+
+def test_is_jan_installed_detects_tauri_per_user_install_on_windows(jan_windows_env):
+    local_jan = jan_windows_env / "Local" / "Jan"
+    local_jan.mkdir(parents=True)
+    (local_jan / "Jan.exe").write_bytes(b"")
+    assert linker.is_jan_installed() is True
+
+
+def test_is_jan_installed_detects_start_menu_shortcut_on_windows(jan_windows_env):
+    menu = _windows_start_menu(jan_windows_env)
+    menu.mkdir(parents=True)
+    (menu / "Jan.lnk").write_bytes(b"")
+    assert linker.is_jan_installed() is True
+
+
+def test_is_jan_installed_ignores_empty_program_dir_on_windows(jan_windows_env):
+    (jan_windows_env / "Local" / "Programs" / "Jan").mkdir(parents=True)
+    assert linker.is_jan_installed() is False
 
 
 # --- Msty (flat symlink dir) --------------------------------------------
@@ -920,7 +1119,13 @@ def test_link_jan_raises_link_error_when_write_fails(tmp_path, monkeypatch):
         linker.link_jan(gguf_path, "model-id")
 
 
-def test_unlink_ollama_swallows_permission_error(isolated_omm_home, tmp_path, monkeypatch):
+def test_unlink_ollama_raises_on_permission_error_instead_of_swallowing(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """`unlink_ollama` used to swallow a permission error into a plain
+    `False`, indistinguishable from "nothing owned here to remove" - see
+    test_unlink_ollama_raises_link_error_on_permission_denied_manifest for
+    the full audit writeup. It must now raise `LinkError` instead."""
     models_dir = tmp_path / "ollama"
     monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
     source = tmp_path / "source.gguf"
@@ -929,7 +1134,8 @@ def test_unlink_ollama_swallows_permission_error(isolated_omm_home, tmp_path, mo
 
     monkeypatch.setattr(Path, "unlink", lambda self, missing_ok=False: (_ for _ in ()).throw(OSError("permission denied")))
 
-    linker.unlink_ollama("model", models_dir=models_dir)  # must not raise
+    with pytest.raises(linker.LinkError):
+        linker.unlink_ollama("model", models_dir=models_dir)
 
 
 def test_unlink_jan_swallows_permission_error(tmp_path, monkeypatch):
@@ -972,7 +1178,7 @@ def test_lms_cli_path_falls_back_to_bootstrap_location(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     lms_file = bin_dir / "lms"
-    lms_file.write_text("#!/bin/sh\n")
+    lms_file.write_text("#!/bin/sh\n", encoding="utf-8")
     assert linker._lms_cli_path() == str(lms_file)
 
 

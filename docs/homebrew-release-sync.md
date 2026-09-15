@@ -31,19 +31,20 @@ after PyPI's public installation checks and means the package is published but
 the Tap was not notified. After restoring the secret, rerun only the failed
 `Request asynchronous Homebrew Formula synchronization` job.
 
-## The Formula is a generated artifact of `pyproject.toml`
+## The Formula is a generated artifact of `requirements-npm-binary.txt`
 
 Issue [#238](https://github.com/omm-hippo/omm/issues/238): `brew install
-omm-hippo/omm/omm` repeatedly drifted from the dependency table
-`pyproject.toml` actually pins — the Tap's `resource` stanzas were a second,
-hand-maintained copy of the closure that a plain `brew bump` never touched.
-`scripts/homebrew_formula.py` removes that second copy. It reads the frozen
-runtime dependency closure straight out of `[project].dependencies`, resolves
-each pin's sdist URL and SHA-256 from PyPI, and can render or verify
-`omm.rb`:
+omm-hippo/omm/omm` repeatedly drifted from the dependency set OMM actually
+ships — the Tap's `resource` stanzas were a second, hand-maintained copy of the
+closure that a plain `brew bump` never touched. `scripts/homebrew_formula.py`
+removes that second copy. It reads the exactly-`==`-pinned runtime graph from
+`requirements-npm-binary.txt` (the same file the standalone npm binary embeds,
+kept in lockstep with `pyproject.toml`'s floating floors by
+`scripts/dependency_parity.py`), resolves each pin's sdist URL and SHA-256 from
+PyPI, and can render or verify `omm.rb`:
 
 - `render --version X [--output PATH]` — build `omm.rb` text for OMM version
-  `X` from the current `pyproject.toml`.
+  `X` from the current `requirements-npm-binary.txt`.
 - `check --formula PATH --version X [--allow-version-lag]` — compare an
   existing Formula against what `render` would produce; exits non-zero with a
   readable diff of any drifted pin or hash. `--allow-version-lag` compares
@@ -51,18 +52,22 @@ each pin's sdist URL and SHA-256 from PyPI, and can render or verify
   the Tap's own release cadence (see above) is allowed to lag `main`.
 - `pypi-latest` — print the latest published, non-yanked `omm-model` version.
 
-A dependency guarded by an environment marker that Homebrew's declared
-interpreter (`python@3.14`) does not satisfy — e.g. `tomli; python_version <
-'3.11'` — is left out of the generated resource list with an explanatory
-comment. A marker shape the script does not understand fails loudly instead
-of being silently dropped.
+The generator needs `packaging` installed (the CI jobs `pip install` it) to
+evaluate environment markers. Homebrew compiles every `resource` from source,
+so where `requirements-npm-binary.txt` splits a pin by platform for wheel
+reasons — `cryptography==48.0.0` on Intel macOS, `50.0.1` everywhere else —
+the generator evaluates markers against a concrete non-Intel-macOS
+interpreter and takes the mainline pin. Build-time-only entries (`build`,
+`hatchling`, `pyinstaller`, …) and any pin excluded by a marker are listed in
+a Formula comment, never silently dropped.
 
 Two CI hooks keep the Formula from drifting again:
 
 - `.github/workflows/ci.yml`'s `homebrew-formula` job checks out the Tap
   read-only and runs `check --allow-version-lag` on every push and pull
-  request to `main`, so a `pyproject.toml` change that the Tap has not caught
-  up to yet is visible immediately, without needing a release to notice.
+  request to `main`, so a `requirements-npm-binary.txt` change that the Tap
+  has not caught up to yet is visible immediately, without needing a release
+  to notice.
 - `.github/workflows/release.yml`'s `render-homebrew-formula` job (tag
   releases only, after the public PyPI install path is verified) renders
   `omm.rb` for the released version and uploads it as a workflow artifact.

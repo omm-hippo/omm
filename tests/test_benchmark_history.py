@@ -11,7 +11,7 @@ def test_loaded_refs_empty_when_no_file(isolated_omm_home):
 def test_invalid_history_shapes_are_treated_as_empty(isolated_omm_home):
     path = isolated_omm_home / "benchmark_history.json"
     for payload in ([], {"entries": [], "failures": "bad"}):
-        path.write_text(json.dumps(payload))
+        path.write_text(json.dumps(payload), encoding="utf-8")
         assert benchmark_history.loaded_refs() == set()
         assert benchmark_history.failure_cooldowns() == {}
 
@@ -42,7 +42,7 @@ def test_record_benchmarked_stores_metadata_on_disk(isolated_omm_home):
         tokens_per_sec=12.5,
     )
 
-    data = json.loads((isolated_omm_home / "benchmark_history.json").read_text())
+    data = json.loads((isolated_omm_home / "benchmark_history.json").read_text(encoding="utf-8"))
     entry = data["entries"]["org/repo:model.gguf"]
     assert entry["repo_id"] == "org/repo"
     assert entry["filename"] == "model.gguf"
@@ -96,7 +96,7 @@ def test_history_file_written_before_failures_existed_still_loads(isolated_omm_h
                 }
             }
         )
-    )
+    , encoding="utf-8")
 
     assert benchmark_history.loaded_refs() == {"org/repo:model.gguf"}
     assert benchmark_history.failure_record("org/repo:model.gguf") is None
@@ -223,9 +223,9 @@ def test_unreadable_cooldown_timestamp_never_suppresses_forever(isolated_omm_hom
             reason="memory_pressure_cancelled",
         )
     path = isolated_omm_home / "benchmark_history.json"
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     data["failures"]["org/repo:model.gguf"]["last_machine_failure_at"] = "not-a-timestamp"
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
 
     assert benchmark_history.failure_cooldowns() == {}
 
@@ -234,10 +234,56 @@ def test_corrupt_history_is_backed_up_before_being_reset(isolated_omm_home):
     """Like config.json/models.json: an unreadable file is preserved, not
     silently replaced by the next record with an empty history."""
     path = isolated_omm_home / "benchmark_history.json"
-    path.write_text("{not json")
+    path.write_text("{not json", encoding="utf-8")
 
     assert benchmark_history.loaded_refs() == set()
 
     backups = list(isolated_omm_home.glob("benchmark_history.json.corrupt-*"))
     assert len(backups) == 1
-    assert backups[0].read_text() == "{not json"
+    assert backups[0].read_text(encoding="utf-8") == "{not json"
+
+
+def test_mistyped_section_is_backed_up_before_being_overwritten(isolated_omm_home):
+    path = isolated_omm_home / "benchmark_history.json"
+    original = json.dumps({"entries": ["legacy"], "failures": {}}).encode("utf-8")
+    path.write_bytes(original)
+
+    benchmark_history.record_benchmarked(
+        "a:x.gguf", repo_id="a", filename="x.gguf", sha256="s", tokens_per_sec=1.0
+    )
+
+    backups = list(isolated_omm_home.glob("benchmark_history.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+
+    # A missing key (older-format file) is not corruption - no backup.
+    path.write_text(json.dumps({"entries": {}}), encoding="utf-8")
+    benchmark_history.loaded_refs()
+    assert list(isolated_omm_home.glob("benchmark_history.json.corrupt-*")) == backups
+
+
+def test_record_functions_swallow_lock_failures(isolated_omm_home, monkeypatch):
+    from contextlib import contextmanager
+
+    from filelock import Timeout
+
+    @contextmanager
+    def boom(*a, **k):
+        raise Timeout(str(a[0]))
+        yield
+
+    monkeypatch.setattr(benchmark_history, "locked", boom)
+
+    assert (
+        benchmark_history.record_benchmarked(
+            "a:x.gguf", repo_id="a", filename="x.gguf", sha256="s", tokens_per_sec=1.0
+        )
+        is None
+    )
+    assert (
+        benchmark_history.record_benchmark_failure(
+            "a:x.gguf", repo_id="a", filename="x.gguf", reason="out_of_memory"
+        )
+        is None
+    )
+    assert benchmark_history.loaded_refs() == set()

@@ -78,7 +78,7 @@ def test_benchmark_saves_local_report_and_asks_before_upload(isolated_omm_home, 
     assert "42.5 tok/s" in result.stdout
     paths = list(config.EVALUATIONS_DIR.glob("quality-*.json"))
     assert len(paths) == 1
-    assert json.loads(paths[0].read_text()) == _full_report()
+    assert json.loads(paths[0].read_text(encoding="utf-8")) == _full_report()
     assert "leaderboard" in result.stdout
     assert sent == []
 
@@ -1271,6 +1271,76 @@ def test_report_failure_telemetry_v8_sends_chip_scores_not_raw_names(isolated_om
     assert event["cpu_score"] == 5600.0
     assert event["gpu_score"] == 4090.0
     assert "cpu_model" not in event
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["memory_pressure_cancelled", "memory_pressure_unload_failed", "memory_guard_blocked"],
+)
+def test_report_failure_telemetry_drops_reasons_outside_upload_schema(monkeypatch, reason):
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("should not reach hardware scan or upload for a schema-excluded reason")
+
+    monkeypatch.setattr(cli, "scan_hardware", _unexpected)
+    monkeypatch.setattr(cli.telemetry, "send_event", _unexpected)
+
+    result = cli._report_failure_telemetry(
+        {"tag": "m.gguf", "outcome": "transient_error", "failure_reason": reason},
+        environment={"engine": "ollama"},
+    )
+
+    assert result is False
+
+
+def test_report_failure_telemetry_omits_attempted_runtime_for_lmstudio(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+    model = {
+        "tag": "too-big:latest",
+        "outcome": "model_unfit",
+        "failure_reason": "out_of_memory",
+        "attempted_runtime": {
+            "context_length": 4096,
+            "gpu_offload_percent": 100,
+            "cpu_threads": 8,
+            "num_batch": 512,
+        },
+    }
+
+    cli._report_failure_telemetry(model, environment={"engine": "lmstudio"})
+
+    event = sent[0]
+    assert event["engine"] == "lmstudio"
+    assert "context_length" not in event
+    assert "gpu_offload_percent" not in event
+
+
+def test_report_failure_telemetry_keeps_attempted_runtime_for_ollama(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "scan_hardware", _hardware_with_chip_metadata)
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+    model = {
+        "tag": "too-big:latest",
+        "outcome": "model_unfit",
+        "failure_reason": "out_of_memory",
+        "attempted_runtime": {
+            "context_length": 4096,
+            "gpu_offload_percent": 100,
+            "cpu_threads": 8,
+            "num_batch": 512,
+        },
+    }
+
+    cli._report_failure_telemetry(model, environment={"engine": "ollama"})
+
+    event = sent[0]
+    assert event["context_length"] == 4096
+    assert event["gpu_offload_percent"] == 100
 
 
 def test_report_failure_telemetry_uses_verified_moe_active_parameter_count(

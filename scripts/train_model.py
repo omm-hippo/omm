@@ -47,6 +47,7 @@ from omm.featurize import (  # noqa: E402
 from omm.atomic import atomic_write_text, locked  # noqa: E402
 from omm.hardware import BUSY_CPU_PERCENT  # noqa: E402
 from scripts.model_quality_gate import (  # noqa: E402
+    INTENTIONALLY_EXCLUDED_REASONS,
     InsufficientTelemetryError,
     compare_artifacts,
     selection_context_key,
@@ -144,6 +145,10 @@ def is_firebase_realtime_database_json_url(url: str) -> bool:
     return parsed.scheme == "https" and is_firebase_host and parsed.path.endswith(".json")
 
 
+class TelemetryFetchError(RuntimeError):
+    """The telemetry export could not be fetched or parsed (not an empty corpus)."""
+
+
 def fetch_real_rows(url: str = TELEMETRY_URL) -> list[dict]:
     parsed = urlparse(url)
     hostname = (parsed.hostname or "").lower()
@@ -170,8 +175,9 @@ def fetch_real_rows(url: str = TELEMETRY_URL) -> list[dict]:
         resp.raise_for_status()
         data = resp.json()
     except (requests.RequestException, ValueError) as e:
-        print(f"Warning: couldn't fetch telemetry ({e}), treating as 0 real rows.")
-        return []
+        raise TelemetryFetchError(
+            f"couldn't fetch telemetry from {parsed.scheme}://{hostname}{parsed.path}: {e}"
+        ) from e
     if isinstance(data, dict) and isinstance(data.get("benchmarks"), list):
         return [row for row in data["benchmarks"][-MAX_REAL_ROWS:] if isinstance(row, dict)]
     if isinstance(data, dict):
@@ -249,18 +255,6 @@ def _direct_bounded_number(value, minimum: float, maximum: float) -> float | Non
 #: healthy daemon. "transient_error" says nothing about fit and is excluded
 #: from every dataset below.
 V7_OUTCOMES = ("success", "model_unfit", "performance_unfit", "transient_error")
-
-#: Rejection reasons meaning "this row was correctly routed elsewhere, not
-#: that the data is malformed." validate_dataset() excludes these from its
-#: rejection-rate gate for exactly that reason.
-INTENTIONALLY_EXCLUDED_REASONS = frozenset({
-    "model_unfit_excluded_from_regression",
-    "performance_unfit_excluded_from_regression",
-    "transient_error_excluded",
-    "pressured_measurement_excluded",
-    "unstable_measurement_excluded",
-    "loaded_measurement_excluded",
-})
 
 #: Physical-plausibility bounds (issue #134). database.rules.json can reject
 #: malformed telemetry (wrong types, out-of-range single fields, unknown
@@ -1605,7 +1599,19 @@ def main() -> None:
     plausibility_report_only = getattr(args, "plausibility_report_only", False)
     if plausibility_report_only and plausibility_report is None:
         raise ValueError("--plausibility-report-only requires --plausibility-report")
-    real_rows = [] if args.offline else fetch_real_rows(args.telemetry_url)
+    if args.offline:
+        real_rows = []
+    else:
+        try:
+            real_rows = fetch_real_rows(args.telemetry_url)
+        except TelemetryFetchError as error:
+            if args.quality_gate:
+                raise SystemExit(
+                    f"Quality gate: {error}. Refusing to treat an unreachable "
+                    "telemetry export as an empty corpus."
+                )
+            print(f"Warning: {error}; treating as 0 real rows.")
+            real_rows = []
     input_sources = [] if args.offline else [
         "firebase_legacy"
         if is_firebase_realtime_database_json_url(args.telemetry_url)
@@ -1650,14 +1656,8 @@ def main() -> None:
         except (OSError, ValueError) as error:
             raise ValueError(f"could not read baseline artifact {args.baseline}: {error}") from error
         validate_artifact(baseline, FEATURE_ORDER)
-        # Validate before constructing a candidate or touching the destination.
-        try:
-            validate_dataset(
-                telemetry_audit,
-                min_unique_configurations=args.minimum_real_configurations,
-                max_rejection_rate=args.maximum_rejection_rate,
-            )
-        except InsufficientTelemetryError as error:
+
+        def _skip_keeping_baseline(error: InsufficientTelemetryError) -> None:
             # The telemetry corpus hasn't grown enough yet, not a code bug.
             # Republish the baseline unchanged rather than failing CI.
             print(f"Quality gate: {error}. Keeping current model unchanged.")
@@ -1679,10 +1679,24 @@ def main() -> None:
                     )
                     + "\n",
                 )
+
+        # Validate before constructing a candidate or touching the destination.
+        try:
+            validate_dataset(
+                telemetry_audit,
+                min_unique_configurations=args.minimum_real_configurations,
+                max_rejection_rate=args.maximum_rejection_rate,
+            )
+        except InsufficientTelemetryError as error:
+            _skip_keeping_baseline(error)
             return
-        train_X, train_y, holdout_X, holdout_y = stable_holdout_split(
-            real_X, real_y, args.holdout_fraction
-        )
+        try:
+            train_X, train_y, holdout_X, holdout_y = stable_holdout_split(
+                real_X, real_y, args.holdout_fraction
+            )
+        except InsufficientTelemetryError as error:
+            _skip_keeping_baseline(error)
+            return
         candidate_X, candidate_y, candidate_weights = training_data_with_synthetic_prior(
             train_X,
             train_y,

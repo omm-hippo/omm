@@ -460,7 +460,7 @@ def compare_artifacts(
 #: stream of pre-v6 telemetry with no hardware identity to report) would
 #: look identical to a stream of malformed rows and eventually block
 #: training.
-_INTENTIONALLY_EXCLUDED_REASONS = frozenset({
+INTENTIONALLY_EXCLUDED_REASONS = frozenset({
     "model_unfit_excluded_from_regression",
     "performance_unfit_excluded_from_regression",
     "transient_error_excluded",
@@ -559,7 +559,7 @@ def validate_dataset(
     excluded = 0
     excluded = sum(
         count for reason, count in rejections.items()
-        if reason in _INTENTIONALLY_EXCLUDED_REASONS and count > 0
+        if reason in INTENTIONALLY_EXCLUDED_REASONS and count > 0
     )
     effective_raw = max(0, raw_rows - excluded)
     effective_rejected = max(0, rejected_rows - excluded)

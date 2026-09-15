@@ -1,4 +1,5 @@
 import errno
+import os
 
 import pytest
 
@@ -68,3 +69,29 @@ def test_main_reraises_other_exceptions_unchanged(monkeypatch):
 
     with pytest.raises(ValueError):
         cli.main()
+
+
+def test_main_sets_no_default_cwd_in_exe_path(monkeypatch):
+    """A planted exe in an untrusted cwd must not shadow the real one for a
+    bare executable name (git, pipx, ollama, ...) that a child process might
+    launch - see the comment above the `os.environ.setdefault(...)` call in
+    `cli.main()`."""
+    # setenv first so monkeypatch records and restores the variable afterward.
+    monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "x")
+    monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath")
+    monkeypatch.setattr(cli, "app", lambda: (_ for _ in ()).throw(SystemExit(0)))
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    assert os.environ["NoDefaultCurrentDirectoryInExePath"] == "1"
+
+
+def test_main_does_not_override_existing_no_default_cwd_in_exe_path_env(monkeypatch):
+    monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "0")
+    monkeypatch.setattr(cli, "app", lambda: (_ for _ in ()).throw(SystemExit(0)))
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    assert os.environ["NoDefaultCurrentDirectoryInExePath"] == "0"

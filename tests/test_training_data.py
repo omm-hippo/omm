@@ -546,7 +546,7 @@ def test_bootstrap_grid_models_moe_active_parameters_separately():
 
 def test_load_telemetry_file_accepts_local_jsonl(tmp_path):
     path = tmp_path / "benchmarks.jsonl"
-    path.write_text("\n".join(json.dumps(_row(speed)) for speed in (10, 20)) + "\n")
+    path.write_text("\n".join(json.dumps(_row(speed)) for speed in (10, 20)) + "\n", encoding="utf-8")
 
     rows = train_model.load_telemetry_file(path)
 
@@ -555,7 +555,7 @@ def test_load_telemetry_file_accepts_local_jsonl(tmp_path):
 
 def test_load_telemetry_file_accepts_firebase_mapping(tmp_path):
     path = tmp_path / "firebase.json"
-    path.write_text(json.dumps({"push-a": _row(10), "push-b": _row(20)}))
+    path.write_text(json.dumps({"push-a": _row(10), "push-b": _row(20)}), encoding="utf-8")
 
     rows = train_model.load_telemetry_file(path)
 
@@ -564,7 +564,7 @@ def test_load_telemetry_file_accepts_firebase_mapping(tmp_path):
 
 def test_load_telemetry_file_accepts_self_hosted_export(tmp_path):
     path = tmp_path / "server-export.json"
-    path.write_text(json.dumps({"count": 2, "benchmarks": [_row(10), _row(20)]}))
+    path.write_text(json.dumps({"count": 2, "benchmarks": [_row(10), _row(20)]}), encoding="utf-8")
 
     rows = train_model.load_telemetry_file(path)
 
@@ -574,7 +574,7 @@ def test_load_telemetry_file_accepts_self_hosted_export(tmp_path):
 def test_load_telemetry_file_accepts_single_failure_event_without_speed(tmp_path):
     path = tmp_path / "failure.json"
     event = _v7_model_unfit_row()
-    path.write_text(json.dumps(event))
+    path.write_text(json.dumps(event), encoding="utf-8")
 
     assert train_model.load_telemetry_file(path) == [event]
 
@@ -589,7 +589,7 @@ def test_load_telemetry_file_accepts_single_failure_event_without_speed(tmp_path
 )
 def test_load_telemetry_file_rejects_non_object_rows(tmp_path, content, message):
     path = tmp_path / "bad-rows.json"
-    path.write_text(content)
+    path.write_text(content, encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):
         train_model.load_telemetry_file(path)
@@ -654,6 +654,88 @@ def test_fetch_real_rows_rejects_insecure_remote_url_before_sending_token(monkey
     assert calls == []
 
 
+def test_fetch_real_rows_raises_on_http_error(monkeypatch):
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "super-secret-token")
+
+    class _FailingResponse:
+        def raise_for_status(self):
+            raise train_model.requests.HTTPError("401")
+
+        def json(self):
+            raise AssertionError("json() should not be called after raise_for_status fails")
+
+    monkeypatch.setattr(train_model.requests, "get", lambda *a, **k: _FailingResponse())
+
+    with pytest.raises(train_model.TelemetryFetchError) as excinfo:
+        train_model.fetch_real_rows("https://collector.example/v1/benchmarks/export")
+
+    assert "super-secret-token" not in str(excinfo.value)
+
+
+def test_fetch_real_rows_raises_on_unparseable_body(monkeypatch):
+    class _UnparseableResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(train_model.requests, "get", lambda *a, **k: _UnparseableResponse())
+
+    with pytest.raises(train_model.TelemetryFetchError):
+        train_model.fetch_real_rows("https://collector.example/v1/benchmarks/export")
+
+
+def test_quality_gate_fails_loudly_when_telemetry_fetch_fails(tmp_path, monkeypatch):
+    output = tmp_path / "model.json"
+
+    def _raise_fetch_error(_url):
+        raise train_model.TelemetryFetchError("couldn't fetch telemetry from https://collector.example/x: boom")
+
+    monkeypatch.setattr(train_model, "fetch_real_rows", _raise_fetch_error)
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[], offline=False, telemetry_url="https://collector.example/x",
+            output=output, baseline=tmp_path / "baseline.json", quality_gate=True,
+            minimum_real_configurations=0, maximum_rejection_rate=0.25, holdout_fraction=0.2,
+            quality_report=None, minimum_fit_negative_examples=5,
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        train_model.main()
+
+    assert not output.exists()
+
+
+def test_offline_false_non_gate_run_continues_after_a_fetch_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(train_model, "load_candidates", lambda: [])
+    monkeypatch.setattr(
+        train_model,
+        "synthetic_rows_from_rules",
+        lambda: ([[0.0] * len(train_model.FEATURE_ORDER)], [0.0]),
+    )
+
+    def _raise_fetch_error(_url):
+        raise train_model.TelemetryFetchError("couldn't fetch telemetry from https://collector.example/x: boom")
+
+    monkeypatch.setattr(train_model, "fetch_real_rows", _raise_fetch_error)
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[], offline=False, telemetry_url="https://collector.example/x",
+            output=tmp_path / "model.json", baseline=None, quality_gate=False,
+            minimum_real_configurations=0, maximum_rejection_rate=0.25, holdout_fraction=0.2,
+            quality_report=None, minimum_fit_negative_examples=5,
+        ),
+    )
+
+    train_model.main()  # must not raise: only --quality-gate escalates a fetch failure
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -679,7 +761,7 @@ def test_non_firebase_rtdb_json_urls_are_not_recognized(url):
 
 def test_load_telemetry_file_rejects_malformed_jsonl(tmp_path):
     path = tmp_path / "bad.jsonl"
-    path.write_text(json.dumps(_row(10)) + "\nnot-json\n")
+    path.write_text(json.dumps(_row(10)) + "\nnot-json\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match=":2 is not valid JSON"):
         train_model.load_telemetry_file(path)
@@ -767,12 +849,12 @@ def test_quality_gate_split_rejects_too_few_selection_contexts():
 
 def test_quality_gate_regression_republishes_baseline_unchanged(tmp_path, monkeypatch):
     telemetry = tmp_path / "telemetry.json"
-    telemetry.write_text(json.dumps([_v6_row(10), _v6_row(20, vram_gb=6)]))
+    telemetry.write_text(json.dumps([_v6_row(10), _v6_row(20, vram_gb=6)]), encoding="utf-8")
     output = tmp_path / "model.json"
-    output.write_text("incumbent-output")
+    output.write_text("incumbent-output", encoding="utf-8")
     baseline = tmp_path / "baseline.json"
     monkeypatch.setattr(train_model, "load_candidates", lambda: [])
-    X, y = train_model.real_rows_to_training_data(json.loads(telemetry.read_text()))
+    X, y = train_model.real_rows_to_training_data(json.loads(telemetry.read_text(encoding="utf-8")))
     baseline.write_text(
         json.dumps(
             train_model.train_artifact(
@@ -781,7 +863,7 @@ def test_quality_gate_regression_republishes_baseline_unchanged(tmp_path, monkey
                 input_sources=[], evaluation=None,
             )
         )
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(
         train_model,
         "compare_artifacts",
@@ -813,7 +895,7 @@ def test_quality_gate_regression_republishes_baseline_unchanged(tmp_path, monkey
 
     train_model.main()  # must not raise: gate rejection is expected, not a code bug
 
-    assert output.read_text() == baseline.read_text()
+    assert output.read_text(encoding="utf-8") == baseline.read_text(encoding="utf-8")
     candidate_args, candidate_kwargs = train_calls[0]
     assert candidate_kwargs["training_mode"] == "hybrid_telemetry"
     assert candidate_kwargs["bootstrap_method"] == train_model.BOOTSTRAP_METHOD
@@ -821,6 +903,53 @@ def test_quality_gate_regression_republishes_baseline_unchanged(tmp_path, monkey
     assert set(candidate_kwargs["sample_weight"][1:]) == {
         train_model.QUALITY_GATE_REAL_WEIGHT
     }
+
+
+def test_quality_gate_single_selection_context_republishes_baseline_unchanged(tmp_path, monkeypatch):
+    # validate_dataset() passes (minimum_real_configurations=0), but only one
+    # selection context exists - stable_holdout_split() is the one that must
+    # soft-skip here, not validate_dataset().
+    telemetry = tmp_path / "telemetry.json"
+    telemetry.write_text(json.dumps([_v6_row(10)]), encoding="utf-8")
+    output = tmp_path / "model.json"
+    output.write_text("incumbent-output", encoding="utf-8")
+    baseline = tmp_path / "baseline.json"
+    monkeypatch.setattr(train_model, "load_candidates", lambda: [])
+    X, y = train_model.real_rows_to_training_data(json.loads(telemetry.read_text(encoding="utf-8")))
+    baseline.write_text(
+        json.dumps(
+            train_model.train_artifact(
+                X, y, sample_weight=None, training_mode="telemetry", bootstrap_method=None,
+                real_rows=[], telemetry_audit={"unique_configurations": len(X)},
+                input_sources=[], evaluation=None,
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        train_model,
+        "synthetic_rows_from_rules",
+        lambda: ([X[0]], [0.0]),
+    )
+    monkeypatch.setattr(train_model, "validate_dataset", lambda *a, **k: None)
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[telemetry], offline=True, telemetry_url="", output=output,
+            baseline=baseline, quality_gate=True, minimum_real_configurations=0,
+            maximum_rejection_rate=0.25, holdout_fraction=0.2, quality_report=tmp_path / "q.json",
+            minimum_fit_negative_examples=5,
+        ),
+    )
+
+    train_model.main()  # must not raise: a single selection context is a soft skip
+
+    assert output.read_text(encoding="utf-8") == baseline.read_text(encoding="utf-8")
+    report = json.loads((tmp_path / "q.json").read_text(encoding="utf-8"))
+    assert report["skipped"] is True
+    assert report["passed"] is False
+    assert "two selection contexts" in report["reason"]
 
 
 def test_quality_gate_publishes_hybrid_artifact_after_pass(tmp_path, monkeypatch):
@@ -831,7 +960,7 @@ def test_quality_gate_publishes_hybrid_artifact_after_pass(tmp_path, monkeypatch
         _v6_row(30, ram_gb=32),
         _v6_row(40, ram_gb=32, vram_gb=6),
     ]
-    telemetry.write_text(json.dumps(rows))
+    telemetry.write_text(json.dumps(rows), encoding="utf-8")
     output = tmp_path / "model.json"
     baseline = tmp_path / "baseline.json"
     monkeypatch.setattr(train_model, "load_candidates", lambda: [])
@@ -850,7 +979,7 @@ def test_quality_gate_publishes_hybrid_artifact_after_pass(tmp_path, monkeypatch
                 evaluation=None,
             )
         )
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(
         train_model,
         "synthetic_rows_from_rules",
@@ -887,7 +1016,7 @@ def test_quality_gate_publishes_hybrid_artifact_after_pass(tmp_path, monkeypatch
 
     train_model.main()
 
-    artifact = json.loads(output.read_text())
+    artifact = json.loads(output.read_text(encoding="utf-8"))
     assert artifact["training_mode"] == "hybrid_telemetry"
     assert artifact["bootstrap_method"] == train_model.BOOTSTRAP_METHOD
     assert artifact["real_row_count"] == len(X)
@@ -899,12 +1028,12 @@ def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchang
     tmp_path, monkeypatch, capsys
 ):
     telemetry = tmp_path / "telemetry.json"
-    telemetry.write_text(json.dumps([_v6_row(10), _v6_row(20, vram_gb=6)]))
+    telemetry.write_text(json.dumps([_v6_row(10), _v6_row(20, vram_gb=6)]), encoding="utf-8")
     output = tmp_path / "model.json"
     baseline = tmp_path / "baseline.json"
     quality_report = tmp_path / "quality-report.json"
     monkeypatch.setattr(train_model, "load_candidates", lambda: [])
-    X, y = train_model.real_rows_to_training_data(json.loads(telemetry.read_text()))
+    X, y = train_model.real_rows_to_training_data(json.loads(telemetry.read_text(encoding="utf-8")))
     baseline.write_text(
         json.dumps(
             train_model.train_artifact(
@@ -913,7 +1042,7 @@ def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchang
                 input_sources=[], evaluation=None,
             )
         )
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(
         train_model,
         "compare_artifacts",
@@ -941,8 +1070,8 @@ def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchang
 
     train_model.main()  # must not raise: too few real configs to compare, not a code bug
 
-    assert output.read_text() == baseline.read_text()
-    report = json.loads(quality_report.read_text())
+    assert output.read_text(encoding="utf-8") == baseline.read_text(encoding="utf-8")
+    report = json.loads(quality_report.read_text(encoding="utf-8"))
     assert report["skipped"] is True
     # A real regression riding along with the data-volume skip must still
     # reach the CI log, not just the "not enough data" line - otherwise a
@@ -962,7 +1091,7 @@ def test_quality_gate_insufficient_data_republishes_baseline_unchanged(tmp_path,
                 "trees": [{"leaf": True, "value": 1.0}],
             }
         )
-    )
+    , encoding="utf-8")
     quality_report = tmp_path / "quality-report.json"
     monkeypatch.setattr(train_model, "fetch_real_rows", lambda _url: [])
     monkeypatch.setattr(
@@ -985,8 +1114,8 @@ def test_quality_gate_insufficient_data_republishes_baseline_unchanged(tmp_path,
 
     train_model.main()  # must not raise: too little telemetry is not a bug
 
-    assert output.read_text() == baseline.read_text()
-    report = json.loads(quality_report.read_text())
+    assert output.read_text(encoding="utf-8") == baseline.read_text(encoding="utf-8")
+    report = json.loads(quality_report.read_text(encoding="utf-8"))
     assert report["passed"] is False
     assert report["skipped"] is True
     assert "too few unique" in report["reason"]
@@ -1022,7 +1151,7 @@ def test_quality_gate_insufficient_data_still_requires_readable_baseline(tmp_pat
 def test_quality_gate_insufficient_data_refuses_malformed_baseline(tmp_path, monkeypatch):
     output = tmp_path / "model.json"
     baseline = tmp_path / "baseline.json"
-    baseline.write_text('{"model_version": 4, "trees": []}')
+    baseline.write_text('{"model_version": 4, "trees": []}', encoding="utf-8")
     monkeypatch.setattr(train_model, "fetch_real_rows", lambda _url: [])
     monkeypatch.setattr(
         train_model,
@@ -1055,7 +1184,7 @@ def test_load_candidates_rejects_malformed_or_duplicate_publication(tmp_path, mo
                 {"name": "a2", "repo_id": "org/a", "filename": "a.gguf"},
             ]
         )
-    )
+    , encoding="utf-8")
     train_model.load_candidates.cache_clear()
 
     try:
@@ -1081,7 +1210,7 @@ def test_offline_training_exports_v4_with_64_trees(tmp_path, monkeypatch):
 
     train_model.main()
 
-    artifact = json.loads(output.read_text())
+    artifact = json.loads(output.read_text(encoding="utf-8"))
     assert artifact["model_version"] == 4
     assert artifact["feature_schema_version"] == 1
     assert artifact["evaluation"] is None
@@ -1837,3 +1966,10 @@ def test_calibration_report_is_redacted_reproducible_and_restores_policy():
         train_model.MIN_OUTLIER_SAMPLE_SIZE,
         train_model.LOW_SIDE_OUTLIER_POLICY,
     ) == original
+
+
+def test_intentional_exclusions_have_one_definition():
+    from scripts import model_quality_gate
+
+    assert train_model.INTENTIONALLY_EXCLUDED_REASONS is model_quality_gate.INTENTIONALLY_EXCLUDED_REASONS
+    assert "no_hardware_identity_pre_v6_schema" in train_model.INTENTIONALLY_EXCLUDED_REASONS

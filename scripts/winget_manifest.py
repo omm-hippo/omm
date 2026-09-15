@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import zipfile
 from datetime import date
 from pathlib import Path
 
@@ -215,6 +216,7 @@ def main() -> int:
         ValueError,
         WingetManifestError,
         windows_portable.WindowsPortableError,
+        zipfile.BadZipFile,
     ) as error:
         print(f"WinGet manifest generation failed: {error}", file=sys.stderr)
         return 1

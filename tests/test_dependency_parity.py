@@ -17,8 +17,10 @@ def test_checked_in_binary_requirements_match_project_runtime_contract():
         "darwin-x64",
         "win32-x64",
     }
+    # pyproject.toml pins only a `cryptography>=` floor now, so both the Intel
+    # macOS pin and the mainline pin satisfy it directly - the darwin-x64
+    # VERSION_EXCEPTIONS entry is dormant, not applied.
     assert results["darwin-x64"].runtime_versions["cryptography"] == "48.0.0"
-    assert set(results["darwin-x64"].exceptions) == {"cryptography"}
     for target in (
         "linux-x64-gnu",
         "linux-arm64-gnu",
@@ -26,7 +28,8 @@ def test_checked_in_binary_requirements_match_project_runtime_contract():
         "win32-x64",
     ):
         assert results[target].runtime_versions["cryptography"] == "50.0.1"
-        assert results[target].exceptions == {}
+    for result in results.values():
+        assert result.exceptions == {}
 
 
 def test_checker_rejects_a_drifted_runtime_pin(tmp_path):
@@ -147,9 +150,11 @@ def test_homebrew_formula_checker_rejects_version_drift(tmp_path):
 
 def test_cli_checks_the_packaged_source_instead_of_the_tooling_project(tmp_path, capsys):
     source_project = tmp_path / "pyproject.toml"
+    # Tighten the click floor past the pin requirements-npm-binary.txt carries
+    # (click==8.5.0) so the checked-in binary graph no longer satisfies it.
     source_project.write_text(
-        dependency_parity.PYPROJECT.read_text().replace("click==8.5.0", "click==8.4.2")
-    )
+        dependency_parity.PYPROJECT.read_text(encoding="utf-8").replace('"click>=8.1"', '"click>=9"')
+    , encoding="utf-8")
 
     result = dependency_parity.main(
         ["--target", "win32-x64", "--pyproject", str(source_project)]
@@ -170,10 +175,10 @@ def test_release_builds_check_dependency_parity_before_freezing():
     workflows = dependency_parity.ROOT / ".github/workflows"
     if not workflows.is_dir():
         pytest.skip("GitHub workflow files are excluded from the Docker build context")
-    windows = (workflows / "windows-portable.yml").read_text()
+    windows = (workflows / "windows-portable.yml").read_text(encoding="utf-8")
     gate = "tooling/scripts/dependency_parity.py --target win32-x64 --pyproject source/pyproject.toml"
     assert windows.index(gate) < windows.index("python tooling/scripts/windows_portable.py build")
-    npm = (workflows / "npm-release.yml").read_text()
+    npm = (workflows / "npm-release.yml").read_text(encoding="utf-8")
     for job, target in (("platform", '${{ matrix.target }}'), ("windows", "win32-x64")):
         section = re.split(r"\n  [a-z][\w-]*:\n", npm.split(f"\n  {job}:\n", 1)[1])[0]
         assert "scripts/dependency_parity.py --target" in section

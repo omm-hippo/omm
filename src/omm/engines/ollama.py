@@ -19,6 +19,8 @@ from omm.engines.base import (
 )
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+_UNLOAD_CONFIRM_TIMEOUT_SECONDS = 30.0
+_UNLOAD_CONFIRM_POLL_SECONDS = 0.5
 
 
 class OllamaAdapter:
@@ -149,9 +151,10 @@ class OllamaAdapter:
             "model": receipt.model.key,
             "prompt": request.prompt,
             "stream": False,
-            "keep_alive": -1,
             "options": generation_options,
         }
+        if getattr(receipt, "loaded_by_omm", False):
+            base_payload["keep_alive"] = -1
         try:
             response = self._client.request(
                 "POST",
@@ -198,14 +201,17 @@ class OllamaAdapter:
                 default_failure="unload_failed",
                 timeout_failure="unload_failed",
             )
-            for attempt in range(4):
+            deadline = time.monotonic() + _UNLOAD_CONFIRM_TIMEOUT_SECONDS
+            while True:
                 selected = find_runtime_model(
                     self.list_models(), RuntimeModelRef(receipt.model.key)
                 )
                 if selected is None or not selected.loaded:
                     return UnloadResult(True)
-                if attempt < 3:
-                    time.sleep(0.1)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(_UNLOAD_CONFIRM_POLL_SECONDS, remaining))
         except RuntimeAdapterError:
             return UnloadResult(False, "unload_failed")
         return UnloadResult(False, "unload_failed")

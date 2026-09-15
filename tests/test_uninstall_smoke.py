@@ -21,10 +21,10 @@ def _managed_home(tmp_path: Path) -> tuple[Path, Path]:
         check=True,
     )
     (managed / "models").mkdir()
-    (managed / ".omm-managed").write_text("omm installer managed home v1\n")
-    (managed / "config.json").write_text("{}\n")
+    (managed / ".omm-managed").write_text("omm installer managed home v1\n", encoding="utf-8")
+    (managed / "config.json").write_text("{}\n", encoding="utf-8")
     sentinel = managed / "keep-me.txt"
-    sentinel.write_text("user-owned\n")
+    sentinel.write_text("user-owned\n", encoding="utf-8")
     return managed, sentinel
 
 
@@ -222,6 +222,11 @@ exec "$REAL_PYTHON" "$@"
 def test_powershell_purge_preserves_unknown_files_and_refuses_cwd(tmp_path):
     managed, sentinel = _managed_home(tmp_path)
     env, _, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
+    (managed / "client-id").write_text("abc123\n", encoding="utf-8")
+    (managed / "logs").mkdir()
+    (managed / "logs" / "history.log").write_text("log line\n", encoding="utf-8")
+    (managed / "usage.log").write_text("usage line\n", encoding="utf-8")
+    (managed / "telemetry_pending.json.flush.lock").write_text("", encoding="utf-8")
 
     command = f"& '{ROOT / 'uninstall.ps1'}' -Purge; exit $LASTEXITCODE"
     result = subprocess.run(
@@ -238,11 +243,15 @@ def test_powershell_purge_preserves_unknown_files_and_refuses_cwd(tmp_path):
     )
     assert result.returncode == 0, result.stderr or result.stdout
 
-    assert sentinel.read_text() == "user-owned\n"
+    assert sentinel.read_text(encoding="utf-8") == "user-owned\n"
     assert not (managed / "models").exists()
     assert not (managed / "sources").exists()
     assert not (managed / "config.json").exists()
     assert not (managed / ".omm-managed").exists()
+    assert not (managed / "client-id").exists()
+    assert not (managed / "logs").exists()
+    assert not (managed / "usage.log").exists()
+    assert not (managed / "telemetry_pending.json.flush.lock").exists()
 
     unsafe_env = {**env, "OMM_HOME": str(ROOT)}
     refused = subprocess.run(
@@ -279,7 +288,7 @@ def test_powershell_uninstaller_removes_only_installed_pipx_environments(tmp_pat
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
-    assert log.read_text().splitlines() == ["omm-model"]
+    assert log.read_text(encoding="utf-8").splitlines() == ["omm-model"]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell smoke test")
@@ -314,9 +323,14 @@ def test_posix_purge_preserves_unknown_files_and_shell_profiles(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     bashrc = home / ".bashrc"
-    bashrc.write_text('export PATH="$HOME/.local/bin:$PATH"\n')
+    bashrc.write_text('export PATH="$HOME/.local/bin:$PATH"\n', encoding="utf-8")
     env, _, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
     env["HOME"] = str(home)
+    (managed / "client-id").write_text("abc123\n", encoding="utf-8")
+    (managed / "logs").mkdir()
+    (managed / "logs" / "history.log").write_text("log line\n", encoding="utf-8")
+    (managed / "usage.log").write_text("usage line\n", encoding="utf-8")
+    (managed / "telemetry_pending.json.flush.lock").write_text("", encoding="utf-8")
 
     subprocess.run(
         ["sh", str(ROOT / "uninstall.sh"), "--purge"],
@@ -327,12 +341,16 @@ def test_posix_purge_preserves_unknown_files_and_shell_profiles(tmp_path):
         text=True,
     )
 
-    assert sentinel.read_text() == "user-owned\n"
-    assert bashrc.read_text() == 'export PATH="$HOME/.local/bin:$PATH"\n'
+    assert sentinel.read_text(encoding="utf-8") == "user-owned\n"
+    assert bashrc.read_text(encoding="utf-8") == 'export PATH="$HOME/.local/bin:$PATH"\n'
     assert not (managed / "models").exists()
     assert not (managed / "sources").exists()
     assert not (managed / "config.json").exists()
     assert not (managed / ".omm-managed").exists()
+    assert not (managed / "client-id").exists()
+    assert not (managed / "logs").exists()
+    assert not (managed / "usage.log").exists()
+    assert not (managed / "telemetry_pending.json.flush.lock").exists()
 
     unsafe_env = {**env, "OMM_HOME": str(ROOT)}
     refused = subprocess.run(
@@ -346,13 +364,116 @@ def test_posix_purge_preserves_unknown_files_and_shell_profiles(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell smoke test")
+def test_posix_purge_refuses_when_models_still_linked(tmp_path):
+    """--purge deletes models/ directly; it never runs linker.py's unlink
+    logic, so a non-empty link-ownership.json means omm still has models
+    linked into local engines. Refuse before any pipx mutation or file
+    deletion, rather than deleting the hub out from under those links."""
+    managed, sentinel = _managed_home(tmp_path)
+    (managed / "link-ownership.json").write_text(
+        json.dumps({"ollama:model.gguf": {"engine": "ollama"}}), encoding="utf-8"
+    )
+    env, log, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
+
+    result = subprocess.run(
+        ["sh", str(ROOT / "uninstall.sh"), "--purge"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "omm uninstall all" in result.stderr
+    assert not log.exists()  # pipx uninstall was never attempted
+    assert (managed / "models").exists()
+    assert (managed / "config.json").exists()
+    assert (managed / ".omm-managed").exists()
+    assert sentinel.read_text(encoding="utf-8") == "user-owned\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell smoke test")
+@pytest.mark.parametrize("content", ["{}", "{ }\n", "   \n", ""])
+def test_posix_purge_allows_empty_or_whitespace_link_ownership(tmp_path, content):
+    managed, _ = _managed_home(tmp_path)
+    (managed / "link-ownership.json").write_text(content, encoding="utf-8")
+    env, _, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
+
+    result = subprocess.run(
+        ["sh", str(ROOT / "uninstall.sh"), "--purge"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert not (managed / "models").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell smoke test")
+def test_powershell_purge_refuses_when_models_still_linked(tmp_path):
+    managed, sentinel = _managed_home(tmp_path)
+    (managed / "link-ownership.json").write_text(
+        json.dumps({"ollama:model.gguf": {"engine": "ollama"}}), encoding="utf-8"
+    )
+    env, log, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
+
+    command = f"& '{ROOT / 'uninstall.ps1'}' -Purge; exit $LASTEXITCODE"
+    result = subprocess.run(
+        [
+            "powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-Command", command,
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert result.returncode != 0
+    assert "omm uninstall all" in (result.stderr + result.stdout)
+    assert not log.exists()
+    assert (managed / "models").exists()
+    assert (managed / ".omm-managed").exists()
+    assert sentinel.read_text(encoding="utf-8") == "user-owned\n"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell smoke test")
+@pytest.mark.parametrize("content", ["{}", "{ }\n", "   \n", ""])
+def test_powershell_purge_allows_empty_or_whitespace_link_ownership(tmp_path, content):
+    managed, _ = _managed_home(tmp_path)
+    (managed / "link-ownership.json").write_text(content, encoding="utf-8")
+    env, _, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
+
+    command = f"& '{ROOT / 'uninstall.ps1'}' -Purge; exit $LASTEXITCODE"
+    result = subprocess.run(
+        [
+            "powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-Command", command,
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert not (managed / "models").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell smoke test")
 def test_posix_data_only_purge_succeeds_without_pipx(tmp_path):
     managed = tmp_path / "custom-omm-home"
     (managed / "models").mkdir(parents=True)
-    (managed / ".omm-managed").write_text("omm installer managed home v1\n")
-    (managed / "config.json").write_text("{}\n")
+    (managed / ".omm-managed").write_text("omm installer managed home v1\n", encoding="utf-8")
+    (managed / "config.json").write_text("{}\n", encoding="utf-8")
     sentinel = managed / "keep-me.txt"
-    sentinel.write_text("user-owned\n")
+    sentinel.write_text("user-owned\n", encoding="utf-8")
     stub = tmp_path / "bin"
     stub.mkdir()
     for name in ("python3", "python", "pipx"):
@@ -372,7 +493,7 @@ def test_posix_data_only_purge_succeeds_without_pipx(tmp_path):
     assert not (managed / "models").exists()
     assert not (managed / "config.json").exists()
     assert not (managed / ".omm-managed").exists()
-    assert sentinel.read_text() == "user-owned\n"
+    assert sentinel.read_text(encoding="utf-8") == "user-owned\n"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell smoke test")
@@ -405,7 +526,7 @@ def test_posix_uninstaller_removes_only_installed_pipx_environments(
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
-    actual = log.read_text().splitlines() if log.exists() else []
+    actual = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     assert actual == expected_uninstalls
     assert not (managed / "sources").exists()
 
@@ -469,8 +590,8 @@ def test_posix_uninstaller_preserves_unrelated_omm_environment(tmp_path, install
 
     assert result.returncode != 0
     assert not log.exists()
-    assert "Preserving unrelated pipx environment 'omm'" in result.stderr
-    assert "environment-name conflict" in result.stderr
+    assert "could not be verified as an OMM install" in result.stderr
+    assert "source checkout was deleted" in result.stderr
     assert (managed / "sources").is_dir()
     command = subprocess.run(["omm", "--version"], env=env, capture_output=True, text=True)
     assert command.returncode == 0
@@ -498,3 +619,142 @@ def test_posix_uninstaller_rejects_ambiguous_legacy_source(tmp_path, bad_source_
     assert result.returncode != 0
     assert not log.exists()
     assert (managed / "sources").is_dir()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="POSIX permission-based retry test (meaningless as root)",
+)
+def test_posix_uninstall_retries_after_locked_source_removal(tmp_path):
+    """A locked source checkout (e.g. an omm process still holding a file
+    open) must not permanently strand the uninstaller behind the "no
+    verified OMM pipx environment was removed" guard on retry: the pipx
+    environment really was removed this run, it is only the source-checkout
+    cleanup that failed and needs another pass."""
+    managed, _ = _managed_home(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    env, log, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
+    env["HOME"] = str(home)
+
+    sha_dir = next((managed / "sources").iterdir())
+    (sha_dir / "extra-file.txt").write_text("locked\n", encoding="utf-8")
+    sha_dir.chmod(0o555)
+    try:
+        result = subprocess.run(
+            ["sh", str(ROOT / "uninstall.sh")],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert (managed / "sources").exists()
+        assert (managed / ".omm-uninstall-pending").is_file()
+        assert log.read_text(encoding="utf-8").splitlines() == ["omm-model"]
+    finally:
+        sha_dir.chmod(0o755)
+
+    result2 = subprocess.run(
+        ["sh", str(ROOT / "uninstall.sh")],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result2.returncode == 0, result2.stderr or result2.stdout
+    assert not (managed / "sources").exists()
+    assert not (managed / ".omm-uninstall-pending").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="POSIX permission-based retry test (meaningless as root)",
+)
+def test_posix_uninstall_purge_retry_removes_managed_marker_once_sources_are_gone(tmp_path):
+    """While the locked source checkout still blocks removal, --purge must
+    not delete `.omm-managed` - a retry needs it to pass the "unrecognized
+    custom OMM_HOME" guard. Once the checkout is finally removable, a
+    further --purge run must clean up both the marker and .omm-managed."""
+    managed, _ = _managed_home(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    env, log, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
+    env["HOME"] = str(home)
+
+    sha_dir = next((managed / "sources").iterdir())
+    (sha_dir / "extra-file.txt").write_text("locked\n", encoding="utf-8")
+    sha_dir.chmod(0o555)
+    try:
+        result = subprocess.run(
+            ["sh", str(ROOT / "uninstall.sh"), "--purge"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert (managed / ".omm-managed").exists()
+        assert (managed / ".omm-uninstall-pending").is_file()
+    finally:
+        sha_dir.chmod(0o755)
+
+    result2 = subprocess.run(
+        ["sh", str(ROOT / "uninstall.sh"), "--purge"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result2.returncode == 0, result2.stderr or result2.stdout
+    assert not (managed / "sources").exists()
+    assert not (managed / ".omm-managed").exists()
+    assert not (managed / ".omm-uninstall-pending").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell smoke test")
+def test_powershell_uninstall_retries_after_locked_source_removal(tmp_path):
+    """Mirrors test_posix_uninstall_retries_after_locked_source_removal: a
+    file still open elsewhere (Python's plain `open()` does not grant
+    FILE_SHARE_DELETE) blocks Remove-Item, and the retry must not hit the
+    "no verified OMM pipx environment was removed" guard."""
+    managed, _ = _managed_home(tmp_path)
+    env, log, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
+
+    sha_dir = next((managed / "sources").iterdir())
+    head_file = sha_dir / ".git" / "HEAD"
+    handle = open(head_file, "rb")
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", str(ROOT / "uninstall.ps1"), "-Purge",
+            ],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert result.returncode != 0
+        assert (managed / "sources").exists()
+        assert (managed / ".omm-managed").exists()
+        assert (managed / ".omm-uninstall-pending").is_file()
+    finally:
+        handle.close()
+
+    result2 = subprocess.run(
+        [
+            "powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(ROOT / "uninstall.ps1"), "-Purge",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert result2.returncode == 0, result2.stderr or result2.stdout
+    assert not (managed / "sources").exists()

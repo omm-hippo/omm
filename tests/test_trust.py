@@ -1,4 +1,7 @@
+import os
+import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -27,9 +30,9 @@ def other_signing_key(tmp_path):
 
 @pytest.fixture
 def allowed_signers(tmp_path, signing_key):
-    pub_key = (signing_key.with_suffix(".pub")).read_text().strip()
+    pub_key = (signing_key.with_suffix(".pub")).read_text(encoding="utf-8").strip()
     path = tmp_path / "allowed_signers"
-    path.write_text(f"test@example.com {pub_key}\n")
+    path.write_text(f"test@example.com {pub_key}\n", encoding="utf-8")
     return path
 
 
@@ -45,7 +48,7 @@ def repo(tmp_path):
     # tests opt in with `git commit -S`; every other commit must stay truly
     # unsigned even after a signed commit set the repo-local signing key.
     _run(["git", "config", "commit.gpgsign", "false"], cwd=repo_dir)
-    (repo_dir / "file.txt").write_text("hello\n")
+    (repo_dir / "file.txt").write_text("hello\n", encoding="utf-8")
     _run(["git", "add", "file.txt"], cwd=repo_dir)
     return repo_dir
 
@@ -122,7 +125,7 @@ def test_verified_install_commit_selects_signed_second_parent(repo, signing_key,
     _commit(repo, "base")
     default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
     _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
-    (repo / "file.txt").write_text("feature\n")
+    (repo / "file.txt").write_text("feature\n", encoding="utf-8")
     _run(["git", "add", "file.txt"], cwd=repo)
     feature_commit = _commit(repo, "feature work", signing_key=signing_key)
     _run(["git", "checkout", "-q", default_branch], cwd=repo)
@@ -141,7 +144,7 @@ def test_verify_commit_merge_commit_fails_when_second_parent_untrusted(
     _commit(repo, "base")
     default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
     _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
-    (repo / "file.txt").write_text("feature\n")
+    (repo / "file.txt").write_text("feature\n", encoding="utf-8")
     _run(["git", "add", "file.txt"], cwd=repo)
     _commit(repo, "feature work by stranger", signing_key=other_signing_key)
     _run(["git", "checkout", "-q", default_branch], cwd=repo)
@@ -165,12 +168,12 @@ def test_verify_commit_rejects_nested_update_branch_merge(repo, signing_key, all
     default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
 
     _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
-    (repo / "file.txt").write_text("feature\n")
+    (repo / "file.txt").write_text("feature\n", encoding="utf-8")
     _run(["git", "add", "file.txt"], cwd=repo)
     _commit(repo, "signed feature work", signing_key=signing_key)
 
     _run(["git", "checkout", "-q", default_branch], cwd=repo)
-    (repo / "main.txt").write_text("main advanced\n")
+    (repo / "main.txt").write_text("main advanced\n", encoding="utf-8")
     _run(["git", "add", "main.txt"], cwd=repo)
     _commit(repo, "main advanced")
 
@@ -209,7 +212,7 @@ def test_verify_commit_passes_when_merge_commit_itself_is_signed(
     _commit(repo, "base")
     default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
     _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
-    (repo / "file.txt").write_text("feature\n")
+    (repo / "file.txt").write_text("feature\n", encoding="utf-8")
     _run(["git", "add", "file.txt"], cwd=repo)
     _commit(repo, "feature work")  # unsigned - must not matter
     _run(["git", "checkout", "-q", default_branch], cwd=repo)
@@ -235,12 +238,12 @@ def test_verify_update_rejects_signed_parent_with_tampered_merge_result(
     base = _commit(repo, "base")
     default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
     _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
-    (repo / "feature.txt").write_text("reviewed\n")
+    (repo / "feature.txt").write_text("reviewed\n", encoding="utf-8")
     _run(["git", "add", "feature.txt"], cwd=repo)
     _commit(repo, "signed feature", signing_key=signing_key)
     _run(["git", "checkout", "-q", default_branch], cwd=repo)
     _run(["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "merge", "feature"], cwd=repo)
-    (repo / "malicious.txt").write_text("not present in either parent\n")
+    (repo / "malicious.txt").write_text("not present in either parent\n", encoding="utf-8")
     _run(["git", "add", "malicious.txt"], cwd=repo)
     _run(["git", "commit", "-q", "--amend", "--no-gpg-sign", "--no-edit"], cwd=repo)
     target = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
@@ -255,15 +258,15 @@ def test_verify_update_follows_skipped_trust_rotation(
     repo, signing_key, other_signing_key, allowed_signers
 ):
     base = _commit(repo, "base", signing_key=signing_key)
-    new_pub_key = other_signing_key.with_suffix(".pub").read_text().strip()
+    new_pub_key = other_signing_key.with_suffix(".pub").read_text(encoding="utf-8").strip()
     anchor_in_repo = repo / trust.TRUST_ANCHOR_REPO_PATH
     anchor_in_repo.parent.mkdir(parents=True)
     anchor_in_repo.write_text(
-        allowed_signers.read_text() + f"bot@example.com {new_pub_key}\n"
-    )
+        allowed_signers.read_text(encoding="utf-8") + f"bot@example.com {new_pub_key}\n"
+    , encoding="utf-8")
     _run(["git", "add", trust.TRUST_ANCHOR_REPO_PATH], cwd=repo)
     transition = _commit(repo, "add bot signer", signing_key=signing_key)
-    (repo / "file.txt").write_text("generated data\n")
+    (repo / "file.txt").write_text("generated data\n", encoding="utf-8")
     _run(["git", "add", "file.txt"], cwd=repo)
     target = _commit(repo, "bot update", signing_key=other_signing_key)
 
@@ -281,15 +284,15 @@ def test_verify_update_rejects_key_that_approves_itself(
     repo, signing_key, other_signing_key, allowed_signers
 ):
     base = _commit(repo, "base", signing_key=signing_key)
-    new_pub_key = other_signing_key.with_suffix(".pub").read_text().strip()
+    new_pub_key = other_signing_key.with_suffix(".pub").read_text(encoding="utf-8").strip()
     anchor_in_repo = repo / trust.TRUST_ANCHOR_REPO_PATH
     anchor_in_repo.parent.mkdir(parents=True)
     anchor_in_repo.write_text(
-        allowed_signers.read_text() + f"stranger@example.com {new_pub_key}\n"
-    )
+        allowed_signers.read_text(encoding="utf-8") + f"stranger@example.com {new_pub_key}\n"
+    , encoding="utf-8")
     _run(["git", "add", trust.TRUST_ANCHOR_REPO_PATH], cwd=repo)
     transition = _commit(repo, "stranger adds itself", signing_key=other_signing_key)
-    (repo / "file.txt").write_text("malicious update\n")
+    (repo / "file.txt").write_text("malicious update\n", encoding="utf-8")
     _run(["git", "add", "file.txt"], cwd=repo)
     target = _commit(repo, "stranger update", signing_key=other_signing_key)
 
@@ -304,7 +307,7 @@ def test_verify_update_rejects_replay_of_older_trusted_commit(
     repo, signing_key, allowed_signers
 ):
     older = _commit(repo, "older signed release", signing_key=signing_key)
-    (repo / "file.txt").write_text("security fix\n")
+    (repo / "file.txt").write_text("security fix\n", encoding="utf-8")
     _run(["git", "add", "file.txt"], cwd=repo)
     installed = _commit(repo, "newer signed release", signing_key=signing_key)
 
@@ -326,12 +329,12 @@ def test_verify_update_across_diverged_branches_via_merge_base(
     base = _commit(repo, "base", signing_key=signing_key)
 
     _run(["git", "checkout", "-q", "-b", "installed-branch"], cwd=repo)
-    (repo / "beta.txt").write_text("beta-only work\n")
+    (repo / "beta.txt").write_text("beta-only work\n", encoding="utf-8")
     _run(["git", "add", "beta.txt"], cwd=repo)
     installed = _commit(repo, "beta-only fix", signing_key=signing_key)
 
     _run(["git", "checkout", "-q", "-b", "topic", base], cwd=repo)
-    (repo / "main.txt").write_text("main-only work\n")
+    (repo / "main.txt").write_text("main-only work\n", encoding="utf-8")
     _run(["git", "add", "main.txt"], cwd=repo)
     topic = _commit(repo, "signed topic work", signing_key=signing_key)
 
@@ -362,7 +365,7 @@ def test_verify_update_from_offtrunk_installed_commit(repo, signing_key, allowed
     default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
 
     _run(["git", "checkout", "-q", "-b", "pr", base], cwd=repo)
-    (repo / "pr.txt").write_text("reviewed work\n")
+    (repo / "pr.txt").write_text("reviewed work\n", encoding="utf-8")
     _run(["git", "add", "pr.txt"], cwd=repo)
     installed = _commit(repo, "signed PR tip", signing_key=signing_key)
 
@@ -373,7 +376,7 @@ def test_verify_update_from_offtrunk_installed_commit(repo, signing_key, allowed
     # branch tip itself never verifies directly (GitHub signs the merge with
     # its own key) - the lineage walk is the only path to trust.
     _run(["git", "checkout", "-q", "-b", "pr2", "HEAD"], cwd=repo)
-    (repo / "pr2.txt").write_text("more reviewed work\n")
+    (repo / "pr2.txt").write_text("more reviewed work\n", encoding="utf-8")
     _run(["git", "add", "pr2.txt"], cwd=repo)
     _commit(repo, "second signed PR tip", signing_key=signing_key)
     _run(["git", "checkout", "-q", default_branch], cwd=repo)
@@ -397,7 +400,7 @@ def test_verify_update_from_offtrunk_installed_commit(repo, signing_key, allowed
 def test_verify_update_rejects_unrelated_history(repo, signing_key, allowed_signers):
     installed = _commit(repo, "installed release", signing_key=signing_key)
     _run(["git", "checkout", "-q", "--orphan", "unrelated"], cwd=repo)
-    (repo / "file.txt").write_text("unrelated\n")
+    (repo / "file.txt").write_text("unrelated\n", encoding="utf-8")
     _run(["git", "add", "file.txt"], cwd=repo)
     target = _commit(repo, "unrelated history")  # unsigned: must not verify directly
 
@@ -415,7 +418,7 @@ def test_verify_update_channel_switch_accepts_ancestor_target(
     everything main has) is a deliberate downgrade the user asked for, not an
     attacker forcing a silent rollback - `same_branch=False` must accept it."""
     older = _commit(repo, "older signed release", signing_key=signing_key)
-    (repo / "file.txt").write_text("newer work\n")
+    (repo / "file.txt").write_text("newer work\n", encoding="utf-8")
     _run(["git", "add", "file.txt"], cwd=repo)
     installed = _commit(repo, "newer signed release", signing_key=signing_key)
 
@@ -427,12 +430,61 @@ def test_verify_update_channel_switch_accepts_ancestor_target(
     assert older[:7] in message
 
 
+def test_verify_update_channel_switch_rejects_unsigned_ancestor(
+    repo, signing_key, allowed_signers
+):
+    """An ancestor that was never itself authenticated (an unsigned
+    intermediate commit, not a two-parent merge with a signed second parent)
+    must not be accepted just because it happens to precede the installed
+    commit - the old same_branch=False shortcut treated "is an ancestor" and
+    "was already verified" as equivalent, which they are not for the
+    first-parent-only lineage walk."""
+    older = _commit(repo, "unsigned pr intermediate")
+    (repo / "file.txt").write_text("newer work\n", encoding="utf-8")
+    _run(["git", "add", "file.txt"], cwd=repo)
+    installed = _commit(repo, "installed signed release", signing_key=signing_key)
+
+    ok, message = trust.verify_update(
+        repo, installed, older, allowed_signers, same_branch=False
+    )
+
+    assert not ok
+    assert "not authenticated" in message
+
+
+def test_verify_update_channel_switch_accepts_github_style_merge_ancestor(
+    repo, signing_key, allowed_signers
+):
+    """A channel-switch ancestor that is a GitHub-style two-parent merge (the
+    merge itself unsigned, its second parent the signed PR tip) must still be
+    accepted when its merge-result tree is deterministic - the same trust
+    rule the forward lineage walk already applies."""
+    base = _commit(repo, "base", signing_key=signing_key)
+    default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
+    _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
+    (repo / "feature.txt").write_text("reviewed\n", encoding="utf-8")
+    _run(["git", "add", "feature.txt"], cwd=repo)
+    _commit(repo, "signed feature", signing_key=signing_key)
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    _run(["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "merge feature", "feature"], cwd=repo)
+    target = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+    (repo / "more.txt").write_text("more\n", encoding="utf-8")
+    _run(["git", "add", "more.txt"], cwd=repo)
+    installed = _commit(repo, "installed signed release", signing_key=signing_key)
+
+    ok, message = trust.verify_update(
+        repo, installed, target, allowed_signers, same_branch=False
+    )
+
+    assert ok, message
+
+
 def test_current_trust_anchor_points_at_bundled_file():
     anchor = trust.current_trust_anchor()
 
     assert anchor is not None
     assert anchor.name == "allowed_signers"
-    assert "ssh-ed25519" in anchor.read_text()
+    assert "ssh-ed25519" in anchor.read_text(encoding="utf-8")
 
 
 def test_verify_update_accepts_the_installed_commit_as_its_own_target(
@@ -445,7 +497,7 @@ def test_verify_update_accepts_the_installed_commit_as_its_own_target(
     _commit(repo, "base", signing_key=signing_key)
     default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
     _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
-    (repo / "feature.txt").write_text("reviewed\n")
+    (repo / "feature.txt").write_text("reviewed\n", encoding="utf-8")
     _run(["git", "add", "feature.txt"], cwd=repo)
     _commit(repo, "signed feature", signing_key=signing_key)
     _run(["git", "checkout", "-q", default_branch], cwd=repo)
@@ -456,3 +508,54 @@ def test_verify_update_accepts_the_installed_commit_as_its_own_target(
 
     assert ok, message
     assert "already the installed commit" in message
+
+
+def test_verify_update_names_git_version_when_merge_tree_unavailable(
+    repo, signing_key, allowed_signers, monkeypatch
+):
+    """`git merge-tree --write-tree` only exists from git 2.38 onward. On an
+    older git the old code silently reported an "unauthenticated merge-result
+    tree" - indistinguishable from a real tampering attempt - instead of
+    telling the user their git is too old."""
+    base = _commit(repo, "base")
+    default_branch = _run(["git", "branch", "--show-current"], cwd=repo).strip()
+    _run(["git", "checkout", "-q", "-b", "feature"], cwd=repo)
+    (repo / "feature.txt").write_text("reviewed\n", encoding="utf-8")
+    _run(["git", "add", "feature.txt"], cwd=repo)
+    _commit(repo, "signed feature", signing_key=signing_key)
+    _run(["git", "checkout", "-q", default_branch], cwd=repo)
+    _run(["git", "merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "merge", "feature"], cwd=repo)
+    target = _run(["git", "rev-parse", "HEAD"], cwd=repo).strip()
+
+    monkeypatch.setattr(trust, "_git_version", lambda: (2, 37))
+    ok, message = trust.verify_update(repo, base, target, allowed_signers)
+
+    assert not ok
+    assert "git 2.38+" in message
+    assert "unauthenticated" not in message
+
+    monkeypatch.undo()
+    ok, message = trust.verify_update(repo, base, target, allowed_signers)
+
+    assert ok, message
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only CWD executable lookup")
+def test_git_lookup_ignores_current_directory(tmp_path, monkeypatch):
+    """A planted `git.exe` sitting in the working directory must not run in
+    place of the real git once `_forbid_cwd_executable_lookup` has set
+    NoDefaultCurrentDirectoryInExePath - otherwise it executes as this
+    process on the very first bare `git` call, before any signature is ever
+    checked."""
+    shutil.copy(
+        os.path.join(os.environ["SystemRoot"], "System32", "hostname.exe"),
+        tmp_path / "git.exe",
+    )
+    # setenv first so monkeypatch records and restores this var afterward.
+    monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "x")
+    monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath")
+    monkeypatch.chdir(tmp_path)
+
+    trust._forbid_cwd_executable_lookup()
+
+    assert trust._git_version_ok() is True

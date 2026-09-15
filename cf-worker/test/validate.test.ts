@@ -186,6 +186,22 @@ describe("path/control-character rejection on model fields", () => {
 
   it("still accepts a legitimate model_installed tag", () => ok({ ...valid, model_installed: "llama3.1:8b-instruct-q4_0" }));
   it("still accepts a legitimate model_repo_id", () => ok({ ...valid, model_repo_id: "meta-llama/Llama-3.1-8B-Instruct-GGUF" }));
+
+  it.each(["model_repo_id", "runtime_profile"])("rejects a non-string %s", (key) => {
+    for (const bad of [{ x: ["/home/victim/.ssh/id_rsa"] }, ["a"], 5, true]) {
+      expect(validateTelemetryEvent({ ...valid, [key]: bad }).valid).toBe(false);
+    }
+  });
+
+  it("rejects non-string legacy os/cpu/gpu", () => {
+    const v2 = { ...valid, benchmark_version: 2 };
+    expect(validateTelemetryEvent({ ...v2, os: "Linux", cpu: "x", gpu: "y" }).valid).toBe(true);
+    for (const key of ["os", "cpu", "gpu"]) {
+      for (const bad of [{}, [1], 3, false]) {
+        expect(validateTelemetryEvent({ ...v2, [key]: bad }).valid).toBe(false);
+      }
+    }
+  });
 });
 
 const v7Success = {

@@ -8,7 +8,7 @@ import pytest
 
 from omm import hub
 from omm.providers import huggingface, modelscope
-from omm.providers.base import AmbiguousProviderError, ModelResolutionError
+from omm.providers.base import AmbiguousModelError, AmbiguousProviderError, ModelResolutionError
 
 
 def _stub_fetch_repo_files(monkeypatch, module, files_by_repo: dict[str, list[str]]):
@@ -55,6 +55,38 @@ def test_bare_repo_resolves_to_sole_matching_provider(monkeypatch):
     resolved = hub.resolve_model("org/only-on-ms")
     assert resolved.provider == "modelscope"
     assert resolved.filename == "model.gguf"
+    assert resolved.note is None
+
+
+def test_bare_repo_reports_outage_instead_of_not_found(monkeypatch):
+    def boom(repo_id):
+        raise ModelResolutionError("boom", kind="unavailable")
+
+    monkeypatch.setattr(huggingface, "fetch_repo_files", boom)
+    monkeypatch.setattr(modelscope, "fetch_repo_files", boom)
+
+    with pytest.raises(ModelResolutionError) as exc_info:
+        hub.resolve_model("org/repo")
+
+    message = str(exc_info.value)
+    assert "not found" not in message
+    assert "Could not check" in message
+    assert "hf:org/repo" in exc_info.value.fix
+
+
+def test_bare_repo_notes_when_other_provider_unavailable(monkeypatch):
+    def hf_boom(repo_id):
+        raise ModelResolutionError("HF is down", kind="unavailable")
+
+    _stub_fetch_repo_files(monkeypatch, modelscope, {"org/repo": ["model.gguf"]})
+    monkeypatch.setattr(huggingface, "fetch_repo_files", hf_boom)
+
+    resolved = hub.resolve_model("org/repo")
+
+    assert resolved.provider == "modelscope"
+    assert resolved.filename == "model.gguf"
+    assert resolved.note is not None
+    assert "could not be checked" in resolved.note
 
 
 def test_bare_repo_on_both_providers_raises_ambiguous_provider_error(monkeypatch):
@@ -113,3 +145,87 @@ def test_fetch_repo_metadata_routes_to_provider_module(monkeypatch):
 def test_fetch_repo_metadata_rejects_an_unknown_provider():
     with pytest.raises(ModelResolutionError):
         hub.fetch_repo_metadata("nowhere", "org/repo")
+
+
+def test_repo_listing_excludes_split_gguf_parts(monkeypatch):
+    _stub_fetch_repo_files(
+        monkeypatch,
+        huggingface,
+        {
+            "org/repo": [
+                "m-Q4_K_M.gguf",
+                "m-Q8_0-00001-of-00002.gguf",
+                "m-Q8_0-00002-of-00002.gguf",
+            ]
+        },
+    )
+
+    resolved = hub.resolve_model("hf:org/repo")
+
+    assert resolved.filename == "m-Q4_K_M.gguf"
+
+
+def test_repo_with_only_split_parts_raises_clear_error(monkeypatch):
+    _stub_fetch_repo_files(
+        monkeypatch,
+        huggingface,
+        {
+            "org/repo": [
+                "m-00001-of-00003.gguf",
+                "m-00002-of-00003.gguf",
+                "m-00003-of-00003.gguf",
+            ]
+        },
+    )
+
+    with pytest.raises(ModelResolutionError) as exc_info:
+        hub.resolve_model("hf:org/repo")
+
+    assert not isinstance(exc_info.value, AmbiguousModelError)
+    assert "split" in str(exc_info.value)
+
+
+def test_explicit_split_part_filename_is_rejected(monkeypatch):
+    with pytest.raises(ModelResolutionError):
+        hub.resolve_model("hf:org/repo:m-00001-of-00002.gguf")
+
+
+def test_single_part_of_one_is_not_treated_as_shard(monkeypatch):
+    _stub_fetch_repo_files(
+        monkeypatch,
+        huggingface,
+        {"org/repo": ["m-00001-of-00001.gguf"]},
+    )
+
+    resolved = hub.resolve_model("hf:org/repo")
+
+    assert resolved.filename == "m-00001-of-00001.gguf"
+
+
+def test_unsafe_repo_filename_is_skipped_instead_of_failing_the_repo(monkeypatch):
+    _stub_fetch_repo_files(
+        monkeypatch,
+        huggingface,
+        {"org/repo": ["aux.gguf", "model-Q4_K_M.gguf"]},
+    )
+
+    resolved = hub.resolve_model("hf:org/repo")
+
+    assert resolved.filename == "model-Q4_K_M.gguf"
+
+
+def test_repo_with_only_unsafe_filenames_reports_how_many_were_rejected(monkeypatch):
+    _stub_fetch_repo_files(
+        monkeypatch,
+        huggingface,
+        {"org/repo": ["aux.gguf", "con.gguf"]},
+    )
+
+    with pytest.raises(ModelResolutionError, match="rejected as unsafe"):
+        hub.resolve_model("hf:org/repo")
+
+
+def test_unknown_provider_prefix_is_named_instead_of_blaming_the_repo_id():
+    for name in ("hg:bartowski/Llama-3-8B:model.Q4_K_M.gguf", "hg:org/repo"):
+        with pytest.raises(ModelResolutionError, match="unknown provider prefix"):
+            hub.resolve_model(name)

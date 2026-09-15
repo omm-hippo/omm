@@ -914,6 +914,19 @@ def test_resolve_upload_decision_ask_falls_back_to_confirm(isolated_omm_home, mo
     assert cli._resolve_upload_decision("other") is False
 
 
+def test_resolve_upload_decision_ask_without_tty_returns_false_without_prompt(
+    isolated_omm_home, monkeypatch
+):
+    """A non-interactive process (e.g. a hidden background child) must not
+    block on - or silently answer - a data-upload prompt it can't actually
+    show. `_ask_upload_choice` is left unstubbed so a regression that moves
+    the guard elsewhere would hang on the real (patched-out) prompt."""
+    cli.config_mod.update_config(telemetry_send_policy="ask")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+
+    assert cli._resolve_upload_decision("p") is False
+
+
 def test_resolve_upload_decision_always_choice_persists_policy_and_uploads(isolated_omm_home, monkeypatch):
     cli.config_mod.update_config(telemetry_send_policy="ask")
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "always")
@@ -1559,6 +1572,170 @@ def test_force_clears_stale_dest_and_part_before_redownloading(isolated_omm_home
     assert dest_existed_at_download_time == [False]
     assert not part.exists()
     assert dest.read_bytes() == b"fresh-bytes"
+
+
+def test_force_preserves_existing_model_until_download_when_space_allows(
+    isolated_omm_home, monkeypatch
+):
+    """Regression (audit #5): `--force` used to delete an existing, complete
+    model *before* even starting the new download - so a network failure
+    mid-download left neither the old file nor the new one, with no
+    recovery. The preflight already grants "reclaim credit" for dest's own
+    bytes (`replace_existing=force`); when the volume has enough free space
+    without reclaiming anything, deleting the old file first serves no
+    purpose and only adds risk. This runs the real `_prepare_install_artifact`
+    (not a stub) - only `_ensure_install_disk_capacity` (real disk state) and
+    `download_file`/`remote_file_size` (network) are faked.
+
+    `dest` must live under `cli.MODELS_DIR` (not an arbitrary tmp_path) -
+    the force-cleanup this test is exercising goes through
+    `_cleanup_incomplete_install` -> `_managed_model_path`, which resolves
+    strictly inside the configured hub, not whatever `dest` the caller
+    passed in."""
+    destination = cli.MODELS_DIR / "model.gguf"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"existing-complete-model")
+
+    capacity_calls = []
+
+    def fake_capacity(dest, size_bytes, *, include_download, only_engine, replace_existing=False):
+        capacity_calls.append(replace_existing)
+        # Every preflight call succeeds - this volume has plenty of room
+        # even without crediting the existing file's bytes back.
+
+    monkeypatch.setattr(cli, "_ensure_install_disk_capacity", fake_capacity)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 1024)
+    monkeypatch.setattr(cli, "sha256_file", lambda _path: "expected-sha")
+
+    dest_existed_at_download_time = []
+
+    def fake_download(_url, path, **_kwargs):
+        dest_existed_at_download_time.append(path.exists())
+        path.write_bytes(b"fresh-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    prepared = cli._prepare_install_artifact(
+        url="https://example.test/model.gguf",
+        filename="model.gguf",
+        repo_id="org/repo",
+        provider="huggingface",
+        dest=destination,
+        expected_sha256="expected-sha",
+        force=True,
+        skip_unfit=False,
+        stop_event=None,
+        only_engine=None,
+        opts=cli.GlobalOptions(),
+    )
+
+    # The old file was still there when the new download started - never
+    # deleted up front just because --force was passed.
+    assert dest_existed_at_download_time == [True]
+    assert prepared.downloaded_now is True
+    assert destination.read_bytes() == b"fresh-bytes"
+    # 1) the original preflight (credited with reclaiming dest, force=True),
+    # 2) this fix's without-reclaim check (also succeeds - no delete needed),
+    # 3) the post-download final capacity check (its own default, unrelated
+    #    to force).
+    assert capacity_calls == [True, False, False]
+
+
+def test_force_deletes_existing_model_when_reclaiming_is_actually_needed(
+    isolated_omm_home, monkeypatch
+):
+    """Companion to the above: when the volume genuinely has no room for
+    the new download without freeing the old file's bytes, `--force` must
+    still delete it up front exactly as before - the fix only removes the
+    *unnecessary* deletion, not the necessary one."""
+    destination = cli.MODELS_DIR / "model.gguf"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"existing-complete-model")
+
+    capacity_calls = []
+
+    def fake_capacity(dest, size_bytes, *, include_download, only_engine, replace_existing=False):
+        capacity_calls.append(replace_existing)
+        if include_download and not replace_existing:
+            # This volume only fits the new download if dest's bytes are
+            # reclaimed first.
+            raise cli.InsufficientDiskSpaceError("not enough free space")
+
+    monkeypatch.setattr(cli, "_ensure_install_disk_capacity", fake_capacity)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 1024)
+    monkeypatch.setattr(cli, "sha256_file", lambda _path: "expected-sha")
+
+    dest_existed_at_download_time = []
+
+    def fake_download(_url, path, **_kwargs):
+        dest_existed_at_download_time.append(path.exists())
+        path.write_bytes(b"fresh-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    cli._prepare_install_artifact(
+        url="https://example.test/model.gguf",
+        filename="model.gguf",
+        repo_id="org/repo",
+        provider="huggingface",
+        dest=destination,
+        expected_sha256="expected-sha",
+        force=True,
+        skip_unfit=False,
+        stop_event=None,
+        only_engine=None,
+        opts=cli.GlobalOptions(),
+    )
+
+    assert dest_existed_at_download_time == [False]
+    assert destination.read_bytes() == b"fresh-bytes"
+
+
+def test_force_reclaim_does_not_delete_partial_owned_by_active_download(
+    isolated_omm_home, monkeypatch
+):
+    """When a force reclaim is actually needed (see the test above), it must
+    not blow away a `.part` another download is actively writing - the
+    reclaim now takes the same download lock the downloader itself holds,
+    so it either waits (not here, timeout=0) or refuses instead of stomping
+    on live bytes."""
+    from omm import downloader
+
+    destination = cli.MODELS_DIR / "model.gguf"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"existing-complete-model")
+    part_path = destination.with_name(destination.name + ".part")
+    part_path.write_bytes(b"partial-bytes-in-flight")
+
+    def fake_capacity(dest, size_bytes, *, include_download, only_engine, replace_existing=False):
+        if include_download and not replace_existing:
+            raise cli.InsufficientDiskSpaceError("not enough free space")
+
+    monkeypatch.setattr(cli, "_ensure_install_disk_capacity", fake_capacity)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 1024)
+    monkeypatch.setattr(cli, "sha256_file", lambda _path: "expected-sha")
+    monkeypatch.setattr(
+        cli, "download_file", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no download"))
+    )
+
+    with downloader.locked(downloader._download_lock_path(destination)):
+        with pytest.raises(cli.DownloadError):
+            cli._prepare_install_artifact(
+                url="https://example.test/model.gguf",
+                filename="model.gguf",
+                repo_id="org/repo",
+                provider="huggingface",
+                dest=destination,
+                expected_sha256="expected-sha",
+                force=True,
+                skip_unfit=False,
+                stop_event=None,
+                only_engine=None,
+                opts=cli.GlobalOptions(),
+            )
+
+    assert part_path.exists()
+    assert destination.exists()
 
 
 def test_without_force_skips_fetch_when_already_present(isolated_omm_home, monkeypatch):

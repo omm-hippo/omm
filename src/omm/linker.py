@@ -263,6 +263,9 @@ def _linux_install_artifact_exists(install_dirs: Sequence[Path], desktop_entry_g
     return False
 
 
+_LMSTUDIO_WINDOWS_INSTALL_DIRS = ("LM Studio", "lm-studio", "lmstudio")
+
+
 def is_lmstudio_installed() -> bool:
     # A headless llmster install (the `lms` CLI + daemon, no GUI) is a
     # real, usable install with no app bundle at all - check it first.
@@ -270,7 +273,14 @@ def is_lmstudio_installed() -> bool:
         return True
     if platform.system() == "Darwin":
         return _app_bundle_installed("LM Studio")
-    return lmstudio_home_dir().exists()
+    if lmstudio_home_dir().exists():
+        return True
+    if platform.system() == "Windows":
+        # electron-builder NSIS writes %LOCALAPPDATA%\Programs\LM Studio and a
+        # Start Menu shortcut at install time; ~/.lmstudio and lms.exe only
+        # appear on first run.
+        return _windows_install_artifact_exists(_LMSTUDIO_WINDOWS_INSTALL_DIRS, "LM Studio*.lnk")
+    return False
 
 
 def find_ollama_executable() -> Path | None:
@@ -783,6 +793,16 @@ def _link_file_impl(
         if platform.system() != "Windows":
             raise LinkError(f"Could not create symlink at {dst}: {error}.") from error
 
+    return _copy_fallback(src, dst, on_copy, errors)
+
+
+def _copy_fallback(
+    src: Path, dst: Path, on_copy: CopyReporter | None, errors: list[str]
+) -> str:
+    """Last-resort real copy shared by `_link_file_impl` and `export_file`,
+    used once neither a hard link (nor, for `_link_file_impl`, a symlink) is
+    possible. `errors` collects the failures tried before this so the final
+    `LinkError` explains the whole attempt chain."""
     try:
         try:
             source_size = src.stat().st_size
@@ -885,6 +905,64 @@ def link_custom_directory(
     destination = directory.expanduser().absolute() / gguf_path.name
     link_file(gguf_path, destination, on_copy=on_copy, force=force)
     return destination
+
+
+def export_file(
+    gguf_path: Path,
+    directory: Path,
+    *,
+    on_copy: CopyReporter | None = None,
+    force: bool = False,
+) -> Path:
+    """Place a standalone copy of a hub GGUF in `directory`, for deployment
+    or backup. Tries a hard link first (same volume, zero-copy), otherwise
+    falls back to a real copy - never a symlink, since a symlink into the
+    hub would break the moment the hub file is uninstalled or the export
+    is moved to another machine."""
+    dst = directory.expanduser().absolute() / gguf_path.name
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise LinkError(f"Could not create directory {dst.parent}: {error}") from error
+
+    if dst.exists() or dst.is_symlink():
+        record = _ownership_record(dst)
+        if record and record.get("source") == _link_key(gguf_path):
+            if (
+                record.get("kind") == "hardlink"
+                and _owned_hardlink(dst, record)
+                and _matches_requested_link(gguf_path, dst)
+            ):
+                return dst
+            if (
+                record.get("kind") == "copy"
+                and _owned_copy(dst, record)
+                and _copy_source_unchanged(gguf_path, record)
+            ):
+                return dst
+        if not unlink_owned_link(dst, expected_source=gguf_path, record=record):
+            if record and record.get("kind") in {"symlink", "hardlink"}:
+                raise LinkError(
+                    f"Refusing to replace an omm link for a different model at {dst}."
+                )
+            if not force:
+                raise LinkError(f"Refusing to replace unowned existing file at {dst}.")
+            dst.unlink()
+
+    errors: list[str] = []
+    try:
+        dst.hardlink_to(gguf_path)
+        try:
+            _record_hardlink(dst, gguf_path)
+        except Exception:
+            dst.unlink(missing_ok=True)
+            raise
+        return dst
+    except OSError as error:
+        errors.append(f"hard link: {error}")
+
+    _copy_fallback(gguf_path, dst, on_copy, errors)
+    return dst
 
 
 def unlink_custom_directory(filename: str, directory: Path) -> None:
@@ -1567,7 +1645,15 @@ def _link_ollama_unlocked(
             elif model_blob.is_symlink():
                 raise LinkError(f"Refusing broken Ollama model blob symlink: {model_blob}.")
             else:
-                link_file(gguf_path, model_blob, on_copy=on_copy)
+                try:
+                    link_file(gguf_path, model_blob, on_copy=on_copy)
+                except LinkError as error:
+                    if isinstance(error.__cause__, PermissionError):
+                        # Re-raise the original PermissionError so the outer
+                        # `except PermissionError` (issue #117) can drive the
+                        # native-create fallback or attach its fix hint.
+                        raise error.__cause__ from None
+                    raise
 
         # Mirrors the config produced by `ollama create` for a bare GGUF (no
         # Modelfile TEMPLATE override): a single model layer, config mediaType
@@ -1643,14 +1729,42 @@ def _link_ollama_unlocked(
         # reject and misattribute to a genuine version incompatibility,
         # permanently poisoning `_manifest_format_known_good` for a
         # transient race rather than a real format drift.
+        previous_manifest: bytes | None = None
+        previous_mode: int | None = None
+        previous_source: Path | None = None
         with locked(_engine_path_lock(manifest_path)):
             if manifest_path.exists() or manifest_path.is_symlink():
                 # Re-checked under the manifest lock: another process may
                 # have published here since the pre-check above.
                 if not _manifest_owned_or_matches(manifest_path, gguf_path, model_sha256):
                     raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
-                manifest_path.unlink()
-                _update_link_ownership(manifest_path, None)
+                if manifest_path.is_file() and not manifest_path.is_symlink():
+                    # Back up the existing registration so a failure below
+                    # (disk full, interrupted write, corrupted read-back) can
+                    # restore it instead of leaving the model unregistered.
+                    # atomic_write_text below replaces via os.replace(), so
+                    # there is no need to unlink first.
+                    previous_manifest = manifest_path.read_bytes()
+                    previous_mode = stat_module.S_IMODE(manifest_path.stat().st_mode)
+                    rec = _ownership_record(manifest_path)
+                    src = rec.get("source") if rec else None
+                    previous_source = Path(src) if isinstance(src, str) else None
+                else:
+                    manifest_path.unlink()
+                    _update_link_ownership(manifest_path, None)
+
+            def _restore_previous() -> None:
+                if previous_manifest is None:
+                    manifest_path.unlink(missing_ok=True)
+                    return
+                try:
+                    atomic_write_bytes(manifest_path, previous_manifest)
+                    if platform.system() != "Windows":
+                        manifest_path.chmod(previous_mode)
+                    _record_ownership(manifest_path, previous_source, "manifest")
+                except OSError:
+                    pass
+
             atomic_write_text(manifest_path, manifest_json)
             # atomic_write_text's tempfile.mkstemp() defaults to mode 0600
             # (owner read/write only), which os.replace() carries straight
@@ -1667,19 +1781,19 @@ def _link_ollama_unlocked(
             try:
                 written_back = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, ValueError) as e:
-                manifest_path.unlink(missing_ok=True)
+                _restore_previous()
                 raise LinkError(
                     f"Ollama manifest for {model_name} did not read back intact after write: {e}."
                 ) from e
             if written_back != manifest:
-                manifest_path.unlink(missing_ok=True)
+                _restore_previous()
                 raise LinkError(
                     f"Ollama manifest for {model_name} was corrupted during write (concurrent writer?)."
                 )
             try:
                 _record_ownership(manifest_path, gguf_path, "manifest")
             except OSError:
-                manifest_path.unlink(missing_ok=True)
+                _restore_previous()
                 raise
     except PermissionError as e:
         # A systemd-managed Ollama's models dir can be owned by a different
@@ -1735,9 +1849,11 @@ def _ollama_cli_version() -> str | None:
 
 
 def _manifest_format_known_good(ollama_version: str) -> bool | None:
-    """True/False if this exact Ollama version was already probed; None if
-    unknown (never checked, or the cache is for a different version - an
-    Ollama upgrade can change the manifest shape)."""
+    """True/False if this exact Ollama version was already confirmed
+    compatible/incompatible; None if unknown (never checked, the cache is
+    for a different version - an Ollama upgrade can change the manifest
+    shape -, or incompatibility is still unconfirmed pending a second
+    distinct model failure - see _record_manifest_format_result)."""
     path = _ollama_manifest_compat_cache_path()
     if not path.exists():
         return None
@@ -1753,12 +1869,55 @@ def _manifest_format_known_good(ollama_version: str) -> bool | None:
     return compatible if isinstance(compatible, bool) else None
 
 
-def _record_manifest_format_result(ollama_version: str, compatible: bool) -> None:
+def _record_manifest_format_result(ollama_version: str, compatible: bool, model_name: str) -> None:
+    """Cache a manifest-format probe result for `ollama_version`.
+
+    A single rejection is not trusted on its own - a transient CLI/daemon
+    hiccup on one model used to permanently disable zero-copy linking for
+    every model afterwards. Only two *distinct* models failing under the
+    same Ollama version confirms real format incompatibility (compatible =
+    False); a lone failure is recorded as unconfirmed (compatible = None)
+    so the next model still gets a fresh zero-copy attempt. Any accepted
+    result clears the failure history and confirms compatibility outright.
+    """
     path = _ollama_manifest_compat_cache_path()
-    content = json.dumps({"ollama_version": ollama_version, "compatible": compatible})
     try:
         with locked(path):
+            if compatible:
+                content = json.dumps({"ollama_version": ollama_version, "compatible": True})
+                atomic_write_text(path, content)
+                return
+            previous_compatible: object = None
+            previous_failures: list[str] = []
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = None
+            if isinstance(existing, dict) and existing.get("ollama_version") == ollama_version:
+                previous_compatible = existing.get("compatible")
+                raw_failures = existing.get("failures")
+                if isinstance(raw_failures, list):
+                    previous_failures = [f for f in raw_failures if isinstance(f, str)]
+            failures = list(previous_failures)
+            if model_name not in failures:
+                failures.append(model_name)
+            confirmed = len(set(failures)) >= 2
+            content = json.dumps(
+                {
+                    "ollama_version": ollama_version,
+                    "compatible": False if confirmed else None,
+                    "failures": failures,
+                }
+            )
             atomic_write_text(path, content)
+            if confirmed and previous_compatible is not False:
+                log.warning(
+                    "Ollama %s rejected omm's manifest for multiple models (%s) - "
+                    "falling back to native `ollama create` for future links until "
+                    "Ollama's manifest format is confirmed compatible again.",
+                    ollama_version,
+                    ", ".join(sorted(set(failures))),
+                )
     except OSError:
         pass
 
@@ -1994,7 +2153,7 @@ def _ensure_ollama_accepts(
     accepted = _ollama_accepts_manifest(model_name)
     if accepted is None:
         return has_chat_template
-    _record_manifest_format_result(ollama_version, accepted)
+    _record_manifest_format_result(ollama_version, accepted, model_name)
     if accepted:
         return has_chat_template
     # Remove the rejected hand-written manifest and its omm-owned model
@@ -2082,8 +2241,15 @@ def _unlink_ollama_manifest_only(
         # manifest references its content digest.
         try:
             manifest_path.unlink()
-        except OSError:
-            return False, set()
+        except OSError as error:
+            # The manifest exists and is owned - this is a real failure to
+            # remove it (e.g. permission denied), not "nothing to remove".
+            # Returning False here would look identical to the latter and
+            # let a caller like `unlink_ollama` delete the hub file/registry
+            # entry while this manifest (and its blob) are still present.
+            raise LinkError(
+                f"Could not remove Ollama manifest {manifest_path}: {error}"
+            ) from error
         _update_link_ownership(manifest_path, None)
         try:
             manifest_path.parent.rmdir()
@@ -2123,7 +2289,16 @@ def unlink_ollama(
     expected_source: Path | None = None,
     expected_content_sha256: str | None = None,
 ) -> bool:
-    """Remove an owned Ollama manifest and now-unreferenced owned blobs."""
+    """Remove an owned Ollama manifest and now-unreferenced owned blobs.
+
+    Raises `LinkError` when the removal itself fails for a real reason -
+    the store lock timed out (`filelock.Timeout` is an `OSError` subclass)
+    or the manifest couldn't actually be deleted (e.g. permission denied).
+    `False` is reserved for "there was nothing owned here to remove".
+    Conflating the two previously let callers (see `_remove_one` in cli.py,
+    which only preserves the registry entry on a `LinkError`) delete the hub
+    file and registry entry while the Ollama manifest/blob were still
+    present, orphaning them permanently."""
     transaction_models_dir = models_dir if models_dir is not None else ollama_models_dir()
     try:
         with locked(_models_transaction_lock(transaction_models_dir)):
@@ -2133,8 +2308,10 @@ def unlink_ollama(
                 expected_source=expected_source,
                 expected_content_sha256=expected_content_sha256,
             )
-    except OSError:
-        return False
+    except (OSError, FileLockTimeout) as error:
+        raise LinkError(
+            f"Could not remove the Ollama registration for {model_name!r}: {error}"
+        ) from error
 
 
 def _unlink_ollama_unlocked(
@@ -2197,9 +2374,18 @@ def unlink_ollama_batch(
         with locked(_models_transaction_lock(models_dir)):
             all_digests: set[str] = set()
             for model_name, expected_source, expected_content_sha256 in validated_specs:
-                removed, model_digests = _unlink_ollama_manifest_only(
-                    model_name, models_dir, expected_source, expected_content_sha256
-                )
+                try:
+                    removed, model_digests = _unlink_ollama_manifest_only(
+                        model_name, models_dir, expected_source, expected_content_sha256
+                    )
+                except LinkError:
+                    # A real failure removing this one manifest (e.g.
+                    # permission denied) must not abort cleanup of the rest
+                    # of the batch - but it also must not report `True` (see
+                    # `unlink_ollama`'s docstring for why that distinction
+                    # matters). Leave it `False` and keep going.
+                    results[model_name] = False
+                    continue
                 results[model_name] = removed
                 if removed:
                     all_digests.update(model_digests)
@@ -2381,12 +2567,27 @@ def jan_models_dir() -> Path:
     return jan_app_dir() / "data" / "llamacpp" / "models"
 
 
+_JAN_WINDOWS_INSTALL_DIRS = ("Jan", "jan")
+
+
 def is_jan_installed() -> bool:
     system = platform.system()
     if system == "Darwin":
         return _app_bundle_installed("Jan")
     if jan_app_dir().exists():
         return True
+    if system == "Windows":
+        if _windows_install_artifact_exists(_JAN_WINDOWS_INSTALL_DIRS, "Jan.lnk"):
+            return True
+        # Tauri NSIS per-user default install lands at %LOCALAPPDATA%\<productName>,
+        # outside the helper's own Programs root.
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            try:
+                return any(p.suffix.lower() == ".exe" for p in (Path(local) / "Jan").iterdir())
+            except OSError:
+                return False
+        return False
     if system == "Linux" and shutil.which("flatpak") is not None:
         # jan_app_dir() (~/.config/Jan) is only created the first time Jan
         # actually launches - a flatpak install that succeeded but was
@@ -2417,7 +2618,7 @@ def _jan_model_yaml_path(model_id: str) -> Path:
     return jan_models_dir() / model_id / "model.yml"
 
 
-def link_jan(gguf_path: Path, model_id: str) -> Path:
+def link_jan(gguf_path: Path, model_id: str, *, force: bool = False) -> Path:
     """Register `gguf_path` with Jan by writing a model.yml manifest that
     points model_path straight at it - no symlink needed, since Jan's own
     local-file import does the same (stores the absolute path as-is)."""
@@ -2440,12 +2641,27 @@ def link_jan(gguf_path: Path, model_id: str) -> Path:
             if not config_path.parent.resolve().is_relative_to(root.resolve()):
                 raise LinkError("Refusing Jan manifest path outside the models directory.")
             config_path.parent.mkdir(parents=True, exist_ok=True)
-            if config_path.exists() and not _owned_manifest(
-                config_path, expected_source=gguf_path
-            ):
-                raise LinkError(
-                    f"Refusing to replace unowned Jan manifest at {config_path}."
-                )
+            if config_path.exists():
+                record = _ownership_record(config_path)
+                if not _owned_manifest(config_path, expected_source=gguf_path, record=record):
+                    recorded = None if config_path.is_symlink() else read_jan_model_path(config_path)
+                    if recorded is not None and _link_key(Path(recorded)) == _link_key(gguf_path):
+                        # Already points at this model (Jan's UI rewrote fields
+                        # like ctx_size) - keep the current manifest rather than
+                        # clobbering user settings.
+                        return config_path
+                    owned_by_other = (
+                        _owned_manifest(config_path, record=record)
+                        and record.get("source") not in (None, _link_key(gguf_path))
+                    )
+                    if owned_by_other:
+                        raise LinkError(
+                            f"Refusing to replace an omm Jan manifest for a different model at {config_path}."
+                        )
+                    if not force:
+                        raise LinkError(
+                            f"Refusing to replace unowned Jan manifest at {config_path}."
+                        )
             atomic_write_text(config_path, content)
             try:
                 _record_ownership(config_path, gguf_path, "manifest")
@@ -3452,7 +3668,7 @@ def link_engine(
     elif key == "lmstudio":
         link_lmstudio(gguf_path, repo_id, on_copy=report_copy, force=force)
     elif key == "jan":
-        link_jan(gguf_path, ollama_tag)
+        link_jan(gguf_path, ollama_tag, force=force)
     elif key == "anythingllm":
         link_ollama(
             gguf_path,

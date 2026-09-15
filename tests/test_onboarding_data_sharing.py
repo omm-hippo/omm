@@ -50,6 +50,14 @@ def test_consent_text_covers_every_payload_concept(isolated_omm_home):
         assert concept in text, concept
 
 
+def test_consent_text_does_not_promise_a_per_report_prompt(isolated_omm_home):
+    # error_report_send_policy is set to "ask" (never "always"), whose one
+    # prompt happens once per `omm contribute` run, before the whole queue
+    # is sent - not once per report. The consent text must not claim
+    # otherwise.
+    assert "before each" not in onboarding._DATA_SHARING_TEXT.lower()
+
+
 def test_cancelled_prompt_changes_nothing(isolated_omm_home, monkeypatch):
     """Escape (questionary's `.ask()` returns None) is "not now", not "never":
     nothing is recorded, so the question can be asked again later."""

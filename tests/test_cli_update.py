@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.progress import Progress
 from typer.testing import CliRunner
 
-from omm import cli
+from omm import cli, config
 
 runner = CliRunner()
 
@@ -79,20 +79,23 @@ class _FakeProc:
         return self._returncode
 
 
-def test_install_spec_points_at_src_dir_on_darwin(monkeypatch):
-    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+def test_install_spec_omits_nvidia_extra_without_nvidia_smi(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     assert cli._install_spec() == str(cli.SRC_DIR)
 
 
-def test_install_spec_adds_nvidia_extra_on_non_darwin(monkeypatch):
-    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
+def test_install_spec_adds_nvidia_extra_when_nvidia_smi_present(monkeypatch):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
+    )
 
     assert cli._install_spec() == f"{cli.SRC_DIR}[nvidia]"
 
 
 def test_omm_version_ignores_newer_src_when_install_is_not_editable(monkeypatch, tmp_path):
-    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.148"\n')
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.148"\n', encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(
         cli.package_metadata,
@@ -106,7 +109,7 @@ def test_omm_version_ignores_newer_src_when_install_is_not_editable(monkeypatch,
 
 
 def test_omm_version_reads_src_for_verified_editable_install(monkeypatch, tmp_path):
-    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.148"\n')
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.148"\n', encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(
         cli.package_metadata,
@@ -142,6 +145,30 @@ def test_update_migrates_when_not_yet_migrated_even_if_commit_matches(monkeypatc
     assert migrate_calls == [1]
     assert refresh_calls == [1]
     assert "updated" in result.stdout.lower()
+
+
+def test_perform_update_refuses_while_another_update_holds_the_lock(monkeypatch):
+    """Two concurrent `omm update` invocations must not race over SRC_DIR -
+    the second one gives up immediately (timeout=0) instead of doing any
+    actual migration/pull work while another process holds the lock."""
+    from omm import config
+    from omm.atomic import locked
+
+    migrate_calls = []
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: migrate_calls.append("src_head") or None)
+    monkeypatch.setattr(
+        cli,
+        "_migrate_to_editable_install",
+        lambda *a, **k: migrate_calls.append("migrate")
+        or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+
+    with locked(config.OMM_HOME / "locks" / "self-update"):
+        result = cli._perform_update("main")
+
+    assert result.returncode == 1
+    assert "already running" in result.stderr
+    assert migrate_calls == []
 
 
 @pytest.mark.parametrize(
@@ -533,8 +560,8 @@ def test_verify_pipx_installation_checks_paths_metadata_apps_and_exact_versions(
     internal_bin.mkdir(parents=True)
     bin_dir.mkdir()
     internal_omm = internal_bin / "omm"
-    internal_omm.write_text("internal")
-    (internal_bin / "localfit-server").write_text("server")
+    internal_omm.write_text("internal", encoding="utf-8")
+    (internal_bin / "localfit-server").write_text("server", encoding="utf-8")
     (bin_dir / "omm").symlink_to(internal_omm)
     (bin_dir / "localfit-server").symlink_to(internal_bin / "localfit-server")
     snapshot = _pipx_snapshot(venvs_root)
@@ -584,8 +611,8 @@ def test_verify_pipx_installation_rejects_a_missing_secondary_app_link(
     internal_bin.mkdir(parents=True)
     bin_dir.mkdir()
     internal_omm = internal_bin / "omm"
-    internal_omm.write_text("internal")
-    (internal_bin / "localfit-server").write_text("server")
+    internal_omm.write_text("internal", encoding="utf-8")
+    (internal_bin / "localfit-server").write_text("server", encoding="utf-8")
     (bin_dir / "omm").symlink_to(internal_omm)
     snapshot = _pipx_snapshot(venvs_root)
     responses = iter(
@@ -830,12 +857,12 @@ def test_failed_new_install_rolls_back_all_legacy_apps_and_verifies_omm(
     exposed_bin.mkdir()
     internal_omm = legacy_bin / "omm"
     internal_server = legacy_bin / "localfit-server"
-    internal_omm.write_text("legacy omm")
-    internal_server.write_text("legacy server")
+    internal_omm.write_text("legacy omm", encoding="utf-8")
+    internal_server.write_text("legacy server", encoding="utf-8")
     exposed_omm = exposed_bin / "omm"
     exposed_server = exposed_bin / "localfit-server"
-    exposed_omm.write_text("unverified new omm")
-    exposed_server.write_text("unverified new server")
+    exposed_omm.write_text("unverified new omm", encoding="utf-8")
+    exposed_server.write_text("unverified new server", encoding="utf-8")
     snapshot = _pipx_snapshot(venvs_root)
     snapshot["venvs"]["omm"] = {
         "main_package": {
@@ -964,6 +991,56 @@ def test_update_reports_error_when_git_update_fails(monkeypatch):
     assert result.exit_code == 1
     assert "fetch failed" in result.stderr
     assert refresh_calls == []
+
+
+def test_update_shows_git_upgrade_hint_when_merge_tree_unavailable(monkeypatch):
+    """A merge-commit update can only be verified with git 2.38+ (`git
+    merge-tree --write-tree`). When trust.verify_update reports that,
+    `omm update` must point the user at upgrading git, not just print the
+    raw stderr."""
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr=(
+                "merge commit abc1234 can only be verified with git 2.38+ "
+                "(git merge-tree --write-tree); found git 2.34. Upgrade git and rerun."
+            ),
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "git 2.38+" in result.stderr
+    assert "Upgrade git" in result.stderr
+
+
+def test_update_shows_reinstall_hint_on_signature_failure(monkeypatch):
+    """A stale installed copy of trust.verify_update may permanently reject
+    a legitimate update - only a reinstall (which re-fetches current
+    verification logic) can recover, so `omm update` must say so."""
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="commit abc1234 has an unauthenticated signature"
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "Reinstalling picks up current verification" in result.stderr
 
 
 def test_update_reports_error_when_pipx_missing(monkeypatch):
@@ -1187,7 +1264,7 @@ def test_remote_head_commit_parses_git_ls_remote_output(monkeypatch):
 def test_deps_satisfied_true_when_all_declared_deps_importable(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\ndependencies = [\n    "click>=8.1",\n    "rich>=13",\n]\n'
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "99.0")
 
@@ -1197,7 +1274,7 @@ def test_deps_satisfied_true_when_all_declared_deps_importable(tmp_path, monkeyp
 def test_deps_satisfied_false_when_a_declared_dep_is_missing(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\ndependencies = [\n    "click>=8.1",\n    "rich>=13",\n]\n'
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
 
     def _version(name):
@@ -1215,7 +1292,7 @@ def test_deps_satisfied_false_when_installed_version_is_below_new_minimum(
 ):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\ndependencies = ["click>=8.1"]\n'
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "8.0.9")
 
@@ -1242,7 +1319,7 @@ def test_deps_satisfied_ignores_dep_whose_marker_excludes_current_python(
         '    "click>=8.1",\n'
         '    "tomli>=2.0; python_version < \'3.11\'",\n'
         "]\n"
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(sys, "version_info", (3, 14, 0))
 
@@ -1264,7 +1341,7 @@ def test_deps_satisfied_still_checks_dep_whose_marker_includes_current_python(
         "dependencies = [\n"
         '    "tomli>=2.0; python_version < \'3.11\'",\n'
         "]\n"
-    )
+    , encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", tmp_path)
     monkeypatch.setattr(sys, "version_info", (3, 10, 0))
 
@@ -1331,7 +1408,7 @@ def test_migrate_to_editable_install_clones_then_pipx_installs(monkeypatch, tmp_
     def fake_run(args, **kwargs):
         if args[:2] == ["git", "clone"]:
             Path(args[-1]).mkdir(parents=True)
-            (Path(args[-1]) / "marker").write_text("cloned")
+            (Path(args[-1]) / "marker").write_text("cloned", encoding="utf-8")
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[-2:] == ["rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(args, 0, stdout="newcommit\n", stderr="")
@@ -1369,14 +1446,14 @@ def test_migrate_to_editable_install_clones_then_pipx_installs(monkeypatch, tmp_
     ]
     assert verify_calls == [(tmp_clone, "newcommit", cli.trust.current_trust_anchor())]
     assert progress_calls == [["pipx", "install", "--force", "--editable", str(src)]]
-    assert (src / "marker").read_text() == "cloned"
+    assert (src / "marker").read_text(encoding="utf-8") == "cloned"
     assert not tmp_clone.exists()
 
 
 def test_migrate_restores_existing_src_when_pipx_install_fails(monkeypatch, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
-    (src / "marker").write_text("old source")
+    (src / "marker").write_text("old source", encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", src)
     monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
 
@@ -1384,7 +1461,7 @@ def test_migrate_restores_existing_src_when_pipx_install_fails(monkeypatch, tmp_
         if args[:2] == ["git", "clone"]:
             clone = Path(args[-1])
             clone.mkdir(parents=True)
-            (clone / "marker").write_text("new source")
+            (clone / "marker").write_text("new source", encoding="utf-8")
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[-2:] == ["rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(args, 0, stdout="newcommit\n", stderr="")
@@ -1401,7 +1478,7 @@ def test_migrate_restores_existing_src_when_pipx_install_fails(monkeypatch, tmp_
     result = cli._migrate_to_editable_install()
 
     assert result.returncode == 1
-    assert (src / "marker").read_text() == "old source"
+    assert (src / "marker").read_text(encoding="utf-8") == "old source"
     assert not (tmp_path / "src.new").exists()
     assert list(tmp_path.glob("src.previous-*")) == []
 
@@ -1409,14 +1486,14 @@ def test_migrate_restores_existing_src_when_pipx_install_fails(monkeypatch, tmp_
 def test_migrate_restores_existing_src_when_pipx_verification_fails(monkeypatch, tmp_path):
     src = tmp_path / "src"
     src.mkdir()
-    (src / "marker").write_text("old source")
+    (src / "marker").write_text("old source", encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", src)
 
     def fake_run(args, **kwargs):
         if args[:2] == ["git", "clone"]:
             clone = Path(args[-1])
             clone.mkdir(parents=True)
-            (clone / "marker").write_text("new source")
+            (clone / "marker").write_text("new source", encoding="utf-8")
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[-2:] == ["rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(args, 0, stdout="newcommit\n", stderr="")
@@ -1439,7 +1516,7 @@ def test_migrate_restores_existing_src_when_pipx_verification_fails(monkeypatch,
 
     assert result.returncode == 1
     assert "failed exact verification" in result.stderr
-    assert (src / "marker").read_text() == "old source"
+    assert (src / "marker").read_text(encoding="utf-8") == "old source"
     assert list(tmp_path.glob("src.previous-*")) == []
 
 
@@ -1525,7 +1602,7 @@ def test_migrate_to_editable_install_preserves_existing_src_on_clone_failure(mon
     ModuleNotFoundError until the user reinstalled from scratch."""
     src = tmp_path / "src"
     src.mkdir()
-    (src / "marker").write_text("still here")
+    (src / "marker").write_text("still here", encoding="utf-8")
     monkeypatch.setattr(cli, "SRC_DIR", src)
     monkeypatch.setattr(
         cli.subprocess,
@@ -1537,7 +1614,7 @@ def test_migrate_to_editable_install_preserves_existing_src_on_clone_failure(mon
     result = cli._migrate_to_editable_install()
 
     assert result.returncode == 1
-    assert (src / "marker").read_text() == "still here"
+    assert (src / "marker").read_text(encoding="utf-8") == "still here"
 
 
 def test_git_update_src_fetches_then_resets(monkeypatch, tmp_path):
@@ -1686,6 +1763,30 @@ def test_update_with_quiet_flag_does_not_crash(monkeypatch):
     result = runner.invoke(cli.app, ["update", "--quiet"])
 
     assert result.exit_code == 0, result.stdout
+
+
+def test_update_with_quiet_flag_stays_off_the_real_update_check_cache(monkeypatch):
+    """Regression: unlike test_update_refreshes_stale_cache_with_live_remote_head,
+    this test does not monkeypatch cli.version_check.record, so update()
+    calls the real version_check.record() and writes update_check.json -
+    and this test never requests isolated_omm_home either. Before that
+    fixture became autouse in conftest.py, config.OMM_HOME here resolved
+    to the developer's real home, and this test overwrote their actual
+    ~/.omm/update_check.json with a fake remote_head, silencing real
+    "Update available!" notices for up to the 30-minute TTL. Confirm
+    OMM_HOME still comes out isolated and the cache file lands there."""
+    same_commit = "abc1234" * 5 + "abc12345"
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_editable_install_uses_src", lambda *args: True)
+    monkeypatch.setattr(cli, "_installed_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: same_commit)
+    monkeypatch.setattr(cli, "_refresh_data", lambda: None)
+
+    result = runner.invoke(cli.app, ["update", "--quiet"])
+
+    assert result.exit_code == 0, result.stdout
+    assert config.OMM_HOME != Path.home() / ".omm"
+    assert (config.OMM_HOME / "update_check.json").exists()
 
 
 def test_pipx_app_names_strip_windows_launcher_suffix():

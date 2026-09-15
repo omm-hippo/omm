@@ -106,6 +106,32 @@ def test_compatibility_ref_uses_resolved_lmstudio_model_key(monkeypatch):
     assert "Qwen/Qwen2.5-0.5B-Instruct-GGUF" in reference.aliases
 
 
+def test_compatibility_adapter_uses_live_lmstudio_port(monkeypatch):
+    class _RecordingLMStudioAdapter:
+        def __init__(self, base_url="http://127.0.0.1:1234"):
+            self.base_url = base_url
+
+    monkeypatch.setattr(cli.linker, "lmstudio_server_port", lambda: 1235)
+    monkeypatch.setattr(cli, "LMStudioAdapter", _RecordingLMStudioAdapter)
+
+    adapter = cli._compatibility_adapter("lmstudio")
+
+    assert adapter.base_url == "http://127.0.0.1:1235"
+
+
+def test_compatibility_adapter_falls_back_to_default_lmstudio_port(monkeypatch):
+    class _RecordingLMStudioAdapter:
+        def __init__(self, base_url="http://127.0.0.1:1234"):
+            self.base_url = base_url
+
+    monkeypatch.setattr(cli.linker, "lmstudio_server_port", lambda: None)
+    monkeypatch.setattr(cli, "LMStudioAdapter", _RecordingLMStudioAdapter)
+
+    adapter = cli._compatibility_adapter("lmstudio")
+
+    assert adapter.base_url == "http://127.0.0.1:1234"
+
+
 def test_verify_success_records_and_reports_result(isolated_omm_home, monkeypatch):
     registry.save_registry({"model.gguf": _entry()})
     adapter = _CliAdapter()
@@ -118,6 +144,23 @@ def test_verify_success_records_and_reports_result(isolated_omm_home, monkeypatc
     assert "Compatible" in result.stdout
     saved = registry.load_registry()["model.gguf"]["compatibility"]["ollama"]
     assert saved["status"] == "passed"
+
+
+def test_verify_honors_global_yes_before_subcommand(isolated_omm_home, monkeypatch):
+    registry.save_registry({"model.gguf": _entry()})
+    adapter = _CliAdapter()
+    monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+
+    def _unexpected_ask_confirm(*args, **kwargs):
+        raise AssertionError("should not prompt when --yes is global")
+
+    monkeypatch.setattr(cli, "_ask_confirm", _unexpected_ask_confirm)
+
+    result = runner.invoke(cli.app, ["--yes", "verify", "model.gguf", "--engine", "ollama"])
+
+    assert result.exit_code == 0, result.output
+    assert "Compatible" in result.stdout
 
 
 def test_verify_asks_before_loading_and_cancel_keeps_registry_unchanged(
@@ -257,6 +300,10 @@ def test_verify_lmstudio_memory_guard_block_prevents_runtime_load(isolated_omm_h
     )
     adapter = _LmStudioCliAdapter()
     monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    # Isolate from any real `lms` CLI/model list on the host machine - see
+    # test_compatibility_ref_uses_resolved_lmstudio_model_key above for why
+    # this must be mocked rather than left to fall through to a real lookup.
+    monkeypatch.setattr(cli.linker, "resolve_lmstudio_model", lambda repo_id, filename: None)
     monkeypatch.setattr(
         cli,
         "_guard_lmstudio_load",
@@ -283,6 +330,10 @@ def test_verify_lmstudio_memory_guard_allows_runtime_load(isolated_omm_home, mon
     )
     adapter = _LmStudioCliAdapter()
     monkeypatch.setattr(cli, "_compatibility_adapter", lambda engine: adapter)
+    # Isolate from any real `lms` CLI/model list on the host machine - see
+    # test_compatibility_ref_uses_resolved_lmstudio_model_key above for why
+    # this must be mocked rather than left to fall through to a real lookup.
+    monkeypatch.setattr(cli.linker, "resolve_lmstudio_model", lambda repo_id, filename: None)
     guard_calls = []
     monkeypatch.setattr(
         cli,
