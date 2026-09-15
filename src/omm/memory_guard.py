@@ -286,7 +286,15 @@ def execute_guard(
                 tuple(unloaded),
                 (*plan.reasons, "unload_failed"),
             )
-        if runtime.is_resident(resident) is not False:
+        confirmation = runtime.is_resident(resident)
+        if confirmation is not False:
+            if confirmation is None:
+                # unload() already returned True, which for Ollama means
+                # /api/ps polling proved the model gone. A None here is just
+                # a second probe we could not reach - the release really did
+                # happen, so the user must still be told about it. A True
+                # (still resident) is the opposite and is never reported.
+                unloaded.append(resident)
             return GuardExecution(
                 False,
                 GuardDecision.BLOCK,

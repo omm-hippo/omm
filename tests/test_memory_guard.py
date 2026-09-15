@@ -196,6 +196,27 @@ def test_failed_or_unconfirmed_unload_blocks_the_new_load(runtime, reason):
     assert reason in result.reasons
 
 
+def test_unconfirmed_unload_still_reports_the_model_it_released():
+    plan = guard.plan_memory_guard(12.0, _hardware(), [_resident()])
+    runtime = _Runtime(still_resident=None)
+
+    result = guard.execute_guard(plan, "ask", runtime, consent=lambda _plan: True)
+
+    assert result.allowed is False
+    assert "unload_not_confirmed" in result.reasons
+    assert [r.model_id for r in result.unloaded] == ["old"]
+
+
+def test_a_model_still_resident_is_never_reported_as_released():
+    plan = guard.plan_memory_guard(12.0, _hardware(), [_resident()])
+    runtime = _Runtime(still_resident=True)
+
+    result = guard.execute_guard(plan, "ask", runtime, consent=lambda _plan: True)
+
+    assert result.allowed is False
+    assert result.unloaded == ()
+
+
 def test_observe_policy_never_unloads_and_allows_observation():
     plan = guard.plan_memory_guard(12.0, _hardware(), [_resident()])
     runtime = _Runtime()
@@ -530,12 +551,109 @@ def test_registry_ownership_is_required_and_model_names_are_not_guessed_for_lmst
     assert guard.omm_managed_model_ids(registry_data, "lmstudio") == {"owned.gguf"}
 
 
-def test_module_has_no_process_kill_or_privilege_escalation_path():
-    source = inspect.getsource(guard)
+def test_memory_guard_module_itself_never_kills_a_process():
+    """AST-based, not string grep: a string-grep version flags any mention
+    of these words in a comment/docstring as a violation, and misses a call
+    spelled through an alias. This only flags real imports/calls/literals."""
+    import ast
 
-    assert "sudo" not in source
-    assert "os.kill" not in source
-    assert "subprocess" not in source
+    tree = ast.parse(inspect.getsource(guard))
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            offenders += [a.name for a in node.names if a.name.split(".")[0] == "subprocess"]
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == "subprocess":
+                offenders.append(node.module)
+        elif isinstance(node, ast.Attribute) and node.attr in {
+            "kill", "killpg", "terminate", "system", "Popen", "execv", "execvp"
+        }:
+            offenders.append(f"{ast.unparse(node)}:{node.lineno}")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            stripped = node.value.strip()
+            if stripped == "sudo" or stripped.startswith("sudo "):
+                offenders.append(f"sudo literal:{node.lineno}")
+    assert offenders == []
+
+
+@pytest.fixture
+def forbid_process_control(monkeypatch):
+    """Any real process-control call during an unload is a failure."""
+    import os
+    import subprocess as subprocess_mod
+
+    def boom(*args, **kwargs):
+        raise AssertionError(f"memory guard tried to control a process: {args!r}")
+
+    monkeypatch.setattr(os, "kill", boom, raising=False)
+    monkeypatch.setattr(os, "system", boom, raising=False)
+    monkeypatch.setattr(subprocess_mod, "Popen", boom)
+    argvs = []
+
+    def record_run(cmd, *args, **kwargs):
+        argvs.append(list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)])
+        raise OSError("no lms CLI in tests")  # linker treats this as 'not running'
+
+    monkeypatch.setattr(subprocess_mod, "run", record_run)
+    return argvs
+
+
+def test_ollama_guard_unload_uses_only_the_api(forbid_process_control, monkeypatch):
+    """OllamaManagedRuntime.unload delegates to quality.ensure_model_unloaded;
+    the no-kill invariant lives in that delegate, not in memory_guard."""
+    from types import SimpleNamespace
+
+    from omm import quality
+
+    requests_made = []
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, path, **kwargs):
+            requests_made.append((method, path))
+            data = {"models": []} if path == "/api/ps" else {}
+            return SimpleNamespace(data=data, headers={})
+
+    monkeypatch.setattr(quality, "LoopbackJsonClient", _FakeClient)
+    runtime = guard.OllamaManagedRuntime({"m.gguf": {"ollama_name": "qwen3:4b", "linked": {"ollama": True}}})
+    resident = guard.ResidentModel("ollama", "qwen3:4b", 4.0, True, receipt_id="qwen3:4b")
+
+    assert runtime.unload(resident) is True
+    assert ("POST", "/api/generate") in requests_made  # keep_alive=0 unload
+    assert ("GET", "/api/ps") in requests_made  # residency confirmation
+    assert forbid_process_control == []  # no subprocess at all
+
+
+def test_lmstudio_guard_unload_never_shells_out_to_kill_anything(forbid_process_control, monkeypatch):
+    """The LM Studio path DOES shell out - `lms server status --json` to
+    find the live port - so the invariant is 'no kill / no privilege
+    escalation', not 'no subprocess'. Pin exactly that."""
+    from types import SimpleNamespace
+
+    from omm.engines import lmstudio as lmstudio_mod
+
+    calls = []
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, path, **kwargs):
+            calls.append((method, path))
+            return SimpleNamespace(data={"data": []}, headers={})
+
+    monkeypatch.setattr(lmstudio_mod, "LoopbackJsonClient", _FakeClient)
+    runtime = guard.LMStudioManagedRuntime({})
+    resident = guard.ResidentModel("lmstudio", "acme/widget", 4.0, True, receipt_id="instance-1")
+
+    runtime.unload(resident)  # return value is not what this test pins
+
+    assert any(path == "/api/v1/models/unload" for _method, path in calls)
+    forbidden = {"sudo", "kill", "taskkill", "pkill", "killall", "stop"}
+    for argv in forbid_process_control:
+        assert not (forbidden & {str(part).lower() for part in argv}), argv
 
 
 def test_blended_requirement_on_discrete_gpu_reclaims_biggest_resident_first():
