@@ -25,9 +25,14 @@ def test_darwin_install_writes_plist_and_loads_it(fake_home, isolated_omm_home, 
     assert plist_path.exists()
     content = plist_path.read_text(encoding="utf-8")
     assert "com.omm.autoimport" in content
-    assert sys.executable in content
     assert "_auto-import-run" in content
     assert calls[0][0] == (["launchctl", "load", "-w", str(plist_path)],)
+
+    wrapper_path = watch_service._launchd_wrapper_path()
+    assert str(wrapper_path) in content
+    assert wrapper_path.stat().st_mode & 0o111  # executable
+    wrapper_content = wrapper_path.read_text(encoding="utf-8")
+    assert sys.executable in wrapper_content
 
 
 def test_darwin_uninstall_unloads_and_removes_plist(fake_home, isolated_omm_home, monkeypatch):
@@ -39,6 +44,7 @@ def test_darwin_uninstall_unloads_and_removes_plist(fake_home, isolated_omm_home
     watch_service.uninstall()
 
     assert not watch_service._launchd_plist_path().exists()
+    assert not watch_service._launchd_wrapper_path().exists()
 
 
 def test_darwin_is_installed_reflects_plist_presence(fake_home, isolated_omm_home, monkeypatch):
