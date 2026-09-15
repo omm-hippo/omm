@@ -194,6 +194,45 @@ def test_upgrade_direct_url_install_swaps_in_new_file_atomically(isolated_omm_ho
     assert not (cli.MODELS_DIR / "model.gguf.update").exists()
 
 
+def test_upgrade_skips_imported_model_without_download_error(isolated_omm_home, monkeypatch):
+    _no_engines(monkeypatch)
+    (cli.MODELS_DIR / "model.gguf").write_bytes(b"old-bytes")
+    registry.save_registry({"model.gguf": _entry(repo_id=None, source="imported")})
+
+    def fail_download(*_args, **_kwargs):
+        pytest.fail("must not attempt a download")
+
+    monkeypatch.setattr(cli, "_download_update", fail_download)
+
+    result = runner.invoke(cli.app, ["upgrade", "all", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "update download failed" not in result.stderr
+    assert "imported locally" in result.stderr
+    assert "0 updated, 0 up to date, 1 skipped" in result.stdout
+
+
+def test_upgrade_direct_url_with_real_source_still_downloads(isolated_omm_home, monkeypatch):
+    # Boundary check for the imported-model guard above: a genuine direct-URL
+    # install (repo_id=None, source=https://...) must still reach
+    # _download_update, not get swept into the new "imported locally" skip.
+    _no_engines(monkeypatch)
+    dest = cli.MODELS_DIR / "model.gguf"
+    dest.write_bytes(b"old-bytes")
+    registry.save_registry({"model.gguf": _entry(repo_id=None, sha256="old-hash")})
+
+    def fake_download(url, dest_path, **_kw):
+        Path(dest_path).write_bytes(b"brand-new-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    result = runner.invoke(cli.app, ["upgrade", "model.gguf"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "updated to" in result.stdout
+    assert dest.read_bytes() == b"brand-new-bytes"
+
+
 def test_upgrade_direct_url_install_reports_skipped_when_finalize_fails(isolated_omm_home, monkeypatch):
     _no_engines(monkeypatch)
     dest = cli.MODELS_DIR / "model.gguf"

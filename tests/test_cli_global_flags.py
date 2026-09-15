@@ -138,6 +138,37 @@ def test_yes_capability_is_judged_independently_for_same_named_nested_command(
     assert "--yes has no effect on `omm engine install`" in nested.stderr
 
 
+def test_json_warning_is_not_emitted_when_prog_name_has_exe_suffix(isolated_omm_home):
+    # F104: the frozen Windows build (PyInstaller) ships as omm.exe, so
+    # click derives that as the program name unless main() pins it. CliRunner
+    # lets a test supply prog_name directly to reproduce that without a real
+    # frozen binary. Before the fix, ctx.command_path was "omm.exe scan" and
+    # the hardcoded removeprefix("omm ") left it untouched, so this false
+    # "--json has no effect" warning fired on every command.
+    result = runner.invoke(cli.app, ["scan", "--json"], prog_name="omm.exe")
+
+    assert "has no effect" not in result.stderr
+
+
+def test_json_warning_text_uses_plain_command_name(isolated_omm_home):
+    result = runner.invoke(cli.app, ["cleanup", "--json"], prog_name="omm.exe")
+
+    assert "--json has no effect on `omm cleanup`" in result.stderr
+    assert "omm.exe" not in result.stderr
+
+
+def test_yes_warning_is_not_emitted_when_prog_name_has_exe_suffix(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "resolve_model", lambda name: (_ for _ in ()).throw(
+        cli.ModelResolutionError("nope")
+    ))
+
+    result = runner.invoke(
+        cli.app, ["install", "no-such-model", "--yes"], prog_name="omm.exe"
+    )
+
+    assert "--yes has no effect" not in result.stderr
+
+
 def test_no_color_survives_a_theme_change_in_the_same_invocation(isolated_omm_home):
     """`--no-color` is applied by the root callback; `setting theme --set`
     then applies a preset to the same module-level console afterwards. It

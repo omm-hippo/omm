@@ -71,13 +71,13 @@ def _signal(**overrides):
 
 def test_handle_emergency_signal_noop_when_no_signal(monkeypatch):
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
-    cli._handle_emergency_signal({"candidates": []})  # must not raise/prompt
+    cli._handle_emergency_signal({"candidates": []}, verified=True)  # must not raise/prompt
 
 
 def test_handle_emergency_signal_skips_when_already_fixed(monkeypatch):
     monkeypatch.setattr(cli, "_omm_version", lambda: "0.3.0")
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
-    cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.2.0")})
+    cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.2.0")}, verified=True)
 
 
 def test_handle_emergency_signal_updates_and_restarts_on_yes(monkeypatch):
@@ -96,7 +96,7 @@ def test_handle_emergency_signal_updates_and_restarts_on_yes(monkeypatch):
     restart_calls = []
     monkeypatch.setattr(cli, "_restart_after_update", lambda: restart_calls.append(1))
 
-    cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.3.0")})
+    cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.3.0")}, verified=True)
 
     assert perform_calls == ["beta"]
     assert restart_calls == [1]
@@ -114,7 +114,7 @@ def test_handle_emergency_signal_blocks_on_no(monkeypatch):
     )
 
     try:
-        cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.3.0")})
+        cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.3.0")}, verified=True)
         assert False, "expected typer.Exit"
     except typer.Exit:
         pass
@@ -137,7 +137,7 @@ def test_handle_emergency_signal_exits_when_update_fails(monkeypatch):
     monkeypatch.setattr(cli, "_restart_after_update", lambda: restart_calls.append(1))
 
     try:
-        cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.3.0")})
+        cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.3.0")}, verified=True)
         assert False, "expected typer.Exit"
     except typer.Exit:
         pass
@@ -153,7 +153,7 @@ def test_handle_emergency_signal_non_tty_blocks_without_prompting(monkeypatch):
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
 
     try:
-        cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.3.0")})
+        cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.3.0")}, verified=True)
         assert False, "expected typer.Exit"
     except typer.Exit:
         pass
@@ -170,15 +170,45 @@ def test_handle_emergency_signal_only_nags_once_per_signal_id(monkeypatch):
 
     signal = {"emergency": _signal(fixed_in_version="0.3.0")}
     try:
-        cli._handle_emergency_signal(signal)
+        cli._handle_emergency_signal(signal, verified=True)
         assert False, "expected typer.Exit"
     except typer.Exit:
         pass
     # Second call in the same process (e.g. a later refetch) with the same
     # signal id is a silent no-op rather than blocking/prompting again.
-    cli._handle_emergency_signal(signal)
+    cli._handle_emergency_signal(signal, verified=True)
 
     assert calls == [1]
+
+
+def test_unverified_artifact_warns_but_never_blocks_or_updates(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_emergency_signals_shown", set())
+    monkeypatch.setattr(cli, "_emergency_signals_warned", set())
+    monkeypatch.setattr(cli, "_omm_version", lambda: "0.2.98")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)  # a condition that would Exit(1) if verified
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(cli, "_perform_update", lambda b: (_ for _ in ()).throw(AssertionError))
+
+    cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.3.0")}, verified=False)
+
+    captured = capsys.readouterr()
+    assert "Runner protocol broke" in captured.err
+
+
+def test_verified_artifact_still_blocks_without_a_tty(monkeypatch):
+    import typer
+
+    monkeypatch.setattr(cli, "_emergency_signals_shown", set())
+    monkeypatch.setattr(cli, "_emergency_signals_warned", set())
+    monkeypatch.setattr(cli, "_omm_version", lambda: "0.2.98")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+
+    try:
+        cli._handle_emergency_signal({"emergency": _signal(fixed_in_version="0.3.0")}, verified=True)
+        assert False, "expected typer.Exit"
+    except typer.Exit:
+        pass
 
 
 def test_load_recommendation_with_change_note_triggers_emergency_check(monkeypatch, tmp_path):
@@ -188,7 +218,7 @@ def test_load_recommendation_with_change_note_triggers_emergency_check(monkeypat
     monkeypatch.setattr(predictor, "fetch_and_cache_model", lambda url: artifact)
 
     seen = []
-    monkeypatch.setattr(cli, "_handle_emergency_signal", lambda a: seen.append(a))
+    monkeypatch.setattr(cli, "_handle_emergency_signal", lambda a, *, verified: seen.append(a))
 
     cli._load_recommendation_with_change_note({"model_url": "http://example.com/model.json"})
 

@@ -75,3 +75,11 @@ def test_client_id_remains_best_effort_when_lock_is_busy(isolated_omm_home, monk
 
     assert re.fullmatch(r"[0-9a-f]{32}", config.client_id())
     assert not config.CLIENT_ID_PATH.exists()
+
+
+def test_peek_client_id_never_creates_the_file(isolated_omm_home):
+    config.CLIENT_ID_PATH.unlink(missing_ok=True)
+    assert config.peek_client_id() is None
+    assert not config.CLIENT_ID_PATH.exists()
+    created = config.client_id()
+    assert config.peek_client_id() == created

@@ -653,6 +653,52 @@ def test_capture_legacy_state_requires_the_running_legacy_venv(monkeypatch, tmp_
     assert "not inside the legacy pipx omm environment" in error
 
 
+def test_run_pipx_query_returns_failure_when_pipx_missing(monkeypatch):
+    # F107: pipx not on PATH (e.g. a Windows install driven by `python -m
+    # pipx`, which never creates pipx.exe) used to raise FileNotFoundError
+    # straight out of subprocess.run here - every caller only handles a
+    # non-zero CompletedProcess, not an exception.
+    def _raise(*args, **kwargs):
+        raise FileNotFoundError("pipx")
+
+    monkeypatch.setattr(cli.subprocess, "run", _raise)
+
+    result = cli._run_pipx_query(["pipx", "environment"])
+
+    assert result.returncode == 1
+    assert "could not run pipx" in result.stderr
+
+
+def test_update_reports_missing_pipx_instead_of_crashing(monkeypatch):
+    # Companion to the test above at the call site that actually escaped:
+    # `_perform_update`'s own `except FileNotFoundError` handler wraps the
+    # pipx *install* subprocess.Popen call, but the legacy-pipx-state
+    # capture (_capture_legacy_pipx_state -> _pipx_environment_value ->
+    # _run_pipx_query) runs earlier, outside that try - so a missing pipx
+    # there previously escaped as an unhandled traceback instead of the
+    # friendly "rollback state could not be verified" message.
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
+    monkeypatch.setattr(
+        cli.package_metadata, "find_distribution", lambda: ("omm", object())
+    )
+
+    def fake_run(args, **kwargs):
+        if args[0] == "pipx":
+            raise FileNotFoundError("pipx")
+        raise AssertionError(f"unexpected subprocess.run call: {args}")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    result = cli._perform_update("main")
+
+    assert result.returncode == 1
+    assert "rollback state could not be verified" in result.stderr
+
+
 def test_verify_pipx_installation_rejects_wrong_main_package(monkeypatch, tmp_path):
     venvs_root = tmp_path / "venvs"
     snapshot = _pipx_snapshot(venvs_root)

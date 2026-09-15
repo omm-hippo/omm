@@ -300,6 +300,13 @@ def _post_event(event: dict[str, Any]) -> bool:
             log_attempt("send_failed_network", detail)
             _set_send_status(SendStatus("send_failed_network", detail=detail, retryable=True))
             return False
+        if resp.status_code == 409:
+            # The gateway already holds this exact event (a retry of a send
+            # whose response was lost). Treat it as delivered so it leaves
+            # the pending queue instead of failing forever.
+            log_attempt("sent_duplicate")
+            _set_send_status(SendStatus("sent_duplicate", status_code=resp.status_code))
+            return True
         if not (200 <= resp.status_code < 300):
             outcome = f"send_failed_http_{resp.status_code}"
             response_detail = str(getattr(resp, "text", "") or "")
@@ -315,7 +322,12 @@ def _post_event(event: dict[str, Any]) -> bool:
     try:
         headers = {}
         ingest_token = os.getenv("LOCALFIT_INGEST_TOKEN")
-        if ingest_token:
+        # Never put the ingest credential on the wire in the clear. The only
+        # plaintext endpoints secure_endpoint() allows are loopback ones, and
+        # localfit_server's require_ingest exempts loopback from the token
+        # check anyway - so an http endpoint never needs it, while another
+        # local process squatting the port could harvest it.
+        if ingest_token and urlparse(endpoint).scheme == "https":
             headers["authorization"] = f"Bearer {ingest_token}"
         resp = requests.post(endpoint, json=wire_event, headers=headers, timeout=5)
     except requests.RequestException as e:

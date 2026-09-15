@@ -308,7 +308,10 @@ def global_flags(func):
         # top-level one (e.g. "omm engine install" vs "omm install") - the
         # bare name would false-match _JSON_CAPABLE/_YES_CAPABLE and swallow
         # a warning the nested command actually needs.
-        command_name = ctx.command_path.removeprefix("omm ")
+        # ctx.command_path starts with whatever program name click derived
+        # from sys.argv[0] ('omm.exe' for the frozen Windows build), so
+        # strip exactly that - not a hardcoded "omm ".
+        command_name = ctx.command_path.removeprefix(f"{ctx.find_root().info_name} ")
         if opts.json and command_name not in _JSON_CAPABLE:
             err_console.print(
                 f"[warning]--json has no effect on `omm {command_name}` - ignoring it.[/warning]"
@@ -474,7 +477,9 @@ def _load_recommendation_with_change_note(config: dict) -> tuple[dict | None, bo
         )
     else:
         artifact, changed = predictor.load_model_with_change_note(config.get("model_url"))
-    _handle_emergency_signal(artifact)
+    _handle_emergency_signal(
+        artifact, verified=predictor.cached_model_signature_is_valid(public_key)
+    )
     return artifact, changed
 
 
@@ -500,6 +505,7 @@ def _version_at_least(installed: str, required: str) -> bool:
 
 
 _emergency_signals_shown: set[str] = set()
+_emergency_signals_warned: set[str] = set()
 
 
 def _restart_after_update() -> None:
@@ -516,14 +522,17 @@ def _restart_after_update() -> None:
         raise typer.Exit(1) from e
 
 
-def _handle_emergency_signal(artifact: dict | None) -> None:
+def _handle_emergency_signal(artifact: dict | None, *, verified: bool) -> None:
     """Every command that fetches the recommendation model (recommend,
-    search, contribute) runs this right after: if the model - already
-    Ed25519-verified in fetch_and_cache_model - carries a signed `emergency`
-    field aimed at versions older than this install, block instead of
-    quietly continuing. This is the last-resort channel for a critical
-    omm/Firebase/runner incompatibility: no separate network call, it rides
-    the model fetch that already happens routinely.
+    search, contribute) runs this right after: if the model carries a signed
+    `emergency` field aimed at versions older than this install, block
+    instead of quietly continuing - but only when `verified` says the
+    artifact this call is looking at is actually Ed25519-verified (either
+    freshly fetched, or an on-disk cache whose provenance still checks out
+    against the configured trust key). An unverified artifact can only warn;
+    see the `verified` check below. This is the last-resort channel for a
+    critical omm/Firebase/runner incompatibility: no separate network call,
+    it rides the model fetch that already happens routinely.
 
     Blocking means exactly that: the only way past this function without
     raising typer.Exit is updating (which restarts the process instead of
@@ -546,6 +555,20 @@ def _handle_emergency_signal(artifact: dict | None) -> None:
 
     fixed_in_version = signal.get("fixed_in_version")
     if fixed_in_version and _version_at_least(_omm_version(), fixed_in_version):
+        return
+
+    if not verified:
+        # This channel's invariant (see the docstring above) is that it only
+        # comes from a signed catalog. An unverified local cache (a legacy
+        # file, a restored backup, another local process's write) can still
+        # speak, but must not block a command or force an update.
+        if signal_id not in _emergency_signals_warned:
+            _emergency_signals_warned.add(signal_id)
+            err_console.print(f"[warning]⚠ {escape(signal['message'])}[/warning]")
+            err_console.print(
+                "[muted]This notice came from an unverified local catalog cache, "
+                "so it is shown for information only. Run `omm update` if you trust it.[/muted]"
+            )
         return
 
     _emergency_signals_shown.add(signal_id)
@@ -1530,6 +1553,12 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
 # must not flush the queued-upload channels (telemetry/error_report/usage).
 _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {"setting", "_bg-version-check", "_auto-import-run"}
 
+# omm's own hidden background commands. Not something a user typed, so they
+# must not add rows to the opt-in usage aggregate, which PRIVACY.md describes
+# as a count of <command> <outcome> the user ran. Local runlog files are not
+# uploaded, so those stay untouched.
+_INTERNAL_SUBCOMMANDS = frozenset({"_bg-version-check", "_auto-import-run"})
+
 
 def _maybe_auto_import(ctx: typer.Context) -> None:
     """One-time, best-effort offer to adopt stray .gguf files already
@@ -1692,6 +1721,15 @@ def _run_pipx_query(args: list[str], *, timeout: int = 30) -> subprocess.Complet
         )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="command timed out")
+    except OSError as error:
+        # pipx not on PATH (Windows installs driven by `python -m pipx`
+        # never create pipx.exe) or not executable. Every caller already
+        # treats a non-zero result as "could not query pipx"; raising here
+        # escaped _perform_update's own FileNotFoundError handler, whose
+        # `try:` starts *after* the legacy pipx state capture.
+        return subprocess.CompletedProcess(
+            args, 1, stdout="", stderr=f"could not run {args[0]}: {error}"
+        )
 
 
 def _pipx_snapshot_path(value: object) -> Path | None:
@@ -2986,6 +3024,16 @@ def _ask_select(question: questionary.Question):
     return _add_escape_to_cancel(question).ask()
 
 
+def _ask_text(message: str, **kwargs):
+    """`_ask_select`'s free-text counterpart. Escape also cancels it (returns
+    None) so the cancel gesture is not different from item to item on the
+    same screen."""
+    import questionary
+
+    _require_tty("This prompt")
+    return _add_escape_to_cancel(questionary.text(message, **kwargs)).ask()
+
+
 # Reverse of the standard 2-beolsik (두벌식) layout: what each jamo types as
 # on a physical QWERTY key. A single-key prompt (y/n/a/...) should accept
 # the jamo too, since pressing the key is what matters, not whether 한/영
@@ -3631,7 +3679,7 @@ def _resolve_ref(arg: str) -> str:
     """If `arg` is a bare integer, treat it as a 1-based index into the last
     `omm search`/`omm list` results shown in this terminal. Any non-numeric
     arg passes through unchanged."""
-    if not arg.isdigit():
+    if not arg.isdecimal():
         return arg
 
     results = session_cache.load_last_results()
@@ -3652,7 +3700,7 @@ def _resolve_ref(arg: str) -> str:
 def _resolve_benchmark_tag(arg: str) -> str:
     """Like `_resolve_ref`, but a numbered ref names a filename from the last
     `omm search`/`omm list`, which `omm benchmark` needs as an Ollama tag."""
-    if not arg.isdigit():
+    if not arg.isdecimal():
         # A registry filename (what `omm list`/`omm info` show, what users
         # paste) is not an Ollama tag: passing it through verbatim made
         # `omm benchmark <name>.gguf` ask Ollama for a model called
@@ -6658,6 +6706,16 @@ def _update_one(filename: str, entry: dict) -> str:
                 err_console.print(f"[warning]{filename}: no source URL on record, skipped.[/warning]")
                 return "skipped"
 
+            if not isinstance(source, str) or urlsplit(source).scheme.lower() not in ("http", "https"):
+                # `omm import` records source="imported" (scan_import.adopt_group)
+                # for a model that came from local disk: there is no upstream to
+                # check. Say so instead of handing the sentinel to the downloader,
+                # which reported it as "Refusing non-HTTPS download URL: imported".
+                err_console.print(
+                    f"[warning]{filename}: imported locally - no upstream URL to check, skipped.[/warning]"
+                )
+                return "skipped"
+
             if not _download_update(source, tmp, filename):
                 return "skipped"
 
@@ -7425,7 +7483,8 @@ def configure_upload_benchmark(
     table.add_column("Field", style="label")
     table.add_column("Value")
     policy = current.get("telemetry_send_policy", "ask")
-    table.add_row("Uploads", {"always": "always", "never": "never", "ask": "ask (default)"}[policy])
+    labels = {"always": "always", "never": "never", "ask": "ask (default)"}
+    table.add_row("Uploads", labels.get(policy, "ask (default)"))
     console.print(table)
 
 
@@ -7527,12 +7586,22 @@ def configure_upload_usage(
         )
     if not (enable or disable or reset_id):
         cfg = load_config()
-        console.print(
-            f"Policy: {'enabled' if usage.policy(cfg) == 'enabled' else 'off (default)'}"
-        )
-        console.print(f"Install id: {config_mod.client_id()}")
+        opted_in = usage.policy(cfg) == "enabled"
+        console.print(f"Policy: {'enabled' if opted_in else 'off (default)'}")
+        if opted_in:
+            console.print(f"Install id: {config_mod.client_id()}")
+        else:
+            # This command is a preview of what would be sent. Creating a
+            # persistent install id on the machine of a user who has turned
+            # collection off would contradict that.
+            existing = config_mod.peek_client_id()
+            console.print(
+                f"Install id: {existing}"
+                if existing
+                else "Install id: (not generated - usage stats are off)"
+            )
         console.print("\n[label]Next batch would send:[/label]")
-        console.print_json(data=usage.build_payload())
+        console.print_json(data=usage.build_payload(create_client_id=opted_in))
 
 
 @setting_app.command(name="memory-guard")
@@ -7813,7 +7882,8 @@ def catalog_rollback() -> None:
         selected = catalog.rollback(
             require_signed=bool(
                 current.get("catalog_manifest_url") and current.get("catalog_public_key")
-            )
+            ),
+            trusted_public_key=current.get("catalog_public_key"),
         )
     except (OSError, ValueError) as error:
         err_console.print(f"[error]Catalog rollback failed: {error}[/error]")
@@ -8037,9 +8107,9 @@ def setting_menu(ctx: typer.Context) -> None:
 
         try:
             if choice == "telemetry":
-                endpoint = questionary.text(
-                    "Endpoint (blank to keep current, 'none' to clear):"
-                ).ask()
+                endpoint = _ask_text("Endpoint (blank to keep current, 'none' to clear):")
+                if endpoint is None:
+                    continue
                 configure_telemetry(endpoint=endpoint or None)
             elif choice == "auto-import":
                 action = _ask_select(
@@ -8083,13 +8153,17 @@ def setting_menu(ctx: typer.Context) -> None:
                 if action is not None:
                     configure_theme(set_name=action)
             elif choice == "calibrate":
-                model_name = questionary.text(
-                    "Model to calibrate (blank for smallest installed):"
-                ).ask()
+                model_name = _ask_text("Model to calibrate (blank for smallest installed):")
+                if model_name is None:
+                    continue
                 calibrate(model_name or None)
             elif choice == "catalog-trust":
-                manifest_url = questionary.text("Signed manifest URL (https://...):").ask()
-                public_key = questionary.text("Base64 Ed25519 public key:").ask()
+                manifest_url = _ask_text("Signed manifest URL (https://...):")
+                if manifest_url is None:
+                    continue
+                public_key = _ask_text("Base64 Ed25519 public key:")
+                if public_key is None:
+                    continue
                 if manifest_url and public_key:
                     catalog_trust(manifest_url=manifest_url, public_key=public_key)
             elif choice == "catalog-rollback":
@@ -8165,7 +8239,10 @@ def search(
         if provider in (None, "curated")
         else []
     )
-    _handle_emergency_signal(predictor.load_cached_model())
+    _handle_emergency_signal(
+        predictor.load_cached_model(),
+        verified=predictor.cached_model_signature_is_valid(config.get("catalog_public_key")),
+    )
     local_matches = search_mod.match_candidates(pool, query)
 
     local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
@@ -8287,7 +8364,10 @@ def _print_install_suggestions(query: str) -> None:
         manifest_url=config.get("catalog_manifest_url"),
         public_key=config.get("catalog_public_key"),
     )
-    _handle_emergency_signal(predictor.load_cached_model())
+    _handle_emergency_signal(
+        predictor.load_cached_model(),
+        verified=predictor.cached_model_signature_is_valid(config.get("catalog_public_key")),
+    )
     suggestions = search_mod.dedupe_by_base_repo(search_mod.suggest_similar(query, pool, limit=3))
 
     existing_labels = {s.get("name") or s.get("repo_id") for s in suggestions}
@@ -9941,10 +10021,16 @@ def _ensure_contribute_candidate_memory(
     raise typer.Exit(1)
 
 
-def _ensure_contribute_start_space() -> None:
-    """Refuse an unattended run when either model volume is already low."""
+def _ensure_contribute_start_space(engine: str) -> None:
+    """Refuse an unattended run when a volume this session writes to is
+    already low. `engine` is the engine actually resolved for this run
+    (post-fallback), so the check looks at the model store that will really
+    be linked into - not always Ollama's."""
     volumes: dict[tuple[str, str | int], Path] = {}
-    for path in (MODELS_DIR, linker.ollama_models_dir()):
+    engine_dir = (
+        linker.lmstudio_models_dir() if engine == "lmstudio" else linker.ollama_models_dir()
+    )
+    for path in (MODELS_DIR, engine_dir):
         volumes.setdefault(linker.storage_volume_key(path), path)
 
     failures = []
@@ -10117,7 +10203,18 @@ def _run_contribution_loop(
             if daemon_ref is not None and (
                 engine != "lmstudio" or daemon_ref.get("proc") is not None
             ):
+                # The handle being replaced is the `ollama serve` omm itself
+                # started. A false-negative reachability probe (2s timeout)
+                # can land here while that process is still alive, and only
+                # daemon_ref["proc"]'s last value is stopped at the end -
+                # so stop the old one now instead of leaking it.
+                previous = daemon_ref.get("proc")
                 daemon_ref["proc"] = restarted
+                if engine != "lmstudio" and previous is not None and previous is not restarted:
+                    try:
+                        _stop_engine_daemon(engine, previous)
+                    except Exception:
+                        pass
             stats.daemon_restarts += 1
             consecutive_daemon_failures = 0
 
@@ -10300,7 +10397,15 @@ def _run_contribution_loop(
                 if daemon_ref is not None and (
                     engine != "lmstudio" or daemon_ref.get("proc") is not None
                 ):
+                    # See the matching comment at the loop-top restart above:
+                    # stop the handle we're replacing instead of leaking it.
+                    previous = daemon_ref.get("proc")
                     daemon_ref["proc"] = restarted
+                    if engine != "lmstudio" and previous is not None and previous is not restarted:
+                        try:
+                            _stop_engine_daemon(engine, previous)
+                        except Exception:
+                            pass
                 stats.daemon_restarts += 1
                 download_state = {"downloaded_now": False}
                 try:
@@ -10573,7 +10678,6 @@ def contribute(
             console.print(
                 f"[muted]Sent {flushed} error report(s) queued by an earlier run.[/muted]"
             )
-    _ensure_contribute_start_space()
     # Engine availability is a preflight, not part of the expensive-work
     # consent. Do it first so users are never asked to approve bandwidth,
     # disk, and compute for a run this machine cannot start.
@@ -10590,6 +10694,11 @@ def contribute(
     engine, started_daemon = _ensure_engine_running(engine, "contribute", assume_yes=yes)
     daemon_ref = {"proc": started_daemon}
     try:
+        # Disk preflight needs the engine actually resolved above -
+        # _ensure_engine_running can fall back from Ollama to LM Studio,
+        # whose model store may live on a different volume. Inside the try
+        # so the finally below still stops a daemon we just started.
+        _ensure_contribute_start_space(engine)
         # Everything that can prove the session impossible belongs before the
         # expensive-work consent. These checks do not download model tensors.
         try:
@@ -10739,9 +10848,14 @@ def _known_command_names() -> set[str]:
     """Every subcommand name omm registers, including command groups."""
     names: set[str] = set()
     for command in getattr(app, "registered_commands", []):
-        name = command.name or getattr(command.callback, "__name__", "")
+        # `_`->`-` is Typer's rule for deriving a command name from the
+        # **callback function name**. A name given explicitly is registered
+        # verbatim by Typer, so it must not be touched here
+        # (`@app.command(name="_bg-version-check")` was mangled into
+        # `-bg-version-check` when this replace applied unconditionally).
+        name = command.name or getattr(command.callback, "__name__", "").replace("_", "-")
         if name:
-            names.add(name.replace("_", "-"))
+            names.add(name)
     for group in getattr(app, "registered_groups", []):
         name = group.name or getattr(getattr(group.typer_instance, "info", None), "name", None)
         if name:
@@ -10804,11 +10918,28 @@ def main() -> None:
     runlog.start(sys.argv[1:])
     exit_code, outcome, exc_name = 0, "ok", None
     try:
-        app()
+        # Pin the program name instead of letting click derive it from
+        # sys.argv[0]: the PyInstaller portable/npm/winget build ships as
+        # `omm.exe`, which made ctx.command_path "omm.exe list" and broke
+        # both the _JSON_CAPABLE/_YES_CAPABLE match and the warning text
+        # in global_flags (it printed `omm omm.exe list`).
+        app(prog_name="omm")
     except SystemExit as e:
         # app() exits this way even on success, so this is the common path.
         exit_code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
         outcome = "ok" if exit_code == 0 else ("usage-error" if exit_code == 2 else "failed")
+        # click, in standalone_mode (the default), turns a KeyboardInterrupt
+        # raised inside a command body into an Abort and ends with
+        # `sys.exit(1)`. So the `except KeyboardInterrupt` below never sees a
+        # Ctrl+C that happened inside app() - only ones outside it (e.g. in
+        # runlog.start). Identify that case from this SystemExit's
+        # __context__ (= Abort) and its __cause__ (= KeyboardInterrupt) so a
+        # user-cancelled run isn't counted as a failure. Abort is also raised
+        # on EOFError, so only treat it as interrupted when the cause was
+        # actually a KeyboardInterrupt.
+        cause = e.__context__
+        if isinstance(cause, click.exceptions.Abort) and isinstance(cause.__cause__, KeyboardInterrupt):
+            outcome = "interrupted"
         raise
     except KeyboardInterrupt:
         exit_code, outcome = 130, "interrupted"
@@ -10847,7 +10978,9 @@ def main() -> None:
     finally:
         runlog.finish(exit_code, outcome)
         try:
-            usage.record_run(runlog.subcommand_of(sys.argv[1:]), outcome, exc_name)
+            subcommand = runlog.subcommand_of(sys.argv[1:])
+            if subcommand not in _INTERNAL_SUBCOMMANDS:
+                usage.record_run(subcommand, outcome, exc_name)
         except Exception:
             pass
 
