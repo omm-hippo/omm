@@ -18,9 +18,9 @@ def test_enable_reports_missing_dependency(isolated_omm_home, monkeypatch):
 
 
 def test_enable_hint_points_pipx_installs_at_pipx_inject(isolated_omm_home, monkeypatch, tmp_path):
-    """`pip install "omm-model[watch]"` never reaches a pipx venv (no pip of
-    its own), which is how a Windows user could install it and still be told
-    to install it on every retry."""
+    """A `pip install "omm-model[watch]"` typed in the shell lands in the
+    Python on PATH, not in omm's pipx venv - which is how a Windows user
+    could install it and still be told to install it on every retry."""
     monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
     monkeypatch.setattr(cli.sys, "frozen", False, raising=False)
     # The pipx environment name is the venv directory name; build it with the

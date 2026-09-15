@@ -896,11 +896,12 @@ def help_cmd(
 def _install_spec() -> str:
     """Editable spec for the persistent local clone (SRC_DIR). Always adds
     the [watch] extra (watchdog + plyer, what `omm setting auto-import
-    enable` needs; a pipx venv has no pip of its own for the user to add
-    it later) and the [nvidia] extra only when an NVIDIA driver is
-    actually present (nvidia-smi on PATH) - the same probes install.sh and
-    install.ps1 use, so a pipx repair never adds an extra the installer
-    omitted or drops one it added."""
+    enable` needs - a `pip install` typed in the user's shell lands in
+    whatever Python is on PATH, not in this pipx venv) and the [nvidia]
+    extra only when an NVIDIA driver is actually present (nvidia-smi on
+    PATH) - the same probes install.sh and install.ps1 use, so a pipx
+    repair never adds an extra the installer omitted or drops one it
+    added."""
     extras = ["watch"]
     if shutil.which("nvidia-smi") is not None:
         extras.insert(0, "nvidia")
@@ -7907,10 +7908,9 @@ def _watch_dependencies_available() -> bool:
 def _watch_dependency_hint() -> str:
     """How to get watchdog + plyer into the Python omm itself imports from.
     A bare `pip install "omm-model[watch]"` lands in whichever Python is
-    first on PATH - for the installer's pipx venv (which has no pip of its
-    own) and for the frozen npm/winget/portable builds that is never the
-    one omm runs from, so the user "installed it" and was told to install
-    it again on every retry."""
+    first on PATH - for the installer's pipx venv and for the frozen
+    npm/winget/portable builds that is never the one omm runs from, so the
+    user "installed it" and was told to install it again on every retry."""
     if getattr(sys, "frozen", False):
         return (
             "This packaged omm build (npm/winget/portable) does not bundle the "
