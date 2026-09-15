@@ -1,0 +1,120 @@
+name: Nightly auto release
+
+# Merging into main never publishes anything by itself: every release path
+# starts from a signed `v<version>` tag (docs/release-process.md). This job
+# is the "someone tags it" step, done nightly by the same bot key that signs
+# the retrain commits, so PyPI / npm / GitHub Release / Windows portable /
+# Homebrew no longer wait for a person to remember the tag.
+
+"on":
+  schedule:
+    # 06:00 KST - after the 03:00 UTC retrain PR has had time to auto-merge,
+    # so a release never lands in the middle of the nightly model update.
+    - cron: "0 21 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag main for release when it moved and CI is green
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          # A tag pushed with GITHUB_TOKEN would not trigger release.yml,
+          # npm-release.yml or windows-portable.yml; a PAT push does. Same
+          # reason train.yml opens its PR with this PAT.
+          token: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Decide whether main needs a release
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(python - <<'PY'
+          import re, pathlib
+          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          print(re.search(r'^version = "([^"]+)"$', text, re.M).group(1))
+          PY
+          )"
+          npm_version="$(python scripts/npm_package.py version)"
+          if [ "$version" != "$npm_version" ]; then
+            echo "pyproject ($version) and npm launcher ($npm_version) versions differ" >&2
+            exit 1
+          fi
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+          skip() { echo "skip: $1"; echo "release=false" >> "$GITHUB_OUTPUT"; exit 0; }
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            skip "tag ${tag} already exists"
+          fi
+          last_tag="$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)"
+          if [ -n "$last_tag" ]; then
+            if [ "$(git rev-parse "${last_tag}^{commit}")" = "$(git rev-parse HEAD)" ]; then
+              skip "main has not moved since ${last_tag}"
+            fi
+            # The nightly retrain only rewrites published/*.json, and clients
+            # fetch that catalog at runtime - it never needs a package release.
+            changed="$(git diff --name-only "${last_tag}" HEAD | grep -v '^published/' || true)"
+            if [ -z "$changed" ]; then
+              skip "only published/ changed since ${last_tag}"
+            fi
+          fi
+          if curl -fsS -o /dev/null "https://pypi.org/pypi/omm-model/${version}/json"; then
+            skip "PyPI already has omm-model ${version}"
+          fi
+          if curl -fsS -o /dev/null "https://registry.npmjs.org/@omm-hippo/omm/${version}"; then
+            skip "npm already has @omm-hippo/omm ${version}"
+          fi
+
+          # Never tag a red or still-running main: every check run on HEAD
+          # must have finished green (skipped/neutral count as fine).
+          not_green="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/$(git rev-parse HEAD)/check-runs?per_page=100" \
+              --jq '.check_runs[] | select(.status != "completed" or (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")) | "\(.name): \(.status)/\(.conclusion)"'
+          )"
+          if [ -n "$not_green" ]; then
+            echo "$not_green"
+            skip "main HEAD has checks that are not green"
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push the signed release tag
+        if: steps.decide.outputs.release == 'true'
+        env:
+          LOCALFIT_RETRAIN_SSH_KEY: ${{ secrets.LOCALFIT_RETRAIN_SSH_KEY }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key_path="$RUNNER_TEMP/omm-release-signing-key"
+          printf '%s\n' "$LOCALFIT_RETRAIN_SSH_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          # The bot key is listed in src/omm/trust/allowed_signers, so the
+          # tag passes `release_artifacts.py verify-release` exactly like a
+          # maintainer's tag. The tagger email must be the listed principal.
+          git config user.name "omm-release-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config gpg.format ssh
+          git config tag.gpgsign true
+          git config user.signingkey "$key_path"
+
+          git tag -s "v${VERSION}" -m "OMM v${VERSION}"
+          python scripts/release_artifacts.py verify-release --tag "v${VERSION}"
+          git push origin "v${VERSION}"
+          echo "Pushed v${VERSION}; release.yml, npm-release.yml and windows-portable.yml take it from here."

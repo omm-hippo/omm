@@ -1,9 +1,10 @@
 # 릴리스 절차 (Release process)
 
-> 한 줄 요약: **릴리스는 자동으로 시작되지 않는다.** 관리자가 `main` 커밋에
-> 서명한 `vX.Y.Z` 태그를 push해야 시작되고, 그 뒤 PyPI · npm · GitHub
-> Release · Windows 포터블 · Homebrew 알림까지는 전부 자동이다.
-> PR을 `main`에 머지하는 것만으로는 아무것도 배포되지 않는다.
+> 한 줄 요약: **릴리스는 서명한 `vX.Y.Z` 태그 push로 시작된다.** 그 뒤 PyPI ·
+> npm · GitHub Release · Windows 포터블 · Homebrew 알림까지는 전부 자동이다.
+> PR을 `main`에 머지하는 것만으로는 아무것도 배포되지 않는다 — 대신
+> **매일 밤 `auto-release.yml`이 `main`이 움직였고 CI가 녹색이면 태그를
+> 대신 찍는다.** 급하면 그 워크플로를 수동 실행하거나 사람이 직접 태그를 찍는다.
 
 이 문서는 2026-09 기준 `.github/workflows/` 내용을 설명한다. 워크플로가
 바뀌면 이 문서도 같이 고친다.
@@ -80,6 +81,31 @@ allowed_signers`에 등록된 SSH 키로 서명돼야 하고, 모든 릴리스 �
    gh release view vX.Y.Z
    ```
 
+## 매일 밤 자동 릴리스 (`auto-release.yml`)
+
+2026-09-16부터 `.github/workflows/auto-release.yml`이 매일 21:00 UTC(06:00 KST,
+03:00 UTC 재학습 PR이 자동 머지된 뒤)에 돌면서 아래 조건을 모두 만족하면
+`main` 최신 커밋에 서명 태그를 push한다. 그 뒤는 사람이 찍은 태그와 완전히
+같다.
+
+- `pyproject.toml` 버전과 npm 런처 버전이 같다(훅이 맞춰 둔다).
+- 그 버전의 태그가 아직 없고, PyPI/npm에도 그 버전이 없다.
+- 마지막 `v*` 태그 이후 `main`이 움직였고, 바뀐 것이 `published/`(야간 재학습
+  결과물, 클라이언트가 실행 시점에 받아 가므로 패키지 릴리스가 필요 없음)만은
+  아니다.
+- `main` 최신 커밋의 체크런이 전부 끝났고 전부 녹색이다(skipped/neutral 허용).
+
+조건이 하나라도 안 맞으면 로그에 `skip: <이유>`를 남기고 아무것도 하지 않는다.
+즉시 릴리스하고 싶으면 Actions에서 **Nightly auto release → Run workflow**를
+누르면 같은 판단을 바로 한다. 서명 키는 재학습 봇과 같은
+`LOCALFIT_RETRAIN_SSH_KEY`(공개키는 `allowed_signers`의
+`github-actions[bot]` 항목)이고, push는 `LOCALFIT_RETRAIN_PAT`로 한다
+(`GITHUB_TOKEN`으로 push한 태그는 다른 워크플로를 깨우지 않는다). 새 시크릿은
+없다.
+
+자동 릴리스를 잠시 멈추려면 Actions에서 이 워크플로를 Disable하면 된다. 그
+동안은 위 수동 절차로 태그를 찍는다.
+
 ## 태그 push 후 자동으로 도는 것
 
 | 워크플로 | 하는 일 | 결과물 |
@@ -140,13 +166,17 @@ patch를 올리지 않는다. 따라서 `version = "0.4.0"`으로 고친 커밋�
 ## 자주 묻는 것
 
 **Q. 머지했는데 왜 배포가 안 되나요?**
-태그를 아무도 안 찍었기 때문이다. 이 문서의 "절차"를 따른다.
+다음 날 06:00 KST의 자동 릴리스를 기다리거나, `auto-release.yml`을 수동
+실행한다. 그래도 안 나가면 그 실행 로그의 `skip:` 줄(CI가 빨간 상태, `published/`만
+바뀜, 이미 발행된 버전 등)을 본다. 아니면 이 문서의 "절차"대로 직접 태그를 찍는다.
 
-**Q. 자동 태그로 바꾸면 안 되나요?**
-태그 서명이 이 저장소의 배포 신뢰 경계다. 설치 스크립트와 자동 업데이트는
+**Q. 자동 태그는 신뢰 경계를 넓히지 않나요?**
+태그 서명이 이 저장소의 배포 신뢰 경계이고, 설치 스크립트와 자동 업데이트는
 `allowed_signers`로 검증된 커밋만 받는다(`CONTRIBUTING.md`의 "Trusted
-pull-request head", `docs/install-staging-flow.md`). CI 봇 키로 태그를 찍게
-하면 그 경계가 CI 토큰 하나로 좁아진다. 바꾸려면 별도 설계 논의가 필요하다.
+pull-request head", `docs/install-staging-flow.md`). 자동 릴리스는 새 키를
+추가하지 않고, 이미 그 목록에 있어 야간 재학습 커밋을 서명하는 봇 키를 그대로
+쓴다. 즉 경계는 그대로이고 "누가 태그 명령을 치느냐"만 바뀐다. 봇 키를 폐기해야
+하면 `allowed_signers`와 설치 스크립트 두 개의 앵커에서 함께 빼고 시크릿을 교체한다.
 
 **Q. 지난 릴리스(v0.3.41)는 왜 일부 실패로 표시되나요?**
 두 job이 실패했지만 배포 자체는 정상이었다. npm 윈도우 검증은 pwsh에서
