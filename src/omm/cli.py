@@ -1253,8 +1253,26 @@ def _refresh_data() -> None:
                 f"[{style}]Updated recommend-model.json "
                 f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/{style}]"
             )
+            if artifact.get("trees") and artifact.get("candidates"):
+                _refresh_recommendation_facts(artifact, scan_hardware())
         except (requests.RequestException, ValueError) as e:
             err_console.print(f"[error]Failed to fetch trained model from {model_url}: {e}[/error]")
+
+
+def _refresh_recommendation_facts(artifact: dict, info: object) -> None:
+    from omm import recommend_facts
+
+    if not _global_opts().json:
+        console.print("[muted]Refreshing model descriptions and file sizes (up to 32 repositories)...[/muted]")
+    try:
+        result = recommend_facts.refresh(artifact, info)
+    except OSError:
+        err_console.print("[warning]Could not save provider metadata; continuing with available catalog data.[/warning]")
+        return
+    if not _global_opts().json:
+        console.print(f"[muted]Updated provider facts for {result['fetched_repos']} repositories.[/muted]")
+    if result["error"]:
+        err_console.print(f"[warning]Provider metadata refresh incomplete ({result['error']}); cached facts remain available.[/warning]")
 
 
 _BARE_REPO_URL = REPO_URL.removeprefix("git+")
@@ -1528,7 +1546,11 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
                 opts = ctx.ensure_object(GlobalOptions)
 
                 def print_notice_unless_suppressed() -> None:
-                    if _update_notice_is_wanted(opts):
+                    if (
+                        _update_notice_is_wanted(opts)
+                        and _installed_commit() == installed
+                        and _channel_branch() == branch
+                    ):
                         err_console.print("[muted]Update available! Run: omm update[/muted]")
 
                 ctx.call_on_close(print_notice_unless_suppressed)
@@ -3327,16 +3349,25 @@ def _select_recommended_model(
     ranked: list[tuple[dict, float | None]],
     refs: list[str],
     installations: list[recommend_status.InstallationStatus],
+    *,
+    profile: str | None = None,
+    eligible_count: int | None = None,
 ) -> str | None:
     import questionary
 
     recommend_ui.set_no_color(_global_opts().no_color)
     rows = recommend_ui.build_rows(ranked, refs, installations)
+    budget = recommend_ui._available_memory(info, profile)
     recommend_ui.print_screen(
         console,
         info,
         len(rows),
         show_caution=any(row.warning for row in rows),
+        profile=profile,
+        eligible_count=eligible_count,
+        exceeds_profile=budget is not None and any(
+            row.memory_gb is not None and row.memory_gb > budget for row in rows
+        ),
     )
     choices = [
         questionary.Choice(
@@ -3366,8 +3397,12 @@ def _print_recommend_json(
     refs: list[str],
     installations: list[recommend_status.InstallationStatus],
     profile: str,
+    *,
+    info: object = None,
+    eligible_count: int | None = None,
 ) -> None:
     rows = recommend_ui.build_rows(ranked, refs, installations)
+    budget = recommend_ui._available_memory(info, profile)
     console.print_json(
         data=[
             {
@@ -3376,7 +3411,11 @@ def _print_recommend_json(
                 "name": row.display_name,
                 "predicted_tokens_per_second": row.speed,
                 "memory_required_gb": row.memory_gb,
+                "model_type": row.model_type,
+                "model_type_source": row.type_source,
                 "use_case": row.use_case,
+                "use_case_source": row.use_case_source,
+                "declared_features": list(row.features),
                 "description": row.description,
                 "warning": row.warning,
                 "installed": row.installation.installed,
@@ -3384,6 +3423,11 @@ def _print_recommend_json(
                 "installed_engines": list(row.installation.engines),
                 "installation_match": row.installation.match_kind,
                 "profile": profile,
+                "profile_budget_gb": budget,
+                "within_profile": (row.memory_gb <= budget if row.memory_gb is not None and budget is not None else None),
+                "eligible_package_count": eligible_count,
+                "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
+                "quantization": recommend_ui.quantization_label(row.candidate),
             }
             for index, row in enumerate(rows)
         ]
@@ -3472,6 +3516,7 @@ def recommend(
         help="How much of the machine to claim: dedicated, balanced, or minimal. "
         "Prompted for interactively when omitted; defaults to balanced under --yes/--json.",
     ),
+    refresh_metadata: bool = typer.Option(False, "--refresh-metadata", help="Refresh cached provider task metadata and exact file sizes before ranking."),
 ) -> None:
     """Suggest a model to install for this hardware.
 
@@ -3507,6 +3552,11 @@ def recommend(
     if changed and not _global_opts().quiet and not json_output:
         console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
     if artifact and artifact.get("candidates"):
+        from omm import recommend_facts
+
+        if refresh_metadata:
+            _refresh_recommendation_facts(artifact, info)
+        artifact = recommend_facts.apply(artifact)
         ranked = predictor.rank_candidates(artifact, info)
         usable = [
             (c, speed) for c, speed in ranked if speed >= predictor.MIN_USABLE_TOKENS_PER_SECOND
@@ -3517,7 +3567,7 @@ def recommend(
                 key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
                 reverse=True,
             )
-            viable = within_profile[:10]
+            viable = within_profile
         elif usable:
             # Nothing in the usable set clears the profile's RAM ceiling -
             # relax the profile rather than show nothing.
@@ -3530,11 +3580,15 @@ def recommend(
                 key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
                 reverse=True,
             )
-            viable = usable[:10]
+            viable = usable
         else:
             # Nothing clears the usable-speed floor (very weak hardware) - fall
             # back to the fastest candidates available rather than show nothing.
-            viable = [(c, speed) for c, speed in ranked if speed > 0][:10]
+            viable = [(c, speed) for c, speed in ranked if speed > 0]
+        from omm.recommend_selection import shortlist
+
+        eligible_count = len(viable)
+        viable = shortlist(viable)
         if not viable:
             err_console.print("[error]No model is predicted to run on this hardware.[/error]")
             raise typer.Exit(1)
@@ -3545,7 +3599,8 @@ def recommend(
         )
         session_cache.record_seen(refs)
         _present_recommendations(
-            info, viable, refs, installations, profile, json_output=json_output, auto_yes=auto_yes
+            info, viable, refs, installations, profile, json_output=json_output,
+            auto_yes=auto_yes, eligible_count=eligible_count,
         )
         return
 
@@ -3579,18 +3634,20 @@ def recommend(
     installations = recommend_status.detect_installation_statuses(matches)
     session_cache.record_seen(refs)
     _present_recommendations(
-        info, ranked_rules, refs, installations, profile, json_output=json_output, auto_yes=auto_yes
+        info, ranked_rules, refs, installations, profile, json_output=json_output,
+        auto_yes=auto_yes, eligible_count=len(matches),
     )
 
 
 def _present_recommendations(
-    info, ranked, refs, installations, profile, *, json_output: bool, auto_yes: bool
+    info, ranked, refs, installations, profile, *, json_output: bool, auto_yes: bool,
+    eligible_count: int | None = None,
 ) -> None:
     """Shared tail of `recommend` for the ML ranking and the static-rules
     fallback: dump JSON, or pick a model (the first uninstalled one under
     --yes, interactively otherwise) and hand it to `_finish_recommendation`."""
     if json_output:
-        _print_recommend_json(ranked, refs, installations, profile)
+        _print_recommend_json(ranked, refs, installations, profile, info=info, eligible_count=eligible_count)
         return
     if auto_yes:
         selected = _first_uninstalled_ref(refs, installations)
@@ -3598,7 +3655,9 @@ def _present_recommendations(
             console.print("[success]All recommended models are already installed.[/success]")
             return
     else:
-        selected = _select_recommended_model(info, ranked, refs, installations)
+        selected = _select_recommended_model(
+            info, ranked, refs, installations, profile=profile, eligible_count=eligible_count,
+        )
         if selected is None:
             err_console.print("[warning]Cancelled.[/warning]")
             raise typer.Exit(0)
