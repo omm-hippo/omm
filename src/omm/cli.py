@@ -729,7 +729,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "unlink", "info", "upgrade", "pin", "unpin", "rollback"]),
+    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "upgrade", "pin", "unpin", "rollback"]),
     ("Tuning & quality", ["tune", "benchmark", "contribute"]),
     (
         "Maintenance",
@@ -741,6 +741,7 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "import",
             "cleanup",
             "link",
+            "unlink",
             "export",
             "update",
             "log",
@@ -3691,26 +3692,50 @@ def tune(
     _print_runtime_profile(profile)
 
 
-def _resolve_ref(arg: str) -> str:
+def _resolve_ref(arg: str, *, fatal: bool = True) -> str | None:
     """If `arg` is a bare integer, treat it as a 1-based index into the last
     `omm search`/`omm list` results shown in this terminal. Any non-numeric
-    arg passes through unchanged."""
+    arg passes through unchanged. With `fatal=False` a bad index prints a
+    warning and returns None instead of exiting, for `_resolve_refs_multi`'s
+    skip-and-continue behavior."""
     if not arg.isdecimal():
         return arg
 
     results = session_cache.load_last_results()
     if not results:
-        err_console.print(
-            "[error]Run `omm search` or `omm list` first to install/uninstall by number.[/error]"
-        )
-        raise typer.Exit(1)
+        message = "Run `omm search` or `omm list` first to install/uninstall by number."
+        if fatal:
+            err_console.print(f"[error]{message}[/error]")
+            raise typer.Exit(1)
+        err_console.print(f"[warning]{message} Skipping '{arg}'.[/warning]")
+        return None
 
     idx = int(arg)
     if idx < 1 or idx > len(results):
-        err_console.print(f"[error]No result #{idx} (1-{len(results)}).[/error]")
-        raise typer.Exit(1)
+        message = f"No result #{idx} (1-{len(results)})."
+        if fatal:
+            err_console.print(f"[error]{message}[/error]")
+            raise typer.Exit(1)
+        err_console.print(f"[warning]{message} Skipping.[/warning]")
+        return None
 
     return results[idx - 1]
+
+
+def _resolve_refs_multi(arg: str) -> list[str]:
+    """Split a comma-separated list of filenames/list-numbers, resolving
+    each ref independently via `_resolve_ref`. A bad ref is skipped with a
+    warning instead of aborting the rest - callers process whatever
+    resolves and report the skipped ones as a non-zero exit."""
+    out: list[str] = []
+    for piece in arg.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        resolved = _resolve_ref(piece, fatal=False)
+        if resolved is not None and resolved not in out:
+            out.append(resolved)
+    return out
 
 
 def _resolve_benchmark_tag(arg: str) -> str:
@@ -5977,7 +6002,7 @@ def _remove_one(
                 # recorded owner and no way to retry via `omm relink` /
                 # `omm uninstall` again.
                 engine_cleanup_failed = True
-    # `omm link <directory>` records the exact destination.  It may be a
+    # `omm link --to <directory>` records the exact destination.  It may be a
     # Windows hard link, so use the ownership-aware remover rather than ever
     # unlinking an arbitrary regular file at that path.
     remaining_custom_links: list[str] = []
@@ -6126,7 +6151,11 @@ def remove(
 @app.command(name="unlink")
 @global_flags
 def unlink(
-    filename: str = typer.Argument(..., autocompletion=complete_remove_filename),
+    filenames: str = typer.Argument(
+        ...,
+        autocompletion=complete_remove_filename,
+        help="Comma-separated model filenames or list numbers.",
+    ),
     engine: str = typer.Option(
         ...,
         "--runner",
@@ -6134,42 +6163,56 @@ def unlink(
         help="Runner to unlink from, or 'all'.",
     ),
 ) -> None:
-    """Remove a model's link from one runner (or every runner with --runner
-    all) without touching the hub file or its links into other runners."""
-    filename, entry = _lookup_entry(_resolve_ref(filename), registry.load_registry())
-    if entry is None:
-        _print_not_installed_error(filename)
+    """Remove one or more models' links from one runner (or every runner
+    with --runner all) without touching the hub file or links into other
+    runners."""
+    if engine.lower() != "all":
+        _validate_engine(engine, flag="--runner")
+
+    refs = _resolve_refs_multi(filenames)
+    if not refs:
         raise typer.Exit(1)
 
-    linked = entry.get("linked", {})
-    if engine.lower() == "all":
-        targets = [spec.key for spec in linker.ENGINES if linked.get(spec.key)]
-        if not targets:
-            console.print(f"{filename} isn't linked into any runner.")
-            raise typer.Exit(0)
-    else:
-        _validate_engine(engine, flag="--runner")
-        if not linked.get(engine):
-            console.print(f"{filename} isn't linked into {_engine_label(engine)}.")
-            raise typer.Exit(0)
-        targets = [engine]
+    reg = registry.load_registry()
+    any_failed = False
+    for ref in refs:
+        filename, entry = _lookup_entry(ref, reg)
+        if entry is None:
+            _print_not_installed_error(filename)
+            any_failed = True
+            continue
 
-    new_linked = dict(linked)
-    failed: list[str] = []
-    for key in targets:
-        try:
-            linker.unlink_engine(key, filename, entry)
-            new_linked[key] = False
-        except linker.LinkError as error:
-            err_console.print(f"[warning]{filename}: {_engine_label(key)} unlink skipped: {error}[/warning]")
-            failed.append(key)
+        linked = entry.get("linked", {})
+        if engine.lower() == "all":
+            targets = [spec.key for spec in linker.ENGINES if linked.get(spec.key)]
+            if not targets:
+                console.print(f"{filename} isn't linked into any runner.")
+                continue
+        else:
+            if not linked.get(engine):
+                console.print(f"{filename} isn't linked into {_engine_label(engine)}.")
+                continue
+            targets = [engine]
 
-    registry.upsert_entry(filename, linked=new_linked)
-    unlinked = [k for k in targets if k not in failed]
-    if unlinked:
-        labels = ", ".join(_engine_label(k) for k in unlinked)
-        console.print(f"[success]Unlinked {filename} from {labels}.[/success]")
-    if failed:
+        new_linked = dict(linked)
+        failed: list[str] = []
+        for key in targets:
+            try:
+                linker.unlink_engine(key, filename, entry)
+                new_linked[key] = False
+            except linker.LinkError as error:
+                err_console.print(f"[warning]{filename}: {_engine_label(key)} unlink skipped: {error}[/warning]")
+                failed.append(key)
+
+        registry.upsert_entry(filename, linked=new_linked)
+        unlinked = [k for k in targets if k not in failed]
+        if unlinked:
+            labels = ", ".join(_engine_label(k) for k in unlinked)
+            console.print(f"[success]Unlinked {filename} from {labels}.[/success]")
+        if failed:
+            any_failed = True
+
+    if any_failed:
         raise typer.Exit(1)
 
 
@@ -8495,12 +8538,19 @@ def _print_install_suggestions(query: str) -> None:
 @app.command(name="link")
 @global_flags
 def link_models(
-    directory: Path = typer.Argument(
+    models: str | None = typer.Argument(
         None,
-        help="Optional model directory for an unsupported local AI app.",
+        help="Comma-separated model filenames or list numbers to link "
+        "(omit for every installed model).",
     ),
     engine: str | None = typer.Option(
         None, "--engine", help="Only re-verify/repair links for this engine."
+    ),
+    to: Path | None = typer.Option(
+        None,
+        "--to",
+        help="Link into an arbitrary directory instead of the supported "
+        "runners (for an unsupported local AI app).",
     ),
     force: bool = typer.Option(
         False,
@@ -8511,16 +8561,17 @@ def link_models(
         "conflict.",
     ),
 ) -> None:
-    """Link models into an arbitrary directory or repair known app links.
+    """Link models into every supported app, an arbitrary directory, or
+    both scoped to a chosen subset of models.
 
-    Without a directory, re-verify every installed model's links into every
+    Without --to, re-verify the selected models' links into every
     supported app (Ollama, LM Studio, Jan, AnythingLLM, Msty,
     text-generation-webui, KoboldCpp) and repair them. Covers models that
     were never linked *and* ones whose link is now broken, missing, or
     stale - link_engine() always replaces the existing symlink/manifest, so
     this always re-links rather than trusting the registry's stored
-    `linked` flag. With a directory, reuse the central GGUF through
-    zero-copy links when possible, with an explicit copy warning when Windows
+    `linked` flag. With --to, reuse the central GGUF through zero-copy
+    links when possible, with an explicit copy warning when Windows
     permissions and volume boundaries make that impossible."""
     # `relink()` (and potentially other in-process callers) invokes this
     # Typer command as a plain function; any keyword left unspecified binds
@@ -8530,8 +8581,8 @@ def link_models(
     if not isinstance(force, bool):
         force = False
     _validate_engine(engine)
-    if directory is not None and engine is not None:
-        err_console.print("[error]--engine only applies without a directory argument.[/error]")
+    if to is not None and engine is not None:
+        err_console.print("[error]--engine only applies without --to.[/error]")
         raise typer.Exit(2)
     reg = registry.load_registry()
     if not reg:
@@ -8544,8 +8595,23 @@ def link_models(
         )
         raise typer.Exit(0)
 
-    if directory is not None:
-        directory = directory.expanduser()
+    any_missing = False
+    if models is not None:
+        refs = _resolve_refs_multi(models)
+        selected: dict[str, dict] = {}
+        for ref in refs:
+            filename, entry = _lookup_entry(ref, reg)
+            if entry is None:
+                _print_not_installed_error(filename)
+                any_missing = True
+                continue
+            selected[filename] = entry
+        if not selected:
+            raise typer.Exit(1)
+        reg = selected
+
+    if to is not None:
+        directory = to.expanduser()
         try:
             directory.mkdir(parents=True, exist_ok=True)
         except OSError as error:
@@ -8589,6 +8655,8 @@ def link_models(
             f"[success]{linked_count} model(s) linked into {directory}.[/success] "
             f"{skipped_missing} skipped (file missing)."
         )
+        if any_missing:
+            raise typer.Exit(1)
         return
 
     relinked_count = 0
@@ -8655,6 +8723,8 @@ def link_models(
         f"[success]{relinked_count} model(s) relinked/verified{engine_suffix}.[/success] "
         f"{skipped_conflict} skipped (conflict). {skipped_missing} skipped (file missing)."
     )
+    if any_missing:
+        raise typer.Exit(1)
 
 
 @app.command(name="relink", hidden=True)
@@ -8668,7 +8738,86 @@ def relink() -> None:
     # Leaving `force` out therefore ran every relink as `--force`, silently
     # deleting any unowned file already sitting at the destination. Pass it
     # explicitly so it's the real `False`.
-    link_models(directory=None, engine=None, force=False)
+    link_models(models=None, engine=None, to=None, force=False)
+
+
+@app.command(name="export")
+@global_flags
+def export_model(
+    filename: str = typer.Argument(..., autocompletion=complete_remove_filename),
+    destination: Path = typer.Argument(..., help="Directory to place the exported file in."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Reclaim a destination omm doesn't recognize as its own by "
+        "deleting it and exporting, instead of skipping it as a conflict.",
+    ),
+) -> None:
+    """Export a hub model to `destination` for deployment or backup: a hard
+    link when possible, otherwise a real copy. Never a symlink, so the
+    exported file keeps working after `omm uninstall` or on another
+    machine. Not tracked in the registry - uninstalling the source model
+    never touches an exported copy. Also writes a provenance/checksum
+    manifest sidecar next to it, so `omm import` on another machine
+    (including an air-gapped one) can restore the source repo, version, and
+    install date instead of treating the file as an anonymous import."""
+    filename, entry = _lookup_entry(_resolve_ref(filename), registry.load_registry())
+    if entry is None:
+        _print_not_installed_error(filename)
+        raise typer.Exit(1)
+    try:
+        source = _managed_model_path(filename)
+    except ModelResolutionError as error:
+        err_console.print(f"[error]{filename}: unsafe registry entry ({error}).[/error]")
+        raise typer.Exit(1) from error
+    if not source.exists():
+        err_console.print(f"[error]{filename}: hub file is missing.[/error]")
+        raise typer.Exit(1)
+
+    destination = destination.expanduser()
+
+    def report_copy(_source: Path, dest_path: Path, size_bytes: int) -> None:
+        console.print(
+            f"[muted]{size_bytes / 1024**3:.1f} GiB copied to {dest_path}; "
+            "a hard link wasn't possible (different volume).[/muted]"
+        )
+
+    try:
+        exported = linker.export_file(source, destination, on_copy=report_copy, force=force)
+    except linker.LinkError as error:
+        err_console.print(f"[error]{filename}: export failed: {error}[/error]")
+        raise typer.Exit(1) from error
+
+    scan_import.write_manifest(exported, _export_manifest_fields(filename, entry, source))
+    console.print(f"[success]Exported {filename} to {exported}.[/success]")
+
+
+def _export_manifest_fields(filename: str, entry: dict, source: Path) -> dict:
+    """Portable subset of a registry entry for the `omm export` sidecar -
+    only fields meaningful on a different machine. `linked`/`custom_links`/
+    `compatibility` are this machine's local state and don't travel."""
+    fields: dict = {"schema_version": 1, "filename": filename, "sha256": entry.get("sha256")}
+    for key in ("repo_id", "source", "version", "installed_at", "size_bytes"):
+        value = entry.get(key)
+        if value is not None:
+            fields[key] = value
+
+    from omm.gguf import read_gguf_metadata
+
+    try:
+        header = read_gguf_metadata(
+            source, {"general.architecture", "general.parameter_count"}
+        )
+    except (OSError, ValueError, struct.error):
+        header = {}
+    architecture = header.get("general.architecture")
+    if isinstance(architecture, str) and architecture:
+        fields["architecture"] = architecture
+    parameter_count = header.get("general.parameter_count")
+    if isinstance(parameter_count, int):
+        fields["parameter_count"] = parameter_count
+
+    return fields
 
 
 @app.command(name="export")

@@ -47,11 +47,29 @@ def _systemd_unit_path() -> Path:
     return Path.home() / ".config" / "systemd" / "user" / _SYSTEMD_UNIT_NAME
 
 
+def _launchd_wrapper_path() -> Path:
+    """A tiny named shim launchd execs instead of the raw python
+    interpreter. macOS's Background Items list shows the basename of
+    ProgramArguments[0] with no way to override it - pointing launchd
+    straight at sys.executable makes every entry read "python"."""
+    return OMM_HOME / "bin" / "omm"
+
+
+def _launchd_wrapper_content() -> str:
+    """Forwards launchd's argv straight to whatever `service_argv()` says
+    should run - a frozen build execs itself directly (`-m omm.cli` would be
+    rejected as an unknown option), a source install runs `-m omm.cli`."""
+    if getattr(sys, "frozen", False):
+        return f"""#!/bin/sh
+exec "{sys.executable}" "$@"
+"""
+    return f"""#!/bin/sh
+exec "{sys.executable}" -m omm.cli "$@"
+"""
+
+
 def _launchd_plist_content() -> str:
     log_path = OMM_HOME / "logs" / "auto-import.log"
-    program_arguments = "\n".join(
-        f"        <string>{argument}</string>" for argument in service_argv()
-    )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -60,7 +78,8 @@ def _launchd_plist_content() -> str:
     <string>{_LAUNCHD_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-{program_arguments}
+        <string>{_launchd_wrapper_path()}</string>
+        <string>_auto-import-run</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -206,6 +225,10 @@ def _windows_legacy_task_delete() -> None:
 def install() -> None:
     system = platform.system()
     if system == "Darwin":
+        wrapper_path = _launchd_wrapper_path()
+        wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+        wrapper_path.write_text(_launchd_wrapper_content(), encoding="utf-8")
+        wrapper_path.chmod(0o755)
         plist_path = _launchd_plist_path()
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         (OMM_HOME / "logs").mkdir(parents=True, exist_ok=True)
@@ -240,6 +263,7 @@ def uninstall() -> None:
         if plist_path.exists():
             subprocess.run(["launchctl", "unload", "-w", str(plist_path)], check=False)
             plist_path.unlink()
+        _launchd_wrapper_path().unlink(missing_ok=True)
     elif system == "Linux":
         subprocess.run(
             ["systemctl", "--user", "disable", "--now", _SYSTEMD_UNIT_NAME], check=False

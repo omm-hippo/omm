@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Callable, Iterator
 
 import typer
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from omm import config as config_mod
@@ -260,6 +261,17 @@ def run_engine_checklist(console: Console) -> list[str] | None:
         return question.ask()
 
 
+# Installer output phrasing is unpredictable across brew/winget/flatpak, so
+# there is no reliable total stage count to show as a percentage. Advance
+# forward-only through this list as keywords are seen, same monotonic scan
+# cli.py's pipx installer progress uses, and use it only for the spinner
+# label - never a progress-bar fraction.
+_INSTALL_STAGE_LABELS: list[tuple[str, str]] = [
+    ("download", "Downloading"),
+    ("install", "Installing"),
+]
+
+
 def install_selected_engines(console: Console, selected: list[str]) -> bool:
     """Install automatable selections and report whether they succeeded.
 
@@ -278,13 +290,38 @@ def install_selected_engines(console: Console, selected: list[str]) -> bool:
                 f"See {COMPATIBLE_PROGRAMS_URL}"
             )
             continue
-        console.print(f"\n[bold]Installing {spec.label}...[/bold]")
-        result = linker.install_engine(
-            key,
-            on_output=lambda line: console.print(
-                line, style="muted", markup=False, highlight=False
-            ),
-        )
+
+        raw_lines: list[str] = []
+        stage = 0
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task_id = progress.add_task(f"Installing {spec.label}...")
+
+            def on_output(line: str) -> None:
+                nonlocal stage
+                raw_lines.append(line)
+                lowered = line.lower()
+                for i in range(stage, len(_INSTALL_STAGE_LABELS)):
+                    keyword, label = _INSTALL_STAGE_LABELS[i]
+                    if keyword in lowered:
+                        stage = i + 1
+                        progress.update(
+                            task_id, description=f"{label} {spec.label}..."
+                        )
+                        break
+
+            result = linker.install_engine(key, on_output=on_output)
+
+        # Installer output stays hidden behind the spinner while things are
+        # going fine - a failure is the one time raw output (the "why") is
+        # worth showing, so surface it before the one-line result message.
+        if result.status != "installed":
+            for line in raw_lines:
+                console.print(line, style="muted", markup=False, highlight=False)
         style = "success" if result.status == "installed" else "error"
         console.print(result.message, style=style, markup=False, highlight=False)
         if result.status != "installed":

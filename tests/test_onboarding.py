@@ -496,26 +496,45 @@ def test_run_engine_checklist_requires_tty(monkeypatch):
     assert "interactive terminal" in console.file.getvalue()
 
 
-def test_install_selected_engines_prints_raw_installer_output_without_markup_errors(monkeypatch):
-    """Installer output must pass through Rich's console.print raw (no
-    markup interpretation): a `[sudo] password:` line must not have its
-    bracketed token eaten, and a line shaped like `[/dim]` must not raise
-    rich.errors.MarkupError and crash the wizard."""
+def test_install_selected_engines_hides_raw_installer_output_on_success(monkeypatch):
+    """Installer stdout stays behind the spinner while the install is going
+    fine - it isn't worth showing the user when there's nothing to diagnose."""
     console = _console()
-    captured = {}
     monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
 
     def fake_install_engine(key, on_output=None):
-        captured["on_output"] = on_output
+        on_output("Downloading Ollama.app")
+        on_output("==> Installing Cask ollama")
         return linker.EngineInstallResult(key, "installed", "ok")
 
     monkeypatch.setattr(linker, "install_engine", fake_install_engine)
 
     onboarding.install_selected_engines(console, ["ollama"])
 
-    on_output = captured["on_output"]
-    on_output("[sudo] password:")
-    on_output("weird [/dim] text")
+    output = console.file.getvalue()
+    assert "Downloading Ollama.app" not in output
+    assert "ok" in output
+
+
+def test_install_selected_engines_prints_raw_installer_output_on_failure_without_markup_errors(
+    monkeypatch,
+):
+    """A failed install surfaces the raw installer output it buffered, so the
+    dump path must pass it through Rich's console.print raw (no markup
+    interpretation): a `[sudo] password:` line must not have its bracketed
+    token eaten, and a line shaped like `[/dim]` must not raise
+    rich.errors.MarkupError and crash the wizard."""
+    console = _console()
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
+
+    def fake_install_engine(key, on_output=None):
+        on_output("[sudo] password:")
+        on_output("weird [/dim] text")
+        return linker.EngineInstallResult(key, "failed", "boom")
+
+    monkeypatch.setattr(linker, "install_engine", fake_install_engine)
+
+    onboarding.install_selected_engines(console, ["ollama"])
 
     output = console.file.getvalue()
     assert "[sudo] password:" in output

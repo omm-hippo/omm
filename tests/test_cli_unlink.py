@@ -96,6 +96,44 @@ def test_unlink_requires_runner_option(isolated_omm_home):
     assert "--runner" in result.stderr
 
 
+def test_unlink_comma_list_touches_every_named_model(isolated_omm_home, monkeypatch):
+    registry.save_registry(
+        {
+            "model-a.gguf": {"linked": {"ollama": True}},
+            "model-b.gguf": {"linked": {"ollama": True}},
+        }
+    )
+    calls = []
+    monkeypatch.setattr(
+        cli.linker, "unlink_engine", lambda key, fname, entry, **kw: calls.append(fname)
+    )
+
+    result = runner.invoke(
+        cli.app, ["unlink", "model-a.gguf,model-b.gguf", "--runner", "ollama"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert sorted(calls) == ["model-a.gguf", "model-b.gguf"]
+
+
+def test_unlink_comma_list_skips_unknown_model_and_still_unlinks_the_rest(
+    isolated_omm_home, monkeypatch
+):
+    registry.save_registry({"model-a.gguf": {"linked": {"ollama": True}}})
+    calls = []
+    monkeypatch.setattr(
+        cli.linker, "unlink_engine", lambda key, fname, entry, **kw: calls.append(fname)
+    )
+
+    result = runner.invoke(
+        cli.app, ["unlink", "model-a.gguf,nothing-here.gguf", "--runner", "ollama"]
+    )
+
+    assert result.exit_code == 1
+    assert "nothing-here.gguf is not installed via omm" in result.stderr
+    assert calls == ["model-a.gguf"]
+
+
 def test_unlink_link_error_reports_and_exits_nonzero(isolated_omm_home, monkeypatch):
     filename = "model.gguf"
     registry.save_registry({filename: {"linked": {"ollama": True}}})
