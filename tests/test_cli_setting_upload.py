@@ -28,6 +28,22 @@ def test_upload_usage_bare_shows_dry_run_payload(isolated_omm_home):
     assert "ram_gb_bucket" in r.output
 
 
+def test_upload_usage_bare_does_not_create_client_id_when_opted_out(isolated_omm_home):
+    config.CLIENT_ID_PATH.unlink(missing_ok=True)
+    r = runner.invoke(cli.app, ["setting", "upload", "usage"])
+    assert r.exit_code == 0, r.output
+    assert not config.CLIENT_ID_PATH.exists()
+    assert "usage stats are off" in r.output
+    assert "ram_gb_bucket" in r.output
+
+
+def test_upload_usage_bare_shows_real_id_when_opted_in(isolated_omm_home):
+    runner.invoke(cli.app, ["setting", "upload", "usage", "--enable"])
+    r = runner.invoke(cli.app, ["setting", "upload", "usage"])
+    assert config.CLIENT_ID_PATH.exists()
+    assert config.client_id() in r.output
+
+
 def test_upload_usage_reset_id_changes_it(isolated_omm_home):
     first = config.client_id()
     r = runner.invoke(cli.app, ["setting", "upload", "usage", "--reset-id"])
@@ -57,6 +73,28 @@ def test_upload_benchmark_still_works(isolated_omm_home):
     r = runner.invoke(cli.app, ["setting", "upload", "benchmark", "--disable"])
     assert r.exit_code == 0
     assert config.load_config()["telemetry_send_policy"] == "never"
+
+
+def test_upload_benchmark_bare_survives_a_corrupt_policy_value(isolated_omm_home):
+    import json
+
+    data = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8")) if config.CONFIG_PATH.exists() else {}
+    data["telemetry_send_policy"] = "yes"
+    config.CONFIG_PATH.write_text(json.dumps(data), encoding="utf-8")
+    r = runner.invoke(cli.app, ["setting", "upload", "benchmark"])
+    assert r.exit_code == 0, r.output
+    assert "ask" in r.output
+
+
+def test_upload_benchmark_bare_survives_a_null_policy_value(isolated_omm_home):
+    import json
+
+    data = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8")) if config.CONFIG_PATH.exists() else {}
+    data["telemetry_send_policy"] = None
+    config.CONFIG_PATH.write_text(json.dumps(data), encoding="utf-8")
+    r = runner.invoke(cli.app, ["setting", "upload", "benchmark"])
+    assert r.exit_code == 0, r.output
+    assert "ask" in r.output
 
 
 def _scripted_selects(monkeypatch, answers):

@@ -582,3 +582,89 @@ def test_setting_bare_menu_theme_submenu_back_changes_nothing(isolated_omm_home,
 
     assert result.exit_code == 0, result.stdout
     assert config.load_config()["theme"] == "dark"
+
+
+def test_setting_menu_escape_in_endpoint_prompt_returns_to_menu(isolated_omm_home, monkeypatch):
+    # Escape from a select answers None via _ask_select; the free-text
+    # counterpart _ask_text must give the same "back to the menu, nothing
+    # changed" behavior instead of requiring Ctrl+C.
+    answers = iter(["telemetry", "back"])
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
+    monkeypatch.setattr(cli, "_ask_text", lambda *a, **k: None)
+    called = []
+    monkeypatch.setattr(cli, "configure_telemetry", lambda **k: called.append(k))
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    assert called == []
+
+
+def test_setting_menu_escape_in_calibrate_prompt_returns_to_menu(isolated_omm_home, monkeypatch):
+    answers = iter(["calibrate", "back"])
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
+    monkeypatch.setattr(cli, "_ask_text", lambda *a, **k: None)
+    called = []
+    monkeypatch.setattr(cli, "calibrate", lambda *a, **k: called.append((a, k)))
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    assert called == []
+
+
+def test_setting_menu_escape_in_catalog_trust_prompt_returns_to_menu(isolated_omm_home, monkeypatch):
+    answers = iter(["catalog-trust", "back"])
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
+    monkeypatch.setattr(cli, "_ask_text", lambda *a, **k: None)
+    called = []
+    monkeypatch.setattr(cli, "catalog_trust", lambda **k: called.append(k))
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    assert called == []
+
+
+def test_setting_menu_blank_endpoint_still_shows_current(isolated_omm_home, monkeypatch):
+    # Regression: a blank (non-Escape) answer keeps its existing meaning of
+    # "show the current endpoint" (configure_telemetry(endpoint=None)),
+    # distinct from Escape's "do nothing at all".
+    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: "telemetry")
+    monkeypatch.setattr(cli, "_ask_text", lambda *a, **k: "")
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    called = []
+    monkeypatch.setattr(cli, "configure_telemetry", lambda **k: called.append(k))
+
+    result = runner.invoke(cli.app, ["setting"])
+
+    assert result.exit_code == 0, result.stdout
+    assert called == [{"endpoint": None}]
+
+
+def test_ask_text_binds_escape_to_cancel(monkeypatch):
+    # Do not actually spin up a prompt_toolkit Application here - on
+    # Windows CliRunner that raises NoConsoleScreenBufferError. Stub both
+    # questionary.text and _add_escape_to_cancel and just confirm they are
+    # wired together.
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(questionary, "text", lambda message, **kwargs: "raw-question")
+
+    calls = []
+
+    class _FakeQuestion:
+        def ask(self):
+            return "answer"
+
+    def fake_add_escape(question):
+        calls.append(question)
+        return _FakeQuestion()
+
+    monkeypatch.setattr(cli, "_add_escape_to_cancel", fake_add_escape)
+
+    assert cli._ask_text("Some message:") == "answer"
+    assert calls == ["raw-question"]

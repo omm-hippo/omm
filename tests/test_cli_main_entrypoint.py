@@ -1,5 +1,6 @@
 import errno
 import os
+import sys
 
 import pytest
 
@@ -95,3 +96,98 @@ def test_main_does_not_override_existing_no_default_cwd_in_exe_path_env(monkeypa
         cli.main()
 
     assert os.environ["NoDefaultCurrentDirectoryInExePath"] == "0"
+
+
+def test_registered_command_names_match_typers_real_names():
+    import typer.main
+
+    assert cli._REGISTERED_COMMAND_NAMES == frozenset(typer.main.get_command(cli.app).commands)
+
+
+def test_hidden_background_command_is_a_known_subcommand():
+    from omm import runlog
+
+    assert "_bg-version-check" in cli._REGISTERED_COMMAND_NAMES
+    assert runlog.subcommand_of(["_bg-version-check"]) == "_bg-version-check"
+    assert runlog.subcommand_of(["totally-unknown"]) == "unknown"
+
+
+def test_internal_background_subcommand_is_not_counted_in_usage(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli.usage, "record_run", lambda *a: calls.append(a))
+    monkeypatch.setattr(cli, "app", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["omm", "_bg-version-check"])
+    cli.main()
+    assert calls == []
+
+
+def test_user_subcommand_is_still_counted_in_usage(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli.usage, "record_run", lambda *a: calls.append(a))
+    monkeypatch.setattr(cli, "app", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["omm", "search"])
+    cli.main()
+    assert calls == [("search", "ok", None)]
+
+
+def test_ctrl_c_inside_click_is_recorded_as_interrupted(monkeypatch):
+    import click
+
+    recorded = []
+    monkeypatch.setattr(cli.usage, "record_run", lambda cmd, outcome, exc: recorded.append(outcome))
+
+    def _click_style_abort():
+        # Reproduces what click.Command.main does: KeyboardInterrupt -> Abort -> sys.exit(1)
+        try:
+            raise KeyboardInterrupt
+        except KeyboardInterrupt as e:
+            abort = click.exceptions.Abort()
+            abort.__cause__ = e
+            try:
+                raise abort
+            except click.exceptions.Abort:
+                raise SystemExit(1)
+
+    monkeypatch.setattr(cli, "app", _click_style_abort)
+    with pytest.raises(SystemExit) as info:
+        cli.main()
+    assert info.value.code == 1
+    assert recorded == ["interrupted"]
+
+
+def test_eof_abort_is_still_failed(monkeypatch):
+    import click
+
+    recorded = []
+    monkeypatch.setattr(cli.usage, "record_run", lambda cmd, outcome, exc: recorded.append(outcome))
+
+    def _click_style_abort():
+        try:
+            raise EOFError
+        except EOFError as e:
+            abort = click.exceptions.Abort()
+            abort.__cause__ = e
+            try:
+                raise abort
+            except click.exceptions.Abort:
+                raise SystemExit(1)
+
+    monkeypatch.setattr(cli, "app", _click_style_abort)
+    with pytest.raises(SystemExit) as info:
+        cli.main()
+    assert info.value.code == 1
+    assert recorded == ["failed"]
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "expected_outcome"),
+    [(1, "failed"), (2, "usage-error"), (0, "ok")],
+)
+def test_plain_exit_is_still_mapped_the_same_way(monkeypatch, exit_code, expected_outcome):
+    recorded = []
+    monkeypatch.setattr(cli.usage, "record_run", lambda cmd, outcome, exc: recorded.append(outcome))
+    monkeypatch.setattr(cli, "app", lambda: (_ for _ in ()).throw(SystemExit(exit_code)))
+    with pytest.raises(SystemExit) as info:
+        cli.main()
+    assert info.value.code == exit_code
+    assert recorded == [expected_outcome]

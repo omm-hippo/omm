@@ -886,6 +886,90 @@ def test_dead_daemon_is_restarted_before_next_candidate(isolated_omm_home, monke
     assert stats.benchmarked == [("model", 42.0)]
 
 
+def test_daemon_restart_stops_the_handle_it_replaces(isolated_omm_home, monkeypatch):
+    """A restart that overwrites `daemon_ref["proc"]` must stop the handle it
+    is replacing first. Otherwise a false-negative reachability probe that
+    fires while the original `ollama serve` process is still alive leaks
+    that process: only the final value of daemon_ref["proc"] is ever stopped
+    (in the loop's finally), so anything replaced along the way is orphaned."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    _seed_registry_entry("model.gguf")
+
+    reachable_calls = [False, True]
+    monkeypatch.setattr(
+        cli.benchmark, "ollama_daemon_reachable", lambda: reachable_calls.pop(0)
+    )
+    old_proc = object()
+    new_proc = object()
+    monkeypatch.setattr(cli.benchmark, "start_ollama_daemon", lambda: new_proc)
+    stopped = []
+    monkeypatch.setattr(cli.benchmark, "stop_ollama_daemon", lambda proc: stopped.append(proc))
+
+    def fake_install_impl(resolved, **kwargs):
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": False, "ollama": True},
+            tokens_per_sec=42.0,
+            telemetry_sent=True,
+            sha256="deadbeef",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    daemon_ref = {"proc": old_proc}
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None, daemon_ref=daemon_ref)
+
+    assert stopped == [old_proc]
+    assert daemon_ref["proc"] is new_proc
+    assert stats.daemon_restarts == 1
+
+
+def test_daemon_restart_does_not_stop_lmstudio_handle(isolated_omm_home, monkeypatch):
+    """LM Studio's daemon_ref is a bool sentinel and its stop path
+    (`linker.stop_lmstudio_daemon()`) takes no handle argument and kills the
+    named service outright - calling it on every restart would kill the
+    daemon we just confirmed is back up. Only the Ollama branch stops the
+    replaced handle."""
+    c = _candidate(filename="model.gguf")
+    queue = _FakeQueue([c])
+    stop_event = threading.Event()
+    _seed_registry_entry("model.gguf")
+
+    reachable_calls = [False, True]
+    monkeypatch.setattr(
+        cli.linker, "lmstudio_daemon_reachable", lambda: reachable_calls.pop(0)
+    )
+    monkeypatch.setattr(cli.linker, "start_lmstudio_daemon", lambda: True)
+    stopped = []
+    monkeypatch.setattr(cli.linker, "stop_lmstudio_daemon", lambda: stopped.append(1))
+
+    def fake_install_impl(resolved, **kwargs):
+        stop_event.set()
+        return cli.InstallOutcome(
+            filename="model.gguf",
+            repo_id="org/repo",
+            linked={"lmstudio": True, "ollama": False},
+            tokens_per_sec=42.0,
+            telemetry_sent=True,
+            sha256="deadbeef",
+        )
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+
+    daemon_ref = {"proc": True}
+    cli._run_contribution_loop(
+        queue, stop_event, refetch=None, daemon_ref=daemon_ref, engine="lmstudio"
+    )
+
+    assert stopped == []
+
+
 def test_dead_lmstudio_daemon_is_restarted_before_next_candidate(isolated_omm_home, monkeypatch):
     """Mirrors test_dead_daemon_is_restarted_before_next_candidate for the
     LM Studio engine: the loop's daemon-health check must dispatch to
