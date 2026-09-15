@@ -80,7 +80,9 @@
     - macOS: `~/Library/LaunchAgents/com.omm.auto-import.plist` + `launchctl load`.
     - Linux: `~/.config/systemd/user/omm-auto-import.service` +
       `systemctl --user enable --now`.
-    - Windows: `schtasks /create` (로그온 트리거, 관리자 권한 불필요).
+    - Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 레지스트리 값
+      (로그온 시 실행, 관리자 권한 불필요). 처음 구현했던 `schtasks /create /sc onlogon`은
+      관리자 권한 셸에서만 성공해("Access is denied") 교체함.
   - `disable`: 서비스 완전 종료 + 파일 제거 + `auto_import_enabled: false`.
   - `status`: 설정 플래그 + 실제 서비스 등록/실행 상태 확인해서 출력.
   - 이미 켜진 상태에서 `enable` 재호출, 이미 꺼진 상태에서 `disable` 재호출은
