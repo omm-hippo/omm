@@ -51,6 +51,19 @@ bound, so both constants are deliberately generous: honest telemetry from
 hardware newer than this document still passes. Rows failing it are rejected
 with reason `implausible_speed_for_hardware`.
 
+### Assumption: one weight read per token
+
+The bound above holds only for single-stream, non-speculative decode - which
+is how omm benchmarks today: one Ollama/LM Studio request at a time, with
+speculative decoding off. Speculative decoding commits several tokens per
+forward pass and batched inference amortises one weight read across many
+sequences, so an honest measurement from either could legitimately exceed
+this ceiling and would be rejected. Nothing omm ships can produce such a row
+yet. When an engine integration exposes speculative or batched benchmarking,
+the payload needs a `decode_mode` field (`single_stream` / `speculative` /
+`batched`) and rows other than `single_stream` must be excluded from this
+check or bounded by a separate formula. Tracked in omm-hippo/omm#227.
+
 `cpu_score`/`gpu_score` cannot scale this ceiling. Despite the names they are
 not performance scores - `omm.featurize.parse_chip_score()` returns the chip's
 model *number* (`"RTX 4090"` -> 4090.0, `"Apple M2 Pro"` -> 2.0), which is not
