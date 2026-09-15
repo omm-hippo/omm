@@ -165,6 +165,11 @@ def fetch_real_rows(url: str = TELEMETRY_URL) -> list[dict]:
         if token and not is_firebase_realtime_database_json_url(url)
         else {}
     )
+    # RTDB keys are SHA-256 proof digests, not timestamps, so ordering by
+    # "$key" and taking the last MAX_REAL_ROWS is a *uniform random sample*
+    # of the corpus, not its newest rows. That is deliberate: the sample's
+    # benchmark_version mix tracks the corpus's. Do not read the slices
+    # below as "most recent".
     params = (
         {"orderBy": '"$key"', "limitToLast": MAX_REAL_ROWS}
         if is_firebase_realtime_database_json_url(url)
@@ -1622,6 +1627,7 @@ def main() -> None:
         real_rows.extend(file_rows)
         input_sources.append("local_file")
         print(f"Loaded {len(file_rows)} local telemetry row(s) from {telemetry_path}.")
+    # Cap only - the order is arbitrary (see fetch_real_rows).
     real_rows = real_rows[-MAX_REAL_ROWS:]
     if plausibility_report is not None:
         calibration_report = build_plausibility_calibration_report(real_rows)
