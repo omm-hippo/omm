@@ -767,7 +767,9 @@ if ($null -eq $versionMatch) {
 $ExpectedVersion = $versionMatch.Matches[0].Groups[1].Value
 
 # Install NVML only when the machine actually exposes an NVIDIA driver.
-$InstallSpec = if (Test-CommandExists "nvidia-smi") { "$SrcDir[nvidia]" } else { $SrcDir }
+# [watch] (watchdog + plyer) is what `omm setting auto-import enable` needs;
+# a pipx venv has no pip of its own, so it has to go in at install time.
+$InstallSpec = if (Test-CommandExists "nvidia-smi") { "$SrcDir[nvidia,watch]" } else { "$SrcDir[watch]" }
 
 Write-Host "Installing omm (editable) from $SrcDir ..."
 # pipx names the new environment after the distribution (`omm-model`)

@@ -17,6 +17,52 @@ def test_enable_reports_missing_dependency(isolated_omm_home, monkeypatch):
     assert config.load_config()["auto_import_enabled"] is False
 
 
+def test_enable_hint_points_pipx_installs_at_pipx_inject(isolated_omm_home, monkeypatch):
+    """`pip install "omm-model[watch]"` never reaches a pipx venv (no pip of
+    its own), which is how a Windows user could install it and still be told
+    to install it on every retry."""
+    monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
+    monkeypatch.setattr(cli.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(cli.sys, "prefix", r"C:\Users\me\pipx\venvs\omm-model")
+    monkeypatch.setattr(
+        cli.package_metadata, "install_source", lambda: cli.package_metadata.InstallSource.PIPX
+    )
+
+    result = runner.invoke(cli.app, ["setting", "auto-import", "enable"])
+
+    assert result.exit_code == 1
+    output = " ".join((result.stdout + result.stderr).split())  # undo console wrapping
+    assert "pipx inject omm-model watchdog plyer" in output
+    assert "pip install" not in output
+
+
+def test_enable_hint_tells_frozen_builds_the_watcher_is_not_bundled(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+
+    result = runner.invoke(cli.app, ["setting", "auto-import", "enable"])
+
+    assert result.exit_code == 1
+    output = result.stdout + result.stderr
+    assert "does not bundle the auto-import watcher" in output
+    assert "pip install" not in output
+
+
+def test_enable_hint_uses_omm_own_interpreter_for_plain_pip_installs(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
+    monkeypatch.setattr(cli.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(cli.sys, "executable", "/opt/py/bin/python3")
+    monkeypatch.setattr(
+        cli.package_metadata, "install_source", lambda: cli.package_metadata.InstallSource.PYPI
+    )
+
+    result = runner.invoke(cli.app, ["setting", "auto-import", "enable"])
+
+    assert result.exit_code == 1
+    output = " ".join((result.stdout + result.stderr).split())  # undo console wrapping
+    assert '"/opt/py/bin/python3" -m pip install "omm-model[watch]"' in output
+
+
 def test_enable_installs_service_and_sets_flag(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: True)
     installed = []
