@@ -1466,7 +1466,9 @@ def _maybe_run_onboarding(ctx: typer.Context) -> None:
         return
     if load_config().get("onboarding_completed", True):
         return
-    if not _stdin_is_tty():
+    if not (_stdin_is_tty() and _stdout_is_tty()):
+        # A first run whose output is piped must not die inside the
+        # single-key prompt; the wizard simply waits for a real terminal.
         return
     choice = _ask_setup_choice()
     if choice == "skip":
@@ -3010,6 +3012,14 @@ def _add_escape_to_cancel(question: questionary.Question) -> questionary.Questio
 
 def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
+
+
+def _stdout_is_tty() -> bool:
+    """prompt_toolkit renders through the *output* console. On Windows it
+    raises NoConsoleScreenBufferError when stdout is a pipe or file even if
+    stdin is a terminal (`omm list | tee log`, an IDE task runner), so a
+    prompt needs both ends to be a real terminal."""
+    return sys.stdout.isatty()
 
 
 def _require_tty(what: str) -> None:
