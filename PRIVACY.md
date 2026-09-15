@@ -28,10 +28,12 @@ addresses.
 **Purpose:** train the `omm recommend` model that predicts tokens/sec for a
 given model on given hardware.
 
-**Sent:** measured tokens/sec and the run parameters, model parameter counts and
+**Sent:** which model was benchmarked (its repo id, GGUF filename and file
+digest), measured tokens/sec and the run parameters, model parameter counts and
 quantisation, engine and engine version, and a hardware profile (CPU model and
-core counts, a CPU benchmark score, RAM size, unified-memory flag). The full,
-schema-enforced field list is `database.rules.json` under the `telemetry` node.
+core counts, a CPU benchmark score, RAM size, unified-memory flag). The full
+field list is `database.rules.json` under the `telemetry` node; the gateway
+that actually enforces it on every write is `cf-worker/src/validate.ts`.
 This node is world-readable — it is the training data.
 
 **Never sent:** file paths, usernames, your search queries, or any generated

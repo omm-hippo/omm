@@ -85,6 +85,7 @@ def archive_current_artifact(
     history_dir: Path | None = None,
     *,
     require_signed: bool = False,
+    trusted_public_key: str | None = None,
 ) -> Path | None:
     source = artifact_path or RECOMMEND_MODEL_PATH
     destination_dir = history_dir or CATALOG_HISTORY_DIR
@@ -100,6 +101,11 @@ def archive_current_artifact(
                 provenance = loaded
         if require_signed:
             if provenance is None:
+                return None
+            # Bind verification to the configured trust anchor. Verifying with
+            # the key the snapshot itself carries only proves self-consistency,
+            # so a snapshot signed by a rotated-out key would still pass.
+            if trusted_public_key is not None and provenance.get("public_key") != trusted_public_key:
                 return None
             verify_signed_artifact(
                 content, provenance.get("manifest"), provenance.get("public_key")
@@ -152,6 +158,7 @@ def rollback(
     artifact_path: Path | None = None,
     history_dir: Path | None = None,
     require_signed: bool = False,
+    trusted_public_key: str | None = None,
 ) -> Path:
     destination = artifact_path or RECOMMEND_MODEL_PATH
     with locked(destination):
@@ -175,6 +182,10 @@ def rollback(
                     continue
                 if require_signed:
                     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+                    if trusted_public_key is not None and provenance.get("public_key") != trusted_public_key:
+                        # Signed by a key we no longer trust - skip this
+                        # snapshot and keep looking for an older one.
+                        continue
                     verify_signed_artifact(
                         candidate_content,
                         provenance.get("manifest"),
@@ -189,7 +200,9 @@ def rollback(
             break
         if selected is None or snapshot_content is None:
             raise FileNotFoundError("no previous catalog snapshot is available")
-        archive_current_artifact(destination, history_dir, require_signed=require_signed)
+        archive_current_artifact(
+            destination, history_dir, require_signed=require_signed, trusted_public_key=trusted_public_key
+        )
         # The retrying atomic writer also handles Windows AV/indexing briefly
         # holding the destination open.
         atomic_write_bytes(destination, snapshot_content)

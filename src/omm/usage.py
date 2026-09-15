@@ -166,7 +166,7 @@ def _gpu_vendor(gpu_name: str | None) -> str:
     return "other"
 
 
-def _snapshot() -> dict:
+def _snapshot(*, create_client_id: bool = True) -> dict:
     from omm import package_metadata
 
     try:
@@ -192,7 +192,9 @@ def _snapshot() -> dict:
         channel = "stable"
     return {
         "schema_version": SCHEMA_VERSION,
-        "client_id": config.client_id(),
+        "client_id": (
+            config.client_id() if create_client_id else (config.peek_client_id() or "(not generated yet)")
+        ),
         "client_version": client_version,
         "install_source": source,
         "os_name": platform.system() or "unknown",
@@ -221,12 +223,15 @@ def _aggregate(rows: list[dict]) -> tuple[dict, dict]:
     )
 
 
-def build_payload(rows: list[dict] | None = None) -> dict:
+def build_payload(rows: list[dict] | None = None, *, create_client_id: bool = True) -> dict:
     """Snapshot + aggregated tally of pending rows. Used by the sender and
     by ``omm setting upload usage``'s dry-run preview. ``rows`` lets a caller
     pass an already-taken snapshot so it aggregates and later clears exactly
-    the same rows, instead of re-reading a queue that may have grown."""
-    payload = _snapshot()
+    the same rows, instead of re-reading a queue that may have grown.
+    ``create_client_id=False`` previews the payload without creating a
+    persistent install id, for a caller checking what would be sent while
+    usage stats are turned off."""
+    payload = _snapshot(create_client_id=create_client_id)
     commands, errors = _aggregate(_read_pending() if rows is None else rows)
     payload["commands"] = commands
     if errors:

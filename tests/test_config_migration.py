@@ -184,3 +184,34 @@ def test_container_repair_preserves_unknown_extension_settings(isolated_omm_home
     config.CONFIG_PATH.write_text(json.dumps({"extension": extension}), encoding="utf-8")
 
     assert config.load_config()["extension"] == extension
+
+
+def test_unknown_telemetry_send_policy_is_normalized_to_ask(isolated_omm_home):
+    config.save_config({**config.DEFAULT_CONFIG, "telemetry_send_policy": None})
+    assert config.load_config()["telemetry_send_policy"] == "ask"
+
+
+@pytest.mark.parametrize("policy", ["always", "never", "ask"])
+def test_known_telemetry_send_policy_values_are_preserved(isolated_omm_home, policy):
+    config.save_config({**config.DEFAULT_CONFIG, "telemetry_send_policy": policy})
+    assert config.load_config()["telemetry_send_policy"] == policy
+
+
+def test_explicit_null_endpoint_without_backend_is_labeled_local(isolated_omm_home):
+    config.CONFIG_PATH.write_text(
+        json.dumps({"telemetry_endpoint": None, "telemetry_send_policy": "ask"}), encoding="utf-8"
+    )
+
+    loaded = config.load_config()
+
+    assert loaded["telemetry_backend"] == "local"
+    assert loaded["telemetry_endpoint"] is None
+
+
+def test_config_without_an_endpoint_key_keeps_the_gateway_default(isolated_omm_home):
+    config.CONFIG_PATH.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+
+    loaded = config.load_config()
+
+    assert loaded["telemetry_backend"] == "gateway"
+    assert loaded["telemetry_endpoint"] == config.TELEMETRY_GATEWAY_ENDPOINT

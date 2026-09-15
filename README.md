@@ -568,7 +568,9 @@ omm setting upload --enable
 
 Loopback ingestion needs no token. If the collector listens on a non-loopback
 interface, set the same `LOCALFIT_INGEST_TOKEN` on both the server and the omm
-client; remote ingestion fails closed when it is missing.
+client; remote ingestion fails closed when it is missing. The client only
+attaches `LOCALFIT_INGEST_TOKEN` to an `https` endpoint, so a loopback
+(`http://127.0.0.1:…`) collector never receives it.
 
 Training can consume the authenticated export directly:
 

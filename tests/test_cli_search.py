@@ -339,6 +339,44 @@ def test_search_limit_skips_param_count_network_fallback_past_the_limit(monkeypa
     assert fallback_calls == ["org/llama-7b-model", "org/llama-13b-model"]
 
 
+def test_search_does_not_act_on_an_unverified_emergency_signal(monkeypatch):
+    """An `emergency` block on a cache load_cached_model() didn't itself
+    verify must only warn (see x-security-03) - it must never block `omm
+    search` the way a signed one does."""
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None, "catalog_public_key": "pk"})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {
+                "name": "tinyllama-1.1b-q4",
+                "repo_id": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+                "description": "Curated default",
+            },
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_cached_model",
+        lambda: {
+            "trees": [{}],
+            "emergency": {"id": "unverified-1", "message": "bogus emergency", "fixed_in_version": "999.0.0"},
+        },
+    )
+    monkeypatch.setattr(cli.predictor, "cached_model_signature_is_valid", lambda public_key: False)
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "predict_speed", lambda trees, hw, candidate: 1.0)
+    monkeypatch.setattr(cli, "_emergency_signals_shown", set())
+    monkeypatch.setattr(cli, "_emergency_signals_warned", set())
+
+    result = runner.invoke(cli.app, ["search", "tiny"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "bogus emergency" in result.stderr
+
+
 def test_search_provider_curated_filters_out_remote_results(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
     monkeypatch.setattr(

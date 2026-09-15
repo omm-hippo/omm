@@ -371,6 +371,7 @@ def fetch_and_cache_model(
                 catalog.archive_current_artifact(
                     artifact_path=RECOMMEND_MODEL_PATH,
                     require_signed=bool(manifest_url and public_key),
+                    trusted_public_key=public_key,
                 )
             if verified_content is not None:
                 atomic_write_bytes(RECOMMEND_MODEL_PATH, verified_content)
@@ -400,6 +401,36 @@ def load_cached_model() -> dict | None:
         return validate_model_artifact(json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError, RecursionError, ValueError):
         return None
+
+
+def cached_model_signature_is_valid(public_key: str | None) -> bool:
+    """Whether the on-disk recommendation catalog cache still verifies
+    against the provenance manifest saved beside it, and that manifest was
+    signed with **the key this install is configured to trust**. Read-only,
+    never raises.
+
+    The provenance's own embedded public_key is not trusted on its own:
+    whoever can overwrite the cache can overwrite that file too, so this
+    only counts as verified when it matches the configured key."""
+    if not isinstance(public_key, str) or not public_key:
+        return False
+    provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
+        RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
+    )
+    try:
+        if RECOMMEND_MODEL_PATH.stat().st_size > MAX_MODEL_ARTIFACT_BYTES:
+            return False
+        if provenance_path.stat().st_size > MAX_MODEL_MANIFEST_BYTES:
+            return False
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        if not isinstance(provenance, dict) or provenance.get("public_key") != public_key:
+            return False
+        catalog.verify_signed_artifact(
+            RECOMMEND_MODEL_PATH.read_bytes(), provenance.get("manifest"), public_key
+        )
+        return True
+    except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+        return False
 
 
 def load_model(

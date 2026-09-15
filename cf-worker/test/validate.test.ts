@@ -204,6 +204,24 @@ describe("path/control-character rejection on model fields", () => {
   });
 });
 
+describe("path/control-character rejection on the remaining telemetry strings", () => {
+  it("rejects a path-shaped legacy os/cpu/gpu value", () => {
+    const v2 = { ...valid, benchmark_version: 2 };
+    for (const key of ["os", "cpu", "gpu"]) {
+      rejected({ ...v2, [key]: "C:/Users/alice/secret" });
+      rejected({ ...v2, [key]: "bad\x00value" });
+    }
+    ok({ ...v2, os: "Darwin 24.0.0", cpu: "Apple M3 Pro", gpu: "Apple M3 Pro" });
+  });
+
+  it("rejects a path-shaped cpu_model", () => rejected({ ...validV6, cpu_model: "/home/victim/.ssh/id_rsa" }));
+
+  it.each(["model_provider", "engine_version", "client_version", "quality_pack_id", "quality_pack_version", "cpu_arch"])(
+    "rejects a path-shaped %s",
+    (key) => rejected({ ...validV6, [key]: "../../etc/passwd" }),
+  );
+});
+
 const v7Success = {
   ram_gb: 24,
   vram_gb: 6,
