@@ -566,10 +566,14 @@ omm setting telemetry --endpoint http://127.0.0.1:8000/v1/benchmarks
 omm setting upload --enable
 ```
 
-Loopback ingestion needs no token. If the collector listens on a non-loopback
-interface, set the same `LOCALFIT_INGEST_TOKEN` on both the server and the omm
-client; remote ingestion fails closed when it is missing. The client only
-attaches `LOCALFIT_INGEST_TOKEN` to an `https` endpoint, so a loopback
+Loopback ingestion needs no token. Once `LOCALFIT_INGEST_TOKEN` is set, every
+request needs it — including loopback ones, so export the same value for the
+omm client on that machine. A same-host reverse proxy makes remote requests
+look like loopback, so peer address alone is not treated as authentication.
+If the collector listens on a non-loopback interface, set the same
+`LOCALFIT_INGEST_TOKEN` on both the server and the omm client; remote
+ingestion fails closed when it is missing. The client only attaches
+`LOCALFIT_INGEST_TOKEN` to an `https` endpoint, so a loopback
 (`http://127.0.0.1:…`) collector never receives it.
 
 Training can consume the authenticated export directly:
