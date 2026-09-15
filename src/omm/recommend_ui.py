@@ -209,10 +209,14 @@ def _hardware_value(label: str, value: str) -> Text:
     return text
 
 
-def _available_memory(info: object) -> float | None:
+def _available_memory(info: object, profile: str | None = None) -> float | None:
     if not isinstance(info, HardwareInfo):
         return None
-    return calculate_memory_budget(info).install_budget_gb
+    install_budget = calculate_memory_budget(info).install_budget_gb
+    return (
+        min(install_budget, predictor.profile_memory_cap_gb(info, profile))
+        if profile is not None else install_budget
+    )
 
 
 def print_screen(
@@ -221,10 +225,18 @@ def print_screen(
     candidate_count: int,
     *,
     show_caution: bool = False,
+    profile: str | None = None,
+    eligible_count: int | None = None,
+    exceeds_profile: bool = False,
 ) -> None:
+    count_label = (
+        f"Showing {candidate_count} of {eligible_count} eligible packages"
+        if eligible_count is not None else
+        f"{candidate_count} compatible model{'s' if candidate_count != 1 else ''} found"
+    )
     console.print(
         Text(
-            f"{candidate_count} compatible model{'s' if candidate_count != 1 else ''} found",
+            count_label,
             style=f"bold {SUCCESS}",
         )
     )
@@ -232,7 +244,8 @@ def print_screen(
     ram = getattr(info, "ram_total_gb", None)
     gpu = str(getattr(info, "gpu_name", "") or "CPU only")
     vram = getattr(info, "vram_total_gb", None)
-    available = _available_memory(info)
+    available = _available_memory(info, profile)
+    budget_label = "PROFILE BUDGET" if profile is not None else "INSTALL LIMIT"
 
     ram_label = f"{ram:.1f} GB" if isinstance(ram, (int, float)) else "Unknown"
     gpu_label = gpu
@@ -250,14 +263,14 @@ def print_screen(
         )
         hardware.add_row(
             _hardware_value("GPU", _clip(gpu_label, 34)),
-            _hardware_value("MODEL MEMORY", available_label),
+            _hardware_value(budget_label, available_label),
         )
     else:
         hardware.add_column()
         hardware.add_row(_hardware_value("CPU", _clip(cpu, 42)))
         hardware.add_row(_hardware_value("RAM", ram_label))
         hardware.add_row(_hardware_value("GPU", _clip(gpu_label, 42)))
-        hardware.add_row(_hardware_value("MODEL MEMORY", available_label))
+        hardware.add_row(_hardware_value(budget_label, available_label))
     console.print(
         Panel(
             hardware,
@@ -268,6 +281,10 @@ def print_screen(
             padding=(0, 1),
         )
     )
+    if profile is not None:
+        console.print(Text(f"Profile: {profile} · larger models first within the budget", style=MUTED))
+    if exceeds_profile:
+        console.print(Text("Some listed packages exceed the selected profile budget (fallback).", style=WARNING))
     console.print(f"[bold {ACCENT}]Recommended models[/]")
     if show_caution:
         caution = Text("   ⚠ CAUTION: ", style=f"bold {WARNING}")
@@ -364,7 +381,7 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
         status.append(row.warning, style=WARNING)
     else:
         status.append("✓  ", style=f"bold {SUCCESS}")
-        status.append("Predicted to run comfortably on this PC", style=SUCCESS)
+        status.append("Predicted to fit the installation budget", style=SUCCESS)
 
     metrics = Table.grid(expand=True, padding=(0, 2))
     metrics.add_column(ratio=1)
@@ -435,6 +452,16 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
     console.print(
         "[muted]Predicted speed is an estimate; actual performance can vary by runtime settings.[/muted]"
     )
+    basis = predictor.memory_estimate_basis(row.candidate)
+    if basis == "model_name":
+        console.print(Text(
+            "Estimates use the model name and quantization; actual file size is unavailable. "
+            "Different models can share the same estimates.", style=MUTED,
+        ))
+    elif basis == "file_size":
+        console.print(Text("Memory is estimated from file size plus runtime overhead, not measured usage.", style=MUTED))
+    elif basis == "parameter_metadata":
+        console.print(Text("Memory is estimated from parameter metadata and quantization; actual file size is unavailable.", style=MUTED))
     if row.installation.match_kind == "model_identity":
         console.print(
             "[muted]The local runtime may use a different quantization or package of this model.[/muted]"

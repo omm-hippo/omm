@@ -3,11 +3,50 @@ from __future__ import annotations
 from io import StringIO
 
 import pytest
+
+import pytest
 from rich.console import Console
 from rich.cells import cell_len
 
 from omm import recommend_status, recommend_ui, theme as theme_mod
 from omm.hardware import HardwareInfo
+
+
+@pytest.mark.parametrize("profile,budget", [("dedicated", "19.2"), ("balanced", "10.8"), ("minimal", "4.8")])
+@pytest.mark.parametrize("width", [70, 120])
+def test_screen_shows_selected_budget_and_count_before_truncation(profile, budget, width):
+    hw = HardwareInfo("macOS", "", "Apple M5", 24, 8, True, "Apple M5", 24, 8)
+    output = StringIO()
+    console = Console(file=output, width=width, theme=theme_mod.build_rich_theme("dark"))
+    recommend_ui.print_screen(console, hw, 10, profile=profile, eligible_count=27)
+    rendered = output.getvalue()
+    assert "Showing 10 of 27 eligible packages" in rendered
+    assert f"PROFILE BUDGET  {budget} GB" in rendered
+    assert f"Profile: {profile}" in rendered
+    if profile != "dedicated":
+        assert "19.2 GB" not in rendered
+
+
+def test_screen_discloses_profile_fallback():
+    output = StringIO()
+    console = Console(file=output, width=120, theme=theme_mod.build_rich_theme("dark"))
+    recommend_ui.print_screen(console, _hardware(), 1, profile="minimal", exceeds_profile=True)
+    assert "exceed the selected profile budget" in output.getvalue()
+
+
+@pytest.mark.parametrize("extra,basis,text", [
+    ({}, "model_name", "Different models can share the same estimates"),
+    ({"size_bytes": 1024**3}, "file_size", "not measured usage"),
+    ({"parameter_count_b": 1.1}, "parameter_metadata", "parameter metadata"),
+])
+def test_detail_explains_estimate_inputs(extra, basis, text):
+    candidate = {"filename": "TinyLlama-1.1B-Q4_K_M.gguf", **extra}
+    [row] = recommend_ui.build_rows([(candidate, 30)], ["model"])
+    output = StringIO()
+    console = Console(file=output, width=150, theme=theme_mod.build_rich_theme("dark"))
+    recommend_ui.print_detail(console, _hardware(), row)
+    assert recommend_ui.predictor.memory_estimate_basis(candidate) == basis
+    assert text in output.getvalue()
 
 
 def _hardware() -> HardwareInfo:
@@ -111,7 +150,7 @@ def test_recommend_screen_renders_hardware_table_and_selected_detail():
     assert "RTX 3060" in rendered
     assert "Recommended models" in rendered
     assert "Llama 3.2 1B Instruct" in rendered
-    assert "Predicted to run comfortably on this PC" in rendered
+    assert "Predicted to fit the installation budget" in rendered
     assert "bartowski/Llama-3.2-1B-Instruct-GGUF" in rendered
     assert "Hugging Face" in rendered
     assert "Quantization  Q4_K_M" in rendered

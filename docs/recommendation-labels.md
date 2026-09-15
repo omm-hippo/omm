@@ -46,6 +46,21 @@ change speed or memory predictions, download targets, or installation behavior.
 
 ## Shortlist and package details
 
+The hardware panel shows the selected profile's memory budget, capped by the
+installation limit: on a 24 GB unified-memory Mac, Dedicated is 19.2 GB,
+Balanced is 10.8 GB, and Minimal is 4.8 GB. Profiles limit memory; the ranking
+still prefers larger usable models inside that budget. The heading reports
+shown entries and eligible packages before grouping and truncation separately.
+If a fallback exceeds the requested budget, the picker says so explicitly.
+
+JSON rows include `profile_budget_gb`, nullable `within_profile`,
+`eligible_package_count`, and `memory_estimate_basis` (`file_size`,
+`parameter_metadata`, `model_name`, or `unknown`). Memory remains an estimate
+including runtime overhead. The detail explains when actual file size is
+unavailable and the estimate comes from parameter metadata or the model name;
+different models may therefore share estimates. No displayed estimate proves
+actual speed, live free memory, or runtime compatibility.
+
 After hardware filtering and ranking, recommendations group matching repository
 model names and filenames across uploaders and quantizations before selecting up
 to ten entries. The first ranked package keeps its exact install reference and

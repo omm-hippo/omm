@@ -248,6 +248,17 @@ def candidate_fits_memory(hw: HardwareInfo, candidate: dict) -> bool | None:
     return required <= available_model_memory_gb(hw)
 
 
+def memory_estimate_basis(candidate: dict) -> str:
+    """Describe the inputs to the estimate, never an observed runtime result."""
+    if positive_finite_number(candidate.get("size_bytes")) is not None:
+        return "file_size"
+    if estimate_required_memory_gb(candidate) is None:
+        return "unknown"
+    if positive_finite_number(candidate.get("parameter_count_b")) is not None:
+        return "parameter_metadata"
+    return "model_name"
+
+
 def profile_memory_cap_gb(hw: HardwareInfo, profile: str) -> float:
     """RAM ceiling `recommend` enforces for the given multitasking profile."""
     return hw.ram_total_gb * _PROFILE_RAM_RATIOS[profile]

@@ -15,6 +15,35 @@ from omm.hub import ResolvedModel
 runner = CliRunner()
 
 
+def test_json_reports_profile_budget_and_eligible_package_count(monkeypatch, isolated_omm_home):
+    candidates = [{"repo_id": f"org/Model{i}-1B", "filename": f"Model{i}-1B-Q4_K_M.gguf", "size_bytes": 1024**3} for i in range(12)]
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(cli, "_load_recommendation_with_change_note", lambda config: ({"candidates": candidates}, False))
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda *args: [(c, 10) for c in candidates])
+    result = runner.invoke(cli.app, ["recommend", "--json", "--profile", "minimal"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert len(rows) == 10
+    assert all(r["eligible_package_count"] == 12 for r in rows)
+    assert all(r["profile_budget_gb"] == pytest.approx(3.2) for r in rows)
+    assert all(r["within_profile"] is True and r["memory_estimate_basis"] == "file_size" for r in rows)
+
+
+def test_json_exposes_candidates_above_requested_profile_in_fallback(monkeypatch, isolated_omm_home):
+    candidate = {"repo_id": "org/Model-8B", "filename": "Model-8B-Q4_K_M.gguf"}
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(cli, "_load_recommendation_with_change_note", lambda config: ({"candidates": [candidate]}, False))
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda *args: [(candidate, 10)])
+    result = runner.invoke(cli.app, ["recommend", "--json", "--profile", "minimal"])
+    assert result.exit_code == 0, result.output
+    [row] = json.loads(result.stdout)
+    assert row["within_profile"] is False
+    assert row["profile_budget_gb"] == pytest.approx(3.2)
+    assert row["memory_estimate_basis"] == "model_name"
+
+
 @pytest.fixture(autouse=True)
 def _default_to_uninstalled_candidates(monkeypatch):
     monkeypatch.setattr(
@@ -432,7 +461,7 @@ def test_recommend_selecting_installed_candidate_does_not_reinstall(
     monkeypatch.setattr(
         cli,
         "_select_recommended_model",
-        lambda info, ranked, refs, installations: refs[0],
+        lambda info, ranked, refs, installations, **kwargs: refs[0],
     )
     monkeypatch.setattr(
         cli,

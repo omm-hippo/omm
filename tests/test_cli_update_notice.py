@@ -1,10 +1,31 @@
 import sys
 
+import pytest
+
 from typer.testing import CliRunner
 
 from omm import cli
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize("changed", ["commit", "channel", "both"])
+def test_pending_notice_is_discarded_after_channel_switch(monkeypatch, changed):
+    current = {"commit": "old_sha", "channel": "beta"}
+    monkeypatch.setattr(cli, "_installed_commit", lambda: current["commit"])
+    monkeypatch.setattr(cli, "_channel_branch", lambda: current["channel"])
+    monkeypatch.setattr(cli.version_check, "cached_remote_head_if_fresh", lambda *args: (True, "new_sha", "old_sha"))
+    printed = []
+    monkeypatch.setattr(cli.err_console, "print", lambda *args, **kwargs: printed.append(args))
+    ctx = _FakeCtx("setting")
+    cli._maybe_start_update_check(ctx)
+    assert len(ctx.close_callbacks) == 1
+    if changed in {"commit", "both"}:
+        current["commit"] = "new_sha"
+    if changed in {"channel", "both"}:
+        current["channel"] = "main"
+    ctx.close_callbacks[0]()
+    assert printed == []
 
 
 class _FakeCtx:
