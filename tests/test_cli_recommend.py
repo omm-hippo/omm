@@ -30,6 +30,28 @@ def test_json_reports_profile_budget_and_eligible_package_count(monkeypatch, iso
     assert all(r["within_profile"] is True and r["memory_estimate_basis"] == "file_size" for r in rows)
 
 
+def test_recommend_rechecks_fit_with_cached_provider_file_size(monkeypatch, isolated_omm_home):
+    import time
+    from omm import recommend_facts
+    large = {"repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF", "filename": "Qwen2.5-7B-Instruct-Q4_K_M.gguf"}
+    small = {"repo_id": "org/small-1B", "filename": "small-1B-Q4_K_M.gguf"}
+    artifact = {"candidates": [large, small]}
+    hw = HardwareInfo("macOS", "", "Apple M5", 24, 8, True, "Apple M5", 24, 8)
+    monkeypatch.setattr(cli, "scan_hardware", lambda: hw)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(cli, "_load_recommendation_with_change_note", lambda config: (artifact, False))
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [(c, 10) for c in artifact["candidates"]])
+    recommend_facts._path().write_text(json.dumps({"version": 1, "repos": {
+        recommend_facts._key(large): {"fetched_at": time.time(), "metadata": {"pipeline_tag": "text-generation"}, "files": {large["filename"]: 4683074240}}
+    }}))
+    monkeypatch.setattr(recommend_facts, "fetch", lambda *args: pytest.fail("ordinary recommend must not fetch provider facts"))
+    result = runner.invoke(cli.app, ["recommend", "--profile", "minimal", "--json"])
+    assert result.exit_code == 0, result.output
+    [row] = json.loads(result.stdout)
+    assert row["ref"] == "org/small-1B:small-1B-Q4_K_M.gguf"
+    assert "size_bytes" not in large
+
+
 def test_json_exposes_candidates_above_requested_profile_in_fallback(monkeypatch, isolated_omm_home):
     candidate = {"repo_id": "org/Model-8B", "filename": "Model-8B-Q4_K_M.gguf"}
     monkeypatch.setattr(cli, "scan_hardware", _hardware)

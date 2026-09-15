@@ -66,6 +66,8 @@ def _label(value: object) -> str:
 def catalog_metadata(payload: dict) -> dict:
     """Preserve bounded task metadata already returned by provider searches."""
     result = {}
+    if not isinstance(payload, dict):
+        return result
     task = payload.get("pipeline_tag")
     if isinstance(task, str) and task.strip() and len(task) <= 100:
         result["pipeline_tag"] = task
@@ -110,7 +112,10 @@ def classify(candidate: dict) -> ModelLabels:
         model_type = "LLM"
     elif task in set().union(*_USE_CASES.values()):
         model_type = "LLM"
-    type_source = "Catalog metadata" if model_type != "Unknown" else "Unknown"
+    origin = candidate.get("metadata_origin")
+    if origin not in {"Provider metadata cache", "Provider metadata cache (stale)"}:
+        origin = "Catalog metadata"
+    type_source = origin if model_type != "Unknown" else "Unknown"
 
     use_case = "—"
     if not embedding:
@@ -124,9 +129,9 @@ def classify(candidate: dict) -> ModelLabels:
                 if (tags | {task}) & aliases:
                     use_case = label
                     break
-        if use_case == "—" and task in _TEXT_TASKS:
+        if use_case == "—" and (tags | {task}) & _TEXT_TASKS:
             use_case = "General"
-    use_case_source = "Catalog metadata" if use_case != "—" else "Unknown"
+    use_case_source = origin if use_case != "—" else "Unknown"
 
     if not type_hints - {""} and _curated(candidate):
         model_type, type_source = "LLM", "Curated model card"

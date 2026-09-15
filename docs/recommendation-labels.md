@@ -31,8 +31,8 @@ The sources are shown in the detail and JSON (`model_type_source`,
 benchmark or proof of runtime feature support. VLM does not assert that image
 input or a required projector works in an installed engine.
 
-Old signed catalogs remain readable and are not modified or re-signed. Their
-missing fields yield Unknown / — except for exact bundled artifacts (including
+Old signed catalogs remain readable and are not modified or re-signed. Without
+provider facts, missing fields yield Unknown / — except for exact bundled artifacts (including
 their static-rule aliases), classified as LLM / General from their model cards:
 
 - [TinyLlama Chat](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)
@@ -43,6 +43,27 @@ The existing HF and ModelScope searches now preserve task metadata they already
 receive. This adds no provider requests. Future generated/signed catalogs carry
 those fields through the existing training path. Label classification does not
 change speed or memory predictions, download targets, or installation behavior.
+
+## Provider facts for existing catalogs
+
+`omm update` and `omm recommend --refresh-metadata` refresh a separate
+`recommend-provider-facts.json` cache. Each refresh covers at most 32 repositories
+(64 metadata GETs), sequentially, without retries. A 402/429 response stops the
+refresh. A time budget is checked between requests; individual socket operations
+also have timeouts. Ordinary recommendations use the cache without additional
+provider requests. The trained catalog's signature and original bytes are kept.
+
+Facts match the exact provider, repository and listed filename. Hugging Face
+provides pipeline/tags and sibling file sizes; ModelScope supplies Tags and
+Tasks.Name plus the file listing's Size. Actual file size replaces the rough
+name-based size before ranking and memory filtering. This can remove a package
+that only appeared to fit under the old estimate; it does not measure inference
+speed or verify image/tool support.
+
+Facts are refreshed after 24 hours. If refresh is unavailable, known facts are
+retained with a stale source label rather than silently reverting to a smaller
+name-based estimate. Source labels distinguish provider facts from the signed
+catalog. A missing specific purpose remains — even when the model type is known.
 
 ## Shortlist and package details
 
@@ -77,7 +98,9 @@ filename alongside TYPE, BEST FOR, and their classification sources.
 
 ## Terminal layout
 
-At 88 columns and above all columns appear. At 68–87 columns MEMORY is hidden;
+At 106 columns and above QUANT identifies the exact selected weight format, so
+a Q2 package is not mistaken for a Q4 package with the same model name. At
+88–105 columns QUANT is hidden. At 68–87 columns MEMORY is also hidden;
 at 48–67 columns BEST FOR is also hidden; below 48 TYPE is also hidden. Both
 labels and their sources remain available in the selected-model detail at every
 width. Full words fit within their columns, including Embedding and Translation.

@@ -1253,8 +1253,26 @@ def _refresh_data() -> None:
                 f"[{style}]Updated recommend-model.json "
                 f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/{style}]"
             )
+            if artifact.get("trees") and artifact.get("candidates"):
+                _refresh_recommendation_facts(artifact, scan_hardware())
         except (requests.RequestException, ValueError) as e:
             err_console.print(f"[error]Failed to fetch trained model from {model_url}: {e}[/error]")
+
+
+def _refresh_recommendation_facts(artifact: dict, info: object) -> None:
+    from omm import recommend_facts
+
+    if not _global_opts().json:
+        console.print("[muted]Refreshing model descriptions and file sizes (up to 32 repositories)...[/muted]")
+    try:
+        result = recommend_facts.refresh(artifact, info)
+    except OSError:
+        err_console.print("[warning]Could not save provider metadata; continuing with available catalog data.[/warning]")
+        return
+    if not _global_opts().json:
+        console.print(f"[muted]Updated provider facts for {result['fetched_repos']} repositories.[/muted]")
+    if result["error"]:
+        err_console.print(f"[warning]Provider metadata refresh incomplete ({result['error']}); cached facts remain available.[/warning]")
 
 
 _BARE_REPO_URL = REPO_URL.removeprefix("git+")
@@ -3409,6 +3427,7 @@ def _print_recommend_json(
                 "within_profile": (row.memory_gb <= budget if row.memory_gb is not None and budget is not None else None),
                 "eligible_package_count": eligible_count,
                 "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
+                "quantization": recommend_ui.quantization_label(row.candidate),
             }
             for index, row in enumerate(rows)
         ]
@@ -3497,6 +3516,7 @@ def recommend(
         help="How much of the machine to claim: dedicated, balanced, or minimal. "
         "Prompted for interactively when omitted; defaults to balanced under --yes/--json.",
     ),
+    refresh_metadata: bool = typer.Option(False, "--refresh-metadata", help="Refresh cached provider task metadata and exact file sizes before ranking."),
 ) -> None:
     """Suggest a model to install for this hardware.
 
@@ -3532,6 +3552,11 @@ def recommend(
     if changed and not _global_opts().quiet and not json_output:
         console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
     if artifact and artifact.get("candidates"):
+        from omm import recommend_facts
+
+        if refresh_metadata:
+            _refresh_recommendation_facts(artifact, info)
+        artifact = recommend_facts.apply(artifact)
         ranked = predictor.rank_candidates(artifact, info)
         usable = [
             (c, speed) for c, speed in ranked if speed >= predictor.MIN_USABLE_TOKENS_PER_SECOND

@@ -12,6 +12,18 @@ from omm import recommend_status, recommend_ui, theme as theme_mod
 from omm.hardware import HardwareInfo
 
 
+@pytest.mark.parametrize("width", [70, 106, 120, 160])
+def test_quantization_is_visible_on_wide_lists_without_overflow(width):
+    candidate = {"repo_id": "org/Qwen2.5-7B", "filename": "Qwen2.5-7B-Q2_K.gguf"}
+    [row] = recommend_ui.build_rows([(candidate, 20)], ["model"])
+    text = "".join(part for _, part in recommend_ui.choice_title(row, width))
+    header = recommend_ui.choice_header(width).plain
+    assert len(text) <= width - 4
+    assert ("QUANT" in header) is (width >= 106)
+    if width >= 106:
+        assert "Q2_K" in text
+
+
 @pytest.mark.parametrize("profile,budget", [("dedicated", "19.2"), ("balanced", "10.8"), ("minimal", "4.8")])
 @pytest.mark.parametrize("width", [70, 120])
 def test_screen_shows_selected_budget_and_count_before_truncation(profile, budget, width):

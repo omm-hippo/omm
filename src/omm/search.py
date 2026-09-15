@@ -252,6 +252,7 @@ def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> lis
                 "filename": filename,
                 "description": "HuggingFace",
                 "provider": "huggingface",
+                **catalog_metadata(item),
             }
         )
     return results
