@@ -457,6 +457,69 @@ def test_post_event_reports_gateway_rejection(isolated_omm_home, monkeypatch):
     assert json.loads(log_lines[0])["outcome"] == "send_failed_http_400"
 
 
+def test_gateway_409_is_treated_as_delivered(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {
+            "telemetry_send_policy": "always",
+            "telemetry_endpoint": config.TELEMETRY_GATEWAY_ENDPOINT,
+        },
+    )
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(409, text='{"error":"duplicate event"}'))
+
+    result = telemetry._post_event({"x": 1})
+
+    assert result is True
+    assert telemetry.last_send_status().outcome == "sent_duplicate"
+
+
+def test_ingest_token_is_not_sent_to_a_plaintext_loopback_endpoint(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {
+            "telemetry_send_policy": "always",
+            "telemetry_endpoint": "http://127.0.0.1:8000/v1/benchmarks",
+        },
+    )
+    monkeypatch.setenv("LOCALFIT_INGEST_TOKEN", "secret-token")
+    captured = {}
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *a, **k: captured.update(headers=k.get("headers")) or _FakeResp(200),
+    )
+
+    result = telemetry._post_event({"x": 1})
+
+    assert result is True
+    assert "authorization" not in captured["headers"]
+
+
+def test_ingest_token_is_sent_to_an_https_self_hosted_endpoint(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {
+            "telemetry_send_policy": "always",
+            "telemetry_endpoint": "https://collector.example/v1/benchmarks",
+        },
+    )
+    monkeypatch.setenv("LOCALFIT_INGEST_TOKEN", "secret-token")
+    captured = {}
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *a, **k: captured.update(headers=k.get("headers")) or _FakeResp(200),
+    )
+
+    result = telemetry._post_event({"x": 1})
+
+    assert result is True
+    assert captured["headers"]["authorization"] == "Bearer secret-token"
+
+
 def test_post_event_skips_auth_for_non_firebase_endpoint(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(
         telemetry,
