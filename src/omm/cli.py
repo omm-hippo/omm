@@ -10063,20 +10063,6 @@ def _ensure_contribute_start_space(engine: str) -> None:
         )
 
 
-def _telemetry_row_count(endpoint: str) -> int | None:
-    """Best-effort read of how many rows exist in the (read-open) Firebase
-    telemetry endpoint, for `omm contribute`'s before/after summary."""
-    import requests
-
-    try:
-        resp = requests.get(f"{endpoint}?shallow=true", timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        return len(data) if isinstance(data, dict) else 0
-    except (requests.RequestException, ValueError):
-        return None
-
-
 class _EscListener:
     """Background key-listener so Esc can interrupt `omm install` or
     `omm contribute` even mid-download/mid-benchmark, not just at a
@@ -10580,8 +10566,6 @@ def _run_contribution_loop(
 def _print_contribution_summary(
     stats: _ContributionStats,
     duration_seconds: float,
-    before_count: int | None,
-    after_count: int | None,
     *,
     total_candidates: int | None = None,
     covered_candidates: int | None = None,
@@ -10614,14 +10598,6 @@ def _print_contribution_summary(
         console.print(
             f"[warning]{_engine_label(engine)} daemon was found dead and restarted {stats.daemon_restarts}x "
             "during this session.[/warning]"
-        )
-    if before_count is not None and after_count is not None:
-        console.print(
-            f"Global telemetry dataset: {before_count} -> {after_count} rows "
-            f"({after_count - before_count:+d})"
-        )
-        console.print(
-            "  [muted](delta may include uploads from other contributors during this session)[/muted]"
         )
     console.print("=" * 70)
     if stats.exhausted and total_candidates is not None and covered_candidates is not None:
@@ -10785,9 +10761,6 @@ def contribute(
             err_console.print("[warning]Cancelled.[/warning]")
             raise typer.Exit(0)
 
-        endpoint = config.get("telemetry_endpoint")
-        before_count = _telemetry_row_count(endpoint) if endpoint else None
-
         def refetch():
             return _load_recommendation_with_change_note(config)
 
@@ -10809,7 +10782,6 @@ def contribute(
 
         cleanup()
 
-        after_count = _telemetry_row_count(endpoint) if endpoint else None
         duration = time.monotonic() - start_time
         current = [
             c
@@ -10823,8 +10795,6 @@ def contribute(
         _print_contribution_summary(
             stats,
             duration,
-            before_count,
-            after_count,
             total_candidates=total_candidates,
             covered_candidates=covered_candidates,
             succeeded_candidates=sum(1 for c in current if contribute_mod.matches_history(c, succeeded)),

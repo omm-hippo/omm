@@ -1,7 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-import requests
 import pytest
 from types import SimpleNamespace
 from typer.testing import CliRunner
@@ -282,7 +281,6 @@ def test_starts_and_stops_ollama_daemon_when_confirmed(isolated_omm_home, monkey
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
     monkeypatch.setattr(cli, "cleanup", lambda: None)
 
@@ -319,7 +317,6 @@ def test_yes_flag_auto_starts_ollama_daemon_without_prompting(isolated_omm_home,
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
     monkeypatch.setattr(cli, "cleanup", lambda: None)
 
@@ -363,7 +360,6 @@ def test_happy_path_runs_loop_cleans_up_and_prints_summary(isolated_omm_home, mo
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
 
     loop_calls = []
 
@@ -382,7 +378,6 @@ def test_happy_path_runs_loop_cleans_up_and_prints_summary(isolated_omm_home, mo
     assert cleanup_calls == [1]
     assert "session summary" in result.stdout.lower()
     assert "m" in result.stdout and "12.5" in result.stdout
-    assert "100 -> 100" in result.stdout
 
 
 def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_home, monkeypatch):
@@ -414,7 +409,6 @@ def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_ho
         cli.benchmark_history, "loaded_refs", lambda: {"huggingface:o:a.gguf", "huggingface:o:b.gguf"}
     )
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
 
     def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None, engine="ollama"):
         return cli._ContributionStats(benchmarked=[], skipped_unfit=1, exhausted=True)
@@ -472,7 +466,6 @@ def test_exhausted_session_coverage_ignores_history_outside_current_catalog(
         },
     )
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
 
     def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None, engine="ollama"):
         return cli._ContributionStats(benchmarked=[], skipped_unfit=1, exhausted=True)
@@ -503,7 +496,6 @@ def test_no_heads_up_warning_on_first_ever_session(isolated_omm_home, monkeypatc
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(
         cli, "_run_contribution_loop",
         lambda *a, **k: cli._ContributionStats(benchmarked=[]),
@@ -532,7 +524,6 @@ def test_heads_up_warning_when_prior_session_already_covered_same_catalog(
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: {"huggingface:o:a.gguf"})
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(
         cli, "_run_contribution_loop",
         lambda *a, **k: cli._ContributionStats(benchmarked=[], exhausted=True),
@@ -571,7 +562,6 @@ def test_no_heads_up_warning_when_catalog_grew_since_last_exhaustion(
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: {"huggingface:o:a.gguf"})
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(
         cli, "_run_contribution_loop",
         lambda *a, **k: cli._ContributionStats(benchmarked=[]),
@@ -596,7 +586,6 @@ def test_contribute_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monke
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
     monkeypatch.setattr(cli, "cleanup", lambda: None)
 
@@ -609,29 +598,6 @@ def test_contribute_without_yes_errors_without_a_tty(isolated_omm_home):
     result = runner.invoke(cli.app, ["contribute"])
 
     assert result.exit_code == 1
-
-
-def test_telemetry_row_count_returns_none_on_network_error(monkeypatch):
-    monkeypatch.setattr(
-        requests,
-        "get",
-        lambda *a, **k: (_ for _ in ()).throw(requests.RequestException("boom")),
-    )
-
-    assert cli._telemetry_row_count("https://example.com/telemetry.json") is None
-
-
-def test_telemetry_row_count_counts_dict_entries(monkeypatch):
-    class _FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"a": {}, "b": {}, "c": {}}
-
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp())
-
-    assert cli._telemetry_row_count("https://example.com/telemetry.json") == 3
 
 
 def test_contribute_loads_quality_pack_and_passes_it_to_loop(isolated_omm_home, monkeypatch):
@@ -647,7 +613,6 @@ def test_contribute_loads_quality_pack_and_passes_it_to_loop(isolated_omm_home, 
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 0)
     monkeypatch.setattr(cli, "cleanup", lambda: None)
     fake_pack = {"pack_id": "pack-1", "pack_version": "1.1.0", "items": []}
     monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: (fake_pack, "sha"))
@@ -679,7 +644,6 @@ def test_contribute_passes_fetch_sibling_candidates_to_loop(isolated_omm_home, m
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 0)
     monkeypatch.setattr(cli, "cleanup", lambda: None)
     fake_pack = {"pack_id": "pack-1", "pack_version": "1.1.0", "items": []}
     monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: (fake_pack, "sha"))
@@ -729,7 +693,6 @@ def test_contribute_warns_once_when_policy_always(isolated_omm_home, monkeypatch
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: None)
     monkeypatch.setattr(cli, "cleanup", lambda: None)
     monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: ({"pack_id": "p", "items": []}, "sha"))
     monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
@@ -753,7 +716,6 @@ def test_contribute_skips_always_warning_once_acknowledged(isolated_omm_home, mo
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: None)
     monkeypatch.setattr(cli, "cleanup", lambda: None)
     monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: ({"pack_id": "p", "items": []}, "sha"))
     monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
@@ -798,7 +760,6 @@ def test_candidate_in_failure_cooldown_is_announced_and_held_out_of_the_queue(
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     queues = []
 
     def fake_loop(queue, *a, **k):
@@ -841,7 +802,6 @@ def test_candidate_whose_cooldown_has_lapsed_is_offered_again(isolated_omm_home,
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     queues = []
 
     def fake_loop(queue, *a, **k):
