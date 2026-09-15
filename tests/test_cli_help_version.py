@@ -235,7 +235,7 @@ def test_help_all_indents_a_wrapped_summary_under_the_summary_column():
     lines = result.stdout.splitlines()
 
     row = next(i for i, line in enumerate(lines) if line.strip().startswith("omm upgrade"))
-    summary_column = lines[row].index("Refresh an installed model")
+    summary_column = lines[row].index("Look for a better model")
 
     assert lines[row + 1].strip(), "expected this summary to wrap at 80 columns"
     assert lines[row + 1].startswith(" " * summary_column)

@@ -1194,6 +1194,76 @@ def test_load_candidates_rejects_malformed_or_duplicate_publication(tmp_path, mo
         train_model.load_candidates.cache_clear()
 
 
+@pytest.mark.parametrize(
+    "supersedes",
+    [
+        "not-a-list",
+        ["ok-name", 123],
+        ["ok-name", ""],
+        ["ok-name", "   "],
+    ],
+)
+def test_load_candidates_rejects_malformed_supersedes(tmp_path, monkeypatch, supersedes):
+    scripts_dir = tmp_path / "scripts"
+    published_dir = tmp_path / "published"
+    scripts_dir.mkdir()
+    published_dir.mkdir()
+    monkeypatch.setattr(train_model, "__file__", str(scripts_dir / "train_model.py"))
+    candidates_path = published_dir / "candidates.json"
+    candidates_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "a",
+                    "repo_id": "org/a",
+                    "filename": "a.gguf",
+                    "supersedes": supersedes,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    train_model.load_candidates.cache_clear()
+
+    try:
+        with pytest.raises(ValueError, match="supersedes"):
+            train_model.load_candidates()
+    finally:
+        train_model.load_candidates.cache_clear()
+
+
+def test_load_candidates_passes_supersedes_through_verbatim(tmp_path, monkeypatch):
+    scripts_dir = tmp_path / "scripts"
+    published_dir = tmp_path / "published"
+    scripts_dir.mkdir()
+    published_dir.mkdir()
+    monkeypatch.setattr(train_model, "__file__", str(scripts_dir / "train_model.py"))
+    candidates_path = published_dir / "candidates.json"
+    candidates_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "a",
+                    "repo_id": "org/a",
+                    "filename": "a.gguf",
+                    "supersedes": ["old-a"],
+                },
+                {"name": "b", "repo_id": "org/b", "filename": "b.gguf"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    train_model.load_candidates.cache_clear()
+
+    try:
+        candidates = train_model.load_candidates()
+    finally:
+        train_model.load_candidates.cache_clear()
+
+    assert candidates[0]["supersedes"] == ["old-a"]
+    assert "supersedes" not in candidates[1]
+
+
 def test_offline_training_exports_v4_with_64_trees(tmp_path, monkeypatch):
     output = tmp_path / "model.json"
     monkeypatch.setattr(train_model, "load_candidates", lambda: [])

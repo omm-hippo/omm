@@ -125,6 +125,25 @@ def test_validate_model_artifact_rejects_malformed_candidates(candidate):
         predictor.validate_model_artifact(invalid)
 
 
+def test_validate_model_artifact_accepts_candidate_with_supersedes():
+    # Backward-compat guard (#322): validate_model_artifact only checks known
+    # fields, so an unrecognized field like `supersedes` must pass through
+    # untouched rather than being rejected as unknown.
+    with_supersedes = artifact()
+    with_supersedes["candidates"] = [
+        {
+            "repo_id": "org/model",
+            "filename": "model.gguf",
+            "provider": "huggingface",
+            "supersedes": ["some-older-model"],
+        }
+    ]
+
+    validated = predictor.validate_model_artifact(with_supersedes)
+
+    assert validated["candidates"][0]["supersedes"] == ["some-older-model"]
+
+
 def test_required_memory_rejects_boolean_and_infinite_size_metadata():
     assert predictor.estimate_required_memory_gb({"size_bytes": True}) is None
     assert predictor.estimate_required_memory_gb({"size_bytes": float("inf")}) is None

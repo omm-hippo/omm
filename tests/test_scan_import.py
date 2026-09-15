@@ -768,7 +768,7 @@ def test_adopt_group_excludes_manifest_style_engine_paths_from_custom_links(
     isolated_omm_home, tmp_path
 ):
     """custom_links is replayed verbatim by generic relink/unlink code
-    (cli._update_one / cli._remove_one) that doesn't know Ollama's own
+    (cli._install_impl --force relink / cli._remove_one) that doesn't know Ollama's own
     content-addressed blob rules - an Ollama blob path must not end up
     there, only in the engine-agnostic `linked` flag."""
     payload = b"ollama blob bytes"
