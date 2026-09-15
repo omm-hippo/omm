@@ -190,6 +190,8 @@ def test_recommend_json_lists_candidates_without_installing(monkeypatch, isolate
         "filename": "model.gguf",
         "provider": "modelscope",
         "description": "test",
+        "pipeline_tag": "text-generation",
+        "tags": ["coding"],
     }
     artifact = {"candidates": [candidate]}
 
@@ -218,6 +220,10 @@ def test_recommend_json_lists_candidates_without_installing(monkeypatch, isolate
     assert row["rank"] == 1
     assert row["ref"] == "ms:org/repo:model.gguf"
     assert row["name"] == cli.recommend_ui.humanize_model_name(candidate)
+    assert row["model_type"] == "LLM"
+    assert row["use_case"] == "Coding"
+    assert row["model_type_source"] == row["use_case_source"] == "Catalog metadata"
+    assert row["declared_features"] == []
     assert row["predicted_tokens_per_second"] == 42.0
     assert row["installed"] is False
     assert row["managed_by_omm"] is False
