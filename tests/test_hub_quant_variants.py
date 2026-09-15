@@ -1,3 +1,4 @@
+import json
 import pytest
 import requests
 
@@ -11,8 +12,17 @@ class _FakeResponse:
         self._siblings = siblings
         self._gguf_total = gguf_total
 
+    headers: dict = {}
+
     def raise_for_status(self):
         pass
+
+    def close(self):
+        pass
+
+    @property
+    def content(self):
+        return json.dumps(self.json()).encode("utf-8")
 
     def json(self):
         payload = {"siblings": self._siblings}
@@ -37,7 +47,7 @@ def test_resolve_model_raises_ambiguous_error_with_repo_and_candidates(monkeypat
     monkeypatch.setattr(
         requests,
         "get",
-        lambda url, timeout: _FakeResponse(
+        lambda *a, **k: _FakeResponse(
             [
                 {"rfilename": "llama-2-7b.Q4_K_M.gguf"},
                 {"rfilename": "llama-2-7b.Q8_0.gguf"},
@@ -101,7 +111,7 @@ def test_resolve_model_skips_mmproj_when_repo_has_single_real_model(monkeypatch)
     monkeypatch.setattr(
         requests,
         "get",
-        lambda url, timeout: _FakeResponse(
+        lambda *a, **k: _FakeResponse(
             [
                 {"rfilename": "llava-v1.6-mistral-7b.Q4_K_M.gguf"},
                 {"rfilename": "mmproj-model-f16.gguf"},
@@ -121,7 +131,7 @@ def test_resolve_model_raises_when_repo_only_has_mmproj_files(monkeypatch):
     monkeypatch.setattr(
         requests,
         "get",
-        lambda url, timeout: _FakeResponse([{"rfilename": "mmproj-model-f16.gguf"}]),
+        lambda *a, **k: _FakeResponse([{"rfilename": "mmproj-model-f16.gguf"}]),
     )
 
     with pytest.raises(ModelResolutionError, match="multimodal projector"):
@@ -136,7 +146,7 @@ def test_resolve_model_excludes_mmproj_from_ambiguous_candidates(monkeypatch):
     monkeypatch.setattr(
         requests,
         "get",
-        lambda url, timeout: _FakeResponse(
+        lambda *a, **k: _FakeResponse(
             [
                 {"rfilename": "llava-v1.6-mistral-7b.Q4_K_M.gguf"},
                 {"rfilename": "llava-v1.6-mistral-7b.Q8_0.gguf"},
@@ -159,7 +169,7 @@ def test_resolve_model_ambiguous_error_carries_repo_level_param_count(monkeypatc
     monkeypatch.setattr(
         requests,
         "get",
-        lambda url, timeout: _FakeResponse(
+        lambda *a, **k: _FakeResponse(
             [
                 {"rfilename": "ID_Legal_Assistant_Q4_K_M.gguf"},
                 {"rfilename": "ID_Legal_Assistant_Q8_0.gguf"},

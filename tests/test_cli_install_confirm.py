@@ -167,6 +167,41 @@ def test_install_keyboard_interrupt_cleans_up_partial_download(isolated_omm_home
     assert cleaned == [(filename, False)]
 
 
+def test_install_esc_deletes_the_resumable_partial(isolated_omm_home, monkeypatch):
+    """Pins the policy documented on `downloader._download_file_impl`: a
+    cancelled *first-time* install deletes the `.part` trio rather than
+    leaving it for a later resume. Runs the real
+    `_cleanup_interrupted_install` (not a stub, unlike the tests above) so
+    the actual deletion is what's under test."""
+    filename = "m.gguf"
+    monkeypatch.setattr(
+        cli,
+        "resolve_model",
+        lambda name: ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo"),
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        raise cli.InstallInterrupted(filename)
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+
+    dest = cli.MODELS_DIR / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")
+    ranges = part.with_name(part.name + ".ranges.json")
+    meta = part.with_name(f"{part.name}.meta")
+    part.write_bytes(b"partial-bytes")
+    ranges.write_text("{}", encoding="utf-8")
+    meta.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+
+    assert result.exit_code == 0
+    assert not part.exists()
+    assert not ranges.exists()
+    assert not meta.exists()
+
+
 def _seed_existing_model(filename: str) -> None:
     """Simulate a model that was fully installed by a *previous* `omm
     install` run - a real central file plus a registry entry, both already

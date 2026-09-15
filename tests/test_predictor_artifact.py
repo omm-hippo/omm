@@ -247,6 +247,40 @@ def test_cached_model_signature_is_invalid_after_tampering(monkeypatch, tmp_path
     assert predictor.cached_model_signature_is_valid(public) is False
 
 
+def test_cached_model_with_a_tampered_body_is_rejected(monkeypatch, tmp_path, isolated_omm_home):
+    private = Ed25519PrivateKey.generate()
+    public, cache_path = _sign_and_cache(monkeypatch, tmp_path, private)
+    monkeypatch.setattr(predictor, "load_config", lambda: {"catalog_public_key": public})
+
+    original = cache_path.read_bytes()
+    tampered = bytearray(original)
+    tampered[0] = tampered[0] ^ 0xFF
+    cache_path.write_bytes(bytes(tampered))
+
+    assert predictor.load_cached_model() is None
+
+
+def test_cached_model_signed_by_a_rotated_out_key_is_rejected(monkeypatch, tmp_path, isolated_omm_home):
+    private = Ed25519PrivateKey.generate()
+    public, cache_path = _sign_and_cache(monkeypatch, tmp_path, private)
+    rotated_public = base64.b64encode(
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+    ).decode()
+    monkeypatch.setattr(predictor, "load_config", lambda: {"catalog_public_key": rotated_public})
+
+    assert predictor.load_cached_model() is None
+
+
+def test_cached_model_without_provenance_is_still_accepted(monkeypatch, tmp_path, isolated_omm_home):
+    cache_path = tmp_path / "recommend-model.json"
+    cache_path.write_text(json.dumps(artifact()), encoding="utf-8")
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+
+    assert predictor.load_cached_model() == artifact()
+
+
 def test_validate_model_artifact_bounds_collection_and_total_tree_work(monkeypatch):
     candidate = {
         "repo_id": "org/model",

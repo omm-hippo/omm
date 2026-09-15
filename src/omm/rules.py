@@ -11,6 +11,7 @@ import math
 
 from omm.atomic import atomic_write_text, backup_corrupt_file
 from omm.config import RULES_PATH
+from omm.httpjson import MAX_RULES_RESPONSE_BYTES, read_bounded_json_response
 
 DEFAULT_RULES: list[dict] = [
     {
@@ -78,9 +79,11 @@ def load_rules() -> list[dict]:
 def fetch_rules(url: str) -> list[dict]:
     import requests
 
-    resp = requests.get(url, timeout=15)
+    resp = requests.get(url, timeout=15, stream=True)
     resp.raise_for_status()
-    rules = _validate_rules(resp.json())
+    rules = _validate_rules(
+        read_bounded_json_response(resp, maximum=MAX_RULES_RESPONSE_BYTES, label="rules index")[0]
+    )
     RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(RULES_PATH, json.dumps(rules, indent=2))
     return rules
