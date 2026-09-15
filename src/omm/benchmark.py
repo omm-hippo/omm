@@ -52,6 +52,41 @@ def ollama_daemon_reachable() -> bool:
         return False
 
 
+def _windows_parent_has_console() -> bool:
+    """True if omm's own process is attached to a real console.
+
+    GetConsoleWindow returns 0 both when there truly is no console and
+    inside a hidden/ConPTY console, so it cannot tell those apart - use
+    GetConsoleProcessList instead, which counts processes actually
+    attached to the console.
+    """
+    try:
+        import ctypes
+
+        buf = (ctypes.c_uint * 1)()
+        return ctypes.windll.kernel32.GetConsoleProcessList(buf, 1) > 0
+    except Exception:
+        return False
+
+
+def _kill_windows_process_tree(proc: subprocess.Popen) -> None:
+    """Force-kill proc and any child processes it spawned (e.g. Ollama's
+    per-model "runner" subprocesses), falling back to killing just the
+    parent if taskkill itself cannot be run."""
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def start_ollama_daemon(timeout: float = _DAEMON_START_TIMEOUT) -> subprocess.Popen | None:
     """Launch `ollama serve` in the background and wait until it answers.
 
@@ -74,7 +109,10 @@ def start_ollama_daemon(timeout: float = _DAEMON_START_TIMEOUT) -> subprocess.Po
             # CREATE_NEW_PROCESS_GROUP is required for stop_ollama_daemon's
             # CTRL_BREAK_EVENT to target only this process - without it, the
             # event would also hit omm's own console/process.
-            creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+            # CREATE_NO_WINDOW 는 자식에게 별도 콘솔을 줘 CTRL_BREAK 가 닿지 않는다.
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+            if not _windows_parent_has_console():
+                creationflags |= subprocess.CREATE_NO_WINDOW
         else:
             creationflags = 0
         proc = subprocess.Popen(
@@ -121,7 +159,10 @@ def stop_ollama_daemon(proc: subprocess.Popen) -> None:
     CREATE_NO_WINDOW). ``CTRL_BREAK_EVENT`` is the Windows analogue of
     SIGTERM Ollama can actually catch and cascade-kill its children with -
     it only reaches a process started in its own process group, which
-    start_ollama_daemon sets up via CREATE_NEW_PROCESS_GROUP.
+    start_ollama_daemon sets up via CREATE_NEW_PROCESS_GROUP. When omm's
+    own parent has no console, CTRL_BREAK is a no-op there too, so both
+    the immediate-failure and the graceful-timeout path fall back to a
+    taskkill-based tree kill on Windows.
     """
     if proc.poll() is not None:
         return
@@ -131,14 +172,26 @@ def stop_ollama_daemon(proc: subprocess.Popen) -> None:
         except (OSError, ValueError):
             # If the console-control event cannot be delivered, do not wait
             # ten seconds for a process that was never asked to stop.
-            proc.terminate()
+            _kill_windows_process_tree(proc)
+            return
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _kill_windows_process_tree(proc)
     else:
         proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # SIGKILL was delivered; an unreaped process stuck in
+                # uninterruptible I/O must not abort the caller's cleanup
+                # (contribute's finally also flushes error reports). Same
+                # tolerance _kill_windows_process_tree already has.
+                pass
 
 
 def benchmark_ollama(tag: str, options: dict | None = None) -> float | None:

@@ -304,6 +304,7 @@ Match the message you see, not the step you think you are on.
 | `Python not found. Install Python 3.10+ first` (Windows) or `Python 3.10+ not found` (macOS/Linux) | No runnable Python 3.10+ was found, and the winget/Homebrew/package-manager bootstrap could not supply one | Install [Python 3.10+](https://www.python.org/downloads/), open a new shell, and rerun |
 | `git not found. Install git first (needed to fetch omm from GitHub)` | git is missing and could not be bootstrapped | Install [git](https://git-scm.com/downloads), open a new shell, and rerun |
 | `git 2.34+ is required to verify SSH commit signatures` | Older git cannot check SSH commit signatures, and the installer fails closed rather than trusting an unverified checkout | Upgrade git to 2.34 or newer and rerun |
+| `merge commit ... can only be verified with git 2.38+` | `omm update` needs `git merge-tree --write-tree` (git 2.38+) to authenticate an unsigned merge commit's result tree, and fails closed instead of trusting it unverified | Upgrade git to 2.38+ and rerun `omm update` |
 | `Signature verification failed - refusing to install untrusted code.` | The fetched commit is not signed by the expected trust anchor | Do not bypass it. Stop and report the failure at <https://github.com/omm-hippo/omm/issues> |
 | `Refusing to replace unrelated pipx environment 'omm'.` | A different tool already owns a pipx environment named `omm` | Remove or rename that environment manually, then rerun |
 | `Refusing to replace an unverified omm-model pipx environment.` | An existing `omm-model` pipx environment could not be confirmed as OMM's | Inspect it with `pipx list`, remove it if it is safe to remove, then rerun |
@@ -417,7 +418,7 @@ the command exits without downloading.
 ### Install & manage models
 
 ```sh
-omm install <name> [--skip-unfit] [--upload/--no-upload] [--force] [--verify-runtime|--no-verify-runtime]  # Download, link, and optionally verify a model
+omm install <name> [--skip-unfit] [--upload/--no-upload] [--force] [--verify-runtime|--no-verify-runtime]  # Download, link, and optionally verify a model (--force re-checks the source and only re-downloads when it actually changed)
 omm fit <name>  # Memory card: does this model (installed or not) fit next to what is running right now?
 omm run [name] [--engine NAME]  # Chat with an installed model: Ollama in the terminal, KoboldCpp/text-generation-webui with the model loaded, GUI apps opened
 omm import [directory] [--yes]  # Adopt GGUF files found across supported runners (and an optional directory) into the hub
@@ -425,8 +426,8 @@ omm uninstall <name> [--dry-run]  # Uninstall a model and clean up its symlinks/
 omm uninstall all [--yes] [--dry-run]  # Uninstall every model installed via omm
 omm list [--json] [--engine NAME]  # Show models installed via omm and their linked status (alias: ls)
 omm info <name> [--json]  # What a model is: source repo, version, size and run commands once installed; author, downloads, license and architecture for a search result
-omm upgrade <name> [--dry-run]  # Refresh a model against its source if it has changed since install (alias: up)
-omm upgrade [--yes] [--dry-run]  # Check every installed model for updates
+omm upgrade <name> [--dry-run]  # Look for a better model than this one - a curated successor, or a higher quantization from the same repo that still fits (alias: up)
+omm upgrade [--yes] [--dry-run]  # Scan every installed model for a better alternative
 omm link [models] [--engine NAME]  # Re-verify and repair installed-model links across supported runners; `models` is a comma-separated name/index list (omit for every model)
 omm link [models] --to <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
 omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
@@ -438,6 +439,10 @@ omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 installation: it prints `Skipped` and leaves the model hub unchanged. If an
 uninstall cannot remove the managed model file, OMM exits with status 1 and
 keeps the registry and any still-live links so the same command can be retried.
+
+`omm upgrade` no longer re-downloads a model against its own source. To
+re-check an installed file and replace it only if the source actually
+changed, use `omm install <name> --force`.
 
 ### Verify & benchmark
 
@@ -565,9 +570,15 @@ omm setting telemetry --endpoint http://127.0.0.1:8000/v1/benchmarks
 omm setting upload --enable
 ```
 
-Loopback ingestion needs no token. If the collector listens on a non-loopback
-interface, set the same `LOCALFIT_INGEST_TOKEN` on both the server and the omm
-client; remote ingestion fails closed when it is missing.
+Loopback ingestion needs no token. Once `LOCALFIT_INGEST_TOKEN` is set, every
+request needs it — including loopback ones, so export the same value for the
+omm client on that machine. A same-host reverse proxy makes remote requests
+look like loopback, so peer address alone is not treated as authentication.
+If the collector listens on a non-loopback interface, set the same
+`LOCALFIT_INGEST_TOKEN` on both the server and the omm client; remote
+ingestion fails closed when it is missing. The client only attaches
+`LOCALFIT_INGEST_TOKEN` to an `https` endpoint, so a loopback
+(`http://127.0.0.1:…`) collector never receives it.
 
 Training can consume the authenticated export directly:
 

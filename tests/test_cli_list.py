@@ -51,8 +51,14 @@ def test_list_json_is_parseable_and_has_expected_fields(isolated_omm_home):
     assert result.exit_code == 0, result.stdout
     data = json.loads(result.stdout)
     assert data == [
-        {"index": 1, "filename": "a.gguf", "size_bytes": 5, "linked": _all_linked()},
-        {"index": 2, "filename": "b.gguf", "size_bytes": 9, "linked": _all_linked(ollama=True)},
+        {
+            "index": 1, "filename": "a.gguf", "size_bytes": 5, "linked": _all_linked(),
+            "pinned": False, "archived_size_bytes": None,
+        },
+        {
+            "index": 2, "filename": "b.gguf", "size_bytes": 9, "linked": _all_linked(ollama=True),
+            "pinned": False, "archived_size_bytes": None,
+        },
     ]
 
 
@@ -70,8 +76,14 @@ def test_list_json_before_subcommand(isolated_omm_home):
     assert result.exit_code == 0, result.stdout
     data = json.loads(result.stdout)
     assert data == [
-        {"index": 1, "filename": "a.gguf", "size_bytes": 5, "linked": _all_linked()},
-        {"index": 2, "filename": "b.gguf", "size_bytes": 9, "linked": _all_linked(ollama=True)},
+        {
+            "index": 1, "filename": "a.gguf", "size_bytes": 5, "linked": _all_linked(),
+            "pinned": False, "archived_size_bytes": None,
+        },
+        {
+            "index": 2, "filename": "b.gguf", "size_bytes": 9, "linked": _all_linked(ollama=True),
+            "pinned": False, "archived_size_bytes": None,
+        },
     ]
 
 
@@ -162,7 +174,12 @@ def test_list_json_prunes_registry_entries_whose_file_is_gone(isolated_omm_home)
 
     assert result.exit_code == 0, result.stdout
     data = json.loads(result.stdout)
-    assert data == [{"index": 1, "filename": "a.gguf", "size_bytes": 5, "linked": _all_linked()}]
+    assert data == [
+        {
+            "index": 1, "filename": "a.gguf", "size_bytes": 5, "linked": _all_linked(),
+            "pinned": False, "archived_size_bytes": None,
+        },
+    ]
     assert registry.load_registry() == {
         "a.gguf": {"size_bytes": 5, "linked": {"lmstudio": False, "ollama": False}}
     }

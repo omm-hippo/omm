@@ -71,6 +71,16 @@ def test_help_all_lists_every_command():
     assert "cleanup" in result.stdout
 
 
+def test_help_all_lists_pin_unpin_rollback():
+    # #295: model revision pin/rollback are top-level Core commands, next
+    # to upgrade/uninstall - not nested under `omm setting`.
+    result = runner.invoke(cli.app, ["help", "--all"])
+
+    assert result.exit_code == 0, result.stdout
+    for name in ("omm pin", "omm unpin", "omm rollback"):
+        assert name in result.stdout, f"missing command: {name}"
+
+
 def test_help_all_expands_nested_setting_subcommands():
     result = runner.invoke(cli.app, ["help", "--all"])
 
@@ -97,6 +107,25 @@ def test_help_all_hints_at_flags_option():
 
     assert result.exit_code == 0, result.stdout
     assert "--flags" in result.stdout
+
+
+def test_help_command_keeps_click_default_and_required_markers():
+    # rich's markup=True by default would swallow "[default: 40]"/"[required]"
+    # as (unknown, dropped) markup tags instead of printing them literally.
+    log_result = runner.invoke(cli.app, ["help", "log"])
+    assert log_result.exit_code == 0, log_result.stdout
+    assert "[default: 40]" in log_result.stdout
+
+    install_result = runner.invoke(cli.app, ["help", "install"])
+    assert install_result.exit_code == 0, install_result.stdout
+    assert "[required]" in install_result.stdout
+
+
+def test_help_all_flags_keeps_default_markers():
+    result = runner.invoke(cli.app, ["help", "--all", "--flags"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "[default: 40]" in result.stdout
 
 
 def test_help_all_flags_expands_each_command_option_list():
@@ -206,7 +235,7 @@ def test_help_all_indents_a_wrapped_summary_under_the_summary_column():
     lines = result.stdout.splitlines()
 
     row = next(i for i, line in enumerate(lines) if line.strip().startswith("omm upgrade"))
-    summary_column = lines[row].index("Refresh an installed model")
+    summary_column = lines[row].index("Look for a better model")
 
     assert lines[row + 1].strip(), "expected this summary to wrap at 80 columns"
     assert lines[row + 1].startswith(" " * summary_column)

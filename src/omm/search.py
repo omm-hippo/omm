@@ -10,7 +10,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 from omm import hub, predictor
-from omm.featurize import is_mmproj_filename
+from omm.featurize import is_mmproj_filename, is_shard_filename
+from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES, read_bounded_json_response
 from omm.providers import modelscope
 
 HF_SEARCH_API = "https://huggingface.co/api/models"
@@ -59,7 +60,6 @@ def _claims_fake_provenance(text: str) -> bool:
     )
 
 
-_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}")
 _PREFERRED_QUANT_RE = re.compile(r"Q4_K_M", re.IGNORECASE)
 
 
@@ -78,7 +78,7 @@ def pick_gguf_file(siblings: list[dict]) -> str | None:
         if (
             isinstance(filename, str)
             and filename.lower().endswith(".gguf")
-            and not _SHARD_RE.search(filename)
+            and not is_shard_filename(filename)
             and not is_mmproj_filename(filename)
         ):
             gguf_files.append(filename)
@@ -221,9 +221,12 @@ def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> lis
             HF_SEARCH_API,
             params={"search": query, "filter": "gguf", "limit": limit, "full": "true"},
             timeout=timeout,
+            stream=True,
         )
         resp.raise_for_status()
-        payload = resp.json()
+        payload = read_bounded_json_response(
+            resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="HuggingFace search results"
+        )[0]
     except (requests.RequestException, ValueError):
         return []
 
@@ -267,9 +270,12 @@ def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list
             MS_SEARCH_API,
             params={"search": query, "page_size": limit},
             timeout=timeout,
+            stream=True,
         )
         resp.raise_for_status()
-        payload = resp.json()
+        payload = read_bounded_json_response(
+            resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="ModelScope search results"
+        )[0]
     except (requests.RequestException, ValueError):
         return []
 

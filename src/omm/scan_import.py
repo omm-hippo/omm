@@ -120,6 +120,20 @@ def _is_safe_registry_filename(filename: object, resolver) -> bool:
     return True
 
 
+def _is_omm_owned_link(path: Path) -> bool:
+    record = linker._ownership_record(path)
+    if not record:
+        return False
+    source = record.get("source")
+    if not isinstance(source, str) or not Path(source).exists():
+        return False  # 허브 원본이 사라졌으면 이 파일이 유일한 사본이므로 import 대상으로 남긴다
+    return (
+        linker._owned_hardlink(path, record)
+        or linker._owned_symlink(path, record)
+        or linker._owned_copy(path, record)
+    )
+
+
 def _scan_ollama_format(engine: str, models_dir: Path) -> list[ExternalGguf]:
     """Real (non-symlink) model-layer blobs for any Ollama-format engine
     (system Ollama, or AnythingLLM's bundled instance at its own
@@ -165,6 +179,8 @@ def _scan_ollama_format(engine: str, models_dir: Path) -> list[ExternalGguf]:
         blob = blobs_dir / f"sha256-{digest}"
         if not blob.is_file() or blob.is_symlink():
             continue
+        if _is_omm_owned_link(blob):
+            continue
         try:
             size = blob.stat().st_size
         except OSError:
@@ -190,6 +206,8 @@ def _scan_flat_dir(engine: str, base: Path) -> list[ExternalGguf]:
     found = []
     for path in _iter_gguf_files(base):
         if not path.is_file() or path.is_symlink():
+            continue
+        if _is_omm_owned_link(path):
             continue
         try:
             found.append(
@@ -239,6 +257,8 @@ def scan_jan() -> list[ExternalGguf]:
         if not model_path.is_absolute():
             model_path = jan_data_dir / model_path
         if not model_path.is_file() or model_path.is_symlink():
+            continue
+        if model_path.resolve().is_relative_to(MODELS_DIR.resolve()):
             continue
         try:
             found.append(
@@ -527,6 +547,12 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
         if loc.path.resolve() == hub_path.resolve():
             continue
         was_real_file = loc.path.is_file() and not loc.path.is_symlink()
+        shares_hub_file = False
+        if was_real_file:
+            try:
+                shares_hub_file = loc.path.samefile(hub_path)
+            except OSError:
+                pass
         if was_real_file:
             # Keep the external copy recoverable until the replacement link
             # exists. A same-directory rename is atomic on Windows/NTFS and
@@ -575,7 +601,7 @@ def adopt_group(group: ModelGroup) -> AdoptResult:
         adopted_links.append(str(loc.path))
         if loc.engine not in _MANIFEST_STYLE_ENGINES:
             custom_link_paths.append(str(loc.path))
-        if was_real_file and link_kind != "copy":
+        if was_real_file and not shares_hub_file and link_kind != "copy":
             bytes_saved += loc.size_bytes
         if loc.engine in linked:
             linked[loc.engine] = True

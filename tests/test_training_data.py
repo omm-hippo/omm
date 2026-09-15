@@ -654,6 +654,88 @@ def test_fetch_real_rows_rejects_insecure_remote_url_before_sending_token(monkey
     assert calls == []
 
 
+def test_fetch_real_rows_raises_on_http_error(monkeypatch):
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "super-secret-token")
+
+    class _FailingResponse:
+        def raise_for_status(self):
+            raise train_model.requests.HTTPError("401")
+
+        def json(self):
+            raise AssertionError("json() should not be called after raise_for_status fails")
+
+    monkeypatch.setattr(train_model.requests, "get", lambda *a, **k: _FailingResponse())
+
+    with pytest.raises(train_model.TelemetryFetchError) as excinfo:
+        train_model.fetch_real_rows("https://collector.example/v1/benchmarks/export")
+
+    assert "super-secret-token" not in str(excinfo.value)
+
+
+def test_fetch_real_rows_raises_on_unparseable_body(monkeypatch):
+    class _UnparseableResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(train_model.requests, "get", lambda *a, **k: _UnparseableResponse())
+
+    with pytest.raises(train_model.TelemetryFetchError):
+        train_model.fetch_real_rows("https://collector.example/v1/benchmarks/export")
+
+
+def test_quality_gate_fails_loudly_when_telemetry_fetch_fails(tmp_path, monkeypatch):
+    output = tmp_path / "model.json"
+
+    def _raise_fetch_error(_url):
+        raise train_model.TelemetryFetchError("couldn't fetch telemetry from https://collector.example/x: boom")
+
+    monkeypatch.setattr(train_model, "fetch_real_rows", _raise_fetch_error)
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[], offline=False, telemetry_url="https://collector.example/x",
+            output=output, baseline=tmp_path / "baseline.json", quality_gate=True,
+            minimum_real_configurations=0, maximum_rejection_rate=0.25, holdout_fraction=0.2,
+            quality_report=None, minimum_fit_negative_examples=5,
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        train_model.main()
+
+    assert not output.exists()
+
+
+def test_offline_false_non_gate_run_continues_after_a_fetch_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(train_model, "load_candidates", lambda: [])
+    monkeypatch.setattr(
+        train_model,
+        "synthetic_rows_from_rules",
+        lambda: ([[0.0] * len(train_model.FEATURE_ORDER)], [0.0]),
+    )
+
+    def _raise_fetch_error(_url):
+        raise train_model.TelemetryFetchError("couldn't fetch telemetry from https://collector.example/x: boom")
+
+    monkeypatch.setattr(train_model, "fetch_real_rows", _raise_fetch_error)
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[], offline=False, telemetry_url="https://collector.example/x",
+            output=tmp_path / "model.json", baseline=None, quality_gate=False,
+            minimum_real_configurations=0, maximum_rejection_rate=0.25, holdout_fraction=0.2,
+            quality_report=None, minimum_fit_negative_examples=5,
+        ),
+    )
+
+    train_model.main()  # must not raise: only --quality-gate escalates a fetch failure
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -821,6 +903,53 @@ def test_quality_gate_regression_republishes_baseline_unchanged(tmp_path, monkey
     assert set(candidate_kwargs["sample_weight"][1:]) == {
         train_model.QUALITY_GATE_REAL_WEIGHT
     }
+
+
+def test_quality_gate_single_selection_context_republishes_baseline_unchanged(tmp_path, monkeypatch):
+    # validate_dataset() passes (minimum_real_configurations=0), but only one
+    # selection context exists - stable_holdout_split() is the one that must
+    # soft-skip here, not validate_dataset().
+    telemetry = tmp_path / "telemetry.json"
+    telemetry.write_text(json.dumps([_v6_row(10)]), encoding="utf-8")
+    output = tmp_path / "model.json"
+    output.write_text("incumbent-output", encoding="utf-8")
+    baseline = tmp_path / "baseline.json"
+    monkeypatch.setattr(train_model, "load_candidates", lambda: [])
+    X, y = train_model.real_rows_to_training_data(json.loads(telemetry.read_text(encoding="utf-8")))
+    baseline.write_text(
+        json.dumps(
+            train_model.train_artifact(
+                X, y, sample_weight=None, training_mode="telemetry", bootstrap_method=None,
+                real_rows=[], telemetry_audit={"unique_configurations": len(X)},
+                input_sources=[], evaluation=None,
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        train_model,
+        "synthetic_rows_from_rules",
+        lambda: ([X[0]], [0.0]),
+    )
+    monkeypatch.setattr(train_model, "validate_dataset", lambda *a, **k: None)
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[telemetry], offline=True, telemetry_url="", output=output,
+            baseline=baseline, quality_gate=True, minimum_real_configurations=0,
+            maximum_rejection_rate=0.25, holdout_fraction=0.2, quality_report=tmp_path / "q.json",
+            minimum_fit_negative_examples=5,
+        ),
+    )
+
+    train_model.main()  # must not raise: a single selection context is a soft skip
+
+    assert output.read_text(encoding="utf-8") == baseline.read_text(encoding="utf-8")
+    report = json.loads((tmp_path / "q.json").read_text(encoding="utf-8"))
+    assert report["skipped"] is True
+    assert report["passed"] is False
+    assert "two selection contexts" in report["reason"]
 
 
 def test_quality_gate_publishes_hybrid_artifact_after_pass(tmp_path, monkeypatch):
@@ -1063,6 +1192,76 @@ def test_load_candidates_rejects_malformed_or_duplicate_publication(tmp_path, mo
             train_model.load_candidates()
     finally:
         train_model.load_candidates.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "supersedes",
+    [
+        "not-a-list",
+        ["ok-name", 123],
+        ["ok-name", ""],
+        ["ok-name", "   "],
+    ],
+)
+def test_load_candidates_rejects_malformed_supersedes(tmp_path, monkeypatch, supersedes):
+    scripts_dir = tmp_path / "scripts"
+    published_dir = tmp_path / "published"
+    scripts_dir.mkdir()
+    published_dir.mkdir()
+    monkeypatch.setattr(train_model, "__file__", str(scripts_dir / "train_model.py"))
+    candidates_path = published_dir / "candidates.json"
+    candidates_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "a",
+                    "repo_id": "org/a",
+                    "filename": "a.gguf",
+                    "supersedes": supersedes,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    train_model.load_candidates.cache_clear()
+
+    try:
+        with pytest.raises(ValueError, match="supersedes"):
+            train_model.load_candidates()
+    finally:
+        train_model.load_candidates.cache_clear()
+
+
+def test_load_candidates_passes_supersedes_through_verbatim(tmp_path, monkeypatch):
+    scripts_dir = tmp_path / "scripts"
+    published_dir = tmp_path / "published"
+    scripts_dir.mkdir()
+    published_dir.mkdir()
+    monkeypatch.setattr(train_model, "__file__", str(scripts_dir / "train_model.py"))
+    candidates_path = published_dir / "candidates.json"
+    candidates_path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "a",
+                    "repo_id": "org/a",
+                    "filename": "a.gguf",
+                    "supersedes": ["old-a"],
+                },
+                {"name": "b", "repo_id": "org/b", "filename": "b.gguf"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    train_model.load_candidates.cache_clear()
+
+    try:
+        candidates = train_model.load_candidates()
+    finally:
+        train_model.load_candidates.cache_clear()
+
+    assert candidates[0]["supersedes"] == ["old-a"]
+    assert "supersedes" not in candidates[1]
 
 
 def test_offline_training_exports_v4_with_64_trees(tmp_path, monkeypatch):
@@ -1837,3 +2036,10 @@ def test_calibration_report_is_redacted_reproducible_and_restores_policy():
         train_model.MIN_OUTLIER_SAMPLE_SIZE,
         train_model.LOW_SIDE_OUTLIER_POLICY,
     ) == original
+
+
+def test_intentional_exclusions_have_one_definition():
+    from scripts import model_quality_gate
+
+    assert train_model.INTENTIONALLY_EXCLUDED_REASONS is model_quality_gate.INTENTIONALLY_EXCLUDED_REASONS
+    assert "no_hardware_identity_pre_v6_schema" in train_model.INTENTIONALLY_EXCLUDED_REASONS

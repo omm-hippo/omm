@@ -199,6 +199,59 @@ def test_is_lmstudio_installed_detects_headless_cli(monkeypatch, tmp_path):
     assert linker.is_lmstudio_installed() is True
 
 
+@pytest.fixture
+def lmstudio_windows_env(tmp_path, monkeypatch):
+    """Point every LM Studio Windows probe at tmp_path. Unset the
+    remaining install-location variables so a real LM Studio on the
+    machine running the tests can't decide the outcome."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker, "_lms_cli_path", lambda: None)
+    monkeypatch.setattr(linker, "lmstudio_home_dir", lambda: tmp_path / "nohome")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    for variable in ("ProgramFiles", "ProgramFiles(x86)", "ProgramData"):
+        monkeypatch.delenv(variable, raising=False)
+    return tmp_path
+
+
+def _lmstudio_windows_start_menu(root: Path) -> Path:
+    return root / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+
+
+def test_is_lmstudio_installed_false_when_nothing_present_on_windows(lmstudio_windows_env):
+    assert linker.is_lmstudio_installed() is False
+
+
+@pytest.mark.parametrize("install_dir_name", ["LM Studio", "lm-studio", "lmstudio"])
+def test_is_lmstudio_installed_detects_never_launched_install_on_windows(
+    lmstudio_windows_env, install_dir_name
+):
+    program_dir = lmstudio_windows_env / "Local" / "Programs" / install_dir_name
+    program_dir.mkdir(parents=True)
+    (program_dir / "LM Studio.exe").write_bytes(b"")
+    assert linker.is_lmstudio_installed() is True
+
+
+def test_is_lmstudio_installed_detects_start_menu_shortcut_on_windows(lmstudio_windows_env):
+    menu = _lmstudio_windows_start_menu(lmstudio_windows_env)
+    menu.mkdir(parents=True)
+    (menu / "LM Studio.lnk").write_bytes(b"")
+    assert linker.is_lmstudio_installed() is True
+
+
+def test_is_lmstudio_installed_ignores_empty_program_dir_on_windows(lmstudio_windows_env):
+    (lmstudio_windows_env / "Local" / "Programs" / "LM Studio").mkdir(parents=True)
+    assert linker.is_lmstudio_installed() is False
+
+
+def test_is_lmstudio_installed_ignores_program_dir_on_non_windows(lmstudio_windows_env, monkeypatch):
+    monkeypatch.setattr(linker.platform, "system", lambda: "Linux")
+    program_dir = lmstudio_windows_env / "Local" / "Programs" / "LM Studio"
+    program_dir.mkdir(parents=True)
+    (program_dir / "LM Studio.exe").write_bytes(b"")
+    assert linker.is_lmstudio_installed() is False
+
+
 def test_has_automated_installer_true_for_lmstudio(monkeypatch):
     monkeypatch.setattr(linker.platform, "system", lambda: "Darwin")
     assert linker.has_automated_installer("lmstudio") is True

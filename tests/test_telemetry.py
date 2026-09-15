@@ -3,7 +3,7 @@ import json
 import pytest
 import requests
 
-from omm import config, firebase_auth, telemetry
+from omm import config, telemetry
 
 
 class _FakeResp:
@@ -302,6 +302,41 @@ def test_flush_pending_keeps_events_that_still_fail(isolated_omm_home, monkeypat
     assert json.loads((isolated_omm_home / "telemetry_pending.json").read_text(encoding="utf-8")) == [{"model": "a"}]
 
 
+def test_flush_pending_backs_off_after_a_failure(isolated_omm_home, monkeypatch):
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="always"
+    )
+    (isolated_omm_home / "telemetry_pending.json").write_text(
+        json.dumps([{"model": "a"}]), encoding="utf-8"
+    )
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **k: calls.append(1) or _FakeResp(500))
+
+    assert telemetry.flush_pending() == 0
+    # A second call arriving immediately after (e.g. the next `omm` command)
+    # must not pay another proof-of-work solve + HTTP round trip while the
+    # cooldown from the first failure is still active.
+    assert telemetry.flush_pending() == 0
+    assert len(calls) == 1
+
+
+def test_flush_pending_clears_backoff_once_a_send_succeeds(isolated_omm_home, monkeypatch):
+    config.update_config(
+        telemetry_endpoint="https://example.com", telemetry_send_policy="always"
+    )
+    (isolated_omm_home / "telemetry_pending.json").write_text(
+        json.dumps([{"model": "a"}]), encoding="utf-8"
+    )
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(500))
+    telemetry.flush_pending()
+
+    monkeypatch.setattr(telemetry, "_backoff_active", lambda: False)
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200))
+
+    assert telemetry.flush_pending() == 1
+    assert telemetry._read_backoff() == {}
+
+
 def test_flush_pending_caps_attempts_per_call(isolated_omm_home, monkeypatch):
     config.update_config(
         telemetry_endpoint="https://example.com", telemetry_send_policy="always"
@@ -422,20 +457,67 @@ def test_post_event_reports_gateway_rejection(isolated_omm_home, monkeypatch):
     assert json.loads(log_lines[0])["outcome"] == "send_failed_http_400"
 
 
-def test_post_event_skips_auth_for_non_firebase_endpoint(isolated_omm_home, monkeypatch):
+def test_gateway_409_is_treated_as_delivered(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(
         telemetry,
         "load_config",
-        lambda: {"telemetry_send_policy": "always", "telemetry_endpoint": "https://example.com"},
+        lambda: {
+            "telemetry_send_policy": "always",
+            "telemetry_endpoint": config.TELEMETRY_GATEWAY_ENDPOINT,
+        },
+    )
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(409, text='{"error":"duplicate event"}'))
+
+    result = telemetry._post_event({"x": 1})
+
+    assert result is True
+    assert telemetry.last_send_status().outcome == "sent_duplicate"
+
+
+def test_ingest_token_is_not_sent_to_a_plaintext_loopback_endpoint(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {
+            "telemetry_send_policy": "always",
+            "telemetry_endpoint": "http://127.0.0.1:8000/v1/benchmarks",
+        },
+    )
+    monkeypatch.setenv("LOCALFIT_INGEST_TOKEN", "secret-token")
+    captured = {}
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *a, **k: captured.update(headers=k.get("headers")) or _FakeResp(200),
     )
 
-    def fail_if_called():
-        raise AssertionError("should not fetch a firebase auth token for a non-firebase endpoint")
+    result = telemetry._post_event({"x": 1})
 
-    monkeypatch.setattr(firebase_auth, "get_id_token", lambda: fail_if_called())
-    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp(200))
+    assert result is True
+    assert "authorization" not in captured["headers"]
 
-    assert telemetry.send_event({"x": 1}) is True
+
+def test_ingest_token_is_sent_to_an_https_self_hosted_endpoint(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        telemetry,
+        "load_config",
+        lambda: {
+            "telemetry_send_policy": "always",
+            "telemetry_endpoint": "https://collector.example/v1/benchmarks",
+        },
+    )
+    monkeypatch.setenv("LOCALFIT_INGEST_TOKEN", "secret-token")
+    captured = {}
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *a, **k: captured.update(headers=k.get("headers")) or _FakeResp(200),
+    )
+
+    result = telemetry._post_event({"x": 1})
+
+    assert result is True
+    assert captured["headers"]["authorization"] == "Bearer secret-token"
 
 
 def test_pending_queue_is_bounded(isolated_omm_home):

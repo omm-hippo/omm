@@ -77,10 +77,17 @@ def test_fetch_rules_writes_atomically(monkeypatch, tmp_path):
         def raise_for_status(self):
             pass
 
+        def close(self):
+            pass
+
         def json(self):
             return [RULE]
 
-    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeResponse())
+        @property
+        def content(self):
+            return json.dumps(self.json()).encode("utf-8")
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse())
 
     rules_mod.fetch_rules("http://example.com/rules.json")
 
@@ -108,11 +115,42 @@ def test_fetch_rules_rejects_invalid_rules_without_replacing_cache(monkeypatch, 
         def raise_for_status(self):
             pass
 
+        def close(self):
+            pass
+
         def json(self):
             return [{"name": "missing thresholds"}]
 
-    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeResponse())
+        @property
+        def content(self):
+            return json.dumps(self.json()).encode("utf-8")
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse())
 
     with pytest.raises(ValueError):
         rules_mod.fetch_rules("https://example.test/rules.json")
     assert json.loads(rules_path.read_text(encoding="utf-8")) == [RULE]
+
+
+def test_fetch_rules_rejects_response_over_the_size_limit(monkeypatch, tmp_path):
+    rules_path = tmp_path / "rules.json"
+    monkeypatch.setattr(rules_mod, "RULES_PATH", rules_path)
+
+    import requests
+
+    from omm.httpjson import MAX_RULES_RESPONSE_BYTES
+
+    class _OversizedResponse:
+        headers = {"Content-Length": str(MAX_RULES_RESPONSE_BYTES + 1)}
+        content = b"[]"
+
+        def raise_for_status(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _OversizedResponse())
+
+    with pytest.raises(ValueError):
+        rules_mod.fetch_rules("https://example.test/rules.json")

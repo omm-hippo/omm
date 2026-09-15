@@ -32,9 +32,10 @@ MIN_HANGUL = 40
 # PRs created by automation carry no human-readable context to enforce.
 BOT_LOGIN_SUFFIX = "[bot]"
 BOT_LOGINS = {"omm-retrain-bot"}
-# train.yml opens `retrain/<timestamp>` PRs; the beta -> main sync PR has head `beta`.
+# train.yml opens `retrain/<timestamp>` PRs; the beta -> main sync PR has head `beta`;
+# emergency-signal.yml opens `emergency-signal/<timestamp>` PRs.
 EXEMPT_HEAD_BRANCHES = {"beta"}
-EXEMPT_HEAD_PREFIXES = ("retrain/",)
+EXEMPT_HEAD_PREFIXES = ("retrain/", "emergency-signal/")
 
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
@@ -80,11 +81,16 @@ class Verdict:
         return "\n".join(lines)
 
 
-def is_exempt(author: str, head_ref: str) -> bool:
+def is_exempt(author: str, head_ref: str, head_same_repo: bool = True) -> bool:
     author = (author or "").strip()
     head_ref = (head_ref or "").strip()
     if author.endswith(BOT_LOGIN_SUFFIX) or author in BOT_LOGINS:
         return True
+    # Branch names are contributor-chosen on a fork, so they only earn an
+    # exemption when the head branch lives in this repository - which is where
+    # every automated PR (retrain/*, emergency-signal/*) is opened from.
+    if not head_same_repo:
+        return False
     if head_ref in EXEMPT_HEAD_BRANCHES or head_ref.startswith(EXEMPT_HEAD_PREFIXES):
         return True
     return False
@@ -116,9 +122,15 @@ def split_sections(body: str) -> dict[str, str]:
     return sections
 
 
-def _find_heading(sections: dict[str, str], wanted: str) -> str | None:
-    """Accept `## 배경`, `## 배경 (context)`, `## 2. 배경`: the key must appear in the heading."""
+def _find_heading(sections: dict[str, str], wanted: str, taken: set[str]) -> str | None:
+    """Accept `## 배경`, `## 배경 (context)`, `## 2. 배경`: the key must appear in the heading.
+
+    One heading may only satisfy one required section, so a single heading that
+    names all four keywords no longer stands in for all four.
+    """
     for heading in sections:
+        if heading in taken:
+            continue
         if wanted in heading:
             return heading
     return None
@@ -128,14 +140,14 @@ def hangul_count(text: str) -> int:
     return len(_HANGUL_RE.findall(text or ""))
 
 
-def evaluate(body: str, author: str = "", head_ref: str = "") -> Verdict:
-    if is_exempt(author, head_ref):
+def evaluate(body: str, author: str = "", head_ref: str = "", head_same_repo: bool = True) -> Verdict:
+    if is_exempt(author, head_ref, head_same_repo):
         return Verdict(ok=True, exempt=True, problems=[])
     sections = split_sections(body)
     problems: list[str] = []
     found: dict[str, str] = {}
     for wanted in REQUIRED_HEADINGS:
-        heading = _find_heading(sections, wanted)
+        heading = _find_heading(sections, wanted, set(found.values()))
         if heading is None:
             problems.append(f"`## {wanted}` 제목이 없습니다.")
             continue
@@ -148,7 +160,7 @@ def evaluate(body: str, author: str = "", head_ref: str = "") -> Verdict:
         problems.append(
             "네 항목의 순서가 다릅니다: 한줄 요약 → 배경 → 무엇을 바꿨나 → 어떻게 확인했나."
         )
-    narrative = " ".join(sections.get(found.get(w, ""), "") for w in NARRATIVE_HEADINGS)
+    narrative = " ".join(sections[found[w]] for w in NARRATIVE_HEADINGS if w in found)
     count = hangul_count(narrative)
     if count < MIN_HANGUL:
         problems.append(
@@ -166,7 +178,8 @@ def main() -> int:
     body = os.environ.get("PR_BODY", "")
     author = os.environ.get("PR_AUTHOR", "")
     head_ref = os.environ.get("PR_HEAD_REF", "")
-    verdict = evaluate(body, author, head_ref)
+    head_same_repo = os.environ.get("PR_HEAD_SAME_REPO", "true").strip().lower() == "true"
+    verdict = evaluate(body, author, head_ref, head_same_repo)
     print(verdict.message)
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:

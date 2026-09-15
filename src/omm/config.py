@@ -16,7 +16,17 @@ def _resolve_omm_home() -> Path:
     directory's filesystem lacks room for GGUF models (e.g. contribute)."""
     override = os.environ.get("OMM_HOME", "").strip()
     if override:
-        return Path(override).expanduser()
+        # install.sh:8-11/38-41 and install.ps1:23-31 already refuse these
+        # values; the runtime is where the destructive work happens
+        # (MODELS_DIR below, `omm cleanup`), so it must refuse them too.
+        # A relative OMM_HOME would otherwise resolve against whatever
+        # directory each command happens to run in.
+        home = Path(override).expanduser()
+        if not home.is_absolute():
+            raise SystemExit(f"Refusing non-absolute OMM_HOME: {override}")
+        if home == Path(home.anchor) or home == Path.home():
+            raise SystemExit(f"Refusing unsafe OMM_HOME: {override}")
+        return home
     return Path.home() / ".omm"
 
 
@@ -33,6 +43,11 @@ RECOMMEND_MODEL_PATH = OMM_HOME / "recommend-model.json"
 EVALUATIONS_DIR = OMM_HOME / "evaluations"
 CALIBRATION_PATH = OMM_HOME / "calibration.json"
 CATALOG_HISTORY_DIR = OMM_HOME / "catalog-history"
+# One archived revision per pinned model (`omm pin`), kept outside MODELS_DIR
+# so `omm cleanup`'s unregistered-*.gguf sweep of the hub never treats an
+# archived copy as an orphan download. See cli.py's _archive_path /
+# _archive_before_replace / rollback.
+MODEL_ARCHIVE_DIR = OMM_HOME / "model-archive"
 # Stable random per-install id for anonymous usage stats. Its own file, never
 # config.json - config gets copied between machines and this must not travel
 # with it. See omm.usage and config.client_id().
@@ -57,13 +72,6 @@ ERROR_REPORTS_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/
 # stream is opt-in and off by default (see omm.usage, usage_stats_policy in
 # DEFAULT_CONFIG below, and PRIVACY.md).
 USAGE_GATEWAY_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/usage"
-# Public client identifier for the `localfit-8ab57` Firebase project - not a
-# secret. Firebase Web API keys are safe to ship in client code (they only
-# identify the project to Google's Identity Toolkit; actual access is
-# governed by the RTDB security rules, not this key). Used solely to sign in
-# anonymously so telemetry writes carry `auth != null`, as the RTDB rules
-# require - see omm.firebase_auth.
-FIREBASE_WEB_API_KEY = "AIzaSyBlnr7Qhu4H4z93X1jUpJDyuNz4D5tyca4"
 # model_url has gone through two GitHub org renames (minigu5/Localfit ->
 # minigu5/Omm -> omm-hippo/omm) plus one artifact rename (recommend-model.json
 # -> localfit-recommend-model.json). It's never user-settable, so any config
@@ -177,6 +185,12 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
             merged["telemetry_backend"] = "local"
         elif isinstance(endpoint, str) and "firebaseio.com" in endpoint:
             merged["telemetry_backend"] = "firebase_legacy"
+        elif "telemetry_endpoint" in data and endpoint is None:
+            # A config that stored an explicit null endpoint before
+            # telemetry_backend existed is already local-only; without this
+            # it keeps DEFAULT_CONFIG's "gateway" label next to
+            # "Endpoint: not configured".
+            merged["telemetry_backend"] = "local"
         elif endpoint:
             merged["telemetry_backend"] = "self_hosted"
     # The direct-Firebase endpoint now rejects every write (omm-hippo/omm#133
@@ -186,6 +200,12 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
     if merged.get("telemetry_backend") == "firebase_legacy" and merged.get("telemetry_endpoint") == LEGACY_FIREBASE_ENDPOINT:
         merged["telemetry_endpoint"] = TELEMETRY_GATEWAY_ENDPOINT
         merged["telemetry_backend"] = "gateway"
+    if merged.get("telemetry_send_policy") not in {"always", "never", "ask"}:
+        # A damaged/external-tool-written value (null, "yes", a number) must
+        # not crash table rendering or policy checks, so fold it back to the
+        # default the same way memory_guard_policy is below. "ask" is the
+        # same value DEFAULT_CONFIG uses.
+        merged["telemetry_send_policy"] = "ask"
     if merged.get("memory_guard_policy") not in {"ask", "block", "observe"}:
         merged["memory_guard_policy"] = "ask"
     poll_seconds = merged.get("memory_guard_poll_seconds")
@@ -213,6 +233,18 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _remove_legacy_firebase_auth_cache() -> None:
+    # One-shot best-effort cleanup: the anonymous Firebase Auth module this
+    # cached a long-lived refresh token for was removed (no send path has
+    # reached it since the Cloudflare Worker gateway became the only
+    # writer). Never raise - a leftover file on a machine that can't be
+    # written to right now is not worth blocking config loads over.
+    try:
+        (OMM_HOME / "firebase_auth.json").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _read_config_data() -> dict[str, Any]:
     """Read saved fields, preserving corrupt bytes before falling back."""
     if not CONFIG_PATH.exists():
@@ -230,6 +262,7 @@ def _read_config_data() -> dict[str, Any]:
 
 def load_config() -> dict[str, Any]:
     ensure_omm_home()
+    _remove_legacy_firebase_auth_cache()
     if not CONFIG_PATH.exists():
         with locked(CONFIG_PATH):
             # A concurrent setting command may have initialized the file
@@ -255,6 +288,20 @@ def update_config(**changes: Any) -> dict[str, Any]:
         current.update(changes)
         atomic_write_text(CONFIG_PATH, json.dumps(current, indent=2) + "\n")
     return current
+
+
+def peek_client_id() -> str | None:
+    """The already-stored install identifier, or None if there is none yet.
+    Unlike `client_id()`, this **never creates anything** - it exists for
+    paths where a user who has opted out of usage stats is only checking
+    what would be sent."""
+    try:
+        existing = CLIENT_ID_PATH.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return None
+    if len(existing) == 32 and all(c in "0123456789abcdef" for c in existing):
+        return existing
+    return None
 
 
 def client_id() -> str:

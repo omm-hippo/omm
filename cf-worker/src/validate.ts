@@ -27,6 +27,10 @@ function str(e: TelemetryEvent, key: string): string {
   return typeof v === "string" ? v : "";
 }
 
+function isStr(e: TelemetryEvent, key: string): boolean {
+  return typeof e[key] === "string";
+}
+
 function bool(e: TelemetryEvent, key: string): boolean | undefined {
   const v = e[key];
   return typeof v === "boolean" ? v : undefined;
@@ -55,6 +59,14 @@ function looksLikePathOrControlChars(value: string): boolean {
   return false;
 }
 
+// Every string that reaches the world-readable telemetry node goes
+// through the same gate the error_reports/usage validators already use.
+function safeStr(e: TelemetryEvent, key: string, max: number, allowEmpty = false): boolean {
+  if (!isStr(e, key)) return false;
+  const v = str(e, key);
+  return (allowEmpty || v.length > 0) && v.length <= max && !looksLikePathOrControlChars(v);
+}
+
 // --- per-field validators -----------------------------------------------
 // Applied only when the field is present (RTDB's per-field .validate never
 // fires for a key that was never written - see #133 design notes). Each
@@ -73,11 +85,8 @@ const FIELD_VALIDATORS: Record<string, FieldValidator> = {
     const v = str(e, "model_installed");
     return v.length > 0 && v.length <= 512 && !looksLikePathOrControlChars(v);
   },
-  model_repo_id: (e) => {
-    const v = str(e, "model_repo_id");
-    return v.length <= 512 && !looksLikePathOrControlChars(v);
-  },
-  model_provider: (e) => str(e, "model_provider").length > 0 && str(e, "model_provider").length <= 64,
+  model_repo_id: (e) => safeStr(e, "model_repo_id", 512, true),
+  model_provider: (e) => safeStr(e, "model_provider", 64),
   model_size_bytes: (e) => num(e, "model_size_bytes") > 0 && num(e, "model_size_bytes") <= 1099511627776,
   model_filename: (e) => {
     const v = str(e, "model_filename");
@@ -95,8 +104,8 @@ const FIELD_VALIDATORS: Record<string, FieldValidator> = {
   active_parameter_count_b: (e) =>
     num(e, "active_parameter_count_b") > 0 && num(e, "active_parameter_count_b") <= 10000,
   quant_bits: (e) => num(e, "quant_bits") >= 0.5 && num(e, "quant_bits") <= 32,
-  engine_version: (e) => str(e, "engine_version").length > 0 && str(e, "engine_version").length <= 100,
-  client_version: (e) => str(e, "client_version").length > 0 && str(e, "client_version").length <= 100,
+  engine_version: (e) => safeStr(e, "engine_version", 100),
+  client_version: (e) => safeStr(e, "client_version", 100),
   engine: (e) => str(e, "engine") === "ollama" || str(e, "engine") === "lmstudio",
   benchmark_version: (e) => isInt(num(e, "benchmark_version")) && num(e, "benchmark_version") >= 1 && num(e, "benchmark_version") <= 9,
   outcome: (e) =>
@@ -120,16 +129,15 @@ const FIELD_VALIDATORS: Record<string, FieldValidator> = {
   sample_count: (e) => isInt(num(e, "sample_count")) && num(e, "sample_count") >= 1 && num(e, "sample_count") <= 10,
   tokens_per_sec_min: (e) => num(e, "tokens_per_sec_min") >= 0 && num(e, "tokens_per_sec_min") <= 1000,
   tokens_per_sec_max: (e) => num(e, "tokens_per_sec_max") >= 0 && num(e, "tokens_per_sec_max") <= 1000,
-  runtime_profile: (e) => str(e, "runtime_profile").length <= 32,
+  runtime_profile: (e) => safeStr(e, "runtime_profile", 32, true),
   context_length: (e) =>
     isInt(num(e, "context_length")) && num(e, "context_length") >= 256 && num(e, "context_length") <= 131072,
   gpu_offload_percent: (e) =>
     isInt(num(e, "gpu_offload_percent")) && num(e, "gpu_offload_percent") >= 0 && num(e, "gpu_offload_percent") <= 100,
   cpu_threads: (e) => isInt(num(e, "cpu_threads")) && num(e, "cpu_threads") >= 0 && num(e, "cpu_threads") <= 1024,
   num_batch: (e) => isInt(num(e, "num_batch")) && num(e, "num_batch") >= 0 && num(e, "num_batch") <= 65536,
-  cpu_model: (e) =>
-    num(e, "benchmark_version") < 8 && str(e, "cpu_model").length > 0 && str(e, "cpu_model").length <= 256,
-  cpu_arch: (e) => str(e, "cpu_arch").length > 0 && str(e, "cpu_arch").length <= 64,
+  cpu_model: (e) => num(e, "benchmark_version") < 8 && safeStr(e, "cpu_model", 256),
+  cpu_arch: (e) => safeStr(e, "cpu_arch", 64),
   cpu_physical_cores: (e) =>
     isInt(num(e, "cpu_physical_cores")) && num(e, "cpu_physical_cores") >= 1 && num(e, "cpu_physical_cores") <= 1024,
   cpu_logical_cores: (e) =>
@@ -138,17 +146,16 @@ const FIELD_VALIDATORS: Record<string, FieldValidator> = {
   cpu_tier: (e) => num(e, "cpu_tier") >= 0 && num(e, "cpu_tier") <= 10,
   gpu_score: (e) => num(e, "gpu_score") >= 0 && num(e, "gpu_score") <= 99999,
   gpu_tier: (e) => num(e, "gpu_tier") >= 0 && num(e, "gpu_tier") <= 10,
-  quality_pack_id: (e) => str(e, "quality_pack_id").length > 0 && str(e, "quality_pack_id").length <= 100,
-  quality_pack_version: (e) =>
-    str(e, "quality_pack_version").length > 0 && str(e, "quality_pack_version").length <= 20,
+  quality_pack_id: (e) => safeStr(e, "quality_pack_id", 100),
+  quality_pack_version: (e) => safeStr(e, "quality_pack_version", 20),
   quality_correct: (e) =>
     isInt(num(e, "quality_correct")) && num(e, "quality_correct") >= 0 && num(e, "quality_correct") <= 100,
   quality_total: (e) =>
     isInt(num(e, "quality_total")) && num(e, "quality_total") >= 1 && num(e, "quality_total") <= 100,
   quality_accuracy: (e) => num(e, "quality_accuracy") >= 0 && num(e, "quality_accuracy") <= 1,
-  os: (e) => num(e, "benchmark_version") < 3 && str(e, "os").length <= 128,
-  cpu: (e) => num(e, "benchmark_version") < 3 && str(e, "cpu").length <= 256,
-  gpu: (e) => num(e, "benchmark_version") < 3 && str(e, "gpu").length <= 256,
+  os: (e) => num(e, "benchmark_version") < 3 && safeStr(e, "os", 128, true),
+  cpu: (e) => num(e, "benchmark_version") < 3 && safeStr(e, "cpu", 256, true),
+  gpu: (e) => num(e, "benchmark_version") < 3 && safeStr(e, "gpu", 256, true),
   measurement_profile: (e) => str(e, "measurement_profile") === "contribute-v1",
   measurement_quality: (e) =>
     ["clean", "pressured", "unstable", "loaded"].includes(str(e, "measurement_quality")),

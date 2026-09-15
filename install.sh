@@ -5,24 +5,49 @@ set -eu
 
 REPO_URL="https://github.com/omm-hippo/omm.git"
 OMM_HOME="${OMM_HOME:-$HOME/.omm}"
-SOURCES_DIR="$OMM_HOME/sources"
 case "$OMM_HOME" in
     /*) ;;
     *) echo "Refusing non-absolute OMM_HOME: $OMM_HOME" >&2; exit 1 ;;
 esac
-case "$OMM_HOME" in
-    ""|/|"$HOME"|"$HOME"/) echo "Refusing unsafe OMM_HOME: $OMM_HOME" >&2; exit 1 ;;
-esac
-if [ -d "$OMM_HOME" ]; then
-    resolved_omm_home=$(cd -P -- "$OMM_HOME" && pwd -P)
-    current_dir=$(pwd -P)
-    case "$current_dir" in
-        "$resolved_omm_home"|"$resolved_omm_home"/*)
-            echo "Refusing OMM_HOME that contains the current directory: $resolved_omm_home" >&2
-            exit 1
-            ;;
-    esac
+
+# Resolves $1 to an absolute path with every "." / ".." / "//" and symlink
+# in its *existing* leading portion collapsed, even when $1 itself does not
+# exist yet - walking up to the nearest existing ancestor, resolving that
+# with `cd -P`, then reattaching the not-yet-existing tail. A "." or ".."
+# component in that not-yet-existing tail is refused rather than guessed at.
+resolve_existing_prefix() {
+    target="$1"
+    suffix=""
+    while [ ! -d "$target" ]; do
+        case "$(basename -- "$target")" in
+            .|..) return 1 ;;
+        esac
+        suffix="/$(basename -- "$target")$suffix"
+        parent=$(dirname -- "$target")
+        [ "$parent" = "$target" ] && return 1
+        target="$parent"
+    done
+    resolved=$(cd -P -- "$target" && pwd -P) || return 1
+    printf '%s%s\n' "${resolved%/}" "$suffix"
+}
+
+if ! RESOLVED_OMM_HOME=$(resolve_existing_prefix "$OMM_HOME"); then
+    echo "Refusing unresolvable OMM_HOME: $OMM_HOME" >&2
+    exit 1
 fi
+RESOLVED_HOME_DIR=$(cd -P -- "$HOME" && pwd -P)
+case "$RESOLVED_OMM_HOME" in
+    ""|/|"$RESOLVED_HOME_DIR") echo "Refusing unsafe OMM_HOME: $OMM_HOME" >&2; exit 1 ;;
+esac
+OMM_HOME="$RESOLVED_OMM_HOME"
+SOURCES_DIR="$OMM_HOME/sources"
+current_dir=$(pwd -P)
+case "$current_dir" in
+    "$OMM_HOME"|"$OMM_HOME"/*)
+        echo "Refusing OMM_HOME that contains the current directory: $OMM_HOME" >&2
+        exit 1
+        ;;
+esac
 
 case "$(uname -s 2>/dev/null || true)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -54,7 +79,12 @@ signing_commit() {
     commit="$1"
     repo_dir="$2"
 
-    parents=$(git -C "$repo_dir" rev-list --parents -n 1 "$commit")
+    # Mirror trust._signing_commit: if rev-list itself fails, fall through
+    # to verifying $commit as-is (which then fails closed with cleanup).
+    if ! parents=$(git -C "$repo_dir" rev-list --parents -n 1 "$commit" 2>/dev/null); then
+        echo "$commit"
+        return 0
+    fi
     # shellcheck disable=SC2086 # word-splitting is exactly what we want here
     set -- $parents
     if [ "$#" -eq 3 ]; then
@@ -190,7 +220,7 @@ prepare_macos_brew() {
             return 1
         fi
         echo "Homebrew not found, installing it with Homebrew's official installer..."
-        if ! homebrew_script=$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh); then
+        if ! homebrew_script=$(curl -fsSL --connect-timeout 30 --max-time 300 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh); then
             echo "Could not download the Homebrew installer: https://brew.sh/" >&2
             return 1
         fi
@@ -265,6 +295,24 @@ else
         echo "git not found, installing it via $PACKAGE_MANAGER..."
         install_system_packages "$PACKAGE_MANAGER" git ca-certificates
     fi
+    # Debian's git only Recommends ssh-client (and apt-get above runs with
+    # --no-install-recommends); apk/pacman git do not depend on openssh at
+    # all. Without ssh-keygen, git's default gpg.ssh.program has nothing to
+    # run and verify_commit_signature fails with a message that never
+    # mentions the real cause.
+    if ! command -v ssh-keygen >/dev/null 2>&1; then
+        if [ -z "$PACKAGE_MANAGER" ]; then
+            echo "ssh-keygen (OpenSSH client) not found and no supported package manager was found; it is required to verify omm's commit signatures." >&2
+            exit 1
+        fi
+        echo "ssh-keygen not found (needed to verify commit signatures), installing it via $PACKAGE_MANAGER..."
+        case "$PACKAGE_MANAGER" in
+            apt-get) install_system_packages "$PACKAGE_MANAGER" openssh-client ;;
+            dnf|yum) install_system_packages "$PACKAGE_MANAGER" openssh-clients ;;
+            pacman) install_system_packages "$PACKAGE_MANAGER" openssh ;;
+            apk) install_system_packages "$PACKAGE_MANAGER" openssh-keygen ;;
+        esac
+    fi
 fi
 
 PY=$(find_supported_python || true)
@@ -275,6 +323,11 @@ fi
 
 if ! command -v git >/dev/null 2>&1; then
     echo "git not found after dependency bootstrap (needed to fetch omm from GitHub)." >&2
+    exit 1
+fi
+
+if ! command -v ssh-keygen >/dev/null 2>&1; then
+    echo "ssh-keygen not found after dependency bootstrap (install the OpenSSH client; needed to verify commit signatures)." >&2
     exit 1
 fi
 
@@ -454,7 +507,23 @@ PY
 }
 
 refresh_pipx_snapshot() {
-    PIPX_SNAPSHOT=$(run_pipx list --json 2>/dev/null)
+    # pipx's own `list --json` returns 1 (EXIT_CODE_LIST_PROBLEM) whenever any
+    # venv on the machine is unhealthy - printing the full snapshot for every
+    # *other* venv first, and simply omitting the broken one. Treating exit 1
+    # as failure here would refuse to install because of a venv omm has never
+    # heard of. Accept exit 1 only when stdout actually parsed as a snapshot;
+    # any other nonzero exit (or unparsable stdout) still fails closed.
+    if PIPX_SNAPSHOT=$(run_pipx list --json 2>/dev/null); then
+        return 0
+    else
+        pipx_status=$?
+    fi
+    [ "$pipx_status" -eq 1 ] || return 1
+    printf '%s' "$PIPX_SNAPSHOT" | "$PY" -c \
+        'import json, sys
+d = json.load(sys.stdin)
+raise SystemExit(0 if isinstance(d, dict) and "pipx_spec_version" in d and isinstance(d.get("venvs"), dict) else 1)' \
+        2>/dev/null
 }
 
 verify_installed_omm_model() {
@@ -506,10 +575,11 @@ ensure_pipx_bin_path() {
                 echo "Cannot configure zsh PATH: $zprofile is not a regular file." >&2
                 return 1
             fi
-            if ! grep -Fq "$PIPX_BIN_DIR" "$zprofile" 2>/dev/null; then
-                # Escape the two characters that could change the shell
-                # assignment while preserving the literal $PATH expansion.
-                shell_path=$(printf '%s' "$PIPX_BIN_DIR" | sed 's/[\\"]/\\&/g')
+            # Escape every character that is special inside a double-quoted
+            # shell assignment, and look for the escaped text so reruns stay
+            # idempotent.
+            shell_path=$(printf '%s' "$PIPX_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
+            if ! grep -Fq "$shell_path" "$zprofile" 2>/dev/null; then
                 # shellcheck disable=SC2016  # $PATH must stay literal in the profile entry.
                 if ! printf '\n# Added by omm installer for pipx applications.\nexport PATH="%s:$PATH"\n' \
                     "$shell_path" >> "$zprofile"; then
@@ -534,8 +604,8 @@ ensure_pipx_bin_path() {
                 echo "Cannot configure PATH: $rcfile is not a regular file." >&2
                 return 1
             fi
-            if ! grep -Fq "$PIPX_BIN_DIR" "$rcfile" 2>/dev/null; then
-                shell_path=$(printf '%s' "$PIPX_BIN_DIR" | sed 's/[\\"]/\\&/g')
+            shell_path=$(printf '%s' "$PIPX_BIN_DIR" | sed 's/[\\"$`]/\\&/g')
+            if ! grep -Fq "$shell_path" "$rcfile" 2>/dev/null; then
                 if ! printf '\n# Added by omm installer for pipx applications.\nexport PATH="%s:$PATH"\n' \
                     "$shell_path" >> "$rcfile"; then
                     echo "Cannot configure PATH in $rcfile." >&2
@@ -583,12 +653,18 @@ if ! refresh_pipx_snapshot; then
     echo "Could not inspect existing pipx environments; refusing an unsafe migration." >&2
     exit 1
 fi
+for env_name in "$LEGACY_PIPX_ENV" "$PIPX_ENV"; do
+    if [ -d "$PIPX_LOCAL_VENVS/$env_name" ] && ! pipx_snapshot_has_environment "$env_name"; then
+        echo "pipx reports the '$env_name' environment as broken (see 'pipx list'). Repair or remove it, then rerun this installer; models under OMM_HOME are not affected." >&2
+        exit 1
+    fi
+done
 
 LEGACY_PIPX_PRESENT=0
 if pipx_snapshot_has_environment "$LEGACY_PIPX_ENV"; then
     if ! pipx_snapshot_environment_is "$LEGACY_PIPX_ENV" "$LEGACY_PIPX_ENV" || \
        ! verify_omm_pipx_environment "$LEGACY_PIPX_ENV" "$LEGACY_PIPX_ENV" 1; then
-        echo "Refusing to replace unrelated pipx environment 'omm'. Remove or rename that environment manually first." >&2
+        echo "Refusing to replace pipx environment 'omm': it is not an omm install this installer recognises (typically because OMM_HOME moved after the original install, or its source checkout was deleted). Your models and settings under OMM_HOME are not affected. If it is your old OMM install, run 'pipx uninstall omm', then re-run this installer." >&2
         exit 1
     fi
     LEGACY_PIPX_PRESENT=1
@@ -605,10 +681,22 @@ if pipx_snapshot_has_environment "$PIPX_ENV"; then
 fi
 
 mkdir -p "$SOURCES_DIR"
+
+# Marks custom OMM_HOME directories as installer-managed. The uninstaller
+# requires this marker before removing anything from a non-default home.
+printf '%s\n' 'omm installer managed home v1' > "$OMM_HOME/.omm-managed"
+
 STAGING_DIR="$SOURCES_DIR/checkout.$$"
 rm -rf "$STAGING_DIR"
 echo "Cloning omm source to a versioned staging directory ..."
-git clone --filter=blob:none --quiet "$REPO_URL" "$STAGING_DIR"
+# Abort a stalled transfer instead of hanging forever (no `timeout`
+# binary on stock macOS).
+if ! git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+    clone --filter=blob:none --quiet "$REPO_URL" "$STAGING_DIR"; then
+    rm -rf "$STAGING_DIR"
+    echo "git clone failed or stalled (no progress for 60s); check your network and rerun this installer." >&2
+    exit 1
+fi
 
 echo "Verifying commit signature ..."
 head_commit=$(git -C "$STAGING_DIR" rev-parse HEAD)
@@ -669,10 +757,13 @@ fi
 
 # NVIDIA VRAM detection is dead weight on Mac (no NVIDIA GPUs since 2016) -
 # only pull that extra in on other platforms.
+# [watch] (watchdog + plyer) is what `omm setting auto-import enable` needs;
+# a `pip install` typed later lands in whatever Python is on PATH, not in
+# this pipx venv, so it goes in at install time.
 if command -v nvidia-smi >/dev/null 2>&1; then
-    INSTALL_SPEC="${SRC_DIR}[nvidia]"
+    INSTALL_SPEC="${SRC_DIR}[nvidia,watch]"
 else
-    INSTALL_SPEC="$SRC_DIR"
+    INSTALL_SPEC="${SRC_DIR}[watch]"
 fi
 
 echo "Installing omm (editable) from $SRC_DIR ..."
@@ -693,7 +784,7 @@ rollback_failed_new_install() {
     if [ "$LEGACY_PIPX_PRESENT" = "1" ]; then
         if run_pipx reinstall "$LEGACY_PIPX_ENV" >/dev/null 2>&1 && \
            verify_exposed_existing_environment "$LEGACY_PIPX_ENV" "$LEGACY_PIPX_ENV" 1; then
-            ROLLBACK_STATE=verified
+            ROLLBACK_STATE=reinstalled
         else
             ROLLBACK_STATE=uncertain
         fi
@@ -712,9 +803,22 @@ report_failed_install() {
     echo "$reason" >&2
     if [ "$ROLLBACK_STATE" = "verified" ]; then
         echo "The pre-existing omm command was restored and verified." >&2
+    elif [ "$ROLLBACK_STATE" = "reinstalled" ]; then
+        echo "The pre-existing omm command was restored with 'pipx reinstall omm' and passed pipx identity checks. If that environment was installed from a Git URL, pipx re-fetched it without omm's signature verification." >&2
     elif [ "$ROLLBACK_STATE" = "uncertain" ]; then
         echo "The previous environment was not removed, but its omm command could not be verified after rollback; run 'pipx reinstall omm' or 'pipx reinstall omm-model'." >&2
     fi
+}
+discard_unreferenced_new_source() {
+    # A fresh checkout nothing points at would otherwise block the
+    # uninstaller ("No verified OMM pipx environment was removed").
+    [ "$NEW_PIPX_PRESENT" = "0" ] || return 0
+    [ -z "$PREVIOUS_SRC_DIR" ] || return 0
+    refresh_pipx_snapshot || return 0
+    if pipx_snapshot_has_environment "$PIPX_ENV"; then
+        return 0
+    fi
+    rm -rf "$SRC_DIR" 2>/dev/null || true
 }
 # pipx can upgrade its shared pip *during* `pipx install` and, with more
 # than one pipx copy pointing at the same shared dir, leave it half-replaced
@@ -738,11 +842,13 @@ pipx_install_with_repair() {
 }
 if ! pipx_install_with_repair; then
     rollback_failed_new_install
+    discard_unreferenced_new_source
     report_failed_install "pipx install failed; the legacy environment was not removed."
     exit 1
 fi
 if ! verify_installed_omm_model; then
     rollback_failed_new_install
+    discard_unreferenced_new_source
     report_failed_install "The new $PIPX_ENV environment or its omm command failed verification; the legacy environment was not removed."
     exit 1
 fi
@@ -769,10 +875,6 @@ if [ "$LEGACY_PIPX_PRESENT" = "1" ]; then
         fi
     fi
 fi
-
-# Marks custom OMM_HOME directories as installer-managed. The uninstaller
-# requires this marker before removing anything from a non-default home.
-printf '%s\n' 'omm installer managed home v1' > "$OMM_HOME/.omm-managed"
 
 # pipx now points at the verified checkout above. Old versioned checkouts are
 # no longer active; best-effort cleanup keeps reinstalls from accumulating.

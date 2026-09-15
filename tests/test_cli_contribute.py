@@ -1,7 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-import requests
 import pytest
 from types import SimpleNamespace
 from typer.testing import CliRunner
@@ -22,9 +21,11 @@ def _isolate_contribute_disk_preflight(request, monkeypatch):
     disk_tests = {
         "test_contribute_refuses_to_start_when_model_volume_has_less_than_ten_gib",
         "test_contribute_yes_flag_before_subcommand_skips_low_disk_prompt",
+        "test_contribute_preflight_checks_the_selected_engine_volume",
+        "test_contribute_preflight_ignores_ollama_dir_for_lmstudio_session",
     }
     if request.node.name not in disk_tests:
-        monkeypatch.setattr(cli, "_ensure_contribute_start_space", lambda: None)
+        monkeypatch.setattr(cli, "_ensure_contribute_start_space", lambda engine: None)
 
 
 class _FakeListener:
@@ -38,6 +39,9 @@ class _FakeListener:
     def start(self):
         self.stop_event.set()
 
+    def stop(self, timeout: float = 1.0) -> None:
+        self.stop_event.set()
+
 
 def test_contribute_refuses_to_start_when_model_volume_has_less_than_ten_gib(
     isolated_omm_home, monkeypatch
@@ -48,11 +52,13 @@ def test_contribute_refuses_to_start_when_model_volume_has_less_than_ten_gib(
         "disk_usage",
         lambda path: SimpleNamespace(free=9 * 1024**3),
     )
-    monkeypatch.setattr(
-        cli,
-        "_ensure_ollama_running",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must stop before engine start")),
-    )
+    # F061: the disk preflight now runs after the engine is confirmed
+    # running (it needs to know which engine's model store to check), so
+    # this test picks Ollama and has it already-reachable (no daemon start)
+    # rather than depend on whether the machine running the suite has an
+    # engine installed at all.
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(cli, "_ensure_ollama_running", lambda *args, **kwargs: None)
 
     result = runner.invoke(cli.app, ["contribute", "--yes"])
 
@@ -69,16 +75,71 @@ def test_contribute_yes_flag_before_subcommand_skips_low_disk_prompt(
         "disk_usage",
         lambda path: SimpleNamespace(free=9 * 1024**3),
     )
-    monkeypatch.setattr(
-        cli,
-        "_ensure_ollama_running",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must stop before engine start")),
-    )
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(cli, "_ensure_ollama_running", lambda *args, **kwargs: None)
 
     result = runner.invoke(cli.app, ["--yes", "contribute"])
 
     assert result.exit_code == 1
     assert "will not start with low disk space" in result.stderr
+
+
+def test_contribute_preflight_checks_the_selected_engine_volume(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    # F061: _select_benchmark_engine can pick "ollama" but _ensure_engine_running
+    # falls back to LM Studio when Ollama's daemon won't actually come up - the
+    # disk preflight must look at the engine that was really resolved, not the
+    # initially-selected one, so a low LM Studio model volume is caught.
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(cli, "_ensure_engine_running", lambda *a, **k: ("lmstudio", None))
+    lmstudio_dir = tmp_path / "lmstudio-models"
+    lmstudio_dir.mkdir()
+    monkeypatch.setattr(cli.linker, "lmstudio_models_dir", lambda: lmstudio_dir)
+    monkeypatch.setattr(cli.linker, "storage_volume_key", lambda path: ("test", str(path)))
+
+    def fake_disk_usage(path):
+        if cli.Path(path) == lmstudio_dir:
+            return SimpleNamespace(free=1 * 1024**3)
+        return SimpleNamespace(free=500 * 1024**3)
+
+    monkeypatch.setattr(cli.shutil, "disk_usage", fake_disk_usage)
+
+    result = runner.invoke(cli.app, ["contribute", "--yes"])
+
+    assert result.exit_code == 1
+    assert "will not start with low disk space" in result.stderr
+    # Console word-wrap can split the path across lines mid-word, so compare
+    # with all whitespace removed rather than a literal substring check.
+    assert lmstudio_dir.name in "".join(result.stderr.split())
+
+
+def test_contribute_preflight_ignores_ollama_dir_for_lmstudio_session(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    # Mirror of the test above: when the resolved engine is LM Studio, a low
+    # Ollama model volume must not block the run.
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(cli, "_ensure_engine_running", lambda *a, **k: ("lmstudio", None))
+    ollama_dir = tmp_path / "ollama-models"
+    ollama_dir.mkdir()
+    monkeypatch.setattr(cli.linker, "ollama_models_dir", lambda: ollama_dir)
+    monkeypatch.setattr(cli.linker, "storage_volume_key", lambda path: ("test", str(path)))
+
+    def fake_disk_usage(path):
+        if cli.Path(path) == ollama_dir:
+            return SimpleNamespace(free=1 * 1024**3)
+        return SimpleNamespace(free=500 * 1024**3)
+
+    monkeypatch.setattr(cli.shutil, "disk_usage", fake_disk_usage)
+    # Let the run proceed past the disk preflight and fail at the next
+    # preflight instead, so a pass on disk space is observable.
+    monkeypatch.setattr(cli.predictor, "load_model_with_change_note", lambda url, *a, **k: (None, False))
+
+    result = runner.invoke(cli.app, ["contribute", "--yes"])
+
+    assert "will not start with low disk space" not in result.stderr
+    assert "No trained recommendation model" in result.stderr
 
 
 def test_contribute_never_runs_unrelated_auto_import(isolated_omm_home, monkeypatch):
@@ -92,7 +153,7 @@ def test_contribute_never_runs_unrelated_auto_import(isolated_omm_home, monkeypa
     monkeypatch.setattr(
         cli,
         "_ensure_contribute_start_space",
-        lambda: (_ for _ in ()).throw(cli.typer.Exit(1)),
+        lambda engine: (_ for _ in ()).throw(cli.typer.Exit(1)),
     )
 
     result = runner.invoke(cli.app, ["contribute", "--yes"])
@@ -220,7 +281,6 @@ def test_starts_and_stops_ollama_daemon_when_confirmed(isolated_omm_home, monkey
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
     monkeypatch.setattr(cli, "cleanup", lambda: None)
 
@@ -257,7 +317,6 @@ def test_yes_flag_auto_starts_ollama_daemon_without_prompting(isolated_omm_home,
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
     monkeypatch.setattr(cli, "cleanup", lambda: None)
 
@@ -301,7 +360,6 @@ def test_happy_path_runs_loop_cleans_up_and_prints_summary(isolated_omm_home, mo
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
 
     loop_calls = []
 
@@ -320,7 +378,6 @@ def test_happy_path_runs_loop_cleans_up_and_prints_summary(isolated_omm_home, mo
     assert cleanup_calls == [1]
     assert "session summary" in result.stdout.lower()
     assert "m" in result.stdout and "12.5" in result.stdout
-    assert "100 -> 100" in result.stdout
 
 
 def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_home, monkeypatch):
@@ -352,7 +409,6 @@ def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_ho
         cli.benchmark_history, "loaded_refs", lambda: {"huggingface:o:a.gguf", "huggingface:o:b.gguf"}
     )
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
 
     def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None, engine="ollama"):
         return cli._ContributionStats(benchmarked=[], skipped_unfit=1, exhausted=True)
@@ -370,6 +426,63 @@ def test_exhausted_session_prints_thank_you_banner_with_coverage(isolated_omm_ho
     assert state["covered_candidates"] == 2
 
 
+def test_exhausted_session_coverage_ignores_history_outside_current_catalog(
+    isolated_omm_home, monkeypatch
+):
+    """`loaded_refs`/`queue.history_refs` can carry refs for models no
+    longer in the current catalog (a sibling quant that got dropped, or a
+    different repo entirely) - the printed coverage and the persisted
+    `covered_candidates` must count only refs that actually match a
+    candidate in *this* run's artifact, not the raw size of the history
+    set."""
+    config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.predictor,
+        "load_model_with_change_note",
+        lambda url, *a, **k: (
+            {
+                "trees": [{}],
+                "candidates": [
+                    {"repo_id": "o", "filename": "a.gguf"},
+                    {"repo_id": "o", "filename": "b.gguf"},
+                    {"repo_id": "o", "filename": "c.gguf"},
+                ],
+            },
+            False,
+        ),
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
+    monkeypatch.setattr(
+        cli.benchmark_history,
+        "loaded_refs",
+        lambda: {
+            "huggingface:o:a.gguf",
+            "huggingface:o:b.gguf",
+            "huggingface:o:sibling.gguf",
+            "huggingface:other:x.gguf",
+        },
+    )
+    monkeypatch.setattr(cli, "_EscListener", _FakeListener)
+
+    def fake_loop(queue, stop_event, refetch, quality_pack=None, daemon_ref=None, fetch_siblings=None, engine="ollama"):
+        return cli._ContributionStats(benchmarked=[], skipped_unfit=1, exhausted=True)
+
+    monkeypatch.setattr(cli, "_run_contribution_loop", fake_loop)
+    monkeypatch.setattr(cli, "cleanup", lambda: None)
+
+    result = runner.invoke(cli.app, ["contribute"])
+
+    assert result.exit_code == 0, result.stdout
+    normalized_stdout = " ".join(result.stdout.split())
+    assert "2/3 candidates covered" in normalized_stdout
+    assert "2 of them successfully" in normalized_stdout
+    state = cli.contribute_state.load()
+    assert state["covered_candidates"] == 2
+
+
 def test_no_heads_up_warning_on_first_ever_session(isolated_omm_home, monkeypatch):
     config.update_config(telemetry_endpoint="https://example.com/telemetry.json")
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
@@ -383,7 +496,6 @@ def test_no_heads_up_warning_on_first_ever_session(isolated_omm_home, monkeypatc
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(
         cli, "_run_contribution_loop",
         lambda *a, **k: cli._ContributionStats(benchmarked=[]),
@@ -412,7 +524,6 @@ def test_heads_up_warning_when_prior_session_already_covered_same_catalog(
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: {"huggingface:o:a.gguf"})
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(
         cli, "_run_contribution_loop",
         lambda *a, **k: cli._ContributionStats(benchmarked=[], exhausted=True),
@@ -451,7 +562,6 @@ def test_no_heads_up_warning_when_catalog_grew_since_last_exhaustion(
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: {"huggingface:o:a.gguf"})
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(
         cli, "_run_contribution_loop",
         lambda *a, **k: cli._ContributionStats(benchmarked=[]),
@@ -476,7 +586,6 @@ def test_contribute_yes_flag_skips_prompt_without_a_tty(isolated_omm_home, monke
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
     monkeypatch.setattr(cli, "cleanup", lambda: None)
 
@@ -489,29 +598,6 @@ def test_contribute_without_yes_errors_without_a_tty(isolated_omm_home):
     result = runner.invoke(cli.app, ["contribute"])
 
     assert result.exit_code == 1
-
-
-def test_telemetry_row_count_returns_none_on_network_error(monkeypatch):
-    monkeypatch.setattr(
-        requests,
-        "get",
-        lambda *a, **k: (_ for _ in ()).throw(requests.RequestException("boom")),
-    )
-
-    assert cli._telemetry_row_count("https://example.com/telemetry.json") is None
-
-
-def test_telemetry_row_count_counts_dict_entries(monkeypatch):
-    class _FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"a": {}, "b": {}, "c": {}}
-
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp())
-
-    assert cli._telemetry_row_count("https://example.com/telemetry.json") == 3
 
 
 def test_contribute_loads_quality_pack_and_passes_it_to_loop(isolated_omm_home, monkeypatch):
@@ -527,7 +613,6 @@ def test_contribute_loads_quality_pack_and_passes_it_to_loop(isolated_omm_home, 
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 0)
     monkeypatch.setattr(cli, "cleanup", lambda: None)
     fake_pack = {"pack_id": "pack-1", "pack_version": "1.1.0", "items": []}
     monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: (fake_pack, "sha"))
@@ -559,7 +644,6 @@ def test_contribute_passes_fetch_sibling_candidates_to_loop(isolated_omm_home, m
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 0)
     monkeypatch.setattr(cli, "cleanup", lambda: None)
     fake_pack = {"pack_id": "pack-1", "pack_version": "1.1.0", "items": []}
     monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: (fake_pack, "sha"))
@@ -609,7 +693,6 @@ def test_contribute_warns_once_when_policy_always(isolated_omm_home, monkeypatch
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: None)
     monkeypatch.setattr(cli, "cleanup", lambda: None)
     monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: ({"pack_id": "p", "items": []}, "sha"))
     monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
@@ -633,7 +716,6 @@ def test_contribute_skips_always_warning_once_acknowledged(isolated_omm_home, mo
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli.benchmark_history, "loaded_refs", lambda: set())
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: None)
     monkeypatch.setattr(cli, "cleanup", lambda: None)
     monkeypatch.setattr(cli.quality_mod, "load_pack", lambda: ({"pack_id": "p", "items": []}, "sha"))
     monkeypatch.setattr(cli, "_run_contribution_loop", lambda *a, **k: cli._ContributionStats(benchmarked=[]))
@@ -678,7 +760,6 @@ def test_candidate_in_failure_cooldown_is_announced_and_held_out_of_the_queue(
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     queues = []
 
     def fake_loop(queue, *a, **k):
@@ -721,7 +802,6 @@ def test_candidate_whose_cooldown_has_lapsed_is_offered_again(isolated_omm_home,
     monkeypatch.setattr(cli, "scan_hardware", lambda: object())
     monkeypatch.setattr(cli.predictor, "rank_candidates", lambda artifact, hw: [])
     monkeypatch.setattr(cli, "_EscListener", _FakeListener)
-    monkeypatch.setattr(cli, "_telemetry_row_count", lambda endpoint: 100)
     queues = []
 
     def fake_loop(queue, *a, **k):

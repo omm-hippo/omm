@@ -79,16 +79,19 @@ class _FakeProc:
         return self._returncode
 
 
-def test_install_spec_points_at_src_dir_on_darwin(monkeypatch):
-    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
-
-    assert cli._install_spec() == str(cli.SRC_DIR)
-
-
-def test_install_spec_adds_nvidia_extra_on_non_darwin(monkeypatch):
+def test_install_spec_omits_nvidia_extra_without_nvidia_smi(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
-    assert cli._install_spec() == f"{cli.SRC_DIR}[nvidia]"
+    assert cli._install_spec() == f"{cli.SRC_DIR}[watch]"
+
+
+def test_install_spec_adds_nvidia_extra_when_nvidia_smi_present(monkeypatch):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
+    )
+
+    assert cli._install_spec() == f"{cli.SRC_DIR}[nvidia,watch]"
 
 
 def test_omm_version_ignores_newer_src_when_install_is_not_editable(monkeypatch, tmp_path):
@@ -142,6 +145,30 @@ def test_update_migrates_when_not_yet_migrated_even_if_commit_matches(monkeypatc
     assert migrate_calls == [1]
     assert refresh_calls == [1]
     assert "updated" in result.stdout.lower()
+
+
+def test_perform_update_refuses_while_another_update_holds_the_lock(monkeypatch):
+    """Two concurrent `omm update` invocations must not race over SRC_DIR -
+    the second one gives up immediately (timeout=0) instead of doing any
+    actual migration/pull work while another process holds the lock."""
+    from omm import config
+    from omm.atomic import locked
+
+    migrate_calls = []
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: migrate_calls.append("src_head") or None)
+    monkeypatch.setattr(
+        cli,
+        "_migrate_to_editable_install",
+        lambda *a, **k: migrate_calls.append("migrate")
+        or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+
+    with locked(config.OMM_HOME / "locks" / "self-update"):
+        result = cli._perform_update("main")
+
+    assert result.returncode == 1
+    assert "already running" in result.stderr
+    assert migrate_calls == []
 
 
 @pytest.mark.parametrize(
@@ -626,6 +653,52 @@ def test_capture_legacy_state_requires_the_running_legacy_venv(monkeypatch, tmp_
     assert "not inside the legacy pipx omm environment" in error
 
 
+def test_run_pipx_query_returns_failure_when_pipx_missing(monkeypatch):
+    # F107: pipx not on PATH (e.g. a Windows install driven by `python -m
+    # pipx`, which never creates pipx.exe) used to raise FileNotFoundError
+    # straight out of subprocess.run here - every caller only handles a
+    # non-zero CompletedProcess, not an exception.
+    def _raise(*args, **kwargs):
+        raise FileNotFoundError("pipx")
+
+    monkeypatch.setattr(cli.subprocess, "run", _raise)
+
+    result = cli._run_pipx_query(["pipx", "environment"])
+
+    assert result.returncode == 1
+    assert "could not run pipx" in result.stderr
+
+
+def test_update_reports_missing_pipx_instead_of_crashing(monkeypatch):
+    # Companion to the test above at the call site that actually escaped:
+    # `_perform_update`'s own `except FileNotFoundError` handler wraps the
+    # pipx *install* subprocess.Popen call, but the legacy-pipx-state
+    # capture (_capture_legacy_pipx_state -> _pipx_environment_value ->
+    # _run_pipx_query) runs earlier, outside that try - so a missing pipx
+    # there previously escaped as an unhandled traceback instead of the
+    # friendly "rollback state could not be verified" message.
+    monkeypatch.setattr(
+        cli.package_metadata,
+        "install_source",
+        lambda: cli.package_metadata.InstallSource.GIT,
+    )
+    monkeypatch.setattr(
+        cli.package_metadata, "find_distribution", lambda: ("omm", object())
+    )
+
+    def fake_run(args, **kwargs):
+        if args[0] == "pipx":
+            raise FileNotFoundError("pipx")
+        raise AssertionError(f"unexpected subprocess.run call: {args}")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    result = cli._perform_update("main")
+
+    assert result.returncode == 1
+    assert "rollback state could not be verified" in result.stderr
+
+
 def test_verify_pipx_installation_rejects_wrong_main_package(monkeypatch, tmp_path):
     venvs_root = tmp_path / "venvs"
     snapshot = _pipx_snapshot(venvs_root)
@@ -964,6 +1037,56 @@ def test_update_reports_error_when_git_update_fails(monkeypatch):
     assert result.exit_code == 1
     assert "fetch failed" in result.stderr
     assert refresh_calls == []
+
+
+def test_update_shows_git_upgrade_hint_when_merge_tree_unavailable(monkeypatch):
+    """A merge-commit update can only be verified with git 2.38+ (`git
+    merge-tree --write-tree`). When trust.verify_update reports that,
+    `omm update` must point the user at upgrading git, not just print the
+    raw stderr."""
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [],
+            1,
+            stdout="",
+            stderr=(
+                "merge commit abc1234 can only be verified with git 2.38+ "
+                "(git merge-tree --write-tree); found git 2.34. Upgrade git and rerun."
+            ),
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "git 2.38+" in result.stderr
+    assert "Upgrade git" in result.stderr
+
+
+def test_update_shows_reinstall_hint_on_signature_failure(monkeypatch):
+    """A stale installed copy of trust.verify_update may permanently reject
+    a legitimate update - only a reinstall (which re-fetches current
+    verification logic) can recover, so `omm update` must say so."""
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda *a, **k: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_perform_update",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="commit abc1234 has an unauthenticated signature"
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "Reinstalling picks up current verification" in result.stderr
 
 
 def test_update_reports_error_when_pipx_missing(monkeypatch):
@@ -1368,7 +1491,7 @@ def test_migrate_to_editable_install_clones_then_pipx_installs(monkeypatch, tmp_
         ["git", "-C", str(tmp_clone), "rev-parse", "HEAD"],
     ]
     assert verify_calls == [(tmp_clone, "newcommit", cli.trust.current_trust_anchor())]
-    assert progress_calls == [["pipx", "install", "--force", "--editable", str(src)]]
+    assert progress_calls == [["pipx", "install", "--force", "--editable", cli._install_spec()]]
     assert (src / "marker").read_text(encoding="utf-8") == "cloned"
     assert not tmp_clone.exists()
 

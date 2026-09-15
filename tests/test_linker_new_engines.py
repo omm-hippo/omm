@@ -101,6 +101,77 @@ def test_link_jan_refuses_to_overwrite_unowned_manifest(
     assert config_path.read_text(encoding="utf-8") == 'model_path: "/user/model.gguf"\nname: "user"\n'
 
 
+def test_link_jan_accepts_manifest_rewritten_by_jan_for_same_model(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"x")
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+
+    config_path = linker.link_jan(gguf_path, "m")
+    config_path.write_text(
+        f"model_path: {json.dumps(str(gguf_path))}\nname: \"m\"\nctx_size: 8192\n",
+        encoding="utf-8",
+    )
+
+    result = linker.link_jan(gguf_path, "m")
+
+    assert result == config_path
+    assert "ctx_size: 8192" in config_path.read_text(encoding="utf-8")
+
+
+def test_link_jan_force_reclaims_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
+    gguf_path = tmp_path / "tinyllama-q4.gguf"
+    gguf_path.write_bytes(b"x")
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    config_path = models_dir / "tinyllama-q4" / "model.yml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('model_path: "/user/model.gguf"\nname: "user"\n', encoding="utf-8")
+
+    result = linker.link_jan(gguf_path, "tinyllama-q4", force=True)
+
+    assert result == config_path
+    assert linker.read_jan_model_path(config_path) == str(gguf_path)
+
+
+def test_link_jan_force_still_refuses_other_models_manifest(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    models_dir = tmp_path / "jan-models"
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
+    first = tmp_path / "first.gguf"
+    first.write_bytes(b"first")
+    second = tmp_path / "second.gguf"
+    second.write_bytes(b"second")
+
+    config_path = linker.link_jan(first, "tag")
+    original = config_path.read_bytes()
+
+    with pytest.raises(linker.LinkError, match="Refusing to replace"):
+        linker.link_jan(second, "tag", force=True)
+
+    assert config_path.read_bytes() == original
+
+
+def test_link_engine_passes_force_to_jan(isolated_omm_home, tmp_path, monkeypatch):
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(b"x")
+    monkeypatch.setattr(linker, "jan_models_dir", lambda: tmp_path / "jan-models")
+    captured = {}
+
+    def fake_link_jan(gguf, model_id, *, force=False):
+        captured["force"] = force
+        return tmp_path / "jan-models" / model_id / "model.yml"
+
+    monkeypatch.setattr(linker, "link_jan", fake_link_jan)
+
+    linker.link_engine("jan", gguf_path, repo_id=None, ollama_tag="m", force=True)
+
+    assert captured["force"] is True
+
+
 def test_unlink_jan_preserves_unowned_manifest(isolated_omm_home, tmp_path, monkeypatch):
     models_dir = tmp_path / "jan-models"
     monkeypatch.setattr(linker, "jan_models_dir", lambda: models_dir)
@@ -783,6 +854,56 @@ def test_is_anythingllm_installed_reflects_app_bundle_on_darwin(tmp_path, monkey
     (tmp_path / "Applications").mkdir()
     (tmp_path / "Applications" / "AnythingLLM.app").mkdir()
     assert linker.is_anythingllm_installed() is True
+
+
+# --- Jan Windows install detection --------------------------------------
+
+
+@pytest.fixture
+def jan_windows_env(tmp_path, monkeypatch):
+    """Point every Jan Windows probe at tmp_path. Unset the remaining
+    install-location variables so a real Jan on the machine running the
+    tests can't decide the outcome."""
+    monkeypatch.setattr(linker.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(linker, "jan_app_dir", lambda: tmp_path / "Roaming" / "Jan")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    for variable in ("ProgramFiles", "ProgramFiles(x86)", "ProgramData"):
+        monkeypatch.delenv(variable, raising=False)
+    return tmp_path
+
+
+def test_is_jan_installed_false_when_nothing_present_on_windows(jan_windows_env):
+    assert linker.is_jan_installed() is False
+
+
+@pytest.mark.parametrize("install_dir_name", ["Jan", "jan"])
+def test_is_jan_installed_detects_never_launched_install_under_programs_on_windows(
+    jan_windows_env, install_dir_name
+):
+    program_dir = jan_windows_env / "Local" / "Programs" / install_dir_name
+    program_dir.mkdir(parents=True)
+    (program_dir / "Jan.exe").write_bytes(b"")
+    assert linker.is_jan_installed() is True
+
+
+def test_is_jan_installed_detects_tauri_per_user_install_on_windows(jan_windows_env):
+    local_jan = jan_windows_env / "Local" / "Jan"
+    local_jan.mkdir(parents=True)
+    (local_jan / "Jan.exe").write_bytes(b"")
+    assert linker.is_jan_installed() is True
+
+
+def test_is_jan_installed_detects_start_menu_shortcut_on_windows(jan_windows_env):
+    menu = _windows_start_menu(jan_windows_env)
+    menu.mkdir(parents=True)
+    (menu / "Jan.lnk").write_bytes(b"")
+    assert linker.is_jan_installed() is True
+
+
+def test_is_jan_installed_ignores_empty_program_dir_on_windows(jan_windows_env):
+    (jan_windows_env / "Local" / "Programs" / "Jan").mkdir(parents=True)
+    assert linker.is_jan_installed() is False
 
 
 # --- Msty (flat symlink dir) --------------------------------------------

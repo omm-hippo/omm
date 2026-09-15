@@ -69,7 +69,12 @@ def generate_keys(private_path: Path, public_path: Path) -> None:
         raise
 
 
-def sign(artifact: Path, private_path: Path, manifest_path: Path) -> None:
+def sign(
+    artifact: Path,
+    private_path: Path,
+    manifest_path: Path,
+    public_key: str | None = None,
+) -> None:
     content = artifact.read_bytes()
     try:
         payload = json.loads(content)
@@ -89,6 +94,18 @@ def sign(artifact: Path, private_path: Path, manifest_path: Path) -> None:
         "signature": base64.b64encode(signature).decode(),
         "signed_at": datetime.now(timezone.utc).isoformat(),
     }
+
+    from omm import catalog  # 지연 import: generate 서브커맨드는 omm 없이도 동작해야 한다
+    from omm.config import DEFAULT_CONFIG
+
+    expected = public_key if public_key is not None else DEFAULT_CONFIG["catalog_public_key"]
+    try:
+        catalog.verify_signed_artifact(content, manifest, expected)
+    except catalog.CatalogVerificationError as error:
+        raise ValueError(
+            f"the new signature does not verify against the expected catalog public key: {error}"
+        ) from error
+
     _atomic_write(manifest_path, json.dumps(manifest, indent=2) + "\n")
 
 
@@ -102,11 +119,22 @@ def main() -> None:
     signing.add_argument("artifact", type=Path)
     signing.add_argument("--private", type=Path, required=True)
     signing.add_argument("--manifest", type=Path, required=True)
+    signing.add_argument(
+        "--public",
+        type=Path,
+        default=None,
+        help="base64 Ed25519 public key file; defaults to the key shipped in omm.config",
+    )
     args = parser.parse_args()
     if args.command == "generate":
         generate_keys(args.private, args.public)
     else:
-        sign(args.artifact, args.private, args.manifest)
+        sign(
+            args.artifact,
+            args.private,
+            args.manifest,
+            public_key=args.public.read_text(encoding="utf-8").strip() if args.public else None,
+        )
 
 
 if __name__ == "__main__":

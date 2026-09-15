@@ -1,3 +1,4 @@
+import errno
 import json
 import platform
 import struct
@@ -651,6 +652,68 @@ def test_ollama_force_preserves_unowned_manifest(isolated_omm_home, tmp_path, mo
     assert manifest.read_text(encoding="utf-8") == "stale manifest, no ownership record"
 
 
+def test_relink_failure_before_manifest_write_keeps_existing_registration(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A relink that fails before the manifest is actually replaced must
+    leave the previous, working registration in place rather than deleting
+    it up front and then failing to write the replacement."""
+    source = tmp_path / "m.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+
+    linker.link_ollama(source, "model", models_dir=models_dir)
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    original = manifest.read_bytes()
+
+    monkeypatch.setattr(linker, "_ollama_link_already_current", lambda *a, **k: False)
+    real = linker.atomic_write_text
+
+    def failing(path, content):
+        if path.name == "latest":
+            raise OSError(errno.ENOSPC, "No space left")
+        return real(path, content)
+
+    monkeypatch.setattr(linker, "atomic_write_text", failing)
+
+    with pytest.raises(linker.LinkError):
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert manifest.read_bytes() == original
+    assert linker._owned_manifest(manifest)
+
+
+def test_relink_readback_failure_restores_previous_manifest(isolated_omm_home, tmp_path, monkeypatch):
+    """If the just-written manifest doesn't read back intact (torn write /
+    concurrent writer), the previous registration must be restored instead
+    of left deleted."""
+    source = tmp_path / "m.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    monkeypatch.setattr(linker, "read_gguf_metadata", lambda *_: {"general.architecture": "llama"})
+
+    linker.link_ollama(source, "model", models_dir=models_dir)
+    manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    original = manifest.read_bytes()
+
+    monkeypatch.setattr(linker, "_ollama_link_already_current", lambda *a, **k: False)
+    real = linker.atomic_write_text
+
+    def failing(path, content):
+        if path.name == "latest":
+            return real(path, "{")
+        return real(path, content)
+
+    monkeypatch.setattr(linker, "atomic_write_text", failing)
+
+    with pytest.raises(linker.LinkError):
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert manifest.read_bytes() == original
+    assert linker._owned_manifest(manifest)
+
+
 def test_link_file_raises_link_error_when_mkdir_fails(tmp_path, monkeypatch):
     src = tmp_path / "model.gguf"
     src.write_bytes(b"weights")
@@ -830,6 +893,39 @@ def test_failed_native_ollama_import_removes_new_blobs_and_manifest(
     assert not blob.exists()
     assert unrelated_blob.read_bytes() == b"another Ollama operation"
     assert not manifest.exists()
+
+
+def test_failed_native_import_does_not_claim_it_removed_files_it_could_not_find(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A failed native `ollama create` that never got as far as publishing a
+    manifest leaves cleanup_transaction() with nothing it can identify as
+    "ours" (transaction_blobs() only trusts blobs the new manifest
+    references). The error message must not claim a removal that didn't
+    happen."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    models_dir = tmp_path / "ollama"
+    blob = models_dir / "blobs" / "sha256-native"
+
+    def run_ollama(cmd, **kwargs):
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"partial native copy")
+        # No manifest written - the real failure ordering: blobs land on
+        # disk before `ollama create` publishes the manifest.
+        return _FakeResult(returncode=1, stderr="no space left on device")
+
+    monkeypatch.setattr(linker.shutil, "which", lambda name: "/usr/bin/ollama")
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
+    )
+    monkeypatch.setattr(linker.subprocess, "run", run_ollama)
+
+    with pytest.raises(linker.InsufficientLinkSpaceError) as excinfo:
+        linker._fallback_to_native_create(source, "model", models_dir)
+
+    assert "were removed" not in str(excinfo.value)
+    assert "may have left partial files" in str(excinfo.value)
 
 
 @pytest.mark.parametrize("failure", ["before-write", "after-write", "timeout", "os-error"])
@@ -1167,7 +1263,7 @@ def test_link_ollama_falls_back_to_native_create_when_show_rejects_manifest(
 
     result = linker.link_ollama(source, "model")
 
-    assert result is True
+    assert result is False  # stubbed metadata has no tokenizer.chat_template
     assert len(create_calls) == 1
     assert subprocess_options
     assert all(options["encoding"] == "utf-8" for options in subprocess_options)
@@ -1178,7 +1274,15 @@ def test_link_ollama_falls_back_to_native_create_when_show_rejects_manifest(
     # native import, so peak usage is one extra copy and no stale blob leaks.
     assert {path.name for path in (models_dir / "blobs").iterdir()} == {"sha256-native"}
     cache = json.loads((home / "ollama_manifest_compat.json").read_text(encoding="utf-8"))
-    assert cache == {"ollama_version": "ollama version is 9.9.9", "compatible": False}
+    # A single rejected model doesn't confirm incompatibility outright (see
+    # test_manifest_format_result_requires_two_distinct_model_failures) - it's
+    # recorded as unconfirmed so the next model still gets a fresh zero-copy
+    # attempt, while this model still falls back to native create above.
+    assert cache == {
+        "ollama_version": "ollama version is 9.9.9",
+        "compatible": None,
+        "failures": ["model"],
+    }
     # Ownership must be recorded even though omm never wrote this manifest
     # itself, or unlink_ollama/autoremove_ollama would refuse to clean it up.
     linker.unlink_ollama("model", models_dir=models_dir)
@@ -1214,9 +1318,45 @@ def test_link_ollama_short_circuits_straight_to_fallback_when_already_known_bad(
 
     result = linker.link_ollama(source, "model")
 
-    assert result is True
+    assert result is False  # stubbed metadata has no tokenizer.chat_template
     assert "show" not in calls  # never probes again once known bad
     assert "create" in calls
+
+
+def test_native_create_fallback_reports_the_real_chat_template_flag(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """The native-create fallback paths must report whether the source GGUF
+    actually has an embedded chat template, not a hardcoded True."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    calls = []
+
+    def run_ollama(cmd, **kwargs):
+        calls.append(cmd[1] if len(cmd) > 1 else cmd[0])
+        if cmd[1:] == ["--version"]:
+            return _FakeResult(stdout="ollama version is 9.9.9")
+        if cmd[1] == "create":
+            manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text('{"native": true}', encoding="utf-8")
+            return _FakeResult(returncode=0)
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    models_dir = _stub_ollama_env(monkeypatch, tmp_path, run_ollama)
+    monkeypatch.setattr(
+        linker,
+        "read_gguf_metadata",
+        lambda *_: {"general.architecture": "llama", "tokenizer.chat_template": "{{ .Prompt }}"},
+    )
+    home = tmp_path / ".omm"
+    monkeypatch.setattr(config, "OMM_HOME", home)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "ollama_manifest_compat.json").write_text(
+        '{"ollama_version": "ollama version is 9.9.9", "compatible": false}'
+    , encoding="utf-8")
+
+    assert linker.link_ollama(source, "model") is True
 
 
 def test_link_ollama_falls_back_to_native_create_on_permission_error(
@@ -1266,10 +1406,89 @@ def test_link_ollama_falls_back_to_native_create_on_permission_error(
 
     result = linker.link_ollama(source, "model")
 
-    assert result is True
+    assert result is False  # stubbed metadata has no tokenizer.chat_template
     assert "create" in calls
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     assert manifest_path.exists()
+
+
+def _patch_link_file_denies_blob_link(monkeypatch, models_dir):
+    real_link_file = linker.link_file
+
+    def denying_link_file(src, dst, **kwargs):
+        if dst.parent == models_dir / "blobs":
+            try:
+                raise PermissionError(13, "Permission denied", str(dst))
+            except PermissionError as e:
+                raise linker.LinkError(f"Could not create symlink at {dst}: {e}.") from e
+        return real_link_file(src, dst, **kwargs)
+
+    monkeypatch.setattr(linker, "link_file", denying_link_file)
+
+
+def test_link_ollama_native_create_when_blob_link_denied_with_existing_blobs_dir(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """A LinkError raised deep inside link_file (issue #117's systemd case,
+    reached via a PermissionError from the symlink/hardlink/copy fallback
+    chain) must still reach the outer `except PermissionError` in
+    _link_ollama_unlocked so the native-create fallback runs, instead of
+    escaping as an unhandled LinkError."""
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+    calls = []
+
+    def run_ollama(cmd, **kwargs):
+        calls.append(cmd[1] if len(cmd) > 1 else cmd[0])
+        if cmd[1:] == ["--version"]:
+            return _FakeResult(stdout="ollama version is 1.2.3")
+        if cmd[1] == "create":
+            manifest = (
+                models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+            )
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(
+                '{"schemaVersion":2,"layers":[{"mediaType":"application/vnd.ollama.image.model",'
+                '"digest":"sha256:native"}]}'
+            , encoding="utf-8")
+            return _FakeResult(returncode=0)
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    models_dir = _stub_ollama_env(monkeypatch, tmp_path, run_ollama)
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
+    )
+    home = tmp_path / ".omm"
+    monkeypatch.setattr(config, "OMM_HOME", home)
+
+    (models_dir / "blobs").mkdir(parents=True)
+    _patch_link_file_denies_blob_link(monkeypatch, models_dir)
+
+    result = linker.link_ollama(source, "model")
+
+    assert result is False  # stubbed metadata has no tokenizer.chat_template
+    assert "create" in calls
+    manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+    assert manifest_path.exists()
+
+
+def test_link_ollama_explicit_models_dir_blob_link_denied_has_fix(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    source = tmp_path / "source.gguf"
+    source.write_bytes(b"weights")
+
+    def run_ollama(cmd, **kwargs):
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    models_dir = _stub_ollama_env(monkeypatch, tmp_path, run_ollama)
+    (models_dir / "blobs").mkdir(parents=True)
+    _patch_link_file_denies_blob_link(monkeypatch, models_dir)
+
+    with pytest.raises(linker.LinkError) as excinfo:
+        linker.link_ollama(source, "model", models_dir=models_dir)
+
+    assert "writable" in (excinfo.value.fix or "")
 
 
 def test_link_ollama_treats_unreachable_daemon_as_unverified_not_incompatible(
@@ -1295,6 +1514,49 @@ def test_link_ollama_treats_unreachable_daemon_as_unverified_not_incompatible(
     assert not (home / "ollama_manifest_compat.json").exists()
     manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
     assert manifest_path.exists()  # omm's own hand-rolled manifest, untouched
+
+
+def test_manifest_format_result_stays_unconfirmed_after_one_model_failure(
+    isolated_omm_home,
+):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is None
+    cache = json.loads(linker._ollama_manifest_compat_cache_path().read_text(encoding="utf-8"))
+    assert cache == {
+        "ollama_version": "ollama version is 9.9.9",
+        "compatible": None,
+        "failures": ["model-a"],
+    }
+
+
+def test_manifest_format_result_confirms_after_two_distinct_model_failures(
+    isolated_omm_home,
+):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-b")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is False
+
+
+def test_manifest_format_result_success_clears_prior_failures(isolated_omm_home):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+    linker._record_manifest_format_result("ollama version is 9.9.9", True, "model-b")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is True
+    cache = json.loads(linker._ollama_manifest_compat_cache_path().read_text(encoding="utf-8"))
+    assert cache == {"ollama_version": "ollama version is 9.9.9", "compatible": True}
+
+
+def test_manifest_format_result_repeated_same_model_failure_does_not_confirm(
+    isolated_omm_home,
+):
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+    linker._record_manifest_format_result("ollama version is 9.9.9", False, "model-a")
+
+    assert linker._manifest_format_known_good("ollama version is 9.9.9") is None
+    cache = json.loads(linker._ollama_manifest_compat_cache_path().read_text(encoding="utf-8"))
+    assert cache["failures"] == ["model-a"]
 
 
 def test_link_ollama_explicit_models_dir_never_calls_ollama_cli(

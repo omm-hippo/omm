@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -162,6 +163,28 @@ def test_scan_lmstudio_skips_symlinks(tmp_path, monkeypatch):
     assert found[0].display_name == "model.gguf"
 
 
+def test_scan_lmstudio_skips_omm_owned_hardlink(isolated_omm_home, tmp_path, monkeypatch):
+    hub = scan_import.MODELS_DIR / "m.gguf"
+    hub.write_bytes(b"hub-bytes")
+
+    base = tmp_path / "lms"
+    dst = base / "pub" / "repo" / "m.gguf"
+    dst.parent.mkdir(parents=True)
+    os.link(hub, dst)
+    linker._record_hardlink(dst, hub)
+
+    other_dir = base / "pub2" / "repo2"
+    other_dir.mkdir(parents=True)
+    other = other_dir / "other.gguf"
+    other.write_bytes(b"unmanaged-bytes")
+
+    monkeypatch.setattr(scan_import.linker, "lmstudio_models_dir", lambda: base)
+
+    found = scan_import.scan_lmstudio()
+
+    assert [item.path for item in found] == [other]
+
+
 def test_flat_scan_accepts_case_insensitive_gguf_suffix(tmp_path):
     model = tmp_path / "MODEL.GGUF"
     model.write_bytes(b"gguf-bytes")
@@ -269,6 +292,19 @@ def test_scan_jan_resolves_absolute_and_relative_model_paths(tmp_path, monkeypat
     assert by_name["abs-entry"].path == absolute_gguf
     assert by_name["rel-entry"].path == rel_gguf
     assert all(item.engine == "jan" for item in found)
+
+
+def test_scan_jan_skips_hub_file(isolated_omm_home, tmp_path, monkeypatch):
+    jan_app_dir = tmp_path / "Jan"
+    jan_models_dir = jan_app_dir / "data" / "llamacpp" / "models"
+    monkeypatch.setattr(scan_import.linker, "jan_app_dir", lambda: jan_app_dir)
+    monkeypatch.setattr(scan_import.linker, "jan_models_dir", lambda: jan_models_dir)
+
+    hub = scan_import.MODELS_DIR / "m.gguf"
+    hub.write_bytes(b"hub-bytes")
+    linker.link_jan(hub, "m")
+
+    assert scan_import.scan_jan() == []
 
 
 def test_group_by_hash_merges_identical_files_across_engines(tmp_path):
@@ -488,6 +524,39 @@ def test_adopt_group_reuses_existing_hub_copy_for_same_hash(isolated_omm_home, t
     assert entry["ollama_runtime_name"] == "existing:latest"
 
 
+def test_adopt_group_does_not_count_existing_hardlink_to_hub_as_saved(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    payload = b"already hardlinked to the hub"
+    digest = "cafef00d" * 8
+    hub_file = scan_import.MODELS_DIR / "existing.gguf"
+    hub_file.write_bytes(payload)
+    registry.upsert_entry(
+        "existing.gguf",
+        sha256=digest,
+        version=digest[:7],
+        source="https://example.com/existing.gguf",
+        size_bytes=len(payload),
+        installed_at="2026-01-01T00:00:00+00:00",
+        linked={},
+    )
+
+    external = tmp_path / "ext.gguf"
+    os.link(hub_file, external)  # no ownership record
+
+    monkeypatch.setattr(linker, "is_engine_installed", lambda key: False)
+
+    group = scan_import.ModelGroup(
+        sha256=digest,
+        locations=[scan_import.ExternalGguf("lmstudio", "ext.gguf", external, len(payload), digest)],
+    )
+
+    result = scan_import.adopt_group(group)
+
+    assert result.bytes_saved == 0
+    assert external.samefile(hub_file)
+
+
 def test_adopt_group_reimports_when_registry_entry_is_a_ghost(isolated_omm_home, tmp_path):
     """Registry can carry a stale entry whose hub file was deleted by hand
     (e.g. outside omm). adopt_group must not trust that entry as a live
@@ -699,7 +768,7 @@ def test_adopt_group_excludes_manifest_style_engine_paths_from_custom_links(
     isolated_omm_home, tmp_path
 ):
     """custom_links is replayed verbatim by generic relink/unlink code
-    (cli._update_one / cli._remove_one) that doesn't know Ollama's own
+    (cli._install_impl --force relink / cli._remove_one) that doesn't know Ollama's own
     content-addressed blob rules - an Ollama blob path must not end up
     there, only in the engine-agnostic `linked` flag."""
     payload = b"ollama blob bytes"

@@ -125,6 +125,25 @@ def test_validate_model_artifact_rejects_malformed_candidates(candidate):
         predictor.validate_model_artifact(invalid)
 
 
+def test_validate_model_artifact_accepts_candidate_with_supersedes():
+    # Backward-compat guard (#322): validate_model_artifact only checks known
+    # fields, so an unrecognized field like `supersedes` must pass through
+    # untouched rather than being rejected as unknown.
+    with_supersedes = artifact()
+    with_supersedes["candidates"] = [
+        {
+            "repo_id": "org/model",
+            "filename": "model.gguf",
+            "provider": "huggingface",
+            "supersedes": ["some-older-model"],
+        }
+    ]
+
+    validated = predictor.validate_model_artifact(with_supersedes)
+
+    assert validated["candidates"][0]["supersedes"] == ["some-older-model"]
+
+
 def test_required_memory_rejects_boolean_and_infinite_size_metadata():
     assert predictor.estimate_required_memory_gb({"size_bytes": True}) is None
     assert predictor.estimate_required_memory_gb({"size_bytes": float("inf")}) is None
@@ -178,6 +197,107 @@ def test_signed_fetch_caches_exact_verified_bytes_for_future_archive(monkeypatch
     archived = history / f"{hashlib.sha256(contents[0]).hexdigest()}.json"
     assert archived.read_bytes() == contents[0]
     assert cache_path.read_bytes() == contents[1]
+
+
+def _sign_and_cache(monkeypatch, tmp_path, private_key):
+    """Fetch-and-cache a signed artifact under `private_key`, leaving the
+    cache file and its provenance sidecar on disk. Returns the base64
+    public key used."""
+    public = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode()
+    cache_path = tmp_path / "recommend-model.json"
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+
+    class Response:
+        def __init__(self, content):
+            self.content = content
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return json.loads(self.content)
+
+    content = json.dumps(artifact(), indent=2).encode()
+    manifest = {
+        "schema_version": 1,
+        "artifact_sha256": hashlib.sha256(content).hexdigest(),
+        "signature": base64.b64encode(private_key.sign(content)).decode(),
+    }
+    responses = iter([Response(content), Response(json.dumps(manifest).encode())])
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: next(responses))
+
+    predictor.fetch_and_cache_model("model", "manifest", public)
+    return public, cache_path
+
+
+def test_cached_model_signature_is_valid_only_for_the_configured_key(monkeypatch, tmp_path):
+    private = Ed25519PrivateKey.generate()
+    other_public = base64.b64encode(
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+    ).decode()
+
+    public, _cache_path = _sign_and_cache(monkeypatch, tmp_path, private)
+
+    assert predictor.cached_model_signature_is_valid(public) is True
+    assert predictor.cached_model_signature_is_valid(other_public) is False
+    assert predictor.cached_model_signature_is_valid(None) is False
+
+
+def test_cached_model_signature_is_invalid_after_tampering(monkeypatch, tmp_path):
+    private = Ed25519PrivateKey.generate()
+    public, cache_path = _sign_and_cache(monkeypatch, tmp_path, private)
+
+    original = cache_path.read_bytes()
+    tampered = bytearray(original)
+    tampered[0] = tampered[0] ^ 0xFF
+    cache_path.write_bytes(bytes(tampered))
+    assert predictor.cached_model_signature_is_valid(public) is False
+
+    cache_path.write_bytes(original)
+    provenance_path = cache_path.with_suffix(cache_path.suffix + ".provenance.json")
+    provenance_path.unlink()
+    assert predictor.cached_model_signature_is_valid(public) is False
+
+
+def test_cached_model_with_a_tampered_body_is_rejected(monkeypatch, tmp_path, isolated_omm_home):
+    private = Ed25519PrivateKey.generate()
+    public, cache_path = _sign_and_cache(monkeypatch, tmp_path, private)
+    monkeypatch.setattr(predictor, "load_config", lambda: {"catalog_public_key": public})
+
+    original = cache_path.read_bytes()
+    tampered = bytearray(original)
+    tampered[0] = tampered[0] ^ 0xFF
+    cache_path.write_bytes(bytes(tampered))
+
+    assert predictor.load_cached_model() is None
+
+
+def test_cached_model_signed_by_a_rotated_out_key_is_rejected(monkeypatch, tmp_path, isolated_omm_home):
+    private = Ed25519PrivateKey.generate()
+    public, cache_path = _sign_and_cache(monkeypatch, tmp_path, private)
+    rotated_public = base64.b64encode(
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+    ).decode()
+    monkeypatch.setattr(predictor, "load_config", lambda: {"catalog_public_key": rotated_public})
+
+    assert predictor.load_cached_model() is None
+
+
+def test_cached_model_without_provenance_is_still_accepted(monkeypatch, tmp_path, isolated_omm_home):
+    cache_path = tmp_path / "recommend-model.json"
+    cache_path.write_text(json.dumps(artifact()), encoding="utf-8")
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+
+    assert predictor.load_cached_model() == artifact()
 
 
 def test_validate_model_artifact_bounds_collection_and_total_tree_work(monkeypatch):
@@ -234,6 +354,47 @@ def test_fetch_rejects_streamed_artifact_beyond_byte_limit(monkeypatch, tmp_path
     assert predictor.load_model("https://example.test/model.json") == artifact()
     assert response.closed is True
     assert json.loads(cache_path.read_text(encoding="utf-8")) == artifact()
+
+
+def test_fetch_returns_verified_artifact_when_cache_write_fails(monkeypatch, tmp_path):
+    cache_path = tmp_path / "recommend-model.json"
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return artifact()
+
+        @property
+        def content(self):
+            return json.dumps(artifact()).encode()
+
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: Response())
+
+    def failing_write(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(predictor, "atomic_write_text", failing_write)
+
+    assert predictor.fetch_and_cache_model("https://example.test/m.json") == artifact()
+    assert predictor.load_model("https://example.test/m.json") == artifact()
+
+
+def test_load_model_falls_back_to_cache_on_lock_timeout(monkeypatch, tmp_path):
+    import filelock
+
+    cache_path = tmp_path / "recommend-model.json"
+    cache_path.write_text(json.dumps(artifact()), encoding="utf-8")
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+
+    def raise_timeout(*args, **kwargs):
+        raise filelock.Timeout(str(cache_path))
+
+    monkeypatch.setattr(predictor, "fetch_and_cache_model", raise_timeout)
+
+    assert predictor.load_model("https://example.test/m.json") == artifact()
 
 
 def test_streaming_limit_applies_to_a_real_loopback_response(monkeypatch, tmp_path):

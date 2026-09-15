@@ -1,4 +1,4 @@
-import { isTimestampFresh, proofDigest, verifyProofOfWork } from "./pow";
+import { isTimestampFresh, sha256Hex, verifyProofOfWork } from "./pow";
 import { validateErrorReport, validateTelemetryEvent, validateUsageEvent } from "./validate";
 import { writeEventOnce, type ServiceAccount } from "./rtdb";
 
@@ -31,7 +31,9 @@ function boundedIntegerOrDefault(
   minimum: number,
   maximum: number,
 ): number | null {
-  const value = Number(raw);
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return fallback;
+  const value = Number(trimmed);
   if (!Number.isFinite(value)) return fallback;
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
     return null;
@@ -185,13 +187,18 @@ export default {
     }
 
     try {
-      const eventId = await proofDigest(eventJson, timestamp, nonce);
+      // Dedupe on the event bytes, not the proof: a client that retries a
+      // timed-out send re-solves the puzzle with a fresh timestamp/nonce but
+      // re-serializes the identical event_json, so a proof-derived key would
+      // store the same row twice. The freshness window plus this create-only
+      // PUT still block replay.
+      const eventId = await sha256Hex(eventJson);
       const write = await writeEventOnce(
         serviceAccount, env.RTDB_DATABASE_URL, node, eventId,
         event as Record<string, unknown>,
       );
       if (write.status === 412) {
-        return json({ error: "proof already used" }, 409);
+        return json({ error: "duplicate event" }, 409);
       }
       if (!write.ok) {
         return json({ error: "upstream write failed" }, 502);

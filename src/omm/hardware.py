@@ -537,9 +537,15 @@ def _windows_registry_gpus() -> list[dict]:
                         )
     except OSError:
         return []
-    unique = {}
+    unique: dict[str, dict] = {}
     for item in found:
-        unique.setdefault(item["Name"], item)
+        # Driver reinstalls leave several keys with the same DriverDesc and
+        # `HardwareInformation.qwMemorySize` is read best-effort above, so a
+        # value-less row can be enumerated first. Merge by largest reported
+        # size, matching how `_scan_windows_gpu` merges the same names.
+        existing = unique.get(item["Name"])
+        if existing is None or (item["AdapterRAM"] or 0) > (existing["AdapterRAM"] or 0):
+            unique[item["Name"]] = item
     return list(unique.values())
 
 
@@ -583,8 +589,24 @@ def _scan_windows_gpu() -> tuple[str | None, float | None, float | None]:
         if "intel" in lowered:
             # Intel Arc A/B-series names denote discrete adapters; generic
             # "Intel Arc Graphics", Iris, and UHD are integrated/shared.
-            return re.search(r"\barc\s+[ab]\d", lowered) is None
-        return "radeon(tm) graphics" in lowered or "radeon graphics" == lowered.strip()
+            normalized = re.sub(r"\((?:tm|r)\)|[™®]", " ", lowered)
+            normalized = " ".join(normalized.split())
+            return re.search(r"\barc\s+(?:pro\s+)?[ab]\d", normalized) is None
+        if "radeon" in lowered or "firepro" in lowered or re.search(r"(?<![a-z])amd(?![a-z])", lowered):
+            # AMD's Ryzen APU adapters are named "AMD Radeon(TM) Graphics",
+            # "... Vega 8 Graphics", "... 780M Graphics", "AMD Radeon 890M
+            # Graphics" and so on - an open-ended family. Mirror the Intel
+            # branch and treat every AMD adapter as shared unless the name
+            # carries an unambiguous discrete-series marker, so an APU's UMA
+            # carve-out is never reported as dedicated VRAM.
+            normalized = re.sub(r"\((?:tm|r)\)|[™®]", " ", lowered)
+            normalized = " ".join(normalized.split())
+            discrete = re.search(
+                r"\b(?:rx|pro|instinct|firepro|wx|vii)\b|\b(?:hd|r[579])\s*\d{3,4}\b",
+                normalized,
+            )
+            return discrete is None
+        return False
 
     # Hybrid laptops often enumerate the integrated adapter first. Prefer a
     # likely discrete adapter, then the largest credible dedicated-memory

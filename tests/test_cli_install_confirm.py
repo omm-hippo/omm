@@ -167,6 +167,41 @@ def test_install_keyboard_interrupt_cleans_up_partial_download(isolated_omm_home
     assert cleaned == [(filename, False)]
 
 
+def test_install_esc_deletes_the_resumable_partial(isolated_omm_home, monkeypatch):
+    """Pins the policy documented on `downloader._download_file_impl`: a
+    cancelled *first-time* install deletes the `.part` trio rather than
+    leaving it for a later resume. Runs the real
+    `_cleanup_interrupted_install` (not a stub, unlike the tests above) so
+    the actual deletion is what's under test."""
+    filename = "m.gguf"
+    monkeypatch.setattr(
+        cli,
+        "resolve_model",
+        lambda name: ResolvedModel(url="https://example.com/x.gguf", filename=filename, repo_id="org/repo"),
+    )
+
+    def fake_install_impl(resolved, **kwargs):
+        raise cli.InstallInterrupted(filename)
+
+    monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
+
+    dest = cli.MODELS_DIR / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")
+    ranges = part.with_name(part.name + ".ranges.json")
+    meta = part.with_name(f"{part.name}.meta")
+    part.write_bytes(b"partial-bytes")
+    ranges.write_text("{}", encoding="utf-8")
+    meta.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
+
+    assert result.exit_code == 0
+    assert not part.exists()
+    assert not ranges.exists()
+    assert not meta.exists()
+
+
 def _seed_existing_model(filename: str) -> None:
     """Simulate a model that was fully installed by a *previous* `omm
     install` run - a real central file plus a registry entry, both already
@@ -325,6 +360,30 @@ def test_install_global_yes_consents_to_runtime_load_without_a_tty(
     )
 
     assert result.exit_code == 0, result.stdout
+
+
+def test_install_global_yes_without_tty_finishes_without_upload_prompt(
+    isolated_omm_home, monkeypatch
+):
+    """`--yes` answers the runtime-load consent, not the data-upload prompt -
+    those are separate questions. Without a TTY (as under CliRunner) the
+    upload prompt must not even be attempted, `--no-upload` or not."""
+    _stub_successful_install(monkeypatch, isolated_omm_home)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(
+        cli,
+        "_ask_confirm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("prompted")),
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+    calls = []
+    monkeypatch.setattr(cli, "_report_telemetry", lambda *a, **k: calls.append((a, k)))
+
+    result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Installed" in result.stdout
+    assert calls == []
 
 
 def test_install_threads_quiet_and_no_color_into_download_file(isolated_omm_home, monkeypatch):

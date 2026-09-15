@@ -55,3 +55,13 @@ def test_train_workflow_preserves_only_the_redacted_plausibility_report():
     assert "telemetry-plausibility-report.json" in workflow
     assert "telemetry.json" not in workflow
     assert "retention-days: 30" in workflow
+
+
+def test_train_workflow_serializes_overlapping_runs_and_drops_unused_write_scope():
+    workflow_path = ROOT / ".github" / "workflows" / "train.yml"
+    if not workflow_path.is_file():
+        pytest.skip("GitHub workflows are excluded from the runtime Docker image")
+    workflow = workflow_path.read_text(encoding="utf-8")
+    assert "concurrency:\n  group: train-recommendation-model\n  cancel-in-progress: false" in workflow
+    assert "permissions:\n  contents: read" in workflow
+    assert "contents: write" not in workflow

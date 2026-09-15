@@ -263,6 +263,9 @@ def _linux_install_artifact_exists(install_dirs: Sequence[Path], desktop_entry_g
     return False
 
 
+_LMSTUDIO_WINDOWS_INSTALL_DIRS = ("LM Studio", "lm-studio", "lmstudio")
+
+
 def is_lmstudio_installed() -> bool:
     # A headless llmster install (the `lms` CLI + daemon, no GUI) is a
     # real, usable install with no app bundle at all - check it first.
@@ -270,7 +273,14 @@ def is_lmstudio_installed() -> bool:
         return True
     if platform.system() == "Darwin":
         return _app_bundle_installed("LM Studio")
-    return lmstudio_home_dir().exists()
+    if lmstudio_home_dir().exists():
+        return True
+    if platform.system() == "Windows":
+        # electron-builder NSIS writes %LOCALAPPDATA%\Programs\LM Studio and a
+        # Start Menu shortcut at install time; ~/.lmstudio and lms.exe only
+        # appear on first run.
+        return _windows_install_artifact_exists(_LMSTUDIO_WINDOWS_INSTALL_DIRS, "LM Studio*.lnk")
+    return False
 
 
 def find_ollama_executable() -> Path | None:
@@ -335,6 +345,28 @@ def _link_key(path: Path) -> str:
     return str(path.expanduser().absolute())
 
 
+def _ownership_keys_are_case_insensitive() -> bool:
+    """NTFS itself is case-insensitive; the typed string is not.
+    One seam so read, write and delete share a single policy (and so
+    tests can exercise the policy without faking the platform)."""
+    return platform.system() == "Windows"
+
+
+def _existing_ownership_key(
+    records: dict[str, dict[str, object]], key: str, *, case_insensitive: bool
+) -> str | None:
+    """The key `records` already stores for this path, or None."""
+    if key in records:
+        return key
+    if not case_insensitive:
+        return None
+    folded = key.casefold()
+    for other_key in records:
+        if other_key.casefold() == folded:
+            return other_key
+    return None
+
+
 def _engine_path_lock(path: Path) -> Path:
     """Lock proxy for a path inside an engine-owned directory (e.g. Ollama's
     blobs/manifests dirs). `locked()` places a `.lock` sibling right next to
@@ -376,9 +408,12 @@ def _update_link_ownership(path: Path, ownership: dict[str, object] | None) -> N
     key = _link_key(path)
     with locked(LINK_OWNERSHIP_PATH):
         records = _load_link_ownership()
-        if ownership is None:
-            records.pop(key, None)
-        else:
+        existing = _existing_ownership_key(
+            records, key, case_insensitive=_ownership_keys_are_case_insensitive()
+        )
+        if existing is not None:
+            records.pop(existing, None)
+        if ownership is not None:
             records[key] = ownership
         atomic_write_text(LINK_OWNERSHIP_PATH, json.dumps(records, indent=2) + "\n")
 
@@ -399,8 +434,11 @@ def _bulk_clear_link_ownership(paths: Sequence[Path]) -> None:
     keys = [_link_key(path) for path in paths]
     with locked(LINK_OWNERSHIP_PATH):
         records = _load_link_ownership()
+        insensitive = _ownership_keys_are_case_insensitive()
         for key in keys:
-            records.pop(key, None)
+            existing = _existing_ownership_key(records, key, case_insensitive=insensitive)
+            if existing is not None:
+                records.pop(existing, None)
         atomic_write_text(LINK_OWNERSHIP_PATH, json.dumps(records, indent=2) + "\n")
 
 
@@ -455,15 +493,10 @@ def _ownership_record(path: Path) -> dict[str, object] | None:
     provably for this exact path.
     """
     records = _load_link_ownership()
-    key = _link_key(path)
-    record = records.get(key)
-    if record is not None or platform.system() != "Windows":
-        return record
-    folded = key.casefold()
-    for other_key, other_record in records.items():
-        if other_key.casefold() == folded:
-            return other_record
-    return None
+    existing = _existing_ownership_key(
+        records, _link_key(path), case_insensitive=_ownership_keys_are_case_insensitive()
+    )
+    return records.get(existing) if existing is not None else None
 
 
 def _owned_hardlink(path: Path, record: dict[str, object] | None = None) -> bool:
@@ -1592,7 +1625,7 @@ def _link_ollama_unlocked(
         # correct native path instead of hashing the whole file and writing
         # a manifest that's just going to be thrown away.
         _fallback_to_native_create_under_model_lock(gguf_path, model_name, models_dir)
-        return True
+        return has_chat_template
 
     if ollama_version is None or _manifest_format_known_good(ollama_version) is True:
         manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / model_name / "latest"
@@ -1644,7 +1677,15 @@ def _link_ollama_unlocked(
             elif model_blob.is_symlink():
                 raise LinkError(f"Refusing broken Ollama model blob symlink: {model_blob}.")
             else:
-                link_file(gguf_path, model_blob, on_copy=on_copy)
+                try:
+                    link_file(gguf_path, model_blob, on_copy=on_copy)
+                except LinkError as error:
+                    if isinstance(error.__cause__, PermissionError):
+                        # Re-raise the original PermissionError so the outer
+                        # `except PermissionError` (issue #117) can drive the
+                        # native-create fallback or attach its fix hint.
+                        raise error.__cause__ from None
+                    raise
 
         # Mirrors the config produced by `ollama create` for a bare GGUF (no
         # Modelfile TEMPLATE override): a single model layer, config mediaType
@@ -1720,14 +1761,42 @@ def _link_ollama_unlocked(
         # reject and misattribute to a genuine version incompatibility,
         # permanently poisoning `_manifest_format_known_good` for a
         # transient race rather than a real format drift.
+        previous_manifest: bytes | None = None
+        previous_mode: int | None = None
+        previous_source: Path | None = None
         with locked(_engine_path_lock(manifest_path)):
             if manifest_path.exists() or manifest_path.is_symlink():
                 # Re-checked under the manifest lock: another process may
                 # have published here since the pre-check above.
                 if not _manifest_owned_or_matches(manifest_path, gguf_path, model_sha256):
                     raise LinkError(f"Refusing to replace unowned Ollama manifest at {manifest_path}.")
-                manifest_path.unlink()
-                _update_link_ownership(manifest_path, None)
+                if manifest_path.is_file() and not manifest_path.is_symlink():
+                    # Back up the existing registration so a failure below
+                    # (disk full, interrupted write, corrupted read-back) can
+                    # restore it instead of leaving the model unregistered.
+                    # atomic_write_text below replaces via os.replace(), so
+                    # there is no need to unlink first.
+                    previous_manifest = manifest_path.read_bytes()
+                    previous_mode = stat_module.S_IMODE(manifest_path.stat().st_mode)
+                    rec = _ownership_record(manifest_path)
+                    src = rec.get("source") if rec else None
+                    previous_source = Path(src) if isinstance(src, str) else None
+                else:
+                    manifest_path.unlink()
+                    _update_link_ownership(manifest_path, None)
+
+            def _restore_previous() -> None:
+                if previous_manifest is None:
+                    manifest_path.unlink(missing_ok=True)
+                    return
+                try:
+                    atomic_write_bytes(manifest_path, previous_manifest)
+                    if platform.system() != "Windows":
+                        manifest_path.chmod(previous_mode)
+                    _record_ownership(manifest_path, previous_source, "manifest")
+                except OSError:
+                    pass
+
             atomic_write_text(manifest_path, manifest_json)
             # atomic_write_text's tempfile.mkstemp() defaults to mode 0600
             # (owner read/write only), which os.replace() carries straight
@@ -1744,19 +1813,19 @@ def _link_ollama_unlocked(
             try:
                 written_back = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, ValueError) as e:
-                manifest_path.unlink(missing_ok=True)
+                _restore_previous()
                 raise LinkError(
                     f"Ollama manifest for {model_name} did not read back intact after write: {e}."
                 ) from e
             if written_back != manifest:
-                manifest_path.unlink(missing_ok=True)
+                _restore_previous()
                 raise LinkError(
                     f"Ollama manifest for {model_name} was corrupted during write (concurrent writer?)."
                 )
             try:
                 _record_ownership(manifest_path, gguf_path, "manifest")
             except OSError:
-                manifest_path.unlink(missing_ok=True)
+                _restore_previous()
                 raise
     except PermissionError as e:
         # A systemd-managed Ollama's models dir can be owned by a different
@@ -1773,7 +1842,7 @@ def _link_ollama_unlocked(
                 ),
             ) from e
         _fallback_to_native_create_under_model_lock(gguf_path, model_name, models_dir)
-        return True
+        return has_chat_template
     except OSError as e:
         raise LinkError(f"Could not link {model_name} into Ollama: {e}") from e
 
@@ -1812,9 +1881,11 @@ def _ollama_cli_version() -> str | None:
 
 
 def _manifest_format_known_good(ollama_version: str) -> bool | None:
-    """True/False if this exact Ollama version was already probed; None if
-    unknown (never checked, or the cache is for a different version - an
-    Ollama upgrade can change the manifest shape)."""
+    """True/False if this exact Ollama version was already confirmed
+    compatible/incompatible; None if unknown (never checked, the cache is
+    for a different version - an Ollama upgrade can change the manifest
+    shape -, or incompatibility is still unconfirmed pending a second
+    distinct model failure - see _record_manifest_format_result)."""
     path = _ollama_manifest_compat_cache_path()
     if not path.exists():
         return None
@@ -1830,12 +1901,55 @@ def _manifest_format_known_good(ollama_version: str) -> bool | None:
     return compatible if isinstance(compatible, bool) else None
 
 
-def _record_manifest_format_result(ollama_version: str, compatible: bool) -> None:
+def _record_manifest_format_result(ollama_version: str, compatible: bool, model_name: str) -> None:
+    """Cache a manifest-format probe result for `ollama_version`.
+
+    A single rejection is not trusted on its own - a transient CLI/daemon
+    hiccup on one model used to permanently disable zero-copy linking for
+    every model afterwards. Only two *distinct* models failing under the
+    same Ollama version confirms real format incompatibility (compatible =
+    False); a lone failure is recorded as unconfirmed (compatible = None)
+    so the next model still gets a fresh zero-copy attempt. Any accepted
+    result clears the failure history and confirms compatibility outright.
+    """
     path = _ollama_manifest_compat_cache_path()
-    content = json.dumps({"ollama_version": ollama_version, "compatible": compatible})
     try:
         with locked(path):
+            if compatible:
+                content = json.dumps({"ollama_version": ollama_version, "compatible": True})
+                atomic_write_text(path, content)
+                return
+            previous_compatible: object = None
+            previous_failures: list[str] = []
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = None
+            if isinstance(existing, dict) and existing.get("ollama_version") == ollama_version:
+                previous_compatible = existing.get("compatible")
+                raw_failures = existing.get("failures")
+                if isinstance(raw_failures, list):
+                    previous_failures = [f for f in raw_failures if isinstance(f, str)]
+            failures = list(previous_failures)
+            if model_name not in failures:
+                failures.append(model_name)
+            confirmed = len(set(failures)) >= 2
+            content = json.dumps(
+                {
+                    "ollama_version": ollama_version,
+                    "compatible": False if confirmed else None,
+                    "failures": failures,
+                }
+            )
             atomic_write_text(path, content)
+            if confirmed and previous_compatible is not False:
+                log.warning(
+                    "Ollama %s rejected omm's manifest for multiple models (%s) - "
+                    "falling back to native `ollama create` for future links until "
+                    "Ollama's manifest format is confirmed compatible again.",
+                    ollama_version,
+                    ", ".join(sorted(set(failures))),
+                )
     except OSError:
         pass
 
@@ -1983,13 +2097,15 @@ def _fallback_to_native_create_unlocked(
         except (OSError, ValueError):
             return []
 
-    def cleanup_transaction() -> None:
+    def cleanup_transaction() -> int:
         blobs_to_remove = transaction_blobs()
         # Reclaim partial replacement bytes before restoring the small
         # manifest, so a disk-full import can still recover its old tag.
+        removed = 0
         for blob in blobs_to_remove:
             try:
                 blob.unlink(missing_ok=True)
+                removed += 1
             except OSError:
                 pass
         try:
@@ -2009,6 +2125,7 @@ def _fallback_to_native_create_unlocked(
                     f"Could not restore the previous Ollama registration at {manifest_path}: "
                     f"{error}. The previous model blobs were preserved."
                 ) from error
+        return removed
 
     with tempfile.TemporaryDirectory() as tmp:
         modelfile = Path(tmp) / "Modelfile"
@@ -2023,11 +2140,16 @@ def _fallback_to_native_create_unlocked(
                 timeout=600,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
-            cleanup_transaction()
+            removed = cleanup_transaction()
             if isinstance(e, OSError) and _is_disk_full_error(e):
                 raise InsufficientLinkSpaceError(
                     f"Ollama ran out of disk space while importing {model_name}. "
-                    "New transaction files were removed."
+                    + (
+                        "New transaction files were removed."
+                        if removed
+                        else "Ollama may have left partial files in "
+                        f"{models_dir / 'blobs'}; omm could not identify them safely."
+                    )
                 ) from e
             raise LinkError(f"Could not regenerate Ollama manifest for {model_name}: {e}") from e
     new_blobs = transaction_blobs()
@@ -2035,12 +2157,17 @@ def _fallback_to_native_create_unlocked(
         # The native importer is not transactional. Remove only files that
         # appeared during this omm-owned invocation, never pre-existing user
         # blobs. This is especially important after ENOSPC.
-        cleanup_transaction()
+        removed = cleanup_transaction()
         stderr = result.stderr.strip()
         if "no space left" in stderr.lower() or "disk full" in stderr.lower():
             raise InsufficientLinkSpaceError(
                 f"Ollama ran out of disk space while importing {model_name}. "
-                "New transaction files were removed."
+                + (
+                    "New transaction files were removed."
+                    if removed
+                    else "Ollama may have left partial files in "
+                    f"{models_dir / 'blobs'}; omm could not identify them safely."
+                )
             )
         raise LinkError(
             f"Ollama rejected {model_name} even via native `ollama create`: {stderr}"
@@ -2071,7 +2198,7 @@ def _ensure_ollama_accepts(
     accepted = _ollama_accepts_manifest(model_name)
     if accepted is None:
         return has_chat_template
-    _record_manifest_format_result(ollama_version, accepted)
+    _record_manifest_format_result(ollama_version, accepted, model_name)
     if accepted:
         return has_chat_template
     # Remove the rejected hand-written manifest and its omm-owned model
@@ -2080,7 +2207,7 @@ def _ensure_ollama_accepts(
     # remain orphaned forever.
     _unlink_ollama_unlocked(model_name, models_dir=models_dir)
     _fallback_to_native_create_under_model_lock(gguf_path, model_name, models_dir)
-    return True
+    return has_chat_template
 
 
 def _manifest_blob_digests(manifest: dict) -> set[str]:
@@ -2378,7 +2505,15 @@ def autoremove_ollama(models_dir: Path | None = None) -> tuple[int, int]:
         # once used to reload and rewrite the whole on-disk registry that many
         # times over for no observable difference in the end state.
         cleared_paths: list[Path] = []
-        for blob in blobs_dir.iterdir():
+        try:
+            blob_entries = list(blobs_dir.iterdir())
+        except OSError:
+            # Same systemd-owned-store case the native-create path already
+            # guards (see _fallback_to_native_create_unlocked): the dir
+            # stats fine but this process may not list it. Nothing can be
+            # cleaned here, and one engine must not abort `omm cleanup`.
+            return (0, 0)
+        for blob in blob_entries:
             if blob.is_symlink() and not blob.exists():
                 try:
                     blob.unlink()
@@ -2485,12 +2620,27 @@ def jan_models_dir() -> Path:
     return jan_app_dir() / "data" / "llamacpp" / "models"
 
 
+_JAN_WINDOWS_INSTALL_DIRS = ("Jan", "jan")
+
+
 def is_jan_installed() -> bool:
     system = platform.system()
     if system == "Darwin":
         return _app_bundle_installed("Jan")
     if jan_app_dir().exists():
         return True
+    if system == "Windows":
+        if _windows_install_artifact_exists(_JAN_WINDOWS_INSTALL_DIRS, "Jan.lnk"):
+            return True
+        # Tauri NSIS per-user default install lands at %LOCALAPPDATA%\<productName>,
+        # outside the helper's own Programs root.
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            try:
+                return any(p.suffix.lower() == ".exe" for p in (Path(local) / "Jan").iterdir())
+            except OSError:
+                return False
+        return False
     if system == "Linux" and shutil.which("flatpak") is not None:
         # jan_app_dir() (~/.config/Jan) is only created the first time Jan
         # actually launches - a flatpak install that succeeded but was
@@ -2521,7 +2671,7 @@ def _jan_model_yaml_path(model_id: str) -> Path:
     return jan_models_dir() / model_id / "model.yml"
 
 
-def link_jan(gguf_path: Path, model_id: str) -> Path:
+def link_jan(gguf_path: Path, model_id: str, *, force: bool = False) -> Path:
     """Register `gguf_path` with Jan by writing a model.yml manifest that
     points model_path straight at it - no symlink needed, since Jan's own
     local-file import does the same (stores the absolute path as-is)."""
@@ -2544,12 +2694,27 @@ def link_jan(gguf_path: Path, model_id: str) -> Path:
             if not config_path.parent.resolve().is_relative_to(root.resolve()):
                 raise LinkError("Refusing Jan manifest path outside the models directory.")
             config_path.parent.mkdir(parents=True, exist_ok=True)
-            if config_path.exists() and not _owned_manifest(
-                config_path, expected_source=gguf_path
-            ):
-                raise LinkError(
-                    f"Refusing to replace unowned Jan manifest at {config_path}."
-                )
+            if config_path.exists():
+                record = _ownership_record(config_path)
+                if not _owned_manifest(config_path, expected_source=gguf_path, record=record):
+                    recorded = None if config_path.is_symlink() else read_jan_model_path(config_path)
+                    if recorded is not None and _link_key(Path(recorded)) == _link_key(gguf_path):
+                        # Already points at this model (Jan's UI rewrote fields
+                        # like ctx_size) - keep the current manifest rather than
+                        # clobbering user settings.
+                        return config_path
+                    owned_by_other = (
+                        _owned_manifest(config_path, record=record)
+                        and record.get("source") not in (None, _link_key(gguf_path))
+                    )
+                    if owned_by_other:
+                        raise LinkError(
+                            f"Refusing to replace an omm Jan manifest for a different model at {config_path}."
+                        )
+                    if not force:
+                        raise LinkError(
+                            f"Refusing to replace unowned Jan manifest at {config_path}."
+                        )
             atomic_write_text(config_path, content)
             try:
                 _record_ownership(config_path, gguf_path, "manifest")
@@ -3556,7 +3721,7 @@ def link_engine(
     elif key == "lmstudio":
         link_lmstudio(gguf_path, repo_id, on_copy=report_copy, force=force)
     elif key == "jan":
-        link_jan(gguf_path, ollama_tag)
+        link_jan(gguf_path, ollama_tag, force=force)
     elif key == "anythingllm":
         link_ollama(
             gguf_path,

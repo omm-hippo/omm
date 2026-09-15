@@ -14,6 +14,7 @@ from omm.engines import (
     RuntimeAdapterError,
     RuntimeModelRef,
 )
+from omm.engines import ollama as ollama_module
 from omm.engines.base import LoopbackJsonClient
 from omm.engines.lmstudio import LMStudioAdapter
 from omm.engines.ollama import OllamaAdapter
@@ -63,6 +64,11 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
             self._json(200, {"models": [{"name": "local-model:latest"}]})
             return
         if self.path == "/api/ps":
+            lag = self.state.get("ps_lag", 0)
+            if lag > 0:
+                self.state["ps_lag"] = lag - 1
+                self._json(200, {"models": [{"name": "local-model:latest"}]})
+                return
             rows = [{"name": "local-model:latest"}] if self.state.get("loaded") else []
             self._json(200, {"models": rows})
             return
@@ -102,6 +108,7 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
                 self._json(500, {"error": "out of memory"})
                 return
             if payload.get("keep_alive") == 0:
+                self.state["ps_lag"] = self.state.get("unload_ps_lag", 0)
                 if not self.state.get("unload_fails"):
                     self.state["loaded"] = False
                 self._json(200, {"response": ""})
@@ -290,6 +297,52 @@ def test_ollama_probe_does_not_override_a_preloaded_context(runtime_server):
     assert "num_ctx" not in probe_payload["options"]
 
 
+def test_ollama_unload_waits_for_async_runner_teardown(runtime_server, monkeypatch):
+    base_url, state = runtime_server
+    monkeypatch.setattr(ollama_module, "_UNLOAD_CONFIRM_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(ollama_module, "_UNLOAD_CONFIRM_TIMEOUT_SECONDS", 5)
+    state["unload_ps_lag"] = 6
+    adapter = OllamaAdapter(base_url)
+    receipt = adapter.load(RuntimeModelRef("local-model"), LoadOptions())
+
+    assert adapter.unload(receipt).unloaded is True
+
+
+@pytest.mark.parametrize("no_thinking_support", [False, True])
+def test_ollama_probe_leaves_preloaded_model_keep_alive_untouched(
+    runtime_server, no_thinking_support
+):
+    base_url, state = runtime_server
+    state["loaded"] = True
+    state["no_thinking_support"] = no_thinking_support
+    adapter = OllamaAdapter(base_url)
+    receipt = adapter.load(RuntimeModelRef("local-model"), LoadOptions())
+
+    assert adapter.generate(receipt, ProbeRequest()).text == "OK"
+    probe_payloads = [
+        payload
+        for method, path, payload in state["calls"]
+        if method == "POST" and path == "/api/generate" and payload.get("prompt")
+    ]
+    assert probe_payloads
+    for payload in probe_payloads:
+        assert "keep_alive" not in payload
+
+
+def test_ollama_probe_uses_keep_alive_for_omm_owned_load(runtime_server):
+    base_url, state = runtime_server
+    adapter = OllamaAdapter(base_url)
+    receipt = adapter.load(RuntimeModelRef("local-model"), LoadOptions())
+
+    assert adapter.generate(receipt, ProbeRequest()).text == "OK"
+    probe_payload = next(
+        payload
+        for method, path, payload in reversed(state["calls"])
+        if method == "POST" and path == "/api/generate" and payload.get("prompt")
+    )
+    assert probe_payload["keep_alive"] == -1
+
+
 def test_ollama_probe_retries_without_think_for_non_thinking_model(runtime_server):
     base_url, state = runtime_server
     state["no_thinking_support"] = True
@@ -457,6 +510,8 @@ def test_uncertain_failed_load_reports_cleanup_failure(
 ):
     base_url, state = runtime_server
     state["unload_fails"] = True
+    monkeypatch.setattr(ollama_module, "_UNLOAD_CONFIRM_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(ollama_module, "_UNLOAD_CONFIRM_POLL_SECONDS", 0.01)
     adapter = factory(base_url)
     original = adapter._client.request
     failed_once = False
@@ -500,3 +555,24 @@ def test_classifies_gpu_driver_crash(message):
 )
 def test_does_not_classify_ordinary_failures_as_gpu_driver_crash(message):
     assert LoopbackJsonClient._is_gpu_driver_crash(message.casefold()) is False
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("model requires more system memory (10.0 gib) than is available", "out_of_memory"),
+        ("cuda out of memory", "out_of_memory"),
+        ("this model does not support tool calling", "unsupported_runtime"),
+        ("model not found, try pulling it first", "model_not_visible"),
+        ("failed to load model", "load_failed"),
+        ("something else entirely", "unknown"),
+        ("", "unknown"),
+    ],
+)
+def test_loopback_client_classifies_error_bodies(message, expected):
+    assert LoopbackJsonClient._classify(message, "unknown") == expected
+
+
+def test_response_message_returns_empty_string_for_a_body_that_is_not_json():
+    response = SimpleNamespace(json=lambda: (_ for _ in ()).throw(ValueError()))
+    assert LoopbackJsonClient._response_message(response) == ""

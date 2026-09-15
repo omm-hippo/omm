@@ -175,6 +175,17 @@ def test_checksum_manifest_detects_archive_changes(tmp_path):
         release_artifacts.validate_checksums(tmp_path)
 
 
+def test_checksum_manifest_uses_lf_newlines(tmp_path):
+    wheel = tmp_path / "example-1.0-py3-none-any.whl"
+    sdist = tmp_path / "example-1.0.tar.gz"
+    wheel.write_bytes(b"wheel")
+    sdist.write_bytes(b"sdist")
+
+    checksum_path = release_artifacts.write_checksums(tmp_path)
+
+    assert b"\r" not in checksum_path.read_bytes()
+
+
 def test_release_bundle_rejects_unexpected_files(tmp_path):
     wheel = tmp_path / "example-1.0-py3-none-any.whl"
     sdist = tmp_path / "example-1.0.tar.gz"

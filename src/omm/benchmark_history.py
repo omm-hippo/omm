@@ -79,6 +79,13 @@ def _load() -> dict[str, Any]:
         return {"entries": {}, "failures": {}}
     entries = data.get("entries")
     failures = data.get("failures")
+    if ("entries" in data and not isinstance(entries, dict)) or (
+        "failures" in data and not isinstance(failures, dict)
+    ):
+        try:
+            backup_corrupt_file(path)
+        except OSError:
+            pass
     return {
         "entries": dict(entries) if isinstance(entries, dict) else {},
         "failures": dict(failures) if isinstance(failures, dict) else {},
@@ -112,20 +119,23 @@ def record_benchmarked(
     ref: str, *, repo_id: str | None, filename: str, sha256: str, tokens_per_sec: float
 ) -> None:
     path = _path()
-    with locked(path):
-        data = _load()
-        data["entries"][ref] = {
-            "repo_id": repo_id,
-            "filename": filename,
-            "sha256": sha256,
-            "tokens_per_sec": tokens_per_sec,
-            "benchmarked_at": datetime.now(timezone.utc).isoformat(),
-        }
-        # A real result proves the earlier failures were circumstantial, so
-        # the streak resets rather than lingering to suppress a model that
-        # demonstrably works on this machine.
-        data["failures"].pop(ref, None)
-        _save(data)
+    try:
+        with locked(path):
+            data = _load()
+            data["entries"][ref] = {
+                "repo_id": repo_id,
+                "filename": filename,
+                "sha256": sha256,
+                "tokens_per_sec": tokens_per_sec,
+                "benchmarked_at": datetime.now(timezone.utc).isoformat(),
+            }
+            # A real result proves the earlier failures were circumstantial, so
+            # the streak resets rather than lingering to suppress a model that
+            # demonstrably works on this machine.
+            data["failures"].pop(ref, None)
+            _save(data)
+    except OSError:
+        return
 
 
 def record_benchmark_failure(
@@ -146,28 +156,31 @@ def record_benchmark_failure(
     silently extend a suppression window it did not earn.
     """
     path = _path()
-    with locked(path):
-        data = _load()
-        now = datetime.now(timezone.utc).isoformat()
-        previous = data["failures"].get(ref)
-        if not isinstance(previous, dict):
-            previous = {}
-        machine_related = is_machine_related_failure(reason)
-        streak = _streak_of(previous) + (1 if machine_related else 0)
-        data["failures"][ref] = {
-            "repo_id": repo_id,
-            "filename": filename,
-            "reason": reason,
-            "outcome": "machine_failure" if machine_related else "other_failure",
-            "engine": engine,
-            "consecutive_machine_failures": streak,
-            "first_failed_at": previous.get("first_failed_at") or now,
-            "last_failed_at": now,
-            "last_machine_failure_at": (
-                now if machine_related else previous.get("last_machine_failure_at")
-            ),
-        }
-        _save(data)
+    try:
+        with locked(path):
+            data = _load()
+            now = datetime.now(timezone.utc).isoformat()
+            previous = data["failures"].get(ref)
+            if not isinstance(previous, dict):
+                previous = {}
+            machine_related = is_machine_related_failure(reason)
+            streak = _streak_of(previous) + (1 if machine_related else 0)
+            data["failures"][ref] = {
+                "repo_id": repo_id,
+                "filename": filename,
+                "reason": reason,
+                "outcome": "machine_failure" if machine_related else "other_failure",
+                "engine": engine,
+                "consecutive_machine_failures": streak,
+                "first_failed_at": previous.get("first_failed_at") or now,
+                "last_failed_at": now,
+                "last_machine_failure_at": (
+                    now if machine_related else previous.get("last_machine_failure_at")
+                ),
+            }
+            _save(data)
+    except OSError:
+        return
 
 
 def failure_record(ref: str) -> dict[str, Any] | None:

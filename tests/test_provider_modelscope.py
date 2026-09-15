@@ -5,9 +5,12 @@ docs/superpowers/specs/2026-07-24-multi-provider-hub-design.md - do not
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import requests
 
+from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES
 from omm.providers import modelscope
 from omm.providers.base import ModelResolutionError
 
@@ -26,12 +29,19 @@ class _FakeResponse:
     def __init__(self, status_code=200, payload=None):
         self.status_code = status_code
         self._payload = payload or {}
+        self.headers = {}
+        # read_bounded_json_response reads `.content` (no iter_content on
+        # these fakes), not `.json()`.
+        self.content = json.dumps(self._payload).encode("utf-8")
 
     def raise_for_status(self):
         if self.status_code >= 400:
             import requests
 
             raise requests.HTTPError(response=self)
+
+    def close(self):
+        pass
 
     def json(self):
         return self._payload
@@ -70,8 +80,16 @@ def test_fetch_repo_files_filters_to_gguf_only(monkeypatch):
 
 def test_fetch_repo_files_404_raises_model_resolution_error(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(404, {}))
-    with pytest.raises(ModelResolutionError):
+    with pytest.raises(ModelResolutionError) as exc_info:
         modelscope.fetch_repo_files("org/does-not-exist")
+    assert exc_info.value.kind == "not_found"
+
+
+def test_fetch_repo_files_503_is_kind_unavailable(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(503, {}))
+    with pytest.raises(ModelResolutionError) as exc_info:
+        modelscope.fetch_repo_files("org/repo")
+    assert exc_info.value.kind == "unavailable"
 
 
 def test_download_url_builds_expected_query_string():
@@ -140,13 +158,18 @@ def test_fetch_repo_param_count_b_is_always_none():
 
 
 class _FakeResponseWithJsonError:
-    """Fake response that raises ValueError when .json() is called,
-    simulating a 200 response with a non-JSON body."""
+    """Fake response with a body that fails to parse as JSON, simulating a
+    200 response with a non-JSON body."""
 
     def __init__(self):
         self.status_code = 200
+        self.headers = {}
+        self.content = b"not valid json"
 
     def raise_for_status(self):
+        pass
+
+    def close(self):
         pass
 
     def json(self):
@@ -244,7 +267,7 @@ _METADATA_PAYLOAD = {
 
 def test_fetch_repo_metadata_reads_the_live_payload_shape(monkeypatch):
     monkeypatch.setattr(
-        requests, "get", lambda url, timeout: _FakeResponse(payload=_METADATA_PAYLOAD)
+        requests, "get", lambda *a, **k: _FakeResponse(payload=_METADATA_PAYLOAD)
     )
 
     metadata = modelscope.fetch_repo_metadata("Qwen/Qwen2.5-7B-Instruct-GGUF")
@@ -263,14 +286,14 @@ def test_fetch_repo_metadata_reads_the_live_payload_shape(monkeypatch):
 
 def test_fetch_repo_metadata_drops_the_unset_timestamp_sentinel(monkeypatch):
     payload = {"Data": {**_METADATA_PAYLOAD["Data"], "LastUpdatedTime": -62135596800}}
-    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeResponse(payload=payload))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(payload=payload))
 
     assert "last_modified" not in modelscope.fetch_repo_metadata("org/repo")
 
 
 def test_fetch_repo_metadata_omits_keys_the_repo_has_no_value_for(monkeypatch):
     monkeypatch.setattr(
-        requests, "get", lambda url, timeout: _FakeResponse(payload={"Data": {}})
+        requests, "get", lambda *a, **k: _FakeResponse(payload={"Data": {}})
     )
 
     metadata = modelscope.fetch_repo_metadata("org/repo")
@@ -279,9 +302,30 @@ def test_fetch_repo_metadata_omits_keys_the_repo_has_no_value_for(monkeypatch):
 
 
 def test_fetch_repo_metadata_returns_empty_instead_of_raising(monkeypatch):
-    def _explode(url, timeout):
+    def _explode(*a, **k):
         raise requests.ConnectionError("offline")
 
     monkeypatch.setattr(requests, "get", _explode)
 
     assert modelscope.fetch_repo_metadata("org/repo") == {}
+
+
+class _OversizedResponse:
+    """Declares a Content-Length past MAX_PROVIDER_RESPONSE_BYTES - the
+    bounded reader must reject it before ever touching the body."""
+
+    headers = {"Content-Length": str(MAX_PROVIDER_RESPONSE_BYTES + 1)}
+    content = b"{}"
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_fetch_repo_files_rejects_response_over_the_size_limit(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _OversizedResponse())
+
+    with pytest.raises(ModelResolutionError):
+        modelscope.fetch_repo_files("org/repo")

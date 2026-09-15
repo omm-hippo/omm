@@ -3,8 +3,9 @@ name: PR 설명 확인
 # Every teammate develops with an AI agent and the resulting English PR bodies
 # leave reviewers without context. CONTRIBUTING.md requires four Korean
 # sections (한줄 요약 / 배경 / 무엇을 바꿨나 / 어떻게 확인했나); this check
-# enforces them. Bot PRs (retrain/*, the beta -> main sync) are exempt inside
-# the script. Read-only: it never comments, so it also works for fork PRs.
+# enforces them. Bot PRs (retrain/*, emergency-signal/*, the beta -> main sync)
+# are exempt inside the script. Read-only: it never comments, so it also works
+# for fork PRs.
 
 "on":
   pull_request:
@@ -23,8 +24,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Check out the protected base, not the PR merge tree: a PR that edits
+      # scripts/check_pr_description.py must not grade itself with its own copy.
+      # The script reads only the PR_BODY/PR_AUTHOR/PR_HEAD_REF env vars below,
+      # so it never needs the PR's files.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -36,4 +42,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_HEAD_REF: ${{ github.head_ref }}
+          # A fork contributor picks their own branch name, so the branch-based
+          # exemptions only apply to head branches in this repository.
+          PR_HEAD_SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
         run: python scripts/check_pr_description.py

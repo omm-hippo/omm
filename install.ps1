@@ -1,11 +1,28 @@
 # Installs omm (Open source Model Manager) as an isolated CLI command via pipx.
 # Usage: [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/omm-hippo/omm/main/install.ps1 | iex
-# To install a non-default branch: $env:OMM_INSTALL_BRANCH = "beta"; irm ... | iex
+# To try a beta build, install normally then run: omm setting version --beta
 # Do not try to fix the first-download TLS problem inside this script: `irm`
 # fetches the script before PowerShell can execute any of its contents.
 $ErrorActionPreference = "Stop"
 
+# `irm ... | iex` runs this script's text inside the caller's own PowerShell
+# session, so a bare `exit` would close that session's window along with any
+# recovery message just printed above it. $PSCommandPath is only set when the
+# script actually runs as a file (tests, CI, a saved copy) - use that to tell
+# the two execution modes apart and only hard-`exit` in the file case.
+$OmmRunAsFile = [bool]$PSCommandPath
+function Exit-OmmFailure {
+    if ($OmmRunAsFile) { exit 1 } else { throw "omm installer failed; see the messages above." }
+}
+
 $RepoUrl = "https://github.com/omm-hippo/omm.git"
+# Mirror install.sh/uninstall.sh: only a fully qualified OMM_HOME is
+# accepted. GetFullPath would resolve a relative, "~", drive-relative
+# ("C:omm") or root-relative ("\omm") value against the process's .NET
+# current directory, not the real hub.
+if ($env:OMM_HOME -and -not ($env:OMM_HOME -match '^[A-Za-z]:[\\/]' -or $env:OMM_HOME -match '^[\\/]{2}[^\\/]')) {
+    throw "Refusing non-absolute OMM_HOME: $env:OMM_HOME"
+}
 $OmmHome = if ($env:OMM_HOME) { $env:OMM_HOME } else { Join-Path $env:USERPROFILE ".omm" }
 $OmmHome = [IO.Path]::GetFullPath($OmmHome).TrimEnd('\')
 $profileHome = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
@@ -18,10 +35,6 @@ if ($currentDirectory -eq $OmmHome -or $currentDirectory.StartsWith($homePrefix,
     throw "Refusing OMM_HOME that contains the current directory: $OmmHome"
 }
 $SourcesDir = Join-Path $OmmHome "sources"
-
-# Set $env:OMM_INSTALL_BRANCH before piping this script into iex to install
-# from a branch other than the repo default (e.g. to try a beta build).
-$Branch = $env:OMM_INSTALL_BRANCH
 
 # Trust anchor for the signature check below - must stay identical to
 # src/omm/trust/allowed_signers in the repo (that copy is what `omm
@@ -75,7 +88,21 @@ function Install-ViaWinget {
 function Resolve-SigningCommit {
     param([string]$Commit, [string]$RepoDir)
 
-    $parents = (git -C $RepoDir rev-list --parents -n 1 $Commit).Trim() -split '\s+'
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativePref = $PSNativeCommandUseErrorActionPreference
+    $output = $null
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        $output = git -C $RepoDir rev-list --parents -n 1 $Commit 2>$null
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $previousNativePref
+    }
+    if ($exitCode -ne 0 -or -not $output) { return $Commit }
+    $parents = ([string]($output | Select-Object -First 1)).Trim() -split '\s+'
     if ($parents.Count -eq 3) {
         return $parents[2]
     }
@@ -107,7 +134,7 @@ function Test-CommitSignature {
     }
 
     $signersFile = New-TemporaryFile
-    Set-Content -Path $signersFile.FullName -Value $AllowedSignersContent -NoNewline
+    Set-Content -LiteralPath $signersFile.FullName -Value $AllowedSignersContent -NoNewline
 
     # git/ssh-keygen write their "Good signature" status line to stderr even
     # on success. PowerShell 7.3+ defaults $PSNativeCommandUseErrorActionPreference
@@ -128,7 +155,7 @@ function Test-CommitSignature {
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
         $PSNativeCommandUseErrorActionPreference = $previousNativePref
-        Remove-Item $signersFile.FullName -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $signersFile.FullName -Force -ErrorAction SilentlyContinue
     }
     if (-not $ok -and -not $Quiet) {
         Write-Warning ($verifyOutput | Out-String)
@@ -173,11 +200,17 @@ function Test-PythonCommand {
         $startInfo.CreateNoWindow = $true
         $process = [System.Diagnostics.Process]::Start($startInfo)
         if ($null -eq $process) { return $false }
+        # Drain both pipes before waiting: a child that fills the ~4KB stderr
+        # pipe buffer at startup would otherwise block and hit the timeout.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(5000)) {
             try { $process.Kill() } catch {}
             return $false
         }
-        $result = $process.StandardOutput.ReadToEnd()
+        if (-not $stdoutTask.Wait(2000)) { return $false }
+        [void]$stderrTask.Wait(2000)
+        $result = $stdoutTask.Result
         return ($process.ExitCode -eq 0 -and $result.Trim() -eq "1")
     } catch {
         # WindowsApps aliases can exist on PATH but open a Store prompt (or
@@ -233,7 +266,7 @@ if (-not $PythonCmd) {
 if (-not $PythonCmd) {
     Write-Error ("Python 3.10+ not found. Install it from https://www.python.org/downloads/ (not the Microsoft Store " +
         "version - Store apps virtualize the folders pipx needs) and re-run this installer.")
-    exit 1
+    Exit-OmmFailure
 }
 
 function Invoke-Python {
@@ -245,12 +278,12 @@ function Invoke-Python {
 if (-not (Test-CommandExists "git")) {
     if (-not (Install-ViaWinget "Git.MinGit" "git")) {
         Write-Error "git not found. Install git first (needed to fetch omm from GitHub): https://git-scm.com/downloads"
-        exit 1
+        Exit-OmmFailure
     }
 }
 if (-not (Test-CommandExists "git")) {
     Write-Error "git not found. Install git first (needed to fetch omm from GitHub): https://git-scm.com/downloads"
-    exit 1
+    Exit-OmmFailure
 }
 
 # --- pipx --------------------------------------------------------------
@@ -291,27 +324,37 @@ $PipxEnvironment = "omm-model"
 $LegacyPipxEnvironment = "omm"
 
 function Get-PipxSnapshot {
+    # pipx's own `list --json` returns 1 (EXIT_CODE_LIST_PROBLEM) whenever any
+    # venv on the machine is unhealthy - printing the full snapshot for every
+    # *other* venv first, and simply omitting the broken one. Treating exit 1
+    # as failure here would refuse to install because of a venv omm has never
+    # heard of. Accept exit 1 only when stdout actually parsed as a snapshot;
+    # any other nonzero exit code still fails closed.
     $previousErrorActionPreference = $ErrorActionPreference
     $previousNativePref = $PSNativeCommandUseErrorActionPreference
-    $ok = $false
+    $exitCode = 1
     $output = @()
     try {
         $ErrorActionPreference = "Continue"
         $PSNativeCommandUseErrorActionPreference = $false
         $output = @(Invoke-Pipx list --json 2>$null)
-        $ok = $LASTEXITCODE -eq 0
+        $exitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
         $PSNativeCommandUseErrorActionPreference = $previousNativePref
     }
-    if (-not $ok) {
+    if ($exitCode -ne 0 -and $exitCode -ne 1) {
         throw "Could not inspect existing pipx environments; refusing an unsafe migration."
     }
     try {
-        return (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine) | ConvertFrom-Json
+        $snapshot = (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine) | ConvertFrom-Json
     } catch {
         throw "Could not parse pipx environment metadata; refusing an unsafe migration."
     }
+    if ($null -eq $snapshot -or $null -eq $snapshot.venvs -or $null -eq $snapshot.pipx_spec_version) {
+        throw "Could not inspect existing pipx environments; refusing an unsafe migration."
+    }
+    return $snapshot
 }
 
 function Test-PipxSnapshotEnvironment {
@@ -398,7 +441,11 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-distribution, omm_home, require_source, expected_version = sys.argv[1:]
+args = sys.argv[1:]
+if len(args) not in (3, 4):
+    raise SystemExit(1)
+distribution, omm_home, require_source = args[:3]
+expected_version = args[3] if len(args) == 4 else ""
 try:
     dist = importlib.metadata.distribution(distribution)
 except importlib.metadata.PackageNotFoundError:
@@ -612,6 +659,14 @@ $PythonExecutable = (Invoke-Python -c "import sys; print(sys.executable)").Trim(
 $PipxLocalVenvs = ([string](Invoke-Pipx environment --value PIPX_LOCAL_VENVS)).Trim()
 $PipxBinDir = ([string](Invoke-Pipx environment --value PIPX_BIN_DIR)).Trim()
 $PipxSnapshot = Get-PipxSnapshot
+foreach ($envName in @($LegacyPipxEnvironment, $PipxEnvironment)) {
+    $envDir = Join-Path $PipxLocalVenvs $envName
+    if ((Test-Path -LiteralPath $envDir -PathType Container) -and -not (Test-PipxSnapshotEnvironment $PipxSnapshot $envName)) {
+        Write-Error ("pipx reports the '$envName' environment as broken (see 'pipx list'). Repair or remove it, " +
+            "then rerun this installer; models under OMM_HOME are not affected.")
+        Exit-OmmFailure
+    }
+}
 $LegacyPipxPresent = Test-PipxSnapshotEnvironment $PipxSnapshot $LegacyPipxEnvironment
 if ($LegacyPipxPresent -and (
     -not (Test-PipxSnapshotIdentity $PipxSnapshot $LegacyPipxEnvironment $LegacyPipxEnvironment) -or
@@ -619,8 +674,8 @@ if ($LegacyPipxPresent -and (
 )) {
     Write-Error ("Refusing to replace pipx environment 'omm': it is not an omm install this installer recognises " +
         "(typically because OMM_HOME moved after the original install, or its source checkout was deleted). " +
-        "Your models and settings under OMM_HOME are not affected. Run `pipx uninstall omm`, then re-run this installer.")
-    exit 1
+        "Your models and settings under OMM_HOME are not affected. If it is your old OMM install, run `pipx uninstall omm`, then re-run this installer.")
+    Exit-OmmFailure
 }
 $NewPipxPresent = Test-PipxSnapshotEnvironment $PipxSnapshot $PipxEnvironment
 if ($NewPipxPresent -and (
@@ -628,22 +683,24 @@ if ($NewPipxPresent -and (
     -not (Test-OmmPipxEnvironment $PipxEnvironment $PipxEnvironment)
 )) {
     Write-Error "Refusing to replace an unverified $PipxEnvironment pipx environment."
-    exit 1
+    Exit-OmmFailure
 }
 
 New-Item -ItemType Directory -Force -Path $SourcesDir | Out-Null
+
+# Marks custom OMM_HOME directories as installer-managed. The uninstaller
+# requires this marker before removing anything from a non-default home.
+Set-Content -LiteralPath (Join-Path $OmmHome ".omm-managed") -Value "omm installer managed home v1" -Encoding Ascii
+
 $StagingDir = Join-Path $SourcesDir ("checkout-" + $PID + "-" + [guid]::NewGuid().ToString("N"))
 Write-Host "Cloning omm source to a versioned staging directory ..."
-$CloneArgs = @("clone", "--filter=blob:none", "--quiet")
-if ($Branch) {
-    Write-Host "Using branch: $Branch"
-    $CloneArgs += @("-b", $Branch)
-}
+$CloneArgs = @("-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60", "clone", "--filter=blob:none", "--quiet")
 $CloneArgs += @($RepoUrl, $StagingDir)
 git @CloneArgs
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "git clone failed."
-    exit 1
+    Remove-Item -LiteralPath $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Error "git clone failed or stalled (no progress for 60s)."
+    Exit-OmmFailure
 }
 
 Write-Host "Verifying commit signature ..."
@@ -669,16 +726,16 @@ if ($null -eq $verifiedCommit) {
     }
 }
 if ($null -eq $verifiedCommit) {
-    Remove-Item -Recurse -Force $StagingDir
+    Remove-Item -LiteralPath $StagingDir -Recurse -Force
     Write-Error "Signature verification failed - refusing to install untrusted code."
-    exit 1
+    Exit-OmmFailure
 }
 if ($verifiedCommit -ne $headCommit) {
     git -C $StagingDir checkout --detach --quiet $verifiedCommit
     if ($LASTEXITCODE -ne 0) {
-        Remove-Item -Recurse -Force $StagingDir
+        Remove-Item -LiteralPath $StagingDir -Recurse -Force
         Write-Error "Could not check out the verified signed commit."
-        exit 1
+        Exit-OmmFailure
     }
 }
 $SrcDir = Join-Path $SourcesDir $verifiedCommit
@@ -690,7 +747,7 @@ if (Test-Path -LiteralPath $SrcDir) {
     } catch {
         Remove-Item -LiteralPath $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
         Write-Error "Could not move the previous source checkout aside: $_"
-        exit 1
+        Exit-OmmFailure
     }
 }
 try {
@@ -700,17 +757,20 @@ try {
         Move-Item -LiteralPath $PreviousSrcDir -Destination $SrcDir -ErrorAction SilentlyContinue
     }
     Write-Error "Could not activate the freshly verified source checkout: $_"
-    exit 1
+    Exit-OmmFailure
 }
 $versionMatch = Select-String -LiteralPath (Join-Path $SrcDir "pyproject.toml") -Pattern '^version = "([^"]+)"\s*$' | Select-Object -First 1
 if ($null -eq $versionMatch) {
     Write-Error "Could not determine the project version from the verified checkout."
-    exit 1
+    Exit-OmmFailure
 }
 $ExpectedVersion = $versionMatch.Matches[0].Groups[1].Value
 
 # Install NVML only when the machine actually exposes an NVIDIA driver.
-$InstallSpec = if (Test-CommandExists "nvidia-smi") { "$SrcDir[nvidia]" } else { $SrcDir }
+# [watch] (watchdog + plyer) is what `omm setting auto-import enable` needs;
+# a `pip install` typed later lands in whatever Python is on PATH, not in
+# this pipx venv, so it goes in at install time.
+$InstallSpec = if (Test-CommandExists "nvidia-smi") { "$SrcDir[nvidia,watch]" } else { "$SrcDir[watch]" }
 
 Write-Host "Installing omm (editable) from $SrcDir ..."
 # pipx names the new environment after the distribution (`omm-model`)
@@ -732,7 +792,7 @@ function Restore-PipxAfterFailedInstall {
     if ($LegacyPipxPresent) {
         if ((Invoke-PipxStatus -Arguments @("reinstall", $LegacyPipxEnvironment) -Quiet) -and
             (Test-ExposedExistingEnvironment $LegacyPipxEnvironment $LegacyPipxEnvironment -RequireLegacySource)) {
-            $rollbackState = "verified"
+            $rollbackState = "reinstalled"
         } else {
             $rollbackState = "uncertain"
         }
@@ -755,9 +815,18 @@ function Write-FailedInstallRecovery {
     Write-Warning $Reason
     if ($RollbackState -eq "verified") {
         Write-Warning "The pre-existing omm command was restored and verified."
+    } elseif ($RollbackState -eq "reinstalled") {
+        Write-Warning "The pre-existing omm command was restored with 'pipx reinstall omm' and passed pipx identity checks. If that environment was installed from a Git URL, pipx re-fetched it without omm's signature verification."
     } elseif ($RollbackState -eq "uncertain") {
         Write-Warning "The previous environment was not removed, but its omm command could not be verified after rollback; run 'pipx reinstall omm' or 'pipx reinstall omm-model'."
     }
+}
+function Remove-UnreferencedNewSource {
+    if ($NewPipxPresent -or $null -ne $PreviousSrcDir) { return }
+    try { $snapshot = Get-PipxSnapshot } catch { return }
+    if (Test-PipxSnapshotEnvironment $snapshot $PipxEnvironment) { return }
+    try { Remove-Item -LiteralPath $SrcDir -Recurse -Force }
+    catch { Write-Warning "Could not remove the unused source checkout ${SrcDir}: $_" }
 }
 # pipx upgrades its shared pip *during* `pipx install` when it thinks it is
 # stale, and with two pipx copies on one machine (Microsoft Store Python
@@ -782,12 +851,14 @@ function Invoke-PipxInstallWithRepair {
 if (-not (Invoke-PipxInstallWithRepair)) {
     $rollbackState = Restore-PipxAfterFailedInstall
     Write-FailedInstallRecovery "pipx install failed; the legacy environment was not removed." $rollbackState
-    exit 1
+    Remove-UnreferencedNewSource
+    Exit-OmmFailure
 }
 if (-not (Test-InstalledOmmModel)) {
     $rollbackState = Restore-PipxAfterFailedInstall
     Write-FailedInstallRecovery "The new $PipxEnvironment environment or its omm command failed verification; the legacy environment was not removed." $rollbackState
-    exit 1
+    Remove-UnreferencedNewSource
+    Exit-OmmFailure
 }
 if ($LegacyPipxPresent) {
     Write-Host "Removing verified legacy pipx environment: $LegacyPipxEnvironment"
@@ -800,20 +871,16 @@ if ($LegacyPipxPresent) {
         } else {
             Write-Warning "pipx may have removed the omm command link before failing; repair could not be verified. Run 'pipx reinstall omm-model'."
         }
-        exit 1
+        Exit-OmmFailure
     }
     if (-not (Test-InstalledOmmModel)) {
         Write-Warning "Repairing the new omm command after legacy cleanup ..."
         if (-not (Invoke-PipxStatus -Arguments $installArguments) -or -not (Test-InstalledOmmModel)) {
             Write-Error "The new omm command could not be verified after legacy cleanup."
-            exit 1
+            Exit-OmmFailure
         }
     }
 }
-
-# Marks custom OMM_HOME directories as installer-managed. The uninstaller
-# requires this marker before removing anything from a non-default home.
-Set-Content -LiteralPath (Join-Path $OmmHome ".omm-managed") -Value "omm installer managed home v1" -Encoding Ascii
 
 # pipx now points at the verified checkout above. Best-effort cleanup of old
 # versioned checkouts is safe; a live old omm process may keep one locked on

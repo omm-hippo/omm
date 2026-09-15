@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import stat
 import sys
@@ -59,6 +60,40 @@ def test_pyinstaller_command_copies_distribution_metadata_and_package_data(tmp_p
     assert command[-1] == str(entry)
 
 
+class _WindowsOs:
+    """`os` as seen from windows_portable on a Windows host."""
+
+    name = "nt"
+
+    def __getattr__(self, attr):
+        return getattr(os, attr)
+
+
+def test_build_uses_the_checked_in_entry_and_pinned_environment(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        (tmp_path / "dist").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "dist" / "omm.exe").write_bytes(b"MZ")
+        return subprocess.CompletedProcess(command, 0)
+
+    # Patch the module's view of `os`, not `os.name` itself: pathlib picks
+    # PosixPath/WindowsPath from the global `os.name`, so flipping it would
+    # break every Path() call on Linux/macOS for the rest of the test.
+    monkeypatch.setattr(windows_portable, "os", _WindowsOs())
+    monkeypatch.setattr(windows_portable.importlib.metadata, "version", lambda _n: "1.2.3")
+    monkeypatch.setattr(windows_portable, "validate_executable", lambda *a: None)
+    monkeypatch.setattr(windows_portable.subprocess, "run", fake_run)
+
+    windows_portable.build_windows_portable("1.2.3", tmp_path / "dist")
+
+    command, options = calls[0]
+    assert command[-1].endswith("npm_entry.py")
+    assert options["env"]["PYTHONHASHSEED"] == "0"
+    assert options["env"]["SOURCE_DATE_EPOCH"] == "0"
+
+
 def test_package_is_deterministic_and_has_an_exact_allowlist(tmp_path):
     executable = tmp_path / "input.exe"
     executable.write_bytes(b"MZ" + b"portable executable")
@@ -81,6 +116,10 @@ def test_package_is_deterministic_and_has_an_exact_allowlist(tmp_path):
     with zipfile.ZipFile(first) as archive:
         assert archive.namelist() == ["omm.exe", "LICENSE.txt"]
         assert archive.read("omm.exe").startswith(b"MZ")
+
+    raw = first_checksum.read_bytes()
+    assert b"\r" not in raw
+    assert raw.endswith(b"\n")
 
 
 def test_archive_verifier_rejects_extra_files(tmp_path):
@@ -172,6 +211,11 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert "github.event_name == 'workflow_dispatch'" in workflow
     assert "contents: write" in workflow
     assert "uses: ./.github/workflows/github-release.yml" in workflow
+    assert (
+        "group: windows-portable-${{ github.event_name == 'workflow_dispatch'"
+        " && format('v{0}', inputs.version) || github.ref_name }}"
+    ) in workflow
+    assert "group: windows-portable-${{ github.ref }}\n" not in workflow
     assert "asset_set: windows" in workflow
     assert "workflow_call:" in github_release
     assert "group: github-release-v${{ inputs.version }}" in github_release
@@ -236,6 +280,10 @@ def test_windows_portable_workflow_is_pinned_and_release_gated():
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
     assert "actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661" in workflow
 
+    attest_start = workflow.index("- name: Attest the portable archive")
+    attest_block = workflow[attest_start:workflow.index("actions/attest-build-provenance@", attest_start)]
+    assert "if: github.event_name != 'pull_request'" in attest_block
+
 
 def test_windows_portable_requirements_are_exactly_pinned():
     requirements = (
@@ -245,3 +293,13 @@ def test_windows_portable_requirements_are_exactly_pinned():
     packages = [line for line in requirements if line and not line.startswith("#")]
     assert packages
     assert all("==" in package for package in packages)
+
+
+def test_missing_installed_distribution_becomes_a_windows_portable_error(monkeypatch):
+    def _raise_not_found(_name):
+        raise windows_portable.importlib.metadata.PackageNotFoundError()
+
+    monkeypatch.setattr(windows_portable.importlib.metadata, "version", _raise_not_found)
+
+    with pytest.raises(windows_portable.WindowsPortableError, match="install omm-model"):
+        windows_portable.installed_distribution_version()

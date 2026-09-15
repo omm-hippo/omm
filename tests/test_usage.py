@@ -30,18 +30,33 @@ def test_build_payload_shape(isolated_omm_home, monkeypatch):
     usage.record_run("install", "failed", "DownloadError")
     usage.record_run("search", "ok", None)
     p = usage.build_payload()
-    for key in (
+    # Exact set, not just presence: a new field in usage._snapshot() must
+    # fail here so the consent text, PRIVACY.md and the worker whitelist
+    # get updated with it.
+    assert set(p) == {
         "schema_version", "client_id", "client_version", "install_source",
-        "os_name", "cpu_arch", "ram_gb_bucket", "vram_gb_bucket",
-        "gpu_vendor", "recorded_at", "update_channel",
-    ):
-        assert key in p, key
+        "os_name", "os_version", "cpu_arch", "ram_gb_bucket", "vram_gb_bucket",
+        "gpu_vendor", "recorded_at", "update_channel", "commands", "errors",
+    }
     assert p["schema_version"] == 1
     assert isinstance(p["ram_gb_bucket"], str)
     assert p["commands"]["install ok"] == 1
     assert p["commands"]["install failed"] == 1
     assert p["commands"]["search ok"] == 1
     assert p["errors"]["install DownloadError"] == 1
+
+
+def test_build_payload_omits_errors_when_no_run_failed(isolated_omm_home, monkeypatch):
+    _enable(monkeypatch)
+    usage.record_run("install", "ok", None)
+    assert "errors" not in usage.build_payload()
+
+
+def test_build_payload_preview_does_not_create_client_id(isolated_omm_home):
+    config.CLIENT_ID_PATH.unlink(missing_ok=True)
+    payload = usage.build_payload(create_client_id=False)
+    assert not config.CLIENT_ID_PATH.exists()
+    assert payload["client_id"] == "(not generated yet)"
 
 
 def test_error_class_never_leaks_message(isolated_omm_home, monkeypatch):
@@ -64,6 +79,34 @@ def test_discard_pending(isolated_omm_home, monkeypatch):
     usage.record_run("install", "ok", None)
     assert usage.discard_pending() == 1
     assert usage.pending_count() == 0
+
+
+def test_discard_pending_count_matches_what_it_deletes(isolated_omm_home, monkeypatch):
+    """discard_pending's returned count must match what it actually deletes.
+    It must not compute the count via a separate call to the (lockable,
+    racy) _read_pending - if it did, a row appended by another process
+    between that count and the unlink would vanish uncounted."""
+    _enable(monkeypatch)
+    usage.record_run("install", "ok", None)
+    real_read_pending = usage._read_pending
+    fired = []
+
+    def racing():
+        if not fired:
+            fired.append(1)
+            usage.record_run("list", "ok", None)
+        return real_read_pending()
+
+    monkeypatch.setattr(usage, "_read_pending", racing)
+
+    n = usage.discard_pending()
+
+    # discard_pending bypasses the (now-racing) _read_pending entirely, so
+    # it only ever counts/deletes what was there when it took the lock -
+    # the row racing() appends afterwards (observed via pending_count(),
+    # which does go through _read_pending) survives untouched.
+    assert n == 1
+    assert usage.pending_count() == 1
 
 
 def test_flush_noop_before_interval(isolated_omm_home, monkeypatch):
@@ -95,6 +138,25 @@ def test_flush_keeps_pending_on_failure(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(usage, "_post", lambda p: False)
     assert usage.flush_pending(force=True) is False
     assert usage.pending_count() == 1
+
+
+def test_concurrent_flush_sends_the_daily_batch_once(isolated_omm_home, monkeypatch):
+    _enable(monkeypatch)
+    usage.record_run("install", "ok", None)
+    calls = []
+
+    def fake_post(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            # Simulate a second process racing the same flush while this
+            # one is mid-send - it must back off immediately rather than
+            # sending a second copy of the same daily batch.
+            usage.flush_pending()
+        return True
+
+    monkeypatch.setattr(usage, "_post", fake_post)
+    assert usage.flush_pending() is True
+    assert len(calls) == 1
 
 
 def test_flush_noop_when_policy_unset(isolated_omm_home, monkeypatch):
@@ -135,5 +197,29 @@ def test_gpu_vendor_does_not_mistake_model_numbers_for_apple_chips():
         "Intel Iris Xe": "intel",
         None: "none",
         "Something else": "other",
+        "NVIDIA Tesla M4": "nvidia",
+        "Tesla M6": "nvidia",
+        "NVIDIA GRID M6-8Q": "nvidia",
+        "Apple M3 Max": "apple",
     }
     assert {name: usage._gpu_vendor(name) for name in expected} == expected
+
+
+def test_flush_keeps_rows_recorded_while_sending(isolated_omm_home, monkeypatch):
+    _enable(monkeypatch)
+    usage.record_run("install", "ok", None)
+    sent = []
+
+    def fake_post(payload):
+        sent.append(payload)
+        usage.record_run("list", "ok", None)
+        return True
+
+    monkeypatch.setattr(usage, "_post", fake_post)
+
+    assert usage.flush_pending(force=True) is True
+    assert sent[0]["commands"] == {"install ok": 1}
+    assert usage.pending_count() == 1
+    assert json.loads(
+        (config.OMM_HOME / "usage-pending.json").read_text(encoding="utf-8")
+    ) == [{"c": "list", "o": "ok"}]

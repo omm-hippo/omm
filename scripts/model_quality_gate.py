@@ -11,6 +11,7 @@ from omm.mltree import (
     MAX_TOTAL_TREE_NODES,
     MAX_TREE_DEPTH,
     MAX_TREES,
+    is_leaf,
     predict_ensemble,
 )
 
@@ -46,7 +47,7 @@ def _validate_tree(tree: Any, feature_count: int, path: str, node_budget: int) -
             raise ValueError(f"{node_path} exceeds maximum tree depth")
         if not isinstance(node, dict):
             raise ValueError(f"{node_path} must be an object")
-        if node.get("leaf") is True:
+        if is_leaf(node):
             _finite_number(node.get("value"), f"{node_path}.value")
             continue
         feature = node.get("feature")
@@ -460,7 +461,7 @@ def compare_artifacts(
 #: stream of pre-v6 telemetry with no hardware identity to report) would
 #: look identical to a stream of malformed rows and eventually block
 #: training.
-_INTENTIONALLY_EXCLUDED_REASONS = frozenset({
+INTENTIONALLY_EXCLUDED_REASONS = frozenset({
     "model_unfit_excluded_from_regression",
     "performance_unfit_excluded_from_regression",
     "transient_error_excluded",
@@ -559,7 +560,7 @@ def validate_dataset(
     excluded = 0
     excluded = sum(
         count for reason, count in rejections.items()
-        if reason in _INTENTIONALLY_EXCLUDED_REASONS and count > 0
+        if reason in INTENTIONALLY_EXCLUDED_REASONS and count > 0
     )
     effective_raw = max(0, raw_rows - excluded)
     effective_rejected = max(0, rejected_rows - excluded)

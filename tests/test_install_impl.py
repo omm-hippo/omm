@@ -914,6 +914,19 @@ def test_resolve_upload_decision_ask_falls_back_to_confirm(isolated_omm_home, mo
     assert cli._resolve_upload_decision("other") is False
 
 
+def test_resolve_upload_decision_ask_without_tty_returns_false_without_prompt(
+    isolated_omm_home, monkeypatch
+):
+    """A non-interactive process (e.g. a hidden background child) must not
+    block on - or silently answer - a data-upload prompt it can't actually
+    show. `_ask_upload_choice` is left unstubbed so a regression that moves
+    the guard elsewhere would hang on the real (patched-out) prompt."""
+    cli.config_mod.update_config(telemetry_send_policy="ask")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+
+    assert cli._resolve_upload_decision("p") is False
+
+
 def test_resolve_upload_decision_always_choice_persists_policy_and_uploads(isolated_omm_home, monkeypatch):
     cli.config_mod.update_config(telemetry_send_policy="ask")
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "always")
@@ -1592,7 +1605,12 @@ def test_force_preserves_existing_model_until_download_when_space_allows(
 
     monkeypatch.setattr(cli, "_ensure_install_disk_capacity", fake_capacity)
     monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 1024)
-    monkeypatch.setattr(cli, "sha256_file", lambda _path: "expected-sha")
+    # Content-based (not a constant) so the pre-download bytes don't
+    # coincidentally equal `expected_sha256` and trip the new force
+    # same-file skip (#322) - this test is about the disk-space preflight,
+    # not that feature.
+    monkeypatch.setattr(cli, "sha256_file", lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+    expected_sha256 = hashlib.sha256(b"fresh-bytes").hexdigest()
 
     dest_existed_at_download_time = []
 
@@ -1608,7 +1626,7 @@ def test_force_preserves_existing_model_until_download_when_space_allows(
         repo_id="org/repo",
         provider="huggingface",
         dest=destination,
-        expected_sha256="expected-sha",
+        expected_sha256=expected_sha256,
         force=True,
         skip_unfit=False,
         stop_event=None,
@@ -1650,7 +1668,12 @@ def test_force_deletes_existing_model_when_reclaiming_is_actually_needed(
 
     monkeypatch.setattr(cli, "_ensure_install_disk_capacity", fake_capacity)
     monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 1024)
-    monkeypatch.setattr(cli, "sha256_file", lambda _path: "expected-sha")
+    # Content-based (not a constant) so the pre-download bytes don't
+    # coincidentally equal `expected_sha256` and trip the new force
+    # same-file skip (#322), which would never even reach the reclaim path
+    # this test exercises.
+    monkeypatch.setattr(cli, "sha256_file", lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+    expected_sha256 = hashlib.sha256(b"fresh-bytes").hexdigest()
 
     dest_existed_at_download_time = []
 
@@ -1666,7 +1689,7 @@ def test_force_deletes_existing_model_when_reclaiming_is_actually_needed(
         repo_id="org/repo",
         provider="huggingface",
         dest=destination,
-        expected_sha256="expected-sha",
+        expected_sha256=expected_sha256,
         force=True,
         skip_unfit=False,
         stop_event=None,
@@ -1676,6 +1699,58 @@ def test_force_deletes_existing_model_when_reclaiming_is_actually_needed(
 
     assert dest_existed_at_download_time == [False]
     assert destination.read_bytes() == b"fresh-bytes"
+
+
+def test_force_reclaim_does_not_delete_partial_owned_by_active_download(
+    isolated_omm_home, monkeypatch
+):
+    """When a force reclaim is actually needed (see the test above), it must
+    not blow away a `.part` another download is actively writing - the
+    reclaim now takes the same download lock the downloader itself holds,
+    so it either waits (not here, timeout=0) or refuses instead of stomping
+    on live bytes."""
+    from omm import downloader
+
+    destination = cli.MODELS_DIR / "model.gguf"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"existing-complete-model")
+    part_path = destination.with_name(destination.name + ".part")
+    part_path.write_bytes(b"partial-bytes-in-flight")
+
+    def fake_capacity(dest, size_bytes, *, include_download, only_engine, replace_existing=False):
+        if include_download and not replace_existing:
+            raise cli.InsufficientDiskSpaceError("not enough free space")
+
+    monkeypatch.setattr(cli, "_ensure_install_disk_capacity", fake_capacity)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 1024)
+    # Content-based (not a constant) so the pre-download bytes don't
+    # coincidentally equal `expected_sha256` and trip the new force
+    # same-file skip (#322) before the reclaim/lock-contention path below
+    # is even reached.
+    monkeypatch.setattr(cli, "sha256_file", lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+    expected_sha256 = hashlib.sha256(b"fresh-bytes").hexdigest()
+    monkeypatch.setattr(
+        cli, "download_file", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no download"))
+    )
+
+    with downloader.locked(downloader._download_lock_path(destination)):
+        with pytest.raises(cli.DownloadError):
+            cli._prepare_install_artifact(
+                url="https://example.test/model.gguf",
+                filename="model.gguf",
+                repo_id="org/repo",
+                provider="huggingface",
+                dest=destination,
+                expected_sha256=expected_sha256,
+                force=True,
+                skip_unfit=False,
+                stop_event=None,
+                only_engine=None,
+                opts=cli.GlobalOptions(),
+            )
+
+    assert part_path.exists()
+    assert destination.exists()
 
 
 def test_without_force_skips_fetch_when_already_present(isolated_omm_home, monkeypatch):
@@ -1709,6 +1784,242 @@ def test_without_force_skips_fetch_when_already_present(isolated_omm_home, monke
 
     assert dest.read_bytes() == b"stale-bytes"
     assert outcome.filename == resolved.filename
+
+
+# --- install --force same-file skip (#322) -----------------------------
+
+
+def test_force_skips_download_when_repo_hash_matches_installed_file(isolated_omm_home, monkeypatch):
+    """`install --force` now re-checks the source first: when the already-
+    installed file's hash already matches the provider's remote digest,
+    the re-download is skipped entirely - no temp download, no wasted
+    bytes."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    resolved = _resolved(provider="huggingface")
+    dest = cli.MODELS_DIR / resolved.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"already-current-bytes")
+    registry.save_registry(
+        {resolved.filename: {"source": resolved.url, "sha256": "deadbeef", "linked": {}}}
+    )
+    # `_stub_common` already stubs `sha256_file` to the constant "deadbeef"
+    # regardless of content - matching the remote digest below is exactly
+    # the "nothing changed" case this test wants.
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "deadbeef")
+    monkeypatch.setattr(cli, "download_file", lambda *a, **k: pytest.fail("must not re-download"))
+
+    outcome = cli._install_impl(resolved, force=True)
+
+    assert dest.read_bytes() == b"already-current-bytes"
+    assert outcome.filename == resolved.filename
+
+
+def test_force_redownloads_when_repo_hash_differs(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    resolved = _resolved(provider="huggingface")
+    dest = cli.MODELS_DIR / resolved.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"stale-bytes")
+    registry.save_registry(
+        {resolved.filename: {"source": resolved.url, "sha256": "old-hash", "linked": {}}}
+    )
+    monkeypatch.setattr(cli, "sha256_file", lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+    expected = hashlib.sha256(b"fresh-bytes").hexdigest()
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: expected)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
+
+    download_calls = []
+
+    def fake_download(url, dst, **_kw):
+        download_calls.append(dst)
+        dst.write_bytes(b"fresh-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    outcome = cli._install_impl(resolved, force=True)
+
+    assert download_calls == [dest]
+    assert dest.read_bytes() == b"fresh-bytes"
+    assert outcome.filename == resolved.filename
+
+
+def test_force_skips_download_for_direct_url_when_fragment_digest_matches(
+    isolated_omm_home, monkeypatch
+):
+    """A direct-URL install's `#sha256=` fragment (`resolved.expected_sha256`)
+    is the same "already current" signal for a source with no repo API."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    filename = "model.gguf"
+    dest = cli.MODELS_DIR / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"already-current-bytes")
+    digest = hashlib.sha256(b"already-current-bytes").hexdigest()
+    monkeypatch.setattr(cli, "sha256_file", lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+    registry.save_registry(
+        {filename: {"source": f"https://example.com/x.gguf#sha256={digest}", "sha256": digest, "linked": {}}}
+    )
+    monkeypatch.setattr(cli, "download_file", lambda *a, **k: pytest.fail("must not re-download"))
+
+    resolved = ResolvedModel(
+        url="https://example.com/x.gguf",
+        filename=filename,
+        repo_id=None,
+        provider=None,
+        expected_sha256=digest,
+    )
+
+    outcome = cli._install_impl(resolved, force=True)
+
+    assert dest.read_bytes() == b"already-current-bytes"
+    assert outcome.filename == filename
+
+
+def test_force_redownloads_for_direct_url_when_fragment_digest_differs(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    filename = "model.gguf"
+    dest = cli.MODELS_DIR / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"stale-bytes")
+    monkeypatch.setattr(cli, "sha256_file", lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+    fresh_digest = hashlib.sha256(b"fresh-bytes").hexdigest()
+
+    download_calls = []
+
+    def fake_download(url, dst, **_kw):
+        download_calls.append(dst)
+        dst.write_bytes(b"fresh-bytes")
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    resolved = ResolvedModel(
+        url="https://example.com/x.gguf",
+        filename=filename,
+        repo_id=None,
+        provider=None,
+        expected_sha256=fresh_digest,
+    )
+
+    outcome = cli._install_impl(resolved, force=True)
+
+    assert download_calls == [dest]
+    assert dest.read_bytes() == b"fresh-bytes"
+    assert outcome.filename == filename
+
+
+def test_install_force_relinks_custom_destinations_when_it_actually_replaces_the_file(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """(#322 coordinator addition, CUSTOM-LINKS-RELINK) The old `_update_one`
+    re-linked any `omm link <dir>` custom destinations after swapping in new
+    bytes, so a hardlinked custom copy didn't keep pointing at the old
+    inode. `install --force` must do the same when it actually replaces the
+    file (not when the same-file check (#322) skips the re-download)."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    resolved = _resolved(provider="huggingface")
+    dest = cli.MODELS_DIR / resolved.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"old-bytes")
+    custom_destination = tmp_path / "custom-app" / resolved.filename
+    custom_destination.parent.mkdir(parents=True, exist_ok=True)
+    # A real `linker.link_file` call (not a hand-written file) so the
+    # destination is registered as omm-owned - otherwise a same-name
+    # existing file is refused as "unowned" by the very relink this test
+    # means to exercise. On Windows this hard-links custom_destination to
+    # dest's current inode, matching what `omm link <dir>` does.
+    cli.linker.link_file(dest, custom_destination)
+    assert custom_destination.read_bytes() == b"old-bytes"
+    registry.save_registry(
+        {
+            resolved.filename: {
+                "source": resolved.url,
+                "sha256": "old-hash",
+                "linked": {},
+                "custom_links": [str(custom_destination)],
+            }
+        }
+    )
+    monkeypatch.setattr(cli, "sha256_file", lambda path: hashlib.sha256(path.read_bytes()).hexdigest())
+    expected = hashlib.sha256(b"new-bytes").hexdigest()
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: expected)
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
+
+    def fake_download(url, dst, **_kw):
+        # Atomic replace (temp + rename), like the real downloader: a
+        # fresh inode at `dest`, not an in-place write that would also
+        # silently mutate a hardlinked custom_destination sharing the old
+        # inode - which would make this test pass without the relink fix.
+        tmp = dst.with_name(dst.name + ".test-download-tmp")
+        tmp.write_bytes(b"new-bytes")
+        tmp.replace(dst)
+
+    monkeypatch.setattr(cli, "download_file", fake_download)
+
+    cli._install_impl(resolved, force=True)
+
+    assert dest.read_bytes() == b"new-bytes"
+    assert custom_destination.read_bytes() == b"new-bytes"
+
+
+def test_install_force_skip_does_not_relink_custom_destinations(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    """Companion to the above: when the same-file check (#322) skips the
+    re-download, nothing actually changed, so the custom link is left
+    untouched rather than needlessly refreshed."""
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+
+    resolved = _resolved(provider="huggingface")
+    dest = cli.MODELS_DIR / resolved.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"same-bytes")
+    custom_destination = tmp_path / "custom-app" / resolved.filename
+    custom_destination.parent.mkdir(parents=True, exist_ok=True)
+    custom_destination.write_bytes(b"same-bytes")
+    registry.save_registry(
+        {
+            resolved.filename: {
+                "source": resolved.url,
+                "sha256": "deadbeef",
+                "linked": {},
+                "custom_links": [str(custom_destination)],
+            }
+        }
+    )
+    # `_stub_common` stubs `sha256_file` to the constant "deadbeef".
+    monkeypatch.setattr(cli, "remote_file_sha256", lambda provider, repo_id, filename: "deadbeef")
+    monkeypatch.setattr(cli, "download_file", lambda *a, **k: pytest.fail("must not re-download"))
+    monkeypatch.setattr(
+        cli.linker, "link_file", lambda *a, **k: pytest.fail("must not relink")
+    )
+
+    cli._install_impl(resolved, force=True)
+
+    assert custom_destination.read_bytes() == b"same-bytes"
 
 
 def test_auto_calibrate_does_not_crash_install_when_write_fails(isolated_omm_home, monkeypatch):

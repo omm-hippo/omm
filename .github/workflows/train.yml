@@ -6,7 +6,14 @@ name: Train recommendation model
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: read
+
+# The nightly cron and a manual dispatch both rewrite published/*.json and open
+# an auto-merging PR. Serialize them so a dispatched run queues behind the cron
+# run instead of racing it into a conflicted PR.
+concurrency:
+  group: train-recommendation-model
+  cancel-in-progress: false
 
 jobs:
   train:

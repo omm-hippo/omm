@@ -1,4 +1,4 @@
-import subprocess as real_subprocess
+import types
 
 from typer.testing import CliRunner
 
@@ -17,82 +17,52 @@ def test_enable_reports_missing_dependency(isolated_omm_home, monkeypatch):
     assert config.load_config()["auto_import_enabled"] is False
 
 
-def test_install_watch_dependencies_declines_without_a_tty(monkeypatch):
-    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
-    monkeypatch.setattr(
-        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no tty"))
-    )
-
-    assert cli._install_watch_dependencies() is False
-
-
-def test_install_watch_dependencies_runs_pip_against_own_interpreter(monkeypatch):
-    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
-    monkeypatch.setattr(cli, "_is_brew_managed_python", lambda: False)
-    pip_calls = []
-    monkeypatch.setattr(
-        cli.subprocess,
-        "run",
-        lambda cmd, **k: pip_calls.append(cmd) or real_subprocess.CompletedProcess(cmd, 0),
-    )
-
-    assert cli._install_watch_dependencies() is True
-    assert pip_calls == [[cli.sys.executable, "-m", "pip", "install", "watchdog>=4", "plyer>=2.1"]]
-
-
-def test_install_watch_dependencies_declines_when_user_says_no(monkeypatch):
-    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
-    monkeypatch.setattr(
-        cli.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no pip call"))
-    )
-
-    assert cli._install_watch_dependencies() is False
-
-
-def test_install_watch_dependencies_reports_pip_failure(monkeypatch):
-    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
-    monkeypatch.setattr(cli, "_is_brew_managed_python", lambda: False)
-
-    def fake_run(cmd, **kwargs):
-        raise real_subprocess.CalledProcessError(1, cmd)
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
-
-    assert cli._install_watch_dependencies() is False
-
-
-def test_enable_offers_to_install_dependencies_when_missing(isolated_omm_home, monkeypatch):
-    calls = []
-
-    def fake_available():
-        calls.append(True)
-        return len(calls) > 1  # missing on first check, present after "install"
-
-    monkeypatch.setattr(cli, "_watch_dependencies_available", fake_available)
-    monkeypatch.setattr(cli, "_install_watch_dependencies", lambda: True)
-    monkeypatch.setattr(watch_service, "is_installed", lambda: False)
-    monkeypatch.setattr(watch_service, "install", lambda: None)
-
-    result = runner.invoke(cli.app, ["setting", "auto-import", "enable"])
-
-    assert result.exit_code == 0, result.stdout
-    assert config.load_config()["auto_import_enabled"] is True
-
-
-def test_enable_declining_install_offer_reports_missing_dependency(
-    isolated_omm_home, monkeypatch
-):
+def test_enable_hint_points_pipx_installs_at_pipx_inject(isolated_omm_home, monkeypatch, tmp_path):
+    """A `pip install "omm-model[watch]"` typed in the shell lands in the
+    Python on PATH, not in omm's pipx venv - which is how a Windows user
+    could install it and still be told to install it on every retry."""
     monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
-    monkeypatch.setattr(cli, "_install_watch_dependencies", lambda: False)
+    monkeypatch.setattr(cli.sys, "frozen", False, raising=False)
+    # The pipx environment name is the venv directory name; build it with the
+    # host's own separators so the test means the same thing on every OS.
+    monkeypatch.setattr(cli.sys, "prefix", str(tmp_path / "pipx" / "venvs" / "omm-model"))
+    monkeypatch.setattr(
+        cli.package_metadata, "install_source", lambda: cli.package_metadata.InstallSource.PIPX
+    )
 
     result = runner.invoke(cli.app, ["setting", "auto-import", "enable"])
 
     assert result.exit_code == 1
-    assert "omm-model[watch]" in result.stdout + result.stderr
-    assert config.load_config()["auto_import_enabled"] is False
+    output = " ".join((result.stdout + result.stderr).split())  # undo console wrapping
+    assert "pipx inject omm-model watchdog plyer" in output
+    assert "pip install" not in output
+
+
+def test_enable_hint_tells_frozen_builds_the_watcher_is_not_bundled(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+
+    result = runner.invoke(cli.app, ["setting", "auto-import", "enable"])
+
+    assert result.exit_code == 1
+    output = result.stdout + result.stderr
+    assert "does not bundle the auto-import watcher" in output
+    assert "pip install" not in output
+
+
+def test_enable_hint_uses_omm_own_interpreter_for_plain_pip_installs(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
+    monkeypatch.setattr(cli.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(cli.sys, "executable", "/opt/py/bin/python3")
+    monkeypatch.setattr(
+        cli.package_metadata, "install_source", lambda: cli.package_metadata.InstallSource.PYPI
+    )
+
+    result = runner.invoke(cli.app, ["setting", "auto-import", "enable"])
+
+    assert result.exit_code == 1
+    output = " ".join((result.stdout + result.stderr).split())  # undo console wrapping
+    assert '"/opt/py/bin/python3" -m pip install "omm-model[watch]"' in output
 
 
 def test_enable_installs_service_and_sets_flag(isolated_omm_home, monkeypatch):
@@ -159,6 +129,28 @@ def test_auto_import_run_is_hidden_from_help():
     result = runner.invoke(cli.app, ["help", "--all"])
 
     assert "_auto-import-run" not in result.stdout
+
+
+def test_first_run_scan_flag_preserves_concurrent_setting_change(isolated_omm_home, monkeypatch):
+    """_maybe_auto_import must not clobber a config change committed by
+    another process between its load and its write of external_scan_done."""
+    config.update_config(usage_stats_policy="enabled", external_scan_done=False)
+    monkeypatch.setattr(cli, "_run_import_flow", lambda *a, **k: None)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    real = cli.load_config
+
+    def racing_load():
+        snap = real()
+        config.update_config(usage_stats_policy="never")
+        return snap
+
+    monkeypatch.setattr(cli, "load_config", racing_load)
+
+    cli._maybe_auto_import(types.SimpleNamespace(invoked_subcommand="list"))
+
+    saved = config.load_config()
+    assert saved["external_scan_done"] is True
+    assert saved["usage_stats_policy"] == "never"
 
 
 def test_auto_import_run_skips_update_check_onboarding_and_import_offer(

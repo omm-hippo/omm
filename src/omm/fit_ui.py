@@ -34,7 +34,6 @@ from rich.text import Text
 
 from omm.hardware import RAM_MODEL_CAP_RATIO, HardwareInfo, MemoryBudget
 
-BAR_MIN = 24
 BAR_MAX = 72
 
 
@@ -132,10 +131,21 @@ def _marker_line(width: int, hw: HardwareInfo, budget: MemoryBudget, required_gb
     end_gb = in_use + budget.ram_safety_reserve_gb + required_gb
     col = min(width, max(1, int(round(width * end_gb / total))))
     label = f"{size_gb:.2f} GB MODEL "
-    pad = max(0, col - len(label) - 1)
-    line = Text(" " * pad)
-    line.append(label, style="accent")
+    line = Text()
+    if col - len(label) - 1 >= 0:
+        line.append(" " * (col - len(label) - 1))
+        line.append(label, style="accent")
+        line.append("┃", style="accent")
+        return line
+    # The tick must stay over the end of the model segment. When the label
+    # cannot fit to its left (a small model on a high-RAM, mostly-idle
+    # machine puts `col` a few columns in), draw the tick at `col` and move
+    # the label to its right - dropping it entirely if that overflows too.
+    line.append(" " * (col - 1))
     line.append("┃", style="accent")
+    trailing = label.rstrip()
+    if col + 1 + len(trailing) <= width:
+        line.append(" " + trailing, style="accent")
     return line
 
 
@@ -149,7 +159,11 @@ def render_fit(
     width: int,
 ) -> RenderableType:
     """A Panel sized to `width` (the console width) holding the card."""
-    inner = max(BAR_MIN, min(BAR_MAX, width - 6))
+    # The Panel's chrome is 6 columns (2 borders + padding=(1, 2)), so the
+    # content must be built at exactly panel_width - 6. Clamping up to
+    # BAR_MIN on a narrow console built rows wider than the box that holds
+    # them, and rich wrapped the bar/legend/marker onto a second line.
+    inner = max(1, min(BAR_MAX, width - 6))
     head = Text()
     head.append(f"RAM {hw.ram_total_gb:.1f} GB", style="muted")
     head.append("  ·  ", style="rule")
@@ -201,7 +215,7 @@ def render_fit(
         border_style="rule",
         box=box.ROUNDED,
         padding=(1, 2),
-        width=min(width, inner + 6),
+        width=inner + 6,
     )
 
 

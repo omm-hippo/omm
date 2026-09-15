@@ -9,7 +9,6 @@ do not accidentally query the unrelated distribution that already owns the
 from __future__ import annotations
 
 import functools
-import importlib.metadata
 import json
 import os
 import platform
@@ -107,6 +106,8 @@ def find_distribution() -> tuple[str, importlib.metadata.Distribution] | None:
     above before it can be treated as this project.
     """
 
+    import importlib.metadata
+
     try:
         return DISTRIBUTION_NAME, importlib.metadata.distribution(DISTRIBUTION_NAME)
     except importlib.metadata.PackageNotFoundError:
@@ -125,6 +126,8 @@ def find_distribution() -> tuple[str, importlib.metadata.Distribution] | None:
 def distribution() -> importlib.metadata.Distribution:
     """Return OMM's distribution or raise ``PackageNotFoundError``."""
 
+    import importlib.metadata
+
     found = find_distribution()
     if found is None:
         raise importlib.metadata.PackageNotFoundError(DISTRIBUTION_NAME)
@@ -141,6 +144,8 @@ def direct_url(
     installed_distribution: importlib.metadata.Distribution | None = None,
 ) -> dict[str, Any] | None:
     """Read pip's PEP 610 ``direct_url.json`` for this OMM installation."""
+
+    import importlib.metadata
 
     try:
         dist = installed_distribution or distribution()

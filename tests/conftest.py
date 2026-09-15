@@ -73,6 +73,19 @@ def _loopback_socket_address(address: object) -> bool:
         return False
 
 
+class ExternalNetworkBlocked(BaseException):
+    """Raised when a unit test attempts a real non-loopback connection.
+
+    Deliberately NOT an Exception subclass: production code wraps its
+    senders in defensive `except Exception` blocks (usage.flush_pending
+    returns False on anything, and cli.py's prelude swallows it again),
+    which silently ate an AssertionError and let a real POST attempt
+    finish green. pytest still reports a BaseException as a failure, and
+    click's CliRunner only catches Exception, so this propagates out of
+    CliRunner.invoke too.
+    """
+
+
 @pytest.fixture(autouse=True)
 def _block_unmocked_external_network(monkeypatch):
     """Fail any unit test that attempts a real non-loopback connection.
@@ -87,12 +100,12 @@ def _block_unmocked_external_network(monkeypatch):
 
     def guarded_connect(sock, address):
         if not _loopback_socket_address(address):
-            raise AssertionError(f"unit test attempted external network access: {address!r}")
+            raise ExternalNetworkBlocked(f"unit test attempted external network access: {address!r}")
         return original_connect(sock, address)
 
     def guarded_connect_ex(sock, address):
         if not _loopback_socket_address(address):
-            raise AssertionError(f"unit test attempted external network access: {address!r}")
+            raise ExternalNetworkBlocked(f"unit test attempted external network access: {address!r}")
         return original_connect_ex(sock, address)
 
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
@@ -241,11 +254,13 @@ def _isolate_omm_home_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CALIBRATION_PATH", home / "calibration.json")
     monkeypatch.setattr(config, "CATALOG_HISTORY_DIR", home / "catalog-history")
     monkeypatch.setattr(config, "CLIENT_ID_PATH", home / "client-id")
+    monkeypatch.setattr(config, "MODEL_ARCHIVE_DIR", home / "model-archive")
 
     monkeypatch.setattr(registry, "REGISTRY_PATH", config.REGISTRY_PATH)
     monkeypatch.setattr(linker, "LINK_OWNERSHIP_PATH", config.LINK_OWNERSHIP_PATH)
     monkeypatch.setattr(linker, "MODELS_DIR", models_dir)
     monkeypatch.setattr(cli, "MODELS_DIR", models_dir)
+    monkeypatch.setattr(cli, "MODEL_ARCHIVE_DIR", config.MODEL_ARCHIVE_DIR)
     monkeypatch.setattr(scan_import, "MODELS_DIR", models_dir)
     monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", config.RECOMMEND_MODEL_PATH)
     monkeypatch.setattr(calibration, "CALIBRATION_PATH", config.CALIBRATION_PATH)

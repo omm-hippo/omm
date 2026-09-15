@@ -74,17 +74,23 @@ def _recording_enabled_read_only() -> bool:
 # --- collection --------------------------------------------------------
 
 
+def _read_pending_unlocked(path) -> list[dict]:
+    try:
+        if not path.exists():
+            return []
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(loaded, list):
+        return []
+    return [r for r in loaded if isinstance(r, dict)][-_PENDING_MAX:]
+
+
 def _read_pending() -> list[dict]:
     try:
         with locked(_pending_path(), timeout=10):
-            path = _pending_path()
-            if not path.exists():
-                return []
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(loaded, list):
-            return []
-        return [r for r in loaded if isinstance(r, dict)][-_PENDING_MAX:]
-    except (OSError, ValueError, FileLockTimeout):
+            return _read_pending_unlocked(_pending_path())
+    except (OSError, FileLockTimeout):
         return []
 
 
@@ -118,11 +124,12 @@ def pending_count() -> int:
 
 
 def discard_pending() -> int:
+    path = _pending_path()
     try:
-        n = pending_count()
-        with locked(_pending_path(), timeout=10):
-            _pending_path().unlink(missing_ok=True)
-        return n
+        with locked(path, timeout=10):
+            n = len(_read_pending_unlocked(path))
+            path.unlink(missing_ok=True)
+            return n
     except (OSError, FileLockTimeout):
         return 0
 
@@ -146,20 +153,24 @@ def _gpu_vendor(gpu_name: str | None) -> str:
     if not gpu_name:
         return "none"
     low = gpu_name.lower()
-    # Apple chips are "M1".."M5" as a standalone token; a bare substring
-    # check also matched model numbers like "Quadro M2000M" or "FirePro M4000".
-    if "apple" in low or re.search(r"(?<![a-z0-9])m[1-9](?![a-z0-9])", low):
+    if "apple" in low:
         return "apple"
-    if any(m in low for m in ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla")):
+    if any(m in low for m in ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla", "grid")):
         return "nvidia"
-    if any(m in low for m in ("amd", "radeon", "rx ")):
+    if any(m in low for m in ("amd", "radeon", "rx ", "firepro")):
         return "amd"
     if any(m in low for m in ("intel", "arc", "iris", "uhd")):
         return "intel"
+    # Apple's own names are a bare "M1".."M9" token ("M4 Max"). Check this
+    # only after the vendor tokens above: NVIDIA ships real products whose
+    # name ends in a bare M-number ("Tesla M4", "Tesla M6", "GRID M6-8Q"),
+    # and an early return here labelled those machines "apple".
+    if re.search(r"(?<![a-z0-9])m[1-9](?![a-z0-9])", low):
+        return "apple"
     return "other"
 
 
-def _snapshot() -> dict:
+def _snapshot(*, create_client_id: bool = True) -> dict:
     from omm import package_metadata
 
     try:
@@ -185,7 +196,9 @@ def _snapshot() -> dict:
         channel = "stable"
     return {
         "schema_version": SCHEMA_VERSION,
-        "client_id": config.client_id(),
+        "client_id": (
+            config.client_id() if create_client_id else (config.peek_client_id() or "(not generated yet)")
+        ),
         "client_version": client_version,
         "install_source": source,
         "os_name": platform.system() or "unknown",
@@ -214,11 +227,16 @@ def _aggregate(rows: list[dict]) -> tuple[dict, dict]:
     )
 
 
-def build_payload() -> dict:
+def build_payload(rows: list[dict] | None = None, *, create_client_id: bool = True) -> dict:
     """Snapshot + aggregated tally of pending rows. Used by the sender and
-    by ``omm setting upload usage``'s dry-run preview."""
-    payload = _snapshot()
-    commands, errors = _aggregate(_read_pending())
+    by ``omm setting upload usage``'s dry-run preview. ``rows`` lets a caller
+    pass an already-taken snapshot so it aggregates and later clears exactly
+    the same rows, instead of re-reading a queue that may have grown.
+    ``create_client_id=False`` previews the payload without creating a
+    persistent install id, for a caller checking what would be sent while
+    usage stats are turned off."""
+    payload = _snapshot(create_client_id=create_client_id)
+    commands, errors = _aggregate(_read_pending() if rows is None else rows)
     payload["commands"] = commands
     if errors:
         payload["errors"] = errors
@@ -324,28 +342,60 @@ def _post(payload: dict) -> bool:
     return _post_to(config.USAGE_GATEWAY_ENDPOINT, payload)
 
 
+def _remove_sent_rows(snapshot: list[dict]) -> None:
+    """Remove exactly the rows in ``snapshot`` from the pending queue,
+    leaving any row appended (by ``record_run``) while the send was in
+    flight. Mirrors telemetry/error_report, which use the same
+    read-snapshot-then-diff pattern to avoid discarding a queue that grew
+    during a slow PoW-signed POST."""
+    if not snapshot:
+        return
+    from omm.telemetry import _remove_sent_snapshot_entries
+
+    path = _pending_path()
+    try:
+        with locked(path, timeout=10):
+            current = _read_pending_unlocked(path)
+            remaining = _remove_sent_snapshot_entries(current, snapshot, list(range(len(snapshot))))
+            if remaining:
+                atomic_write_text(path, json.dumps(remaining[-_PENDING_MAX:]))
+            else:
+                path.unlink(missing_ok=True)
+    except (OSError, FileLockTimeout):
+        pass
+
+
 def flush_pending(force: bool = False) -> bool:
     """Send one batch if opted in, past the 24h interval, and not backing
     off. Clears pending + stamps state on success. One POST per call.
-    Swallows all errors; returns whether it sent."""
+    Swallows all errors; returns whether it sent.
+
+    Guarded by a non-blocking flush lock: two `omm` processes racing to
+    send the same daily batch (e.g. a foreground command and a detached
+    background child both starting up at once) must not both post it. A
+    process that loses the race gives up immediately instead of waiting,
+    so this never stalls a user-facing command.
+    """
     try:
         if policy() != "enabled":
             return False
-        rows = _read_pending()
-        if not rows and not force:
+        path = _pending_path()
+        with locked(path.with_name(f"{path.name}.flush"), timeout=0):
+            rows = _read_pending()
+            if not rows and not force:
+                return False
+            if not force:
+                if _backoff_active():
+                    return False
+                last = float(_read_state().get("last_sent", 0) or 0)
+                if time.time() - last < _FLUSH_INTERVAL_S:
+                    return False
+            if _post(build_payload(rows)):
+                _remove_sent_rows(rows)
+                _stamp_state()
+                _clear_backoff()
+                return True
+            _set_backoff(6 * 3600)
             return False
-        if not force:
-            if _backoff_active():
-                return False
-            last = float(_read_state().get("last_sent", 0) or 0)
-            if time.time() - last < _FLUSH_INTERVAL_S:
-                return False
-        if _post(build_payload()):
-            discard_pending()
-            _stamp_state()
-            _clear_backoff()
-            return True
-        _set_backoff(6 * 3600)
-        return False
     except Exception:
         return False

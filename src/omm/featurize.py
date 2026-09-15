@@ -73,8 +73,15 @@ _TIER_EXCLUDE_PATTERNS = {
     # word and the tier word (e.g. "Core(TM) Ultra"), so allow one optional
     # parenthetical group there rather than matching literal whitespace only.
     "ultra": re.compile(r"\bcore\b\s*(?:\([^)]*\)\s*)?\bultra\b", re.IGNORECASE),
+    # NVIDIA's "with Max-Q Design" laptop variants run at a lower TGP than
+    # the desktop part with the same model number, so scoring them into the
+    # "Max" tier inverts this feature's order (desktop "3080 Ti" 1.0 vs
+    # laptop "3080 Ti Max-Q" 2.0). The letter-based boundary in
+    # _TIER_PATTERNS treats the hyphen as a boundary, so exclude it here.
     "max": re.compile(
-        r"\bryzen\b\s*(?:\([^)]*\)\s*)?\bai\b\s*(?:\([^)]*\)\s*)?\bmax\b", re.IGNORECASE
+        r"\bryzen\b\s*(?:\([^)]*\)\s*)?\bai\b\s*(?:\([^)]*\)\s*)?\bmax\b"
+        r"|\bmax\s*-?\s*q\b",
+        re.IGNORECASE,
     ),
 }
 
@@ -84,6 +91,7 @@ _CHIP_MODEL_RE = re.compile(
 )
 
 _MMPROJ_RE = re.compile(r"mmproj", re.IGNORECASE)
+_SHARD_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 _GPT_OSS_SIZE_RE = re.compile(
     r"(?:^|[/_.:-])gpt[-_.]?oss(?:[-_.:]|$).*?(20|120)[Bb](?=[-_.:]|$)",
     re.IGNORECASE,
@@ -101,6 +109,16 @@ def is_mmproj_filename(filename: str) -> bool:
     auto-pick or rank a repo's .gguf files should exclude them rather than
     let one outrank or stand in for the real model quants."""
     return bool(_MMPROJ_RE.search(filename))
+
+
+def is_shard_filename(filename: str) -> bool:
+    """True for one part of a split (multi-part) GGUF, e.g.
+    "model-00001-of-00002.gguf". A "-00001-of-00001" file is the whole model
+    under a split-style name, not actually split, so it is not a shard."""
+    match = _SHARD_RE.search(filename)
+    if not match:
+        return False
+    return int(match.group(2)) > 1
 
 
 def parse_param_count_billions(text: str) -> float | None:

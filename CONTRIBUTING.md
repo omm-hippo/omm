@@ -130,8 +130,8 @@ state exactly what you ran and separate these levels when they apply:
    where the change came from. `## 배경` must give that context (the issue,
    the bug, the review, the conversation). English technical detail may
    follow the Korean sections. The `PR 설명 확인` check enforces the headings
-   and a minimum amount of Korean text; bot PRs (`retrain/*`, the
-   `beta` → `main` sync) are exempt. Commit subjects may stay English.
+   and a minimum amount of Korean text; bot PRs (`retrain/*`, `emergency-signal/*`,
+   the `beta` → `main` sync) are exempt. Commit subjects may stay English.
 7. Respond to review without mixing unrelated cleanup into the same PR.
 
 ## Trusted pull-request head

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -79,3 +80,29 @@ def test_manifest_writer_rejects_unexpected_existing_files(tmp_path):
             winget_manifest.installer_url("1.2.3"),
             tmp_path / "output",
         )
+
+
+def test_main_reports_a_corrupt_archive_without_a_traceback(tmp_path, capsys, monkeypatch):
+    archive = tmp_path / "omm-windows-x64-1.2.3.zip"
+    archive.write_bytes(b"PK\x03\x04garbage")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "winget_manifest.py",
+            "--version",
+            "1.2.3",
+            "--archive",
+            str(archive),
+            "--release-date",
+            "2026-08-20",
+            "--installer-url",
+            winget_manifest.installer_url("1.2.3"),
+            "--output-dir",
+            str(tmp_path / "output"),
+        ],
+    )
+
+    assert winget_manifest.main() == 1
+    assert "WinGet manifest generation failed" in capsys.readouterr().err

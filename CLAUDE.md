@@ -166,8 +166,10 @@ This does not submit the manifest to the WinGet community repository.
 **Telemetry.** `benchmark.py` measures real tokens/sec via Ollama's `/api/generate`;
 `contribute.py` runs an unattended benchmark loop (auto start/stop of the Ollama daemon under
 `--yes`) and uploads rows. Data goes to Firebase RTDB project `localfit-8ab57`, `telemetry` node,
-through the `cf-worker/` Cloudflare Worker gateway. `database.rules.json` enforces the schema per
-`benchmark_version` (currently v8/v9; older versions grandfathered) and is emulator-tested in CI.
+through the `cf-worker/` Cloudflare Worker gateway. `cf-worker/src/validate.ts` is what enforces the
+telemetry schema at runtime (the Worker writes with a rules-bypassing service token, tested by the
+cf-worker vitest job in CI); `database.rules.json` keeps `.write` denied and is the documented
+source of truth to diff against - its emulator test only proves the direct write path is closed.
 `src/localfit_server/` (FastAPI) is an optional self-hostable collector — not the primary path.
 Three separate opt-in outbound channels share the `cf-worker/` PoW gateway, each its own
 RTDB node + `database.rules.json` block + `validate.ts` validator: `telemetry` (benchmark

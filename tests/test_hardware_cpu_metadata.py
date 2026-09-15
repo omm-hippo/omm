@@ -1,6 +1,8 @@
 from io import StringIO
 from types import SimpleNamespace
 
+import pytest
+
 from omm import hardware
 
 
@@ -219,15 +221,120 @@ def test_windows_hybrid_gpu_prefers_discrete_and_registry_vram(monkeypatch):
     assert free is None
 
 
-def test_windows_discrete_intel_arc_is_not_treated_as_shared(monkeypatch):
+@pytest.mark.parametrize(
+    ("name", "ram_gb", "expected"),
+    [
+        ("Intel(R) Arc(TM) A770 Graphics", 16, 16.0),
+        ("Intel(R) Arc(TM) B580 Graphics", 12, 12.0),
+        ("Intel(R) Arc(TM) Pro A60 Graphics", 12, 12.0),
+        ("Intel Arc A770", 16, 16.0),
+        ("Intel(R) Arc(TM) Graphics", 2, None),
+        ("Intel(R) Arc(TM) 140V GPU (16GB)", 2, None),
+    ],
+)
+def test_windows_discrete_intel_arc_is_not_treated_as_shared(monkeypatch, name, ram_gb, expected):
     monkeypatch.setattr(
         hardware,
         "_windows_cim",
-        lambda *_: [{"Name": "Intel Arc A770", "AdapterRAM": 16 * 1024**3}],
+        lambda *_: [{"Name": name, "AdapterRAM": ram_gb * 1024**3}],
     )
     monkeypatch.setattr(hardware, "_windows_registry_gpus", lambda: [])
 
-    name, total, _ = hardware._scan_windows_gpu()
+    got_name, total, _ = hardware._scan_windows_gpu()
 
-    assert name == "Intel Arc A770"
-    assert total == 16.0
+    assert got_name == name
+    assert total == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "ram_gb", "expected"),
+    [
+        ("AMD Radeon(TM) Graphics", 2, None),
+        ("AMD Radeon(TM) Vega 8 Graphics", 2, None),
+        ("AMD Radeon(TM) 780M Graphics", 2, None),
+        ("AMD Radeon 890M Graphics", 4, None),
+        ("AMD Radeon RX 7800 XT", 16, 16.0),
+        ("AMD Radeon RX 6600M", 8, 8.0),
+        ("AMD Radeon Pro W5700", 8, 8.0),
+        ("AMD Radeon HD 7970", 3, 3.0),
+    ],
+)
+def test_windows_amd_apu_names_are_not_reported_as_dedicated_vram(monkeypatch, name, ram_gb, expected):
+    monkeypatch.setattr(hardware, "_windows_cim", lambda *_: [{"Name": name, "AdapterRAM": ram_gb * 1024**3}])
+    monkeypatch.setattr(hardware, "_windows_registry_gpus", lambda: [])
+    got_name, total, _ = hardware._scan_windows_gpu()
+    assert got_name == name
+    assert total == expected
+
+
+def test_registry_gpu_dedupe_prefers_the_row_that_has_qwmemorysize(monkeypatch):
+    """Driver reinstalls can leave a value-less registry row enumerated before
+    the one that actually has qwMemorySize; dedupe must keep the larger size
+    instead of first-wins, matching how _scan_windows_gpu merges duplicates.
+    """
+    import sys
+
+    class _FakeKey:
+        def __init__(self, path, values=None, subkeys=None):
+            self.path = path
+            self.values = values or {}
+            self.subkeys = subkeys or []
+
+    hklm_sentinel = object()
+    base_path = r"SYSTEM\CurrentControlSet\Control\Video"
+
+    root_guid_key = _FakeKey(base_path, subkeys=["GUID0"])
+    guid_key = _FakeKey(f"{base_path}\\GUID0", subkeys=["0000", "0001"])
+    key_0000 = _FakeKey(
+        f"{base_path}\\GUID0\\0000", values={"DriverDesc": "NVIDIA GeForce RTX 4090"}
+    )
+    key_0001 = _FakeKey(
+        f"{base_path}\\GUID0\\0001",
+        values={"DriverDesc": "NVIDIA GeForce RTX 4090", "HardwareInformation.qwMemorySize": 24 * 1024**3},
+    )
+
+    tree = {
+        base_path: root_guid_key,
+        f"{base_path}\\GUID0": guid_key,
+        f"{base_path}\\GUID0\\0000": key_0000,
+        f"{base_path}\\GUID0\\0001": key_0001,
+    }
+
+    class _OpenKeyCtx:
+        def __init__(self, fake_key):
+            self.fake_key = fake_key
+
+        def __enter__(self):
+            return self.fake_key
+
+        def __exit__(self, *exc_info):
+            return False
+
+    class _FakeWinreg:
+        HKEY_LOCAL_MACHINE = hklm_sentinel
+
+        @staticmethod
+        def OpenKey(root, path):
+            full_path = path if root is hklm_sentinel else f"{root.path}\\{path}"
+            fake_key = tree[full_path]
+            return _OpenKeyCtx(fake_key)
+
+        @staticmethod
+        def QueryInfoKey(fake_key):
+            return (len(fake_key.subkeys), 0, 0)
+
+        @staticmethod
+        def EnumKey(fake_key, index):
+            return fake_key.subkeys[index]
+
+        @staticmethod
+        def QueryValueEx(fake_key, field):
+            if field not in fake_key.values:
+                raise OSError("not found")
+            return (fake_key.values[field], None)
+
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg)
+
+    result = hardware._windows_registry_gpus()
+
+    assert result == [{"Name": "NVIDIA GeForce RTX 4090", "AdapterRAM": 24 * 1024**3}]

@@ -79,6 +79,77 @@ def test_recommend_builds_choice_values_via_exact_install_ref(monkeypatch, isola
     assert "Enter select" in captured_options["instruction"]
 
 
+def test_static_rules_fallback_filters_gpu_host_on_vram_budget(monkeypatch, isolated_omm_home):
+    """A discrete-GPU (non-unified-memory) host's static-rules budget must
+    be judged against VRAM, not RAM * profile ratio - rules.matching_rules
+    compares `available_gb` to each rule's `min_vram_gb` whenever
+    `has_gpu` is True."""
+    dgpu_hardware = HardwareInfo(
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=32,
+        ram_available_gb=28,
+        unified_memory=False,
+        gpu_name="GPU",
+        vram_total_gb=4,
+        vram_free_gb=4,
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: dgpu_hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (None, False)
+    )
+    captured = {}
+    monkeypatch.setattr(
+        cli.rules_mod,
+        "matching_rules",
+        lambda rules, available_gb, has_gpu: (
+            captured.update(gb=available_gb, gpu=has_gpu),
+            [],
+        )[1],
+    )
+
+    result = runner.invoke(cli.app, ["recommend", "--json"])
+
+    assert result.exit_code == 1
+    assert captured["gpu"] is True
+    assert captured["gb"] == pytest.approx(3.6)
+
+
+def test_static_rules_fallback_unified_memory_uses_ram_budget(monkeypatch, isolated_omm_home):
+    unified_hardware = HardwareInfo(
+        os_name="Darwin",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=32,
+        ram_available_gb=28,
+        unified_memory=True,
+        gpu_name="GPU",
+        vram_total_gb=32,
+        vram_free_gb=32,
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: unified_hardware)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (None, False)
+    )
+    captured = {}
+    monkeypatch.setattr(
+        cli.rules_mod,
+        "matching_rules",
+        lambda rules, available_gb, has_gpu: (
+            captured.update(gb=available_gb, gpu=has_gpu),
+            [],
+        )[1],
+    )
+
+    result = runner.invoke(cli.app, ["recommend", "--json"])
+
+    assert result.exit_code == 1
+    assert captured["gb"] == pytest.approx(32 * 0.45)
+
+
 def test_recommend_quiet_suppresses_status_lines(monkeypatch, isolated_omm_home):
     """`--quiet` accepts the flag (issue #80) but used to leave the
     "fetched updated data"/"falling back to static rules" status lines

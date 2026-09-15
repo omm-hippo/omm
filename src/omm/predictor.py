@@ -11,7 +11,8 @@ import math
 
 from omm import calibration, catalog
 from omm.atomic import atomic_write_bytes, atomic_write_text, locked
-from omm.config import RECOMMEND_MODEL_PATH
+from omm.config import RECOMMEND_MODEL_PATH, load_config
+from omm.httpjson import read_bounded_json_response as _read_bounded_json_response
 from omm.featurize import (
     positive_finite_number,
     FEATURE_ORDER,
@@ -28,6 +29,7 @@ from omm.mltree import (
     MAX_TOTAL_TREE_NODES,
     MAX_TREE_DEPTH,
     MAX_TREES,
+    is_leaf,
     predict_ensemble_range,
 )
 from omm.tuning import RuntimeProfile, recommend_runtime_settings
@@ -37,7 +39,6 @@ MODEL_MEMORY_OVERHEAD = 1.2
 SUPPORTED_MODEL_VERSION = 4
 MAX_MODEL_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_MODEL_MANIFEST_BYTES = 1024 * 1024
-_RESPONSE_CHUNK_BYTES = 64 * 1024
 
 # Roughly average human reading speed. rank_candidates() sorts by predicted
 # speed alone, so a smaller model is always ranked above a larger one that's
@@ -116,7 +117,7 @@ def validate_model_artifact(artifact: object) -> dict:
                 raise ValueError("tree exceeds maximum depth")
             if not isinstance(node, dict):
                 raise ValueError("tree nodes must be objects")
-            if node.get("leaf") is True:
+            if is_leaf(node):
                 value = node.get("value")
                 if (
                     isinstance(value, bool)
@@ -145,53 +146,6 @@ def validate_model_artifact(artifact: object) -> dict:
             stack.append((node["right"], depth + 1))
             stack.append((node["left"], depth + 1))
     return artifact
-
-
-def _bounded_response_bytes(response, *, maximum: int, label: str) -> bytes:
-    """Read an HTTP response without trusting Content-Length or JSON shape."""
-    headers = getattr(response, "headers", {})
-    raw_length = headers.get("Content-Length") if hasattr(headers, "get") else None
-    try:
-        declared_length = int(raw_length)
-    except (TypeError, ValueError):
-        declared_length = None
-    if declared_length is not None and declared_length > maximum:
-        raise ValueError(f"{label} exceeds the {maximum}-byte safety limit")
-
-    iterator = getattr(response, "iter_content", None)
-    if callable(iterator):
-        content = bytearray()
-        for chunk in iterator(chunk_size=_RESPONSE_CHUNK_BYTES):
-            if not isinstance(chunk, bytes):
-                raise ValueError(f"{label} response contained non-byte data")
-            if len(content) + len(chunk) > maximum:
-                raise ValueError(f"{label} exceeds the {maximum}-byte safety limit")
-            content.extend(chunk)
-        return bytes(content)
-
-    raw_content = getattr(response, "content", None)
-    if isinstance(raw_content, bytes):
-        if len(raw_content) > maximum:
-            raise ValueError(f"{label} exceeds the {maximum}-byte safety limit")
-        return raw_content
-
-    raise ValueError(f"{label} response did not provide byte content")
-
-
-def _read_bounded_json_response(response, *, maximum: int, label: str) -> tuple[object, bytes]:
-    try:
-        content = _bounded_response_bytes(response, maximum=maximum, label=label)
-    finally:
-        close = getattr(response, "close", None)
-        if callable(close):
-            close()
-    if len(content) > maximum:
-        # Covers json()-only compatibility objects used above.
-        raise ValueError(f"{label} exceeds the {maximum}-byte safety limit")
-    try:
-        return json.loads(content), content
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise ValueError(f"{label} is not valid JSON") from error
 
 
 def extract_emergency_signal(artifact: dict | None) -> dict | None:
@@ -352,37 +306,78 @@ def fetch_and_cache_model(
         # unverifiable and prevents the next refresh from archiving it as a
         # signed rollback point.
         verified_content = raw_content
-    RECOMMEND_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with locked(RECOMMEND_MODEL_PATH):
-        # Archive and replace under the same cross-process lock. Otherwise two
-        # simultaneous refreshes can both archive the old file, then overwrite
-        # one another without ever retaining the first fresh artifact.
+    provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
+        RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
+    )
+    try:
+        RECOMMEND_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with locked(RECOMMEND_MODEL_PATH):
+            # Archive and replace under the same cross-process lock. Otherwise two
+            # simultaneous refreshes can both archive the old file, then overwrite
+            # one another without ever retaining the first fresh artifact.
+            try:
+                current = validate_model_artifact(
+                    json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8"))
+                )
+            except (OSError, json.JSONDecodeError, RecursionError, ValueError):
+                current = None
+            if current is not None:
+                catalog.archive_current_artifact(
+                    artifact_path=RECOMMEND_MODEL_PATH,
+                    require_signed=bool(manifest_url and public_key),
+                    trusted_public_key=public_key,
+                )
+            if verified_content is not None:
+                atomic_write_bytes(RECOMMEND_MODEL_PATH, verified_content)
+            else:
+                atomic_write_text(RECOMMEND_MODEL_PATH, json.dumps(artifact) + "\n")
+            if manifest is not None and public_key is not None:
+                atomic_write_text(
+                    provenance_path,
+                    json.dumps({"manifest": manifest, "public_key": public_key}, sort_keys=True) + "\n",
+                )
+            else:
+                provenance_path.unlink(missing_ok=True)
+    except OSError:
         try:
-            current = validate_model_artifact(
-                json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8"))
-            )
-        except (OSError, json.JSONDecodeError, RecursionError, ValueError):
-            current = None
-        if current is not None:
-            catalog.archive_current_artifact(
-                artifact_path=RECOMMEND_MODEL_PATH,
-                require_signed=bool(manifest_url and public_key),
-            )
-        if verified_content is not None:
-            atomic_write_bytes(RECOMMEND_MODEL_PATH, verified_content)
-        else:
-            atomic_write_text(RECOMMEND_MODEL_PATH, json.dumps(artifact) + "\n")
-        provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
-            RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
-        )
-        if manifest is not None and public_key is not None:
-            atomic_write_text(
-                provenance_path,
-                json.dumps({"manifest": manifest, "public_key": public_key}, sort_keys=True) + "\n",
-            )
-        else:
             provenance_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     return artifact
+
+
+def _provenance_signature_ok(raw: bytes, provenance: dict, public_key: str | None) -> bool:
+    """Shared core of both provenance checks below: does the parsed
+    `provenance` sidecar match `public_key`, and does `raw` verify against
+    its manifest under that key? Callers pre-check `provenance` is a dict
+    and catch the ValueError/TypeError `catalog.verify_signed_artifact` can
+    raise - this only handles the comparison + verify step so neither
+    caller re-derives it."""
+    if not isinstance(provenance, dict) or provenance.get("public_key") != public_key:
+        return False
+    catalog.verify_signed_artifact(raw, provenance.get("manifest"), public_key)
+    return True
+
+
+def _cached_artifact_provenance_ok(raw: bytes) -> bool:
+    """The sidecar written by fetch_and_cache_model is verification
+    material; reading the cache without checking it made the signed path
+    meaningless offline. A cache with no sidecar stays usable (legacy
+    caches predate provenance), but one that has a sidecar must match it
+    and be signed by the key the user currently trusts."""
+    provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
+        RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
+    )
+    if not provenance_path.exists():
+        return True
+    try:
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        if not isinstance(provenance, dict):
+            return False
+        public_key = load_config().get("catalog_public_key") or provenance.get("public_key")
+        return _provenance_signature_ok(raw, provenance, public_key)
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def load_cached_model() -> dict | None:
@@ -391,9 +386,38 @@ def load_cached_model() -> dict | None:
     try:
         if RECOMMEND_MODEL_PATH.stat().st_size > MAX_MODEL_ARTIFACT_BYTES:
             return None
-        return validate_model_artifact(json.loads(RECOMMEND_MODEL_PATH.read_text(encoding="utf-8")))
+        raw = RECOMMEND_MODEL_PATH.read_bytes()
+        artifact = validate_model_artifact(json.loads(raw))
     except (OSError, json.JSONDecodeError, RecursionError, ValueError):
         return None
+    if not _cached_artifact_provenance_ok(raw):
+        return None
+    return artifact
+
+
+def cached_model_signature_is_valid(public_key: str | None) -> bool:
+    """Whether the on-disk recommendation catalog cache still verifies
+    against the provenance manifest saved beside it, and that manifest was
+    signed with **the key this install is configured to trust**. Read-only,
+    never raises.
+
+    The provenance's own embedded public_key is not trusted on its own:
+    whoever can overwrite the cache can overwrite that file too, so this
+    only counts as verified when it matches the configured key."""
+    if not isinstance(public_key, str) or not public_key:
+        return False
+    provenance_path = RECOMMEND_MODEL_PATH.with_suffix(
+        RECOMMEND_MODEL_PATH.suffix + ".provenance.json"
+    )
+    try:
+        if RECOMMEND_MODEL_PATH.stat().st_size > MAX_MODEL_ARTIFACT_BYTES:
+            return False
+        if provenance_path.stat().st_size > MAX_MODEL_MANIFEST_BYTES:
+            return False
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        return _provenance_signature_ok(RECOMMEND_MODEL_PATH.read_bytes(), provenance, public_key)
+    except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+        return False
 
 
 def load_model(
@@ -411,7 +435,7 @@ def load_model(
             if manifest_url and public_key:
                 return fetch_and_cache_model(url, manifest_url, public_key)
             return fetch_and_cache_model(url)
-        except (requests.RequestException, RecursionError, ValueError):
+        except (requests.RequestException, RecursionError, ValueError, OSError):
             pass
     return load_cached_model()
 

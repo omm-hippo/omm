@@ -105,11 +105,29 @@ def test_bundled_quality_pack_is_versioned_bounded_and_attributed():
         ("FINAL: 18", "18"),
         ("work here\nFINAL = 70,000", "70000"),
         ("The result is 3.0", "3"),
+        ("FINAL: .5", "0.5"),
+        ("FINAL: -.5", "-0.5"),
+        ("FINAL: +.5", "0.5"),
+        ("FINAL: .5e2", "50"),
+        ("FINAL: +.5e-2", "0.005"),
+        ("FINAL: -.5E+2", "-50"),
+        ("FINAL: 5.e2", "500"),
+        ("The result is -.5", "-0.5"),
+        ("The result is .5e2.", "50"),
+        ("FINAL: .5, so this is the answer.", "0.5"),
+        ("FINAL: 5.", "5"),
+        ("FINAL: 1e2.", "100"),
         ("no numeric answer", None),
     ],
 )
 def test_parse_numeric_answer(response, expected):
     assert quality.parse_numeric_answer(response) == expected
+
+
+@pytest.mark.parametrize("answer", ["1e", "1e+", "1e-", ".5e+", "1e2.3", "1e2e3", "1e++2"])
+@pytest.mark.parametrize("prefix", ["FINAL: ", "The result is "])
+def test_parse_numeric_answer_rejects_incomplete_or_malformed_exponents(prefix, answer):
+    assert quality.parse_numeric_answer(prefix + answer) is None
 
 
 def test_quality_pack_rejects_duplicate_ids(tmp_path):
@@ -120,6 +138,37 @@ def test_quality_pack_rejects_duplicate_ids(tmp_path):
 
     with pytest.raises(quality.QualityEvaluationError, match="unique"):
         quality.load_pack(path)
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        'Answer as JSON {"a": 1}. {question}',
+        "{question} {}",
+        "{question} {0}",
+        "{question} }",
+        "Q {question} {",
+    ],
+)
+def test_quality_pack_rejects_stray_braces_in_prompt_template(tmp_path, template):
+    pack, _digest = quality.load_pack()
+    pack["prompt_template"] = template
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps(pack), encoding="utf-8")
+
+    with pytest.raises(quality.QualityEvaluationError, match="other braces"):
+        quality.load_pack(path)
+
+
+def test_quality_pack_allows_literal_braces_around_question(tmp_path):
+    pack, _digest = quality.load_pack()
+    pack["prompt_template"] = '{{"a": 1}} {question}'
+    path = tmp_path / "ok.json"
+    path.write_text(json.dumps(pack), encoding="utf-8")
+
+    loaded, _digest = quality.load_pack(path)
+
+    assert loaded["prompt_template"].format(question="x") == '{"a": 1} x'
 
 
 def test_evaluate_model_stores_parsed_answers_not_raw_text(monkeypatch):
@@ -157,6 +206,40 @@ def test_evaluate_model_stores_parsed_answers_not_raw_text(monkeypatch):
     assert result["quality"]["raw_responses_stored"] is False
     assert all("response" not in item for item in result["quality"]["items"])
     assert result["speed"]["samples_tokens_per_sec"] == [100.0, 100.0]
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected", "predicted", "correct"),
+    [
+        (".5", "0.5", "0.5", True),
+        (".5", "5", "0.5", False),
+        ("-.5", "-0.5", "-0.5", True),
+        (".5e2", "50", "50", True),
+        ("1e+", "1", None, False),
+    ],
+)
+def test_evaluate_model_scores_fractional_and_invalid_exponent_answers(
+    monkeypatch, answer, expected, predicted, correct
+):
+    pack, _digest = quality.load_pack()
+    pack["items"] = [{**pack["items"][0], "expected": expected}]
+    monkeypatch.setattr(quality, "_model_metadata", lambda tag: {"capabilities": ["completion"]})
+    monkeypatch.setattr(
+        quality,
+        "_generate",
+        lambda *args, **kwargs: {
+            "response": f"FINAL: {answer}",
+            "eval_count": 10,
+            "eval_duration": 100_000_000,
+        },
+    )
+
+    result = quality.evaluate_model("fixture:latest", pack, speed_runs=1)
+
+    item = result["quality"]["items"][0]
+    assert item["predicted"] == predicted
+    assert item["correct"] is correct
+    assert result["quality"]["accuracy"] == (1.0 if correct else 0.0)
 
 
 def test_generate_omits_think_field_for_model_without_thinking_capability(monkeypatch):
@@ -316,6 +399,60 @@ def test_collect_evidence_gives_up_after_max_daemon_restart_failures(monkeypatch
 
     assert report["models"] == []
     assert any("won't come back" in event for event in events)
+
+
+def test_isolated_daemon_blips_do_not_stop_the_whole_batch(monkeypatch):
+    """Restart failures scattered across the batch must not accumulate into
+    a false 'daemon won't come back' abort - the streak resets every time a
+    tag is actually reached."""
+    states = iter([None, "0.30.10", None, "0.30.10", None, "0.30.10"])
+    monkeypatch.setattr(quality, "ollama_version", lambda: next(states, "0.30.10"))
+    monkeypatch.setattr(quality.benchmark, "start_ollama_daemon", lambda: None)
+    monkeypatch.setattr(quality.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        quality,
+        "evaluate_model",
+        lambda tag, pack, speed_runs=3: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag: True)
+    events = []
+
+    report = quality.collect_evidence(
+        ["model:1", "model:2", "model:3"],
+        _hardware(),
+        on_daemon_event=events.append,
+    )
+
+    assert [m["tag"] for m in report["models"]] == ["model:1", "model:2", "model:3"]
+    assert not any("won't come back" in event for event in events)
+
+
+def test_confirmation_does_not_claim_an_unload_it_never_attempted(monkeypatch):
+    monkeypatch.setattr(quality, "ollama_version", lambda: None)
+
+    entry = quality._confirm_generation_timeout(
+        "m:latest", _hardware(), {"pack_id": "x", "items": []}, 1
+    )
+
+    assert entry["measurement_isolation"]["unloaded_after_run"] is False
+    assert entry["outcome"] == "transient_error"
+
+
+def test_confirmation_does_not_claim_an_unload_when_metadata_lookup_fails(monkeypatch):
+    monkeypatch.setattr(quality, "ollama_version", lambda: "0.30.10")
+
+    def fake_model_metadata(tag):
+        raise quality.QualityEvaluationError(
+            "model missing", failure_reason=quality.FAILURE_REASON_MODEL_LOAD_FAILED
+        )
+
+    monkeypatch.setattr(quality, "_model_metadata", fake_model_metadata)
+
+    entry = quality._confirm_generation_timeout(
+        "m:latest", _hardware(), {"pack_id": "x", "items": []}, 1
+    )
+
+    assert entry["measurement_isolation"]["unloaded_after_run"] is False
 
 
 def test_unload_model_uses_keep_alive_zero_without_deleting(monkeypatch):
@@ -690,24 +827,6 @@ class _FakeResponse:
     @property
     def text(self):
         return json.dumps(self._body) if self._body is not None else ""
-
-
-@pytest.mark.parametrize(
-    ("body", "expected"),
-    [
-        (
-            {"error": "model requires more system memory (10.0 GiB) than is available (8.0 GiB)"},
-            quality.FAILURE_REASON_OUT_OF_MEMORY,
-        ),
-        ({"error": "CUDA out of memory"}, quality.FAILURE_REASON_OUT_OF_MEMORY),
-        ({"error": "failed to load model"}, quality.FAILURE_REASON_MODEL_LOAD_FAILED),
-        ({"error": "this model does not support tool calling"}, quality.FAILURE_REASON_UNSUPPORTED_RUNTIME),
-        ({"error": "something else entirely"}, quality.FAILURE_REASON_UNKNOWN),
-        (None, quality.FAILURE_REASON_UNKNOWN),
-    ],
-)
-def test_classify_error_response_maps_ollama_error_bodies(body, expected):
-    assert quality._classify_error_response(_FakeResponse(500, body)) == expected
 
 
 def test_request_json_classifies_connect_timeout_as_ollama_unavailable(monkeypatch):
@@ -1102,6 +1221,34 @@ def test_evaluate_tag_once_passes_only_supported_optional_keywords(monkeypatch):
 
     assert result["outcome"] == "success"
     assert calls == [("model:latest", 3, {"num_ctx": 2048})]
+
+
+def test_lmstudio_failure_entry_omits_attempted_runtime(monkeypatch):
+    monkeypatch.setattr(quality, "_model_metadata", lambda tag, **k: {"parameter_size": "7B"})
+
+    def failing(tag, pack, speed_runs=3, **kwargs):
+        raise quality.QualityEvaluationError(
+            "oom", failure_reason=quality.FAILURE_REASON_OUT_OF_MEMORY
+        )
+
+    monkeypatch.setattr(quality, "evaluate_model", failing)
+    monkeypatch.setattr(quality, "unload_model", lambda tag, **k: True)
+    pack, _digest = quality.load_pack()
+
+    entry = quality._evaluate_tag_once(
+        "model-key", _hardware(), pack, 3,
+        engine="lmstudio", lmstudio_port=1234, lmstudio_model={},
+    )
+
+    assert entry["outcome"] == "model_unfit"
+    assert "attempted_runtime" not in entry
+
+    control = quality._evaluate_tag_once(
+        "model-key", _hardware(), pack, 3,
+        engine="ollama", lmstudio_port=1234, lmstudio_model={},
+    )
+
+    assert "attempted_runtime" in control
 
 
 def test_confirm_mode_second_attempt_succeeds_reports_real_success(monkeypatch):
@@ -1912,6 +2059,45 @@ def test_collect_evidence_lmstudio_recovers_from_daemon_crash_mid_batch(monkeypa
     assert [m["tag"] for m in report["models"]] == ["model:one", "model:two"]
     assert any("restart" in event.lower() for event in events)
     assert any("LM Studio" in event for event in events)
+
+
+@pytest.mark.parametrize(
+    ("initial_proc", "expected_proc"),
+    [
+        (None, None),
+        (True, True),
+    ],
+)
+def test_collect_evidence_lmstudio_restart_does_not_claim_user_owned_server(
+    monkeypatch, initial_proc, expected_proc
+):
+    """A daemon_ref["proc"] of None means omm doesn't own the running LM
+    Studio server. Restart succeeding must not promote it to True - that
+    would make a later cleanup stop the user's own server. When omm already
+    owns the handle (True), restart keeps owning it."""
+    reachable_calls = {"count": 0}
+
+    def fake_reachable():
+        reachable_calls["count"] += 1
+        return reachable_calls["count"] != 1
+
+    monkeypatch.setattr(quality.linker, "lmstudio_daemon_reachable", fake_reachable)
+    monkeypatch.setattr(quality.linker, "start_lmstudio_daemon", lambda: True)
+    monkeypatch.setattr(quality.linker, "lmstudio_server_port", lambda: 1234)
+    monkeypatch.setattr(
+        quality, "evaluate_model",
+        lambda tag, pack, speed_runs=3, **kwargs: {"tag": tag, "quality": {}, "speed": {}},
+    )
+    monkeypatch.setattr(quality, "unload_model", lambda tag, **kwargs: True)
+    daemon_ref = {"proc": initial_proc}
+
+    quality.collect_evidence(
+        ["model:one"], _hardware(), engine="lmstudio",
+        lmstudio_models={"model:one": {}},
+        daemon_ref=daemon_ref,
+    )
+
+    assert daemon_ref["proc"] is expected_proc
 
 
 def test_collect_evidence_lmstudio_gives_up_after_max_daemon_restart_failures(monkeypatch):
