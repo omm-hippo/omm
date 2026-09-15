@@ -71,6 +71,7 @@ from omm import (
     theme as theme_mod,
     trust,
     tuning,
+    upgrade as upgrade_mod,
     usage,
     version_check,
     watch,
@@ -4726,8 +4727,29 @@ def _prepare_install_artifact(
     install transaction, registry update, and runtime verification stages.
     """
     downloaded_now = False
+    existing_sha256 = sha256_file(dest) if dest.is_file() else None
+
+    if (
+        force
+        and existing_sha256 is not None
+        and expected_sha256 is not None
+        and existing_sha256 == expected_sha256
+    ):
+        # `omm upgrade` used to re-check an installed file against its
+        # source and skip the re-download when nothing had changed
+        # (#322). `_install_impl` already resolves `expected_sha256`
+        # before calling here - from the provider's remote digest for a
+        # repo install, or from the `#sha256=` fragment `resolve_model`
+        # requires for a direct URL - so a plain byte comparison against
+        # what is already on disk answers the same question without any
+        # extra network round trip or temporary download.
+        console.print(
+            f"[success]{filename} is already the current version from its source; "
+            "skipping the re-download.[/success]"
+        )
+        force = False
+
     if dest.exists() and not force:
-        existing_sha256 = sha256_file(dest)
         if expected_sha256 is not None and existing_sha256 != expected_sha256:
             raise DownloadError(
                 f"{filename} already exists but does not match the provider SHA-256; "
@@ -4787,6 +4809,29 @@ def _prepare_install_artifact(
                     needs_reclaim = False
                 except InsufficientDiskSpaceError:
                     needs_reclaim = True
+
+            # (#322, D-PIN-HOOK=A) Archive a pinned model's about-to-be-
+            # replaced bytes here: after needs_reclaim is known (archiving
+            # first, typically via a hard link, would make
+            # _reclaimable_file_bytes stop counting dest's bytes as
+            # reclaimable) and before the download that will overwrite it.
+            # Only actually block on needs_reclaim when size_bytes is
+            # known - an unknown remote size otherwise always leaves
+            # needs_reclaim True and would abort every pinned reinstall.
+            pin_entry = registry.load_registry().get(filename)
+            if isinstance(pin_entry, dict) and pin_entry.get("pinned") and dest.is_file():
+                if needs_reclaim and size_bytes:
+                    raise DownloadError(
+                        f"{filename}: not enough disk space to archive the pinned "
+                        "version. Reinstall cancelled; the installed file was "
+                        "preserved."
+                    )
+                if not _archive_before_replace(filename, pin_entry, dest):
+                    raise DownloadError(
+                        f"{filename}: the pinned version could not be archived; "
+                        "the installed file was preserved."
+                    )
+
             if needs_reclaim:
                 try:
                     with locked(_download_lock_path(dest), timeout=0):
@@ -4832,9 +4877,12 @@ def _prepare_install_artifact(
         errors.print_cli_error(err_console, f"{error}.", fix=error.fix)
         raise typer.Exit(1) from error
 
-    if not opts.quiet:
-        console.print("Verifying checksum..." if expected_sha256 else "Computing checksum...")
-    sha256 = sha256_file(dest)
+    if downloaded_now or existing_sha256 is None:
+        if not opts.quiet:
+            console.print("Verifying checksum..." if expected_sha256 else "Computing checksum...")
+        sha256 = sha256_file(dest)
+    else:
+        sha256 = existing_sha256
     if expected_sha256 is not None and sha256 != expected_sha256:
         dest.unlink(missing_ok=True)
         raise DownloadError(
@@ -4897,6 +4945,18 @@ def _install_impl(
         dest = _managed_model_path(filename)
     except ModelResolutionError as error:
         raise DownloadError(str(error)) from error
+
+    # (#322) `install --force` can genuinely replace an already-registered
+    # model's bytes - the old `_update_one` used to re-link any
+    # `omm link <dir>` custom destinations afterwards so they picked up the
+    # new inode instead of quietly going stale. Capture what to refresh
+    # before the replace so the check below (after downloading) only fires
+    # for an actual reinstall of a model that already had one.
+    custom_links_to_refresh = None
+    if force:
+        existing_entry = registry.load_registry().get(filename)
+        if isinstance(existing_entry, dict):
+            custom_links_to_refresh = existing_entry.get("custom_links")
 
     artifact = predictor.load_cached_model()
     trees = artifact.get("trees") if artifact else None
@@ -4978,6 +5038,17 @@ def _install_impl(
         provider=provider,
         linked=linked,
     )
+    if force and downloaded_now and custom_links_to_refresh:
+        for destination in custom_links_to_refresh:
+            if not isinstance(destination, str):
+                continue
+            try:
+                linker.link_file(dest, Path(destination))
+            except (linker.LinkError, OSError) as error:
+                err_console.print(
+                    f"[warning]{filename}: custom link at {destination} could not be "
+                    f"refreshed: {error}[/warning]"
+                )
 
     selected_runtime = (
         _post_install_runtime(linked, preferred_runtime)
@@ -5611,7 +5682,9 @@ def install(
     force: bool = typer.Option(
         False,
         "--force",
-        help="Re-download even if this model is already installed.",
+        help="Reinstall an already-installed model. The source is checked "
+        "first and the download is skipped when the installed file already "
+        "matches it.",
     ),
     verify_runtime: bool | None = typer.Option(
         None,
@@ -6516,20 +6589,6 @@ def info(
         console.print(note, style="muted")
 
 
-def _download_update(url: str, tmp: Path, filename: str) -> bool:
-    """Download a model's newer file to `tmp`; on failure report it, clean
-    up the partial download and return False."""
-    opts = _global_opts()
-    try:
-        download_file(url, tmp, quiet=opts.quiet, no_color=opts.no_color)
-    except DownloadError as e:
-        err_console.print(f"[error]{filename}: update download failed: {e}[/error]")
-        tmp.unlink(missing_ok=True)
-        _cleanup_download_parts(tmp)
-        return False
-    return True
-
-
 def _archive_path(filename: str) -> Path:
     """Resolve a registry filename to its slot in MODEL_ARCHIVE_DIR - the
     one pinned-model backup `omm rollback` can restore (one slot per model;
@@ -6550,10 +6609,10 @@ def _copy_or_hardlink_with_space_check(source: Path, staging: Path) -> bool:
     """Populate `staging` (whose parent must already exist) with a copy of
     `source`: a same-volume hard link when possible (no extra bytes used),
     else a real byte copy after confirming `staging`'s volume has room for
-    one. Shared by archiving a pinned model before `upgrade` replaces it and
-    by `rollback` setting aside the current file before restoring the
-    archived one. Returns False (staging left absent) only when a real copy
-    was needed and there wasn't space for it."""
+    one. Shared by archiving a pinned model before `install --force`
+    replaces it and by `rollback` setting aside the current file before
+    restoring the archived one. Returns False (staging left absent) only
+    when a real copy was needed and there wasn't space for it."""
     try:
         staging.hardlink_to(source)
         return True
@@ -6573,7 +6632,8 @@ def _copy_or_hardlink_with_space_check(source: Path, staging: Path) -> bool:
 
 def _archive_before_replace(filename: str, entry: dict, dest: Path) -> bool:
     """Archive the about-to-be-replaced file for a pinned model into
-    MODEL_ARCHIVE_DIR before `_update_one` swaps in new bytes at `dest`.
+    MODEL_ARCHIVE_DIR before `omm install --force` re-downloads new bytes
+    over `dest`.
     (`rollback`'s own current-before-rollback archiving is a separate,
     smaller sequence built from `_copy_or_hardlink_with_space_check` below -
     this function always ends by overwriting the one archive slot with
@@ -6622,7 +6682,7 @@ def _archive_before_replace(filename: str, entry: dict, dest: Path) -> bool:
             if not _copy_or_hardlink_with_space_check(dest, staging):
                 err_console.print(
                     f"[error]{filename}: not enough disk space to archive the pinned "
-                    "version. Upgrade cancelled; the installed file was "
+                    "version. Reinstall cancelled; the installed file was "
                     "preserved.[/error]"
                 )
                 return False
@@ -6630,7 +6690,7 @@ def _archive_before_replace(filename: str, entry: dict, dest: Path) -> bool:
         except (OSError, DownloadError) as error:
             err_console.print(
                 f"[error]{filename}: could not archive the pinned version ({error}). "
-                "Upgrade cancelled; the installed file was preserved.[/error]"
+                "Reinstall cancelled; the installed file was preserved.[/error]"
             )
             return False
         finally:
@@ -6648,125 +6708,6 @@ def _archive_before_replace(filename: str, entry: dict, dest: Path) -> bool:
     return True
 
 
-def _update_one(filename: str, entry: dict) -> str:
-    """Refresh one installed model against its source. Returns "updated",
-    "up_to_date", or "skipped". HF-repo installs check a cheap remote hash
-    first and only re-download on a mismatch; direct-URL installs have no
-    such endpoint, so they re-download to a temp file and compare hashes
-    before swapping it in."""
-    try:
-        dest = _managed_model_path(filename)
-    except ModelResolutionError as error:
-        err_console.print(f"[error]{filename}: unsafe registry filename ({error}).[/error]")
-        return "skipped"
-    repo_id = entry.get("repo_id")
-    try:
-        provider = validate_provider(entry.get("provider") or "huggingface")
-    except ModelResolutionError as error:
-        err_console.print(f"[error]{filename}: unsafe registry provider ({error}).[/error]")
-        return "skipped"
-    old_sha256 = entry.get("sha256")
-    try:
-        tmp = dest.with_name(dest.name + ".update")
-
-        if repo_id:
-            try:
-                repo_id = validate_repo_id(repo_id)
-            except ModelResolutionError as error:
-                err_console.print(f"[error]{filename}: unsafe repository id ({error}).[/error]")
-                return "skipped"
-            remote_sha256 = remote_file_sha256(provider, repo_id, filename)
-            if remote_sha256 is None:
-                err_console.print(
-                    f"[warning]{filename}: could not check for updates "
-                    "(no repo/LFS info), skipped.[/warning]"
-                )
-                return "skipped"
-            if (
-                remote_sha256 == old_sha256
-                and dest.is_file()
-                and sha256_file(dest) == remote_sha256
-            ):
-                return "up_to_date"
-
-            url = download_url(provider, repo_id, filename)
-            if not _download_update(url, tmp, filename):
-                return "skipped"
-            new_sha256 = sha256_file(tmp)
-            if new_sha256 != remote_sha256:
-                err_console.print(
-                    f"[error]{filename}: downloaded SHA-256 does not match provider metadata; "
-                    "the installed file was preserved.[/error]"
-                )
-                tmp.unlink(missing_ok=True)
-                return "skipped"
-        else:
-            source = entry.get("source")
-            if not source:
-                err_console.print(f"[warning]{filename}: no source URL on record, skipped.[/warning]")
-                return "skipped"
-
-            if not isinstance(source, str) or urlsplit(source).scheme.lower() not in ("http", "https"):
-                # `omm import` records source="imported" (scan_import.adopt_group)
-                # for a model that came from local disk: there is no upstream to
-                # check. Say so instead of handing the sentinel to the downloader,
-                # which reported it as "Refusing non-HTTPS download URL: imported".
-                err_console.print(
-                    f"[warning]{filename}: imported locally - no upstream URL to check, skipped.[/warning]"
-                )
-                return "skipped"
-
-            if not _download_update(source, tmp, filename):
-                return "skipped"
-
-            new_sha256 = sha256_file(tmp)
-            if (
-                new_sha256 == old_sha256
-                and dest.is_file()
-                and sha256_file(dest) == new_sha256
-            ):
-                tmp.unlink(missing_ok=True)
-                return "up_to_date"
-        try:
-            _ensure_install_disk_capacity(
-                dest,
-                tmp.stat().st_size,
-                include_download=False,
-                only_engine=None,
-            )
-        except (InsufficientDiskSpaceError, OSError) as error:
-            err_console.print(
-                f"[error]{filename}: update cannot be linked safely: {error}. "
-                "The installed file was preserved.[/error]"
-            )
-            tmp.unlink(missing_ok=True)
-            _cleanup_download_parts(tmp)
-            return "skipped"
-
-        if entry.get("pinned") and dest.is_file():
-            if not _archive_before_replace(filename, entry, dest):
-                # Out of disk space for the archive copy (D3): abort the
-                # upgrade entirely rather than replace an un-archivable
-                # pinned model - the installed file is left exactly as it
-                # was, only the downloaded tmp file is discarded.
-                tmp.unlink(missing_ok=True)
-                _cleanup_download_parts(tmp)
-                return "skipped"
-
-        try:
-            _replace_with_retry(tmp, dest)
-        except (OSError, DownloadError) as e:
-            err_console.print(f"[error]{filename}: update failed to finalize: {e}[/error]")
-            tmp.unlink(missing_ok=True)
-            return "skipped"
-
-        return _finalize_replaced_model(filename, entry, dest, new_sha256, provider, repo_id)
-    except KeyboardInterrupt:
-        _unlink_with_retry(tmp)
-        _cleanup_download_parts(tmp)
-        raise
-
-
 def _finalize_replaced_model(
     filename: str,
     entry: dict,
@@ -6776,12 +6717,11 @@ def _finalize_replaced_model(
     repo_id: str | None,
 ) -> str:
     """Relink and record the registry entry after new bytes have already
-    landed at `dest` (via `tmp.replace(dest)`/`_replace_with_retry`). Shared
-    tail of `_update_one` and `rollback` - both swap a model's bytes in
-    place and then need identical relink + registry bookkeeping. Returns
-    "updated" on success, "skipped" if relinking failed (the bytes on disk
-    are still the new ones; only the links/registry need `omm link` to
-    catch up)."""
+    landed at `dest` (via `tmp.replace(dest)`/`_replace_with_retry`). Used
+    by `rollback`, which swaps a model's bytes in place and then needs this
+    relink + registry bookkeeping. Returns "updated" on success, "skipped"
+    if relinking failed (the bytes on disk are still the new ones; only the
+    links/registry need `omm link` to catch up)."""
     ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
     try:
         linked = _link_model(dest, repo_id, ollama_tag)
@@ -7015,67 +6955,184 @@ def fit(
     console.print(_fit_card(label, size_bytes))
 
 
-@app.command()
-@global_flags
-def upgrade(
-    model_name: str = typer.Argument(None, autocompletion=complete_remove_filename),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Show what would be checked for updates without downloading anything."
-    ),
-) -> None:
-    """Refresh an installed model against its source, re-downloading only
-    if the source has changed since install. With no argument (or `all`),
-    checks every model installed via omm.
-
-    Alias: up"""
+def _upgrade_targets(model_name: str | None) -> list[tuple[str, dict]]:
+    """Resolve `omm upgrade`'s argument to the registry entries to scan.
+    No argument (or "all") means every installed model; a specific ref
+    must already be installed - `omm upgrade` only ever suggests
+    alternatives to a model omm already manages."""
     reg = registry.load_registry()
-
     if model_name is None or model_name.lower() == "all":
         if not reg:
             console.print("No models installed via omm yet.")
             raise typer.Exit(0)
-        if dry_run:
-            for filename in reg:
-                console.print(f"Would check for updates: {filename}")
-            raise typer.Exit(0)
-        if not _global_opts().yes and not _ask_confirm(f"Check {len(reg)} model(s) for updates?"):
-            err_console.print("[warning]Cancelled.[/warning]")
-            raise typer.Exit(0)
-
-        counts = {"updated": 0, "up_to_date": 0, "skipped": 0}
-        for filename, entry in list(reg.items()):
-            try:
-                counts[_update_one(filename, entry)] += 1
-            except Exception as error:
-                # `_update_one` handles its own expected failure modes
-                # internally and returns "skipped" for them; this is a
-                # last-resort net so one model's unexpected failure (a
-                # link-ownership lock timeout, a race with another omm
-                # process, ...) can't crash the whole batch with no summary
-                # line and leave every model after it unchecked.
-                err_console.print(f"[error]{filename}: update failed unexpectedly: {error}[/error]")
-                counts["skipped"] += 1
-        console.print(
-            f"[success]{counts['updated']} updated, {counts['up_to_date']} up to date, "
-            f"{counts['skipped']} skipped.[/success]"
-        )
-        return
-
+        return list(reg.items())
     resolved = _resolve_ref(model_name)
     filename, entry = _lookup_entry(resolved, reg)
     if entry is None:
         _print_not_installed_error(resolved)
         raise typer.Exit(1)
+    return [(filename, entry)]
+
+
+def _candidate_fits_budget(hw: HardwareInfo, budget, candidate: dict) -> bool:
+    """(A)'s memory gate (#322, D-BUDGET-GATE=A): the install cap (total
+    RAM headroom), not the RAM free this instant - the same gate
+    `predictor.predict_speed_interval` already applies internally, so a
+    suggestion is never for a candidate that couldn't even be installed.
+    A candidate whose required memory can't be estimated is excluded
+    (fail-safe, not treated as fitting)."""
+    required = predictor.estimate_required_memory_gb(candidate)
+    if required is None:
+        return False
+    return fit_ui.verdict(required, budget).status != "too_big"
+
+
+def _scan_for_upgrades(targets: list[tuple[str, dict]]) -> list[upgrade_mod.Suggestion]:
+    """Every network/hardware lookup `omm upgrade` needs, gathered up front
+    (#322). One model's failure is reported and skipped rather than
+    aborting the whole scan."""
+    hw = scan_hardware()
+    budget = calculate_memory_budget(hw)
+    config = load_config()
+    artifact, _changed = _load_recommendation_with_change_note(config)
+    trees = artifact.get("trees") if artifact else None
+    candidates = (artifact.get("candidates") or []) if artifact else []
+
+    def _predict_tps(candidate: dict) -> float | None:
+        if trees is None:
+            return None
+        try:
+            return predictor.predict_speed(trees, hw, candidate)
+        except (ValueError, KeyError, TypeError, IndexError):
+            return None
+
+    suggestions: list[upgrade_mod.Suggestion] = []
+    for filename, entry in targets:
+        try:
+            provider = entry.get("provider") or "huggingface"
+            repo_id = entry.get("repo_id")
+
+            successor = upgrade_mod.find_successor(
+                candidates, repo_id=repo_id, filename=filename, provider=provider
+            )
+            if successor is not None:
+                successor_provider = successor.get("provider") or "huggingface"
+                successor_name = successor.get("name") or successor["filename"]
+                suggestions.append(
+                    upgrade_mod.Suggestion(
+                        installed_filename=filename,
+                        kind=upgrade_mod.KIND_SUCCESSOR,
+                        provider=successor_provider,
+                        repo_id=successor["repo_id"],
+                        filename=successor["filename"],
+                        reason=f"superseded by {successor_name}",
+                        ref=(
+                            f"{upgrade_mod.provider_prefix(successor_provider)}:"
+                            f"{successor['repo_id']}:{successor['filename']}"
+                        ),
+                    )
+                )
+
+            if repo_id:
+                quant_provider = validate_provider(provider)
+                quant_repo_id = validate_repo_id(repo_id)
+                quant = upgrade_mod.find_quant_upgrade(
+                    provider=quant_provider,
+                    repo_id=quant_repo_id,
+                    installed_filename=filename,
+                    list_repo_files=fetch_repo_files,
+                    file_size=remote_file_size,
+                    predict_tps=_predict_tps,
+                    fits_budget=lambda c: _candidate_fits_budget(hw, budget, c),
+                )
+                if quant is not None:
+                    suggestions.append(quant)
+        except Exception as error:
+            err_console.print(f"[warning]{filename}: could not be checked ({error}).[/warning]")
+    return suggestions
+
+
+@app.command()
+@global_flags
+def upgrade(
+    model_name: str = typer.Argument(None, autocompletion=complete_remove_filename),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Only print the suggestions; install nothing."
+    ),
+) -> None:
+    """Look for a better model than the ones already installed - a newer
+    curated successor, or a higher-quality quantization from the same repo
+    that still fits this machine's memory - and install the ones you
+    approve. With no argument (or `all`), scans every model installed via
+    omm.
+
+    To re-check an installed file against its source instead, use
+    `omm install <model> --force`.
+
+    Alias: up"""
+    targets = _upgrade_targets(model_name)
+    suggestions = _scan_for_upgrades(targets)
+
+    if not suggestions:
+        console.print(f"[success]Checked {len(targets)} model(s); nothing better found.[/success]")
+        return
+
+    table = _table(title="Suggested upgrades")
+    table.add_column("Installed", style="accent")
+    table.add_column("Suggestion", style="accent")
+    table.add_column("Why", style="value")
+    for suggestion in suggestions:
+        label = suggestion.filename
+        if suggestion.kind == upgrade_mod.KIND_QUANT:
+            label = f"{label} (same repo)"
+        reason = suggestion.reason
+        if suggestion.predicted_tps is not None:
+            reason = f"{reason} · ~{suggestion.predicted_tps:.0f} tok/s"
+        table.add_row(suggestion.installed_filename, label, reason)
+    console.print(table)
 
     if dry_run:
-        console.print(f"Would check for updates: {filename}")
         raise typer.Exit(0)
-    result = _update_one(filename, entry)
-    if result == "up_to_date":
-        console.print(f"[success]{filename} is already up to date ({_entry_version(entry)}).[/success]")
-    elif result == "updated":
-        fresh_entry = registry.load_registry()[filename]
-        console.print(f"[success]{filename} updated to {_entry_version(fresh_entry)}.[/success]")
+
+    opts = _global_opts()
+    if not opts.yes and not _stdin_is_tty():
+        # D-NONTTY=A: a non-interactive caller gets the table and exits
+        # clean - `omm upgrade` is a pure scan until something is
+        # actually approved, so there's nothing here to fail loudly about.
+        console.print(
+            "[muted]Re-run with --yes, or install one directly with "
+            "`omm install <ref>`, to act on these.[/muted]"
+        )
+        raise typer.Exit(0)
+
+    for suggestion in suggestions:
+        if not opts.yes and not _ask_confirm(f"Install {suggestion.filename}?"):
+            continue
+        try:
+            resolved = _resolve_model_interactive(suggestion.ref)
+            _install_impl(
+                resolved,
+                assume_yes=opts.yes,
+                verify_runtime_after_install=True,
+                runtime_load_consent=True if opts.yes else None,
+                preferred_runtime=load_config().get("default_engine"),
+                enforce_memory_guard=True,
+            )
+        except DownloadError as error:
+            errors.print_cli_error(err_console, str(error), fix=error.fix)
+            continue
+        except linker.LinkError as error:
+            errors.print_cli_error(err_console, str(error), fix=error.fix)
+            continue
+        except InstallInterrupted as e:
+            _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
+            err_console.print("[warning]Cancelled.[/warning]")
+            raise typer.Exit(0) from e
+        console.print(f"[success]Ω Installed {suggestion.filename}[/success]")
+        console.print(
+            "  The previous model is still installed. Remove it with: "
+            f"[accent]omm uninstall {suggestion.installed_filename}[/accent]"
+        )
 
 
 @app.command()
@@ -7083,12 +7140,12 @@ def upgrade(
 def pin(
     model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
 ) -> None:
-    """Mark an installed model to be archived before its next `omm
-    upgrade`, so `omm rollback` can undo that upgrade afterwards. Nothing is
-    copied yet - GGUFs are large, so the archive is only made right before
-    upgrade actually replaces the file, not at pin time. `omm upgrade`
-    still replaces a pinned model same as any other; pin only decides
-    whether the version it replaces is kept."""
+    """Mark an installed model to be archived before its next `omm install
+    --force`, so `omm rollback` can undo that reinstall afterwards. Nothing
+    is copied yet - GGUFs are large, so the archive is only made right
+    before the reinstall actually replaces the file, not at pin time. `omm
+    install --force` still replaces a pinned model same as any other; pin
+    only decides whether the version it replaces is kept."""
     filename, entry = _lookup_entry(_resolve_ref(model_name), registry.load_registry())
     if entry is None:
         _print_not_installed_error(model_name)
@@ -7098,8 +7155,8 @@ def pin(
         return
     registry.upsert_entry(filename, pinned=True)
     console.print(
-        f"[success]Pinned {filename}. Its next `omm upgrade` will archive the "
-        "current version first.[/success]"
+        f"[success]Pinned {filename}. Its next `omm install --force` will archive "
+        "the current version first.[/success]"
     )
 
 
@@ -7108,9 +7165,9 @@ def pin(
 def unpin(
     model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
 ) -> None:
-    """Undo `omm pin`: a future `omm upgrade` stops archiving this model,
-    and any version already archived for it is deleted. Run `omm rollback`
-    first if you might still want that archived version."""
+    """Undo `omm pin`: a future `omm install --force` stops archiving this
+    model, and any version already archived for it is deleted. Run `omm
+    rollback` first if you might still want that archived version."""
     filename, entry = _lookup_entry(_resolve_ref(model_name), registry.load_registry())
     if entry is None:
         _print_not_installed_error(model_name)
@@ -8709,7 +8766,7 @@ def _cleanup_incomplete_installs() -> int:
 
 
 def _cleanup_orphan_archives() -> int:
-    """Reclaim leftover pin archives (`omm pin` / `omm upgrade` /
+    """Reclaim leftover pin archives (`omm pin` / `omm install --force` /
     `omm rollback`, see MODEL_ARCHIVE_DIR): an archive whose model was
     since removed from the registry (uninstalled by hand, or pruned by
     `_prune_missing_models` after its hub file vanished outside omm - note

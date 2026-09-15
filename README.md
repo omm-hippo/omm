@@ -418,7 +418,7 @@ the command exits without downloading.
 ### Install & manage models
 
 ```sh
-omm install <name> [--skip-unfit] [--upload/--no-upload] [--force] [--verify-runtime|--no-verify-runtime]  # Download, link, and optionally verify a model
+omm install <name> [--skip-unfit] [--upload/--no-upload] [--force] [--verify-runtime|--no-verify-runtime]  # Download, link, and optionally verify a model (--force re-checks the source and only re-downloads when it actually changed)
 omm fit <name>  # Memory card: does this model (installed or not) fit next to what is running right now?
 omm run [name] [--engine NAME]  # Chat with an installed model: Ollama in the terminal, KoboldCpp/text-generation-webui with the model loaded, GUI apps opened
 omm import [directory] [--yes]  # Adopt GGUF files found across supported runners (and an optional directory) into the hub
@@ -426,8 +426,8 @@ omm uninstall <name> [--dry-run]  # Uninstall a model and clean up its symlinks/
 omm uninstall all [--yes] [--dry-run]  # Uninstall every model installed via omm
 omm list [--json] [--engine NAME]  # Show models installed via omm and their linked status (alias: ls)
 omm info <name> [--json]  # What a model is: source repo, version, size and run commands once installed; author, downloads, license and architecture for a search result
-omm upgrade <name> [--dry-run]  # Refresh a model against its source if it has changed since install (alias: up)
-omm upgrade [--yes] [--dry-run]  # Check every installed model for updates
+omm upgrade <name> [--dry-run]  # Look for a better model than this one - a curated successor, or a higher quantization from the same repo that still fits (alias: up)
+omm upgrade [--yes] [--dry-run]  # Scan every installed model for a better alternative
 omm link [--engine NAME]  # Re-verify and repair installed-model links across supported runners
 omm link <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
 omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
@@ -439,6 +439,10 @@ omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 installation: it prints `Skipped` and leaves the model hub unchanged. If an
 uninstall cannot remove the managed model file, OMM exits with status 1 and
 keeps the registry and any still-live links so the same command can be retried.
+
+`omm upgrade` no longer re-downloads a model against its own source. To
+re-check an installed file and replace it only if the source actually
+changed, use `omm install <name> --force`.
 
 ### Verify & benchmark
 
