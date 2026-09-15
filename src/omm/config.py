@@ -16,7 +16,17 @@ def _resolve_omm_home() -> Path:
     directory's filesystem lacks room for GGUF models (e.g. contribute)."""
     override = os.environ.get("OMM_HOME", "").strip()
     if override:
-        return Path(override).expanduser()
+        # install.sh:8-11/38-41 and install.ps1:23-31 already refuse these
+        # values; the runtime is where the destructive work happens
+        # (MODELS_DIR below, `omm cleanup`), so it must refuse them too.
+        # A relative OMM_HOME would otherwise resolve against whatever
+        # directory each command happens to run in.
+        home = Path(override).expanduser()
+        if not home.is_absolute():
+            raise SystemExit(f"Refusing non-absolute OMM_HOME: {override}")
+        if home == Path(home.anchor) or home == Path.home():
+            raise SystemExit(f"Refusing unsafe OMM_HOME: {override}")
+        return home
     return Path.home() / ".omm"
 
 
@@ -182,6 +192,12 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
             merged["telemetry_backend"] = "local"
         elif isinstance(endpoint, str) and "firebaseio.com" in endpoint:
             merged["telemetry_backend"] = "firebase_legacy"
+        elif "telemetry_endpoint" in data and endpoint is None:
+            # A config that stored an explicit null endpoint before
+            # telemetry_backend existed is already local-only; without this
+            # it keeps DEFAULT_CONFIG's "gateway" label next to
+            # "Endpoint: not configured".
+            merged["telemetry_backend"] = "local"
         elif endpoint:
             merged["telemetry_backend"] = "self_hosted"
     # The direct-Firebase endpoint now rejects every write (omm-hippo/omm#133
@@ -191,6 +207,12 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
     if merged.get("telemetry_backend") == "firebase_legacy" and merged.get("telemetry_endpoint") == LEGACY_FIREBASE_ENDPOINT:
         merged["telemetry_endpoint"] = TELEMETRY_GATEWAY_ENDPOINT
         merged["telemetry_backend"] = "gateway"
+    if merged.get("telemetry_send_policy") not in {"always", "never", "ask"}:
+        # A damaged/external-tool-written value (null, "yes", a number) must
+        # not crash table rendering or policy checks, so fold it back to the
+        # default the same way memory_guard_policy is below. "ask" is the
+        # same value DEFAULT_CONFIG uses.
+        merged["telemetry_send_policy"] = "ask"
     if merged.get("memory_guard_policy") not in {"ask", "block", "observe"}:
         merged["memory_guard_policy"] = "ask"
     poll_seconds = merged.get("memory_guard_poll_seconds")
@@ -260,6 +282,20 @@ def update_config(**changes: Any) -> dict[str, Any]:
         current.update(changes)
         atomic_write_text(CONFIG_PATH, json.dumps(current, indent=2) + "\n")
     return current
+
+
+def peek_client_id() -> str | None:
+    """The already-stored install identifier, or None if there is none yet.
+    Unlike `client_id()`, this **never creates anything** - it exists for
+    paths where a user who has opted out of usage stats is only checking
+    what would be sent."""
+    try:
+        existing = CLIENT_ID_PATH.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return None
+    if len(existing) == 32 and all(c in "0123456789abcdef" for c in existing):
+        return existing
+    return None
 
 
 def client_id() -> str:
