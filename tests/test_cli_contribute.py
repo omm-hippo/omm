@@ -22,9 +22,11 @@ def _isolate_contribute_disk_preflight(request, monkeypatch):
     disk_tests = {
         "test_contribute_refuses_to_start_when_model_volume_has_less_than_ten_gib",
         "test_contribute_yes_flag_before_subcommand_skips_low_disk_prompt",
+        "test_contribute_preflight_checks_the_selected_engine_volume",
+        "test_contribute_preflight_ignores_ollama_dir_for_lmstudio_session",
     }
     if request.node.name not in disk_tests:
-        monkeypatch.setattr(cli, "_ensure_contribute_start_space", lambda: None)
+        monkeypatch.setattr(cli, "_ensure_contribute_start_space", lambda engine: None)
 
 
 class _FakeListener:
@@ -51,11 +53,13 @@ def test_contribute_refuses_to_start_when_model_volume_has_less_than_ten_gib(
         "disk_usage",
         lambda path: SimpleNamespace(free=9 * 1024**3),
     )
-    monkeypatch.setattr(
-        cli,
-        "_ensure_ollama_running",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must stop before engine start")),
-    )
+    # F061: the disk preflight now runs after the engine is confirmed
+    # running (it needs to know which engine's model store to check), so
+    # this test picks Ollama and has it already-reachable (no daemon start)
+    # rather than depend on whether the machine running the suite has an
+    # engine installed at all.
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(cli, "_ensure_ollama_running", lambda *args, **kwargs: None)
 
     result = runner.invoke(cli.app, ["contribute", "--yes"])
 
@@ -72,16 +76,71 @@ def test_contribute_yes_flag_before_subcommand_skips_low_disk_prompt(
         "disk_usage",
         lambda path: SimpleNamespace(free=9 * 1024**3),
     )
-    monkeypatch.setattr(
-        cli,
-        "_ensure_ollama_running",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must stop before engine start")),
-    )
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(cli, "_ensure_ollama_running", lambda *args, **kwargs: None)
 
     result = runner.invoke(cli.app, ["--yes", "contribute"])
 
     assert result.exit_code == 1
     assert "will not start with low disk space" in result.stderr
+
+
+def test_contribute_preflight_checks_the_selected_engine_volume(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    # F061: _select_benchmark_engine can pick "ollama" but _ensure_engine_running
+    # falls back to LM Studio when Ollama's daemon won't actually come up - the
+    # disk preflight must look at the engine that was really resolved, not the
+    # initially-selected one, so a low LM Studio model volume is caught.
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(cli, "_ensure_engine_running", lambda *a, **k: ("lmstudio", None))
+    lmstudio_dir = tmp_path / "lmstudio-models"
+    lmstudio_dir.mkdir()
+    monkeypatch.setattr(cli.linker, "lmstudio_models_dir", lambda: lmstudio_dir)
+    monkeypatch.setattr(cli.linker, "storage_volume_key", lambda path: ("test", str(path)))
+
+    def fake_disk_usage(path):
+        if cli.Path(path) == lmstudio_dir:
+            return SimpleNamespace(free=1 * 1024**3)
+        return SimpleNamespace(free=500 * 1024**3)
+
+    monkeypatch.setattr(cli.shutil, "disk_usage", fake_disk_usage)
+
+    result = runner.invoke(cli.app, ["contribute", "--yes"])
+
+    assert result.exit_code == 1
+    assert "will not start with low disk space" in result.stderr
+    # Console word-wrap can split the path across lines mid-word, so compare
+    # with all whitespace removed rather than a literal substring check.
+    assert lmstudio_dir.name in "".join(result.stderr.split())
+
+
+def test_contribute_preflight_ignores_ollama_dir_for_lmstudio_session(
+    isolated_omm_home, tmp_path, monkeypatch
+):
+    # Mirror of the test above: when the resolved engine is LM Studio, a low
+    # Ollama model volume must not block the run.
+    monkeypatch.setattr(cli, "_select_benchmark_engine", lambda: "ollama")
+    monkeypatch.setattr(cli, "_ensure_engine_running", lambda *a, **k: ("lmstudio", None))
+    ollama_dir = tmp_path / "ollama-models"
+    ollama_dir.mkdir()
+    monkeypatch.setattr(cli.linker, "ollama_models_dir", lambda: ollama_dir)
+    monkeypatch.setattr(cli.linker, "storage_volume_key", lambda path: ("test", str(path)))
+
+    def fake_disk_usage(path):
+        if cli.Path(path) == ollama_dir:
+            return SimpleNamespace(free=1 * 1024**3)
+        return SimpleNamespace(free=500 * 1024**3)
+
+    monkeypatch.setattr(cli.shutil, "disk_usage", fake_disk_usage)
+    # Let the run proceed past the disk preflight and fail at the next
+    # preflight instead, so a pass on disk space is observable.
+    monkeypatch.setattr(cli.predictor, "load_model_with_change_note", lambda url, *a, **k: (None, False))
+
+    result = runner.invoke(cli.app, ["contribute", "--yes"])
+
+    assert "will not start with low disk space" not in result.stderr
+    assert "No trained recommendation model" in result.stderr
 
 
 def test_contribute_never_runs_unrelated_auto_import(isolated_omm_home, monkeypatch):
@@ -95,7 +154,7 @@ def test_contribute_never_runs_unrelated_auto_import(isolated_omm_home, monkeypa
     monkeypatch.setattr(
         cli,
         "_ensure_contribute_start_space",
-        lambda: (_ for _ in ()).throw(cli.typer.Exit(1)),
+        lambda engine: (_ for _ in ()).throw(cli.typer.Exit(1)),
     )
 
     result = runner.invoke(cli.app, ["contribute", "--yes"])

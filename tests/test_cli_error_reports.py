@@ -356,7 +356,7 @@ def test_giving_up_after_a_failed_daemon_restart_queues_nothing_when_reports_are
 def _crash_in(monkeypatch, argv, error):
     monkeypatch.setattr(cli.sys, "argv", argv)
 
-    def _raise():
+    def _raise(**_):
         raise error
 
     monkeypatch.setattr(cli, "app", _raise)

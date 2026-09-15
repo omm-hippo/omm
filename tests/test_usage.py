@@ -44,6 +44,13 @@ def test_build_payload_shape(isolated_omm_home, monkeypatch):
     assert p["errors"]["install DownloadError"] == 1
 
 
+def test_build_payload_preview_does_not_create_client_id(isolated_omm_home):
+    config.CLIENT_ID_PATH.unlink(missing_ok=True)
+    payload = usage.build_payload(create_client_id=False)
+    assert not config.CLIENT_ID_PATH.exists()
+    assert payload["client_id"] == "(not generated yet)"
+
+
 def test_error_class_never_leaks_message(isolated_omm_home, monkeypatch):
     _enable(monkeypatch)
     usage.record_run("install", "failed", type(RuntimeError("secret /home/x")).__name__)
