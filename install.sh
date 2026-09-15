@@ -757,10 +757,13 @@ fi
 
 # NVIDIA VRAM detection is dead weight on Mac (no NVIDIA GPUs since 2016) -
 # only pull that extra in on other platforms.
+# [watch] (watchdog + plyer) is what `omm setting auto-import enable` needs;
+# a `pip install` typed later lands in whatever Python is on PATH, not in
+# this pipx venv, so it goes in at install time.
 if command -v nvidia-smi >/dev/null 2>&1; then
-    INSTALL_SPEC="${SRC_DIR}[nvidia]"
+    INSTALL_SPEC="${SRC_DIR}[nvidia,watch]"
 else
-    INSTALL_SPEC="$SRC_DIR"
+    INSTALL_SPEC="${SRC_DIR}[watch]"
 fi
 
 echo "Installing omm (editable) from $SRC_DIR ..."

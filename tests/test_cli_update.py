@@ -83,7 +83,7 @@ def test_install_spec_omits_nvidia_extra_without_nvidia_smi(monkeypatch):
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
-    assert cli._install_spec() == str(cli.SRC_DIR)
+    assert cli._install_spec() == f"{cli.SRC_DIR}[watch]"
 
 
 def test_install_spec_adds_nvidia_extra_when_nvidia_smi_present(monkeypatch):
@@ -91,7 +91,7 @@ def test_install_spec_adds_nvidia_extra_when_nvidia_smi_present(monkeypatch):
         cli.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
     )
 
-    assert cli._install_spec() == f"{cli.SRC_DIR}[nvidia]"
+    assert cli._install_spec() == f"{cli.SRC_DIR}[nvidia,watch]"
 
 
 def test_omm_version_ignores_newer_src_when_install_is_not_editable(monkeypatch, tmp_path):
@@ -1491,7 +1491,7 @@ def test_migrate_to_editable_install_clones_then_pipx_installs(monkeypatch, tmp_
         ["git", "-C", str(tmp_clone), "rev-parse", "HEAD"],
     ]
     assert verify_calls == [(tmp_clone, "newcommit", cli.trust.current_trust_anchor())]
-    assert progress_calls == [["pipx", "install", "--force", "--editable", str(src)]]
+    assert progress_calls == [["pipx", "install", "--force", "--editable", cli._install_spec()]]
     assert (src / "marker").read_text(encoding="utf-8") == "cloned"
     assert not tmp_clone.exists()
 

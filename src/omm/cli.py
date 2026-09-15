@@ -894,13 +894,18 @@ def help_cmd(
 
 
 def _install_spec() -> str:
-    """Editable spec for the persistent local clone (SRC_DIR). Adds the
-    [nvidia] extra only when an NVIDIA driver is actually present
-    (nvidia-smi on PATH) - the same probe install.sh and install.ps1
-    use, so a pipx repair never adds an extra the installer omitted."""
-    if shutil.which("nvidia-smi") is None:
-        return str(SRC_DIR)
-    return f"{SRC_DIR}[nvidia]"
+    """Editable spec for the persistent local clone (SRC_DIR). Always adds
+    the [watch] extra (watchdog + plyer, what `omm setting auto-import
+    enable` needs - a `pip install` typed in the user's shell lands in
+    whatever Python is on PATH, not in this pipx venv) and the [nvidia]
+    extra only when an NVIDIA driver is actually present (nvidia-smi on
+    PATH) - the same probes install.sh and install.ps1 use, so a pipx
+    repair never adds an extra the installer omitted or drops one it
+    added."""
+    extras = ["watch"]
+    if shutil.which("nvidia-smi") is not None:
+        extras.insert(0, "nvidia")
+    return f"{SRC_DIR}[{','.join(extras)}]"
 
 
 def _shorten_home(path: Path) -> str:
@@ -7907,6 +7912,30 @@ def _watch_dependencies_available() -> bool:
     return True
 
 
+def _watch_dependency_hint() -> str:
+    """How to get watchdog + plyer into the Python omm itself imports from.
+    A bare `pip install "omm-model[watch]"` lands in whichever Python is
+    first on PATH - for the installer's pipx venv and for the frozen
+    npm/winget/portable builds that is never the one omm runs from, so the
+    user "installed it" and was told to install it again on every retry."""
+    if getattr(sys, "frozen", False):
+        return (
+            "This packaged omm build (npm/winget/portable) does not bundle the "
+            "auto-import watcher yet. Install omm with the installer script from "
+            "the README to use auto-import."
+        )
+    source = package_metadata.install_source()
+    if source is package_metadata.InstallSource.PIPX:
+        environment = Path(sys.prefix).name
+        return f"Install it into omm's pipx environment with: pipx inject {environment} watchdog plyer"
+    if source is package_metadata.InstallSource.HOMEBREW:
+        return (
+            "The Homebrew formula does not bundle the auto-import watcher yet. "
+            "Install omm with the installer script from the README to use auto-import."
+        )
+    return f'Install it with: "{sys.executable}" -m pip install "omm-model[watch]"'
+
+
 @watch_app.command(name="enable")
 @global_flags
 def auto_import_enable() -> None:
@@ -7914,7 +7943,7 @@ def auto_import_enable() -> None:
     adopts new models into the omm hub without a prompt."""
     if not _watch_dependencies_available():
         err_console.print(
-            '[error]Missing dependency. Install with: pip install "omm-model\\[watch]"[/error]'
+            f"[error]Missing dependency (watchdog, plyer). {escape(_watch_dependency_hint())}[/error]"
         )
         raise typer.Exit(1)
     if watch_service.is_installed():

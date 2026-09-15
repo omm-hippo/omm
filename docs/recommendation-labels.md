@@ -41,8 +41,24 @@ their static-rule aliases), classified as LLM / General from their model cards:
 
 The existing HF and ModelScope searches now preserve task metadata they already
 receive. This adds no provider requests. Future generated/signed catalogs carry
-those fields through the existing training path. The pool, ranking, memory
-predictions, downloads, and installation behavior are unchanged.
+those fields through the existing training path. Label classification does not
+change speed or memory predictions, download targets, or installation behavior.
+
+## Shortlist and package details
+
+After hardware filtering and ranking, recommendations group matching repository
+model names and filenames across uploaders and quantizations before selecting up
+to ten entries. The first ranked package keeps its exact install reference and
+its own task metadata; labels from a discarded mirror are not substituted.
+
+Normal models appear before specialized or uncensored variants. Within each
+group, the shortlist first admits up to two entries per model family, then fills
+remaining places with the other eligible models. Model versions, sizes, and
+fine-tune differences remain distinct. These are selection heuristics, not
+quality scores or verification of provider trust or runtime compatibility.
+
+The selected-model detail shows the provider, named quantization, and exact
+filename alongside TYPE, BEST FOR, and their classification sources.
 
 ## Terminal layout
 
