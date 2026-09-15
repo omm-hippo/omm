@@ -77,6 +77,82 @@ def test_signed_rollback_requires_and_restores_signature_provenance(tmp_path):
     assert catalog.verify_signed_artifact(content, restored["manifest"], restored["public_key"])
 
 
+def test_rollback_skips_a_snapshot_signed_by_a_rotated_out_key(tmp_path):
+    old_private, old_public = _keys()
+    _new_private, new_public = _keys()
+    artifact = tmp_path / "recommend.json"
+    history = tmp_path / "history"
+    original_content = b'{"version":1}'
+    artifact.write_bytes(original_content)
+    manifest = {
+        "schema_version": 1,
+        "artifact_sha256": hashlib.sha256(original_content).hexdigest(),
+        "signature": base64.b64encode(old_private.sign(original_content)).decode(),
+    }
+    provenance = artifact.with_suffix(".json.provenance.json")
+    provenance.write_text(json.dumps({"manifest": manifest, "public_key": old_public}), encoding="utf-8")
+    assert catalog.archive_current_artifact(
+        artifact, history, require_signed=True, trusted_public_key=old_public
+    )
+    artifact.write_bytes(b'{"version":2}')
+    provenance.unlink()
+
+    with pytest.raises(FileNotFoundError):
+        catalog.rollback(
+            artifact_path=artifact, history_dir=history, require_signed=True, trusted_public_key=new_public
+        )
+
+
+def test_rollback_accepts_a_snapshot_signed_by_the_configured_key(tmp_path):
+    old_private, old_public = _keys()
+    artifact = tmp_path / "recommend.json"
+    history = tmp_path / "history"
+    original_content = b'{"version":1}'
+    artifact.write_bytes(original_content)
+    manifest = {
+        "schema_version": 1,
+        "artifact_sha256": hashlib.sha256(original_content).hexdigest(),
+        "signature": base64.b64encode(old_private.sign(original_content)).decode(),
+    }
+    provenance = artifact.with_suffix(".json.provenance.json")
+    provenance.write_text(json.dumps({"manifest": manifest, "public_key": old_public}), encoding="utf-8")
+    assert catalog.archive_current_artifact(
+        artifact, history, require_signed=True, trusted_public_key=old_public
+    )
+    artifact.write_bytes(b'{"version":2}')
+    provenance.unlink()
+
+    selected = catalog.rollback(
+        artifact_path=artifact, history_dir=history, require_signed=True, trusted_public_key=old_public
+    )
+
+    assert selected.read_bytes() == original_content
+    assert artifact.read_bytes() == original_content
+
+
+def test_archive_skips_a_snapshot_signed_by_a_rotated_out_key(tmp_path):
+    old_private, old_public = _keys()
+    _new_private, new_public = _keys()
+    artifact = tmp_path / "recommend.json"
+    history = tmp_path / "history"
+    content = b'{"version":1}'
+    artifact.write_bytes(content)
+    manifest = {
+        "schema_version": 1,
+        "artifact_sha256": hashlib.sha256(content).hexdigest(),
+        "signature": base64.b64encode(old_private.sign(content)).decode(),
+    }
+    provenance = artifact.with_suffix(".json.provenance.json")
+    provenance.write_text(json.dumps({"manifest": manifest, "public_key": old_public}), encoding="utf-8")
+
+    result = catalog.archive_current_artifact(
+        artifact, history, require_signed=True, trusted_public_key=new_public
+    )
+
+    assert result is None
+    assert not history.exists() or list(history.glob("*.json")) == []
+
+
 def test_archive_current_artifact_returns_none_on_write_failure(tmp_path, monkeypatch):
     artifact = tmp_path / "recommend.json"
     artifact.write_text('{"version":1}', encoding="utf-8")

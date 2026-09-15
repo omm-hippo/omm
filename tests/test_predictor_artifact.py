@@ -180,6 +180,73 @@ def test_signed_fetch_caches_exact_verified_bytes_for_future_archive(monkeypatch
     assert cache_path.read_bytes() == contents[1]
 
 
+def _sign_and_cache(monkeypatch, tmp_path, private_key):
+    """Fetch-and-cache a signed artifact under `private_key`, leaving the
+    cache file and its provenance sidecar on disk. Returns the base64
+    public key used."""
+    public = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode()
+    cache_path = tmp_path / "recommend-model.json"
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", cache_path)
+
+    class Response:
+        def __init__(self, content):
+            self.content = content
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return json.loads(self.content)
+
+    content = json.dumps(artifact(), indent=2).encode()
+    manifest = {
+        "schema_version": 1,
+        "artifact_sha256": hashlib.sha256(content).hexdigest(),
+        "signature": base64.b64encode(private_key.sign(content)).decode(),
+    }
+    responses = iter([Response(content), Response(json.dumps(manifest).encode())])
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: next(responses))
+
+    predictor.fetch_and_cache_model("model", "manifest", public)
+    return public, cache_path
+
+
+def test_cached_model_signature_is_valid_only_for_the_configured_key(monkeypatch, tmp_path):
+    private = Ed25519PrivateKey.generate()
+    other_public = base64.b64encode(
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+    ).decode()
+
+    public, _cache_path = _sign_and_cache(monkeypatch, tmp_path, private)
+
+    assert predictor.cached_model_signature_is_valid(public) is True
+    assert predictor.cached_model_signature_is_valid(other_public) is False
+    assert predictor.cached_model_signature_is_valid(None) is False
+
+
+def test_cached_model_signature_is_invalid_after_tampering(monkeypatch, tmp_path):
+    private = Ed25519PrivateKey.generate()
+    public, cache_path = _sign_and_cache(monkeypatch, tmp_path, private)
+
+    original = cache_path.read_bytes()
+    tampered = bytearray(original)
+    tampered[0] = tampered[0] ^ 0xFF
+    cache_path.write_bytes(bytes(tampered))
+    assert predictor.cached_model_signature_is_valid(public) is False
+
+    cache_path.write_bytes(original)
+    provenance_path = cache_path.with_suffix(cache_path.suffix + ".provenance.json")
+    provenance_path.unlink()
+    assert predictor.cached_model_signature_is_valid(public) is False
+
+
 def test_validate_model_artifact_bounds_collection_and_total_tree_work(monkeypatch):
     candidate = {
         "repo_id": "org/model",
