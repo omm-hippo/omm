@@ -1,3 +1,5 @@
+import subprocess as real_subprocess
+
 from typer.testing import CliRunner
 
 from omm import cli, config, watch, watch_service
@@ -7,6 +9,84 @@ runner = CliRunner()
 
 def test_enable_reports_missing_dependency(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
+
+    result = runner.invoke(cli.app, ["setting", "auto-import", "enable"])
+
+    assert result.exit_code == 1
+    assert "omm-model[watch]" in result.stdout + result.stderr
+    assert config.load_config()["auto_import_enabled"] is False
+
+
+def test_install_watch_dependencies_declines_without_a_tty(monkeypatch):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no tty"))
+    )
+
+    assert cli._install_watch_dependencies() is False
+
+
+def test_install_watch_dependencies_runs_pip_against_own_interpreter(monkeypatch):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_is_brew_managed_python", lambda: False)
+    pip_calls = []
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda cmd, **k: pip_calls.append(cmd) or real_subprocess.CompletedProcess(cmd, 0),
+    )
+
+    assert cli._install_watch_dependencies() is True
+    assert pip_calls == [[cli.sys.executable, "-m", "pip", "install", "watchdog>=4", "plyer>=2.1"]]
+
+
+def test_install_watch_dependencies_declines_when_user_says_no(monkeypatch):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(
+        cli.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no pip call"))
+    )
+
+    assert cli._install_watch_dependencies() is False
+
+
+def test_install_watch_dependencies_reports_pip_failure(monkeypatch):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_is_brew_managed_python", lambda: False)
+
+    def fake_run(cmd, **kwargs):
+        raise real_subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli._install_watch_dependencies() is False
+
+
+def test_enable_offers_to_install_dependencies_when_missing(isolated_omm_home, monkeypatch):
+    calls = []
+
+    def fake_available():
+        calls.append(True)
+        return len(calls) > 1  # missing on first check, present after "install"
+
+    monkeypatch.setattr(cli, "_watch_dependencies_available", fake_available)
+    monkeypatch.setattr(cli, "_install_watch_dependencies", lambda: True)
+    monkeypatch.setattr(watch_service, "is_installed", lambda: False)
+    monkeypatch.setattr(watch_service, "install", lambda: None)
+
+    result = runner.invoke(cli.app, ["setting", "auto-import", "enable"])
+
+    assert result.exit_code == 0, result.stdout
+    assert config.load_config()["auto_import_enabled"] is True
+
+
+def test_enable_declining_install_offer_reports_missing_dependency(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
+    monkeypatch.setattr(cli, "_install_watch_dependencies", lambda: False)
 
     result = runner.invoke(cli.app, ["setting", "auto-import", "enable"])
 

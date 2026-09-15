@@ -7408,16 +7408,52 @@ def _watch_dependencies_available() -> bool:
     return True
 
 
+def _is_brew_managed_python() -> bool:
+    """Best-effort detection of a Homebrew-managed venv. `brew upgrade omm`
+    recreates this venv from the formula's pinned resources, so a package
+    injected into it disappears on the next upgrade."""
+    return "Cellar" in sys.prefix
+
+
+def _install_watch_dependencies() -> bool:
+    """Install watchdog/plyer into the interpreter currently running this
+    CLI. Targets sys.executable directly so it works the same whether omm
+    was installed via pipx (curl installer), plain pip, or brew - all of
+    them are just some venv that sys.executable points at."""
+    if not _stdin_is_tty() or not _ask_confirm(
+        'Install "watchdog" and "plyer" now to enable auto-import?', default=True
+    ):
+        return False
+    if _is_brew_managed_python():
+        err_console.print(
+            "[warning]Homebrew-managed install detected - `brew upgrade omm` "
+            "will wipe this install and turn auto-import back off.[/warning]"
+        )
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "watchdog>=4", "plyer>=2.1"],
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        err_console.print(f"[error]Could not install auto-import dependencies: {error}[/error]")
+        return False
+    import importlib
+
+    importlib.invalidate_caches()
+    return True
+
+
 @watch_app.command(name="enable")
 @global_flags
 def auto_import_enable() -> None:
     """Turn on background auto-import: watches Ollama/LM Studio/etc. and
     adopts new models into the omm hub without a prompt."""
     if not _watch_dependencies_available():
-        err_console.print(
-            '[error]Missing dependency. Install with: pip install "omm-model\\[watch]"[/error]'
-        )
-        raise typer.Exit(1)
+        if not _install_watch_dependencies() or not _watch_dependencies_available():
+            err_console.print(
+                '[error]Missing dependency. Install with: pip install "omm-model\\[watch]"[/error]'
+            )
+            raise typer.Exit(1)
     if watch_service.is_installed():
         console.print("[muted]Auto-import is already enabled.[/muted]")
         return
