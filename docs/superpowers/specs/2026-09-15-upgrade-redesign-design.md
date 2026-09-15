@@ -1,8 +1,8 @@
 # `omm upgrade` 재설계 — 설계
 
 날짜: 2026-09-15
-상태: 초안 (사용자 리뷰 대기)
-관련 이슈: (이 스펙 승인 후 생성)
+상태: 승인됨
+관련 이슈: [omm-hippo/omm#322](https://github.com/omm-hippo/omm/issues/322)
 
 ## 배경
 
