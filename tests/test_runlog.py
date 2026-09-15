@@ -76,6 +76,77 @@ def test_argv_and_url_scrubbing(isolated_omm_home):
     assert "hf.co/repo/model.gguf" in text
 
 
+def test_scrub_argv_strips_values_from_equals_form_options():
+    """`--opt=value` is one click token; keeping it whole put URLs and
+    queries into the run log the docstring promises to keep out."""
+    scrubbed = runlog._scrub_argv([
+        "setting", "telemetry", "--endpoint=https://tok@collector.corp/telemetry",
+    ])
+    assert "--endpoint=<arg>" in scrubbed
+    assert not any("collector.corp" in token for token in scrubbed)
+    assert not any("tok@" in token for token in scrubbed)
+
+
+def test_scrub_argv_only_keeps_the_first_positional_command_name(monkeypatch):
+    monkeypatch.setattr(
+        runlog, "_registered_command_names", lambda: frozenset({"search", "log", "setting"})
+    )
+    assert runlog._scrub_argv(["search", "install"]) == ["search", "<arg>"]
+    assert runlog._scrub_argv(["--json", "log", "--grep=internal-model"]) == [
+        "--json", "log", "--grep=<arg>",
+    ]
+
+
+def test_run_log_file_never_contains_an_equals_option_value(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        runlog, "_registered_command_names", lambda: frozenset({"search", "log", "setting"})
+    )
+    runlog.start(["log", "--grep=internal-model-name"])
+    runlog.finish(0, "ok")
+    text = _only_jsonl_text(config.OMM_HOME)
+    history = (config.OMM_HOME / "logs" / "history.log").read_text(encoding="utf-8")
+    assert "internal-model-name" not in text
+    assert "internal-model-name" not in history
+    assert "--grep=<arg>" in text
+
+
+def test_start_failure_after_attaching_detaches_the_handler(isolated_omm_home, monkeypatch):
+    """A crash between addHandler and the run_start record used to leave the
+    handler on the 'omm' logger forever: finish() skips cleanup because the
+    globals were cleared, and the next start() attaches a duplicate."""
+
+    def boom(record):
+        raise OSError("cwd is gone")
+
+    monkeypatch.setattr(runlog, "_write_record", boom)
+    runlog.start(["list"])  # must not raise
+
+    assert runlog._HANDLER is None
+    assert not any(
+        getattr(h, "_omm_runlog", False) for h in logging.getLogger("omm").handlers
+    )
+
+
+def test_repeated_failed_starts_do_not_accumulate_handlers(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(runlog, "_write_record", lambda record: (_ for _ in ()).throw(OSError("boom")))
+    for _ in range(3):
+        runlog.start(["list"])
+    assert sum(
+        1 for h in logging.getLogger("omm").handlers if getattr(h, "_omm_runlog", False)
+    ) == 0
+    runlog.finish(1, "failed")  # must not raise
+
+
+def test_start_survives_an_unavailable_working_directory(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(runlog.Path, "cwd", staticmethod(lambda: (_ for _ in ()).throw(FileNotFoundError())))
+    runlog.start(["list"])
+    logging.getLogger("omm.x").info("kept", extra={"event": "kept"})
+    runlog.finish(0, "ok")
+    text = _only_jsonl_text(config.OMM_HOME)
+    assert '"event": "run_start"' in text and '"event": "run_end"' in text
+    assert '"cwd": null' in text
+
+
 def test_logging_failure_is_swallowed(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(
         runlog, "_logs_dir", lambda: (_ for _ in ()).throw(OSError("boom"))
