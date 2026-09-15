@@ -145,8 +145,10 @@ def fetch_repo_metadata(repo_id: str) -> dict:
             "context_length": coerce_count(gguf.get("context_length")),
             "last_modified": first_str(payload.get("lastModified")),
             # `gated` is False for open repos and "auto"/"manual" for gated
-            # ones - only the gated states are worth a row.
-            "gated": first_str(payload.get("gated")),
+            # ones - only the gated states are worth a row. Older repos can
+            # still answer with the bare boolean `true` (gated, approval type
+            # unspecified), which first_str would drop on the floor.
+            "gated": "yes" if payload.get("gated") is True else first_str(payload.get("gated")),
             "url": f"https://huggingface.co/{repo_id}",
         }
     )

@@ -181,6 +181,27 @@ def test_fetch_repo_metadata_keeps_a_gated_repo_flagged(monkeypatch):
     assert huggingface.fetch_repo_metadata("org/repo")["gated"] == "manual"
 
 
+def test_legacy_boolean_gated_is_reported(monkeypatch):
+    payload = {**_METADATA_PAYLOAD, "gated": True}
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeResponse(payload=payload))
+
+    assert huggingface.fetch_repo_metadata("org/repo")["gated"] == "yes"
+
+
+def test_gated_false_stays_absent(monkeypatch):
+    payload = {**_METADATA_PAYLOAD, "gated": False}
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeResponse(payload=payload))
+
+    assert "gated" not in huggingface.fetch_repo_metadata("org/repo")
+
+
+def test_gated_manual_is_preserved(monkeypatch):
+    payload = {**_METADATA_PAYLOAD, "gated": "manual"}
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeResponse(payload=payload))
+
+    assert huggingface.fetch_repo_metadata("org/repo")["gated"] == "manual"
+
+
 def test_fetch_repo_metadata_omits_keys_the_repo_has_no_value_for(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda url, timeout: _FakeResponse(payload={}))
 
