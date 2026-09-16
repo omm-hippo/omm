@@ -152,6 +152,9 @@ algorithm strands every already-installed client; such users need a manual
 `cd ~/.omm/src && git fetch origin && git reset --hard origin/main` bridge.
 
 **Releases.** Pushing a signed `v<version>` tag into `main` history is the release trigger.
+`auto-release.yml` does that nightly (21:00 UTC) with the retrain bot key whenever `main` moved
+past the last tag with green checks and the version is unpublished; it can also be dispatched by
+hand, and a maintainer can still tag manually (`docs/release-process.md`).
 `release.yml` (PyPI + asynchronous Homebrew dispatch), `npm-release.yml`, and
 `windows-portable.yml` fire on it. All release paths use `release_artifacts.py verify-release` to
 check the allowed tag signature, exact project version and checkout, and `main` ancestry.
