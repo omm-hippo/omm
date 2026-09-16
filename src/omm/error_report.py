@@ -627,6 +627,11 @@ def _post_report(report: dict[str, Any], config_data: dict[str, Any] | None = No
 
 def send_report(report: dict[str, Any], force: bool = False) -> bool:
     """Send one report immediately when policy (or one-run consent) allows."""
+    from omm import network_policy
+
+    if not network_policy.uploads_allowed():
+        log_attempt("skipped_network_mode", network_policy.current_mode())
+        return False
     config_data = read_config()
     policy = send_policy(config_data)
     # A stored opt-out is authoritative. ``force`` represents one-run consent
@@ -650,6 +655,10 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH, force: bool
     answered the prompt) so a crash is never followed by an immediate
     upload the user never approved.
     """
+    from omm import network_policy
+
+    if not network_policy.uploads_allowed():
+        return 0
     if (
         isinstance(max_retries, bool)
         or not isinstance(max_retries, int)

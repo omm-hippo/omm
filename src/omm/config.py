@@ -133,6 +133,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "update_channel": "stable",
     "onboarding_completed": True,
     "theme": "dark",
+    # Outbound activity mode. `--offline` is a one-process override and does
+    # not rewrite this saved choice (see omm.network_policy).
+    "network_mode": "online",
     "memory_guard_policy": "ask",
     "memory_guard_poll_seconds": 1.0,
     "memory_guard_low_memory_seconds": 3.0,
@@ -208,6 +211,8 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
         merged["telemetry_send_policy"] = "ask"
     if merged.get("memory_guard_policy") not in {"ask", "block", "observe"}:
         merged["memory_guard_policy"] = "ask"
+    if merged.get("network_mode") not in {"online", "models-only", "offline"}:
+        merged["network_mode"] = "online"
     poll_seconds = merged.get("memory_guard_poll_seconds")
     if (
         isinstance(poll_seconds, bool)

@@ -9,6 +9,8 @@ Ollama·LM Studio만 지원하며 다른 엔진은 미지원으로 표시한다.
 ```text
 omm engine status --json
 omm engine doctor ollama
+omm engine security
+omm engine security ollama --fix-local-only
 omm engine update ollama --dry-run
 omm engine update ollama --yes
 omm engine uninstall lmstudio --dry-run --json
@@ -25,6 +27,14 @@ omm engine uninstall lmstudio --dry-run --json
 바뀌지 않았는지 재확인한다. 설치/업데이트/제거는 같은 엔진 작업 잠금을 쓴다.
 실행 후 패키지를 다시 조회해 확인하지 못하면 완료라고 표시하지 않는다.
 엔진 프로그램이 감지되는 것만으로 실제 추론을 검증했다고 하지 않는다.
+
+`engine security`는 Ollama·LM Studio의 실제 TCP 리스너와 프로세스 정체를
+함께 확인해 `이 컴퓨터만`, `외부 연결 허용`, `확인 불가`를 구분한다. 포트가
+보인다는 사실만으로 해당 엔진이라고 추정하지 않는다. `--fix-local-only`는
+PID·시작 시각·실행 파일·명령을 다시 확인해 OMM이 시작한 Ollama라고 증명되는
+경우에만 쓸 수 있다. 먼저 기존 로컬 클라이언트 연결과 메모리 작업이 끊기고
+서버가 재시작된다는 영향을 보여준 뒤 동의를 받는다. LM Studio와 다른 앱 또는
+사용자가 시작한 서버는 상태만 보여주고 설정하거나 재시작하지 않는다.
 
 OMM 모델 삭제, `--zap`, `--purge`, 전체 패키지 업데이트는 실행하지 않는다.
 엔진 자체의 앱 데이터 처리는 해당 패키지 관리자의 정책을 따른다. 엔진의

@@ -1,10 +1,19 @@
 # Privacy
 
-`omm` manages models and calls local AI runners on your machine. Searching
-model providers, downloading models or runners, refreshing recommendation
-data, and checking for updates use network requests independently of the
-three data-sharing channels below. Disabling uploads does not disable those
-requests.
+`omm` manages models and calls local AI runners on your machine. Choose how
+much external network work OMM itself may start:
+
+```sh
+omm setting network --mode online       # existing behavior + saved upload consent
+omm setting network --mode models-only  # model sources/catalog/downloads; no uploads or update checks
+omm setting network --mode offline      # installed models, verified cache, loopback runtimes only
+omm --offline list                       # one-command override; does not change the saved mode
+```
+
+`models-only` still contacts model providers and the signed recommendation
+catalog, so those destinations see the connection IP. `offline` blocks OMM's
+external HTTP/DNS, Git, package-manager and update-check work. Neither mode
+controls communications started independently by Ollama or LM Studio.
 
 Benchmark telemetry, usage statistics, and crash reports are each **off or
 "ask" by default**, controlled separately, and can be turned off at any time.
@@ -127,3 +136,12 @@ debugging and is never sent anywhere; the channels above do not read it.
 app directories on this machine and adopts new models into the omm hub in the
 background. It is a local filesystem automation only - nothing it does is uploaded
 or sent anywhere.
+
+`omm report` builds a separate support document from a new allow-list. By
+default it includes OMM version, install source, a command name, exception
+class, and diagnostic status/counts. It excludes usernames, home/personal
+paths, tokens, environment variables, search text, command arguments,
+generated text, and model names. Optional `os`, `network`, `policies`, and
+check-name groups are included only when selected with `--include`. The full
+JSON is printed before `--save`; the command never uploads it, opens a GitHub
+issue, or sends a message.

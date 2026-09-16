@@ -19,8 +19,14 @@ cryptography==48.0.0; sys_platform == "darwin" and platform_machine == "x86_64"
 cryptography==50.0.1; sys_platform != "darwin" or platform_machine != "x86_64"
 filelock==3.32.4
 idna==3.19
+jaraco.classes==3.4.0
+jaraco.context==6.1.2
+jaraco.functools==4.6.0
+jeepney==0.9.0; sys_platform == "linux"
+keyring==25.7.0
 markdown-it-py==4.2.0
 mdurl==0.1.2
+more-itertools==11.1.0
 prompt-toolkit==3.0.53
 psutil==7.2.2
 pycparser==3.0
@@ -28,8 +34,10 @@ pygments==2.21.0
 questionary==2.1.1
 requests==2.34.2
 rich==15.0.0
+SecretStorage==3.5.0; sys_platform == "linux"
 shellingham==1.5.4
 typer==0.27.1
 typing-extensions==4.16.0
 urllib3==2.7.0
 wcwidth==0.8.2
+pywin32-ctypes==0.2.3; sys_platform == "win32"

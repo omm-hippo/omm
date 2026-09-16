@@ -78,6 +78,8 @@ class ResolvedModel:
     repo_id: str | None  # None when installed from a direct URL (no known repo)
     provider: str | None = None  # None when the source provider is unknown
     expected_sha256: str | None = None
+    expected_size_bytes: int | None = None
+    source_metadata_checked: bool = False
     # Set when resolution fell back to a single provider because another
     # provider could not be checked (outage) rather than confirmed absent -
     # the CLI surfaces this so the fallback isn't silent. None otherwise.
@@ -244,11 +246,15 @@ def _remote_gguf_prefix_cached(
     as the bounded prefix has been read rather than buffering the whole model.
     """
     import requests
+    from omm import auth
 
     url = download_url(provider, repo_id, filename)
     with requests.get(
         url,
-        headers={"Range": f"bytes=0-{max_prefix_bytes - 1}"},
+        headers={
+            **auth.headers_for_url(url),
+            "Range": f"bytes=0-{max_prefix_bytes - 1}",
+        },
         stream=True,
         timeout=(10, 30),
     ) as response:

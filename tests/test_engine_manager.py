@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
-from omm import cli, config, engine_manager as manager
+from omm import cli, config, engine_manager as manager, network_policy
 from omm.engines import RuntimeHealth
 from omm.engine_packages import operation_lock
 
@@ -105,6 +105,20 @@ def test_execute_rechecks_package_before_and_after_change(monkeypatch, isolated_
     assert result["package"]["version"] == "2.0"
     assert len(calls) == 1
     assert model.read_bytes() == b"unchanged"
+
+
+def test_package_mutation_is_blocked_outside_online_mode(monkeypatch):
+    plan = {
+        "engine": "ollama",
+        "action": "update",
+        "package": asdict(brew_receipt()),
+        "command": ["/brew", "upgrade", "--cask", "ollama-app"],
+        "omm_models_preserved": True,
+    }
+    network_policy.set_mode("models-only")
+    monkeypatch.setattr(manager, "_run_action", lambda *a, **k: pytest.fail("must not execute"))
+    with pytest.raises(network_policy.NetworkModeError, match="models-only"):
+        manager.execute_action(plan, on_output=lambda line: None)
 
 
 def test_package_changed_after_preview_is_not_executed(monkeypatch):

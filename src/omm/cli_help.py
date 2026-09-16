@@ -26,7 +26,13 @@ def option_requested(args: list[str], option: str) -> bool:
 def engine_read_only_args(args: list[str]) -> bool:
     before_separator = args[:args.index("--")] if "--" in args else args
     commands = [token for token in before_separator if not token.startswith("-")]
-    return len(commands) >= 2 and commands[:2] in (["engine", "status"], ["engine", "doctor"])
+    if "--fix-local-only" in before_separator:
+        return False
+    return len(commands) >= 2 and commands[:2] in (
+        ["engine", "status"],
+        ["engine", "doctor"],
+        ["engine", "security"],
+    )
 
 
 def first_terminal_hint(command: str) -> bool:

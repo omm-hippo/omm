@@ -6,6 +6,7 @@ quality.py's _generate_with_runtime when engine="lmstudio" is selected.
 
 from __future__ import annotations
 
+import os
 import platform
 import math
 import shutil
@@ -122,6 +123,7 @@ def start_ollama_daemon(timeout: float = _DAEMON_START_TIMEOUT) -> subprocess.Po
             stderr=error_log,
             start_new_session=True,
             creationflags=creationflags,
+            env={**os.environ, "OLLAMA_HOST": "127.0.0.1:11434"},
         )
     except OSError as error:
         error_log.close()
@@ -132,6 +134,11 @@ def start_ollama_daemon(timeout: float = _DAEMON_START_TIMEOUT) -> subprocess.Po
     while time.monotonic() < deadline:
         if ollama_daemon_reachable():
             error_log.close()
+            from omm import engine_security
+
+            engine_security.record_owned_ollama(
+                proc, str(executable), "127.0.0.1:11434"
+            )
             return proc
         if proc.poll() is not None:
             error_log.seek(0)
@@ -164,7 +171,11 @@ def stop_ollama_daemon(proc: subprocess.Popen) -> None:
     the immediate-failure and the graceful-timeout path fall back to a
     taskkill-based tree kill on Windows.
     """
+    from omm import engine_security
+
+    pid = getattr(proc, "pid", None)
     if proc.poll() is not None:
+        engine_security.clear_owned_ollama(pid)
         return
     if platform.system() == "Windows":
         try:
@@ -173,6 +184,7 @@ def stop_ollama_daemon(proc: subprocess.Popen) -> None:
             # If the console-control event cannot be delivered, do not wait
             # ten seconds for a process that was never asked to stop.
             _kill_windows_process_tree(proc)
+            engine_security.clear_owned_ollama(pid)
             return
         try:
             proc.wait(timeout=10)
@@ -192,6 +204,7 @@ def stop_ollama_daemon(proc: subprocess.Popen) -> None:
                 # (contribute's finally also flushes error reports). Same
                 # tolerance _kill_windows_process_tree already has.
                 pass
+    engine_security.clear_owned_ollama(pid)
 
 
 def benchmark_ollama(tag: str, options: dict | None = None) -> float | None:

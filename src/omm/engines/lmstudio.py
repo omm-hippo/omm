@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import math
 import time
 
@@ -32,7 +31,12 @@ class LMStudioAdapter:
         *,
         api_token: str | None = None,
     ) -> None:
-        token = api_token if api_token is not None else os.environ.get("LM_API_TOKEN")
+        if api_token is None:
+            from omm import auth
+
+            token = auth.token_for("lmstudio")
+        else:
+            token = api_token
         self._client = LoopbackJsonClient(base_url, token=token)
 
     def health(self) -> RuntimeHealth:

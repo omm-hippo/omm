@@ -165,6 +165,37 @@ def test_https_redirect_downgrade_is_rejected_before_following(tmp_path, monkeyp
     assert calls == ["https://example.com/model.gguf"]
 
 
+def test_huggingface_token_does_not_follow_cross_host_redirect(monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "secret-token")
+    calls = []
+
+    def redirect_then_file(url, **kwargs):
+        calls.append((url, kwargs.get("headers", {})))
+        if len(calls) == 1:
+            response = _FakeResp(
+                302,
+                [],
+                headers={"Location": "https://cdn.example/model.gguf"},
+            )
+        else:
+            response = _FakeResp(200, [b"x"], headers={"Content-Length": "1"})
+        response.url = url
+        return response
+
+    monkeypatch.setattr(requests, "get", redirect_then_file)
+    response = downloader._https_get(
+        "https://huggingface.co/org/repo/resolve/main/model.gguf",
+        headers={"Range": "bytes=0-0"},
+        stream=True,
+        timeout=30,
+    )
+
+    assert response.status_code == 200
+    assert calls[0][1]["Authorization"] == "Bearer secret-token"
+    assert "Authorization" not in calls[1][1]
+    assert calls[0][1]["Range"] == calls[1][1]["Range"] == "bytes=0-0"
+
+
 def test_download_file_raises_cancelled_and_keeps_part_file_when_stop_check_fires(tmp_path, monkeypatch):
     dest = tmp_path / "model.gguf"
     monkeypatch.setattr(downloader, "_choose_thread_count", lambda total: 1)
