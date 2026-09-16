@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import functools
 import inspect
+import itertools
 import json
 import math
 import os
@@ -383,31 +384,37 @@ def marks_command_body_ran(func):
     return wrapper
 
 
-_ROOT_HELP_TEXT = """Example usage:
-  omm search TEXT
-  omm install MODEL
-  omm list
-  omm recommend
-  omm uninstall MODEL
+# Curated `omm help` sections: (title, usage lines). Each usage line is the
+# real command path followed by optional placeholder arguments (UPPERCASE or
+# [bracketed]); `help --flags` walks the lowercase prefix to find the command
+# whose options it expands, so keep entries spelled the way Click knows them.
+_ROOT_HELP_SECTIONS: list[tuple[str, list[str]]] = [
+    ("Example usage", ["search TEXT", "install MODEL", "list", "recommend", "uninstall MODEL"]),
+    ("Tuning & quality", ["tune MODEL", "benchmark MODEL...", "contribute"]),
+    ("Maintenance", ["scan", "doctor", "setup", "engine install", "upgrade [MODEL]", "setting"]),
+]
 
-Tuning & quality:
-  omm tune MODEL
-  omm benchmark MODEL...
-  omm contribute
+_ROOT_HELP_FOOTER_LINES: list[str] = [
+    "Further help:",
+    "  omm help COMMAND      Show help for one command",
+    "  omm help --flags      Also show the flags of the commands above",
+    "  omm help --all        List every command",
+    "  https://github.com/omm-hippo/omm",
+]
 
-Maintenance:
-  omm scan
-  omm doctor
-  omm setup
-  omm engine install
-  omm upgrade [MODEL]
-  omm setting
 
-Further help:
-  omm help COMMAND      Show help for one command
-  omm help --all        List every command
-  https://github.com/omm-hippo/omm
-"""
+def _render_root_help_text() -> str:
+    lines: list[str] = []
+    for title, entries in _ROOT_HELP_SECTIONS:
+        lines.append(f"{title}:")
+        lines.extend(f"  omm {entry}" for entry in entries)
+        lines.append("")
+    lines.extend(_ROOT_HELP_FOOTER_LINES)
+    lines.append("")
+    return "\n".join(lines)
+
+
+_ROOT_HELP_TEXT = _render_root_help_text()
 
 _COMMAND_ALIASES = {"rm": "uninstall", "ls": "list", "up": "upgrade"}
 
@@ -796,29 +803,75 @@ def _add_command_row(grid: Table, name: str, cmd_obj: click.Command) -> None:
     grid.add_row(f"  omm {name}", cmd_obj.get_short_help_str(limit=1000))
 
 
-def _print_command_flags(root_ctx: click.Context, name: str, cmd_obj: click.Command) -> None:
-    """Indented flag block for one command, used by `help --all --flags`.
-    Built from each param's own `get_help_record` (name + help only)
-    rather than `get_help()`, which would repeat the Usage/description
-    lines already shown by the summary grid above."""
+def _command_flag_records(
+    root_ctx: click.Context, name: str, cmd_obj: click.Command
+) -> list[tuple[str, str]]:
+    """(option names, help) pairs for one command, built from each param's
+    own `get_help_record` (name + help only) rather than `get_help()`,
+    which would repeat the Usage/description lines already shown by the
+    listing above."""
     sub_ctx = cmd_obj.make_context(name, [], parent=root_ctx, resilient_parsing=True)
     # Typer's vendored click fork gives positional Arguments a
     # get_help_record() too (vanilla click.Argument returns None) - filter
     # those out by dash-prefix so this block only lists actual flags.
-    records = [
+    return [
         record
         for p in cmd_obj.params
         if (record := p.get_help_record(sub_ctx)) is not None and record[0].startswith("-")
     ]
-    if not records:
-        return
-    console.print(f"  [bold]omm {name}[/bold]")
+
+
+def _print_flag_grid(records: list[tuple[str, str]]) -> None:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(no_wrap=True)
     grid.add_column()
     for opts, help_text in records:
         grid.add_row(f"    {escape(opts)}", escape(help_text))
     console.print(grid)
+
+
+def _print_command_flags(root_ctx: click.Context, name: str, cmd_obj: click.Command) -> None:
+    """Indented flag block for one command, used by `help --all --flags`."""
+    records = _command_flag_records(root_ctx, name, cmd_obj)
+    if not records:
+        return
+    console.print(f"  [bold]omm {name}[/bold]")
+    _print_flag_grid(records)
+
+
+def _resolve_command_path(root_ctx: click.Context, path: list[str]) -> click.Command | None:
+    """Walk `path` (e.g. ["engine", "install"]) down nested groups. Uses the
+    `.commands` dict duck-typing (see `_print_full_command_reference`) so
+    Typer's vendored click groups resolve the same as plain ones."""
+    cmd: click.Command = root_ctx.command
+    for part in path:
+        commands = getattr(cmd, "commands", None)
+        if not commands or part not in commands:
+            return None
+        cmd = commands[part]
+    return cmd
+
+
+def _print_curated_command_reference(root_ctx: click.Context) -> None:
+    """`omm help --flags` (without `--all`): the same curated sections as
+    `omm help`, with each listed command's option list expanded beneath
+    its usage line. Placeholder arguments (TEXT, MODEL, [MODEL]) in the
+    usage line are kept for readability; only the lowercase command path
+    in front of them is resolved to a Click command."""
+    for title, entries in _ROOT_HELP_SECTIONS:
+        console.print(f"[bold]{title}:[/bold]")
+        for entry in entries:
+            console.print(f"  [bold]omm {escape(entry)}[/bold]")
+            path = list(itertools.takewhile(lambda tok: tok.islower(), entry.split()))
+            cmd_obj = _resolve_command_path(root_ctx, path)
+            if cmd_obj is None:
+                continue
+            records = _command_flag_records(root_ctx, " ".join(path), cmd_obj)
+            if records:
+                _print_flag_grid(records)
+        console.print()
+    for line in _ROOT_HELP_FOOTER_LINES:
+        console.print(line, markup=False, highlight=False)
 
 
 def _print_full_command_reference(root_ctx: click.Context, show_flags: bool = False) -> None:
@@ -899,7 +952,9 @@ def help_cmd(
     command: str = typer.Argument(None, help="Show help for a specific subcommand."),
     all: bool = typer.Option(False, "--all", help="List every command, not just the common ones."),
     flags: bool = typer.Option(
-        False, "--flags", help="With --all, also show each command's full option list."
+        False,
+        "--flags",
+        help="Also show each listed command's option list (the common commands, or every command with --all).",
     ),
 ) -> None:
     """Show help, same as --help."""
@@ -907,6 +962,9 @@ def help_cmd(
     if command is None:
         if all:
             _print_full_command_reference(root_ctx, show_flags=flags)
+            raise typer.Exit(0)
+        if flags:
+            _print_curated_command_reference(root_ctx)
             raise typer.Exit(0)
         console.print(root_ctx.get_help(), markup=False, highlight=False)
         raise typer.Exit(0)
