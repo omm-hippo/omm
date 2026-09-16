@@ -30,11 +30,12 @@ removed when OMM stops that daemon.
 
 `omm auth login/status/logout [PROVIDER]` supports `huggingface` and
 `lmstudio`. `HF_TOKEN` and `LM_API_TOKEN` remain the highest-priority source.
-Otherwise OMM uses only the native secure backend exposed by `keyring`:
-macOS Keychain, Windows Credential Manager, or Linux Secret Service.
-Null, fail, alternate-file, and other backends are rejected. If a supported
-backend is absent, the CLI does not persist the token and points users to the
-existing per-session environment variable flow.
+Otherwise OMM uses only the native operating-system store: macOS Keychain via
+`security` with stdin-only secret entry, Windows Credential Manager via its
+native API, or Linux Secret Service via `secret-tool` with stdin-only secret
+entry. No alternate-file backend exists. If a supported backend is absent,
+the CLI does not persist or solicit the token and points users to the existing
+per-session environment variable flow.
 
 Tokens are entered by hidden prompt or stdin, never by a command-line value.
 They are never written to `config.json`, `.env`, logs, exceptions, or support

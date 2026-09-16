@@ -90,6 +90,37 @@ def test_status_never_contains_token(monkeypatch):
     assert "environment" in rendered
 
 
+def test_macos_native_store_passes_secret_only_on_stdin(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return __import__("subprocess").CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(auth.subprocess, "run", fake_run)
+    auth._MacOSKeychainBackend().set_password(auth.SERVICE, "huggingface", "stdin-secret")
+    args, kwargs = calls[0]
+    assert "stdin-secret" not in repr(args)
+    assert kwargs["input"] == "stdin-secret\n"
+    assert args[-1] == "-w"
+
+
+def test_linux_secret_service_passes_secret_only_on_stdin(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return __import__("subprocess").CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(auth.subprocess, "run", fake_run)
+    auth._LinuxSecretServiceBackend("/usr/bin/secret-tool").set_password(
+        auth.SERVICE, "lmstudio", "stdin-secret"
+    )
+    args, kwargs = calls[0]
+    assert "stdin-secret" not in repr(args)
+    assert kwargs["input"] == "stdin-secret\n"
+
+
 def test_cli_login_reads_stdin_and_writes_only_native_store(isolated_omm_home, monkeypatch):
     backend = _Backend()
     monkeypatch.setattr(auth, "_native_backend", lambda: backend)
