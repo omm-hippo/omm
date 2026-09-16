@@ -7,6 +7,8 @@ import argparse
 import json
 from pathlib import Path
 
+from omm.evaluation import describe_evaluation
+
 
 _PUBLICATION_METADATA = {
     "passed": {
@@ -68,10 +70,19 @@ def publication_outputs(
         raise ValueError(
             f"quality gate reported {status} but changed the published model"
         )
+    metadata = dict(_PUBLICATION_METADATA[status])
+    details = describe_evaluation(report)
+    incomplete = [name for name, check in details["checks"].items()
+                  if check["status"] == "insufficient_data"]
+    if incomplete:
+        metadata["pr_body"] += (
+            " Evaluation coverage is incomplete: " + ", ".join(incomplete)
+            + ". A passed regression gate does not verify these checks."
+        )
     return {
         "quality_gate_status": status,
         "model_changed": str(model_changed).lower(),
-        **_PUBLICATION_METADATA[status],
+        **metadata,
     }
 
 

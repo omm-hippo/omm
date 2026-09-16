@@ -79,7 +79,9 @@ from omm import (
     watch_service,
 )
 from omm import contribute as contribute_mod
+from omm import install_state
 from omm.cli_views import print_scan, table as _table
+from omm.cli_help import BriefUsageError, UsageError, engine_read_only_args, option_requested
 from omm.atomic import locked
 from omm.model_export import export_model_file
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
@@ -218,6 +220,11 @@ _JSON_CAPABLE = {
     "recommend",
     "doctor",
     "fit",
+    "setting catalog-status",
+    "engine status",
+    "engine doctor",
+    "engine update",
+    "engine uninstall",
 }
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
@@ -232,6 +239,8 @@ _YES_CAPABLE = {
     "benchmark",
     "verify",
     "run",
+    "engine update",
+    "engine uninstall",
 }
 
 
@@ -391,7 +400,10 @@ def marks_command_body_ran(func):
 _ROOT_HELP_SECTIONS: list[tuple[str, list[str]]] = [
     ("Example usage", ["search TEXT", "install MODEL", "list", "recommend", "uninstall MODEL"]),
     ("Tuning & quality", ["tune MODEL", "benchmark MODEL...", "contribute"]),
-    ("Maintenance", ["scan", "doctor", "setup", "engine install", "upgrade [MODEL]", "setting"]),
+    (
+        "Maintenance",
+        ["scan", "doctor", "setup", "engine status", "engine install", "upgrade [MODEL]", "setting"],
+    ),
 ]
 
 _ROOT_HELP_FOOTER_LINES: list[str] = [
@@ -447,7 +459,20 @@ class _RootHelpGroup(typer.core.TyperGroup):
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         ctx.meta["omm_help_requested"] = _help_option_requested(args)
-        return super().parse_args(ctx, args)
+        ctx.meta["omm_json_requested"] = option_requested(args, "--json")
+        ctx.meta["omm_engine_read_only"] = engine_read_only_args(args)
+        try:
+            return super().parse_args(ctx, args)
+        except UsageError as error:
+            raise BriefUsageError(error, ctx) from error
+
+    def invoke(self, ctx: click.Context):
+        try:
+            return super().invoke(ctx)
+        except BriefUsageError:
+            raise
+        except UsageError as error:
+            raise BriefUsageError(error, ctx) from error
 
     def get_command(self, ctx: click.Context, cmd_name: str):
         cmd_name = _COMMAND_ALIASES.get(cmd_name, cmd_name)
@@ -483,7 +508,7 @@ watch_app = typer.Typer(
 setting_app.add_typer(watch_app)
 engine_app = typer.Typer(
     name="engine",
-    help="Install local AI runner programs (Ollama, LM Studio, etc.).",
+    help="Inspect, install, update, and remove local AI runner programs.",
     rich_markup_mode=None,
 )
 app.add_typer(engine_app)
@@ -702,8 +727,9 @@ def _root(
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
     side_effect_minimal_mode = (
-        ctx.invoked_subcommand in {"doctor", "help"}
+        ctx.invoked_subcommand in {"doctor", "help", "engine"}
         or bool(ctx.meta.get("omm_help_requested"))
+        or bool(ctx.meta.get("omm_engine_read_only"))
     )
     theme = (
         doctor_mod.read_theme_read_only()
@@ -1259,6 +1285,121 @@ def engine_install_cmd(
         return
     if not onboarding.install_selected_engines(console, [key]):
         raise typer.Exit(1)
+
+
+
+def _engine_keys(engine: str | None) -> list[str]:
+    if engine is not None:
+        engine = engine.strip().lower()
+        _validate_engine(engine, flag="engine")
+        return [engine]
+    return [spec.key for spec in linker.ENGINES]
+
+
+@engine_app.command(name="status")
+@global_flags
+def engine_status_cmd(
+    engine: str | None = typer.Argument(None, autocompletion=complete_engine_key),
+    api: bool = typer.Option(True, "--api/--no-api", help="Check local API reachability; never start a server."),
+) -> None:
+    """Show installation, package version, and local API state separately."""
+    from omm.engine_manager import inspect_engine
+    from omm.cli_views import print_engines
+
+    items = [inspect_engine(key, check_api=api) for key in _engine_keys(engine)]
+    if _global_opts().json:
+        _print_json(data=items)
+    else:
+        print_engines(console, items)
+
+
+@engine_app.command(name="doctor")
+@global_flags
+def engine_doctor_cmd(
+    engine: str | None = typer.Argument(None, autocompletion=complete_engine_key),
+) -> None:
+    """Read-only engine diagnostics and the next step for missing components."""
+    from omm.engine_manager import inspect_engine
+    from omm.cli_views import print_engines
+
+    items = [inspect_engine(key) for key in _engine_keys(engine)]
+    if _global_opts().json:
+        _print_json(data=items)
+    else:
+        print_engines(console, items, diagnostics=True)
+    if any(not item["installed"] for item in items):
+        raise typer.Exit(1)
+
+
+def _change_engine(engine: str, action: str, *, dry_run: bool) -> None:
+    from omm import engine_manager
+    import shlex
+
+    key = _engine_keys(engine)[0]
+    opts = _global_opts()
+    try:
+        plan = engine_manager.plan_action(key, action)
+    except engine_manager.EngineManagementError as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(1) from error
+    if dry_run:
+        if opts.json:
+            _print_json(data={**plan, "dry_run": True})
+        else:
+            console.print(shlex.join(plan["command"]), markup=False)
+            console.print("Preview only; no package changes were made.")
+        return
+    if not opts.json:
+        console.print(shlex.join(plan["command"]), markup=False)
+        console.print("OMM model files are kept. The package manager may restart the runner.")
+    if not opts.yes:
+        if opts.json or not _stdin_is_tty():
+            err_console.print("Use --dry-run to inspect the command or --yes to perform this package change.")
+            raise typer.Exit(1)
+        if not _ask_confirm(f"{action.capitalize()} {key} through {plan['package']['manager']}?"):
+            err_console.print("Cancelled.")
+            raise typer.Exit(0)
+    recent_output = []
+    def on_output(line: str) -> None:
+        recent_output.append(line)
+        del recent_output[:-20]
+        if not opts.quiet:
+            err_console.print(line, markup=False, highlight=False)
+    try:
+        result = engine_manager.execute_action(plan, on_output=on_output)
+    except (engine_manager.EngineManagementError, OSError, FileLockTimeout) as error:
+        if opts.quiet:
+            for line in recent_output:
+                err_console.print(line, markup=False, highlight=False)
+        err_console.print(str(error), markup=False)
+        err_console.print(f"Run `omm engine status {key}` before retrying.", markup=False)
+        raise typer.Exit(1) from error
+    if opts.json:
+        _print_json(data=result)
+    else:
+        console.print(f"{key}: {action} {result['status']} ({result['elapsed_seconds']:.1f}s).", markup=False)
+        if action == "uninstall" and result["installed"]:
+            err_console.print("The package was removed, but application files are still detected. Run `omm engine doctor`.")
+
+
+@engine_app.command(name="update")
+@global_flags
+def engine_update_cmd(
+    engine: str = typer.Argument(..., autocompletion=complete_engine_key),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the package command without executing it."),
+) -> None:
+    """Update one engine through its identified package manager."""
+    _change_engine(engine, "update", dry_run=dry_run)
+
+
+@engine_app.command(name="uninstall")
+@global_flags
+def engine_uninstall_cmd(
+    engine: str = typer.Argument(..., autocompletion=complete_engine_key),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the package command without executing it."),
+) -> None:
+    """Remove an engine package without deleting the OMM model hub."""
+    _change_engine(engine, "uninstall", dry_run=dry_run)
 
 
 def _refresh_data() -> None:
@@ -4031,15 +4172,19 @@ def _link_model(
     session, so linking into every other installed engine for every
     downloaded candidate is unnecessary churn."""
     linked = {spec.key: False for spec in linker.ENGINES}
+    target_engines = []
 
     for spec in linker.ENGINES:
         if only_engine is not None and spec.key != only_engine:
             continue
         if not linker.is_engine_installed(spec.key):
             continue
+        target_engines.append(spec.key)
+        install_state.checkpoint("linking", target_engines=list(target_engines))
         try:
             warning = linker.link_engine(spec.key, dest, repo_id=repo_id, ollama_tag=ollama_tag)
             linked[spec.key] = True
+            install_state.checkpoint("linking", linked=dict(linked))
             if warning:
                 err_console.print(f"[warning]{warning}[/warning]")
         except linker.InsufficientLinkSpaceError:
@@ -4905,7 +5050,7 @@ def _prepare_install_artifact(
                 isinstance(existing_entry, dict)
                 and existing_entry.get("source") == url
                 and existing_entry.get("sha256") == existing_sha256
-            ):
+            ) and not install_state.verified_file_matches(filename, url, existing_sha256):
                 raise DownloadError(
                     f"{filename} already exists but its source and digest cannot "
                     "be verified; refusing to adopt or overwrite it."
@@ -5035,6 +5180,7 @@ def _prepare_install_artifact(
     return _PreparedInstallArtifact(sha256=sha256, downloaded_now=downloaded_now)
 
 
+@install_state.tracked_install
 def _install_impl(
     resolved,
     *,
@@ -5077,6 +5223,9 @@ def _install_impl(
     already-installed model never looks indistinguishable from cancelling
     a fresh one."""
     opts = _global_opts()
+    operation = install_state.current()
+    if operation is not None and operation.resumed and not opts.quiet:
+        console.print("Resuming interrupted install: rechecking the file and engine links.")
     url, filename, repo_id = resolved.url, resolved.filename, resolved.repo_id
     try:
         filename = validate_model_filename(filename)
@@ -5155,6 +5304,7 @@ def _install_impl(
         return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
     sha256 = prepared.sha256
     downloaded_now = prepared.downloaded_now
+    install_state.checkpoint("artifact_verified", sha256=sha256, size_bytes=dest.stat().st_size)
     if downloaded_state is not None:
         downloaded_state["downloaded_now"] = downloaded_now
 
@@ -5182,6 +5332,7 @@ def _install_impl(
         provider=provider,
         linked=linked,
     )
+    install_state.checkpoint("registered", linked=dict(linked))
     if force and downloaded_now and custom_links_to_refresh:
         for destination in custom_links_to_refresh:
             if not isinstance(destination, str):
@@ -5898,21 +6049,21 @@ def install(
         errors.print_cli_error(err_console, str(error), fix=error.fix)
         raise typer.Exit(1) from error
     except InstallInterrupted as e:
-        _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
+        if install_state.preserve_interrupted_file(e.filename):
+            err_console.print("Verified model file kept. Re-run the same install command to resume.")
+        else:
+            _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
         err_console.print("[warning]Cancelled.[/warning]")
         raise typer.Exit(0) from e
     except KeyboardInterrupt:
-        # Windows Ctrl+C is a console control event, not the Esc listener's
-        # stop_event - it can land mid-download, mid-checksum, or mid-link
-        # instead of at the _run_interruptible() checkpoints stop_event
-        # covers. Route it through the same unload-before-delete cleanup so
-        # it doesn't strand a partial GGUF or a linked-but-unregistered file -
-        # but only actually remove anything if this call is the one that
-        # downloaded it (see `download_state` above and
-        # `_cleanup_interrupted_install`'s docstring).
-        _cleanup_interrupted_install(
-            resolved.filename, downloaded_now=download_state["downloaded_now"]
-        )
+        # Keep a verified artifact after Ctrl+C; the install's finally blocks
+        # release only runtime work it started. Reuse must recheck the bytes.
+        if install_state.preserve_interrupted_file(resolved.filename):
+            err_console.print("Verified model file kept. Re-run the same install command to resume.")
+        else:
+            _cleanup_interrupted_install(
+                resolved.filename, downloaded_now=download_state["downloaded_now"]
+            )
         raise
     finally:
         listener.stop()
@@ -5991,7 +6142,8 @@ def _cleanup_incomplete_install(filename: str, *, respect_download_lock: bool = 
 def _unlink_unless_download_active(path: Path, lock_target: Path) -> bool:
     """Delete `path` unless an active download holds the lock for `lock_target`."""
     try:
-        with locked(_download_lock_path(lock_target), timeout=0):
+        relative = lock_target.relative_to(MODELS_DIR).as_posix()
+        with install_state.cleanup_guard(relative), locked(_download_lock_path(lock_target), timeout=0):
             path.unlink()
     except OSError:
         return False
@@ -8094,13 +8246,40 @@ def catalog_status() -> None:
             fingerprint = catalog.public_key_fingerprint(public_key)
         except catalog.CatalogVerificationError:
             fingerprint = "invalid"
+    from omm.evaluation import describe_evaluation
+
+    artifact = predictor.load_cached_model()
+    evidence = describe_evaluation(artifact.get("evaluation") if artifact else None)
+    data = {
+        "manifest_url": current.get("catalog_manifest_url"),
+        "trusted_key": fingerprint,
+        "rollback_snapshots": len(catalog.snapshots()),
+        "trained_at": artifact.get("trained_at") if artifact else None,
+        "evaluation": evidence,
+    }
+    if _global_opts().json:
+        _print_json(data=data)
+        return
     table = _table(title="Recommendation catalog", show_header=False)
     table.add_column("Field", style="label")
     table.add_column("Value")
-    table.add_row("Signed manifest", str(current.get("catalog_manifest_url") or "not configured"))
+    table.add_row("Signed manifest", str(data["manifest_url"] or "not configured"))
     table.add_row("Trusted key", fingerprint)
-    table.add_row("Rollback snapshots", str(len(catalog.snapshots())))
+    table.add_row("Rollback snapshots", str(data["rollback_snapshots"]))
+    table.add_row("Evaluation coverage", evidence["status"])
+    if data["trained_at"]:
+        table.add_row("Trained at", str(data["trained_at"]))
     console.print(table)
+    if not artifact:
+        console.print("No verified cached evaluation report is available.")
+        return
+    for check in evidence["checks"].values():
+        console.print(f"{check['label']}: {check['status']} — {check['reason']}", markup=False)
+    for gap in evidence["data_gaps"].values():
+        console.print(
+            f"More evidence needed: {gap['additional_needed']} {gap['sample_type']}. "
+            "Collect only with consent and the normal memory safeguards.", markup=False,
+        )
 
 
 @setting_app.command(name="catalog-rollback")
@@ -11159,6 +11338,10 @@ def main() -> None:
     # of git/pipx/ollama before any verification happens. Shared with trust so
     # there is one implementation; harmless on POSIX.
     trust._forbid_cwd_executable_lookup()
+    if engine_read_only_args(sys.argv[1:]):
+        # Diagnostics must not create a run log, usage batch, or crash queue.
+        app(prog_name="omm")
+        return
     runlog.start(sys.argv[1:])
     exit_code, outcome, exc_name = 0, "ok", None
     try:

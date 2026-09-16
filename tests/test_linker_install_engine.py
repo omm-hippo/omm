@@ -47,7 +47,7 @@ def test_install_ollama_mac_streams_output_and_reports_installed(monkeypatch):
     assert result == linker.EngineInstallResult(
         "ollama", "installed", "Ollama installed successfully."
     )
-    assert captured == ["downloading...", "done"]
+    assert captured == ["downloading...", "done", "OMM: verifying installation"]
 
 
 def test_install_ollama_linux_reports_failed_when_still_not_detected(monkeypatch):
@@ -273,7 +273,7 @@ def test_install_lmstudio_mac_linux_streams_output_and_reports_installed(monkeyp
     assert result == linker.EngineInstallResult(
         "lmstudio", "installed", "LM Studio installed successfully."
     )
-    assert captured == ["Downloading llmster..."]
+    assert captured == ["Downloading llmster...", "OMM: verifying installation"]
 
 
 def test_install_lmstudio_linux_reports_failed_when_still_not_detected(monkeypatch):

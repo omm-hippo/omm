@@ -304,6 +304,14 @@ def install_selected_engines(console: Console, selected: list[str]) -> bool:
             def on_output(line: str) -> None:
                 nonlocal stage
                 raw_lines.append(line)
+                del raw_lines[:-200]
+                if line == "OMM: verifying installation":
+                    progress.update(task_id, description=f"Checking {spec.label} installation...")
+                    return
+                if line == "OMM: repairing installation":
+                    stage = 0
+                    progress.update(task_id, description=f"Repairing {spec.label} installation...")
+                    return
                 lowered = line.lower()
                 for i in range(stage, len(_INSTALL_STAGE_LABELS)):
                     keyword, label = _INSTALL_STAGE_LABELS[i]

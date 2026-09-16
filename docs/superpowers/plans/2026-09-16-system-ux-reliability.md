@@ -42,10 +42,10 @@
 - [x] 최신 main 기준 격리 worktree 및 Python 3.12 개발 환경 생성
 - [x] #336 / #339 / #332 본문과 댓글 재확인
 - [x] 첫 단계 CLI 중복/출력·export 역할 분리와 JSON 출력
-- [ ] 평가 상태 및 부족한 측정 정보
-- [ ] 설치 중단 복구
-- [ ] CLI 화면과 짧은 안내
-- [ ] 엔진 관리
+- [x] 평가 상태 및 부족한 측정 정보 (기존 공개 정책은 유지)
+- [x] 설치 중단 복구 (일반 설치, 검증된 파일·연결·등록)
+- [x] CLI 화면과 짧은 안내
+- [x] 엔진 관리 (알려진 패키지 관리자만 변경, 실물 앱 변경은 미검증)
 - [ ] 설정 적용/검증/저장/복원
 - [ ] 관련 회귀 테스트, 실제 경로 확인, 최종 검토
 
@@ -65,3 +65,40 @@
 관련 최종 검사 158 passed (검사 집합은 일부 겹침). 이 Mac에서 임시 OMM_HOME으로
 실제 scan / scan --details / scan --json 명령이 모두 exit 0이고 JSON 해석에 성공했다.
 엔진 추론, Windows/Linux 실물 및 배포 패키지 경로는 이번 묶음에서 미검증이다.
+
+### 두 번째 묶음 검증
+
+관련 회귀 506 passed / 15 skipped. 실제 프로세스를 파일 검증 후 등록 직전에
+종료하고 새 프로세스에서 재개하는 파일 복구 테스트 통과. 엔진 연결은 샌드박스
+파일 연결이며 추론 검증으로 주장하지 않는다. 추천 평가 표시는 과거 공개 artifact의
+자료 부족도 재계산해서 표시하되 원본 파일과 배포 정책을 바꾸지 않는다.
+첫 PR #346 병합을 확인하기 전에는 두 번째 PR을 게시하지 않는다.
+
+### 현재 게시 순서와 작업 공간
+
+- 첫 PR: https://github.com/omm-hippo/omm/pull/346 — `one-way/system-ux-reliability-20260916`,
+  작업 공간 `/Users/minjun/Omm-worktrees/system-ux-reliability-20260916`.
+  최초 head 54e9c67의 전체 CI는 놓친 scan 제목 기대값 1건으로 실패했다.
+  `tests/test_cli_memory_and_tune.py`를 수정한 341227b에서 59개 검사 성공,
+  리뷰 APPROVED, CLEAN, 미병합 상태를 확인했다.
+- 평가/복구 로컬 커밋: 125743b, `one-way/evaluation-recovery-20260916`,
+  `/Users/minjun/Omm-worktrees/evaluation-recovery-20260916`.
+  관련 506 passed/15 skipped; 최종 관련 재검사 145 passed/15 skipped.
+  건너뛴 검사는 이 Mac에 없는 PowerShell/Windows 전용 검사다.
+- 엔진/안내 로컬 작업: `one-way/engine-management-20260916`,
+  `/Users/minjun/Omm-worktrees/engine-management-20260916`, 125743b 위에서 진행.
+  관련 회귀 282 passed/6 skipped. 실제 읽기 전용 engine status에서 7개 항목의
+  JSON을 해석했고, Ollama API ready와 LM Studio server_unavailable을 구분했으며
+  임시 OMM_HOME이 생성되지 않았다. 앱/패키지의 실제 삭제·업데이트는 하지 않았다.
+- 아직 구현해야 하는 항목: 설정 추천→임시 적용→실제 생성 확인→저장/복원과
+  저장한 프리셋의 OMM 실행 경로 반영. 이후 최종 회귀 및 실제 경로 검증.
+- 사용자 후속 지시: 먼저 끝난 것은 먼저 PR, 비슷하게 끝나는 관련 작업은 묶기.
+  한 PR이 실제 머지된 후에 다음 PR 게시. main 직접 push/merge 승인은 없음.
+  첫 PR 미병합 동안 구현은 로컬에서 계속한다.
+
+### 첫 PR 병합 확인
+
+사용자가 #346을 직접 병합했다. 원격 병합 커밋은 2ea20668a5b45b602d36b4e515d177120e2f9795.
+최신 main을 이 기능 브랜치에 SSH 서명된 로컬 병합으로 반영했고, 관련 검사
+380 passed / 6 skipped를 확인했다. 이제 평가·복구·엔진·안내 묶음을 게시한다.
+설정 프리셋 묶음은 이 PR이 실제 병합된 후에 게시한다.

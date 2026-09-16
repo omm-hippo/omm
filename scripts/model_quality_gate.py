@@ -6,6 +6,7 @@ import math
 from numbers import Real
 from typing import Any
 
+from omm.evaluation import describe_evaluation
 from omm.mltree import (
     MAX_CANDIDATES,
     MAX_TOTAL_TREE_NODES,
@@ -437,7 +438,7 @@ def compare_artifacts(
                 f"{metric} regressed: candidate={candidate_value}, baseline={baseline_value}, "
                 f"tolerance={selection_threshold}"
             )
-    return {
+    report = {
         "passed": not failures,
         "failures": failures,
         "candidate": candidate_metrics,
@@ -451,6 +452,9 @@ def compare_artifacts(
         },
         "fit_negative_examples": fit_negative_examples,
     }
+
+    report["evaluation_details"] = describe_evaluation(report)
+    return report
 
 
 #: Rejection reasons meaning "this row was routed to the fit-classification

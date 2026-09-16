@@ -130,7 +130,7 @@ irm https://omm.run/uninstall.ps1 | iex
 
 Download that script and run it with `-Purge` to remove the model hub and settings too.
 
-Runner note: on Windows x64 the checklist downloads the official AnythingLLM and Msty installers and runs them silently into `OMM_HOME\apps` (no winget package exists for either); on ARM Windows it prints their download page instead.
+Runner note: AnythingLLM and Msty currently require manual installation on Windows; the checklist prints guidance instead of guessing an installer or package ID.
 
 Detailed walkthrough: <https://omm.run/install/windows>
 
@@ -390,15 +390,18 @@ The first bare `omm` run on a fresh install (or `omm setup` any time after) show
 
 | Runner | Automated on | Manual elsewhere |
 |---|---|---|
-| Ollama | macOS, Linux, Windows | — |
-| LM Studio | macOS, Linux, Windows (headless `lms` CLI) | — |
+| Ollama | macOS (Homebrew), Windows (WinGet) | Linux |
+| LM Studio | macOS (Homebrew), Windows (WinGet) | Linux |
 | Jan | macOS (Homebrew), Windows (winget), Linux (Flatpak) | wherever that package manager isn't installed |
-| AnythingLLM | macOS (Homebrew), Windows x64 (official installer) | Linux, Windows ARM |
-| Msty | macOS (Homebrew), Windows x64 (official installer) | Linux, Windows ARM |
-| KoboldCpp | macOS (Apple Silicon), Linux (x86_64), Windows | Intel Mac, other architectures |
-| text-generation-webui | macOS (any arch), Linux/Windows (x86_64) | ARM Linux/Windows |
+| AnythingLLM | macOS (Homebrew) | Linux, Windows |
+| Msty | macOS (Homebrew) | Linux, Windows |
+| KoboldCpp | — | All platforms; automatic artifacts lack a pinned checksum |
+| text-generation-webui | — | All platforms; install manually from the official releases |
 
 Every currently-installed runner is also listed (marked as already installed, not selectable) rather than hidden, so the checklist always reflects what omm actually detects on the machine.
+
+See [engine management](docs/engine-management.md) for operation previews,
+package ownership checks, and verification limits.
 
 ### Storage location
 
@@ -421,6 +424,10 @@ Purge (`-Purge` on PowerShell, `--purge` on sh) removes only known omm-owned pat
 ```sh
 omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
 omm engine install [ENGINE]  # Install one supported local runner, or choose interactively
+omm engine status [ENGINE] [--json]  # Separate application, package version, and local API state
+omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
+omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
+omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm scan [--details] [--json]  # Memory, storage, runners, and models; --details adds OS/CPU/GPU
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
@@ -458,6 +465,10 @@ omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 ```
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `omm info` and `omm fit` both work on a model that is not installed yet, so a search result can be inspected before downloading several GB; `omm info` describes the model, `omm fit` answers whether it runs on this machine. `search`/`install` mark models predicted not to run on this machine's hardware in red.
+
+Interrupted installs keep checkpoints under `OMM_HOME/install-journal`. Re-run
+the original install command to recheck the file and repair links; `omm doctor`
+lists incomplete attempts. See [install recovery](docs/install-recovery.md).
 
 `omm install --skip-unfit` is a scripting-friendly skip, not a successful
 installation: it prints `Skipped` and leaves the model hub unchanged. If an
@@ -502,7 +513,7 @@ omm setting memory-guard --policy ask|block|observe  # Protect local runtime loa
 omm setting theme [--set NAME]  # Show or change omm's output color theme
 omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
-omm setting catalog-status  # Show signed recommendation data and rollback snapshots
+omm setting catalog-status [--json]  # Show trust, rollback snapshots, and per-check evaluation evidence
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
 ```
 
@@ -535,8 +546,9 @@ stdout a single structured document that is safe to pipe (for example,
 `omm list --json | jq .`). `benchmark --json` also writes a single JSON report to stdout; `--output` saves
 the same evidence as a file. Supported commands emit a structured error document
 when their command body fails before producing a result, and use exit status 130
-with `status: "cancelled"` when interrupted. Argument-parser errors still use
-stderr and exit status 2. Successful data shapes remain unchanged.
+with `status: "cancelled"` when interrupted. Argument-parser errors use a JSON
+error document when `--json` was requested, and stderr otherwise, with exit
+status 2. Successful data shapes remain unchanged.
 
 For commands that document `--yes`/`-y`, pass it to skip their confirmation
 prompts, or use the command-specific flag (`install --skip-unfit`, `install
@@ -651,10 +663,13 @@ than 25% invalid rows, and reserves a deterministic 20% holdout. A 64-tree v4
 candidate replaces the incumbent only when both holdout RMSLE and P90 absolute
 percentage error stay within the configured regression limits. Selection is
 evaluated on whole hardware/request contexts, so sibling model variants never
-leak across training and holdout sets. Publishing also requires at least three
-multi-model selection groups plus complete top-1, regret, balanced-fit, and
-false-positive evidence. Missing evidence fails the gate. The artifact records
-the complete candidate/baseline evaluation report.
+leak across training and holdout sets. Publishing requires at least three multi-model selection groups and complete
+selection metrics. Fit-regression checks are only applied once the minimum
+known-unfit sample count is met. A passed publication gate therefore does not
+mean every check was evaluated: per-check `evaluation_details` and
+`omm setting catalog-status` distinguish passed, failed, and insufficient data.
+See [evaluation evidence](docs/evaluation-evidence.md). The artifact records
+the candidate/baseline evaluation report.
 
 The same gate can validate an exported local dataset without contacting the
 collector:

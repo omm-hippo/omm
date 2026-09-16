@@ -3081,6 +3081,21 @@ def has_automated_installer(key: str) -> bool:
 def install_engine(
     key: str, *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
+    from filelock import Timeout
+    from omm.engine_packages import PACKAGES, operation_lock
+
+    if key not in PACKAGES:
+        raise NotImplementedError(f"no automated installer for engine: {key}")
+    try:
+        with operation_lock(key):
+            return _install_engine_unlocked(key, on_output=on_output)
+    except (Timeout, OSError) as error:
+        return EngineInstallResult(key, "failed", f"Could not acquire or use the engine operation lock: {error}")
+
+
+def _install_engine_unlocked(
+    key: str, *, on_output: Callable[[str], None] | None = None
+) -> EngineInstallResult:
     """Dispatch table mirroring is_engine_installed()'s if/elif style so
     individual branches stay monkeypatchable in tests. Every engine in
     ENGINES has a handler, but handlers without a verified package-manager
@@ -3134,21 +3149,24 @@ _LMSTUDIO_DOWNLOAD_URL = "https://lmstudio.ai/download"
 def _install_ollama(
     *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
-    return _install_via_package_manager(
-        key="ollama", label="Ollama", manual_url=_OLLAMA_DOWNLOAD_URL,
-        is_installed=is_ollama_installed, on_output=on_output,
-        brew_cask="ollama-app", winget_id="Ollama.Ollama",
-    )
+    return _install_package_engine("ollama", is_ollama_installed, on_output)
 
 
 def _install_lmstudio(
     *, on_output: Callable[[str], None] | None = None
 ) -> EngineInstallResult:
     """Install LM Studio through the platform package manager only."""
+    return _install_package_engine("lmstudio", is_lmstudio_installed, on_output)
+
+
+def _install_package_engine(key: str, is_installed, on_output) -> EngineInstallResult:
+    from omm.engine_packages import PACKAGES
+
+    spec = PACKAGES[key]
     return _install_via_package_manager(
-        key="lmstudio", label="LM Studio", manual_url=_LMSTUDIO_DOWNLOAD_URL,
-        is_installed=is_lmstudio_installed, on_output=on_output,
-        brew_cask="lm-studio", winget_id="ElementLabs.LMStudio",
+        key=key, label=spec.label, manual_url=spec.manual_url,
+        is_installed=is_installed, on_output=on_output,
+        brew_cask=spec.brew_cask, winget_id=spec.winget_id, flatpak_id=spec.flatpak_id,
     )
 
 
@@ -3207,7 +3225,10 @@ def _install_via_package_manager(
     except OSError as e:
         return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
 
-    if is_installed():
+    if on_output is not None:
+        on_output("OMM: verifying installation")
+    detected = is_installed()
+    if returncode == 0 and detected:
         return EngineInstallResult(key, "installed", f"{label} installed successfully.")
 
     # brew refuses to touch a cask it already has a receipt for ("already
@@ -3230,14 +3251,24 @@ def _install_via_package_manager(
         and args is not None
         and args[:3] == ["brew", "install", "--cask"]
     ):
+        if on_output is not None:
+            on_output("OMM: repairing installation")
         try:
             returncode = _stream_subprocess(["brew", "reinstall", "--cask", brew_cask], on_output)
         except OSError as e:
             return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
-        if is_installed():
+        if on_output is not None:
+            on_output("OMM: verifying installation")
+        detected = is_installed()
+        if returncode == 0 and detected:
             return EngineInstallResult(key, "installed", f"{label} installed successfully.")
 
     detail = f" (installer exited with code {returncode})" if returncode else ""
+    if detected:
+        return EngineInstallResult(
+            key, "failed", f"Installer reported failure{detail}; {label} is still detected. "
+            f"Run `omm engine doctor {key}` before retrying.",
+        )
     return EngineInstallResult(
         key,
         "failed",
@@ -3246,16 +3277,7 @@ def _install_via_package_manager(
 
 
 def _install_jan(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
-    return _install_via_package_manager(
-        key="jan",
-        label="Jan",
-        manual_url="https://jan.ai/download",
-        is_installed=is_jan_installed,
-        on_output=on_output,
-        brew_cask="jan",
-        winget_id="Jan.Jan",
-        flatpak_id="ai.jan.Jan",
-    )
+    return _install_package_engine("jan", is_jan_installed, on_output)
 
 
 def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
@@ -3280,14 +3302,7 @@ def _install_anythingllm(*, on_output: Callable[[str], None] | None = None) -> E
     # installer.sh (sudo AppArmor-profile prompt, no documented silent
     # flag) - same risk class the original design excluded
     # text-generation-webui's git-clone path for.
-    return _install_via_package_manager(
-        key="anythingllm",
-        label="AnythingLLM",
-        manual_url="https://docs.anythingllm.com/installation-desktop/overview",
-        is_installed=is_anythingllm_installed,
-        on_output=on_output,
-        brew_cask="anythingllm",
-    )
+    return _install_package_engine("anythingllm", is_anythingllm_installed, on_output)
 
 
 def _install_mstystudio(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
@@ -3295,14 +3310,7 @@ def _install_mstystudio(*, on_output: Callable[[str], None] | None = None) -> En
     # (CloudStack.Msty) targets the deprecated pre-rebrand "Msty" app, not
     # current "Msty Studio" - using it would install the wrong software.
     # No Linux package manager exists at all.
-    return _install_via_package_manager(
-        key="mstystudio",
-        label="Msty",
-        manual_url="https://msty.ai/products/studio/",
-        is_installed=is_mstystudio_installed,
-        on_output=on_output,
-        brew_cask="mstystudio",
-    )
+    return _install_package_engine("mstystudio", is_mstystudio_installed, on_output)
 
 
 def _install_koboldcpp(*, on_output: Callable[[str], None] | None = None) -> EngineInstallResult:
