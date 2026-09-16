@@ -2,9 +2,10 @@ name: Nightly auto release
 
 # Merging into main never publishes anything by itself: every release path
 # starts from a signed `v<version>` tag (docs/release-process.md). This job
-# is the "someone tags it" step, done nightly by the same bot key that signs
-# the retrain commits, so PyPI / npm / GitHub Release / Windows portable /
-# Homebrew no longer wait for a person to remember the tag.
+# is the "someone tags it" step, checked nightly and done by the same bot key
+# that signs the retrain commits, so PyPI / npm / GitHub Release / Windows
+# portable / Homebrew no longer wait for a person to remember the tag.
+# Releases are spaced at least three days apart (see the decide step).
 
 "on":
   schedule:
@@ -42,6 +43,7 @@ jobs:
         id: decide
         env:
           GH_TOKEN: ${{ github.token }}
+          MIN_DAYS_BETWEEN_RELEASES: "3"
         run: |
           set -euo pipefail
           version="$(python - <<'PY'
@@ -67,6 +69,17 @@ jobs:
           if [ -n "$last_tag" ]; then
             if [ "$(git rev-parse "${last_tag}^{commit}")" = "$(git rev-parse HEAD)" ]; then
               skip "main has not moved since ${last_tag}"
+            fi
+            # Downstream reviews (Homebrew's bump cooldown, the winget
+            # community queue) take more than a day, so releases are spaced
+            # at least MIN_DAYS_BETWEEN_RELEASES apart. A manual run is an
+            # explicit "release now" and ignores the spacing.
+            if [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
+              last_tag_at="$(git log -1 --format=%ct "${last_tag}")"
+              age_days=$(( ( $(date -u +%s) - last_tag_at ) / 86400 ))
+              if [ "${age_days}" -lt "${MIN_DAYS_BETWEEN_RELEASES}" ]; then
+                skip "${last_tag} is only ${age_days} day(s) old; waiting for ${MIN_DAYS_BETWEEN_RELEASES}"
+              fi
             fi
             # The nightly retrain only rewrites published/*.json, and clients
             # fetch that catalog at runtime - it never needs a package release.

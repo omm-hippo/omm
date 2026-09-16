@@ -3,8 +3,9 @@
 > 한 줄 요약: **릴리스는 서명한 `vX.Y.Z` 태그 push로 시작된다.** 그 뒤 PyPI ·
 > npm · GitHub Release · Windows 포터블 · Homebrew 알림까지는 전부 자동이다.
 > PR을 `main`에 머지하는 것만으로는 아무것도 배포되지 않는다 — 대신
-> **매일 밤 `auto-release.yml`이 `main`이 움직였고 CI가 녹색이면 태그를
-> 대신 찍는다.** 급하면 그 워크플로를 수동 실행하거나 사람이 직접 태그를 찍는다.
+> **`auto-release.yml`이 매일 밤 검사해서 `main`이 움직였고 CI가 녹색이며 지난
+> 릴리스로부터 3일이 지났으면 태그를 대신 찍는다.** 급하면 그 워크플로를 수동
+> 실행하거나(간격 무시) 사람이 직접 태그를 찍는다.
 
 이 문서는 2026-09 기준 `.github/workflows/` 내용을 설명한다. 워크플로가
 바뀌면 이 문서도 같이 고친다.
@@ -81,7 +82,7 @@ allowed_signers`에 등록된 SSH 키로 서명돼야 하고, 모든 릴리스 �
    gh release view vX.Y.Z
    ```
 
-## 매일 밤 자동 릴리스 (`auto-release.yml`)
+## 자동 릴리스 (`auto-release.yml`, 매일 검사·3일 간격)
 
 2026-09-16부터 `.github/workflows/auto-release.yml`이 매일 21:00 UTC(06:00 KST,
 03:00 UTC 재학습 PR이 자동 머지된 뒤)에 돌면서 아래 조건을 모두 만족하면
@@ -93,6 +94,9 @@ allowed_signers`에 등록된 SSH 키로 서명돼야 하고, 모든 릴리스 �
 - 마지막 `v*` 태그 이후 `main`이 움직였고, 바뀐 것이 `published/`(야간 재학습
   결과물, 클라이언트가 실행 시점에 받아 가므로 패키지 릴리스가 필요 없음)만은
   아니다.
+- 마지막 `v*` 태그가 **3일 이상** 지났다(Homebrew bump cooldown, winget 심사처럼
+  하루 넘게 걸리는 하류 검토가 밀리지 않게 릴리스 간격을 둔다. 값은 워크플로의
+  `MIN_DAYS_BETWEEN_RELEASES`). 수동 실행(`Run workflow`)은 이 간격을 무시한다.
 - `main` 최신 커밋의 체크런이 전부 끝났고 전부 녹색이다(skipped/neutral 허용).
 
 조건이 하나라도 안 맞으면 로그에 `skip: <이유>`를 남기고 아무것도 하지 않는다.

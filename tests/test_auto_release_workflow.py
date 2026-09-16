@@ -36,6 +36,9 @@ def test_auto_release_only_tags_a_moved_green_unpublished_main():
 
     assert 'skip "tag ${tag} already exists"' in workflow
     assert 'skip "main has not moved since ${last_tag}"' in workflow
+    assert 'MIN_DAYS_BETWEEN_RELEASES: "3"' in workflow
+    assert 'if [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then' in workflow
+    assert 'if [ "${age_days}" -lt "${MIN_DAYS_BETWEEN_RELEASES}" ]; then' in workflow
     assert "grep -v '^published/'" in workflow
     assert 'skip "only published/ changed since ${last_tag}"' in workflow
     assert "https://pypi.org/pypi/omm-model/${version}/json" in workflow
