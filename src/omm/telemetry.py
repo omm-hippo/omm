@@ -14,7 +14,7 @@ import hashlib
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -54,6 +54,7 @@ class SendStatus:
     detail: str = ""
     retryable: bool = False
     attempts: int = 1
+    queued: bool = False
 
 
 _last_send_status: SendStatus | None = None
@@ -207,7 +208,7 @@ def _save_pending(events: list[dict[str, Any]]) -> None:
         pass
 
 
-def _append_pending(event: dict[str, Any]) -> None:
+def _append_pending(event: dict[str, Any]) -> bool:
     """Append without losing events written by another omm process."""
     try:
         path = _pending_path()
@@ -215,8 +216,9 @@ def _append_pending(event: dict[str, Any]) -> None:
             events = _read_pending_unlocked(path)
             events.append(event)
             atomic_write_text(path, json.dumps(events[-_MAX_PENDING_EVENTS:]))
+        return True
     except (OSError, FileLockTimeout):
-        pass
+        return False
 
 
 def _remove_sent_snapshot_entries(
@@ -392,7 +394,9 @@ def send_event(event: dict[str, Any], force: bool = False) -> bool:
     # process. A one-shot --upload/confirmation authorizes this attempt, not
     # an indefinite background queue after the user may have opted out.
     if not ok and config_data.get("telemetry_send_policy") == "always":
-        _append_pending(event)
+        queued = _append_pending(event)
+        status = last_send_status() or SendStatus("send_failed_unknown", attempts=attempts)
+        _set_send_status(replace(status, queued=bool(queued)))
     elif not ok and force:
         status = last_send_status() or SendStatus("send_failed_unknown", attempts=attempts)
         _save_last_failed(event, status)

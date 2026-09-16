@@ -122,6 +122,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--quality-report", type=Path, help="Optional JSON quality-gate report.")
+    parser.add_argument("--diagnostics-report", type=Path, help="Write hardware/engine regression slices and missing evidence without changing the gate.")
     parser.add_argument(
         "--plausibility-report",
         type=Path,
@@ -1659,6 +1660,7 @@ def main() -> None:
     print(_plausibility_summary(telemetry_audit))
 
     if args.quality_gate:
+        diagnostics_path = getattr(args, "diagnostics_report", None)
         if args.baseline is None:
             raise ValueError("--baseline is required with --quality-gate")
         # Every quality-gate exit path may republish this file. Validate it
@@ -1678,6 +1680,12 @@ def main() -> None:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with locked(args.output):
                 atomic_write_text(args.output, baseline_text)
+            if diagnostics_path is not None:
+                diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(diagnostics_path, json.dumps({
+                    "schema_version": 1, "gate_passed": False, "status": "insufficient_data",
+                    "reason": str(error), "telemetry_audit": telemetry_audit,
+                }, indent=2, allow_nan=False) + "\n")
             if args.quality_report:
                 args.quality_report.parent.mkdir(parents=True, exist_ok=True)
                 atomic_write_text(
@@ -1745,6 +1753,19 @@ def main() -> None:
                 "fit_telemetry_audit": fit_audit,
             }
         )
+        from scripts.recommendation_diagnostics import build_report, training_provenance
+
+        candidate["training_provenance"] = training_provenance(FEATURE_ORDER, train_X, holdout_X)
+        candidate["real_training_row_count"] = len(train_X)
+        candidate["holdout_row_count"] = len(holdout_X)
+        if diagnostics_path is not None:
+            diagnostics = build_report(
+                candidate, baseline, train_X, train_y, holdout_X, holdout_y,
+                telemetry_audit=telemetry_audit, fit_audit=fit_audit,
+            )
+            diagnostics["gate_passed"] = evaluation["passed"]
+            diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(diagnostics_path, json.dumps(diagnostics, indent=2, allow_nan=False) + "\n")
         from omm.evaluation import describe_evaluation
 
         evaluation["evaluation_details"] = describe_evaluation(evaluation)
@@ -1795,22 +1816,11 @@ def main() -> None:
             with locked(args.output):
                 atomic_write_text(args.output, baseline_text)
             return
-        final_X, final_y, final_weights = training_data_with_synthetic_prior(
-            real_X,
-            real_y,
-            real_weight=QUALITY_GATE_REAL_WEIGHT,
-        )
-        artifact = train_artifact(
-            final_X,
-            final_y,
-            sample_weight=final_weights,
-            training_mode="hybrid_telemetry",
-            bootstrap_method=BOOTSTRAP_METHOD,
-            real_rows=real_rows,
-            telemetry_audit=telemetry_audit,
-            input_sources=input_sources,
-            evaluation=evaluation,
-        )
+        # The gate proves the candidate above. Refitting on all rows here used
+        # to publish different trees and train on the supposedly held-out
+        # contexts, giving the incumbent an advantage at the next comparison.
+        artifact = candidate
+        artifact["evaluation"] = evaluation
     elif len(real_X) < MIN_REAL_ROWS:
         X, y, sample_weight = training_data_with_synthetic_prior(
             real_X,
