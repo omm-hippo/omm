@@ -24,462 +24,1323 @@
     "name": "unsloth-qwen3-coder-30b-a3b-instruct-gguf",
     "repo_id": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
     "filename": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
-    "description": "12,834,876 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "12,817,609 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "transformers",
+      "gguf",
+      "unsloth",
+      "qwen3",
+      "qwen",
+      "text-generation",
+      "arxiv:2505.09388",
+      "base_model:Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      "base_model:quantized:Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "imatrix",
+      "conversational"
+    ]
   },
   {
     "name": "ornith-ai-ornith-1.5-9b-gguf",
     "repo_id": "ornith-ai/Ornith-1.5-9B-GGUF",
     "filename": "Ornith-1.5-9B-Q4_K_M.gguf",
-    "description": "4,889,153 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "5,098,072 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "transformers",
+      "gguf",
+      "text-generation",
+      "license:mit",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "ornith-ai-ornith-1.5-35b-a3b-gguf",
     "repo_id": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
     "filename": "Ornith-1.5-35B-Q4_K_M.gguf",
-    "description": "4,149,809 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "4,258,710 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "transformers",
+      "gguf",
+      "text-generation",
+      "license:mit",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "ornith-ai-ornith-1.0-9b-gguf",
     "repo_id": "ornith-ai/Ornith-1.0-9B-GGUF",
     "filename": "ornith-1.0-9b-Q4_K_M.gguf",
-    "description": "3,622,075 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "3,567,338 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "transformers",
+      "gguf",
+      "text-generation",
+      "license:mit",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "jonathancoletti-qwen3.8-27b-uncensored-gguf",
     "repo_id": "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF",
     "filename": "Qwen3.8-27B-Uncensored-Q4_K_M.gguf",
-    "description": "2,914,886 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "2,821,345 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "llama.cpp",
+      "gguf",
+      "uncensored",
+      "qwen3.8",
+      "mtp",
+      "speculative-decoding",
+      "imatrix",
+      "quantized",
+      "text-generation",
+      "en",
+      "zh",
+      "base_model:Qwen/Qwen3.8-27B",
+      "base_model:quantized:Qwen/Qwen3.8-27B",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "ornith-ai-ornith-1.0-35b-gguf",
     "repo_id": "ornith-ai/Ornith-1.0-35B-GGUF",
     "filename": "ornith-1.0-35b-Q4_K_M.gguf",
-    "description": "2,326,844 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "2,292,761 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "transformers",
+      "gguf",
+      "text-generation",
+      "license:mit",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "0bserverx-qwen3.8-27b-heretic-abliterated-uncensored-gguf",
     "repo_id": "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
     "filename": "Qwen3.8-27B-Heretic-Q4_K_M.gguf",
-    "description": "1,932,215 downloads on HuggingFace",
-    "provider": "huggingface"
-  },
-  {
-    "name": "obliteratus-qwen3.8-27b-obliterated",
-    "repo_id": "OBLITERATUS/Qwen3.8-27B-OBLITERATED",
-    "filename": "Qwen3.8-27B-OBLITERATED-Q4_K_M.gguf",
-    "description": "1,244,256 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "1,963,066 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "transformers",
+      "gguf",
+      "qwen3.8",
+      "qwen3.5",
+      "heretic",
+      "abliterated",
+      "uncensored",
+      "roleplay",
+      "imatrix",
+      "text-generation",
+      "conversational",
+      "base_model:Qwen/Qwen3.8-27B",
+      "base_model:quantized:Qwen/Qwen3.8-27B",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us"
+    ]
   },
   {
     "name": "ornith-ai-ornith-1.5-397b-gguf",
     "repo_id": "ornith-ai/Ornith-1.5-397B-GGUF",
     "filename": "Ornith-1.5-397B-Q4_K_M.gguf",
-    "description": "1,231,974 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "1,276,366 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "transformers",
+      "gguf",
+      "text-generation",
+      "license:mit",
+      "endpoints_compatible",
+      "region:us",
+      "imatrix",
+      "conversational"
+    ]
+  },
+  {
+    "name": "obliteratus-qwen3.8-27b-obliterated",
+    "repo_id": "OBLITERATUS/Qwen3.8-27B-OBLITERATED",
+    "filename": "Qwen3.8-27B-OBLITERATED-Q4_K_M.gguf",
+    "description": "1,266,908 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "mlx",
+      "safetensors",
+      "gguf",
+      "qwen3_5",
+      "abliterated",
+      "uncensored",
+      "obliteratus",
+      "qwen3",
+      "qwen3.8",
+      "red-team",
+      "ai-safety-research",
+      "text-generation",
+      "conversational",
+      "base_model:Qwen/Qwen3.8-27B",
+      "base_model:quantized:Qwen/Qwen3.8-27B",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us"
+    ]
   },
   {
     "name": "liquidai-lfm2.5-2.6b-gguf",
     "repo_id": "LiquidAI/LFM2.5-2.6B-GGUF",
     "filename": "LFM2.5-2.6B-Q4_K_M.gguf",
-    "description": "1,149,670 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "1,164,289 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "gguf",
+      "liquid",
+      "lfm2.5",
+      "llama.cpp",
+      "text-generation",
+      "ar",
+      "zh",
+      "en",
+      "fr",
+      "de",
+      "hi",
+      "id",
+      "it",
+      "ja",
+      "ko",
+      "pl",
+      "pt",
+      "ru",
+      "es",
+      "th",
+      "vi",
+      "base_model:LiquidAI/LFM2.5-2.6B",
+      "base_model:quantized:LiquidAI/LFM2.5-2.6B",
+      "license:other",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "legraphista-glm-4-9b-chat-imat-gguf",
     "repo_id": "legraphista/glm-4-9b-chat-IMat-GGUF",
     "filename": "glm-4-9b-chat.BF16.gguf",
     "description": "1,009,064 downloads on HuggingFace",
-    "provider": "huggingface"
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "gguf",
+      "glm",
+      "chatglm",
+      "thudm",
+      "quantized",
+      "GGUF",
+      "quantization",
+      "imat",
+      "imatrix",
+      "static",
+      "16bit",
+      "8bit",
+      "6bit",
+      "5bit",
+      "4bit",
+      "3bit",
+      "2bit",
+      "1bit",
+      "text-generation",
+      "zh",
+      "en",
+      "base_model:zai-org/glm-4-9b-chat",
+      "base_model:quantized:zai-org/glm-4-9b-chat",
+      "license:other",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "final-bench-pocket-35b-gguf",
     "repo_id": "FINAL-Bench/POCKET-35B-GGUF",
     "filename": "POCKET-35B-Q4_K_M.gguf",
-    "description": "815,008 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "818,182 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "llama.cpp",
+      "gguf",
+      "conversational",
+      "on-device",
+      "mobile",
+      "iphone",
+      "android",
+      "cpu",
+      "local-llm",
+      "edge",
+      "mixture-of-experts",
+      "moe",
+      "quantized",
+      "pocket",
+      "vidraft",
+      "qwen3_5_moe",
+      "darwin",
+      "text-generation",
+      "base_model:FINAL-Bench/Darwin-36B-Opus",
+      "base_model:quantized:FINAL-Bench/Darwin-36B-Opus",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "imatrix"
+    ]
   },
   {
     "name": "empero-ai-qwen3.8-4b-distill-gguf",
     "repo_id": "empero-ai/Qwen3.8-4B-Distill-GGUF",
     "filename": "Qwen3.8-4B-Q4_K_M.gguf",
-    "description": "737,473 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "752,514 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "gguf",
+      "llama.cpp",
+      "quantized",
+      "empero-ai",
+      "qwen3.5",
+      "qwen3.8",
+      "distillation",
+      "reasoning",
+      "gated-deltanet",
+      "text-generation",
+      "en",
+      "base_model:empero-ai/Qwen3.8-4B-Distill",
+      "base_model:quantized:empero-ai/Qwen3.8-4B-Distill",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "empero-ai-qwen3.8-2b-distill-gguf",
     "repo_id": "empero-ai/Qwen3.8-2B-Distill-GGUF",
     "filename": "Qwen3.8-2B-Q4_K_M.gguf",
-    "description": "719,986 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "734,373 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "gguf",
+      "llama.cpp",
+      "quantized",
+      "empero-ai",
+      "qwen3.5",
+      "qwen3.8",
+      "distillation",
+      "reasoning",
+      "gated-deltanet",
+      "edge",
+      "text-generation",
+      "en",
+      "base_model:empero-ai/Qwen3.8-2B-Distill",
+      "base_model:quantized:empero-ai/Qwen3.8-2B-Distill",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "empero-ai-qwen3.8-9b-distill-gguf",
     "repo_id": "empero-ai/Qwen3.8-9B-Distill-GGUF",
     "filename": "Qwen3.8-9B-Q4_K_M.gguf",
-    "description": "689,959 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "703,072 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "gguf",
+      "llama.cpp",
+      "quantized",
+      "empero-ai",
+      "qwen3.5",
+      "qwen3.8",
+      "distillation",
+      "reasoning",
+      "gated-deltanet",
+      "text-generation",
+      "en",
+      "base_model:empero-ai/Qwen3.8-9B-Distill",
+      "base_model:quantized:empero-ai/Qwen3.8-9B-Distill",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "yuxinlu1-gemma-4-12b-agentic-fable5-composer2.5-v2-3.5x-tau2-gguf",
     "repo_id": "yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF",
     "filename": "gemma4-v2-Q4_K_M.gguf",
-    "description": "669,565 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "678,289 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "gguf",
+      "gemma4",
+      "coding",
+      "agentic",
+      "terminal",
+      "tool-use",
+      "reasoning",
+      "thinking",
+      "llama.cpp",
+      "local-llm",
+      "text-generation",
+      "base_model:google/gemma-4-12B-it",
+      "base_model:quantized:google/gemma-4-12B-it",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "prism-ml-ternary-bonsai-27b-gguf",
     "repo_id": "prism-ml/Ternary-Bonsai-27B-gguf",
     "filename": "Ternary-Bonsai-27B-F16.gguf",
-    "description": "644,342 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "646,371 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "llama.cpp",
+      "gguf",
+      "conversational",
+      "ternary",
+      "2-bit",
+      "llama-cpp",
+      "cuda",
+      "metal",
+      "on-device",
+      "hybrid-attention",
+      "prismml",
+      "bonsai",
+      "text-generation",
+      "base_model:Qwen/Qwen3.6-27B",
+      "base_model:quantized:Qwen/Qwen3.6-27B",
+      "license:apache-2.0",
+      "eval-results",
+      "endpoints_compatible",
+      "region:us"
+    ]
   },
   {
     "name": "z-lab-qwen3.8-27b-dflash2-gguf",
     "repo_id": "z-lab/Qwen3.8-27B-DFlash2-GGUF",
     "filename": "Qwen3.8-27B-DFlash2-Q4_K_M.gguf",
-    "description": "626,407 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "641,449 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "llama.cpp",
+      "gguf",
+      "dflash2",
+      "speculative-decoding",
+      "draft-model",
+      "text-generation",
+      "base_model:Qwen/Qwen3.8-27B",
+      "base_model:quantized:Qwen/Qwen3.8-27B",
+      "license:apache-2.0",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "liquidai-lfm2.5-230m-gguf",
     "repo_id": "LiquidAI/LFM2.5-230M-GGUF",
     "filename": "LFM2.5-230M-Q4_K_M.gguf",
-    "description": "588,021 downloads on HuggingFace",
-    "provider": "huggingface"
-  },
-  {
-    "name": "unsloth-gpt-oss-20b-gguf",
-    "repo_id": "unsloth/gpt-oss-20b-GGUF",
-    "filename": "gpt-oss-20b-Q4_K_M.gguf",
-    "description": "552,424 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "591,417 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "gguf",
+      "liquid",
+      "lfm2.5",
+      "llama.cpp",
+      "text-generation",
+      "en",
+      "ar",
+      "zh",
+      "fr",
+      "de",
+      "ja",
+      "ko",
+      "es",
+      "pt",
+      "it",
+      "base_model:LiquidAI/LFM2.5-230M",
+      "base_model:quantized:LiquidAI/LFM2.5-230M",
+      "license:other",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "unsloth-ornith-1.0-9b-gguf",
     "repo_id": "unsloth/Ornith-1.0-9B-GGUF",
     "filename": "Ornith-1.0-9B-Q4_K_M.gguf",
-    "description": "534,817 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "544,471 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "gguf",
+      "unsloth",
+      "qwen3_5_moe",
+      "text-generation",
+      "base_model:deepreinforce-ai/Ornith-1.0-9B",
+      "base_model:quantized:deepreinforce-ai/Ornith-1.0-9B",
+      "license:mit",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
-    "name": "yuxinlu1-gemma-4-12b-coder-fable5-composer2.5-v1-gguf",
-    "repo_id": "yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF",
-    "filename": "gemma4-coding-Q4_K_M.gguf",
-    "description": "501,713 downloads on HuggingFace",
-    "provider": "huggingface"
+    "name": "unsloth-gpt-oss-20b-gguf",
+    "repo_id": "unsloth/gpt-oss-20b-GGUF",
+    "filename": "gpt-oss-20b-Q4_K_M.gguf",
+    "description": "544,073 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "transformers",
+      "gguf",
+      "gpt_oss",
+      "text-generation",
+      "openai",
+      "unsloth",
+      "base_model:openai/gpt-oss-20b",
+      "base_model:quantized:openai/gpt-oss-20b",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "liquidai-lfm2.5-8b-a1b-gguf",
     "repo_id": "LiquidAI/LFM2.5-8B-A1B-GGUF",
     "filename": "LFM2.5-8B-A1B-Q4_K_M.gguf",
-    "description": "495,233 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "509,939 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "gguf",
+      "liquid",
+      "lfm2",
+      "edge",
+      "llama.cpp",
+      "text-generation",
+      "en",
+      "ar",
+      "zh",
+      "fr",
+      "de",
+      "ja",
+      "ko",
+      "es",
+      "base_model:LiquidAI/LFM2.5-8B-A1B",
+      "base_model:quantized:LiquidAI/LFM2.5-8B-A1B",
+      "license:other",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
+  },
+  {
+    "name": "yuxinlu1-gemma-4-12b-coder-fable5-composer2.5-v1-gguf",
+    "repo_id": "yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF",
+    "filename": "gemma4-coding-Q4_K_M.gguf",
+    "description": "501,956 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "gguf",
+      "gemma4",
+      "coding",
+      "code",
+      "reasoning",
+      "thinking",
+      "llama.cpp",
+      "local-llm",
+      "text-generation",
+      "base_model:google/gemma-4-12B-it",
+      "base_model:quantized:google/gemma-4-12B-it",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "unsloth-qwen3-4b-gguf",
     "repo_id": "unsloth/Qwen3-4B-GGUF",
     "filename": "Qwen3-4B-Q4_K_M.gguf",
-    "description": "494,362 downloads on HuggingFace",
-    "provider": "huggingface"
+    "description": "500,372 downloads on HuggingFace",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation",
+    "tags": [
+      "transformers",
+      "gguf",
+      "qwen3",
+      "text-generation",
+      "qwen",
+      "unsloth",
+      "en",
+      "arxiv:2309.00071",
+      "base_model:Qwen/Qwen3-4B",
+      "base_model:quantized:Qwen/Qwen3-4B",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ]
   },
   {
     "name": "unsloth/Qwen3.8-27B-GGUF",
     "repo_id": "unsloth/Qwen3.8-27B-GGUF",
     "filename": "Qwen3.8-27B-UD-Q4_K_M.gguf",
-    "description": "320,717 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "323,675 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "model_type:qwen3_5",
+      "library:gguf",
+      "library:pytorch",
+      "custom_tag:unsloth",
+      "custom_tag:gguf"
+    ]
   },
   {
     "name": "unsloth/Qwen3.8-Flash-Next-GGUF",
     "repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
     "filename": "MTP/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf",
-    "description": "372,736 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "373,846 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:image-text-to-text",
+      "custom_tag:unsloth",
+      "custom_tag:gguf"
+    ]
   },
   {
     "name": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
     "repo_id": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
     "filename": "Ornith-1.5-35B-Q4_K_M.gguf",
-    "description": "20,955 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "21,278 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:mit",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "XHToken/Spark-X2.5-4B-GGUF",
     "repo_id": "XHToken/Spark-X2.5-4B-GGUF",
     "filename": "Spark-X2.5-4B-Q4_K_M.gguf",
-    "description": "3,952 downloads on ModelScope",
-    "provider": "modelscope"
-  },
-  {
-    "name": "OpenBMB/MiniCPM5-2B-gguf",
-    "repo_id": "OpenBMB/MiniCPM5-2B-gguf",
-    "filename": "MiniCPM5-2B-Q4_K_M.gguf",
-    "description": "11,676 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "4,164 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "task:text-generation",
+      "custom_tag:gguf",
+      "custom_tag:llama.cpp",
+      "custom_tag:ollama",
+      "custom_tag:lm-studio",
+      "custom_tag:sparkx2_5",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
     "repo_id": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
     "filename": "imatrix-qwen3.8-27b.gguf",
-    "description": "6,460 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "7,054 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "library:pytorch",
+      "task:image-text-to-text",
+      "custom_tag:gguf",
+      "custom_tag:gsq",
+      "custom_tag:rco",
+      "custom_tag:quantization",
+      "custom_tag:mixed-precision",
+      "custom_tag:ist-daslab",
+      "custom_tag:multimodal",
+      "custom_tag:vision"
+    ]
   },
   {
-    "name": "unsloth/Qwen3.6-35B-A3B-GGUF",
-    "repo_id": "unsloth/Qwen3.6-35B-A3B-GGUF",
-    "filename": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
-    "description": "373,391 downloads on ModelScope",
-    "provider": "modelscope"
-  },
-  {
-    "name": "unsloth/MiniMax-H3-GGUF",
-    "repo_id": "unsloth/MiniMax-H3-GGUF",
-    "filename": "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
-    "description": "71,567 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "OpenBMB/MiniCPM5-2B-gguf",
+    "repo_id": "OpenBMB/MiniCPM5-2B-gguf",
+    "filename": "MiniCPM5-2B-Q4_K_M.gguf",
+    "description": "12,976 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:transformer",
+      "library:gguf",
+      "task:text-generation",
+      "custom_tag:minicpm",
+      "custom_tag:minicpm5",
+      "custom_tag:llama",
+      "custom_tag:text-generation",
+      "custom_tag:long-context",
+      "custom_tag:tool-calling",
+      "custom_tag:on-device",
+      "custom_tag:edge-ai",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "unsloth/Qwen3.5-9B-GGUF",
     "repo_id": "unsloth/Qwen3.5-9B-GGUF",
     "filename": "Qwen3.5-9B-Q4_K_M.gguf",
-    "description": "131,023 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "132,004 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "library:pytorch",
+      "task:image-text-to-text",
+      "custom_tag:unsloth",
+      "custom_tag:gguf"
+    ]
+  },
+  {
+    "name": "unsloth/Qwen3.6-35B-A3B-GGUF",
+    "repo_id": "unsloth/Qwen3.6-35B-A3B-GGUF",
+    "filename": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "description": "373,946 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "library:pytorch",
+      "task:image-text-to-text",
+      "custom_tag:unsloth",
+      "custom_tag:qwen",
+      "custom_tag:qwen3_5_moe",
+      "custom_tag:gguf"
+    ]
+  },
+  {
+    "name": "unsloth/MiniMax-H3-GGUF",
+    "repo_id": "unsloth/MiniMax-H3-GGUF",
+    "filename": "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
+    "description": "71,940 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:safetensors",
+      "library:gguf",
+      "library:pytorch",
+      "custom_tag:gguf",
+      "custom_tag:text-to-video",
+      "custom_tag:image-to-video",
+      "custom_tag:video-generation",
+      "custom_tag:stable-diffusion.cpp",
+      "custom_tag:unsloth",
+      "custom_tag:minimax",
+      "custom_tag:multimodal"
+    ]
   },
   {
     "name": "z-lab/Qwen3.8-27B-DFlash2-GGUF",
     "repo_id": "z-lab/Qwen3.8-27B-DFlash2-GGUF",
     "filename": "Qwen3.8-27B-DFlash2-Q4_K_M.gguf",
-    "description": "4,149 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "4,203 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:gguf",
+      "custom_tag:dflash2",
+      "custom_tag:speculative-decoding",
+      "custom_tag:draft-model",
+      "custom_tag:llama.cpp",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "Abiray/Qwen3.8-27B-Q4_K_M-GGUF",
     "repo_id": "Abiray/Qwen3.8-27B-Q4_K_M-GGUF",
     "filename": "Qwen3.8-27B-Q4_K_M.gguf",
-    "description": "7,922 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "7,992 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "library:pytorch",
+      "task:image-text-to-text",
+      "custom_tag:qwen",
+      "custom_tag:quantized",
+      "custom_tag:gguf",
+      "custom_tag:llama-cpp",
+      "custom_tag:vision"
+    ]
   },
   {
-    "name": "hf/antirez-deepseek-v4.1-flash-gguf",
-    "repo_id": "hf/antirez-deepseek-v4.1-flash-gguf",
-    "filename": "DeepSeek-V4.1-Flash-Q2.gguf",
-    "description": "99 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "unsloth/Qwen-Image-Edit-2511-GGUF",
+    "repo_id": "unsloth/Qwen-Image-Edit-2511-GGUF",
+    "filename": "qwen-image-edit-2511-Q4_K_M.gguf",
+    "description": "22,332 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:pytorch",
+      "library:gguf",
+      "task:image-to-image",
+      "custom_tag:gguf",
+      "custom_tag:quantized",
+      "custom_tag:unsloth",
+      "custom_tag:qwen"
+    ]
   },
   {
-    "name": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
-    "repo_id": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
-    "filename": "dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf",
-    "description": "40,712 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "unsloth/Qwen3.5-4B-GGUF",
+    "repo_id": "unsloth/Qwen3.5-4B-GGUF",
+    "filename": "Qwen3.5-4B-Q4_K_M.gguf",
+    "description": "65,660 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "library:pytorch",
+      "task:image-text-to-text",
+      "custom_tag:unsloth",
+      "custom_tag:gguf"
+    ]
   },
   {
     "name": "Qwen/Qwen2.5-7B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-7B-Instruct-GGUF",
     "filename": "qwen2.5-7b-instruct-q2_k.gguf",
-    "description": "218,981 downloads on ModelScope",
-    "provider": "modelscope"
-  },
-  {
-    "name": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
-    "repo_id": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
-    "filename": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
-    "description": "36,573 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "220,103 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
     "repo_id": "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
     "filename": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
-    "description": "50,402 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "50,728 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "model_type:qwen2_5_vl",
+      "library:transformer",
+      "library:gguf",
+      "library:pytorch",
+      "task:image-text-to-text",
+      "custom_tag:multimodal",
+      "custom_tag:unsloth",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
-    "name": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
-    "repo_id": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
-    "filename": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
-    "description": "114,844 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
+    "repo_id": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
+    "filename": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+    "description": "36,791 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "task:image-text-to-text",
+      "custom_tag:gguf"
+    ]
   },
   {
     "name": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
     "filename": "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-    "description": "33,596 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "33,813 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "task:text-generation",
+      "custom_tag:code",
+      "custom_tag:codeqwen",
+      "custom_tag:chat",
+      "custom_tag:qwen",
+      "custom_tag:qwen-coder",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
-    "name": "ewinregirgojr/Qwen3.8-14B-Instruct-Turbo-GGUF",
-    "repo_id": "ewinregirgojr/Qwen3.8-14B-Instruct-Turbo-GGUF",
-    "filename": "Qwen3.8-14B-Instruct-Turbo-Q4_K_M.gguf",
-    "description": "961 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+    "repo_id": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+    "filename": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+    "description": "114,962 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:transformer",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:unsloth",
+      "custom_tag:qwen3",
+      "custom_tag:qwen",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
     "filename": "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
-    "description": "50,640 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "50,855 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:code",
+      "custom_tag:codeqwen",
+      "custom_tag:chat",
+      "custom_tag:qwen",
+      "custom_tag:qwen-coder",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
+  },
+  {
+    "name": "ewinregirgojr/Qwen3.8-14B-Instruct-Turbo-GGUF",
+    "repo_id": "ewinregirgojr/Qwen3.8-14B-Instruct-Turbo-GGUF",
+    "filename": "Qwen3.8-14B-Instruct-Turbo-Q4_K_M.gguf",
+    "description": "989 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:gguf",
+      "custom_tag:llama.cpp",
+      "custom_tag:qwen",
+      "custom_tag:qwen3",
+      "custom_tag:14b",
+      "custom_tag:deltanet",
+      "custom_tag:linear-attention",
+      "custom_tag:hybrid-attention",
+      "custom_tag:distillation",
+      "custom_tag:pruned",
+      "custom_tag:reasoning",
+      "custom_tag:tool-calling",
+      "custom_tag:agent",
+      "custom_tag:coding",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "Qwen/Qwen3-VL-4B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen3-VL-4B-Instruct-GGUF",
     "filename": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
-    "description": "20,651 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "20,795 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "task:image-text-to-text",
+      "custom_tag:gguf"
+    ]
   },
   {
     "name": "Qwen/Qwen2.5-3B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-3B-Instruct-GGUF",
     "filename": "qwen2.5-3b-instruct-q4_k_m.gguf",
-    "description": "296,900 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "297,936 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "ngxson/Qwen2.5-7B-Instruct-1M-Q4_K_M-GGUF",
     "repo_id": "ngxson/Qwen2.5-7B-Instruct-1M-Q4_K_M-GGUF",
     "filename": "qwen2.5-7b-instruct-1m-q4_k_m.gguf",
-    "description": "4,566 downloads on ModelScope",
-    "provider": "modelscope"
-  },
-  {
-    "name": "AI-ModelScope/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
-    "repo_id": "AI-ModelScope/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
-    "filename": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
-    "description": "10,397 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "4,599 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:llama-cpp",
+      "custom_tag:gguf-my-repo",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
     "repo_id": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
     "filename": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-    "description": "65,281 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "65,752 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
-    "name": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
-    "repo_id": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
-    "filename": "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
-    "description": "7,735 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "AI-ModelScope/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+    "repo_id": "AI-ModelScope/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+    "filename": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
+    "description": "10,530 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
-    "name": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
-    "repo_id": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
-    "filename": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-    "description": "14,999 downloads on ModelScope",
-    "provider": "modelscope"
-  },
-  {
-    "name": "Qwen/Qwen1.5-1.8B-Chat-GGUF",
-    "repo_id": "Qwen/Qwen1.5-1.8B-Chat-GGUF",
-    "filename": "qwen1_5-1_8b-chat-q4_k_m.gguf",
-    "description": "9,820 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    "repo_id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "description": "44,925 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "Qwen/Qwen1.5-0.5B-Chat-GGUF",
     "repo_id": "Qwen/Qwen1.5-0.5B-Chat-GGUF",
     "filename": "qwen1_5-0_5b-chat-q4_k_m.gguf",
-    "description": "15,734 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "15,750 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "LLM-Research/glm-4-9b-chat-GGUF",
     "repo_id": "LLM-Research/glm-4-9b-chat-GGUF",
     "filename": "glm-4-9b-chat.BF16.gguf",
-    "description": "11,005 downloads on ModelScope",
-    "provider": "modelscope"
-  },
-  {
-    "name": "Qwen/Qwen1.5-7B-Chat-GGUF",
-    "repo_id": "Qwen/Qwen1.5-7B-Chat-GGUF",
-    "filename": "qwen1_5-7b-chat-q4_k_m.gguf",
-    "description": "9,942 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "11,065 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:glm",
+      "custom_tag:chatglm",
+      "custom_tag:thudm",
+      "custom_tag:quantized",
+      "custom_tag:GGUF",
+      "custom_tag:quantization",
+      "custom_tag:static",
+      "custom_tag:16bit",
+      "custom_tag:8bit",
+      "custom_tag:6bit",
+      "custom_tag:5bit",
+      "custom_tag:4bit",
+      "custom_tag:3bit",
+      "custom_tag:2bit",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "LLM-Research/glm-4-9b-chat-1m-GGUF",
     "repo_id": "LLM-Research/glm-4-9b-chat-1m-GGUF",
     "filename": "glm-4-9b-chat-1m.BF16.gguf",
-    "description": "4,681 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "4,754 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:glm",
+      "custom_tag:chatglm",
+      "custom_tag:thudm",
+      "custom_tag:quantized",
+      "custom_tag:GGUF",
+      "custom_tag:quantization",
+      "custom_tag:static",
+      "custom_tag:16bit",
+      "custom_tag:8bit",
+      "custom_tag:6bit",
+      "custom_tag:5bit",
+      "custom_tag:4bit",
+      "custom_tag:3bit",
+      "custom_tag:2bit",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
-    "name": "bartowski/llama-3-neural-chat-v1-8b-GGUF",
-    "repo_id": "bartowski/llama-3-neural-chat-v1-8b-GGUF",
-    "filename": "llama-3-neural-chat-v1-8b-Q4_K_M.gguf",
-    "description": "6,068 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "Qwen/Qwen1.5-7B-Chat-GGUF",
+    "repo_id": "Qwen/Qwen1.5-7B-Chat-GGUF",
+    "filename": "qwen1_5-7b-chat-q4_k_m.gguf",
+    "description": "9,964 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
-    "name": "lefromage/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF",
-    "repo_id": "lefromage/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF",
-    "filename": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-    "description": "532 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "Qwen/Qwen1.5-1.8B-Chat-GGUF",
+    "repo_id": "Qwen/Qwen1.5-1.8B-Chat-GGUF",
+    "filename": "qwen1_5-1_8b-chat-q4_k_m.gguf",
+    "description": "9,842 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
+  },
+  {
+    "name": "Qwen/Qwen1.5-72B-Chat-GGUF",
+    "repo_id": "Qwen/Qwen1.5-72B-Chat-GGUF",
+    "filename": "qwen1_5-72b-chat-q2_k.gguf",
+    "description": "5,691 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
+  },
+  {
+    "name": "Qwen/CodeQwen1.5-7B-Chat-GGUF",
+    "repo_id": "Qwen/CodeQwen1.5-7B-Chat-GGUF",
+    "filename": "codeqwen-1_5-7b-chat-q4_k_m.gguf",
+    "description": "5,392 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
+  },
+  {
+    "name": "ZhipuAI/glm-edge-1.5b-chat-gguf",
+    "repo_id": "ZhipuAI/glm-edge-1.5b-chat-gguf",
+    "filename": "ggml-model-Q4_K_M.gguf",
+    "description": "1,402 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "task:text-generation",
+      "custom_tag:glm",
+      "custom_tag:edge",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
+  },
+  {
+    "name": "Qwen/Qwen1.5-4B-Chat-GGUF",
+    "repo_id": "Qwen/Qwen1.5-4B-Chat-GGUF",
+    "filename": "qwen1_5-4b-chat-q4_k_m.gguf",
+    "description": "6,673 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "Xorbits/Qwen-14B-Chat-GGUF",
     "repo_id": "Xorbits/Qwen-14B-Chat-GGUF",
     "filename": "Qwen-14B-Chat.Q4_K_M.gguf",
     "description": "8,022 downloads on ModelScope",
-    "provider": "modelscope"
+    "provider": "modelscope",
+    "tags": [
+      "license:Apache License 2.0",
+      "library:gguf",
+      "library:xinference",
+      "task:text-generation",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
-    "name": "limoncc/internlm2-chat-7b-gguf",
-    "repo_id": "limoncc/internlm2-chat-7b-gguf",
+    "name": "IndexTeam/Index-1.9B-Chat-GGUF",
+    "repo_id": "IndexTeam/Index-1.9B-Chat-GGUF",
     "filename": "ggml-model-Q4_K_M.gguf",
-    "description": "211 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "824 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "custom_tag:gguf"
+    ]
   },
   {
-    "name": "LessThanThreeAI/Qwen3.8-27B-Humanlike-Chat-GGUF",
-    "repo_id": "LessThanThreeAI/Qwen3.8-27B-Humanlike-Chat-GGUF",
-    "filename": "Qwen3.8-27B-Humanlike-Chat-Q4_K_M.gguf",
-    "description": "34 downloads on ModelScope",
-    "provider": "modelscope"
-  },
-  {
-    "name": "ZhipuAI/glm-edge-1.5b-chat-gguf",
-    "repo_id": "ZhipuAI/glm-edge-1.5b-chat-gguf",
-    "filename": "ggml-model-Q4_K_M.gguf",
-    "description": "1,384 downloads on ModelScope",
-    "provider": "modelscope"
-  },
-  {
-    "name": "Qwen/Qwen1.5-14B-Chat-GGUF",
-    "repo_id": "Qwen/Qwen1.5-14B-Chat-GGUF",
-    "filename": "qwen1_5-14b-chat-q4_k_m.gguf",
-    "description": "7,267 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "Xorbits/Llama-2-13b-Chat-GGUF",
+    "repo_id": "Xorbits/Llama-2-13b-Chat-GGUF",
+    "filename": "llama-2-13b-chat.Q4_K_M.gguf",
+    "description": "355 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:Apache License 2.0",
+      "library:gguf",
+      "library:xinference",
+      "task:text-generation",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
     "name": "ZhipuAI/glm-edge-4b-chat-gguf",
     "repo_id": "ZhipuAI/glm-edge-4b-chat-gguf",
     "filename": "ggml-model-Q4_K_M.gguf",
-    "description": "1,173 downloads on ModelScope",
-    "provider": "modelscope"
+    "description": "1,180 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "task:text-generation",
+      "custom_tag:glm",
+      "custom_tag:edge",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
-    "name": "second-state/DeepSeek-V2-Lite-Chat-GGUF",
-    "repo_id": "second-state/DeepSeek-V2-Lite-Chat-GGUF",
-    "filename": "DeepSeek-V2-Lite-Chat-Q4_K_M.gguf",
-    "description": "3,908 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "Qwen/Qwen1.5-14B-Chat-GGUF",
+    "repo_id": "Qwen/Qwen1.5-14B-Chat-GGUF",
+    "filename": "qwen1_5-14b-chat-q4_k_m.gguf",
+    "description": "7,276 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:other",
+      "library:gguf",
+      "library:pytorch",
+      "task:text-generation",
+      "custom_tag:chat",
+      "custom_tag:gguf",
+      "deploy:swingdeploy"
+    ]
   },
   {
-    "name": "Qwen/CodeQwen1.5-7B-Chat-GGUF",
-    "repo_id": "Qwen/CodeQwen1.5-7B-Chat-GGUF",
-    "filename": "codeqwen-1_5-7b-chat-q4_k_m.gguf",
-    "description": "5,387 downloads on ModelScope",
-    "provider": "modelscope"
+    "name": "lefromage/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF",
+    "repo_id": "lefromage/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF",
+    "filename": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+    "description": "538 downloads on ModelScope",
+    "provider": "modelscope",
+    "tags": [
+      "license:apache-2.0",
+      "library:gguf",
+      "library:pytorch",
+      "custom_tag:llama-cpp",
+      "custom_tag:gguf-my-repo",
+      "custom_tag:gguf"
+    ]
   }
 ]
