@@ -7,6 +7,10 @@ who participates in good faith should be treated with dignity and respect,
 regardless of identity, background, experience, ability, language, beliefs,
 education, or economic and social circumstances.
 
+This is the community conduct guide. For development and review practices,
+see [CONTRIBUTING.md](CONTRIBUTING.md); for software vulnerabilities, follow
+[SECURITY.md](SECURITY.md).
+
 ## Encouraged Behaviors
 
 Community members are expected to:
@@ -14,6 +18,8 @@ Community members are expected to:
 - Engage honestly, patiently, and kindly.
 - Respect different viewpoints, experiences, and communication styles.
 - Give and receive constructive technical feedback without personal attacks.
+- Explain feedback clearly across languages and experience levels, and focus
+  criticism on the work and its observable behavior.
 - Keep discussions relevant to the project and its community.
 - Take responsibility for mistakes, correct them, and help repair harm.
 - Protect private information and honor clearly stated boundaries.
@@ -46,7 +52,8 @@ account, email address, event, or public statement.
 
 Report a possible violation privately by emailing the OMM maintainers at
 **omm.hippo@gmail.com** with the subject **[Code of Conduct]**. Include relevant
-links or context and identify any immediate safety or confidentiality concern.
+links, what happened, and when it happened, where available. Identify any
+immediate safety or confidentiality concern and a way to follow up with you.
 Do not open a public issue about a Code of Conduct report.
 
 Reports will be handled as confidentially as reasonably possible. A maintainer
