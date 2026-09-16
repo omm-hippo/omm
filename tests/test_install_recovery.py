@@ -112,7 +112,7 @@ def test_corrupt_record_is_preserved_but_never_used_as_proof(install_fixture):
     resolved, _, _, _ = install_fixture
     path = install_state._path(resolved.filename)
     path.parent.mkdir(parents=True)
-    path.write_text("not json")
+    path.write_text("not json", encoding="utf-8")
     cli._install_impl(resolved, no_upload=True)
     assert list(path.parent.glob("*.corrupt-*"))
     assert install_state.read_record(resolved.filename)["status"] == "complete"
@@ -123,7 +123,7 @@ def test_journal_never_persists_url_credentials(install_fixture):
     resolved = ResolvedModel(url="https://example.test/model.gguf?token=private", filename=resolved.filename,
                              repo_id=None, provider=None, expected_sha256=resolved.expected_sha256)
     cli._install_impl(resolved, no_upload=True)
-    raw = install_state._path(resolved.filename).read_text()
+    raw = install_state._path(resolved.filename).read_text(encoding="utf-8")
     assert "private" not in raw and "https://" not in raw
 
 
@@ -162,10 +162,10 @@ assert registry.load_registry()["model.gguf"]["sha256"] == digest
 assert install_state.read_record("model.gguf")["status"] == "complete"
 '''
     env = {**os.environ, "OMM_HOME": str(tmp_path / "process-home")}
-    crash = subprocess.run([sys.executable, "-c", source, "crash"], env=env, capture_output=True, text=True, timeout=20)
+    crash = subprocess.run([sys.executable, "-c", source, "crash"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     assert crash.returncode == 17, crash.stderr
     journal = next((tmp_path / "process-home" / "install-journal").glob("*.json"))
-    assert json.loads(journal.read_text())["status"] == "running"
-    resume = subprocess.run([sys.executable, "-c", source, "resume"], env=env, capture_output=True, text=True, timeout=20)
+    assert json.loads(journal.read_text(encoding="utf-8"))["status"] == "running"
+    resume = subprocess.run([sys.executable, "-c", source, "resume"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     assert resume.returncode == 0, resume.stderr
     assert "Resuming interrupted install" in resume.stdout
