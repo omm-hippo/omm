@@ -52,3 +52,30 @@ def print_scan(console: Console, *, info, budget, hub_storage_gb: float,
     for item in external:
         models.add_row(item.display_name, shorten_path(item.path), item.engine, "no")
     console.print(models)
+
+
+def print_engines(console: Console, engines: list[dict], *, diagnostics: bool = False) -> None:
+    view = table(title="Local AI runners", box=None)
+    for name in ("Engine", "Application", "Package / version", "Local API"):
+        view.add_column(name, style="value" if name != "Engine" else "heading", overflow="fold")
+    for engine in engines:
+        package = engine["package"]
+        package_label = (f"{package['manager']} / {package['version'] or 'unknown'}"
+                         if package else "Not identified")
+        api = engine["api_status"]
+        api_label = {"ready": "Ready", "not_checked": "Not checked",
+                     "diagnostics_unavailable": "Not supported",
+                     "server_unavailable": "Off or unreachable"}.get(api, api.replace("_", " "))
+        view.add_row(engine["label"], "Installed" if engine["installed"] else "Not detected",
+                     package_label, api_label)
+        if diagnostics and engine.get("package_error"):
+            console.print(engine["package_error"], markup=False)
+    console.print(view)
+    if diagnostics:
+        for engine in engines:
+            if not engine["installed"]:
+                console.print(f"{engine['label']}: install with `omm engine install {engine['key']}`.", markup=False)
+            elif engine["api_status"] not in {"ready", "not_checked", "diagnostics_unavailable"}:
+                console.print(f"{engine['label']}: enable its local API, then retry `omm verify MODEL --engine {engine['key']}`.", markup=False)
+            if not engine["package"]:
+                console.print(f"{engine['label']}: package changes need an identified manager; manual options: {engine['manual_url']}", markup=False)

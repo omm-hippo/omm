@@ -80,6 +80,7 @@ from omm import (
 from omm import contribute as contribute_mod
 from omm import install_state
 from omm.cli_views import print_scan, table as _table
+from omm.cli_help import BriefUsageError, UsageError, engine_read_only_args, option_requested
 from omm.atomic import locked
 from omm.model_export import export_model_file
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
@@ -218,6 +219,10 @@ _JSON_CAPABLE = {
     "doctor",
     "fit",
     "setting catalog-status",
+    "engine status",
+    "engine doctor",
+    "engine update",
+    "engine uninstall",
 }
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
@@ -232,6 +237,8 @@ _YES_CAPABLE = {
     "benchmark",
     "verify",
     "run",
+    "engine update",
+    "engine uninstall",
 }
 
 
@@ -400,6 +407,7 @@ Maintenance:
   omm scan
   omm doctor
   omm setup
+  omm engine status
   omm engine install
   omm upgrade [MODEL]
   omm setting
@@ -441,7 +449,20 @@ class _RootHelpGroup(typer.core.TyperGroup):
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         ctx.meta["omm_help_requested"] = _help_option_requested(args)
-        return super().parse_args(ctx, args)
+        ctx.meta["omm_json_requested"] = option_requested(args, "--json")
+        ctx.meta["omm_engine_read_only"] = engine_read_only_args(args)
+        try:
+            return super().parse_args(ctx, args)
+        except UsageError as error:
+            raise BriefUsageError(error, ctx) from error
+
+    def invoke(self, ctx: click.Context):
+        try:
+            return super().invoke(ctx)
+        except BriefUsageError:
+            raise
+        except UsageError as error:
+            raise BriefUsageError(error, ctx) from error
 
     def get_command(self, ctx: click.Context, cmd_name: str):
         cmd_name = _COMMAND_ALIASES.get(cmd_name, cmd_name)
@@ -477,7 +498,7 @@ watch_app = typer.Typer(
 setting_app.add_typer(watch_app)
 engine_app = typer.Typer(
     name="engine",
-    help="Install local AI runner programs (Ollama, LM Studio, etc.).",
+    help="Inspect, install, update, and remove local AI runner programs.",
     rich_markup_mode=None,
 )
 app.add_typer(engine_app)
@@ -696,8 +717,9 @@ def _root(
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
     side_effect_minimal_mode = (
-        ctx.invoked_subcommand in {"doctor", "help"}
+        ctx.invoked_subcommand in {"doctor", "help", "engine"}
         or bool(ctx.meta.get("omm_help_requested"))
+        or bool(ctx.meta.get("omm_engine_read_only"))
     )
     theme = (
         doctor_mod.read_theme_read_only()
@@ -1202,6 +1224,121 @@ def engine_install_cmd(
         return
     if not onboarding.install_selected_engines(console, [key]):
         raise typer.Exit(1)
+
+
+
+def _engine_keys(engine: str | None) -> list[str]:
+    if engine is not None:
+        engine = engine.strip().lower()
+        _validate_engine(engine, flag="engine")
+        return [engine]
+    return [spec.key for spec in linker.ENGINES]
+
+
+@engine_app.command(name="status")
+@global_flags
+def engine_status_cmd(
+    engine: str | None = typer.Argument(None, autocompletion=complete_engine_key),
+    api: bool = typer.Option(True, "--api/--no-api", help="Check local API reachability; never start a server."),
+) -> None:
+    """Show installation, package version, and local API state separately."""
+    from omm.engine_manager import inspect_engine
+    from omm.cli_views import print_engines
+
+    items = [inspect_engine(key, check_api=api) for key in _engine_keys(engine)]
+    if _global_opts().json:
+        _print_json(data=items)
+    else:
+        print_engines(console, items)
+
+
+@engine_app.command(name="doctor")
+@global_flags
+def engine_doctor_cmd(
+    engine: str | None = typer.Argument(None, autocompletion=complete_engine_key),
+) -> None:
+    """Read-only engine diagnostics and the next step for missing components."""
+    from omm.engine_manager import inspect_engine
+    from omm.cli_views import print_engines
+
+    items = [inspect_engine(key) for key in _engine_keys(engine)]
+    if _global_opts().json:
+        _print_json(data=items)
+    else:
+        print_engines(console, items, diagnostics=True)
+    if any(not item["installed"] for item in items):
+        raise typer.Exit(1)
+
+
+def _change_engine(engine: str, action: str, *, dry_run: bool) -> None:
+    from omm import engine_manager
+    import shlex
+
+    key = _engine_keys(engine)[0]
+    opts = _global_opts()
+    try:
+        plan = engine_manager.plan_action(key, action)
+    except engine_manager.EngineManagementError as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(1) from error
+    if dry_run:
+        if opts.json:
+            _print_json(data={**plan, "dry_run": True})
+        else:
+            console.print(shlex.join(plan["command"]), markup=False)
+            console.print("Preview only; no package changes were made.")
+        return
+    if not opts.json:
+        console.print(shlex.join(plan["command"]), markup=False)
+        console.print("OMM model files are kept. The package manager may restart the runner.")
+    if not opts.yes:
+        if opts.json or not _stdin_is_tty():
+            err_console.print("Use --dry-run to inspect the command or --yes to perform this package change.")
+            raise typer.Exit(1)
+        if not _ask_confirm(f"{action.capitalize()} {key} through {plan['package']['manager']}?"):
+            err_console.print("Cancelled.")
+            raise typer.Exit(0)
+    recent_output = []
+    def on_output(line: str) -> None:
+        recent_output.append(line)
+        del recent_output[:-20]
+        if not opts.quiet:
+            err_console.print(line, markup=False, highlight=False)
+    try:
+        result = engine_manager.execute_action(plan, on_output=on_output)
+    except (engine_manager.EngineManagementError, OSError, FileLockTimeout) as error:
+        if opts.quiet:
+            for line in recent_output:
+                err_console.print(line, markup=False, highlight=False)
+        err_console.print(str(error), markup=False)
+        err_console.print(f"Run `omm engine status {key}` before retrying.", markup=False)
+        raise typer.Exit(1) from error
+    if opts.json:
+        _print_json(data=result)
+    else:
+        console.print(f"{key}: {action} {result['status']} ({result['elapsed_seconds']:.1f}s).", markup=False)
+        if action == "uninstall" and result["installed"]:
+            err_console.print("The package was removed, but application files are still detected. Run `omm engine doctor`.")
+
+
+@engine_app.command(name="update")
+@global_flags
+def engine_update_cmd(
+    engine: str = typer.Argument(..., autocompletion=complete_engine_key),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the package command without executing it."),
+) -> None:
+    """Update one engine through its identified package manager."""
+    _change_engine(engine, "update", dry_run=dry_run)
+
+
+@engine_app.command(name="uninstall")
+@global_flags
+def engine_uninstall_cmd(
+    engine: str = typer.Argument(..., autocompletion=complete_engine_key),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the package command without executing it."),
+) -> None:
+    """Remove an engine package without deleting the OMM model hub."""
+    _change_engine(engine, "uninstall", dry_run=dry_run)
 
 
 def _refresh_data() -> None:
@@ -11113,6 +11250,10 @@ def main() -> None:
     # of git/pipx/ollama before any verification happens. Shared with trust so
     # there is one implementation; harmless on POSIX.
     trust._forbid_cwd_executable_lookup()
+    if engine_read_only_args(sys.argv[1:]):
+        # Diagnostics must not create a run log, usage batch, or crash queue.
+        app(prog_name="omm")
+        return
     runlog.start(sys.argv[1:])
     exit_code, outcome, exc_name = 0, "ok", None
     try:

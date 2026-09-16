@@ -130,7 +130,7 @@ irm https://omm.run/uninstall.ps1 | iex
 
 Download that script and run it with `-Purge` to remove the model hub and settings too.
 
-Runner note: on Windows x64 the checklist downloads the official AnythingLLM and Msty installers and runs them silently into `OMM_HOME\apps` (no winget package exists for either); on ARM Windows it prints their download page instead.
+Runner note: AnythingLLM and Msty currently require manual installation on Windows; the checklist prints guidance instead of guessing an installer or package ID.
 
 Detailed walkthrough: <https://omm.run/install/windows>
 
@@ -390,15 +390,18 @@ The first bare `omm` run on a fresh install (or `omm setup` any time after) show
 
 | Runner | Automated on | Manual elsewhere |
 |---|---|---|
-| Ollama | macOS, Linux, Windows | — |
-| LM Studio | macOS, Linux, Windows (headless `lms` CLI) | — |
+| Ollama | macOS (Homebrew), Windows (WinGet) | Linux |
+| LM Studio | macOS (Homebrew), Windows (WinGet) | Linux |
 | Jan | macOS (Homebrew), Windows (winget), Linux (Flatpak) | wherever that package manager isn't installed |
-| AnythingLLM | macOS (Homebrew), Windows x64 (official installer) | Linux, Windows ARM |
-| Msty | macOS (Homebrew), Windows x64 (official installer) | Linux, Windows ARM |
-| KoboldCpp | macOS (Apple Silicon), Linux (x86_64), Windows | Intel Mac, other architectures |
-| text-generation-webui | macOS (any arch), Linux/Windows (x86_64) | ARM Linux/Windows |
+| AnythingLLM | macOS (Homebrew) | Linux, Windows |
+| Msty | macOS (Homebrew) | Linux, Windows |
+| KoboldCpp | — | All platforms; automatic artifacts lack a pinned checksum |
+| text-generation-webui | — | All platforms; install manually from the official releases |
 
 Every currently-installed runner is also listed (marked as already installed, not selectable) rather than hidden, so the checklist always reflects what omm actually detects on the machine.
+
+See [engine management](docs/engine-management.md) for operation previews,
+package ownership checks, and verification limits.
 
 ### Storage location
 
@@ -421,6 +424,10 @@ Purge (`-Purge` on PowerShell, `--purge` on sh) removes only known omm-owned pat
 ```sh
 omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
 omm engine install [ENGINE]  # Install one supported local runner, or choose interactively
+omm engine status [ENGINE] [--json]  # Separate application, package version, and local API state
+omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
+omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
+omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm scan [--details] [--json]  # Memory, storage, runners, and models; --details adds OS/CPU/GPU
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
@@ -539,8 +546,9 @@ stdout a single structured document that is safe to pipe (for example,
 `omm list --json | jq .`). `benchmark --json` also writes a single JSON report to stdout; `--output` saves
 the same evidence as a file. Supported commands emit a structured error document
 when their command body fails before producing a result, and use exit status 130
-with `status: "cancelled"` when interrupted. Argument-parser errors still use
-stderr and exit status 2. Successful data shapes remain unchanged.
+with `status: "cancelled"` when interrupted. Argument-parser errors use a JSON
+error document when `--json` was requested, and stderr otherwise, with exit
+status 2. Successful data shapes remain unchanged.
 
 For commands that document `--yes`/`-y`, pass it to skip their confirmation
 prompts, or use the command-specific flag (`install --skip-unfit`, `install
