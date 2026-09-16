@@ -1,4 +1,5 @@
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from omm import cli, config
@@ -239,3 +240,45 @@ def test_help_all_indents_a_wrapped_summary_under_the_summary_column():
 
     assert lines[row + 1].strip(), "expected this summary to wrap at 80 columns"
     assert lines[row + 1].startswith(" " * summary_column)
+
+
+def test_help_flags_without_all_expands_the_curated_commands_only():
+    # Issue #337: `omm help --flags` used to print exactly what `omm help`
+    # prints. It must keep the curated (short) command list but expand
+    # each listed command's option list beneath its usage line.
+    plain = runner.invoke(cli.app, ["help"])
+    result = runner.invoke(cli.app, ["help", "--flags"])
+
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout != plain.stdout
+    assert "omm search TEXT" in result.stdout
+    assert "--skip-unfit" in result.stdout
+    assert "omm engine install" in result.stdout
+    assert "omm upgrade [MODEL]" in result.stdout
+    assert "Further help:" in result.stdout
+    # Still curated: commands only reachable through `--all` stay hidden.
+    assert "omm pin" not in result.stdout
+    assert "omm rollback" not in result.stdout
+    assert "omm setting theme" not in result.stdout
+
+
+def test_help_flags_is_shorter_than_help_all_flags():
+    curated = runner.invoke(cli.app, ["help", "--flags"])
+    full = runner.invoke(cli.app, ["help", "--all", "--flags"])
+
+    assert curated.exit_code == 0 and full.exit_code == 0
+    assert len(curated.stdout.splitlines()) < len(full.stdout.splitlines())
+
+
+def test_root_help_sections_name_real_commands():
+    # The curated sections are hand-written; a typo would silently drop
+    # that command's flags from `help --flags` and lie in `omm help`.
+    command = typer.main.get_command(cli.app)
+    for _title, entries in cli._ROOT_HELP_SECTIONS:
+        for entry in entries:
+            cmd = command
+            for part in entry.split():
+                if not part.islower():
+                    break
+                assert part in cmd.commands, f"unknown command in curated help: {entry}"
+                cmd = cmd.commands[part]
