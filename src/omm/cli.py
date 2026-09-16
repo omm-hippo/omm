@@ -130,6 +130,7 @@ from omm.hub import (
     fetch_repo_metadata,
     fetch_repo_param_count_b,
     model_filename_identity,
+    parse_model_ref,
     rank_quant_variants,
     remote_file_size,
     remote_file_sha256,
@@ -5856,7 +5857,10 @@ def install(
         resolved = _resolve_model_interactive(model_name)
     except ModelResolutionError as e:
         errors.print_cli_error(err_console, str(e), fix=e.fix)
-        _print_install_suggestions(model_name)
+        # A resolution that already identified concrete alternatives (the GGUF
+        # builds of a safetensors-only repo) beats a fuzzy catalog match.
+        if not _print_ref_suggestions(getattr(e, "suggestions", [])):
+            _print_install_suggestions(model_name)
         raise typer.Exit(1) from e
 
     listener = _EscListener()
@@ -6617,8 +6621,15 @@ def _info_not_installed(model_name: str, json_output: bool) -> None:
     try:
         resolved = _resolve_model_interactive(model_name)
     except ModelResolutionError as error:
-        _print_not_installed_error(model_name)
-        err_console.print(f"[muted]{escape(str(error))}[/muted]")
+        # When the failure already names a real remote repo (it exists, it
+        # just has no GGUF), "<ref> is not installed via omm" is the wrong
+        # headline - report what the reference actually resolved to.
+        if getattr(error, "repo_id", None):
+            errors.print_cli_error(err_console, str(error), fix=error.fix)
+            _print_ref_suggestions(getattr(error, "suggestions", []))
+        else:
+            _print_not_installed_error(model_name)
+            err_console.print(f"[muted]{escape(str(error))}[/muted]")
         raise typer.Exit(1) from error
 
     provider = resolved.provider or "huggingface"
@@ -7081,7 +7092,8 @@ def fit(
         try:
             resolved = _resolve_model_interactive(model_name)
         except ModelResolutionError as error:
-            err_console.print(f"[error]{error}[/error]")
+            errors.print_cli_error(err_console, str(error), fix=error.fix)
+            _print_ref_suggestions(getattr(error, "suggestions", []))
             raise typer.Exit(1) from error
         size_bytes = None
         if resolved.repo_id and resolved.provider:
@@ -8470,6 +8482,9 @@ def search(
     if skip_ms and provider == "modelscope":
         err_console.print("[error]--skip-ms conflicts with --provider modelscope.[/error]")
         raise typer.Exit(2)
+    # A pasted provider URL is a model name too - search for the repo it names
+    # rather than for the literal URL, which matches nothing anywhere.
+    query = parse_model_ref(query).search_text
     json_output = _global_opts().json
     config = load_config()
     pool = (
@@ -8597,6 +8612,19 @@ def search(
         console.print(
             "[muted]Install with: omm install <number>  (e.g. omm install 1)[/muted]"
         )
+
+
+def _print_ref_suggestions(refs: list[str]) -> bool:
+    """Print refs a failed resolution already knows about (e.g. the GGUF
+    builds of a safetensors-only repo) in the same "Did you mean" shape
+    `_print_install_suggestions` uses. False when there was nothing to show,
+    so the caller can fall back to a fuzzy catalog search."""
+    if not refs:
+        return False
+    err_console.print("[warning]Did you mean one of these?[/warning]")
+    for ref in refs:
+        err_console.print(f"  - {escape(ref)}")
+    return True
 
 
 def _print_install_suggestions(query: str) -> None:
