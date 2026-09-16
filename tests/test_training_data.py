@@ -985,17 +985,17 @@ def test_quality_gate_publishes_hybrid_artifact_after_pass(tmp_path, monkeypatch
         "synthetic_rows_from_rules",
         lambda: ([X[0]], [0.0]),
     )
-    monkeypatch.setattr(
-        train_model,
-        "compare_artifacts",
-        lambda *_args, **_kwargs: {
+    evaluated_trees = []
+    def passing_gate(candidate, *_args, **_kwargs):
+        evaluated_trees.append(json.loads(json.dumps(candidate["trees"])))
+        return {
             "passed": True,
             "failures": [],
             "candidate": {"selection_group_count": 3},
             "baseline": {"selection_group_count": 3},
             "thresholds": {"min_selection_groups": 3},
-        },
-    )
+        }
+    monkeypatch.setattr(train_model, "compare_artifacts", passing_gate)
     monkeypatch.setattr(
         train_model,
         "parse_args",
@@ -1020,8 +1020,12 @@ def test_quality_gate_publishes_hybrid_artifact_after_pass(tmp_path, monkeypatch
     assert artifact["training_mode"] == "hybrid_telemetry"
     assert artifact["bootstrap_method"] == train_model.BOOTSTRAP_METHOD
     assert artifact["real_row_count"] == len(X)
-    assert artifact["training_row_count"] == len(X) + 1
+    assert artifact["training_row_count"] == artifact["evaluation"]["training_rows"] + 1
     assert artifact["evaluation"]["passed"] is True
+    assert artifact["trees"] == evaluated_trees[0]
+    proof = artifact["training_provenance"]
+    assert proof["published_model_is_evaluated_candidate"] is True
+    assert set(proof["training_context_hashes"]).isdisjoint(proof["holdout_context_hashes"])
 
 
 def test_quality_gate_insufficient_selection_groups_republishes_baseline_unchanged(
