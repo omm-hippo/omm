@@ -79,7 +79,9 @@ from omm import (
     watch_service,
 )
 from omm import contribute as contribute_mod
+from omm.cli_views import print_scan, table as _table
 from omm.atomic import locked
+from omm.model_export import export_model_file
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
 from omm.config import MODEL_ARCHIVE_DIR, MODELS_DIR, OMM_HOME, load_config
 from omm.downloader import (
@@ -188,6 +190,7 @@ class GlobalOptions:
     see global_flags()."""
 
     json: bool = False
+    json_emitted: bool = False
     yes: bool = False
     quiet: bool = False
     no_color: bool = False
@@ -241,6 +244,29 @@ def _global_opts() -> GlobalOptions:
         return get_current_context().ensure_object(GlobalOptions)
     except RuntimeError:
         return GlobalOptions()
+
+
+def _print_json(*, data: object) -> None:
+    """Write one unstyled document; preserve existing successful payloads."""
+    from omm.json_output import write_document
+
+    write_document(data)
+    _global_opts().json_emitted = True
+
+
+def _json_command_failure(command: str, exit_code: int, *, cancelled: bool = False) -> None:
+    opts = _global_opts()
+    if opts.json and command in _JSON_CAPABLE and not opts.json_emitted:
+        _print_json(data={
+            "schema_version": 1,
+            "status": "cancelled" if cancelled else "error",
+            "error": {
+                "code": "cancelled" if cancelled else "command_failed",
+                "command": command,
+                "exit_code": exit_code,
+                "message": "Operation cancelled." if cancelled else "Command failed; see stderr for details.",
+            },
+        })
 
 
 def global_flags(func):
@@ -329,7 +355,15 @@ def global_flags(func):
             )
         opts.pending_telemetry_notice = 0
         opts.command_body_ran = True
-        return func(*args, **kwargs)
+        try:
+            return func(*args, **kwargs)
+        except typer.Exit as error:
+            if error.exit_code:
+                _json_command_failure(command_name, error.exit_code)
+            raise
+        except KeyboardInterrupt:
+            _json_command_failure(command_name, 130, cancelled=True)
+            raise typer.Exit(130) from None
 
     wrapper.__signature__ = original_sig.replace(parameters=new_params)
     return wrapper
@@ -418,15 +452,6 @@ class _RootHelpGroup(typer.core.TyperGroup):
         cmd_name = _COMMAND_ALIASES.get(cmd_name, cmd_name)
         return super().get_command(ctx, cmd_name)
 
-
-def _table(*args, **kwargs) -> Table:
-    """Every table omm prints, in the site's hierarchy: dim rules and
-    title, bold header row. Column styles stay per call site (labels are
-    `label`, values `value`, filenames `accent`)."""
-    kwargs.setdefault("border_style", "rule")
-    kwargs.setdefault("header_style", "heading")
-    kwargs.setdefault("title_style", "muted")
-    return Table(*args, **kwargs)
 
 
 app = typer.Typer(
@@ -952,7 +977,6 @@ def help_cmd(
     console.print(cmd_obj.get_help(sub_ctx), markup=False, highlight=False)
 
 
-
 def _install_spec() -> str:
     """Editable spec for the persistent local clone (SRC_DIR). Always adds
     the [watch] extra (watchdog + plyer, what `omm setting auto-import
@@ -1109,8 +1133,10 @@ def _hub_storage_bytes(reg: dict[str, Any]) -> int:
 
 @app.command()
 @global_flags
-def scan() -> None:
-    """Scan current PC hardware (RAM, VRAM, OS) and print a summary table."""
+def scan(
+    details: bool = typer.Option(False, "--details", help="Also show OS, CPU, and GPU identity."),
+) -> None:
+    """Summarize memory, model storage, and installed local AI runners."""
     opts = _global_opts()
     info = scan_hardware()
     installed = {spec.key: linker.is_engine_installed(spec.key) for spec in linker.ENGINES}
@@ -1121,7 +1147,7 @@ def scan() -> None:
     storage_saved_gb = load_config().get("storage_saved_bytes", 0) / (1024**3)
 
     if opts.json:
-        console.print_json(
+        _print_json(
             data={
                 "os": f"{info.os_name} {info.os_version}",
                 "cpu": info.cpu,
@@ -1158,63 +1184,15 @@ def scan() -> None:
         )
         return
 
-    table = _table(title="omm hardware scan")
-    table.add_column("Field", style="label")
-    table.add_column("Value", style="value")
-
-    table.add_row("OS", f"{info.os_name} {info.os_version}")
-    table.add_row("CPU", info.cpu)
-    table.add_row("RAM (total)", f"{info.ram_total_gb:.1f} GB")
-    table.add_row("RAM (available)", f"{info.ram_available_gb:.1f} GB")
-    budget = calculate_memory_budget(info)
-    table.add_row("Safe model budget now", f"{budget.model_budget_gb:.1f} GB")
-    table.add_row("Reserved for apps/OS", f"{budget.ram_safety_reserve_gb:.1f} GB+")
-    table.add_row("omm hub storage", f"{hub_storage_gb:.1f} GB")
-    table.add_row("Saved via omm import", f"{storage_saved_gb:.1f} GB")
-
-    if info.unified_memory:
-        table.add_row("Memory type", "Unified (Apple Silicon)")
-        table.add_row("GPU", info.gpu_name or "Unknown")
-    elif info.gpu_name:
-        table.add_row("GPU", info.gpu_name)
-        if info.vram_total_gb is not None:
-            table.add_row("VRAM (total)", f"{info.vram_total_gb:.1f} GB")
-        if info.vram_free_gb is not None:
-            table.add_row("VRAM (free)", f"{info.vram_free_gb:.1f} GB")
-        if info.vram_total_gb is None:
-            table.add_row("VRAM", "Shared or unavailable from the OS")
-    else:
-        table.add_row("GPU", "None detected")
-
-    console.print(table)
-
-    engine_table = _table(title="Local AI runners", box=None)
-    engine_table.add_column("Program", style="label")
-    engine_table.add_column("Status", style="success")
-    for spec in linker.ENGINES:
-        if installed[spec.key]:
-            engine_table.add_row(spec.label, "installed")
-    console.print()
-    console.print(engine_table)
+    print_scan(
+        console, info=info, budget=calculate_memory_budget(info),
+        hub_storage_gb=hub_storage_gb, storage_saved_gb=storage_saved_gb,
+        engine_labels=[spec.label for spec in linker.ENGINES if installed[spec.key]],
+        registry=reg, external=external, shorten_path=_shorten_home, details=details,
+    )
     note = _missing_engines_note(installed)
     if note and not opts.quiet:
         console.print(note, style="muted")
-
-    model_table = _table(title="Local AI models", box=None)
-    # Model names get the room first: a truncated `tinyllama-1.1b-cha…` is
-    # what the user has to type back, the path is only where it lives.
-    model_table.add_column("Model", style="accent", overflow="ellipsis", min_width=30)
-    model_table.add_column("Location", style="value", overflow="ellipsis")
-    model_table.add_column("Engine(s)", style="muted")
-    model_table.add_column("Managed by omm", style="muted", no_wrap=True)
-    for filename, entry in reg.items():
-        linked = entry.get("linked", {})
-        engines = [name for name, on in linked.items() if on]
-        model_table.add_row(filename, "(omm hub)", ", ".join(engines) or "-", "yes")
-    for item in external:
-        model_table.add_row(item.display_name, _shorten_home(item.path), item.engine, "no")
-    console.print()
-    console.print(model_table)
 
     if opts.quiet:
         return
@@ -1312,8 +1290,26 @@ def _refresh_data() -> None:
                 f"[{style}]Updated recommend-model.json "
                 f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/{style}]"
             )
+            if artifact.get("trees") and artifact.get("candidates"):
+                _refresh_recommendation_facts(artifact, scan_hardware())
         except (requests.RequestException, ValueError) as e:
             err_console.print(f"[error]Failed to fetch trained model from {model_url}: {e}[/error]")
+
+
+def _refresh_recommendation_facts(artifact: dict, info: object) -> None:
+    from omm import recommend_facts
+
+    if not _global_opts().json:
+        console.print("[muted]Refreshing model descriptions and file sizes (up to 32 repositories)...[/muted]")
+    try:
+        result = recommend_facts.refresh(artifact, info)
+    except OSError:
+        err_console.print("[warning]Could not save provider metadata; continuing with available catalog data.[/warning]")
+        return
+    if not _global_opts().json:
+        console.print(f"[muted]Updated provider facts for {result['fetched_repos']} repositories.[/muted]")
+    if result["error"]:
+        err_console.print(f"[warning]Provider metadata refresh incomplete ({result['error']}); cached facts remain available.[/warning]")
 
 
 _BARE_REPO_URL = REPO_URL.removeprefix("git+")
@@ -1589,7 +1585,11 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
                 opts = ctx.ensure_object(GlobalOptions)
 
                 def print_notice_unless_suppressed() -> None:
-                    if _update_notice_is_wanted(opts):
+                    if (
+                        _update_notice_is_wanted(opts)
+                        and _installed_commit() == installed
+                        and _channel_branch() == branch
+                    ):
                         err_console.print("[muted]Update available! Run: omm update[/muted]")
 
                 ctx.call_on_close(print_notice_unless_suppressed)
@@ -2936,7 +2936,7 @@ def doctor() -> None:
         command_path=doctor_mod.running_command_path(),
     )
     if _global_opts().json:
-        console.print_json(data=report.as_dict())
+        _print_json(data=report.as_dict())
     else:
         table = Table(title="omm doctor")
         table.add_column("Status", no_wrap=True)
@@ -3396,16 +3396,25 @@ def _select_recommended_model(
     ranked: list[tuple[dict, float | None]],
     refs: list[str],
     installations: list[recommend_status.InstallationStatus],
+    *,
+    profile: str | None = None,
+    eligible_count: int | None = None,
 ) -> str | None:
     import questionary
 
     recommend_ui.set_no_color(_global_opts().no_color)
     rows = recommend_ui.build_rows(ranked, refs, installations)
+    budget = recommend_ui._available_memory(info, profile)
     recommend_ui.print_screen(
         console,
         info,
         len(rows),
         show_caution=any(row.warning for row in rows),
+        profile=profile,
+        eligible_count=eligible_count,
+        exceeds_profile=budget is not None and any(
+            row.memory_gb is not None and row.memory_gb > budget for row in rows
+        ),
     )
     choices = [
         questionary.Choice(
@@ -3435,9 +3444,13 @@ def _print_recommend_json(
     refs: list[str],
     installations: list[recommend_status.InstallationStatus],
     profile: str,
+    *,
+    info: object = None,
+    eligible_count: int | None = None,
 ) -> None:
     rows = recommend_ui.build_rows(ranked, refs, installations)
-    console.print_json(
+    budget = recommend_ui._available_memory(info, profile)
+    _print_json(
         data=[
             {
                 "rank": index + 1,
@@ -3445,7 +3458,11 @@ def _print_recommend_json(
                 "name": row.display_name,
                 "predicted_tokens_per_second": row.speed,
                 "memory_required_gb": row.memory_gb,
+                "model_type": row.model_type,
+                "model_type_source": row.type_source,
                 "use_case": row.use_case,
+                "use_case_source": row.use_case_source,
+                "declared_features": list(row.features),
                 "description": row.description,
                 "warning": row.warning,
                 "installed": row.installation.installed,
@@ -3453,6 +3470,11 @@ def _print_recommend_json(
                 "installed_engines": list(row.installation.engines),
                 "installation_match": row.installation.match_kind,
                 "profile": profile,
+                "profile_budget_gb": budget,
+                "within_profile": (row.memory_gb <= budget if row.memory_gb is not None and budget is not None else None),
+                "eligible_package_count": eligible_count,
+                "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
+                "quantization": recommend_ui.quantization_label(row.candidate),
             }
             for index, row in enumerate(rows)
         ]
@@ -3541,6 +3563,7 @@ def recommend(
         help="How much of the machine to claim: dedicated, balanced, or minimal. "
         "Prompted for interactively when omitted; defaults to balanced under --yes/--json.",
     ),
+    refresh_metadata: bool = typer.Option(False, "--refresh-metadata", help="Refresh cached provider task metadata and exact file sizes before ranking."),
 ) -> None:
     """Suggest a model to install for this hardware.
 
@@ -3576,6 +3599,11 @@ def recommend(
     if changed and not _global_opts().quiet and not json_output:
         console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
     if artifact and artifact.get("candidates"):
+        from omm import recommend_facts
+
+        if refresh_metadata:
+            _refresh_recommendation_facts(artifact, info)
+        artifact = recommend_facts.apply(artifact)
         ranked = predictor.rank_candidates(artifact, info)
         usable = [
             (c, speed) for c, speed in ranked if speed >= predictor.MIN_USABLE_TOKENS_PER_SECOND
@@ -3586,7 +3614,7 @@ def recommend(
                 key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
                 reverse=True,
             )
-            viable = within_profile[:10]
+            viable = within_profile
         elif usable:
             # Nothing in the usable set clears the profile's RAM ceiling -
             # relax the profile rather than show nothing.
@@ -3599,11 +3627,15 @@ def recommend(
                 key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
                 reverse=True,
             )
-            viable = usable[:10]
+            viable = usable
         else:
             # Nothing clears the usable-speed floor (very weak hardware) - fall
             # back to the fastest candidates available rather than show nothing.
-            viable = [(c, speed) for c, speed in ranked if speed > 0][:10]
+            viable = [(c, speed) for c, speed in ranked if speed > 0]
+        from omm.recommend_selection import shortlist
+
+        eligible_count = len(viable)
+        viable = shortlist(viable)
         if not viable:
             err_console.print("[error]No model is predicted to run on this hardware.[/error]")
             raise typer.Exit(1)
@@ -3614,7 +3646,8 @@ def recommend(
         )
         session_cache.record_seen(refs)
         _present_recommendations(
-            info, viable, refs, installations, profile, json_output=json_output, auto_yes=auto_yes
+            info, viable, refs, installations, profile, json_output=json_output,
+            auto_yes=auto_yes, eligible_count=eligible_count,
         )
         return
 
@@ -3648,18 +3681,20 @@ def recommend(
     installations = recommend_status.detect_installation_statuses(matches)
     session_cache.record_seen(refs)
     _present_recommendations(
-        info, ranked_rules, refs, installations, profile, json_output=json_output, auto_yes=auto_yes
+        info, ranked_rules, refs, installations, profile, json_output=json_output,
+        auto_yes=auto_yes, eligible_count=len(matches),
     )
 
 
 def _present_recommendations(
-    info, ranked, refs, installations, profile, *, json_output: bool, auto_yes: bool
+    info, ranked, refs, installations, profile, *, json_output: bool, auto_yes: bool,
+    eligible_count: int | None = None,
 ) -> None:
     """Shared tail of `recommend` for the ML ranking and the static-rules
     fallback: dump JSON, or pick a model (the first uninstalled one under
     --yes, interactively otherwise) and hand it to `_finish_recommendation`."""
     if json_output:
-        _print_recommend_json(ranked, refs, installations, profile)
+        _print_recommend_json(ranked, refs, installations, profile, info=info, eligible_count=eligible_count)
         return
     if auto_yes:
         selected = _first_uninstalled_ref(refs, installations)
@@ -3667,7 +3702,9 @@ def _present_recommendations(
             console.print("[success]All recommended models are already installed.[/success]")
             return
     else:
-        selected = _select_recommended_model(info, ranked, refs, installations)
+        selected = _select_recommended_model(
+            info, ranked, refs, installations, profile=profile, eligible_count=eligible_count,
+        )
         if selected is None:
             err_console.print("[warning]Cancelled.[/warning]")
             raise typer.Exit(0)
@@ -3733,7 +3770,7 @@ def tune(
 
     profile = tuning.recommend_runtime_settings(scan_hardware(), candidate)
     if _global_opts().json:
-        console.print_json(
+        _print_json(
             data={
                 "model": candidate.get("filename") or candidate.get("name"),
                 "profile_name": profile.profile_name,
@@ -4330,6 +4367,7 @@ def _run_memory_guard(
     `_guard_lmstudio_load` - both engines follow the identical ask/block/
     observe policy semantics, differing only in how a resident is matched
     to the load target and how residents/unloads are performed."""
+    diagnostic_console = err_console if _global_opts().json else console
     latest_residents: tuple[memory_guard_mod.ResidentModel, ...] = ()
     target_preloaded = False
 
@@ -4390,7 +4428,7 @@ def _run_memory_guard(
         )
         return False, runtime, False
     if execution.unloaded:
-        console.print(
+        diagnostic_console.print(
             "[success]Memory Guard released and verified OMM-managed model(s): "
             + ", ".join(resident.model_id for resident in execution.unloaded)
             + ".[/success]"
@@ -6591,7 +6629,7 @@ def _info_not_installed(model_name: str, json_output: bool) -> None:
         metadata = fetch_repo_metadata(provider, resolved.repo_id)
 
     if json_output:
-        console.print_json(
+        _print_json(
             data={
                 "filename": resolved.filename,
                 "repo_id": resolved.repo_id,
@@ -6655,7 +6693,7 @@ def info(
     ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
 
     if json_output:
-        console.print_json(
+        _print_json(
             data={
                 "filename": filename,
                 "repo_id": entry.get("repo_id"),
@@ -7061,7 +7099,7 @@ def fit(
         size_gb = size_bytes / (1024**3)
         required_gb = predictor.estimate_required_memory_gb({"size_bytes": size_bytes}) or size_gb
         v = fit_ui.verdict(required_gb, budget)
-        console.print_json(
+        _print_json(
             data={
                 "model": label,
                 "size_gb": round(size_gb, 2),
@@ -7483,7 +7521,7 @@ def list_models(
         }
     if not reg:
         if json_output:
-            console.print_json(data=[])
+            _print_json(data=[])
         elif engine is not None and had_any_models:
             console.print(
                 f"No models linked into {_engine_label(engine)} yet. "
@@ -7505,7 +7543,7 @@ def list_models(
             }
             for idx, (filename, entry) in enumerate(reg.items(), start=1)
         ]
-        console.print_json(data=rows)
+        _print_json(data=rows)
         session_cache.record_results(list(reg.keys()))
         return
 
@@ -7781,7 +7819,7 @@ def configure_upload_usage(
                 else "Install id: (not generated - usage stats are off)"
             )
         console.print("\n[label]Next batch would send:[/label]")
-        console.print_json(data=usage.build_payload(create_client_id=opted_in))
+        _print_json(data=usage.build_payload(create_client_id=opted_in))
 
 
 @setting_app.command(name="memory-guard")
@@ -8554,7 +8592,7 @@ def search(
 
     session_cache.record_results(refs)
     if json_output:
-        console.print_json(data=rows)
+        _print_json(data=rows)
     elif refs:
         console.print(
             "[muted]Install with: omm install <number>  (e.g. omm install 1)[/muted]"
@@ -8841,120 +8879,16 @@ def export_model(
         )
 
     try:
-        exported = linker.export_file(source, destination, on_copy=report_copy, force=force)
+        exported = export_model_file(source, destination, filename, entry, on_copy=report_copy, force=force)
     except linker.LinkError as error:
         err_console.print(f"[error]{filename}: export failed: {error}[/error]")
         raise typer.Exit(1) from error
 
-    scan_import.write_manifest(exported, _export_manifest_fields(filename, entry, source))
     console.print(f"[success]Exported {filename} to {exported}.[/success]")
 
 
-def _export_manifest_fields(filename: str, entry: dict, source: Path) -> dict:
-    """Portable subset of a registry entry for the `omm export` sidecar -
-    only fields meaningful on a different machine. `linked`/`custom_links`/
-    `compatibility` are this machine's local state and don't travel."""
-    fields: dict = {"schema_version": 1, "filename": filename, "sha256": entry.get("sha256")}
-    for key in ("repo_id", "source", "version", "installed_at", "size_bytes"):
-        value = entry.get(key)
-        if value is not None:
-            fields[key] = value
-
-    from omm.gguf import read_gguf_metadata
-
-    try:
-        header = read_gguf_metadata(
-            source, {"general.architecture", "general.parameter_count"}
-        )
-    except (OSError, ValueError, struct.error):
-        header = {}
-    architecture = header.get("general.architecture")
-    if isinstance(architecture, str) and architecture:
-        fields["architecture"] = architecture
-    parameter_count = header.get("general.parameter_count")
-    if isinstance(parameter_count, int):
-        fields["parameter_count"] = parameter_count
-
-    return fields
 
 
-@app.command(name="export")
-@global_flags
-def export_model(
-    filename: str = typer.Argument(..., autocompletion=complete_remove_filename),
-    destination: Path = typer.Argument(..., help="Directory to place the exported file in."),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help="Reclaim a destination omm doesn't recognize as its own by "
-        "deleting it and exporting, instead of skipping it as a conflict.",
-    ),
-) -> None:
-    """Export a hub model to `destination` for deployment or backup: a hard
-    link when possible, otherwise a real copy. Never a symlink, so the
-    exported file keeps working after `omm uninstall` or on another
-    machine. Not tracked in the registry - uninstalling the source model
-    never touches an exported copy. Also writes a provenance/checksum
-    manifest sidecar next to it, so `omm import` on another machine
-    (including an air-gapped one) can restore the source repo, version, and
-    install date instead of treating the file as an anonymous import."""
-    filename, entry = _lookup_entry(_resolve_ref(filename), registry.load_registry())
-    if entry is None:
-        _print_not_installed_error(filename)
-        raise typer.Exit(1)
-    try:
-        source = _managed_model_path(filename)
-    except ModelResolutionError as error:
-        err_console.print(f"[error]{filename}: unsafe registry entry ({error}).[/error]")
-        raise typer.Exit(1) from error
-    if not source.exists():
-        err_console.print(f"[error]{filename}: hub file is missing.[/error]")
-        raise typer.Exit(1)
-
-    destination = destination.expanduser()
-
-    def report_copy(_source: Path, dest_path: Path, size_bytes: int) -> None:
-        console.print(
-            f"[muted]{size_bytes / 1024**3:.1f} GiB copied to {dest_path}; "
-            "a hard link wasn't possible (different volume).[/muted]"
-        )
-
-    try:
-        exported = linker.export_file(source, destination, on_copy=report_copy, force=force)
-    except linker.LinkError as error:
-        err_console.print(f"[error]{filename}: export failed: {error}[/error]")
-        raise typer.Exit(1) from error
-
-    scan_import.write_manifest(exported, _export_manifest_fields(filename, entry, source))
-    console.print(f"[success]Exported {filename} to {exported}.[/success]")
-
-
-def _export_manifest_fields(filename: str, entry: dict, source: Path) -> dict:
-    """Portable subset of a registry entry for the `omm export` sidecar -
-    only fields meaningful on a different machine. `linked`/`custom_links`/
-    `compatibility` are this machine's local state and don't travel."""
-    fields: dict = {"schema_version": 1, "filename": filename, "sha256": entry.get("sha256")}
-    for key in ("repo_id", "source", "version", "installed_at", "size_bytes"):
-        value = entry.get(key)
-        if value is not None:
-            fields[key] = value
-
-    from omm.gguf import read_gguf_metadata
-
-    try:
-        header = read_gguf_metadata(
-            source, {"general.architecture", "general.parameter_count"}
-        )
-    except (OSError, ValueError, struct.error):
-        header = {}
-    architecture = header.get("general.architecture")
-    if isinstance(architecture, str) and architecture:
-        fields["architecture"] = architecture
-    parameter_count = header.get("general.parameter_count")
-    if isinstance(parameter_count, int):
-        fields["parameter_count"] = parameter_count
-
-    return fields
 
 
 def _cleanup_incomplete_installs() -> int:
@@ -9437,7 +9371,7 @@ def benchmark_cmd(
                 _report_failure_telemetry(entry, report.get("environment", {}))
 
         if json_output:
-            console.print_json(data=report)
+            _print_json(data=report)
         else:
             console.print(
                 f"[bold]Summary:[/bold] {len(successes)} succeeded, "
@@ -9511,6 +9445,7 @@ def _report_telemetry(
     memory_estimate: contribute_memory.ContributionMemoryEstimate | None = None,
     host_cpu_load_percent: float | None = None,
 ) -> bool:
+    diagnostic_console = err_console if _global_opts().json else console
     if tokens_per_sec is None:
         # Not a real "it doesn't run" signal, so skip rather than polluting
         # the speed-regression training data. `failure_reason` (when known,
@@ -9520,13 +9455,13 @@ def _report_telemetry(
         # re-fixed without ever being the real cause.
         if failure_reason is None:
             telemetry.log_attempt("skipped_daemon_unreachable", filename)
-            console.print(
+            diagnostic_console.print(
                 f"[muted]Telemetry not sent - {_engine_label(engine)} daemon wasn't reachable "
                 "during benchmark.[/muted]"
             )
         else:
             telemetry.log_attempt(f"skipped_{failure_reason}", filename)
-            console.print(
+            diagnostic_console.print(
                 f"[muted]Telemetry not sent - benchmark failed ({failure_reason}).[/muted]"
             )
         return False
@@ -9547,7 +9482,7 @@ def _report_telemetry(
         # speed and must never become a legacy success row in the regression
         # dataset (including when two positive samples leave the median > 0).
         telemetry.log_attempt("skipped_no_timing_metrics", filename)
-        console.print(
+        diagnostic_console.print(
             "[muted]Telemetry not sent - benchmark produced no valid positive "
             "timing measurement.[/muted]"
         )
@@ -9624,7 +9559,7 @@ def _report_telemetry(
         active_parameter_count = min(active_parameter_count, parameter_count)
     if candidate["is_moe"] and active_parameter_count is None:
         telemetry.log_attempt("skipped_moe_active_parameters_unknown", filename)
-        console.print(
+        diagnostic_console.print(
             "[muted]Telemetry not sent - this MoE model's active parameter count "
             "could not be verified.[/muted]"
         )
@@ -9772,7 +9707,7 @@ def _report_telemetry(
     if not sent:
         reason = _telemetry_send_failure_text()
         if load_config().get("telemetry_send_policy") == "always":
-            console.print(
+            diagnostic_console.print(
                 f"[muted]Telemetry not sent: {reason}; queued for a later retry.[/muted]"
             )
         else:
@@ -9783,12 +9718,12 @@ def _report_telemetry(
                 if diagnostic.exists()
                 else "This one-time upload was not queued."
             )
-            console.print(f"[muted]Telemetry not sent: {reason}. {detail}[/muted]")
+            diagnostic_console.print(f"[muted]Telemetry not sent: {reason}. {detail}[/muted]")
         hint = _telemetry_rejection_hint_text()
         if hint is not None:
-            console.print(hint)
+            diagnostic_console.print(hint)
     elif not _global_opts().quiet:
-        console.print("[muted]Benchmark result uploaded.[/muted]")
+        diagnostic_console.print("[muted]Benchmark result uploaded.[/muted]")
     return sent
 
 
@@ -9800,6 +9735,7 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     rely on that absence to keep this out of the speed-regression dataset.
     See docs/telemetry-v7.md for the full contract.
     """
+    diagnostic_console = err_console if _global_opts().json else console
     outcome = model.get("outcome")
     reason = model.get("failure_reason")
     if outcome not in ("model_unfit", "transient_error", "performance_unfit") or not isinstance(reason, str):
@@ -9919,7 +9855,7 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     if not sent:
         failure = _telemetry_send_failure_text()
         if load_config().get("telemetry_send_policy") == "always":
-            console.print(
+            diagnostic_console.print(
                 f"[muted]Telemetry not sent for {tag}: {failure}; queued for a later retry.[/muted]"
             )
         else:
@@ -9930,14 +9866,14 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
                 if diagnostic.exists()
                 else "This one-time upload was not queued."
             )
-            console.print(
+            diagnostic_console.print(
                 f"[muted]Telemetry not sent for {tag}: {failure}. {detail}[/muted]"
             )
         hint = _telemetry_rejection_hint_text()
         if hint is not None:
-            console.print(hint)
+            diagnostic_console.print(hint)
     elif not _global_opts().quiet:
-        console.print(f"[muted]Reported {tag} as {outcome}.[/muted]")
+        diagnostic_console.print(f"[muted]Reported {tag} as {outcome}.[/muted]")
     return sent
 
 

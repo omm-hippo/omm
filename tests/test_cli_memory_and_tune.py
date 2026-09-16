@@ -83,7 +83,7 @@ def test_scan_quiet_suppresses_hints_but_keeps_the_tables(isolated_omm_home, mon
 
     assert result.exit_code == 0, result.stdout
     assert "Cleared stale link record" not in result.stdout
-    assert "omm hardware scan" in result.stdout.lower()
+    assert "omm resources" in result.stdout.lower()
 
 
 def test_scan_leaves_link_record_untouched_when_engine_still_installed(isolated_omm_home, monkeypatch):

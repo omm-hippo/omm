@@ -18,10 +18,12 @@ them with the latest [GitHub release](https://github.com/omm-hippo/omm/releases)
 ## Reporting a Vulnerability
 
 Do **not** open a public GitHub issue, discussion, or pull request for a
-suspected vulnerability. The repository does not currently enable GitHub's
-private vulnerability-reporting form.
+suspected vulnerability. Use GitHub's
+[private vulnerability-reporting form](https://github.com/omm-hippo/omm/security/advisories/new),
+which is enabled for this repository.
 
-Email **omm.hippo@gmail.com** with the subject **[Security]** and include:
+If you cannot use the form, email **omm.hippo@gmail.com** with the subject
+**[Security]**. In either channel, include:
 
 - A concise description and the potential impact.
 - The affected omm version or commit and installation method.
@@ -37,8 +39,12 @@ high-volume testing against public or quota-limited services.
 
 The maintainers aim to acknowledge a report within a few days, confirm the
 affected scope, prepare and verify a fix, and coordinate disclosure timing. If
-you are unsure whether a report is security-sensitive, use the private email
-path.
+you are unsure whether a report is security-sensitive, use either private
+reporting channel.
+
+For ordinary troubleshooting, see [README.md](README.md#troubleshooting).
+For harassment or other community concerns, use the separate
+[Code of Conduct process](CODE_OF_CONDUCT.md#reporting-an-issue).
 
 ## Scope
 

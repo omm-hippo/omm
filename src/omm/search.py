@@ -13,6 +13,7 @@ from omm import hub, predictor
 from omm.featurize import is_mmproj_filename, is_shard_filename
 from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES, read_bounded_json_response
 from omm.providers import modelscope
+from omm.recommend_metadata import catalog_metadata
 
 HF_SEARCH_API = "https://huggingface.co/api/models"
 
@@ -251,6 +252,7 @@ def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> lis
                 "filename": filename,
                 "description": "HuggingFace",
                 "provider": "huggingface",
+                **catalog_metadata(item),
             }
         )
     return results
@@ -324,6 +326,7 @@ def search_modelscope(query: str, limit: int = 20, timeout: float = 3.0) -> list
                 "filename": filename,
                 "description": f"{downloads_text} downloads on ModelScope",
                 "provider": "modelscope",
+                **catalog_metadata(item),
             }
         except Exception:  # noqa: BLE001 - a single malformed repo shouldn't kill the search
             return None
