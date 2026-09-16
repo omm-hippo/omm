@@ -487,6 +487,7 @@ omm verify <name> [--engine ollama|lmstudio] [--yes] [--keep-loaded]  # Prove lo
 omm benchmark <name>... [--output PATH]  # Local quality + speed evidence for selected installed models
 omm benchmark all [--output PATH]  # Benchmark every installed model in the selected runtime
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
+omm contribute --max-minutes 30 --max-download-gb 10 --max-models 3
 ```
 
 `omm verify` checks more than a link: it asks before starting a stopped local
@@ -584,6 +585,17 @@ usage error (bad flag or argument).
 `rm`, `ls`, and `up` are short aliases for `uninstall`, `list`, and `upgrade`.
 
 Set `OMM_HOME` to store everything (models, config, catalog history) under a different directory instead of `~/.omm` — useful when `$HOME`'s filesystem doesn't have room for GGUF models, e.g. `OMM_HOME=/mnt/data/omm omm contribute --yes`.
+
+`omm contribute` keeps models and partial downloads already on your computer;
+it removes only the temporary models created by that session. Choose an optional
+time, model-data download, or new-model count limit, or combine them as above.
+The download limit is in GiB and includes retries; metadata and HTTP/TLS overhead
+are excluded. A time limit requests cancellation and then allows safe cleanup
+to finish. Without these flags, the loop continues until Esc or candidate exhaustion.
+The startup notice explains what is sent and whether the configured collector is
+public. The final summary separates successful measurements, accepted uploads,
+failed sends saved for retry, and the files kept or removed. See
+[contribution sessions](docs/contribution-sessions.md).
 
 `omm contribute` performs a 10 GiB startup free-space preflight. Before each
 download it separately budgets the central GGUF, a worst-case full runner copy,

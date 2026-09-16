@@ -6,6 +6,11 @@ import pytest
 from omm import benchmark_history, cli, contribute_memory, registry
 
 
+@pytest.fixture(autouse=True)
+def no_real_native_model_listing(monkeypatch):
+    monkeypatch.setattr(cli, "_contribute_native_model_exists", lambda *args: False)
+
+
 class _FakeQueue:
     def __init__(self, candidates):
         self._candidates = list(candidates)
@@ -31,7 +36,7 @@ class _DeferredFakeQueue:
         self.marked_seen = []
 
     def next_candidate(self, refetch=None, fetch_siblings=None):
-        return None if self.deferred else self.candidate
+        return None if self.deferred or getattr(self, "finished", False) else self.candidate
 
     def defer(self, ref):
         self.deferred = True
@@ -107,6 +112,18 @@ def _seed_registry_entry(filename, sha256="deadbeef"):
     )
 
 
+def _delete_registered_model(filename, removed=None):
+    registry.remove_entry(filename)
+    if removed is not None:
+        removed.append(filename)
+    return True
+
+
+def _installed_outcome(**kwargs):
+    _seed_registry_entry(kwargs["filename"])
+    return cli.InstallOutcome(**kwargs)
+
+
 def test_stops_immediately_when_stop_event_already_set(isolated_omm_home, monkeypatch):
     queue = _FakeQueue([_candidate()])
     stop_event = threading.Event()
@@ -173,7 +190,7 @@ def test_keyboard_interrupt_uses_owned_cleanup_path(isolated_omm_home, monkeypat
     cleaned = []
     monkeypatch.setattr(
         cli,
-        "_cleanup_interrupted_install",
+        "_cleanup_contribution_model",
         lambda filename, downloaded_now=False: cleaned.append(filename),
     )
 
@@ -201,7 +218,7 @@ def test_keyboard_interrupt_before_download_starts_does_not_crash(isolated_omm_h
     cleaned = []
     monkeypatch.setattr(
         cli,
-        "_cleanup_interrupted_install",
+        "_cleanup_contribution_model",
         lambda filename, downloaded_now=False: cleaned.append(filename),
     )
 
@@ -322,12 +339,12 @@ def test_post_download_memory_block_budget_survives_safe_preflight(
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "_DEFERRED_MEMORY_RECHECK_SECONDS", 0.0)
     monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", lambda candidate, **kwargs: None)
-    _seed_registry_entry("model.gguf")
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
 
     calls = []
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         calls.append(1)
         if len(calls) > cli._MAX_CANDIDATE_MEMORY_DEFERRALS + 2:
             # Safety net against the pre-fix infinite loop: the failure
@@ -464,9 +481,9 @@ def test_successful_benchmark_records_history_and_deletes_model(isolated_omm_hom
     queue = _FakeQueue([c])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         stop_event.set()  # stop the loop after this one iteration
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -479,7 +496,7 @@ def test_successful_benchmark_records_history_and_deletes_model(isolated_omm_hom
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     removed = []
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn, removed))
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
@@ -503,7 +520,7 @@ def test_skipped_unfit_candidate_counted_and_not_deleted(isolated_omm_home, monk
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     removed = []
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn, removed))
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
@@ -543,9 +560,9 @@ def test_upload_failure_counts_as_not_uploaded_and_does_not_mark_seen(isolated_o
     queue = _FakeQueue([c])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         stop_event.set()
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -558,7 +575,7 @@ def test_upload_failure_counts_as_not_uploaded_and_does_not_mark_seen(isolated_o
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     removed = []
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn, removed))
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
@@ -573,9 +590,9 @@ def test_ollama_unreachable_mid_loop_counts_as_not_uploaded(isolated_omm_home, m
     queue = _FakeQueue([c])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         stop_event.set()
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -587,7 +604,7 @@ def test_ollama_unreachable_mid_loop_counts_as_not_uploaded(isolated_omm_home, m
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     removed = []
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn, removed))
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
@@ -609,11 +626,11 @@ def test_gives_up_on_candidate_that_repeatedly_fails_to_benchmark(isolated_omm_h
     queue = _FakeQueue([c, c, c])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("model.gguf")
 
     calls = []
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         calls.append(resolved.filename)
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -624,7 +641,7 @@ def test_gives_up_on_candidate_that_repeatedly_fails_to_benchmark(isolated_omm_h
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
@@ -647,9 +664,9 @@ def test_giving_up_on_candidate_reports_failure_telemetry_with_real_reason(
     queue = _FakeQueue([c, c])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         return cli.InstallOutcome(
             filename="model.gguf",
             repo_id="org/repo",
@@ -662,7 +679,7 @@ def test_giving_up_on_candidate_reports_failure_telemetry_with_real_reason(
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
     reported = []
     monkeypatch.setattr(
         cli, "_report_contribute_failure_telemetry", lambda outcome: reported.append(outcome)
@@ -715,7 +732,6 @@ def test_daemon_dies_mid_benchmark_retries_same_candidate_once(isolated_omm_home
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
-    _seed_registry_entry("model.gguf")
 
     reachable_calls = [True, False]
     monkeypatch.setattr(
@@ -730,6 +746,7 @@ def test_daemon_dies_mid_benchmark_retries_same_candidate_once(isolated_omm_home
     calls = []
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         calls.append(resolved.filename)
         if len(calls) == 1:
             return cli.InstallOutcome(
@@ -751,7 +768,7 @@ def test_daemon_dies_mid_benchmark_retries_same_candidate_once(isolated_omm_home
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     removed = []
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn, removed))
 
     daemon_ref = {"proc": None}
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None, daemon_ref=daemon_ref)
@@ -770,7 +787,6 @@ def test_daemon_retry_memory_deferral_uses_memory_bookkeeping(
     candidate = _candidate(filename="model.gguf")
     queue = _FakeQueue([candidate])
     stop_event = threading.Event()
-    _seed_registry_entry("model.gguf")
     reachable_calls = [True, False, True]
     monkeypatch.setattr(
         cli.benchmark,
@@ -781,6 +797,7 @@ def test_daemon_retry_memory_deferral_uses_memory_bookkeeping(
     calls = []
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         calls.append(1)
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -793,7 +810,7 @@ def test_daemon_retry_memory_deferral_uses_memory_bookkeeping(
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     removed = []
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn, removed))
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
@@ -811,7 +828,6 @@ def test_daemon_wont_restart_after_dying_mid_benchmark_gives_up_on_candidate(
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
-    _seed_registry_entry("model.gguf")
 
     reachable_calls = [True, False]
     monkeypatch.setattr(
@@ -822,6 +838,7 @@ def test_daemon_wont_restart_after_dying_mid_benchmark_gives_up_on_candidate(
     calls = []
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         calls.append(resolved.filename)
         stop_event.set()
         return cli.InstallOutcome(
@@ -834,7 +851,7 @@ def test_daemon_wont_restart_after_dying_mid_benchmark_gives_up_on_candidate(
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     removed = []
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn, removed))
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
@@ -851,7 +868,6 @@ def test_dead_daemon_is_restarted_before_next_candidate(isolated_omm_home, monke
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
-    _seed_registry_entry("model.gguf")
 
     reachable_calls = [False, True]
     monkeypatch.setattr(
@@ -864,6 +880,7 @@ def test_dead_daemon_is_restarted_before_next_candidate(isolated_omm_home, monke
     )
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         stop_event.set()
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -875,7 +892,7 @@ def test_dead_daemon_is_restarted_before_next_candidate(isolated_omm_home, monke
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
 
     daemon_ref = {"proc": None}
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None, daemon_ref=daemon_ref)
@@ -895,7 +912,6 @@ def test_daemon_restart_stops_the_handle_it_replaces(isolated_omm_home, monkeypa
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
-    _seed_registry_entry("model.gguf")
 
     reachable_calls = [False, True]
     monkeypatch.setattr(
@@ -908,6 +924,7 @@ def test_daemon_restart_stops_the_handle_it_replaces(isolated_omm_home, monkeypa
     monkeypatch.setattr(cli.benchmark, "stop_ollama_daemon", lambda proc: stopped.append(proc))
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         stop_event.set()
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -919,7 +936,7 @@ def test_daemon_restart_stops_the_handle_it_replaces(isolated_omm_home, monkeypa
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
 
     daemon_ref = {"proc": old_proc}
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None, daemon_ref=daemon_ref)
@@ -938,7 +955,6 @@ def test_daemon_restart_does_not_stop_lmstudio_handle(isolated_omm_home, monkeyp
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
-    _seed_registry_entry("model.gguf")
 
     reachable_calls = [False, True]
     monkeypatch.setattr(
@@ -949,6 +965,7 @@ def test_daemon_restart_does_not_stop_lmstudio_handle(isolated_omm_home, monkeyp
     monkeypatch.setattr(cli.linker, "stop_lmstudio_daemon", lambda: stopped.append(1))
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         stop_event.set()
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -960,7 +977,7 @@ def test_daemon_restart_does_not_stop_lmstudio_handle(isolated_omm_home, monkeyp
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
 
     daemon_ref = {"proc": True}
     cli._run_contribution_loop(
@@ -982,7 +999,6 @@ def test_dead_lmstudio_daemon_is_restarted_before_next_candidate(isolated_omm_ho
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
-    _seed_registry_entry("model.gguf")
 
     reachable_calls = [False, True]
     monkeypatch.setattr(
@@ -999,6 +1015,7 @@ def test_dead_lmstudio_daemon_is_restarted_before_next_candidate(isolated_omm_ho
     )
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         assert kwargs.get("benchmark_engine") == "lmstudio"
         assert kwargs.get("link_only_engine") == "lmstudio"
         stop_event.set()
@@ -1012,7 +1029,7 @@ def test_dead_lmstudio_daemon_is_restarted_before_next_candidate(isolated_omm_ho
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
 
     daemon_ref = {"proc": None}
     stats = cli._run_contribution_loop(
@@ -1034,7 +1051,6 @@ def test_dead_lmstudio_daemon_restart_updates_an_already_owned_handle(
     c = _candidate(filename="model.gguf")
     queue = _FakeQueue([c])
     stop_event = threading.Event()
-    _seed_registry_entry("model.gguf")
 
     reachable_calls = [False, True]
     monkeypatch.setattr(
@@ -1043,6 +1059,7 @@ def test_dead_lmstudio_daemon_restart_updates_an_already_owned_handle(
     monkeypatch.setattr(cli.linker, "start_lmstudio_daemon", lambda: True)
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         stop_event.set()
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -1054,7 +1071,7 @@ def test_dead_lmstudio_daemon_restart_updates_an_already_owned_handle(
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
 
     daemon_ref = {"proc": True}
     cli._run_contribution_loop(
@@ -1090,7 +1107,6 @@ def test_download_error_skips_candidate_and_continues(isolated_omm_home, monkeyp
     queue = _FakeQueue([c1, c2])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("good.gguf")
 
     calls = []
 
@@ -1099,6 +1115,7 @@ def test_download_error_skips_candidate_and_continues(isolated_omm_home, monkeyp
         if resolved.filename == "bad.gguf":
             raise cli.DownloadError("network broke")
         stop_event.set()
+        _seed_registry_entry("good.gguf")
         return cli.InstallOutcome(
             filename="good.gguf",
             repo_id="org/repo",
@@ -1109,7 +1126,7 @@ def test_download_error_skips_candidate_and_continues(isolated_omm_home, monkeyp
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
@@ -1122,7 +1139,6 @@ def test_contribution_stopped_cleans_up_and_breaks(isolated_omm_home, monkeypatc
     queue = _FakeQueue([c, _candidate(filename="never-reached.gguf")])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
         # downloaded_now=True: this candidate's bytes were actually fetched
@@ -1132,6 +1148,7 @@ def test_contribution_stopped_cleans_up_and_breaks(isolated_omm_home, monkeypatc
         # audit #1 fix) must NOT reach _remove_one - see
         # test_keyboard_interrupt_uses_owned_cleanup_path and
         # `_cleanup_interrupted_install`'s docstring.
+        _seed_registry_entry("model.gguf")
         raise cli.InstallInterrupted("model.gguf", downloaded_now=True)
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
@@ -1150,7 +1167,8 @@ def test_contribution_stopped_cleans_up_and_breaks(isolated_omm_home, monkeypatc
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
-    assert events == [("unload", "model"), ("remove", "model.gguf")]
+    # _remove_one performs the engine-specific unload before its file removal.
+    assert events == [("remove", "model.gguf")]
     assert stats.benchmarked == []
 
 
@@ -1197,7 +1215,7 @@ def test_skipped_low_disk_candidate_counted_and_not_deleted(isolated_omm_home, m
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
     removed = []
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: removed.append(fn))
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn, removed))
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
 
@@ -1236,11 +1254,11 @@ def test_memory_cancelled_candidate_is_not_downloaded_again_in_the_same_run(
     queue = _FakeQueue([c, c, c])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("model.gguf")
 
     calls = []
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         calls.append(resolved.filename)
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -1253,7 +1271,7 @@ def test_memory_cancelled_candidate_is_not_downloaded_again_in_the_same_run(
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
     monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
@@ -1271,11 +1289,10 @@ def test_memory_cancelled_candidate_is_recorded_for_the_next_run(
     queue = _FakeQueue([c])
     stop_event = threading.Event()
     monkeypatch.setattr(cli, "_engine_daemon_reachable", lambda engine: True)
-    _seed_registry_entry("model.gguf")
     monkeypatch.setattr(
         cli,
         "_install_impl",
-        lambda resolved, **kwargs: cli.InstallOutcome(
+        lambda resolved, **kwargs: _installed_outcome(
             filename="model.gguf",
             repo_id="org/repo",
             linked={"lmstudio": False, "ollama": True},
@@ -1285,7 +1302,7 @@ def test_memory_cancelled_candidate_is_recorded_for_the_next_run(
             benchmark_engine="lmstudio",
         ),
     )
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
     monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
 
     cli._run_contribution_loop(queue, stop_event, refetch=None, engine="lmstudio")
@@ -1305,11 +1322,10 @@ def test_second_run_cooldown_follows_two_cancelled_downloads(isolated_omm_home, 
     cross-run cooldown exists for - one loop pass per session, exactly as
     the within-run rule enforces."""
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("model.gguf")
     monkeypatch.setattr(
         cli,
         "_install_impl",
-        lambda resolved, **kwargs: cli.InstallOutcome(
+        lambda resolved, **kwargs: _installed_outcome(
             filename="model.gguf",
             repo_id="org/repo",
             linked={"lmstudio": False, "ollama": True},
@@ -1318,7 +1334,7 @@ def test_second_run_cooldown_follows_two_cancelled_downloads(isolated_omm_home, 
             failure_reason="memory_pressure_cancelled",
         ),
     )
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
     monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
 
     for _ in range(2):
@@ -1337,11 +1353,11 @@ def test_transient_benchmark_failure_still_gets_its_second_chance(isolated_omm_h
     queue = _FakeQueue([c, c, c])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("model.gguf")
 
     calls = []
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         calls.append(resolved.filename)
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -1353,7 +1369,7 @@ def test_transient_benchmark_failure_still_gets_its_second_chance(isolated_omm_h
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
     monkeypatch.setattr(cli, "_report_contribute_failure_telemetry", lambda outcome: None)
 
     stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
@@ -1374,9 +1390,9 @@ def test_successful_benchmark_clears_an_earlier_cancelled_attempt(isolated_omm_h
     queue = _FakeQueue([_candidate(filename="model.gguf")])
     stop_event = threading.Event()
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
-    _seed_registry_entry("model.gguf")
 
     def fake_install_impl(resolved, **kwargs):
+        _seed_registry_entry("model.gguf")
         stop_event.set()
         return cli.InstallOutcome(
             filename="model.gguf",
@@ -1388,7 +1404,7 @@ def test_successful_benchmark_clears_an_earlier_cancelled_attempt(isolated_omm_h
         )
 
     monkeypatch.setattr(cli, "_install_impl", fake_install_impl)
-    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: None)
+    monkeypatch.setattr(cli, "_remove_one", lambda fn, entry: _delete_registered_model(fn))
 
     cli._run_contribution_loop(queue, stop_event, refetch=None)
 

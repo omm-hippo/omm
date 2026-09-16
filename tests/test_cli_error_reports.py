@@ -306,15 +306,14 @@ def _run_loop_with_unrestartable_daemon(monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: reachable.pop(0))
     monkeypatch.setattr(cli.benchmark, "start_ollama_daemon", lambda: None)
     monkeypatch.setattr(cli.benchmark, "last_daemon_start_error", lambda: "port 11434 in use")
+    monkeypatch.setattr(cli, "_contribute_native_model_exists", lambda *args: False)
     monkeypatch.setattr(cli, "_remove_one", lambda filename, entry: None)
-    registry.upsert_entry(
-        "model.gguf",
-        sha256="deadbeef",
-        version="deadbee",
-        linked={"lmstudio": False, "ollama": True},
-    )
 
     def fake_install_impl(resolved, **kwargs):
+        registry.upsert_entry(
+            "model.gguf", sha256="deadbeef", version="deadbee",
+            linked={"lmstudio": False, "ollama": True},
+        )
         stop_event.set()
         return cli.InstallOutcome(
             filename="model.gguf",

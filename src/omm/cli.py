@@ -19,7 +19,7 @@ import sys
 import sysconfig
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -4399,6 +4399,8 @@ class InstallOutcome:
     compatibility_status: str | None = None
     runtime_load_declined: bool = False
     benchmark_engine: str | None = None
+    upload_status: str | None = None
+    upload_queued: bool = False
 
 
 @dataclass(frozen=True)
@@ -4511,7 +4513,8 @@ def _background_cpu_load_is_high() -> bool:
 
 
 def _maybe_auto_calibrate(
-    filename: str, repo_id: str | None, dest: Path, tokens_per_sec: float
+    filename: str, repo_id: str | None, dest: Path, tokens_per_sec: float,
+    *, engine: str = "ollama",
 ) -> None:
     """Best-effort local calibration right after a successful benchmark.
     Silent no-op if there's no cached model to compare against - this must
@@ -4530,7 +4533,7 @@ def _maybe_auto_calibrate(
             artifact["trees"],
             hardware,
             candidate,
-            engine="ollama",
+            engine=engine,
             apply_calibration=False,
         )
     except (ValueError, KeyError, TypeError, IndexError):
@@ -4542,7 +4545,7 @@ def _maybe_auto_calibrate(
             hardware,
             measured_tokens_per_sec=tokens_per_sec,
             predicted_tokens_per_sec=predicted,
-            engine="ollama",
+            engine=engine,
         )
     except OSError:
         return
@@ -5400,6 +5403,7 @@ def _install_impl(
     a fresh one."""
     opts = _global_opts()
     operation = install_state.current()
+    telemetry.reset_send_status()
     if operation is not None and operation.resumed and not opts.quiet:
         console.print("Resuming interrupted install: rechecking the file and engine links.")
     url, filename, repo_id = resolved.url, resolved.filename, resolved.repo_id
@@ -6019,7 +6023,7 @@ def _install_impl(
                 and contribute_memory.speed_mad_ratio(speed_samples) <= 0.15
             )
             if stable_for_calibration and not host_cpu_busy:
-                _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec)
+                _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec, engine=benchmark_engine)
             elif not stable_for_calibration:
                 console.print(
                     "[muted]Local calibration not updated because this measurement "
@@ -6091,6 +6095,7 @@ def _install_impl(
     elif not runtime_load_declined and selected_runtime is None and not linked["ollama"]:
         telemetry.log_attempt("not_attempted_no_ollama_link", filename)
 
+    send_status = telemetry.last_send_status()
     return InstallOutcome(
         filename, repo_id, linked, ollama_tag, tokens_per_sec, telemetry_sent, sha256=sha256,
         failure_reason=(
@@ -6102,6 +6107,8 @@ def _install_impl(
         compatibility_status=compatibility_status,
         runtime_load_declined=runtime_load_declined,
         benchmark_engine=benchmark_engine if (run_ollama_benchmark or run_lmstudio_benchmark) else None,
+        upload_status=send_status.outcome if send_status else None,
+        upload_queued=bool(send_status and send_status.queued),
     )
 
 
@@ -6366,6 +6373,22 @@ class _PendingOllamaUnlinks:
 
 
 def _remove_one(
+    filename: str,
+    entry: dict,
+    *,
+    ollama_tag: str | None = None,
+    pending_ollama_unlinks: "_PendingOllamaUnlinks | None" = None,
+) -> bool:
+    try:
+        with install_state.cleanup_guard(filename):
+            return _remove_one_impl(filename, entry, ollama_tag=ollama_tag,
+                                    pending_ollama_unlinks=pending_ollama_unlinks)
+    except FileLockTimeout:
+        err_console.print(f"[warning]{filename} is in use by another model operation; kept it unchanged.[/warning]")
+        return False
+
+
+def _remove_one_impl(
     filename: str,
     entry: dict,
     *,
@@ -10127,10 +10150,13 @@ def _report_telemetry(
     sent = telemetry.send_event(event, force=True)
     if not sent:
         reason = _telemetry_send_failure_text()
-        if load_config().get("telemetry_send_policy") == "always":
+        status = telemetry.last_send_status()
+        if status is not None and status.queued:
             diagnostic_console.print(
                 f"[muted]Telemetry not sent: {reason}; queued for a later retry.[/muted]"
             )
+        elif load_config().get("telemetry_send_policy") == "always":
+            diagnostic_console.print(f"[warning]Telemetry not sent: {reason}; a retry copy could not be saved.[/warning]")
         else:
             diagnostic = telemetry.last_failed_path()
             detail = (
@@ -10275,10 +10301,13 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     sent = telemetry.send_event(event, force=True)
     if not sent:
         failure = _telemetry_send_failure_text()
-        if load_config().get("telemetry_send_policy") == "always":
+        status = telemetry.last_send_status()
+        if status is not None and status.queued:
             diagnostic_console.print(
                 f"[muted]Telemetry not sent for {tag}: {failure}; queued for a later retry.[/muted]"
             )
+        elif load_config().get("telemetry_send_policy") == "always":
+            diagnostic_console.print(f"[warning]Telemetry not sent for {tag}: {failure}; a retry copy could not be saved.[/warning]")
         else:
             diagnostic = telemetry.last_failed_path()
             detail = (
@@ -10402,6 +10431,16 @@ class _ContributionStats:
     given_up_on: int = 0
     machine_failures: int = 0
     exhausted: bool = False
+    preserved_models: tuple[str, ...] = ()
+    removed_models: tuple[str, ...] = ()
+    cleanup_failed_models: tuple[str, ...] = ()
+    attempted_models: int = 0
+    measured_attempts: int = 0
+    downloaded_bytes: int = 0
+    queued_uploads: int = 0
+    skipped_download_limit: int = 0
+    stop_reason: str = "completed"
+    failure_reasons: dict[str, int] = field(default_factory=dict)
 
 
 _MAX_CONSECUTIVE_DAEMON_FAILURES = 3
@@ -10826,9 +10865,60 @@ def _run_contribution_loop(
     daemon_ref: dict | None = None,
     fetch_siblings=None,
     engine: str = "ollama",
+    limits=None,
 ) -> _ContributionStats:
-    opts = _global_opts()
+    from omm.contribute_session import ContributionSession
+
+    from omm.downloader import download_budget_scope
+
+    session = ContributionSession(_cleanup_contribution_model, limits=limits, stop_event=stop_event)
     stats = _ContributionStats(benchmarked=[])
+    try:
+        with download_budget_scope(session.download_budget):
+            return _run_contribution_loop_impl(
+                queue, stop_event, refetch, quality_pack, daemon_ref,
+                fetch_siblings, engine, session, stats,
+            )
+    finally:
+        try:
+            session.close()
+        finally:
+            stats.preserved_models = tuple(sorted(session.preserved))
+            stats.removed_models = tuple(sorted(session.removed))
+            stats.cleanup_failed_models = tuple(sorted(session.cleanup_failed))
+            stats.attempted_models = len(session.attempted)
+            stats.downloaded_bytes = session.download_budget.used
+            stats.stop_reason = session.stop_reason or (
+                "user_stop" if stop_event.is_set() else "download_limit" if stats.skipped_download_limit else
+                "no_new_models" if session.preserved else "completed"
+            )
+
+
+def _cleanup_contribution_model(filename: str) -> bool | None:
+    """Called only while this session holds the lease for a new model."""
+    name, entry = _lookup_entry(filename, registry.load_registry())
+    if entry is not None:
+        return _remove_one(name, entry)
+    path = _managed_model_path(filename)
+    if not path.exists() and not list(path.parent.glob(path.name + ".part*")):
+        return None
+    _cleanup_incomplete_install(filename)
+    return not path.exists() and not list(path.parent.glob(path.name + ".part*"))
+
+
+def _contribute_native_model_exists(filename: str, repo_id: str, engine: str) -> bool:
+    """A native model can predate OMM's hub and must not become temporary."""
+    reference = _compatibility_model_ref(filename, {"repo_id": repo_id}, engine)
+    return find_runtime_model(_compatibility_adapter(engine).list_models(), reference) is not None
+
+
+def _run_contribution_loop_impl(
+    queue, stop_event, refetch, quality_pack, daemon_ref, fetch_siblings,
+    engine, session, stats,
+) -> _ContributionStats:
+    from omm.downloader import DownloadBudgetSkipped
+
+    opts = _global_opts()
     consecutive_daemon_failures = 0
     benchmark_failure_counts: dict[str, int] = {}
     deferred: dict[str, _DeferredContribution] = {}
@@ -10836,6 +10926,9 @@ def _run_contribution_loop(
     gpu_state: dict = {"force_cpu": False}
     engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
     while not stop_event.is_set():
+        session.release()
+        if session.check_limits():
+            break
         if not _engine_daemon_reachable(engine):
             err_console.print(
                 f"[warning]{engine_label} daemon isn't reachable - it likely crashed mid-session. "
@@ -10850,6 +10943,7 @@ def _run_contribution_loop(
                         f"{consecutive_daemon_failures} attempts - stopping "
                         "omm contribute instead of looping unattended.[/error]"
                     )
+                    session.stop("engine_unavailable")
                     break
                 time.sleep(_DAEMON_RESTART_BACKOFF_SECONDS)
                 continue
@@ -10898,7 +10992,9 @@ def _run_contribution_loop(
                     )
                 else:
                     console.print("[muted]No more candidates available for this hardware.[/muted]")
-            stats.exhausted = not deferred
+            stats.exhausted = not deferred and not session.preserved
+            if deferred:
+                session.stop_reason = "memory_unavailable"
             break
 
         display_name = candidate.get("name", candidate["filename"])
@@ -10973,6 +11069,27 @@ def _run_contribution_loop(
             provider = validate_provider(candidate.get("provider") or "huggingface")
             repo_id = validate_repo_id(candidate["repo_id"])
             filename = validate_model_filename(candidate["filename"])
+            try:
+                claimed = session.claim(filename, _managed_model_path(filename))
+            except FileLockTimeout:
+                session.preserved.add(filename)
+                queue.mark_seen(ref_str)
+                err_console.print(f"[warning]Keeping {filename}: another model operation is using it.[/warning]")
+                continue
+            if not claimed:
+                queue.mark_seen(ref_str)
+                if not opts.quiet:
+                    console.print(f"[muted]Keeping {filename}: it was already present before this contribution.[/muted]")
+                continue
+            if _contribute_native_model_exists(filename, repo_id, engine):
+                session.preserved.add(filename)
+                session.release()
+                queue.mark_seen(ref_str)
+                if not opts.quiet:
+                    console.print(f"[muted]Keeping {filename}: it is already installed in {engine_label}.[/muted]")
+                continue
+            if not session.begin_model(ref_str):
+                break
             resolved = ResolvedModel(
                 url=download_url(provider, repo_id, filename),
                 filename=filename,
@@ -10997,7 +11114,7 @@ def _run_contribution_loop(
                 downloaded_state=download_state,
             )
         except InstallInterrupted as e:
-            _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
+            session.clean()
             break
         except KeyboardInterrupt:
             # On Windows Ctrl+C is a console control event, not the Esc
@@ -11008,11 +11125,16 @@ def _run_contribution_loop(
             # but only actually remove anything if this call downloaded it.
             stop_event.set()
             if filename is not None:
-                _cleanup_interrupted_install(
-                    filename, downloaded_now=download_state["downloaded_now"]
-                )
+                session.clean()
             break
-        except (DownloadError, ModelResolutionError, linker.LinkError) as e:
+        except DownloadBudgetSkipped:
+            stats.skipped_download_limit += 1
+            queue.mark_seen(ref_str)
+            err_console.print(f"[warning]Skipped {candidate['filename']}: it exceeds the remaining download allowance.[/warning]")
+            continue
+        except (DownloadError, ModelResolutionError, linker.LinkError, RuntimeAdapterError) as e:
+            reason = type(e).__name__
+            stats.failure_reasons[reason] = stats.failure_reasons.get(reason, 0) + 1
             err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
             continue
 
@@ -11080,27 +11202,36 @@ def _run_contribution_loop(
                         downloaded_state=download_state,
                     )
                 except InstallInterrupted as e:
-                    _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
+                    session.clean()
                     break
                 except KeyboardInterrupt:
                     stop_event.set()
                     if filename is not None:
-                        _cleanup_interrupted_install(
-                            filename, downloaded_now=download_state["downloaded_now"]
-                        )
+                        session.clean()
                     break
+                except DownloadBudgetSkipped:
+                    stats.skipped_download_limit += 1
+                    queue.mark_seen(ref_str)
+                    continue
                 except (DownloadError, linker.LinkError) as e:
+                    reason = type(e).__name__
+                    stats.failure_reasons[reason] = stats.failure_reasons.get(reason, 0) + 1
                     err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
                     continue
+
+        if outcome.tokens_per_sec is not None:
+            stats.measured_attempts += 1
+        if outcome.upload_queued:
+            stats.queued_uploads += 1
+        if outcome.failure_reason or (outcome.tokens_per_sec is not None and not outcome.telemetry_sent):
+            reason = outcome.failure_reason or outcome.upload_status or "not_uploaded"
+            stats.failure_reasons[reason] = stats.failure_reasons.get(reason, 0) + 1
 
         if outcome.failure_reason in {
             "memory_allocation_blocked",
             "memory_allocation_deferred",
         }:
-            reg = registry.load_registry()
-            found_name, entry = _lookup_entry(outcome.filename, reg)
-            if entry:
-                _remove_one(found_name, entry)
+            session.clean()
             item = deferred.setdefault(ref_str, _DeferredContribution(candidate))
             post_download_memory_failures[ref_str] = (
                 post_download_memory_failures.get(ref_str, 0) + 1
@@ -11156,10 +11287,7 @@ def _run_contribution_loop(
             queue.mark_seen(ref_str)
             continue
 
-        reg = registry.load_registry()
-        fn, entry = _lookup_entry(outcome.filename, reg)
-        if entry:
-            _remove_one(fn, entry)
+        session.clean()
 
         # A completed attempt has just unloaded and deleted its model. Memory
         # conditions may therefore have improved; let bounded deferred items
@@ -11243,14 +11371,51 @@ def _print_contribution_summary(
     console.print("=" * 70)
     console.print("[bold]omm contribute: session summary[/bold]")
     console.print(f"Duration: {minutes}m {seconds}s")
+    reason_text = {
+        "time_limit": "your time limit was reached (cleanup may take a little longer)",
+        "download_limit": "the download allowance was reached or remaining models would exceed it",
+        "model_limit": "your model-count limit was reached",
+        "user_stop": "you stopped the session",
+        "no_new_models": "no new models remained; your existing models were kept",
+        "completed": "no more eligible candidates remained",
+        "engine_unavailable": "the engine could not be restarted",
+        "memory_unavailable": "remaining models still needed more free memory",
+    }
+    console.print(f"Stopped: {reason_text.get(stats.stop_reason, stats.stop_reason)}")
+    console.print(f"New models attempted: {stats.attempted_models}")
+    console.print(f"Measurements completed: {stats.measured_attempts}")
+    console.print(f"Model data downloaded: {stats.downloaded_bytes / 1024**3:.3f} GiB (including retries)")
     console.print(f"Models benchmarked+uploaded: {len(stats.benchmarked)}")
+    console.print("Upload counts reflect the collector's response; they do not mean the result was used for training.")
     for name, tokens_per_sec in stats.benchmarked:
         console.print(f"  - {name:<40} {tokens_per_sec:.1f} tok/s")
     console.print(f"Skipped (predicted not to fit this hardware): {stats.skipped_unfit}")
     console.print(f"Skipped (not enough disk space): {stats.skipped_low_disk}")
     console.print(f"Deferred before download (live memory pressure): {stats.deferred_low_memory}")
     console.print(f"Still blocked after bounded memory retries: {stats.skipped_low_memory}")
-    console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
+    console.print(f"Attempts without an accepted speed-result upload: {stats.attempted_not_uploaded}")
+    console.print(f"Failed sends saved locally for an automatic retry: {stats.queued_uploads}")
+    console.print(f"Skipped (download allowance): {stats.skipped_download_limit}")
+    for reason, count in sorted(stats.failure_reasons.items()):
+        label = {
+            "DownloadError": "Download failed", "ModelResolutionError": "Model source could not be resolved",
+            "LinkError": "Engine linking failed", "RuntimeAdapterError": "Engine status could not be checked",
+            "generation_timeout": "The model did not respond in time",
+            "memory_pressure_cancelled": "Stopped because memory became scarce",
+            "memory_allocation_blocked": "Not enough memory to load the model",
+            "memory_allocation_deferred": "Waiting for more free memory",
+            "send_failed_network": "Could not reach the result collector",
+            "not_uploaded": "A measured result was not accepted by the collector",
+        }.get(reason, reason.replace("_", " "))
+        console.print(f"  {label}: {count}", markup=False)
+    for label, names in (
+        ("Existing models kept", stats.preserved_models),
+        ("Temporary models removed", stats.removed_models),
+        ("Temporary models needing cleanup", stats.cleanup_failed_models),
+    ):
+        console.print(f"{label}: {len(names)}")
+        for name in names:
+            console.print(f"  - {name}", markup=False)
     if stats.machine_failures:
         console.print(
             f"[warning]Failed after downloading on live machine conditions: "
@@ -11294,13 +11459,32 @@ def contribute(
             "policy; ignored if error reports are explicitly turned off)."
         ),
     ),
+    max_minutes: float | None = typer.Option(None, "--max-minutes", help="Stop after this many minutes; finish safe cleanup."),
+    max_download_gb: float | None = typer.Option(None, "--max-download-gb", help="Limit model data read to this many GiB, including retries (metadata/HTTP overhead excluded)."),
+    max_models: int | None = typer.Option(None, "--max-models", help="Try at most this many new models; retries count as the same model."),
 ) -> None:
     """Benchmark models in a loop to improve `omm recommend`.
 
     Repeatedly installs, benchmarks, and uploads telemetry for
-    hardware-fit models until Esc is pressed, growing the training dataset
-    behind `omm recommend`. Deletes each model after benchmarking it (even
-    successful ones) to keep disk usage bounded."""
+    hardware-fit models until Esc or a chosen limit, growing the training
+    dataset behind `omm recommend`. Keeps existing models and removes only
+    this session's temporary models."""
+    from omm.contribute_session import ContributionLimits
+
+    try:
+        download_bytes = None
+        if max_download_gb is not None:
+            amount = max_download_gb * 1024**3
+            if not math.isfinite(amount) or amount < 1:
+                raise ValueError("The download limit must be positive and at least one byte.")
+            download_bytes = int(amount)
+        limits = ContributionLimits(
+            seconds=max_minutes * 60 if max_minutes is not None else None,
+            download_bytes=download_bytes, models=max_models,
+        )
+    except (ValueError, OverflowError) as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(2) from error
     yes = _global_opts().yes
     policy = load_config().get("telemetry_send_policy", "ask")
     if policy == "never":
@@ -11393,13 +11577,30 @@ def contribute(
 
         err_console.print("[warning]omm contribute - before you start:[/warning]")
         contribute_notice_lines = [
-            "Downloads, benchmarks, and deletes GGUF models repeatedly until you press Esc",
+            "Downloads and tests new GGUF models until you press Esc or reach a chosen limit",
+            "Keeps models and partial downloads you already have; removes only this session's temporary models",
+            "Other OMM-managed models may be unloaded from memory; their saved files are kept",
             "Uses real bandwidth, disk space, and compute; runs unattended "
             "(no per-model confirmation)",
             f"Uploads every benchmark result per your current upload policy ({policy})",
+            "Sends model identifiers, hardware characteristics, runtime versions, speed and score summaries",
+            "Generated answers and local file paths are not sent; crash reports and usage stats have separate settings",
             "Reserves space per candidate (central GGUF + worst-case engine copy + headroom); "
             "skips anything that won't fit",
         ]
+        contribute_notice_lines.append(
+            "The default shared benchmark database is publicly readable"
+            if config.get("telemetry_endpoint") == config_mod.TELEMETRY_GATEWAY_ENDPOINT
+            else "Results go to your configured collector; its operator controls who can read them"
+        )
+        chosen_limits = []
+        if max_minutes is not None:
+            chosen_limits.append(f"{max_minutes:g} minutes")
+        if max_download_gb is not None:
+            chosen_limits.append(f"{max_download_gb:g} GiB of model data, including retries")
+        if max_models is not None:
+            chosen_limits.append(f"{max_models} new model(s)")
+        contribute_notice_lines.append("Session limits: " + ("; ".join(chosen_limits) if chosen_limits else "none selected; press Esc to stop"))
         if engine == "ollama":
             # The precise, GGUF-based memory estimator (commit-limit gating,
             # measurement-stability defer/retry) only understands Ollama
@@ -11443,11 +11644,10 @@ def contribute(
                 daemon_ref=daemon_ref,
                 fetch_siblings=_fetch_sibling_candidates,
                 engine=engine,
+                **({"limits": limits} if chosen_limits else {}),
             )
         finally:
             listener.stop()
-
-        cleanup()
 
         duration = time.monotonic() - start_time
         current = [
