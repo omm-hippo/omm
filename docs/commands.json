@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.100",
+  "omm_version": "0.3.101",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -169,7 +169,7 @@
       "kind": "command",
       "aliases": [],
       "summary": "Benchmark models in a loop to improve `omm recommend`.",
-      "description": "Repeatedly installs, benchmarks, and uploads telemetry for hardware-fit models until Esc is pressed, growing the training dataset behind `omm recommend`. Deletes each model after benchmarking it (even successful ones) to keep disk usage bounded.",
+      "description": "Repeatedly installs, benchmarks, and uploads telemetry for hardware-fit models until Esc or a chosen limit, growing the training dataset behind `omm recommend`. Keeps existing models and removes only this session's temporary models.",
       "usage": "omm contribute [OPTIONS]",
       "arguments": [],
       "options": [
@@ -180,6 +180,36 @@
           "metavar": null,
           "is_flag": true,
           "help": "Send scrubbed error reports from this run only (does not change the saved policy; ignored if error reports are explicitly turned off).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--max-minutes"
+          ],
+          "metavar": "<float>",
+          "is_flag": false,
+          "help": "Stop after this many minutes; finish safe cleanup.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--max-download-gb"
+          ],
+          "metavar": "<float>",
+          "is_flag": false,
+          "help": "Limit model data read to this many GiB, including retries (metadata/HTTP overhead excluded).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--max-models"
+          ],
+          "metavar": "<int>",
+          "is_flag": false,
+          "help": "Try at most this many new models; retries count as the same model.",
           "default": null,
           "global": false
         },
