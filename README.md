@@ -573,9 +573,13 @@ the exact flags and placement of a specific command:
 - `--quiet` / `-q` — suppress progress bars and background status/hint lines (e.g. download progress, "Verifying checksum...", scan's "Run: omm link" nudge); errors, warnings, and the result of what you asked for still print
 - `--no-color` — disable ANSI colors on omm's own console output and its download progress bar; the `NO_COLOR` environment variable does the same
 
-Commands using the shared flag wrapper warn when `--json` or `--yes` has no
-effect. Exit codes are consistent across commands: `0` success, `1` failure,
-and `2` usage error (bad flag or argument).
+Unsupported `--json` combinations return a single `unsupported_json` error
+document and exit 2 before command actions or startup prompts run. JSON mode
+never opens the first-run setup/import dialogs, including on a terminal.
+`omm --json --version` returns a version document; explicit `--help` still
+shows normal help. The shared flag wrapper warns when `--yes` has no effect.
+Exit codes are consistent across commands: `0` success, `1` failure, and `2`
+usage error (bad flag or argument).
 
 `rm`, `ls`, and `up` are short aliases for `uninstall`, `list`, and `upgrade`.
 

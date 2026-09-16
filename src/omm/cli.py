@@ -205,9 +205,8 @@ class GlobalOptions:
     command_body_ran: bool = False
 
 
-# Commands whose output --json actually restructures. Every other command
-# silently ignores the flag - warn instead so a script piping --json from
-# one of them doesn't get plain-text garbage with exit code 0 (see #81).
+# Commands whose output --json actually restructures. Other combinations fail
+# before execution, rather than running mutations with misleading plain output.
 _JSON_CAPABLE = {
     "search",
     "list",
@@ -279,6 +278,47 @@ def _json_command_failure(command: str, exit_code: int, *, cancelled: bool = Fal
         })
 
 
+def _command_name(ctx) -> str:
+    parts = []
+    while ctx.parent is not None:
+        parts.append(ctx.command.name or ctx.info_name)
+        ctx = ctx.parent
+    return " ".join(reversed(parts))
+
+
+def _requested_command_name(ctx) -> str | None:
+    """Resolve registered command names without invoking command callbacks.
+
+    Root/intermediate groups only have boolean flags. Stop at the leaf so model
+    names and positional values cannot be mistaken for additional commands.
+    """
+    command = ctx.command
+    names = []
+    for token in ctx.meta.get("omm_raw_args", []):
+        if token.startswith("-"):
+            continue
+        getter = getattr(command, "get_command", None)
+        if getter is None:
+            break
+        child = getter(ctx, token)
+        if child is None:
+            return None
+        names.append(child.name or token)
+        command = child
+        if not hasattr(command, "get_command"):
+            break
+    return " ".join(names)
+
+
+def _require_json_support(command: str) -> None:
+    if _global_opts().json and command not in _JSON_CAPABLE:
+        _print_json(data={"schema_version": 1, "status": "error", "error": {
+            "code": "unsupported_json", "command": command or "omm", "exit_code": 2,
+            "message": "This command does not support JSON output; no command action was performed.",
+        }})
+        raise typer.Exit(2)
+
+
 def global_flags(func):
     """Attach --json/--yes/--quiet/--no-color to a command so they also
     work positioned after the subcommand name (the root callback already
@@ -341,19 +381,11 @@ def global_flags(func):
         if opts.no_color:
             console.no_color = True
             err_console.no_color = True
-        # Full path minus the root program name, not ctx.command.name alone:
-        # a nested command can share its bare name with an unrelated
-        # top-level one (e.g. "omm engine install" vs "omm install") - the
-        # bare name would false-match _JSON_CAPABLE/_YES_CAPABLE and swallow
-        # a warning the nested command actually needs.
-        # ctx.command_path starts with whatever program name click derived
-        # from sys.argv[0] ('omm.exe' for the frozen Windows build), so
-        # strip exactly that - not a hardcoded "omm ".
-        command_name = ctx.command_path.removeprefix(f"{ctx.find_root().info_name} ")
-        if opts.json and command_name not in _JSON_CAPABLE:
-            err_console.print(
-                f"[warning]--json has no effect on `omm {command_name}` - ignoring it.[/warning]"
-            )
+        # Use the canonical full path: engine install differs from install,
+        # and ls must retain list's capabilities regardless of the program name.
+        command_name = _command_name(ctx)
+        if ctx.invoked_subcommand is None:
+            _require_json_support(command_name)
         if opts.yes and command_name not in _YES_CAPABLE:
             err_console.print(
                 f"[warning]--yes has no effect on `omm {command_name}` - it has no confirmation prompt to skip.[/warning]"
@@ -393,6 +425,8 @@ def marks_command_body_ran(func):
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        if _global_opts().json:
+            _require_json_support(_command_name(_get_current_context()()))
         _global_opts().command_body_ran = True
         return func(*args, **kwargs)
 
@@ -456,6 +490,7 @@ class _RootHelpGroup(typer.core.TyperGroup):
         formatter.write(_ROOT_HELP_TEXT)
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        ctx.meta["omm_raw_args"] = list(args)
         ctx.meta["omm_help_requested"] = _help_option_requested(args)
         ctx.meta["omm_json_requested"] = option_requested(args, "--json")
         ctx.meta["omm_engine_read_only"] = engine_read_only_args(args)
@@ -717,17 +752,28 @@ def _root(
     no_color_flag: Annotated[bool, typer.Option("--no-color", help="Disable colored output.")] = False,
 ) -> None:
     if version_flag:
-        typer.echo(f"omm {_omm_version()}")
+        if json_flag or ctx.meta.get("omm_json_requested"):
+            _print_json(data={"version": _omm_version()})
+        else:
+            typer.echo(f"omm {_omm_version()}")
         raise typer.Exit(0)
     opts = ctx.ensure_object(GlobalOptions)
-    opts.json = opts.json or json_flag
+    opts.json = opts.json or json_flag or bool(ctx.meta.get("omm_json_requested"))
     opts.yes = opts.yes or yes_flag
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
+    unresolved_json_command = False
+    if opts.json and not ctx.meta.get("omm_help_requested"):
+        requested = _requested_command_name(ctx)
+        if requested is not None:
+            _require_json_support(requested)
+        else:
+            unresolved_json_command = True
     side_effect_minimal_mode = (
         ctx.invoked_subcommand in {"doctor", "help", "engine"}
         or bool(ctx.meta.get("omm_help_requested"))
         or bool(ctx.meta.get("omm_engine_read_only"))
+        or unresolved_json_command
     )
     theme = (
         doctor_mod.read_theme_read_only()
@@ -1605,7 +1651,7 @@ def _maybe_run_onboarding(ctx: typer.Context) -> None:
     every subcommand, not just the bare `omm` invocation, so a first-time
     user running e.g. `omm contribute` directly still gets the wizard
     before their command executes."""
-    if ctx.invoked_subcommand in _SKIP_ONBOARDING_SUBCOMMANDS:
+    if _global_opts().json or ctx.invoked_subcommand in _SKIP_ONBOARDING_SUBCOMMANDS:
         return
     if load_config().get("onboarding_completed", True):
         return
@@ -1722,7 +1768,7 @@ def _maybe_auto_import(ctx: typer.Context) -> None:
     Runs on the first interactive command after install (not from
     install.sh itself - curl|sh has no TTY for questionary's prompts) and
     never again once the flag is set, whether or not anything was found."""
-    if ctx.invoked_subcommand in _SKIP_AUTO_IMPORT_SUBCOMMANDS:
+    if _global_opts().json or ctx.invoked_subcommand in _SKIP_AUTO_IMPORT_SUBCOMMANDS:
         return
     config = load_config()
     if config.get("external_scan_done"):

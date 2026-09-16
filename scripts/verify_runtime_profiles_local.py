@@ -63,7 +63,7 @@ def main() -> None:
     cli._compatibility_adapter = lambda engine: adapter if engine == "ollama" else None
     report = {"root": str(root), "model_sha256": actual, "base_url": base_url,
               "verification": "real local Ollama and native CLI; private endpoint routing"}
-    with (root / "server.log").open("w") as log:
+    with (root / "server.log").open("w", encoding="utf-8") as log:
         server = subprocess.Popen([binary, "serve"], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 30
@@ -72,7 +72,7 @@ def main() -> None:
                     raise RuntimeError(f"Private Ollama did not start; see {root / 'server.log'}")
                 time.sleep(0.25)
             modelfile = root / "Modelfile"
-            modelfile.write_text(f"FROM {json.dumps(str(model))}\nPARAMETER num_predict 16\nPARAMETER temperature 0\n")
+            modelfile.write_text(f"FROM {json.dumps(str(model))}\nPARAMETER num_predict 16\nPARAMETER temperature 0\n", encoding="utf-8")
             imported = subprocess.run([binary, "create", "omm-profile-smoke", "-f", str(modelfile)],
                                       env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
             if imported.returncode:
@@ -100,19 +100,19 @@ def main() -> None:
 
             tuned = json.loads(invoke(["tune", model.name, "--apply", "--save", "--engine", "ollama", "--yes", "--json"]))
             assert tuned["saved"] and tuned["proposed"]["temporary_load_released"]
-            persisted = json.loads((hub / "runtime-profiles.json").read_text())
+            persisted = json.loads((hub / "runtime-profiles.json").read_text(encoding="utf-8"))
             assert persisted["models"][model.name]["ollama"]["active"]["sha256"] == actual
             report["tune"] = tuned
             invoke(["verify", model.name, "--engine", "ollama", "--yes"])
             report["verify"] = registry.load_registry()[model.name]["compatibility"]["ollama"]
             prompt = root / "input.txt"
-            prompt.write_text("Once upon a time\n")
+            prompt.write_text("Once upon a time\n", encoding="utf-8")
             native_calls = []
             original_call = subprocess.call
             def capture_native(command, **kwargs):
                 if len(command) < 3 or command[1] != "run":
                     raise RuntimeError("Unexpected launch in the smoke test")
-                with prompt.open() as stdin:
+                with prompt.open(encoding="utf-8") as stdin:
                     result = subprocess.run(command, stdin=stdin, env=env, capture_output=True,
                                             text=True, encoding="utf-8", errors="replace", timeout=120)
                 resident = adapter._client.request("GET", "/api/ps").data.get("models", [])
@@ -147,7 +147,7 @@ def main() -> None:
                 server.kill()
                 server.wait(timeout=10)
             report["owned_server_stopped"] = server.poll() is not None
-            (root / "verification.json").write_text(json.dumps(report, indent=2, allow_nan=False))
+            (root / "verification.json").write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
     print(json.dumps({"report": str(root / "verification.json"), "status": report.get("status"),
                       "owned_server_stopped": report["owned_server_stopped"]}))
 

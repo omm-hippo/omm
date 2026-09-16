@@ -52,3 +52,40 @@ def test_late_failure_does_not_append_a_second_json_document(monkeypatch):
     result = CliRunner().invoke(cli.app, ["scan", "--json"])
     assert result.exit_code == 1
     assert json.loads(result.stdout) == {"partial": True}
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--json", "uninstall", "all"], ["uninstall", "all", "--json"],
+    ["--json", "verify", "model.gguf"], ["--json", "setting"],
+    ["setting", "upload", "benchmark", "--enable", "--json"], ["--json"],
+])
+def test_unsupported_json_never_enters_startup_or_command_hooks(arguments, monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("unsupported JSON must not start work")
+    for name in ("_maybe_start_update_check", "_maybe_run_onboarding", "_maybe_auto_import",
+                 "_remove_one", "_compatibility_adapter", "_ask_select"):
+        monkeypatch.setattr(cli, name, unexpected)
+    result = CliRunner().invoke(cli.app, arguments)
+    assert result.exit_code == 2, result.output
+    assert json.loads(result.stdout)["error"]["code"] == "unsupported_json"
+
+
+def test_json_alias_and_version_are_machine_readable():
+    result = CliRunner().invoke(cli.app, ["ls", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == []
+    version = CliRunner().invoke(cli.app, ["--json", "--version"])
+    assert version.exit_code == 0
+    assert isinstance(json.loads(version.stdout)["version"], str)
+
+
+def test_json_on_a_terminal_does_not_open_first_run_dialogs(monkeypatch):
+    from omm import config
+    config.update_config(onboarding_completed=False, external_scan_done=False)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_stdout_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_setup_choice", lambda: pytest.fail("JSON must not prompt"))
+    monkeypatch.setattr(cli, "_run_import_flow", lambda: pytest.fail("JSON must not offer imports"))
+    result = CliRunner().invoke(cli.app, ["list", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == []

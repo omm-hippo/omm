@@ -62,7 +62,7 @@ def test_successful_trial_saves_only_settings_and_evidence_then_restores_default
     assert adapter.loaded is False
     profiles.save_trial(path.name, "ollama", path, digest, evidence, expected_revision=0)
     assert profiles.saved_options_for_file(path.name, "ollama", path) == options
-    saved = profiles._path().read_text()
+    saved = profiles._path().read_text(encoding="utf-8")
     assert "private response" not in saved and "prompt" not in saved
     assert profiles.restore(path.name, "ollama", digest)["status"] == "default"
     assert profiles.saved_options_for_file(path.name, "ollama", path) is None
@@ -134,10 +134,10 @@ def test_model_replacement_and_concurrent_profile_save_are_rejected(model):
 
 def test_corrupt_store_is_not_silently_overwritten(model):
     path, digest = model
-    profiles._path().write_text("bad json")
+    profiles._path().write_text("bad json", encoding="utf-8")
     with pytest.raises(profiles.ProfileError):
         profiles.restore(path.name, "ollama", digest)
-    assert profiles._path().read_text() == "bad json"
+    assert profiles._path().read_text(encoding="utf-8") == "bad json"
 
 
 def test_cli_apply_verify_save_and_restore_flow(model, monkeypatch):
