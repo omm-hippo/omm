@@ -1,0 +1,3156 @@
+{
+  "schema_version": 1,
+  "generated_by": "scripts/export_command_reference.py",
+  "omm_version": "0.3.105",
+  "docs_base_url": "https://omm.run/commands",
+  "commands": [
+    {
+      "path": [
+        "benchmark"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Measure a small reproducible quality pack and decode speed.",
+      "description": "",
+      "usage": "omm benchmark [OPTIONS] {models}...",
+      "arguments": [
+        {
+          "name": "models...",
+          "help": "One or more already-installed model identifiers for the active engine (Ollama tags, or LM Studio modelKeys when Ollama isn't available).",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--pack"
+          ],
+          "metavar": "<path>",
+          "is_flag": false,
+          "help": "Use a different versioned JSON pack.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--output"
+          ],
+          "metavar": "<path>",
+          "is_flag": false,
+          "help": "Write evidence to this JSON path.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--speed-runs"
+          ],
+          "metavar": "<int range>",
+          "is_flag": false,
+          "help": "",
+          "default": 3,
+          "global": false
+        },
+        {
+          "flags": [
+            "--confirm-performance-timeout"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "If a model's first generation attempt times out, wait for it to fully finish, health-check the daemon, and retry exactly once before deciding. Two confirmed timeouts under a healthy daemon are reported as performance_unfit instead of transient_error. Off by default: a single timeout is never auto-retried unless you pass this flag.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/benchmark"
+    },
+    {
+      "path": [
+        "cleanup"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Clean up leftover partial downloads and broken runner symlinks.",
+      "description": "Removes orphaned partial or unregistered .gguf downloads left behind by interrupted installs, plus symlinks in AI runner model directories whose source .gguf was deleted without going through `omm uninstall`. Also reclaims orphaned `omm pin` archives (see MODEL_ARCHIVE_DIR) - an archived version whose model is still registered, pinned or not, is never touched here.",
+      "usage": "omm cleanup [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cleanup"
+    },
+    {
+      "path": [
+        "contribute"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Benchmark models in a loop to improve `omm recommend`.",
+      "description": "Repeatedly installs, benchmarks, and uploads telemetry for hardware-fit models until Esc or a chosen limit, growing the training dataset behind `omm recommend`. Keeps existing models and removes only this session's temporary models.",
+      "usage": "omm contribute [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--report-errors"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Send scrubbed error reports from this run only (does not change the saved policy; ignored if error reports are explicitly turned off).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--max-minutes"
+          ],
+          "metavar": "<float>",
+          "is_flag": false,
+          "help": "Stop after this many minutes; finish safe cleanup.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--max-download-gb"
+          ],
+          "metavar": "<float>",
+          "is_flag": false,
+          "help": "Limit model data read to this many GiB, including retries (metadata/HTTP overhead excluded).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--max-models"
+          ],
+          "metavar": "<int>",
+          "is_flag": false,
+          "help": "Try at most this many new models; retries count as the same model.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/contribute"
+    },
+    {
+      "path": [
+        "doctor"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Diagnose the OMM install and Ollama links without changing state.",
+      "description": "WARN findings keep exit code 0; definite FAIL findings exit 1.",
+      "usage": "omm doctor [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/doctor"
+    },
+    {
+      "path": [
+        "engine"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Inspect, install, update, and remove local AI runner programs.",
+      "description": "",
+      "usage": "omm engine [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/engine"
+    },
+    {
+      "path": [
+        "engine",
+        "doctor"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Read-only engine diagnostics and the next step for missing components.",
+      "description": "",
+      "usage": "omm engine doctor [OPTIONS] [engine]",
+      "arguments": [
+        {
+          "name": "engine",
+          "help": "",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/engine#doctor"
+    },
+    {
+      "path": [
+        "engine",
+        "install"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Install a local AI runner program (Ollama, LM Studio, etc.).",
+      "description": "With no argument, interactively pick from a checklist. With an engine key, install that one runner directly.",
+      "usage": "omm engine install [OPTIONS] [engine]",
+      "arguments": [
+        {
+          "name": "engine",
+          "help": "Engine key to install directly, skipping the checklist (ollama, lmstudio, jan, anythingllm, mstystudio, textgenwebui, koboldcpp).",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/engine#install"
+    },
+    {
+      "path": [
+        "engine",
+        "status"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show installation, package version, and local API state separately.",
+      "description": "",
+      "usage": "omm engine status [OPTIONS] [engine]",
+      "arguments": [
+        {
+          "name": "engine",
+          "help": "",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--api",
+            "--no-api"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Check local API reachability; never start a server.",
+          "default": true,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/engine#status"
+    },
+    {
+      "path": [
+        "engine",
+        "uninstall"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Remove an engine package without deleting the OMM model hub.",
+      "description": "",
+      "usage": "omm engine uninstall [OPTIONS] {engine}",
+      "arguments": [
+        {
+          "name": "engine",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--dry-run"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Show the package command without executing it.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/engine#uninstall"
+    },
+    {
+      "path": [
+        "engine",
+        "update"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Update one engine through its identified package manager.",
+      "description": "",
+      "usage": "omm engine update [OPTIONS] {engine}",
+      "arguments": [
+        {
+          "name": "engine",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--dry-run"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Show the package command without executing it.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/engine#update"
+    },
+    {
+      "path": [
+        "export"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Export a hub model to `destination` for deployment or backup: a hard link when possible, otherwise a real copy. Never a symlink, so the exported file keeps working after `omm uninstall` or on another machine. Not tracked in the registry - uninstalling the source model never touches an exported copy. Also writes a provenance/checksum manifest sidecar next to it, so `omm import` on another machine (including an air-gapped one) can restore the source repo, version, and install date instead of treating the file as an anonymous import.",
+      "description": "",
+      "usage": "omm export [OPTIONS] {filename} {destination}",
+      "arguments": [
+        {
+          "name": "filename",
+          "help": "",
+          "required": true
+        },
+        {
+          "name": "destination",
+          "help": "Directory to place the exported file in.",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--force"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Reclaim a destination omm doesn't recognize as its own by deleting it and exporting, instead of skipping it as a conflict.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/export"
+    },
+    {
+      "path": [
+        "fit"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show whether a model fits this PC's memory right now - installed or not - as a bar over what other apps use, the OS reserve, and the install cap.",
+      "description": "",
+      "usage": "omm fit [OPTIONS] {model_name}",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "Installed model, curated id, repo/file, or search number.",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/fit"
+    },
+    {
+      "path": [
+        "help"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show help, same as --help.",
+      "description": "",
+      "usage": "omm help [OPTIONS] [command]",
+      "arguments": [
+        {
+          "name": "command",
+          "help": "Show help for a specific subcommand.",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--all"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "List every command, not just the common ones.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--flags"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Also show each listed command's option list (the common commands, or every command with --all).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/help"
+    },
+    {
+      "path": [
+        "import"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Adopt .gguf files from other local AI apps into the omm hub.",
+      "description": "Scans every supported local AI app (and optionally PATH) for files not yet managed by omm, then offers to adopt each one it finds.",
+      "usage": "omm import [OPTIONS] [path]",
+      "arguments": [
+        {
+          "name": "path",
+          "help": "Optional extra directory to also scan for stray .gguf files.",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/import"
+    },
+    {
+      "path": [
+        "info"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show what a model is - source repo, version, size and linked-program run commands once installed, or author, downloads, license and architecture for a search result. `omm fit` is what tells you whether it runs here.",
+      "description": "",
+      "usage": "omm info [OPTIONS] {model_name}",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "Installed model, curated id, repo/file, or search number.",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/info"
+    },
+    {
+      "path": [
+        "install"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Download a model into the central hub and link it into installed engines.",
+      "description": "",
+      "usage": "omm install [OPTIONS] {model_name}",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--skip-unfit"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "If this hardware is predicted not to run the model, skip it instead of asking (exits 0 with skipped_unfit set). For scripting.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--upload",
+            "--no-upload"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Send (or skip sending) this machine's benchmark result to the telemetry server, without asking. Unset defers to the current `omm setting upload` policy.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--force"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Reinstall an already-installed model. The source is checked first and the download is skipped when the installed file already matches it.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--verify-runtime",
+            "--no-verify-runtime"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Run (or skip) a short local load/generation check after linking. Unset asks before loading an unloaded model.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/install"
+    },
+    {
+      "path": [
+        "link"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Link models into every supported app, an arbitrary directory, or both scoped to a chosen subset of models.",
+      "description": "Without --to, re-verify the selected models' links into every supported app (Ollama, LM Studio, Jan, AnythingLLM, Msty, text-generation-webui, KoboldCpp) and repair them. Covers models that were never linked *and* ones whose link is now broken, missing, or stale - link_engine() always replaces the existing symlink/manifest, so this always re-links rather than trusting the registry's stored `linked` flag. With --to, reuse the central GGUF through zero-copy links when possible, with an explicit copy warning when Windows permissions and volume boundaries make that impossible.",
+      "usage": "omm link [OPTIONS] [models]",
+      "arguments": [
+        {
+          "name": "models",
+          "help": "Comma-separated model filenames or list numbers to link (omit for every installed model).",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--engine"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Only re-verify/repair links for this engine.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--to"
+          ],
+          "metavar": "<path>",
+          "is_flag": false,
+          "help": "Link into an arbitrary directory instead of the supported runners (for an unsupported local AI app).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--force"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Reclaim a destination omm doesn't recognize as its own (e.g. lost ownership record, or a file placed there by something else) by deleting it and relinking, instead of skipping it as a conflict.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/link"
+    },
+    {
+      "path": [
+        "list"
+      ],
+      "kind": "command",
+      "aliases": [
+        "ls"
+      ],
+      "summary": "Show models installed via omm and their linked status.",
+      "description": "",
+      "usage": "omm list [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--engine"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Only show models linked into this engine.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/list"
+    },
+    {
+      "path": [
+        "log"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show the local run log (~/.omm/logs/history.log).",
+      "description": "Every `omm` command appends a summary block here; full detail for one run is in its `~/.omm/logs/<timestamp>_<pid>_<command>.jsonl` file. The log is local only - it is never uploaded.",
+      "usage": "omm log [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--lines",
+            "-n"
+          ],
+          "metavar": "<int>",
+          "is_flag": false,
+          "help": "Show the last N runs.",
+          "default": 40,
+          "global": false
+        },
+        {
+          "flags": [
+            "--grep"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Only show runs whose block contains TEXT.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--rebuild"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Regenerate history.log from the per-run JSONL files.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/log"
+    },
+    {
+      "path": [
+        "pin"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Mark an installed model to be archived before its next `omm install --force`, so `omm rollback` can undo that reinstall afterwards. Nothing is copied yet - GGUFs are large, so the archive is only made right before the reinstall actually replaces the file, not at pin time. `omm install --force` still replaces a pinned model same as any other; pin only decides whether the version it replaces is kept.",
+      "description": "",
+      "usage": "omm pin [OPTIONS] {model_name}",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/pin"
+    },
+    {
+      "path": [
+        "recommend"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Suggest a model to install for this hardware.",
+      "description": "Ranked by a model trained on real install telemetry, falling back to the static rules when that trained model can't be fetched.\n\n--json prints the ranked candidates and their local installation state, and installs nothing. --yes skips the interactive picker and installs the highest-ranked candidate that is not already installed.",
+      "usage": "omm recommend [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "How much of the machine to claim: dedicated, balanced, or minimal. Prompted for interactively when omitted; defaults to balanced under --yes/--json.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--refresh-metadata"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Refresh cached provider task metadata and exact file sizes before ranking.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/recommend"
+    },
+    {
+      "path": [
+        "report"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Preview a privacy-minimized support report and optionally save it locally.",
+      "description": "",
+      "usage": "omm report [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--include"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Add one optional group: os, policies, or checks. Repeat as needed.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--save"
+          ],
+          "metavar": "<path>",
+          "is_flag": false,
+          "help": "Save the previewed JSON to this path. Nothing is uploaded.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--force"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Allow replacing the explicitly named output file.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/report"
+    },
+    {
+      "path": [
+        "rollback"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Restore a pinned model's archived version in place of the one currently installed. The version it replaces takes over the archive slot, so running `omm rollback` again swaps forward to it.",
+      "description": "",
+      "usage": "omm rollback [OPTIONS] {model_name}",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/rollback"
+    },
+    {
+      "path": [
+        "run"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Start a chat with an installed model - Ollama chats right here in the terminal, KoboldCpp/text-generation-webui start with the model loaded, GUI apps are opened.",
+      "description": "",
+      "usage": "omm run [OPTIONS] [model_name]",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "Installed model (see `omm list`).",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--engine",
+            "-e"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Runner to use (ollama, lmstudio, jan, koboldcpp, textgenwebui, anythingllm, mstystudio).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/run"
+    },
+    {
+      "path": [
+        "scan"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Summarize memory, model storage, and installed local AI runners.",
+      "description": "",
+      "usage": "omm scan [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--details"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Also show OS, CPU, and GPU identity.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/scan"
+    },
+    {
+      "path": [
+        "search"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Search curated models, cached candidates, and HuggingFace by name.",
+      "description": "",
+      "usage": "omm search [OPTIONS] {query}",
+      "arguments": [
+        {
+          "name": "query",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--skip-unfit"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "If this hardware is predicted not to run a model, omit it from the results instead of listing it.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--limit"
+          ],
+          "metavar": "<int range>",
+          "is_flag": false,
+          "help": "Show at most this many results.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--provider"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Only show results from this source: curated (omm's built-in/cached catalog, not a real host), huggingface, or modelscope.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--skip-ms"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Don't query ModelScope. Its results need one extra network request per candidate repo, which can noticeably slow down search.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/search"
+    },
+    {
+      "path": [
+        "setting"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "View or change omm settings (telemetry, upload policy, version, calibration, catalog trust).",
+      "description": "",
+      "usage": "omm setting [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/setting"
+    },
+    {
+      "path": [
+        "setting",
+        "auto-import"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Automatically adopt models that Ollama, LM Studio, and similar apps download natively into the omm hub in the background. Off by default. See PRIVACY.md.",
+      "description": "",
+      "usage": "omm setting auto-import [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/setting#auto-import"
+    },
+    {
+      "path": [
+        "setting",
+        "calibrate"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Correct this machine's local speed estimate without uploading data.",
+      "description": "",
+      "usage": "omm setting calibrate [OPTIONS] [model_name]",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "Installed Ollama-linked model; defaults to the smallest available model.",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#calibrate"
+    },
+    {
+      "path": [
+        "setting",
+        "catalog-rollback"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Restore the most recent different recommendation snapshot.",
+      "description": "",
+      "usage": "omm setting catalog-rollback [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#catalog-rollback"
+    },
+    {
+      "path": [
+        "setting",
+        "catalog-status"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show recommendation-catalog trust and rollback state.",
+      "description": "",
+      "usage": "omm setting catalog-status [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#catalog-status"
+    },
+    {
+      "path": [
+        "setting",
+        "catalog-trust"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Require future recommendation downloads to pass signature verification.",
+      "description": "",
+      "usage": "omm setting catalog-trust [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--manifest-url"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "HTTPS manifest URL.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--public-key"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Base64 Ed25519 public key.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#catalog-trust"
+    },
+    {
+      "path": [
+        "setting",
+        "memory-guard"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show or change the consent-aware runtime memory protection policy.",
+      "description": "",
+      "usage": "omm setting memory-guard [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--policy"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Memory Guard policy: ask, block, or observe.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--poll-seconds"
+          ],
+          "metavar": "<float range>",
+          "is_flag": false,
+          "help": "Seconds between live-memory checks during a long operation.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--low-memory-seconds"
+          ],
+          "metavar": "<float range>",
+          "is_flag": false,
+          "help": "How long low memory must persist before OMM cancels its own operation.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#memory-guard"
+    },
+    {
+      "path": [
+        "setting",
+        "runtime-profile"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Inspect a saved runtime profile, or undo the last save without reloading models.",
+      "description": "",
+      "usage": "omm setting runtime-profile [OPTIONS] {model_name}",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--engine"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "ollama or lmstudio",
+          "default": "ollama",
+          "global": false
+        },
+        {
+          "flags": [
+            "--restore"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Restore the previous saved profile (or defaults).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#runtime-profile"
+    },
+    {
+      "path": [
+        "setting",
+        "telemetry"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Configure where benchmark telemetry is sent; see `omm setting upload` for the send policy.",
+      "description": "",
+      "usage": "omm setting telemetry [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--endpoint"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Self-hosted HTTPS endpoint, localhost URL, or 'none' to clear it.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#telemetry"
+    },
+    {
+      "path": [
+        "setting",
+        "theme"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show or change the color theme applied to omm's output.",
+      "description": "",
+      "usage": "omm setting theme [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--set"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "One of: light, dark, high-contrast, no-color",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#theme"
+    },
+    {
+      "path": [
+        "setting",
+        "upload"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Choose what anonymous data omm may send: benchmark results, usage stats, crash reports. Each is off or ask by default. See PRIVACY.md.",
+      "description": "",
+      "usage": "omm setting upload [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#upload"
+    },
+    {
+      "path": [
+        "setting",
+        "version"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show or switch the update channel `omm update` pulls from. Switching takes effect immediately - it fetches and checks out the new branch right away, no separate `omm update` needed.",
+      "description": "",
+      "usage": "omm setting version [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--stable"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Track the stable channel (main branch).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--beta"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Track the beta channel (beta branch).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#version"
+    },
+    {
+      "path": [
+        "setup"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Re-run the first-time setup wizard (hardware scan + engine checklist).",
+      "description": "",
+      "usage": "omm setup [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setup"
+    },
+    {
+      "path": [
+        "tune"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Recommend context, GPU offload, threads, and batch size for a model.",
+      "description": "",
+      "usage": "omm tune [OPTIONS] {model_name}",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--apply"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Temporarily load and verify the proposed settings.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--save"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Save settings only after a successful --apply trial.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--engine"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Runtime for the trial: ollama or lmstudio.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/tune"
+    },
+    {
+      "path": [
+        "uninstall"
+      ],
+      "kind": "command",
+      "aliases": [
+        "rm"
+      ],
+      "summary": "Uninstall a model and clean up all symlinks/manifests. Pass `all` to uninstall every model installed via omm.",
+      "description": "",
+      "usage": "omm uninstall [OPTIONS] {filename}",
+      "arguments": [
+        {
+          "name": "filename",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--dry-run"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Show what would be uninstalled without removing anything.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/uninstall"
+    },
+    {
+      "path": [
+        "unlink"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Remove one or more models' links from one runner (or every runner with --runner all) without touching the hub file or links into other runners.",
+      "description": "",
+      "usage": "omm unlink [OPTIONS] {filenames}",
+      "arguments": [
+        {
+          "name": "filenames",
+          "help": "Comma-separated model filenames or list numbers.",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--runner"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Runner to unlink from, or 'all'.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/unlink"
+    },
+    {
+      "path": [
+        "unpin"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Undo `omm pin`: a future `omm install --force` stops archiving this model, and any version already archived for it is deleted. Run `omm rollback` first if you might still want that archived version.",
+      "description": "",
+      "usage": "omm unpin [OPTIONS] {model_name}",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/unpin"
+    },
+    {
+      "path": [
+        "update"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Reinstall omm from the latest source and refresh its data.",
+      "description": "Uses a persistent editable clone (SRC_DIR) for a git-pull-speed update once migrated; a one-time pipx --editable install otherwise. Pulls from whichever branch `omm setting version` has selected (stable/main by default, or beta).",
+      "usage": "omm update [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/update"
+    },
+    {
+      "path": [
+        "upgrade"
+      ],
+      "kind": "command",
+      "aliases": [
+        "up"
+      ],
+      "summary": "Look for a better model than the ones already installed - a newer curated successor, or a higher-quality quantization from the same repo that still fits this machine's memory - and install the ones you approve. With no argument (or `all`), scans every model installed via omm.",
+      "description": "To re-check an installed file against its source instead, use `omm install <model> --force`.",
+      "usage": "omm upgrade [OPTIONS] [model_name]",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--dry-run"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Only print the suggestions; install nothing.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/upgrade"
+    },
+    {
+      "path": [
+        "verify"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Prove that an installed model can load and return local text.",
+      "description": "If the selected engine's daemon isn't running, this starts it (asking first unless --yes) and stops it again afterward, unless --keep-loaded left the model loaded on it.",
+      "usage": "omm verify [OPTIONS] {model_name}",
+      "arguments": [
+        {
+          "name": "model_name",
+          "help": "",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--engine"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Local runtime to test: ollama or lmstudio.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--keep-loaded"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Keep a model loaded only when this command loaded it.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Load the model without asking. For scripting.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/verify"
+    }
+  ]
+}
