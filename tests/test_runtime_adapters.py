@@ -61,7 +61,8 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
             self._json(200, {"version": "0.12.6"})
             return
         if self.path == "/api/tags":
-            self._json(200, {"models": [{"name": "local-model:latest"}]})
+            aliases = [{"name": key + ":latest"} for key in self.state.get("profile_models", {})]
+            self._json(200, {"models": [{"name": "local-model:latest"}, *aliases]})
             return
         if self.path == "/api/ps":
             lag = self.state.get("ps_lag", 0)
@@ -69,7 +70,8 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
                 self.state["ps_lag"] = lag - 1
                 self._json(200, {"models": [{"name": "local-model:latest"}]})
                 return
-            rows = [{"name": "local-model:latest"}] if self.state.get("loaded") else []
+            rows = [{"name": self.state.get("loaded_key", "local-model:latest"),
+                     "context_length": self.state.get("actual_context", self.state.get("options", {}).get("num_ctx", 1024))}] if self.state.get("loaded") else []
             self._json(200, {"models": rows})
             return
         if self.path == "/api/v1/models":
@@ -117,22 +119,33 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "\"local-model\" does not support thinking"})
                 return
             self.state["loaded"] = True
+            self.state["loaded_key"] = payload.get("model", "local-model:latest")
+            self.state["options"] = payload.get("options", {})
             response = "" if not payload.get("prompt") or self.state.get("empty") else "OK"
             if self.state.get("reasoning_model") and payload.get("think") is not False:
                 self._json(200, {"response": "", "thinking": "still reasoning"})
             else:
-                self._json(200, {"response": response})
+                self._json(200, {"response": response, "eval_count": 2, "eval_duration": 100_000_000})
             return
         if self.path == "/api/v1/models/load":
             if self.state.get("oom"):
                 self._json(500, {"error": "insufficient memory"})
                 return
             self.state["loaded"] = True
-            self._json(200, {"status": "loaded", "instance_id": "local/model"})
+            result = {"status": "loaded", "instance_id": "local/model"}
+            if payload.get("echo_load_config"):
+                result["load_config"] = {"context_length": self.state.get("actual_context", payload["context_length"])}
+                if "eval_batch_size" in payload:
+                    result["load_config"]["eval_batch_size"] = payload["eval_batch_size"]
+            self._json(200, result)
             return
         if self.path == "/api/v1/chat":
             content = "" if self.state.get("empty") else "OK"
             self._json(200, {"output": [{"type": "message", "content": content}]})
+            return
+        if self.path == "/api/create":
+            self.state.setdefault("profile_models", {})[payload["model"]] = payload
+            self._json(200, {"status": "success"})
             return
         if self.path == "/api/v1/models/unload":
             if self.state.get("unload_fails"):
@@ -141,6 +154,16 @@ class _RuntimeHandler(BaseHTTPRequestHandler):
             if not self.state.get("unload_ignored"):
                 self.state["loaded"] = False
             self._json(200, {"instance_id": payload.get("instance_id")})
+            return
+        self._json(404, {"error": "not found"})
+
+    def do_DELETE(self):
+        payload = self._payload()
+        self.state.setdefault("calls", []).append(("DELETE", self.path, payload))
+        if self.path == "/api/delete":
+            self.state.setdefault("profile_models", {}).pop(payload["model"], None)
+            self.send_response(200)
+            self.end_headers()
             return
         self._json(404, {"error": "not found"})
 
@@ -158,6 +181,53 @@ def runtime_server():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_ollama_profile_options_are_preserved_in_generation_and_context_is_observed(runtime_server):
+    url, state = runtime_server
+    adapter = OllamaAdapter(url)
+    options = LoadOptions(512, cpu_threads=2, batch_size=64, gpu_layers=0, verify_applied=True)
+    receipt = adapter.load(RuntimeModelRef("local-model"), options)
+    assert receipt.applied_options == {"context_length": 512}
+    result = adapter.generate(receipt, ProbeRequest())
+    assert result.tokens_per_second == 20
+    generation = [payload for method, path, payload in state["calls"]
+                  if method == "POST" and path == "/api/generate" and payload.get("prompt")]
+    for key, value in options.ollama_options().items():
+        assert generation[-1]["options"][key] == value
+    assert adapter.unload(receipt).unloaded
+
+
+@pytest.mark.parametrize("factory,reference", [(OllamaAdapter, "local-model"), (LMStudioAdapter, "local/model")])
+def test_unapplied_context_is_not_reported_as_verified(runtime_server, factory, reference):
+    url, state = runtime_server
+    state["actual_context"] = 4096
+    with pytest.raises(RuntimeAdapterError, match="did not confirm"):
+        factory(url).load(RuntimeModelRef(reference), LoadOptions(512, verify_applied=True))
+    assert state["loaded"] is False
+
+
+def test_lmstudio_profile_only_sends_supported_fields_and_checks_echo(runtime_server):
+    url, state = runtime_server
+    adapter = LMStudioAdapter(url)
+    receipt = adapter.load(RuntimeModelRef("local/model"), LoadOptions(512, batch_size=128, verify_applied=True))
+    assert receipt.applied_options == {"context_length": 512, "eval_batch_size": 128}
+    assert adapter.unload(receipt).unloaded
+    with pytest.raises(RuntimeAdapterError, match="does not expose"):
+        adapter.load(RuntimeModelRef("local/model"), LoadOptions(512, cpu_threads=2))
+
+
+def test_temporary_ollama_profile_preserves_the_source_and_is_removed(runtime_server):
+    url, state = runtime_server
+    adapter = OllamaAdapter(url)
+    alias = adapter.create_profile_model(RuntimeModelRef("local-model"), LoadOptions(512, cpu_threads=2))
+    assert state["profile_models"][alias.key]["from"] == "local-model:latest"
+    assert state["profile_models"][alias.key]["parameters"]["num_ctx"] == 512
+    adapter.remove_profile_model(alias)
+    assert state["profile_models"] == {}
+    assert adapter.list_models()[0].key == "local-model:latest"
+    with pytest.raises(ValueError, match="did not create"):
+        adapter.remove_profile_model(RuntimeModelRef("omm-profile-someone-else"))
 
 
 @pytest.mark.parametrize(

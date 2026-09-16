@@ -432,6 +432,7 @@ omm scan [--details] [--json]  # Memory, storage, runners, and models; --details
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
+omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
 omm search <query> [--json] [--skip-unfit] [--skip-ms] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated, Hugging Face, and ModelScope sources
 omm help [command]  # Show help, same as --help
 ```
@@ -512,6 +513,7 @@ omm setting upload crash --enable|--disable|--ask  # Opt-in crash-report policy
 omm setting memory-guard --policy ask|block|observe  # Protect local runtime loads from live memory pressure
 omm setting theme [--set NAME]  # Show or change omm's output color theme
 omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
+omm setting runtime-profile <name> [--engine ollama|lmstudio] [--restore] [--json]  # Inspect or undo saved settings
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
 omm setting catalog-status [--json]  # Show trust, rollback snapshots, and per-check evaluation evidence
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
@@ -537,6 +539,11 @@ for a pip installation, use `python -m pip install "omm-model[watch]"` in
 that installation's environment. The status command reports configuration
 and service registration; it does not prove that a particular file has
 been imported. Check `omm list` after the file has finished downloading.
+
+Saved runtime profiles are tied to the exact model file and engine. `omm verify`
+and supported `omm run` paths use them on the next owned load; running models
+keep their current settings. See [runtime profiles](docs/runtime-profiles.md)
+for engine capabilities, memory checks, cleanup, and verification limits.
 
 ### Scripting
 

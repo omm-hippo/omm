@@ -46,8 +46,8 @@
 - [x] 설치 중단 복구 (일반 설치, 검증된 파일·연결·등록)
 - [x] CLI 화면과 짧은 안내
 - [x] 엔진 관리 (알려진 패키지 관리자만 변경, 실물 앱 변경은 미검증)
-- [ ] 설정 적용/검증/저장/복원
-- [ ] 관련 회귀 테스트, 실제 경로 확인, 최종 검토
+- [x] 설정 적용/검증/저장/복원 (Ollama 실제 경로 확인; LM Studio API 계약 검증)
+- [x] 관련 회귀 테스트, 실제 경로 확인, 최종 로컬 검토 (원격 CI는 PR 순서대로 확인)
 
 ## 토의 해석
 
@@ -95,3 +95,35 @@
 - 사용자 후속 지시: 먼저 끝난 것은 먼저 PR, 비슷하게 끝나는 관련 작업은 묶기.
   한 PR이 실제 머지된 후에 다음 PR 게시. main 직접 push/merge 승인은 없음.
   첫 PR 미병합 동안 구현은 로컬에서 계속한다.
+
+### 마지막 구현과 검증
+
+- 엔진 관리 후속 78ee407: 실제 Mac의 Ollama 설치가 Homebrew formula임을 확인해
+  cask/formula를 구분했다. 실제 읽기 전용 조회와 update 명령 미리보기에서
+  `/opt/homebrew/bin/brew upgrade --formula ollama`를 확인했으며 실행하지 않았다.
+- 최종 작업 공간: `/Users/minjun/Omm-worktrees/runtime-presets-20260916`,
+  브랜치 `one-way/runtime-presets-20260916` (78ee407을 fast-forward로 포함).
+- 설정 시험/저장/복원 및 verify/run 반영 구현. LM Studio는 native v1이 지원하는
+  context/eval_batch만 적용·echo 검증한다. Ollama는 실제 /api/ps 문맥도 확인한다.
+- 최초 실제 소형 모델 시험에서 GGUF의 문맥 한도 128보다 큰 값을 추천하는 것을
+  발견했다. 128 한도를 반영하고 재시험하여 실제 CLI tune/save/verify/run/restore와
+  종료 후 모델·별칭·개인 서버 정리까지 통과했다. 실제 Ollama 버전 0.30.10.
+- 실제 검증 보고서:
+  `/var/folders/qq/3vz6sykd59d2kld93nxwl2lr0000gn/T/omm-profile-live-i9pi2cgl/verification.json`.
+  기본 사용자 Ollama 저장소 대신 별도 포트/모델 저장소 사용. 생성 문장은 프리셋에 없음.
+- 전체 로컬 검사 3296 passed / 35 skipped. 최초 전체 검사에서 발견한 시험 스크립트
+  subprocess 인코딩 누락을 고친 후의 결과다. 이후 예외 JSON 처리와 formula 감지
+  보완을 포함한 최종 전체 검사도 3300 passed / 35 skipped로 통과했다.
+- 업데이트 테스트가 실제 작업 트리를 SRC_DIR로 사용하는 것을 막기 위해 autouse
+  fixture에서 cli.OMM_HOME과 cli.SRC_DIR도 테스트 임시 경로로 격리했다.
+- 미검증: LM Studio 실서비스/GUI 및 Windows/Linux 실물, 실제 엔진 패키지 변경,
+  장시간·대형 모델 추론. 대역 검증을 실제 서비스 검증으로 표현하지 않는다.
+- 게시 계획: #346 실제 병합 후 평가/복구+엔진/안내 묶음을 엔진 관리 브랜치에서
+  게시한다. 그것이 병합된 후 runtime-presets 브랜치의 최종 묶음을 게시한다.
+- 사용자의 PR 게시 승인은 유효하다. 비동기 질문에 사용자가 “내가 직접 병합할게”라고
+  답했다. 병합은 사용자만 수행한다. 실제 병합을 확인한 뒤 다음 PR을 게시한다.
+  운영 OMM HTTP 직접 요청 0회.
+
+최종 전체 테스트 로그: `/tmp/omm-approved-features-final-suite.log`.
+첫 PR #346은 여전히 미병합 상태이며, 사용자가 직접 병합하기로 명시했다.
+자동 병합이나 다음 PR의 선행 게시를 하지 않는다.

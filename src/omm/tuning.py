@@ -132,6 +132,11 @@ def recommend_runtime_settings(
     else:
         num_batch = 128
 
+    maximum_context = positive_finite_number(candidate.get("context_length"))
+    if maximum_context is not None and maximum_context >= 128 and maximum_context.is_integer():
+        context_length = min(context_length, int(maximum_context))
+        num_batch = min(num_batch, context_length)
+
     return RuntimeProfile(
         context_length=context_length,
         gpu_offload_percent=gpu_offload_percent,

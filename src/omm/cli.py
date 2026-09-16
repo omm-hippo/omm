@@ -223,6 +223,7 @@ _JSON_CAPABLE = {
     "engine doctor",
     "engine update",
     "engine uninstall",
+    "setting runtime-profile",
 }
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
@@ -239,6 +240,7 @@ _YES_CAPABLE = {
     "run",
     "engine update",
     "engine uninstall",
+    "tune",
 }
 
 
@@ -372,6 +374,12 @@ def global_flags(func):
         except KeyboardInterrupt:
             _json_command_failure(command_name, 130, cancelled=True)
             raise typer.Exit(130) from None
+        except Exception:
+            # Keep the original exception for main's diagnostics/crash policy,
+            # while giving JSON consumers one failure document when no result
+            # was produced. Never append a second JSON object to a report.
+            _json_command_failure(command_name, 1)
+            raise
 
     wrapper.__signature__ = original_sig.replace(parameters=new_params)
     return wrapper
@@ -3814,8 +3822,14 @@ def _print_runtime_profile(profile: tuning.RuntimeProfile) -> None:
 @global_flags
 def tune(
     model_name: str = typer.Argument(..., autocompletion=complete_install_name),
+    apply: bool = typer.Option(False, "--apply", help="Temporarily load and verify the proposed settings."),
+    save: bool = typer.Option(False, "--save", help="Save settings only after a successful --apply trial."),
+    engine: str | None = typer.Option(None, "--engine", help="Runtime for the trial: ollama or lmstudio."),
 ) -> None:
     """Recommend context, GPU offload, threads, and batch size for a model."""
+    if save and not apply:
+        err_console.print("--save requires --apply so settings are verified before saving.")
+        raise typer.Exit(2)
     model_name = _resolve_ref(model_name)
     filename, entry = _lookup_entry(model_name, registry.load_registry())
 
@@ -3849,7 +3863,24 @@ def tune(
                 candidate,
             )
 
+    if entry is not None:
+        from omm import runtime_profiles
+
+        try:
+            metadata = runtime_profiles._metadata(_managed_model_path(filename))
+            architecture = metadata.get("general.architecture")
+            candidate["context_length"] = metadata.get(f"{architecture}.context_length")
+        except (runtime_profiles.ProfileError, ModelResolutionError):
+            # A read-only estimate can still use known size metadata. An
+            # actual --apply trial requires a readable model header below.
+            pass
     profile = tuning.recommend_runtime_settings(scan_hardware(), candidate)
+    if apply:
+        if entry is None:
+            err_console.print("Install this model with OMM before applying runtime settings.")
+            raise typer.Exit(1)
+        _apply_runtime_profile(filename, entry, profile, engine=engine, save=save)
+        return
     if _global_opts().json:
         _print_json(
             data={
@@ -3866,6 +3897,105 @@ def tune(
         return
     console.print(f"[bold]{candidate.get('filename') or candidate.get('name')}[/bold]")
     _print_runtime_profile(profile)
+
+
+
+def _apply_runtime_profile(filename: str, entry: dict, profile, *, engine: str | None, save: bool) -> None:
+    from dataclasses import asdict
+    from omm import runtime_profiles
+    from omm.engines import LoadOptions
+
+    opts = _global_opts()
+    daemon = None
+    selected = None
+    try:
+        selected = _select_compatibility_engine(entry, engine)
+        path = _managed_model_path(filename)
+        digest = sha256_file(path)
+        before = runtime_profiles.describe(filename, selected, digest)
+        options = runtime_profiles.proposed_options(profile, path, selected)
+        if not opts.json:
+            console.print(f"Settings to test with {_engine_label(selected)}:")
+            for key, value in asdict(options).items():
+                if key != "verify_applied" and value is not None:
+                    console.print(f"  {key}: {value}")
+            if selected == "lmstudio":
+                console.print("LM Studio's API applies context and batch size; CPU threads and GPU layers stay engine-controlled.")
+        if not opts.yes:
+            if opts.json or not _stdin_is_tty():
+                raise runtime_profiles.ProfileError("Use --yes to permit a short local settings trial in scripts.")
+            if not _ask_confirm("Temporarily load this model, run short baseline/proposed probes, then release it?"):
+                err_console.print("Cancelled; settings were not changed.")
+                return
+        _, daemon = _ensure_engine_running(selected, "tune", assume_yes=opts.yes)
+        adapter = _compatibility_adapter(selected)
+        reference = _compatibility_model_ref(filename, entry, selected)
+        previous = runtime_profiles.saved_options(filename, selected, digest)
+        baseline_options = previous or LoadOptions(
+            context_length=min(1024, options.context_length), cpu_threads=options.cpu_threads,
+            batch_size=min(128, options.context_length), gpu_layers=options.gpu_layers,
+            verify_applied=True,
+        )
+        with install_state.cleanup_guard(filename):
+            baseline = runtime_profiles.trial(path, adapter, reference, baseline_options, scan_hardware)
+            evidence = runtime_profiles.trial(path, adapter, reference, options, scan_hardware)
+            result = {"model": filename, "sha256": digest, "engine": selected,
+                      "baseline": baseline, "proposed": evidence, "saved": False,
+                      "quality_evaluated": False}
+            if not opts.json:
+                for label, item in (("Baseline", baseline), ("Proposed", evidence)):
+                    speed = item["tokens_per_second"]
+                    speed_text = f"{speed:.1f} tok/s" if speed is not None else "speed unavailable"
+                    console.print(f"{label}: generation passed, load released, {speed_text}.")
+                console.print("Short probes are noisy and do not evaluate answer quality.")
+                if not save and not opts.yes and _stdin_is_tty():
+                    save = _ask_confirm("Save the verified proposed settings for this model and engine?", default=False)
+            if save:
+                runtime_profiles.save_trial(filename, selected, path, digest, evidence,
+                                            expected_revision=before["revision"])
+                result["saved"] = True
+        if opts.json:
+            _print_json(data=result)
+        else:
+            console.print("Verified profile saved." if result["saved"] else "Trial complete; the saved profile was unchanged.")
+    except (runtime_profiles.ProfileError, RuntimeAdapterError, OSError, ValueError) as error:
+        err_console.print(f"Settings trial failed: {error}. The previous saved profile was kept.", markup=False)
+        raise typer.Exit(1) from error
+    finally:
+        if daemon is not None and selected is not None:
+            _stop_engine_daemon(selected, daemon)
+
+
+@setting_app.command(name="runtime-profile")
+@global_flags
+def runtime_profile_cmd(
+    model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
+    engine: str = typer.Option("ollama", "--engine", help="ollama or lmstudio"),
+    restore: bool = typer.Option(False, "--restore", help="Restore the previous saved profile (or defaults)."),
+) -> None:
+    """Inspect a saved runtime profile, or undo the last save without reloading models."""
+    from omm import runtime_profiles
+
+    filename, entry = _lookup_entry(_resolve_ref(model_name), registry.load_registry())
+    if entry is None:
+        _print_not_installed_error(model_name)
+        raise typer.Exit(1)
+    try:
+        digest = sha256_file(_managed_model_path(filename))
+        data = (runtime_profiles.restore(filename, engine, digest) if restore
+                else runtime_profiles.describe(filename, engine, digest))
+    except (runtime_profiles.ProfileError, OSError, ModelResolutionError) as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(1) from error
+    if _global_opts().json:
+        _print_json(data=data)
+    else:
+        console.print(f"{filename} / {engine}: {data['status']}", markup=False)
+        if data["active"] is not None:
+            for key, value in data["active"]["options"].items():
+                console.print(f"  {key}: {value}")
+        if restore:
+            console.print("Previous settings restored for the next OMM load; running models were left alone.")
 
 
 def _resolve_ref(arg: str, *, fatal: bool = True) -> str | None:
@@ -6633,12 +6763,24 @@ def verify(
                 raise typer.Exit(1)
 
         console.print(f"Verifying {filename} with {_engine_label(selected_engine)}...")
+        from omm import runtime_profiles
+
+        try:
+            saved = runtime_profiles.saved_options_for_file(filename, selected_engine, _managed_model_path(filename))
+            if saved is not None and (visible is None or not visible.loaded):
+                runtime_profiles.ensure_memory(_managed_model_path(filename), saved, scan_hardware())
+        except (runtime_profiles.ProfileError, OSError) as error:
+            err_console.print(str(error), markup=False)
+            raise typer.Exit(1) from error
         result = verify_and_record(
             filename,
             adapter,
             model_ref,
             keep_loaded=keep_loaded,
+            **({"load_options": saved} if saved is not None else {}),
         )
+        if saved is not None and result.model_was_preloaded:
+            console.print("The model was already loaded; its existing settings were preserved.")
         if result.status == "passed":
             detail = "already loaded and preserved" if result.model_was_preloaded else (
                 "left loaded as requested" if result.model_left_loaded else "test load released"
@@ -7117,6 +7259,15 @@ def run(
         f"[muted]({launcher.launch_description(chosen)})[/muted]"
     )
 
+    from omm import runtime_profiles
+
+    saved = None
+    if chosen in _VERIFY_ENGINES:
+        try:
+            saved = runtime_profiles.saved_options_for_file(filename, chosen, _managed_model_path(filename))
+        except (runtime_profiles.ProfileError, OSError, ModelResolutionError) as error:
+            err_console.print(str(error), markup=False)
+            raise typer.Exit(1) from error
     daemon_handle = None
     if chosen == "ollama":
         daemon_handle = _ensure_ollama_running("run", assume_yes=_global_opts().yes)
@@ -7124,15 +7275,32 @@ def run(
             console.print("[muted]Started Ollama in the background for this chat.[/muted]")
         console.print("[muted]Type /bye to leave the chat.[/muted]")
     try:
-        result = launcher.launch(
-            chosen,
-            model_filename=filename,
-            model_path=MODELS_DIR / filename,
-            ollama_tag=ollama_tag,
-        )
+        def launch(tag: str):
+            return launcher.launch(
+                chosen, model_filename=filename, model_path=MODELS_DIR / filename,
+                ollama_tag=tag,
+            )
+        if saved is not None:
+            if chosen == "lmstudio":
+                daemon_handle = _ensure_lmstudio_running("run", assume_yes=_global_opts().yes)
+            adapter = _compatibility_adapter(chosen)
+            model_ref = _compatibility_model_ref(filename, entry, chosen)
+            result, applied = runtime_profiles.launch_with_profile(
+                _managed_model_path(filename), adapter, model_ref, saved, scan_hardware, launch,
+            )
+            console.print("Saved profile applied to the local runtime." if applied
+                          else "Already-loaded model settings were preserved; the saved profile was not reapplied.")
+            if chosen == "lmstudio" and result.ok:
+                # Native GUI handoff intentionally leaves its model/server running.
+                daemon_handle = None
+        else:
+            result = launch(ollama_tag)
+    except (runtime_profiles.ProfileError, RuntimeAdapterError, OSError) as error:
+        err_console.print(f"Could not launch with the saved profile: {error}", markup=False)
+        raise typer.Exit(1) from error
     finally:
         if daemon_handle is not None:
-            _stop_engine_daemon("ollama", daemon_handle)
+            _stop_engine_daemon(chosen, daemon_handle)
     if not result.ok:
         err_console.print(f"[error]{result.message}[/error]")
         raise typer.Exit(1)

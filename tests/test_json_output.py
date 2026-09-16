@@ -32,3 +32,23 @@ def test_benchmark_interrupt_is_structured(isolated_omm_home, monkeypatch):
     result = CliRunner().invoke(cli.app, ["benchmark", "sample", "--json"])
     assert result.exit_code == 130
     assert json.loads(result.stdout)["status"] == "cancelled"
+
+
+def test_unexpected_failure_keeps_the_exception_and_structured_output(monkeypatch):
+    def broken_scan():
+        raise OSError("hardware query failed")
+    monkeypatch.setattr(cli, "scan_hardware", broken_scan)
+    result = CliRunner().invoke(cli.app, ["scan", "--json"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, OSError)
+    assert json.loads(result.stdout)["error"]["exit_code"] == 1
+
+
+def test_late_failure_does_not_append_a_second_json_document(monkeypatch):
+    def broken_scan():
+        cli._print_json(data={"partial": True})
+        raise OSError("late failure")
+    monkeypatch.setattr(cli, "scan_hardware", broken_scan)
+    result = CliRunner().invoke(cli.app, ["scan", "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {"partial": True}

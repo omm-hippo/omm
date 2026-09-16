@@ -556,4 +556,12 @@ def collect_report(
             f"{pending['filename']}: last checkpoint {pending.get('phase', 'unknown')}; "
             "re-run the original install command to recheck and resume.",
         ))
+    from omm.runtime_profiles import interrupted_runs
+
+    for pending in interrupted_runs():
+        checks.append(DoctorCheck(
+            "WARN", "Runtime profile cleanup",
+            f"A previous OMM run ended before confirming cleanup of {pending['alias']}. "
+            "Inspect this alias in Ollama; no model was automatically unloaded or deleted.",
+        ))
     return DoctorReport(tuple(checks))
