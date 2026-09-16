@@ -65,3 +65,14 @@ def test_train_workflow_serializes_overlapping_runs_and_drops_unused_write_scope
     assert "concurrency:\n  group: train-recommendation-model\n  cancel-in-progress: false" in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "contents: write" not in workflow
+
+
+def test_cf_worker_ci_rejects_high_severity_dependency_vulnerabilities():
+    workflow_path = ROOT / ".github" / "workflows" / "ci.yml"
+    if not workflow_path.is_file():
+        pytest.skip("GitHub workflows are excluded from the runtime Docker image")
+    workflow = workflow_path.read_text(encoding="utf-8")
+    worker_job = workflow.split("  cf-worker:", 1)[1].split("\n  homebrew-formula:", 1)[0]
+    assert worker_job.index("run: npm ci") < worker_job.index(
+        "run: npm audit --audit-level=high"
+    ) < worker_job.index("run: npm test")
