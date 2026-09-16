@@ -143,6 +143,7 @@ from omm.hub import (
     validate_repo_id,
 )
 from omm.runtime_compatibility import CompatibilityResult, PROBE_VERSION, verify_and_record
+from omm.command_reference import DOCS_BASE_URL, docs_epilog
 
 if TYPE_CHECKING:
     import questionary
@@ -321,6 +322,14 @@ def _require_json_support(command: str) -> None:
         raise typer.Exit(2)
 
 
+# The option names `global_flags` injects below. Kept next to the decorator
+# so `omm.command_reference` can mark them as shared rather than repeating
+# them on every command in docs/commands.json.
+GLOBAL_FLAG_OPTS: frozenset[str] = frozenset(
+    {"--json", "--yes", "-y", "--quiet", "-q", "--no-color"}
+)
+
+
 def global_flags(func):
     """Attach --json/--yes/--quiet/--no-color to a command so they also
     work positioned after the subcommand name (the root callback already
@@ -453,6 +462,7 @@ _ROOT_HELP_FOOTER_LINES: list[str] = [
     "  omm help COMMAND      Show help for one command",
     "  omm help --flags      Also show the flags of the commands above",
     "  omm help --all        List every command",
+    f"  Command reference: {DOCS_BASE_URL}",
     "  https://github.com/omm-hippo/omm",
 ]
 
@@ -488,7 +498,37 @@ def _help_option_requested(args: list[str]) -> bool:
     return False
 
 
-class _RootHelpGroup(typer.core.TyperGroup):
+def _command_path_of(ctx: click.Context) -> list[str]:
+    """The command path of `ctx` without the program name, e.g. ["setting"].
+
+    Walks parents rather than splitting `ctx.command_path`, which starts
+    with whatever name the binary was invoked as (`omm.exe` on Windows).
+    """
+    names: list[str] = []
+    node: click.Context | None = ctx
+    while node is not None and node.parent is not None:
+        if node.info_name:
+            names.append(node.info_name)
+        node = node.parent
+    return list(reversed(names))
+
+
+class _DocsEpilogGroup(typer.core.TyperGroup):
+    """Adds the `More about omm ...: https://omm.run/commands/...` footer to
+    every subcommand's `--help`, at the single place Click resolves a name
+    to a command object - so a new command gets its documentation link
+    without touching its decorator."""
+
+    def get_command(self, ctx: click.Context, cmd_name: str):
+        command = super().get_command(ctx, cmd_name)
+        if command is not None and not command.epilog:
+            command.epilog = docs_epilog(
+                _command_path_of(ctx) + [command.name or cmd_name]
+            )
+        return command
+
+
+class _RootHelpGroup(_DocsEpilogGroup):
     """Homebrew-style curated `omm --help`/`omm help` - a short list of
     common commands instead of the full alphabetical listing of every
     registered subcommand. Full list stays reachable via `omm help --all`.
@@ -534,6 +574,7 @@ setting_app = typer.Typer(
     help="View or change omm settings (telemetry, upload policy, version, calibration, catalog trust).",
     invoke_without_command=True,
     rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
 )
 app.add_typer(setting_app)
 upload_app = typer.Typer(
@@ -541,18 +582,21 @@ upload_app = typer.Typer(
     help="Choose what anonymous data omm may send: benchmark results, usage stats, crash reports. Each is off or ask by default. See PRIVACY.md.",
     invoke_without_command=True,
     rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
 )
 setting_app.add_typer(upload_app)
 watch_app = typer.Typer(
     name="auto-import",
     help="Automatically adopt models that Ollama, LM Studio, and similar apps download natively into the omm hub in the background. Off by default. See PRIVACY.md.",
     rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
 )
 setting_app.add_typer(watch_app)
 engine_app = typer.Typer(
     name="engine",
     help="Inspect, install, update, and remove local AI runner programs.",
     rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
 )
 app.add_typer(engine_app)
 if platform.system() == "Windows":
