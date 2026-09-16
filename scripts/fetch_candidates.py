@@ -19,6 +19,7 @@ from omm.atomic import atomic_write_text, locked  # noqa: E402
 from omm.featurize import parse_param_count_billions  # noqa: E402
 from omm.hub import CURATED_INDEX  # noqa: E402
 from omm.linker import sanitize_ollama_tag  # noqa: E402
+from omm.recommend_metadata import catalog_metadata  # noqa: E402
 from omm.search import _claims_fake_provenance, pick_gguf_file  # noqa: E402
 
 HF_SEARCH_URL = "https://huggingface.co/api/models"
@@ -77,6 +78,7 @@ def fetch_trending_candidates() -> list[dict]:
                 "filename": filename,
                 "description": f"{downloads:,} downloads on HuggingFace",
                 "provider": "huggingface",
+                **catalog_metadata(model),
             }
         )
     return candidates
