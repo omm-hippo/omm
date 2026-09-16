@@ -594,8 +594,10 @@ are excluded. A time limit requests cancellation and then allows safe cleanup
 to finish. Without these flags, the loop continues until Esc or candidate exhaustion.
 The startup notice explains what is sent and whether the configured collector is
 public. The final summary separates successful measurements, accepted uploads,
-failed sends saved for retry, and the files kept or removed. See
-[contribution sessions](docs/contribution-sessions.md).
+failed sends saved for retry, and the files kept or removed. The
+[recommendation data contribution guide](docs/contribution-sessions.md) gives a
+one-model starting point, cross-computer instructions, and the current quality-data
+limits.
 
 `omm contribute` performs a 10 GiB startup free-space preflight. Before each
 download it separately budgets the central GGUF, a worst-case full runner copy,

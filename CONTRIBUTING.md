@@ -15,7 +15,7 @@ pull request.
 | --- | --- |
 | A bug, installation problem, or feature request | [Issue templates](https://github.com/omm-hippo/omm/issues/new/choose) |
 | Documentation or code | [Development setup](#development-setup), then [Pull request workflow](#pull-request-workflow) |
-| Recommendation data from your hardware | [Contributing benchmark data](#contributing-benchmark-data-no-code-required) |
+| Recommendation data from your hardware | [Step-by-step collection guide](docs/contribution-sessions.md) |
 | A suspected vulnerability | [Private security reporting](SECURITY.md#reporting-a-vulnerability) |
 | A community conduct concern | [Code of Conduct reporting](CODE_OF_CONDUCT.md#reporting-an-issue) |
 
@@ -35,6 +35,22 @@ and the [disk-space and daemon behavior](README.md#scripting). The command
 downloads models and performs sustained local computation. Use
 `omm setting upload benchmark --ask` to request consent for each contribution
 session, or `--disable` to prevent benchmark uploads.
+
+Start with an already-installed model when possible:
+
+```sh
+omm benchmark <installed-model> --speed-runs 3 --output omm-benchmark-evidence.json
+```
+
+To cover a new model/hardware combination, begin with one bounded attempt:
+
+```sh
+omm contribute --max-minutes 30 --max-download-gb 10 --max-models 1
+```
+
+See the [recommendation data contribution guide](docs/contribution-sessions.md)
+for update checks, cross-platform expectations, public-data boundaries, and what
+the current eight-item reasoning pack can and cannot establish.
 
 ## Development setup
 
