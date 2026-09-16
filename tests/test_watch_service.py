@@ -25,9 +25,18 @@ def test_darwin_install_writes_plist_and_loads_it(fake_home, isolated_omm_home, 
     assert plist_path.exists()
     content = plist_path.read_text(encoding="utf-8")
     assert "com.omm.autoimport" in content
-    assert sys.executable in content
     assert "_auto-import-run" in content
     assert calls[0][0] == (["launchctl", "load", "-w", str(plist_path)],)
+
+    wrapper_path = watch_service._launchd_wrapper_path()
+    assert str(wrapper_path) in content
+    if sys.platform != "win32":
+        # Windows has no Unix permission bits to chmod onto st_mode; this
+        # branch is only ever run for real on macOS anyway (Darwin here is
+        # simulated via monkeypatch, not the actual host OS).
+        assert wrapper_path.stat().st_mode & 0o111  # executable
+    wrapper_content = wrapper_path.read_text(encoding="utf-8")
+    assert sys.executable in wrapper_content
 
 
 def test_darwin_uninstall_unloads_and_removes_plist(fake_home, isolated_omm_home, monkeypatch):
@@ -39,6 +48,7 @@ def test_darwin_uninstall_unloads_and_removes_plist(fake_home, isolated_omm_home
     watch_service.uninstall()
 
     assert not watch_service._launchd_plist_path().exists()
+    assert not watch_service._launchd_wrapper_path().exists()
 
 
 def test_darwin_is_installed_reflects_plist_presence(fake_home, isolated_omm_home, monkeypatch):
@@ -192,8 +202,14 @@ def test_darwin_and_linux_definitions_follow_service_argv(fake_home, isolated_om
     monkeypatch.setattr(watch_service.platform, "system", lambda: "Darwin")
     watch_service.install()
     plist = watch_service._launchd_plist_path().read_text(encoding="utf-8")
-    assert "<string>/opt/omm/omm</string>\n        <string>_auto-import-run</string>" in plist
-    assert "omm.cli" not in plist
+    wrapper_path = watch_service._launchd_wrapper_path()
+    # launchd execs the named wrapper shim (not sys.executable directly - see
+    # _launchd_wrapper_path), which forwards straight through to whatever
+    # service_argv() says should run.
+    assert f"<string>{wrapper_path}</string>\n        <string>_auto-import-run</string>" in plist
+    wrapper_content = wrapper_path.read_text(encoding="utf-8")
+    assert 'exec "/opt/omm/omm" "$@"' in wrapper_content
+    assert "omm.cli" not in wrapper_content
 
     monkeypatch.setattr(watch_service.platform, "system", lambda: "Linux")
     watch_service.install()
