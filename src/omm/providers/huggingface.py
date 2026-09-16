@@ -5,6 +5,7 @@ git history for prior behavior if something looks unfamiliar."""
 from __future__ import annotations
 
 import math
+import re
 from urllib.parse import quote
 
 from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES, read_bounded_json_response
@@ -19,6 +20,59 @@ from omm.providers.base import (
 HF_API = "https://huggingface.co/api/models/{repo_id}"
 HF_DOWNLOAD = "https://huggingface.co/{repo_id}/resolve/main/{filename}"
 HF_PATHS_INFO = "https://huggingface.co/api/models/{repo_id}/paths-info/main"
+HF_MODELS = "https://huggingface.co/api/models"
+
+# A repo id off the network is printed back to the user and pasted into the
+# next `omm install`, so only the shape hub.validate_repo_id would accept is
+# ever handed on (hub can't be imported here - it imports this module).
+_SAFE_REPO_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def fetch_gguf_quantizations(repo_id: str, limit: int = 3) -> list[str]:
+    """Most-downloaded GGUF re-uploads of `repo_id`, from HF's model tree.
+
+    This is the "Quantizations" list an HF model page shows for a
+    safetensors-only base model: repos tagged both `gguf` and
+    `base_model:quantized:<repo_id>`. Only used to build a suggestion list
+    after a resolution already failed, so it never raises - a bad response
+    just means no suggestions."""
+    import requests
+
+    limit = max(1, min(int(limit), 20))
+    try:
+        resp = requests.get(
+            HF_MODELS,
+            params=[
+                ("filter", f"base_model:quantized:{repo_id}"),
+                ("filter", "gguf"),
+                ("sort", "downloads"),
+                ("direction", "-1"),
+                ("limit", str(limit)),
+            ],
+            timeout=15,
+            stream=True,
+        )
+        resp.raise_for_status()
+        payload = read_bounded_json_response(
+            resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="HF model tree"
+        )[0]
+    except (requests.RequestException, ValueError, TypeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+
+    refs: list[str] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        candidate = entry.get("id") or entry.get("modelId")
+        if not isinstance(candidate, str) or _SAFE_REPO_ID.fullmatch(candidate) is None:
+            continue
+        if candidate not in refs:
+            refs.append(candidate)
+        if len(refs) >= limit:
+            break
+    return refs
 
 
 def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
