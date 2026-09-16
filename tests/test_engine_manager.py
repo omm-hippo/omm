@@ -24,7 +24,25 @@ def test_brew_receipt_uses_exact_local_package_identity(monkeypatch):
         return subprocess.CompletedProcess(args, 0, "not-ollama-app 9\nollama-app 1.2.3\n", "")
     monkeypatch.setattr(manager, "_query", query)
     assert manager.package_receipt("ollama").version == "1.2.3"
-    assert seen == [["/usr/local/bin/brew", "list", "--cask", "--versions"]]
+    assert seen == [["/usr/local/bin/brew", "list", "--cask", "--versions"],
+                    ["/usr/local/bin/brew", "list", "--formula", "--versions"]]
+
+
+def test_brew_formula_install_is_managed_as_a_formula_not_an_app(monkeypatch):
+    monkeypatch.setattr(manager, "platform", SimpleNamespace(system=lambda: "Darwin"))
+    monkeypatch.setattr(manager.shutil, "which", lambda name: "/brew")
+    monkeypatch.setattr(manager, "_query", lambda args: subprocess.CompletedProcess(args, 0, "ollama 0.30.10\n" if "--formula" in args else "", ""))
+    receipt = manager.package_receipt("ollama")
+    assert receipt.kind == "formula" and receipt.package_id == "ollama"
+    assert manager.command_for("update", receipt) == ["/brew", "upgrade", "--formula", "ollama"]
+
+
+def test_brew_does_not_arbitrarily_choose_between_formula_and_app(monkeypatch):
+    monkeypatch.setattr(manager, "platform", SimpleNamespace(system=lambda: "Darwin"))
+    monkeypatch.setattr(manager.shutil, "which", lambda name: "/brew")
+    monkeypatch.setattr(manager, "_query", lambda args: subprocess.CompletedProcess(args, 0, "ollama 0.30.10\n" if "--formula" in args else "ollama-app 0.30.10\n", ""))
+    with pytest.raises(manager.EngineManagementError, match="Both"):
+        manager.package_receipt("ollama")
 
 
 def test_probe_failure_is_not_the_same_as_an_absent_package(monkeypatch):

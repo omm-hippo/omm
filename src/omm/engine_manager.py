@@ -27,6 +27,7 @@ class PackageReceipt:
     package_id: str
     version: str | None
     scope: str | None = None
+    kind: str | None = None
 
 
 def _environment(*, read_only: bool = True) -> dict[str, str]:
@@ -48,17 +49,23 @@ def _query(args: list[str]) -> subprocess.CompletedProcess | None:
 def package_receipt(key: str) -> PackageReceipt | None:
     package = PACKAGES[key]
     system = platform.system()
-    if system == "Darwin" and package.brew_cask and (binary := shutil.which("brew")):
-        result = _query([binary, "list", "--cask", "--versions"])
-        if result is None or result.returncode != 0:
-            raise EngineManagementError("Could not read Homebrew's installed casks.")
-        if result and result.returncode == 0:
+    if system == "Darwin" and (package.brew_cask or package.brew_formula) and (binary := shutil.which("brew")):
+        found = []
+        for kind, package_id in (("cask", package.brew_cask), ("formula", package.brew_formula)):
+            if package_id is None:
+                continue
+            result = _query([binary, "list", f"--{kind}", "--versions"])
+            if result is None or result.returncode != 0:
+                raise EngineManagementError(f"Could not read Homebrew's installed {kind} packages.")
             matches = [line.split() for line in result.stdout.splitlines()
-                       if line.split() and line.split()[0] == package.brew_cask]
+                       if line.split() and line.split()[0] == package_id]
             if len(matches) == 1 and len(matches[0]) > 1:
-                return PackageReceipt("brew", binary, package.brew_cask, " ".join(matches[0][1:]))
-            if matches:
+                found.append(PackageReceipt("brew", binary, package_id, " ".join(matches[0][1:]), kind=kind))
+            elif matches:
                 raise EngineManagementError("Homebrew returned ambiguous package information.")
+        if len(found) > 1:
+            raise EngineManagementError("Both Ollama app and formula are installed; manage the intended package explicitly with Homebrew.")
+        return found[0] if found else None
     elif system == "Windows" and package.winget_id and (binary := shutil.which("winget")):
         result = _query([binary, "list", "--id", package.winget_id, "--exact",
                          "--source", "winget", "--disable-interactivity"])
@@ -126,8 +133,10 @@ def command_for(action: str, receipt: PackageReceipt) -> list[str]:
     if action not in {"update", "uninstall"}:
         raise ValueError("unsupported engine action")
     if receipt.manager == "brew":
+        if receipt.kind not in {None, "cask", "formula"}:
+            raise EngineManagementError("Unknown Homebrew package kind.")
         return [receipt.executable, "upgrade" if action == "update" else "uninstall",
-                "--cask", receipt.package_id]
+                "--formula" if receipt.kind == "formula" else "--cask", receipt.package_id]
     if receipt.manager == "winget":
         command = [receipt.executable, "upgrade" if action == "update" else "uninstall",
                    "--id", receipt.package_id, "--exact", "--source", "winget",

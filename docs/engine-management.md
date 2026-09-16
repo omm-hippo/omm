@@ -14,7 +14,7 @@ omm engine update ollama --yes
 omm engine uninstall lmstudio --dry-run --json
 ```
 
-변경은 현재 설치가 확인된 Homebrew cask / WinGet의 정확한 패키지 ID / Flatpak
+변경은 현재 설치가 확인된 Homebrew cask(또는 Ollama formula) / WinGet의 정확한 패키지 ID / Flatpak
 설치 범위로만 수행한다. 직접 설치나 출처 불명확한 앱은 경로를 추정해 삭제하지
 않고 수동 안내를 준다. WinGet은 수동 설치 앱도 공식 ID로 식별할 수 있으므로,
 식별 결과가 과거에 WinGet으로 설치했다는 증거라는 뜻은 아니다. Flatpak에 같은
