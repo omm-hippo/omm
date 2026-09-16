@@ -50,6 +50,40 @@ class AmbiguousModelError(ModelResolutionError):
         )
 
 
+class NoGgufFilesError(ModelResolutionError):
+    """Raised when a repo really exists on a provider but holds no .gguf file.
+
+    A safetensors-only base model (openbmb/MiniCPM5-2B, issue #340) used to be
+    reported as "not found on HuggingFace or ModelScope", which sends people
+    hunting for a typo that isn't there. The repo id is known here, so say what
+    is actually wrong and - when the provider can list them - point at the GGUF
+    re-uploads of that same base model.
+    """
+
+    def __init__(
+        self,
+        repo_id: str,
+        provider: str,
+        provider_label: str | None = None,
+        suggestions: list[str] | None = None,
+    ):
+        self.repo_id = repo_id
+        self.provider = provider
+        self.suggestions = list(suggestions or [])
+        if self.suggestions:
+            fix = "Install a GGUF build of it instead, e.g. " + self.suggestions[0]
+        else:
+            fix = (
+                "omm only installs GGUF builds. Look for one with "
+                f"`omm search {repo_id.split('/')[-1]} GGUF`."
+            )
+        super().__init__(
+            f"'{repo_id}' exists on {provider_label or provider} but has no .gguf file.",
+            fix=fix,
+            kind="no_gguf",
+        )
+
+
 class AmbiguousProviderError(ModelResolutionError):
     """Raised when a bare `org/repo` (no provider prefix) matches a repo on
     more than one provider, so the caller can ask which one instead of
