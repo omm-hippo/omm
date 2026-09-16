@@ -17,6 +17,10 @@ on it.
 > published build, use the [GitHub Releases](https://github.com/omm-hippo/omm/releases)
 > page or the version shown by your package manager.
 
+**Project guides:** [Contributing](CONTRIBUTING.md) ·
+[Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md) ·
+[Privacy](PRIVACY.md) · [MIT License](LICENSE)
+
 ## What omm does
 
 - Installs GGUF models into a central, configurable model hub.
@@ -24,11 +28,29 @@ on it.
   text-generation-webui, and KoboldCpp without silently duplicating large files.
 - Ranks models against live RAM, VRAM, operating-system, and runner state.
 - Verifies load and generation through local Ollama or LM Studio APIs.
-- Keeps every outbound channel opt-in — benchmark uploads, anonymous usage stats, and crash reports. See [PRIVACY.md](PRIVACY.md).
+- Keeps benchmark uploads, anonymous usage stats, and crash reports opt-in,
+  with a separate setting for each. Searches, downloads, and update checks
+  also use the network; see [PRIVACY.md](PRIVACY.md).
+
+## Quick start
+
+After [installing omm](#install), run these commands in order:
+
+```sh
+omm setup       # Scan hardware and choose a local AI runner
+omm recommend   # Review compatible models and choose one to install
+omm list        # Find the installed model's name
+```
+
+Use that name with `omm verify <name>` to check local load and generation,
+then `omm run <name>` to use it. If setup or a runner is not working, start
+with `omm doctor` and `omm log --lines 5`. A recommendation estimates fit;
+verification checks the selected model on your machine.
 
 ## Table of contents
 
 - [What omm does](#what-omm-does)
+- [Quick start](#quick-start)
 - [Install](#install)
   - [Windows](#windows)
   - [macOS](#macos)
@@ -39,11 +61,13 @@ on it.
   - [Windows portable and Winget status](#windows-portable-and-winget-status)
   - [Supported platforms](#supported-platforms)
   - [Local AI runners](#local-ai-runners)
+  - [Storage location](#storage-location)
 - [Usage](#usage)
   - [Setup & discovery](#setup--discovery)
   - [Install & manage models](#install--manage-models)
   - [Verify & benchmark](#verify--benchmark)
   - [Update & configuration](#update--configuration)
+  - [Local logs and automatic import](#local-logs-and-automatic-import)
   - [Scripting](#scripting)
 - [Self-hosted benchmark data](#self-hosted-benchmark-data)
 - [Signed recommendation data](#signed-recommendation-data)
@@ -397,7 +421,7 @@ Purge (`-Purge` on PowerShell, `--purge` on sh) removes only known omm-owned pat
 ```sh
 omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
 omm engine install [ENGINE]  # Install one supported local runner, or choose interactively
-omm scan [--json]  # Print a hardware, runner, and model summary (RAM, VRAM, OS)
+omm scan [--details] [--json]  # Memory, storage, runners, and models; --details adds OS/CPU/GPU
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
@@ -482,14 +506,37 @@ omm setting catalog-status  # Show signed recommendation data and rollback snaps
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
 ```
 
+### Local logs and automatic import
+
+```sh
+omm log --lines 5                 # Read the last five command summaries
+omm log --grep install            # Filter the local history by text
+omm setting auto-import status   # Inspect the setting and OS service registration
+omm setting auto-import enable   # Register background import of models from local runners
+omm setting auto-import disable  # Stop and unregister background import
+```
+
+Logs live under `OMM_HOME/logs/` and are not uploaded by the data-sharing
+channels. Review and redact a log before attaching it to an issue.
+
+Automatic import is off by default. Enabling it registers a per-user
+background service that adopts newly discovered models without a prompt.
+It requires the optional `watch` dependencies (`watchdog` and `plyer`);
+for a pip installation, use `python -m pip install "omm-model[watch]"` in
+that installation's environment. The status command reports configuration
+and service registration; it does not prove that a particular file has
+been imported. Check `omm list` after the file has finished downloading.
+
 ### Scripting
 
 All errors, warnings, and confirmation prompts print to stderr. For `search`,
 `list`, `info`, `tune`, `scan`, `doctor`, and `recommend`, `--json` makes
 stdout a single structured document that is safe to pipe (for example,
-`omm list --json | jq .`). `benchmark --json` appends its JSON report after
-the human-readable evidence summary, so treat the saved `--output` file as
-the machine-readable artifact instead of piping the complete stdout stream.
+`omm list --json | jq .`). `benchmark --json` also writes a single JSON report to stdout; `--output` saves
+the same evidence as a file. Supported commands emit a structured error document
+when their command body fails before producing a result, and use exit status 130
+with `status: "cancelled"` when interrupted. Argument-parser errors still use
+stderr and exit status 2. Successful data shapes remain unchanged.
 
 For commands that document `--yes`/`-y`, pass it to skip their confirmation
 prompts, or use the command-specific flag (`install --skip-unfit`, `install
@@ -567,7 +614,7 @@ Explicitly configure the endpoint and opt in before uploading:
 
 ```sh
 omm setting telemetry --endpoint http://127.0.0.1:8000/v1/benchmarks
-omm setting upload --enable
+omm setting upload benchmark --enable
 ```
 
 Loopback ingestion needs no token. Once `LOCALFIT_INGEST_TOKEN` is set, every
@@ -637,11 +684,12 @@ restores the most recent different snapshot.
 python -m venv .venv
 source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]" -r requirements-train.txt
-python -m pytest -q
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for platform-specific setup, scoped
-checks, signed-head requirements, and pull-request conventions.
+Run tests with the disposable home and model-hub setup in
+[CONTRIBUTING.md](CONTRIBUTING.md#development-setup). That guide also covers
+platform-specific setup, scoped checks, signed-head requirements, and
+pull-request conventions.
 
 ## Contributing
 
