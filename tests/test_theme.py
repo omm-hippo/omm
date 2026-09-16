@@ -71,7 +71,8 @@ def test_light_preset_is_legible_on_a_light_background():
     assert styles["accent"].bold is True
     assert styles["muted"].dim is True
     assert styles["value"].color is None
-    assert styles["label"].dim is True and styles["rule"].dim is True
+    assert styles["label"].dim is not True
+    assert styles["rule"].dim is True
 
 
 def test_dark_preset_differs_from_light_in_accent_warning_and_value():
@@ -83,10 +84,8 @@ def test_dark_preset_differs_from_light_in_accent_warning_and_value():
         assert dark[role].bold == light[role].bold
 
 
-def test_dark_preset_uses_the_omm_site_tokens_verbatim():
-    """The website's terminal mock-ups reproduce real omm output in these
-    colours (omm-site design/DIRECTION.md tokens); the real CLI must
-    match them so the two don't drift apart."""
+def test_dark_preset_keeps_brand_accents_and_readable_information():
+    """Keep brand accents; labels need more contrast than decorative rules (#339)."""
     styles = theme.build_rich_theme("dark").styles
     assert styles["accent"].color.triplet.hex == "#ffb000"
     assert styles["warning"].color.triplet.hex == "#ffb000"
@@ -94,8 +93,9 @@ def test_dark_preset_uses_the_omm_site_tokens_verbatim():
     assert styles["error"].color.triplet.hex == "#f2645a"
     assert styles["value"].color.triplet.hex == "#f4f4f4"
     assert styles["heading"].bold is True
-    for role in ("muted", "label", "rule"):
-        assert styles[role].color.triplet.hex == "#767676"
+    assert styles["label"].color == styles["value"].color
+    assert styles["muted"].color.triplet.hex == "#a8a8a8"
+    assert styles["rule"].color.triplet.hex == "#767676"
 
 
 def test_high_contrast_alert_roles_use_inverse_video_blocks():

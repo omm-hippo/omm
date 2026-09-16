@@ -1,11 +1,15 @@
 # Privacy
 
-`omm` runs entirely on your machine. Nothing about your use of it leaves your
-computer unless you turn on one of the three outbound channels below. Every one
-is **off or "ask" by default**, each is controlled separately, and each can be
-turned off at any time.
+`omm` manages models and calls local AI runners on your machine. Searching
+model providers, downloading models or runners, refreshing recommendation
+data, and checking for updates use network requests independently of the
+three data-sharing channels below. Disabling uploads does not disable those
+requests.
 
-Turn everything off:
+Benchmark telemetry, usage statistics, and crash reports are each **off or
+"ask" by default**, controlled separately, and can be turned off at any time.
+
+Turn off all three data-sharing channels:
 
 ```sh
 omm setting upload benchmark --disable
@@ -16,25 +20,37 @@ omm setting telemetry --endpoint none
 
 All three channels share one gateway (a Cloudflare Worker) that accepts writes
 only after a small proof-of-work and forwards them to a Firebase Realtime
-Database. Requests are not authenticated and the gateway does not log client IP
-addresses.
+Database. Uploads do not require a user account. The gateway code does not add
+client IP addresses to these records; network requests still expose an IP
+address to the destination and its infrastructure.
 
 ---
 
 ## 1. Benchmark telemetry — `omm setting upload benchmark`
 
-**When:** after `omm install`'s optional speed check, and during `omm contribute`.
+**When:** after `omm install`'s optional speed check, `omm benchmark`, and during
+`omm contribute`, subject to the benchmark-upload policy.
 **Default:** ask each time.
 **Purpose:** train the `omm recommend` model that predicts tokens/sec for a
 given model on given hardware.
 
-**Sent:** which model was benchmarked (its repo id, GGUF filename and file
-digest), measured tokens/sec and the run parameters, model parameter counts and
-quantisation, engine and engine version, and a hardware profile (CPU model and
-core counts, a CPU benchmark score, RAM size, unified-memory flag). The full
-field list is `database.rules.json` under the `telemetry` node; the gateway
-that actually enforces it on every write is `cf-worker/src/validate.ts`.
-This node is world-readable — it is the training data.
+**Sent:** model identifiers and available source/file metadata (including
+repository id, filename, size, or digest), measured tokens/sec, quality
+summaries, model parameter counts and quantisation, engine/version, and
+hardware characteristics. Current v8/v9 records use locally computed CPU/GPU
+scores and tiers instead of raw CPU/GPU model names, alongside architecture,
+core counts, RAM/VRAM, and the unified-memory flag. Where available, v9 adds
+memory estimates, observed memory pressure, host CPU load, and measurement
+quality. Ollama runtime settings are included when known; LM Studio records
+omit settings that omm cannot observe. Older stored records can still contain
+the CPU model field used before v8.
+
+The full allow-list is enforced by
+[`cf-worker/src/validate.ts`](cf-worker/src/validate.ts), with the corresponding
+schema in [`database.rules.json`](database.rules.json) under `telemetry`.
+**This node is publicly readable** — it is the training data. Benchmark
+records can identify the model you tested; the separate usage channel below
+does not send model names.
 
 **Never sent:** file paths, usernames, your search queries, or any generated
 model text.
