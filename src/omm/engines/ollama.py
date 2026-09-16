@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import time
+import uuid
 
 from omm.engines.base import (
     LoadOptions,
@@ -28,6 +30,7 @@ class OllamaAdapter:
 
     def __init__(self, base_url: str = DEFAULT_OLLAMA_URL) -> None:
         self._client = LoopbackJsonClient(base_url)
+        self._profile_models: set[str] = set()
 
     def health(self) -> RuntimeHealth:
         try:
@@ -93,8 +96,8 @@ class OllamaAdapter:
                     "model": selected.key,
                     "prompt": "",
                     "stream": False,
-                    "keep_alive": -1,
-                    "options": {"num_ctx": options.context_length},
+                    "keep_alive": 120 if options.verify_applied else -1,
+                    "options": options.ollama_options(),
                 },
                 timeout=120,
                 default_failure="load_failed",
@@ -103,12 +106,22 @@ class OllamaAdapter:
             refreshed = find_runtime_model(self.list_models(), RuntimeModelRef(selected.key))
             if refreshed is None or not refreshed.loaded:
                 raise RuntimeAdapterError("load_failed", "Ollama did not report the model as loaded")
+            observed = None
+            if options.verify_applied:
+                rows = self._client.request("GET", "/api/ps").data.get("models", [])
+                row = next((row for row in rows if isinstance(row, dict)
+                            and (row.get("name") or row.get("model")) == refreshed.key), {})
+                actual = row.get("context_length")
+                if type(actual) is not int or actual != options.context_length:
+                    raise RuntimeAdapterError("load_failed", "Ollama did not confirm the requested context length")
+                observed = {"context_length": actual}
             return LoadReceipt(
                 refreshed,
                 refreshed.instance_id or refreshed.key,
                 False,
                 True,
                 options,
+                observed,
             )
         except RuntimeAdapterError as original:
             try:
@@ -146,7 +159,7 @@ class OllamaAdapter:
             # down that runner and initializes the model a second time. Only
             # pin the context for a model OMM loaded itself; a preloaded user's
             # unknown runtime settings must stay untouched.
-            generation_options["num_ctx"] = load_options.context_length
+            generation_options.update(load_options.ollama_options())
         base_payload = {
             "model": receipt.model.key,
             "prompt": request.prompt,
@@ -154,7 +167,7 @@ class OllamaAdapter:
             "options": generation_options,
         }
         if getattr(receipt, "loaded_by_omm", False):
-            base_payload["keep_alive"] = -1
+            base_payload["keep_alive"] = 120 if isinstance(load_options, LoadOptions) and load_options.verify_applied else -1
         try:
             response = self._client.request(
                 "POST",
@@ -187,7 +200,53 @@ class OllamaAdapter:
         text = response.get("response")
         if not isinstance(text, str) or not text.strip():
             raise RuntimeAdapterError("empty_response", "Ollama returned no text")
-        return ProbeResult(text)
+        count, duration = response.get("eval_count"), response.get("eval_duration")
+        speed = None
+        if (isinstance(count, int) and not isinstance(count, bool) and count > 0
+                and isinstance(duration, (int, float)) and not isinstance(duration, bool)
+                and 0 < count <= request.max_output_tokens
+                and math.isfinite(duration) and duration > 0):
+            speed = count / (duration / 1e9)
+            if not math.isfinite(speed):
+                speed = None
+        return ProbeResult(text, speed, count if isinstance(count, int) and not isinstance(count, bool) else None)
+
+    def create_profile_model(self, model: RuntimeModelRef, options: LoadOptions, *, on_prepare=None) -> RuntimeModelRef:
+        """Create a temporary, unique configuration alias; never change the base."""
+        existing = self.list_models()
+        selected = find_runtime_model(existing, model)
+        if selected is None:
+            raise RuntimeAdapterError("model_not_visible", "the source model is not visible")
+        key = "omm-profile-" + uuid.uuid4().hex
+        if find_runtime_model(existing, RuntimeModelRef(key)) is not None:
+            raise RuntimeAdapterError("load_failed", "temporary profile name already exists")
+        if on_prepare is not None:
+            on_prepare(RuntimeModelRef(key))
+        self._profile_models.add(key)
+        try:
+            response = self._client.request("POST", "/api/create", payload={
+                "model": key, "from": selected.key, "parameters": options.ollama_options(), "stream": False,
+            }, timeout=120, default_failure="load_failed")
+            if response.data.get("status") != "success":
+                raise RuntimeAdapterError("load_failed", "Ollama did not confirm the temporary profile")
+        except BaseException:
+            self.remove_profile_model(RuntimeModelRef(key))
+            raise
+        return RuntimeModelRef(key)
+
+    def remove_profile_model(self, model: RuntimeModelRef) -> None:
+        if model.key not in self._profile_models:
+            raise ValueError("this adapter did not create that temporary profile")
+        selected = find_runtime_model(self.list_models(), model)
+        if selected is None:
+            self._profile_models.discard(model.key)
+            return
+        if selected.loaded and not self.unload(LoadReceipt(selected, selected.key, False, True)).unloaded:
+            raise RuntimeAdapterError("unload_failed", "temporary profile could not be unloaded")
+        self._client.request("DELETE", "/api/delete", payload={"model": model.key}, allow_empty=True)
+        if find_runtime_model(self.list_models(), model) is not None:
+            raise RuntimeAdapterError("unload_failed", "temporary profile deletion was not confirmed")
+        self._profile_models.discard(model.key)
 
     def unload(self, receipt: LoadReceipt) -> UnloadResult:
         if not receipt.loaded_by_omm:

@@ -1,3 +1,5 @@
+import json
+
 from typer.testing import CliRunner
 
 from omm import cli, linker, onboarding
@@ -44,12 +46,15 @@ def test_engine_install_aborts_when_checklist_is_cancelled(monkeypatch):
     assert calls == []
 
 
-def test_engine_install_json_flag_warns_since_unsupported(monkeypatch):
-    monkeypatch.setattr(onboarding, "run_engine_checklist", lambda console: [])
+def test_engine_install_json_flag_rejects_without_starting_installer(monkeypatch):
+    calls = []
+    monkeypatch.setattr(onboarding, "run_engine_checklist", lambda console: calls.append(True) or [])
 
     result = runner.invoke(cli.app, ["engine", "install", "--json"])
 
-    assert "--json has no effect on `omm engine install`" in result.output
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"]["command"] == "engine install"
+    assert calls == []
 
 
 def test_engine_install_with_name_skips_checklist(monkeypatch):

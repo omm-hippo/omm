@@ -207,9 +207,8 @@ class GlobalOptions:
     command_body_ran: bool = False
 
 
-# Commands whose output --json actually restructures. Every other command
-# silently ignores the flag - warn instead so a script piping --json from
-# one of them doesn't get plain-text garbage with exit code 0 (see #81).
+# Commands whose output --json actually restructures. Other combinations fail
+# before execution, rather than running mutations with misleading plain output.
 _JSON_CAPABLE = {
     "search",
     "list",
@@ -225,6 +224,7 @@ _JSON_CAPABLE = {
     "engine doctor",
     "engine update",
     "engine uninstall",
+    "setting runtime-profile",
 }
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
@@ -241,6 +241,7 @@ _YES_CAPABLE = {
     "run",
     "engine update",
     "engine uninstall",
+    "tune",
 }
 
 
@@ -277,6 +278,47 @@ def _json_command_failure(command: str, exit_code: int, *, cancelled: bool = Fal
                 "message": "Operation cancelled." if cancelled else "Command failed; see stderr for details.",
             },
         })
+
+
+def _command_name(ctx) -> str:
+    parts = []
+    while ctx.parent is not None:
+        parts.append(ctx.command.name or ctx.info_name)
+        ctx = ctx.parent
+    return " ".join(reversed(parts))
+
+
+def _requested_command_name(ctx) -> str | None:
+    """Resolve registered command names without invoking command callbacks.
+
+    Root/intermediate groups only have boolean flags. Stop at the leaf so model
+    names and positional values cannot be mistaken for additional commands.
+    """
+    command = ctx.command
+    names = []
+    for token in ctx.meta.get("omm_raw_args", []):
+        if token.startswith("-"):
+            continue
+        getter = getattr(command, "get_command", None)
+        if getter is None:
+            break
+        child = getter(ctx, token)
+        if child is None:
+            return None
+        names.append(child.name or token)
+        command = child
+        if not hasattr(command, "get_command"):
+            break
+    return " ".join(names)
+
+
+def _require_json_support(command: str) -> None:
+    if _global_opts().json and command not in _JSON_CAPABLE:
+        _print_json(data={"schema_version": 1, "status": "error", "error": {
+            "code": "unsupported_json", "command": command or "omm", "exit_code": 2,
+            "message": "This command does not support JSON output; no command action was performed.",
+        }})
+        raise typer.Exit(2)
 
 
 def global_flags(func):
@@ -341,19 +383,11 @@ def global_flags(func):
         if opts.no_color:
             console.no_color = True
             err_console.no_color = True
-        # Full path minus the root program name, not ctx.command.name alone:
-        # a nested command can share its bare name with an unrelated
-        # top-level one (e.g. "omm engine install" vs "omm install") - the
-        # bare name would false-match _JSON_CAPABLE/_YES_CAPABLE and swallow
-        # a warning the nested command actually needs.
-        # ctx.command_path starts with whatever program name click derived
-        # from sys.argv[0] ('omm.exe' for the frozen Windows build), so
-        # strip exactly that - not a hardcoded "omm ".
-        command_name = ctx.command_path.removeprefix(f"{ctx.find_root().info_name} ")
-        if opts.json and command_name not in _JSON_CAPABLE:
-            err_console.print(
-                f"[warning]--json has no effect on `omm {command_name}` - ignoring it.[/warning]"
-            )
+        # Use the canonical full path: engine install differs from install,
+        # and ls must retain list's capabilities regardless of the program name.
+        command_name = _command_name(ctx)
+        if ctx.invoked_subcommand is None:
+            _require_json_support(command_name)
         if opts.yes and command_name not in _YES_CAPABLE:
             err_console.print(
                 f"[warning]--yes has no effect on `omm {command_name}` - it has no confirmation prompt to skip.[/warning]"
@@ -374,6 +408,12 @@ def global_flags(func):
         except KeyboardInterrupt:
             _json_command_failure(command_name, 130, cancelled=True)
             raise typer.Exit(130) from None
+        except Exception:
+            # Keep the original exception for main's diagnostics/crash policy,
+            # while giving JSON consumers one failure document when no result
+            # was produced. Never append a second JSON object to a report.
+            _json_command_failure(command_name, 1)
+            raise
 
     wrapper.__signature__ = original_sig.replace(parameters=new_params)
     return wrapper
@@ -387,6 +427,8 @@ def marks_command_body_ran(func):
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        if _global_opts().json:
+            _require_json_support(_command_name(_get_current_context()()))
         _global_opts().command_body_ran = True
         return func(*args, **kwargs)
 
@@ -458,6 +500,7 @@ class _RootHelpGroup(typer.core.TyperGroup):
         formatter.write(_ROOT_HELP_TEXT)
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        ctx.meta["omm_raw_args"] = list(args)
         ctx.meta["omm_help_requested"] = _help_option_requested(args)
         ctx.meta["omm_json_requested"] = option_requested(args, "--json")
         ctx.meta["omm_engine_read_only"] = engine_read_only_args(args)
@@ -719,17 +762,28 @@ def _root(
     no_color_flag: Annotated[bool, typer.Option("--no-color", help="Disable colored output.")] = False,
 ) -> None:
     if version_flag:
-        typer.echo(f"omm {_omm_version()}")
+        if json_flag or ctx.meta.get("omm_json_requested"):
+            _print_json(data={"version": _omm_version()})
+        else:
+            typer.echo(f"omm {_omm_version()}")
         raise typer.Exit(0)
     opts = ctx.ensure_object(GlobalOptions)
-    opts.json = opts.json or json_flag
+    opts.json = opts.json or json_flag or bool(ctx.meta.get("omm_json_requested"))
     opts.yes = opts.yes or yes_flag
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
+    unresolved_json_command = False
+    if opts.json and not ctx.meta.get("omm_help_requested"):
+        requested = _requested_command_name(ctx)
+        if requested is not None:
+            _require_json_support(requested)
+        else:
+            unresolved_json_command = True
     side_effect_minimal_mode = (
         ctx.invoked_subcommand in {"doctor", "help", "engine"}
         or bool(ctx.meta.get("omm_help_requested"))
         or bool(ctx.meta.get("omm_engine_read_only"))
+        or unresolved_json_command
     )
     theme = (
         doctor_mod.read_theme_read_only()
@@ -1658,7 +1712,7 @@ def _maybe_run_onboarding(ctx: typer.Context) -> None:
     every subcommand, not just the bare `omm` invocation, so a first-time
     user running e.g. `omm contribute` directly still gets the wizard
     before their command executes."""
-    if ctx.invoked_subcommand in _SKIP_ONBOARDING_SUBCOMMANDS:
+    if _global_opts().json or ctx.invoked_subcommand in _SKIP_ONBOARDING_SUBCOMMANDS:
         return
     if load_config().get("onboarding_completed", True):
         return
@@ -1775,7 +1829,7 @@ def _maybe_auto_import(ctx: typer.Context) -> None:
     Runs on the first interactive command after install (not from
     install.sh itself - curl|sh has no TTY for questionary's prompts) and
     never again once the flag is set, whether or not anything was found."""
-    if ctx.invoked_subcommand in _SKIP_AUTO_IMPORT_SUBCOMMANDS:
+    if _global_opts().json or ctx.invoked_subcommand in _SKIP_AUTO_IMPORT_SUBCOMMANDS:
         return
     config = load_config()
     if config.get("external_scan_done"):
@@ -3875,8 +3929,14 @@ def _print_runtime_profile(profile: tuning.RuntimeProfile) -> None:
 @global_flags
 def tune(
     model_name: str = typer.Argument(..., autocompletion=complete_install_name),
+    apply: bool = typer.Option(False, "--apply", help="Temporarily load and verify the proposed settings."),
+    save: bool = typer.Option(False, "--save", help="Save settings only after a successful --apply trial."),
+    engine: str | None = typer.Option(None, "--engine", help="Runtime for the trial: ollama or lmstudio."),
 ) -> None:
     """Recommend context, GPU offload, threads, and batch size for a model."""
+    if save and not apply:
+        err_console.print("--save requires --apply so settings are verified before saving.")
+        raise typer.Exit(2)
     model_name = _resolve_ref(model_name)
     filename, entry = _lookup_entry(model_name, registry.load_registry())
 
@@ -3910,7 +3970,24 @@ def tune(
                 candidate,
             )
 
+    if entry is not None:
+        from omm import runtime_profiles
+
+        try:
+            metadata = runtime_profiles._metadata(_managed_model_path(filename))
+            architecture = metadata.get("general.architecture")
+            candidate["context_length"] = metadata.get(f"{architecture}.context_length")
+        except (runtime_profiles.ProfileError, ModelResolutionError):
+            # A read-only estimate can still use known size metadata. An
+            # actual --apply trial requires a readable model header below.
+            pass
     profile = tuning.recommend_runtime_settings(scan_hardware(), candidate)
+    if apply:
+        if entry is None:
+            err_console.print("Install this model with OMM before applying runtime settings.")
+            raise typer.Exit(1)
+        _apply_runtime_profile(filename, entry, profile, engine=engine, save=save)
+        return
     if _global_opts().json:
         _print_json(
             data={
@@ -3927,6 +4004,105 @@ def tune(
         return
     console.print(f"[bold]{candidate.get('filename') or candidate.get('name')}[/bold]")
     _print_runtime_profile(profile)
+
+
+
+def _apply_runtime_profile(filename: str, entry: dict, profile, *, engine: str | None, save: bool) -> None:
+    from dataclasses import asdict
+    from omm import runtime_profiles
+    from omm.engines import LoadOptions
+
+    opts = _global_opts()
+    daemon = None
+    selected = None
+    try:
+        selected = _select_compatibility_engine(entry, engine)
+        path = _managed_model_path(filename)
+        digest = sha256_file(path)
+        before = runtime_profiles.describe(filename, selected, digest)
+        options = runtime_profiles.proposed_options(profile, path, selected)
+        if not opts.json:
+            console.print(f"Settings to test with {_engine_label(selected)}:")
+            for key, value in asdict(options).items():
+                if key != "verify_applied" and value is not None:
+                    console.print(f"  {key}: {value}")
+            if selected == "lmstudio":
+                console.print("LM Studio's API applies context and batch size; CPU threads and GPU layers stay engine-controlled.")
+        if not opts.yes:
+            if opts.json or not _stdin_is_tty():
+                raise runtime_profiles.ProfileError("Use --yes to permit a short local settings trial in scripts.")
+            if not _ask_confirm("Temporarily load this model, run short baseline/proposed probes, then release it?"):
+                err_console.print("Cancelled; settings were not changed.")
+                return
+        _, daemon = _ensure_engine_running(selected, "tune", assume_yes=opts.yes)
+        adapter = _compatibility_adapter(selected)
+        reference = _compatibility_model_ref(filename, entry, selected)
+        previous = runtime_profiles.saved_options(filename, selected, digest)
+        baseline_options = previous or LoadOptions(
+            context_length=min(1024, options.context_length), cpu_threads=options.cpu_threads,
+            batch_size=min(128, options.context_length), gpu_layers=options.gpu_layers,
+            verify_applied=True,
+        )
+        with install_state.cleanup_guard(filename):
+            baseline = runtime_profiles.trial(path, adapter, reference, baseline_options, scan_hardware)
+            evidence = runtime_profiles.trial(path, adapter, reference, options, scan_hardware)
+            result = {"model": filename, "sha256": digest, "engine": selected,
+                      "baseline": baseline, "proposed": evidence, "saved": False,
+                      "quality_evaluated": False}
+            if not opts.json:
+                for label, item in (("Baseline", baseline), ("Proposed", evidence)):
+                    speed = item["tokens_per_second"]
+                    speed_text = f"{speed:.1f} tok/s" if speed is not None else "speed unavailable"
+                    console.print(f"{label}: generation passed, load released, {speed_text}.")
+                console.print("Short probes are noisy and do not evaluate answer quality.")
+                if not save and not opts.yes and _stdin_is_tty():
+                    save = _ask_confirm("Save the verified proposed settings for this model and engine?", default=False)
+            if save:
+                runtime_profiles.save_trial(filename, selected, path, digest, evidence,
+                                            expected_revision=before["revision"])
+                result["saved"] = True
+        if opts.json:
+            _print_json(data=result)
+        else:
+            console.print("Verified profile saved." if result["saved"] else "Trial complete; the saved profile was unchanged.")
+    except (runtime_profiles.ProfileError, RuntimeAdapterError, OSError, ValueError) as error:
+        err_console.print(f"Settings trial failed: {error}. The previous saved profile was kept.", markup=False)
+        raise typer.Exit(1) from error
+    finally:
+        if daemon is not None and selected is not None:
+            _stop_engine_daemon(selected, daemon)
+
+
+@setting_app.command(name="runtime-profile")
+@global_flags
+def runtime_profile_cmd(
+    model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
+    engine: str = typer.Option("ollama", "--engine", help="ollama or lmstudio"),
+    restore: bool = typer.Option(False, "--restore", help="Restore the previous saved profile (or defaults)."),
+) -> None:
+    """Inspect a saved runtime profile, or undo the last save without reloading models."""
+    from omm import runtime_profiles
+
+    filename, entry = _lookup_entry(_resolve_ref(model_name), registry.load_registry())
+    if entry is None:
+        _print_not_installed_error(model_name)
+        raise typer.Exit(1)
+    try:
+        digest = sha256_file(_managed_model_path(filename))
+        data = (runtime_profiles.restore(filename, engine, digest) if restore
+                else runtime_profiles.describe(filename, engine, digest))
+    except (runtime_profiles.ProfileError, OSError, ModelResolutionError) as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(1) from error
+    if _global_opts().json:
+        _print_json(data=data)
+    else:
+        console.print(f"{filename} / {engine}: {data['status']}", markup=False)
+        if data["active"] is not None:
+            for key, value in data["active"]["options"].items():
+                console.print(f"  {key}: {value}")
+        if restore:
+            console.print("Previous settings restored for the next OMM load; running models were left alone.")
 
 
 def _resolve_ref(arg: str, *, fatal: bool = True) -> str | None:
@@ -6697,12 +6873,24 @@ def verify(
                 raise typer.Exit(1)
 
         console.print(f"Verifying {filename} with {_engine_label(selected_engine)}...")
+        from omm import runtime_profiles
+
+        try:
+            saved = runtime_profiles.saved_options_for_file(filename, selected_engine, _managed_model_path(filename))
+            if saved is not None and (visible is None or not visible.loaded):
+                runtime_profiles.ensure_memory(_managed_model_path(filename), saved, scan_hardware())
+        except (runtime_profiles.ProfileError, OSError) as error:
+            err_console.print(str(error), markup=False)
+            raise typer.Exit(1) from error
         result = verify_and_record(
             filename,
             adapter,
             model_ref,
             keep_loaded=keep_loaded,
+            **({"load_options": saved} if saved is not None else {}),
         )
+        if saved is not None and result.model_was_preloaded:
+            console.print("The model was already loaded; its existing settings were preserved.")
         if result.status == "passed":
             detail = "already loaded and preserved" if result.model_was_preloaded else (
                 "left loaded as requested" if result.model_left_loaded else "test load released"
@@ -7188,6 +7376,15 @@ def run(
         f"[muted]({launcher.launch_description(chosen)})[/muted]"
     )
 
+    from omm import runtime_profiles
+
+    saved = None
+    if chosen in _VERIFY_ENGINES:
+        try:
+            saved = runtime_profiles.saved_options_for_file(filename, chosen, _managed_model_path(filename))
+        except (runtime_profiles.ProfileError, OSError, ModelResolutionError) as error:
+            err_console.print(str(error), markup=False)
+            raise typer.Exit(1) from error
     daemon_handle = None
     if chosen == "ollama":
         daemon_handle = _ensure_ollama_running("run", assume_yes=_global_opts().yes)
@@ -7195,15 +7392,32 @@ def run(
             console.print("[muted]Started Ollama in the background for this chat.[/muted]")
         console.print("[muted]Type /bye to leave the chat.[/muted]")
     try:
-        result = launcher.launch(
-            chosen,
-            model_filename=filename,
-            model_path=MODELS_DIR / filename,
-            ollama_tag=ollama_tag,
-        )
+        def launch(tag: str):
+            return launcher.launch(
+                chosen, model_filename=filename, model_path=MODELS_DIR / filename,
+                ollama_tag=tag,
+            )
+        if saved is not None:
+            if chosen == "lmstudio":
+                daemon_handle = _ensure_lmstudio_running("run", assume_yes=_global_opts().yes)
+            adapter = _compatibility_adapter(chosen)
+            model_ref = _compatibility_model_ref(filename, entry, chosen)
+            result, applied = runtime_profiles.launch_with_profile(
+                _managed_model_path(filename), adapter, model_ref, saved, scan_hardware, launch,
+            )
+            console.print("Saved profile applied to the local runtime." if applied
+                          else "Already-loaded model settings were preserved; the saved profile was not reapplied.")
+            if chosen == "lmstudio" and result.ok:
+                # Native GUI handoff intentionally leaves its model/server running.
+                daemon_handle = None
+        else:
+            result = launch(ollama_tag)
+    except (runtime_profiles.ProfileError, RuntimeAdapterError, OSError) as error:
+        err_console.print(f"Could not launch with the saved profile: {error}", markup=False)
+        raise typer.Exit(1) from error
     finally:
         if daemon_handle is not None:
-            _stop_engine_daemon("ollama", daemon_handle)
+            _stop_engine_daemon(chosen, daemon_handle)
     if not result.ok:
         err_console.print(f"[error]{result.message}[/error]")
         raise typer.Exit(1)

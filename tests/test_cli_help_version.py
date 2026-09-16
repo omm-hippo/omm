@@ -200,11 +200,9 @@ def test_help_all_shows_setting_group_description():
 
 
 def test_help_accepts_global_flags_after_the_subcommand_name():
-    # help_cmd was deliberately left off @global_flags at one point, so
-    # `omm help --quiet`/`--json`/etc errored with "No such option" even
-    # though the README promises the 4 global flags work on every command
-    # (see #81).
-    for flag in ("--quiet", "-q", "--json", "--yes", "-y", "--no-color"):
+    # Human help accepts the presentation/confirmation flags after its name.
+    # --json has a separate unsupported_json contract because help is text.
+    for flag in ("--quiet", "-q", "--yes", "-y", "--no-color"):
         result = runner.invoke(cli.app, ["help", flag])
         assert result.exit_code == 0, (flag, result.stdout, result.stderr)
 

@@ -432,6 +432,7 @@ omm scan [--details] [--json]  # Memory, storage, runners, and models; --details
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
+omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
 omm search <query> [--json] [--skip-unfit] [--skip-ms] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated, Hugging Face, and ModelScope sources
 omm help [command]  # Show help, same as --help
 ```
@@ -512,6 +513,7 @@ omm setting upload crash --enable|--disable|--ask  # Opt-in crash-report policy
 omm setting memory-guard --policy ask|block|observe  # Protect local runtime loads from live memory pressure
 omm setting theme [--set NAME]  # Show or change omm's output color theme
 omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
+omm setting runtime-profile <name> [--engine ollama|lmstudio] [--restore] [--json]  # Inspect or undo saved settings
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
 omm setting catalog-status [--json]  # Show trust, rollback snapshots, and per-check evaluation evidence
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
@@ -537,6 +539,11 @@ for a pip installation, use `python -m pip install "omm-model[watch]"` in
 that installation's environment. The status command reports configuration
 and service registration; it does not prove that a particular file has
 been imported. Check `omm list` after the file has finished downloading.
+
+Saved runtime profiles are tied to the exact model file and engine. `omm verify`
+and supported `omm run` paths use them on the next owned load; running models
+keep their current settings. See [runtime profiles](docs/runtime-profiles.md)
+for engine capabilities, memory checks, cleanup, and verification limits.
 
 ### Scripting
 
@@ -566,9 +573,13 @@ the exact flags and placement of a specific command:
 - `--quiet` / `-q` — suppress progress bars and background status/hint lines (e.g. download progress, "Verifying checksum...", scan's "Run: omm link" nudge); errors, warnings, and the result of what you asked for still print
 - `--no-color` — disable ANSI colors on omm's own console output and its download progress bar; the `NO_COLOR` environment variable does the same
 
-Commands using the shared flag wrapper warn when `--json` or `--yes` has no
-effect. Exit codes are consistent across commands: `0` success, `1` failure,
-and `2` usage error (bad flag or argument).
+Unsupported `--json` combinations return a single `unsupported_json` error
+document and exit 2 before command actions or startup prompts run. JSON mode
+never opens the first-run setup/import dialogs, including on a terminal.
+`omm --json --version` returns a version document; explicit `--help` still
+shows normal help. The shared flag wrapper warns when `--yes` has no effect.
+Exit codes are consistent across commands: `0` success, `1` failure, and `2`
+usage error (bad flag or argument).
 
 `rm`, `ls`, and `up` are short aliases for `uninstall`, `list`, and `upgrade`.
 
