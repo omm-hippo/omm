@@ -10,6 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import threading
 
 from filelock import Timeout
 
@@ -18,6 +19,7 @@ from omm.atomic import atomic_write_text, backup_corrupt_file, locked
 from omm.downloader import DownloadError
 
 _CURRENT: ContextVar[InstallRecord | None] = ContextVar("omm_install_record", default=None)
+_HELD_LOCKS: ContextVar[frozenset[tuple[Path, int]]] = ContextVar("omm_install_locks", default=frozenset())
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
@@ -98,8 +100,16 @@ def cleanup_guard(filename: str):
     path = _path(filename)
     if path.parent.is_symlink() or path.is_symlink():
         raise DownloadError("Refusing a symlinked install journal.")
-    with locked(path, timeout=0):
+    key = (path, threading.get_ident())
+    if key in _HELD_LOCKS.get():
         yield
+        return
+    with locked(path, timeout=0):
+        token = _HELD_LOCKS.set(_HELD_LOCKS.get() | {key})
+        try:
+            yield
+        finally:
+            _HELD_LOCKS.reset(token)
 
 
 def pending_records() -> list[dict]:
@@ -141,7 +151,7 @@ def tracked_install(func):
         if path.is_symlink() or path.parent.is_symlink():
             raise DownloadError("Refusing a symlinked install journal.")
         try:
-            with locked(path, timeout=0):
+            with cleanup_guard(filename):
                 prior = read_record(filename)
                 if prior is None and path.exists():
                     backup_corrupt_file(path)

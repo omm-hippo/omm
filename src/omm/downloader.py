@@ -22,6 +22,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -81,6 +83,69 @@ class DownloadError(Exception):
 
 class DownloadCancelled(DownloadError):
     pass
+
+
+class DownloadBudgetSkipped(DownloadError):
+    """The remaining session allowance cannot cover this response body."""
+
+
+class DownloadBudget:
+    def __init__(self, limit: int | None = None, on_exhausted: Callable[[], None] | None = None):
+        self.limit = limit
+        self.used = 0
+        self.on_exhausted = on_exhausted
+        self._lock = threading.Lock()
+
+    @property
+    def remaining(self) -> int | None:
+        return None if self.limit is None else max(0, self.limit - self.used)
+
+    def record(self, count: int) -> None:
+        with self._lock:
+            self.used += count
+
+    def exhausted(self) -> None:
+        if self.on_exhausted is not None:
+            self.on_exhausted()
+        raise DownloadCancelled("Session download limit reached")
+
+
+_ACTIVE_BUDGET: ContextVar[DownloadBudget | None] = ContextVar("omm_download_budget", default=None)
+
+
+@contextmanager
+def download_budget_scope(budget: DownloadBudget):
+    token = _ACTIVE_BUDGET.set(budget)
+    try:
+        yield
+    finally:
+        _ACTIVE_BUDGET.reset(token)
+
+
+def _download_chunks(response, expected_bytes: int | None):
+    budget = _ACTIVE_BUDGET.get()
+    if budget is None or budget.limit is None:
+        for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
+            if budget is not None:
+                budget.record(len(chunk))
+            yield chunk
+        return
+    if expected_bytes is not None and expected_bytes > budget.remaining:
+        raise DownloadBudgetSkipped("This model would exceed the remaining download allowance.")
+    received = 0
+    # Capped transfers are sequential. A fresh iterator reads the next bounded
+    # part of the same streamed HTTP body, so the final read can be smaller
+    # than a normal chunk. Retries share this same counter.
+    while expected_bytes is None or received < expected_bytes:
+        remaining = budget.remaining
+        if not remaining:
+            budget.exhausted()
+        chunk = next(response.iter_content(chunk_size=min(_CHUNK_SIZE, remaining)), b"")
+        if not chunk:
+            break
+        budget.record(len(chunk))
+        received += len(chunk)
+        yield chunk
 
 
 class InsufficientDiskSpaceError(DownloadError):
@@ -520,7 +585,7 @@ def _download_range_worker(
                 last_commit_at = time.monotonic()
 
             try:
-                for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
+                for chunk in _download_chunks(resp, expected_len):
                     if not chunk:
                         continue
                     if written + len(chunk) > expected_len:
@@ -606,6 +671,7 @@ def _run_range_workers(
             with ThreadPoolExecutor(max_workers=len(pending)) as executor:
                 futures = [
                     executor.submit(
+                        copy_context().run,
                         _download_range_worker,
                         url,
                         part_path,
@@ -859,7 +925,7 @@ def _download_single_stream(
                 filename=dest.name,
             )
             with part_path.open("ab") as f:
-                for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
+                for chunk in _download_chunks(resp, expected_response_bytes):
                     if chunk:
                         try:
                             f.write(chunk)
@@ -899,6 +965,12 @@ def _attempt_download(
     no_color: bool = False,
 ) -> None:
     sidecar_path = _sidecar_path(part_path)
+    budget = _ACTIVE_BUDGET.get()
+    if budget is not None and budget.limit is not None:
+        if sidecar_path.exists():
+            raise DownloadError("A capped download cannot adopt an existing parallel transfer.")
+        _download_single_stream(url, dest, part_path, stop_check, quiet=quiet, no_color=no_color)
+        return
     probed: tuple[int, bool, str | None] | None = None
 
     if part_path.exists() and sidecar_path.exists():

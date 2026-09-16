@@ -270,6 +270,8 @@ jobs:
           cache-dependency-path: cf-worker/package-lock.json
       - name: Install locked dependencies
         run: npm ci
+      - name: Reject high-severity dependency vulnerabilities
+        run: npm audit --audit-level=high
       - name: Run vitest
         run: npm test
       - name: Type-check
