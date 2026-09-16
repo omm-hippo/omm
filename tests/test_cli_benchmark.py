@@ -154,6 +154,20 @@ def test_benchmark_json_never_prompts_under_ask_policy(isolated_omm_home, monkey
     assert json.loads(result.stdout) == _full_report()
 
 
+def test_benchmark_json_upload_failure_stays_on_stderr(isolated_omm_home, monkeypatch):
+    config.update_config(telemetry_send_policy="always")
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
+    sent = []
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) and False)
+    result = runner.invoke(cli.app, ["benchmark", "small:latest", "--json"])
+    assert result.exit_code == 0, result.output
+    assert len(sent) == 1
+    assert json.loads(result.stdout) == _full_report()
+    assert "Telemetry not sent" in result.stderr
+
+
 def test_benchmark_global_yes_is_forwarded_to_daemon_start(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)

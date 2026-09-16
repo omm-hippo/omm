@@ -421,7 +421,7 @@ Purge (`-Purge` on PowerShell, `--purge` on sh) removes only known omm-owned pat
 ```sh
 omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
 omm engine install [ENGINE]  # Install one supported local runner, or choose interactively
-omm scan [--json]  # Print a hardware, runner, and model summary (RAM, VRAM, OS)
+omm scan [--details] [--json]  # Memory, storage, runners, and models; --details adds OS/CPU/GPU
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
@@ -532,9 +532,11 @@ been imported. Check `omm list` after the file has finished downloading.
 All errors, warnings, and confirmation prompts print to stderr. For `search`,
 `list`, `info`, `tune`, `scan`, `doctor`, and `recommend`, `--json` makes
 stdout a single structured document that is safe to pipe (for example,
-`omm list --json | jq .`). `benchmark --json` appends its JSON report after
-the human-readable evidence summary, so treat the saved `--output` file as
-the machine-readable artifact instead of piping the complete stdout stream.
+`omm list --json | jq .`). `benchmark --json` also writes a single JSON report to stdout; `--output` saves
+the same evidence as a file. Supported commands emit a structured error document
+when their command body fails before producing a result, and use exit status 130
+with `status: "cancelled"` when interrupted. Argument-parser errors still use
+stderr and exit status 2. Successful data shapes remain unchanged.
 
 For commands that document `--yes`/`-y`, pass it to skip their confirmation
 prompts, or use the command-specific flag (`install --skip-unfit`, `install
