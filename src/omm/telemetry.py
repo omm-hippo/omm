@@ -358,12 +358,6 @@ def _post_event(event: dict[str, Any]) -> bool:
 
 
 def send_event(event: dict[str, Any], force: bool = False) -> bool:
-    from omm import network_policy
-
-    if not network_policy.uploads_allowed():
-        log_attempt("skipped_network_mode", network_policy.current_mode())
-        _set_send_status(SendStatus("skipped_network_mode"))
-        return False
     config_data = load_config()
     if not force and config_data.get("telemetry_send_policy") != "always":
         log_attempt("skipped_opt_out")
@@ -413,10 +407,6 @@ def flush_pending(max_retries: int = _DEFAULT_MAX_RETRIES_PER_FLUSH) -> int:
     """Best-effort resend of previously-failed events. Retries at most
     `max_retries` events per call so a large backlog can't stall an
     unrelated command. Returns how many were resent successfully."""
-    from omm import network_policy
-
-    if not network_policy.uploads_allowed():
-        return 0
     if (
         isinstance(max_retries, bool)
         or not isinstance(max_retries, int)

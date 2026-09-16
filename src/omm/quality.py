@@ -813,11 +813,7 @@ def _lmstudio_request_json(
     so this new LM Studio transport can never change _request_json's
     already-tested Ollama behavior."""
     try:
-        from omm import auth
-
-        return LoopbackJsonClient(
-            f"http://127.0.0.1:{port}", token=auth.token_for("lmstudio")
-        ).request(
+        return LoopbackJsonClient(f"http://127.0.0.1:{port}").request(
             method,
             path,
             payload=payload,

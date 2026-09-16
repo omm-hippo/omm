@@ -12,33 +12,16 @@ import pytest
 
 from omm import (
     calibration,
-    auth,
     catalog,
     cli,
     config,
     hardware,
     linker,
-    network_policy,
     package_metadata,
     predictor,
     registry,
     scan_import,
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset_network_policy():
-    """A saved/one-shot mode is process-global, so it must not leak tests."""
-    network_policy.reset_for_tests()
-    yield
-    network_policy.reset_for_tests()
-
-
-@pytest.fixture(autouse=True)
-def _reset_session_credentials():
-    auth._SESSION_TOKENS.clear()
-    yield
-    auth._SESSION_TOKENS.clear()
 
 
 @pytest.fixture

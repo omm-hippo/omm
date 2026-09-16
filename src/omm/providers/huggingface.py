@@ -9,7 +9,6 @@ import re
 from urllib.parse import quote
 
 from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES, read_bounded_json_response
-from omm import auth
 from omm.providers.base import (
     ModelResolutionError,
     coerce_count,
@@ -52,7 +51,6 @@ def fetch_gguf_quantizations(repo_id: str, limit: int = 3) -> list[str]:
             ],
             timeout=15,
             stream=True,
-            headers=auth.huggingface_headers(),
         )
         resp.raise_for_status()
         payload = read_bounded_json_response(
@@ -86,26 +84,13 @@ def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
     import requests
 
     try:
-        resp = requests.get(
-            HF_API.format(repo_id=repo_id), timeout=15, stream=True,
-            headers=auth.huggingface_headers(),
-        )
+        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15, stream=True)
         resp.raise_for_status()
     except requests.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
-            if auth.token_for("huggingface"):
-                detail = (
-                    "the token was rejected or this gated model still needs "
-                    "model-specific approval on Hugging Face"
-                )
-            else:
-                detail = (
-                    "authentication is required; run `omm auth login huggingface`. "
-                    "A gated model may also require separate approval on its Hugging Face page"
-                )
             raise ModelResolutionError(
-                f"HF repo '{repo_id}' could not be accessed: {detail}.",
+                f"HF repo '{repo_id}' is private or gated - requires an access token.",
                 kind="not_found",
             ) from e
         if status == 404:
@@ -156,10 +141,7 @@ def fetch_repo_param_count_b(repo_id: str) -> float | None:
     import requests
 
     try:
-        resp = requests.get(
-            HF_API.format(repo_id=repo_id), timeout=15, stream=True,
-            headers=auth.huggingface_headers(),
-        )
+        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15, stream=True)
         resp.raise_for_status()
     except requests.RequestException:
         return None
@@ -196,10 +178,7 @@ def fetch_repo_metadata(repo_id: str) -> dict:
     import requests
 
     try:
-        resp = requests.get(
-            HF_API.format(repo_id=repo_id), timeout=15, stream=True,
-            headers=auth.huggingface_headers(),
-        )
+        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15, stream=True)
         resp.raise_for_status()
         payload = read_bounded_json_response(
             resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="HF repo metadata"
@@ -256,7 +235,6 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
             json={"paths": [filename]},
             timeout=15,
             stream=True,
-            headers=auth.huggingface_headers(),
         )
         resp.raise_for_status()
     except requests.RequestException as e:
@@ -291,10 +269,7 @@ def remote_file_size(repo_id: str, filename: str) -> int | None:
 
     url = HF_DOWNLOAD.format(repo_id=repo_id, filename=quote(filename, safe="/"))
     try:
-        response = requests.head(
-            url, timeout=15, allow_redirects=False,
-            headers=auth.huggingface_headers(),
-        )
+        response = requests.head(url, timeout=15, allow_redirects=False)
         response.raise_for_status()
     except requests.RequestException:
         return None

@@ -161,7 +161,6 @@ def _https_get(url: str, **kwargs):
     import requests
 
     current_url = url
-    supplied_headers = kwargs.pop("headers", {})
     for redirect_count in range(_MAX_REDIRECTS + 1):
         if urlparse(current_url).scheme.lower() != "https":
             kind = (
@@ -170,13 +169,7 @@ def _https_get(url: str, **kwargs):
                 else "HTTPS-to-HTTP download redirect"
             )
             raise DownloadError(f"Refusing {kind}: {current_url}")
-        from omm import auth, network_policy
-
-        headers = {**auth.headers_for_url(current_url), **supplied_headers}
-        with network_policy.model_transfer():
-            response = requests.get(
-                current_url, allow_redirects=False, headers=headers, **kwargs
-            )
+        response = requests.get(current_url, allow_redirects=False, **kwargs)
         location = response.headers.get("Location")
         if response.status_code not in {301, 302, 303, 307, 308} or not location:
             final_url = str(getattr(response, "url", current_url))

@@ -426,13 +426,11 @@ omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnab
 omm engine install [ENGINE]  # Install one supported local runner, or choose interactively
 omm engine status [ENGINE] [--json]  # Separate application, package version, and local API state
 omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
-omm engine security [ollama|lmstudio] [--json]  # Show this-computer-only / external / unknown listener scope
-omm engine security ollama --fix-local-only  # Restart only a proven OMM-owned server after impact + consent
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm scan [--details] [--json]  # Memory, storage, runners, and models; --details adds OS/CPU/GPU
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
-omm report [--include os|network|policies|checks] [--save PATH]  # Preview an allow-listed local support report; never upload it
+omm report [--include os|policies|checks] [--save PATH]  # Preview an allow-listed local support report; never upload it
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
@@ -470,11 +468,11 @@ omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `omm info` and `omm fit` both work on a model that is not installed yet, so a search result can be inspected before downloading several GB; `omm info` describes the model, `omm fit` answers whether it runs on this machine. `search`/`install` mark models predicted not to run on this machine's hardware in red.
 
-Before a normal install, OMM shows a source card with the provider,
-repository, file, expected size/location, GGUF format, and the HTTPS/size/
-SHA-256 checks it plans to perform. Afterward it reports the checks actually
-completed. “SHA-256 matched” means the bytes match the provider or pinned
-digest; it does not claim the file is non-malicious. `--quiet`, piped/
+Before a normal interactive install, OMM shows a source card with the
+provider, repository, file, expected size/location, GGUF format, and the
+HTTPS/size/SHA-256 checks it plans to perform. Afterward it reports the checks
+actually completed. “SHA-256 matched” means the bytes match the provider or
+pinned digest; it does not claim the file is non-malicious. `--quiet`, piped/
 non-interactive use, and internal contribution flows keep this extra
 presentation out of scripted output.
 
@@ -506,30 +504,16 @@ runtime or loading an unloaded model, sends one short deterministic prompt,
 requires a non-empty answer, and stops or unloads only what OMM started for
 the check. It never deletes the model or stores the generated answer. Use
 `--yes` for unattended confirmation and `--keep-loaded` to preserve a model
-OMM loaded for the check. LM Studio API authentication reads `LM_API_TOKEN`
-first, then the native OS secret store configured by `omm auth login
-lmstudio`; it never writes a token to `config.json` or `.env`. Compatibility
-status is stored locally in `models.json` and is
+OMM loaded for the check. LM Studio API authentication reads
+`LM_API_TOKEN` from the process environment and never writes it to
+`config.json`. Compatibility status is stored locally in `models.json` and is
 shown by `omm info`.
-
-Hugging Face follows the same environment-first rule with `HF_TOKEN`, then
-the native store configured by `omm auth login huggingface`. Request only the
-read access needed for model downloads. Login does not grant access to a
-gated model; accept that model's separate approval terms on Hugging Face.
-
-```sh
-omm auth login huggingface   # Hidden prompt; native Keychain/Credential Manager/Secret Service only
-omm auth login lmstudio
-omm auth status [huggingface|lmstudio] [--json]
-omm auth logout [huggingface|lmstudio]
-```
 
 ### Update & configuration
 
 ```sh
 omm update  # Update a canonical OMM Git-source install; package installs print their manager command
 omm setting  # Interactive menu for outbound data, version, theme, calibration, and catalog trust
-omm setting network --mode online|models-only|offline  # Scope OMM-started external network work
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
 omm setting upload  # Show all three outbound-data policies (benchmark / usage / crash); see PRIVACY.md
@@ -544,14 +528,6 @@ omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require sig
 omm setting catalog-status [--json]  # Show trust, rollback snapshots, and per-check evaluation evidence
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
 ```
-
-`online` preserves existing behavior and each upload consent. `models-only`
-allows model search/listing, signed recommendation updates, provider metadata,
-and model downloads while suppressing statistics/error/usage uploads and OMM
-update checks. `offline` allows loopback engine APIs and verified local caches
-only. Add the one-shot global `--offline` flag before or after a command to
-avoid changing the saved setting. These modes do not control communications
-that Ollama or LM Studio starts independently.
 
 ### Local logs and automatic import
 
@@ -582,8 +558,7 @@ for engine capabilities, memory checks, cleanup, and verification limits.
 ### Scripting
 
 All errors, warnings, and confirmation prompts print to stderr. For `search`,
-`list`, `info`, `tune`, `scan`, `doctor`, `recommend`, `auth status`, `engine
-security`, `setting network`, and `report`, `--json` makes
+`list`, `info`, `tune`, `scan`, `doctor`, `recommend`, and `report`, `--json` makes
 stdout a single structured document that is safe to pipe (for example,
 `omm list --json | jq .`). `benchmark --json` also writes a single JSON report to stdout; `--output` saves
 the same evidence as a file. Supported commands emit a structured error document
@@ -607,7 +582,6 @@ the exact flags and placement of a specific command:
 - `--yes` / `-y` — skip confirmation prompts
 - `--quiet` / `-q` — suppress progress bars and background status/hint lines (e.g. download progress, "Verifying checksum...", scan's "Run: omm link" nudge); errors, warnings, and the result of what you asked for still print
 - `--no-color` — disable ANSI colors on omm's own console output and its download progress bar; the `NO_COLOR` environment variable does the same
-- `--offline` — block external network work for this invocation without changing the saved network mode
 
 Unsupported `--json` combinations return a single `unsupported_json` error
 document and exit 2 before command actions or startup prompts run. JSON mode

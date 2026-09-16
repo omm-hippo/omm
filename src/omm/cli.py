@@ -56,7 +56,6 @@ from omm import (
     launcher,
     linker,
     memory_guard as memory_guard_mod,
-    network_policy,
     onboarding,
     package_metadata,
     predictor,
@@ -189,7 +188,7 @@ def _get_current_context():
 
 @dataclass
 class GlobalOptions:
-    """Merged state for the global flags, shared via ctx.obj. A value
+    """Merged state for the 4 global flags, shared via ctx.obj. A value
     given after the subcommand name always overrides one given before it;
     see global_flags()."""
 
@@ -198,7 +197,6 @@ class GlobalOptions:
     yes: bool = False
     quiet: bool = False
     no_color: bool = False
-    offline: bool = False
     pending_telemetry_notice: int = 0
     # True once a command body has actually started running. Click's eager
     # `--help` option prints and exits from the *sub*command's context,
@@ -224,12 +222,9 @@ _JSON_CAPABLE = {
     "setting catalog-status",
     "engine status",
     "engine doctor",
-    "engine security",
-    "auth status",
-    "setting network",
-    "report",
     "engine update",
     "engine uninstall",
+    "report",
     "setting runtime-profile",
 }
 
@@ -247,7 +242,6 @@ _YES_CAPABLE = {
     "run",
     "engine update",
     "engine uninstall",
-    "engine security",
     "report",
     "tune",
 }
@@ -330,10 +324,10 @@ def _require_json_support(command: str) -> None:
 
 
 def global_flags(func):
-    """Attach the global flags to a command so they also
+    """Attach --json/--yes/--quiet/--no-color to a command so they also
     work positioned after the subcommand name (the root callback already
     covers positioning before it). Rewrites the wrapped function's
-    inspect.Signature so Typer registers the extra Click options without
+    inspect.Signature so Typer registers 4 extra Click options without
     every command function having to redeclare them. Values merge into
     the same GlobalOptions ctx.obj the root callback populated; a value
     given here (post-subcommand) always wins over one given before the
@@ -374,18 +368,6 @@ def global_flags(func):
             default=False,
             annotation=Annotated[bool, typer.Option("--no-color", help="Disable colored output.")],
         ),
-        inspect.Parameter(
-            "offline_flag",
-            inspect.Parameter.KEYWORD_ONLY,
-            default=False,
-            annotation=Annotated[
-                bool,
-                typer.Option(
-                    "--offline",
-                    help="Block OMM's external network work for this command only.",
-                ),
-            ],
-        ),
     ]
 
     @functools.wraps(func)
@@ -400,9 +382,6 @@ def global_flags(func):
             opts.quiet = True
         if kwargs.pop("no_color_flag", False):
             opts.no_color = True
-        if kwargs.pop("offline_flag", False):
-            opts.offline = True
-            network_policy.set_mode("offline")
         if opts.no_color:
             console.no_color = True
             err_console.no_color = True
@@ -578,12 +557,6 @@ engine_app = typer.Typer(
     rich_markup_mode=None,
 )
 app.add_typer(engine_app)
-auth_app = typer.Typer(
-    name="auth",
-    help="Manage provider credentials without storing tokens in OMM config files.",
-    rich_markup_mode=None,
-)
-app.add_typer(auth_app)
 if platform.system() == "Windows":
     # Legacy cp949/cp1252 consoles cannot encode every model name or symbol.
     # Preserve their configured encoding but replace unsupported glyphs rather
@@ -789,17 +762,7 @@ def _root(
     yes_flag: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompts. For scripting.")] = False,
     quiet_flag: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress progress bars and background status/hint lines (errors and results still print).")] = False,
     no_color_flag: Annotated[bool, typer.Option("--no-color", help="Disable colored output.")] = False,
-    offline_flag: Annotated[
-        bool,
-        typer.Option("--offline", help="Block OMM's external network work for this command only."),
-    ] = False,
 ) -> None:
-    offline_requested = (
-        offline_flag
-        or option_requested(ctx.meta.get("omm_raw_args", []), "--offline")
-        or "--offline" in sys.argv[1:]
-    )
-    network_policy.configure(config_mod.CONFIG_PATH, offline_override=offline_requested)
     if version_flag:
         if json_flag or ctx.meta.get("omm_json_requested"):
             _print_json(data={"version": _omm_version()})
@@ -811,7 +774,6 @@ def _root(
     opts.yes = opts.yes or yes_flag
     opts.quiet = opts.quiet or quiet_flag
     opts.no_color = opts.no_color or no_color_flag
-    opts.offline = opts.offline or offline_requested
     unresolved_json_command = False
     if opts.json and not ctx.meta.get("omm_help_requested"):
         requested = _requested_command_name(ctx)
@@ -849,7 +811,6 @@ def _root(
         opts.command_body_ran = True
         _maybe_run_onboarding(ctx)
         console.print(f"Ω omm {_version_line(_installed_commit())}")
-        console.print(f"[muted]Network: {network_policy.current_mode()}[/muted]")
         console.print(f"[muted]{_telemetry_destination_line()}[/muted]")
         raise typer.Exit(0)
     _maybe_run_onboarding(ctx)
@@ -1345,129 +1306,6 @@ def setup_cmd() -> None:
     config_mod.update_config(onboarding_completed=True)
 
 
-@auth_app.command(name="login")
-@global_flags
-def auth_login_cmd(
-    provider: str = typer.Argument(..., help="huggingface or lmstudio"),
-    token_stdin: bool = typer.Option(
-        False,
-        "--token-stdin",
-        help="Read one token from standard input instead of showing a hidden prompt.",
-    ),
-) -> None:
-    """Save a provider token in the native OS secret store when available."""
-    import getpass
-    from omm import auth
-
-    try:
-        provider = auth.normalize_provider(provider)
-    except auth.CredentialError as error:
-        err_console.print(str(error), markup=False)
-        raise typer.Exit(2) from error
-    env_name = auth.ENVIRONMENT_VARIABLES[provider]
-    if auth.token_source(provider) == "environment":
-        console.print(
-            f"{provider}: authenticated from {env_name}. Environment variables have highest priority; nothing was stored."
-        )
-        return
-    if provider == "huggingface":
-        console.print(
-            "Use a fine-grained/read token with only the model access you need. "
-            "A gated model's approval is separate from login and must be completed on Hugging Face."
-        )
-    else:
-        console.print("This token is used only with LM Studio's loopback local API.")
-    if auth.secure_store_name() is None:
-        console.print(
-            f"[warning]No supported native secret store is available. OMM will not ask for or persist a token.[/warning]"
-        )
-        console.print(
-            f"Set {env_name} in the shell/session that runs OMM. No .env or config.json fallback is used."
-        )
-        return
-    if token_stdin:
-        token = sys.stdin.read(4097)
-        if len(token) > 4096:
-            err_console.print("Token input is too long.")
-            raise typer.Exit(2)
-    else:
-        if not _stdin_is_tty():
-            err_console.print("Use --token-stdin, or set the session environment variable instead.")
-            raise typer.Exit(2)
-        token = getpass.getpass("Token (hidden): ")
-    try:
-        result = auth.store_token(provider, token)
-    except auth.CredentialError as error:
-        err_console.print(str(error), markup=False)
-        raise typer.Exit(1) from error
-    if result["stored"]:
-        console.print(f"[success]{provider}: saved in {auth.secure_store_name()}.[/success]")
-    else:
-        console.print(
-            f"[warning]{provider}: the native secret store is unavailable for storage, so the token was not persisted.[/warning]"
-        )
-        console.print(
-            f"Use {env_name} for each shell/session. OMM did not write the token to .env or config.json."
-        )
-
-
-@auth_app.command(name="status")
-@global_flags
-def auth_status_cmd(
-    provider: str | None = typer.Argument(None, help="Optional: huggingface or lmstudio"),
-) -> None:
-    """Show credential source and priority without revealing a token."""
-    from omm import auth
-
-    try:
-        providers = [auth.normalize_provider(provider)] if provider else list(auth.PROVIDERS)
-    except auth.CredentialError as error:
-        err_console.print(str(error), markup=False)
-        raise typer.Exit(2) from error
-    rows = [auth.status(item) for item in providers]
-    if _global_opts().json:
-        _print_json(data=rows)
-        return
-    table = _table(title="Authentication")
-    table.add_column("Provider")
-    table.add_column("Status")
-    table.add_column("Source")
-    table.add_column("Priority")
-    for row in rows:
-        table.add_row(
-            str(row["provider"]),
-            "authenticated" if row["authenticated"] else "not authenticated",
-            str(row["source"]),
-            f"{row['environment_variable']} → native secret store → no storage",
-        )
-    console.print(table)
-
-
-@auth_app.command(name="logout")
-@global_flags
-def auth_logout_cmd(
-    provider: str | None = typer.Argument(None, help="Optional: huggingface or lmstudio; omit for both"),
-) -> None:
-    """Delete OMM's native-store credential; environment variables remain active."""
-    from omm import auth
-
-    try:
-        providers = [auth.normalize_provider(provider)] if provider else list(auth.PROVIDERS)
-    except auth.CredentialError as error:
-        err_console.print(str(error), markup=False)
-        raise typer.Exit(2) from error
-    for item in providers:
-        try:
-            result = auth.logout(item)
-        except auth.CredentialError as error:
-            err_console.print(f"{item}: {error}", markup=False)
-            raise typer.Exit(1) from error
-        message = "native-store credential removed" if result["removed"] else "no native-store credential found"
-        if result["environment_active"]:
-            message += f"; {auth.ENVIRONMENT_VARIABLES[item]} is still active"
-        console.print(f"{item}: {message}.")
-
-
 @engine_app.command(name="install")
 @global_flags
 def engine_install_cmd(
@@ -1549,87 +1387,6 @@ def engine_doctor_cmd(
         raise typer.Exit(1)
 
 
-@engine_app.command(name="security")
-@global_flags
-def engine_security_cmd(
-    engine: str | None = typer.Argument(
-        None, autocompletion=complete_engine_key, help="ollama or lmstudio; omit for both"
-    ),
-    fix_local_only: bool = typer.Option(
-        False,
-        "--fix-local-only",
-        help="Restart only a positively identified OMM-owned server on loopback.",
-    ),
-) -> None:
-    """Show whether local runtime servers accept connections from other devices."""
-    from omm import engine_security
-
-    if engine is not None:
-        key = engine.strip().casefold()
-        if key not in {"ollama", "lmstudio"}:
-            err_console.print("engine must be ollama or lmstudio", markup=False)
-            raise typer.Exit(2)
-        targets = [key]
-    else:
-        targets = ["ollama", "lmstudio"]
-    if fix_local_only and len(targets) != 1:
-        err_console.print("Name one engine when using --fix-local-only.")
-        raise typer.Exit(2)
-    try:
-        items = [engine_security.inspect(key) for key in targets]
-    except engine_security.EngineSecurityError as error:
-        err_console.print(str(error), markup=False)
-        raise typer.Exit(1) from error
-
-    if fix_local_only:
-        item = items[0]
-        if item["status"] == "external_allowed" and item.get("owned_by_omm"):
-            if not _global_opts().json:
-                console.print("Planned change:")
-                console.print("  - Stop the Ollama server that this OMM process record still owns.")
-                console.print("  - Existing local clients will disconnect and in-memory model work will stop.")
-                console.print("  - Restart Ollama on 127.0.0.1 only; saved model files stay unchanged.")
-            if not _global_opts().yes:
-                if _global_opts().json or not _stdin_is_tty():
-                    err_console.print("Review the impact above, then pass --yes to apply it.")
-                    raise typer.Exit(1)
-                if not _ask_confirm("Restart this OMM-owned Ollama server as local-only?"):
-                    err_console.print("Cancelled.")
-                    raise typer.Exit(0)
-        try:
-            items = [engine_security.fix_local_only(targets[0])]
-        except engine_security.EngineSecurityError as error:
-            err_console.print(str(error), markup=False)
-            raise typer.Exit(1) from error
-
-    if _global_opts().json:
-        _print_json(data=items)
-        return
-    labels = {
-        "local_only": "This computer only",
-        "external_allowed": "External connections allowed",
-        "unknown": "Could not determine",
-    }
-    table = _table(title="Engine server security")
-    table.add_column("Engine")
-    table.add_column("Access")
-    table.add_column("Listener")
-    table.add_column("What OMM knows")
-    for item in items:
-        listeners = ", ".join(
-            f"{row['address']}:{row['port']}" for row in item.get("listeners", [])
-        ) or "not visible"
-        ownership = "OMM-owned" if item.get("owned_by_omm") else "not owned by OMM"
-        table.add_row(
-            str(item["engine"]), labels[str(item["status"])], listeners,
-            f"{item['reason']}; {ownership}",
-        )
-    console.print(table)
-    console.print(
-        "[muted]This reports server listening scope only. OMM does not control network activity started independently by Ollama or LM Studio.[/muted]"
-    )
-
-
 def _change_engine(engine: str, action: str, *, dry_run: bool) -> None:
     from omm import engine_manager
     import shlex
@@ -1648,11 +1405,6 @@ def _change_engine(engine: str, action: str, *, dry_run: bool) -> None:
             console.print(shlex.join(plan["command"]), markup=False)
             console.print("Preview only; no package changes were made.")
         return
-    try:
-        network_policy.require("package", f"an engine {action} through a package manager")
-    except network_policy.NetworkModeError as error:
-        err_console.print(str(error), markup=False)
-        raise typer.Exit(1) from error
     if not opts.json:
         console.print(shlex.join(plan["command"]), markup=False)
         console.print("OMM model files are kept. The package manager may restart the runner.")
@@ -1671,12 +1423,7 @@ def _change_engine(engine: str, action: str, *, dry_run: bool) -> None:
             err_console.print(line, markup=False, highlight=False)
     try:
         result = engine_manager.execute_action(plan, on_output=on_output)
-    except (
-        engine_manager.EngineManagementError,
-        network_policy.NetworkModeError,
-        OSError,
-        FileLockTimeout,
-    ) as error:
+    except (engine_manager.EngineManagementError, OSError, FileLockTimeout) as error:
         if opts.quiet:
             for line in recent_output:
                 err_console.print(line, markup=False, highlight=False)
@@ -1876,8 +1623,6 @@ def _installed_commit() -> str | None:
 def _remote_head_commit(ref: str = "main") -> str | None:
     """Latest commit on the given ref of the omm repo, via `git ls-remote`
     (no GitHub API rate limit, no auth needed for a public repo)."""
-    if not network_policy.updates_allowed():
-        return None
     try:
         result = subprocess.run(
             ["git", "ls-remote", _BARE_REPO_URL, ref],
@@ -2021,8 +1766,6 @@ def _spawn_bg_version_check() -> None:
 
 
 def _maybe_start_update_check(ctx: typer.Context) -> None:
-    if not network_policy.updates_allowed():
-        return
     if ctx.invoked_subcommand in _SKIP_UPDATE_CHECK_SUBCOMMANDS:
         return
     installed = _installed_commit()
@@ -3194,13 +2937,6 @@ def _perform_update(branch: str, *, same_branch: bool = True) -> subprocess.Comp
     """Serialize `_perform_update_unlocked` behind a self-update lock so two
     concurrent `omm update` (or channel switch) invocations can't race each
     other over SRC_DIR."""
-    if not network_policy.updates_allowed():
-        return subprocess.CompletedProcess(
-            [], 1, stdout="", stderr=(
-                f"Network mode is {network_policy.current_mode()}; OMM update and package-manager "
-                "network work are blocked. Run `omm setting network --mode online` first."
-            )
-        )
     try:
         with locked(config_mod.OMM_HOME / "locks" / "self-update", timeout=0):
             return _perform_update_unlocked(branch, same_branch=same_branch)
@@ -3432,14 +3168,18 @@ def support_report_cmd(
     include: list[str] = typer.Option(
         None,
         "--include",
-        help="Add one optional group: os, network, policies, or checks. Repeat as needed.",
+        help="Add one optional group: os, policies, or checks. Repeat as needed.",
     ),
     save: Path | None = typer.Option(
         None,
         "--save",
         help="Save the previewed JSON to this path. Nothing is uploaded.",
     ),
-    force: bool = typer.Option(False, "--force", help="Allow replacing the explicitly named output file."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Allow replacing the explicitly named output file.",
+    ),
 ) -> None:
     """Preview a privacy-minimized support report and optionally save it locally."""
     from omm import support_report
@@ -3466,7 +3206,10 @@ def support_report_cmd(
         err_console.print(f"Refusing symlinked report destination: {output}", markup=False)
         raise typer.Exit(1)
     if output.exists() and not force:
-        err_console.print(f"Report destination already exists: {output}. Use --force to replace it.", markup=False)
+        err_console.print(
+            f"Report destination already exists: {output}. Use --force to replace it.",
+            markup=False,
+        )
         raise typer.Exit(1)
     if not _global_opts().yes:
         if _global_opts().json or not _stdin_is_tty():
@@ -3830,9 +3573,6 @@ def _ensure_ollama_running(action: str, *, assume_yes: bool = False):
 
 
 def _resolve_upload_decision(prompt: str) -> bool:
-    if not network_policy.uploads_allowed():
-        telemetry.log_attempt("skipped_network_mode", network_policy.current_mode())
-        return False
     policy = load_config().get("telemetry_send_policy", "ask")
     if policy == "always":
         return True
@@ -4104,13 +3844,6 @@ def recommend(
     json_output = _global_opts().json
     auto_yes = _global_opts().yes
 
-    if refresh_metadata and network_policy.current_mode() == "offline":
-        err_console.print(
-            "Offline mode cannot refresh provider metadata. Cached facts remain unchanged; "
-            "use `omm setting network --mode models-only` to refresh them."
-        )
-        raise typer.Exit(1)
-
     if profile is not None:
         profile = profile.casefold()
         if profile not in predictor.RECOMMEND_PROFILES:
@@ -4129,16 +3862,6 @@ def recommend(
     artifact, changed = _load_recommendation_with_change_note(config)
     if changed and not _global_opts().quiet and not json_output:
         console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
-    elif (
-        artifact
-        and network_policy.current_mode() == "offline"
-        and not _global_opts().quiet
-        and not json_output
-    ):
-        console.print(
-            "[muted]Offline: using the locally verified recommendation cache. "
-            "Use `omm setting network --mode models-only` to refresh it.[/muted]"
-        )
     if artifact and artifact.get("candidates"):
         from omm import recommend_facts
 
@@ -4195,7 +3918,7 @@ def recommend(
     if not _global_opts().quiet and not json_output:
         console.print("[muted]No trained model available, falling back to static rules.[/muted]")
     rules_url = config.get("rules_url")
-    if rules_url and network_policy.current_mode() != "offline":
+    if rules_url:
         try:
             _, rules_changed = rules_mod.refresh_rules_with_change_note(rules_url)
             if rules_changed and not _global_opts().quiet and not json_output:
@@ -5520,7 +5243,7 @@ def _verify_lmstudio_after_install(
 
 
 def _resolve_install_source_metadata(resolved, dest: Path) -> str | None:
-    """Populate digest/size once. Return the verified cache label, if any."""
+    """Populate provider digest/size once. Return a verified cache label, if used."""
     if getattr(resolved, "source_metadata_checked", False):
         return None
     provider = validate_provider(resolved.provider or "huggingface")
@@ -5537,25 +5260,19 @@ def _resolve_install_source_metadata(resolved, dest: Path) -> str | None:
         and isinstance(entry.get("sha256"), str)
         and sha256_file(dest) == entry["sha256"]
     )
-    if cache_matches and (
-        network_policy.current_mode() == "offline" or not resolved.provider
-    ):
+    if cache_matches and not resolved.provider:
         resolved.expected_sha256 = entry["sha256"]
         resolved.expected_size_bytes = dest.stat().st_size
         resolved.source_metadata_checked = True
         return "verified OMM cache"
 
-    if network_policy.current_mode() == "offline":
-        network_policy.require("model", "model source metadata or a model download")
-
     try:
-        with network_policy.model_transfer():
-            if repo_id:
-                resolved.expected_size_bytes = remote_file_size(provider, repo_id, filename)
-            if resolved.provider and repo_id:
-                resolved.expected_sha256 = resolved.expected_sha256 or remote_file_sha256(
-                    provider, repo_id, filename
-                )
+        if repo_id:
+            resolved.expected_size_bytes = remote_file_size(provider, repo_id, filename)
+        if resolved.provider and repo_id:
+            resolved.expected_sha256 = resolved.expected_sha256 or remote_file_sha256(
+                provider, repo_id, filename
+            )
     except ModelResolutionError as error:
         raise DownloadError(str(error), fix=error.fix) from error
     resolved.source_metadata_checked = True
@@ -6495,20 +6212,11 @@ def _install_impl(
                     "was taken while other programs were using the CPU.[/muted]"
                 )
 
-            want_upload = network_policy.uploads_allowed() and not no_upload and (
+            want_upload = not no_upload and (
                 auto_upload or _resolve_upload_decision(
                     "Send this machine's benchmark result to the server?"
                 )
             )
-            if auto_upload and not network_policy.uploads_allowed():
-                telemetry.log_attempt(
-                    "skipped_network_mode", network_policy.current_mode()
-                )
-                if not opts.quiet:
-                    err_console.print(
-                        f"[muted]Benchmark upload skipped because network mode is "
-                        f"{network_policy.current_mode()}.[/muted]"
-                    )
             if want_upload:
                 telemetry_sent = _report_telemetry(
                     filename,
@@ -6669,12 +6377,8 @@ def install(
 
     try:
         source_plan = _install_plan_for(resolved)
-    except (DownloadError, network_policy.NetworkModeError) as error:
-        errors.print_cli_error(
-            err_console,
-            str(error),
-            fix=getattr(error, "fix", None),
-        )
+    except DownloadError as error:
+        errors.print_cli_error(err_console, str(error), fix=error.fix)
         raise typer.Exit(1) from error
     show_source_card = (
         not _global_opts().quiet and _stdin_is_tty() and _stdout_is_tty()
@@ -8484,61 +8188,6 @@ def log_cmd(
     console.print(text.rstrip())
 
 
-@setting_app.command(name="network")
-@global_flags
-def configure_network(
-    mode: str | None = typer.Option(
-        None,
-        "--mode",
-        help="online, models-only, or offline; omit to show the current mode.",
-    ),
-) -> None:
-    """Choose which external network work OMM itself may start."""
-    current = load_config().get("network_mode", "online")
-    if mode is not None:
-        normalized = mode.strip().casefold()
-        if normalized not in network_policy.MODES:
-            err_console.print(
-                f"--mode must be one of: {', '.join(network_policy.MODES)}", markup=False
-            )
-            raise typer.Exit(2)
-        config_mod.update_config(network_mode=normalized)
-        network_policy.set_mode(normalized)
-        current = normalized
-    effective = network_policy.current_mode()
-    data = {
-        "mode": current,
-        "effective_mode": effective,
-        "allows": {
-            "model_search_download_and_signed_catalog": effective in {"online", "models-only"},
-            "statistics_errors_usage_uploads": effective == "online",
-            "update_checks_git_and_package_managers": effective == "online",
-            "loopback_runtime_apis": True,
-        },
-        "boundary": "This controls only network work started by OMM, not communications started independently by Ollama or LM Studio.",
-        "one_time_override": "Pass --offline to any command without changing this saved mode.",
-    }
-    if _global_opts().json:
-        _print_json(data=data)
-        return
-    table = _table(title="OMM network mode", show_header=False)
-    table.add_column("Field", style="label")
-    table.add_column("Value")
-    table.add_row("Saved mode", current)
-    table.add_row("Effective for this command", effective)
-    table.add_row(
-        "Model access",
-        "allowed" if data["allows"]["model_search_download_and_signed_catalog"] else "installed models and verified cache only",
-    )
-    table.add_row(
-        "Uploads / updates",
-        "allowed with existing consent" if effective == "online" else "blocked",
-    )
-    table.add_row("Local engine API", "allowed on loopback")
-    console.print(table)
-    console.print(f"[muted]{data['boundary']}[/muted]")
-
-
 @setting_app.command(name="telemetry")
 @global_flags
 def configure_telemetry(
@@ -9292,10 +8941,6 @@ def setting_menu(ctx: typer.Context) -> None:
                         value="telemetry",
                     ),
                     questionary.Choice(
-                        f"Network mode (current: {current.get('network_mode', 'online')})",
-                        value="network",
-                    ),
-                    questionary.Choice(
                         "Upload / outbound data (benchmark, usage, crash)", value="upload"
                     ),
                     questionary.Choice(f"Version channel (current: {update_channel})", value="version"),
@@ -9327,20 +8972,6 @@ def setting_menu(ctx: typer.Context) -> None:
                 if endpoint is None:
                     continue
                 configure_telemetry(endpoint=endpoint or None)
-            elif choice == "network":
-                action = _ask_select(
-                    questionary.select(
-                        f"Network mode (current: {current.get('network_mode', 'online')}):",
-                        choices=[
-                            questionary.Choice("Online - current behavior and consent", value="online"),
-                            questionary.Choice("Models only - model sources, catalog, downloads", value="models-only"),
-                            questionary.Choice("Offline - local engines and verified cache", value="offline"),
-                            questionary.Choice("← Back", value="back"),
-                        ],
-                    )
-                )
-                if action is not None and action != "back":
-                    configure_network(mode=action)
             elif choice == "auto-import":
                 action = _ask_select(
                     questionary.select(
@@ -9481,9 +9112,8 @@ def search(
     local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
     from concurrent.futures import ThreadPoolExecutor
 
-    offline_mode = network_policy.current_mode() == "offline"
-    query_huggingface = provider in (None, "huggingface") and not offline_mode
-    query_modelscope = provider in (None, "modelscope") and not skip_ms and not offline_mode
+    query_huggingface = provider in (None, "huggingface")
+    query_modelscope = provider in (None, "modelscope") and not skip_ms
     with ThreadPoolExecutor(max_workers=max(1, query_huggingface + query_modelscope)) as executor:
         hf_future = (
             executor.submit(search_mod.search_huggingface, query)
@@ -9513,19 +9143,8 @@ def search(
         else:
             combined = [c for c in combined if c.get("provider") == provider]
     if not combined:
-        if offline_mode and provider in {"huggingface", "modelscope"}:
-            err_console.print(
-                "[warning]Offline mode blocks live provider search. Use a built-in/cached result, "
-                "or run `omm setting network --mode models-only`.[/warning]"
-            )
-            raise typer.Exit(1)
         err_console.print(f"[warning]No models found matching '{query}'.[/warning]")
         raise typer.Exit(1)
-    if offline_mode and not (json_output or _global_opts().quiet):
-        console.print(
-            "[muted]Offline: searched the built-in list and verified cached catalog only. "
-            "Use `omm setting network --mode models-only` for live provider results.[/muted]"
-        )
 
     # Score against whatever's already cached locally, same as install
     # completion - the only network calls are the lazy per-repo param-count
@@ -9552,7 +9171,6 @@ def search(
                 trees is not None
                 and c.get("repo_id")
                 and candidate_parameter_count_billions(c) is None
-                and not offline_mode
             ):
                 # Filename/repo-id parsing found no param count (e.g. a repo
                 # branded "DeepSeek-V4-Flash" instead of "...-70B"). Without
@@ -10338,7 +9956,7 @@ def benchmark_cmd(
                 "core counts. aggregate numbers may be shared below. Not a "
                 "leaderboard.[/muted]"
             )
-        should_upload = network_policy.uploads_allowed() and (
+        should_upload = (
             load_config().get("telemetry_send_policy") == "always"
             if json_output
             else _resolve_upload_decision(
@@ -12045,14 +11663,6 @@ def contribute(
     from omm.contribute_session import ContributionLimits
 
     try:
-        network_policy.require(
-            "telemetry", "a contribution session that uploads benchmark results"
-        )
-    except network_policy.NetworkModeError as error:
-        err_console.print(str(error), markup=False)
-        raise typer.Exit(1) from error
-
-    try:
         download_bytes = None
         if max_download_gb is not None:
             amount = max_download_gb * 1024**3
@@ -12333,10 +11943,6 @@ def main() -> None:
     # of git/pipx/ollama before any verification happens. Shared with trust so
     # there is one implementation; harmless on POSIX.
     trust._forbid_cwd_executable_lookup()
-    network_policy.configure(
-        config_mod.CONFIG_PATH,
-        offline_override="--offline" in sys.argv[1:],
-    )
     if engine_read_only_args(sys.argv[1:]):
         # Diagnostics must not create a run log, usage batch, or crash queue.
         app(prog_name="omm")

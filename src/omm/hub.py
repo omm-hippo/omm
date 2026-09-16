@@ -246,15 +246,11 @@ def _remote_gguf_prefix_cached(
     as the bounded prefix has been read rather than buffering the whole model.
     """
     import requests
-    from omm import auth
 
     url = download_url(provider, repo_id, filename)
     with requests.get(
         url,
-        headers={
-            **auth.headers_for_url(url),
-            "Range": f"bytes=0-{max_prefix_bytes - 1}",
-        },
+        headers={"Range": f"bytes=0-{max_prefix_bytes - 1}"},
         stream=True,
         timeout=(10, 30),
     ) as response:

@@ -1196,32 +1196,18 @@ def _probe_lmstudio_generate(
     because first-load time on a large model, not just generation time, is
     included."""
     import requests
-    from omm import auth
 
     try:
-        token = auth.token_for("lmstudio")
-        url = f"http://127.0.0.1:{port}/v1/chat/completions"
-        payload = {
+        response = requests.post(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            json={
                 "model": model_key,
                 "messages": [{"role": "user", "content": _LMSTUDIO_PROBE_PROMPT}],
                 "max_tokens": _LMSTUDIO_PROBE_MAX_TOKENS,
                 "stream": False,
-            }
-        if token:
-            session = requests.Session()
-            session.trust_env = False
-            response = session.post(
-                url,
-                json=payload,
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=timeout,
-                allow_redirects=False,
-            )
-        else:
-            # Preserve the long-standing unauthenticated request shape for
-            # integrations that monkeypatch requests.post. No secret exists
-            # here, so proxy-environment leakage is not a credential risk.
-            response = requests.post(url, json=payload, timeout=timeout)
+            },
+            timeout=timeout,
+        )
     except requests.RequestException:
         return None
     if not response.ok:
@@ -3097,14 +3083,13 @@ def install_engine(
 ) -> EngineInstallResult:
     from filelock import Timeout
     from omm.engine_packages import PACKAGES, operation_lock
-    from omm import network_policy
 
     if key not in PACKAGES:
         raise NotImplementedError(f"no automated installer for engine: {key}")
     try:
         with operation_lock(key):
             return _install_engine_unlocked(key, on_output=on_output)
-    except (Timeout, OSError, network_policy.NetworkModeError) as error:
+    except (Timeout, OSError) as error:
         return EngineInstallResult(key, "failed", f"Could not acquire or use the engine operation lock: {error}")
 
 
@@ -3116,9 +3101,6 @@ def _install_engine_unlocked(
     ENGINES has a handler, but handlers without a verified package-manager
     route fail closed with manual-install guidance. A key not in ENGINES at
     all still raises NotImplementedError."""
-    from omm import network_policy
-
-    network_policy.require("package", "a package-manager engine installation")
     if key == "ollama":
         return _install_ollama(on_output=on_output)
     if key == "lmstudio":

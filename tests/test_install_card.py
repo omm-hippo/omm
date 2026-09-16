@@ -4,7 +4,7 @@ import hashlib
 
 import pytest
 
-from omm import cli, install_card, network_policy, registry
+from omm import cli, install_card, registry
 from omm.downloader import DownloadError
 from omm.hub import ResolvedModel
 
@@ -32,7 +32,7 @@ def test_cards_separate_planned_checks_from_results(tmp_path):
     assert "does not prove" in result["meaning"]
 
 
-def test_offline_install_metadata_reuses_only_registry_verified_bytes(
+def test_install_card_reuses_registry_verified_bytes_without_a_provider_lookup(
     isolated_omm_home, monkeypatch
 ):
     content = b"verified-cache"
@@ -41,7 +41,7 @@ def test_offline_install_metadata_reuses_only_registry_verified_bytes(
         "https://huggingface.co/org/repo/model.gguf",
         "model.gguf",
         "org/repo",
-        "huggingface",
+        None,
     )
     destination = cli.MODELS_DIR / resolved.filename
     destination.write_bytes(content)
@@ -57,8 +57,6 @@ def test_offline_install_metadata_reuses_only_registry_verified_bytes(
     )
     monkeypatch.setattr(cli, "remote_file_size", lambda *a: pytest.fail("no network metadata"))
     monkeypatch.setattr(cli, "remote_file_sha256", lambda *a: pytest.fail("no network metadata"))
-    network_policy.set_mode("offline")
-
     card = cli._install_plan_for(resolved)
 
     assert card["source"] == "verified OMM cache"

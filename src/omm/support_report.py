@@ -12,7 +12,7 @@ from typing import Iterable
 from omm import config, package_metadata
 
 SCHEMA_VERSION = 1
-OPTIONAL_GROUPS = ("os", "network", "policies", "checks")
+OPTIONAL_GROUPS = ("os", "policies", "checks")
 _SAFE_NAME = re.compile(r"[A-Za-z0-9_. -]{1,80}")
 
 
@@ -96,10 +96,6 @@ def build(doctor_report, *, include: Iterable[str] = ()) -> dict[str, object]:
     }
     if "os" in selected:
         report["os"] = {"name": platform.system() or "unknown", "arch": platform.machine() or "unknown"}
-    if "network" in selected:
-        from omm import network_policy
-
-        report["network"] = {"mode": network_policy.current_mode()}
     if "policies" in selected:
         try:
             data = config.load_config()

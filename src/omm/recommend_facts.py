@@ -84,19 +84,11 @@ def apply(artifact: dict, records: dict | None = None) -> dict:
 
 def _get(url: str, deadline: float, *, params: dict | None = None) -> dict:
     import requests
-    from omm import auth
 
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("provider metadata refresh budget reached")
-    response = requests.get(
-        url,
-        params=params,
-        timeout=min(8, remaining),
-        stream=True,
-        allow_redirects=False,
-        headers=auth.headers_for_url(url),
-    )
+    response = requests.get(url, params=params, timeout=min(8, remaining), stream=True, allow_redirects=False)
     try:
         response.raise_for_status()
     except requests.RequestException:

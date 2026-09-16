@@ -9,7 +9,7 @@ import difflib
 import re
 from concurrent.futures import ThreadPoolExecutor
 
-from omm import auth, hub, predictor
+from omm import hub, predictor
 from omm.featurize import is_mmproj_filename, is_shard_filename
 from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES, read_bounded_json_response
 from omm.providers import modelscope
@@ -223,7 +223,6 @@ def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> lis
             params={"search": query, "filter": "gguf", "limit": limit, "full": "true"},
             timeout=timeout,
             stream=True,
-            headers=auth.huggingface_headers(),
         )
         resp.raise_for_status()
         payload = read_bounded_json_response(

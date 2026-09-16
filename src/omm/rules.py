@@ -72,13 +72,6 @@ def _read_rules_file() -> list[dict] | None:
 
 
 def load_rules() -> list[dict]:
-    from omm import network_policy
-
-    if network_policy.current_mode() == "offline":
-        # Hosted rules have no signature/provenance sidecar. The bundled
-        # defaults are part of the installed, update-signature-verified code
-        # and are therefore the only acceptable offline fallback.
-        return DEFAULT_RULES
     rules = _read_rules_file()
     return rules if rules is not None else DEFAULT_RULES
 

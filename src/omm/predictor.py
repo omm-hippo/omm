@@ -278,19 +278,8 @@ def fetch_and_cache_model(
     public_key: str | None = None,
 ) -> dict:
     import requests
-    from contextlib import nullcontext
-    from omm import network_policy
 
-    # A custom host is allowed in models-only mode only for the signed path.
-    # The default raw.githubusercontent.com host is already on the model-host
-    # allow-list, but this scope lets a user-configured signed mirror work too.
-    signed_scope = (
-        network_policy.model_transfer()
-        if manifest_url and public_key
-        else nullcontext()
-    )
-    with signed_scope:
-        resp = requests.get(url, timeout=15, stream=True)
+    resp = requests.get(url, timeout=15, stream=True)
     try:
         resp.raise_for_status()
     except requests.RequestException:
@@ -309,8 +298,7 @@ def fetch_and_cache_model(
     manifest = None
     verified_content: bytes | None = None
     if manifest_url and public_key:
-        with network_policy.model_transfer():
-            manifest_response = requests.get(manifest_url, timeout=15, stream=True)
+        manifest_response = requests.get(manifest_url, timeout=15, stream=True)
         try:
             manifest_response.raise_for_status()
         except requests.RequestException:
@@ -415,19 +403,6 @@ def load_cached_model() -> dict | None:
         return None
     if not _cached_artifact_provenance_ok(raw):
         return None
-    from omm import network_policy
-
-    if network_policy.current_mode() == "offline":
-        try:
-            public_key = load_config().get("catalog_public_key")
-        except Exception:
-            return None
-        if not cached_model_signature_is_valid(public_key):
-            # Legacy caches without a provenance sidecar remain usable in
-            # online/models-only mode for compatibility, but offline mode's
-            # contract is stricter: only a cache whose exact bytes still
-            # verify against the configured key may influence a result.
-            return None
     return artifact
 
 

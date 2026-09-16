@@ -300,18 +300,6 @@ def test_cached_model_without_provenance_is_still_accepted(monkeypatch, tmp_path
     assert predictor.load_cached_model() == artifact()
 
 
-def test_offline_accepts_cache_only_when_signature_matches_configured_key(
-    monkeypatch, tmp_path, isolated_omm_home
-):
-    from omm import network_policy
-
-    private = Ed25519PrivateKey.generate()
-    public, _cache_path = _sign_and_cache(monkeypatch, tmp_path, private)
-    monkeypatch.setattr(predictor, "load_config", lambda: {"catalog_public_key": public})
-    network_policy.set_mode("offline")
-    assert predictor.load_cached_model() == artifact()
-
-
 def test_validate_model_artifact_bounds_collection_and_total_tree_work(monkeypatch):
     candidate = {
         "repo_id": "org/model",

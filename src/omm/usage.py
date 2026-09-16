@@ -377,10 +377,6 @@ def flush_pending(force: bool = False) -> bool:
     so this never stalls a user-facing command.
     """
     try:
-        from omm import network_policy
-
-        if not network_policy.uploads_allowed():
-            return False
         if policy() != "enabled":
             return False
         path = _pending_path()

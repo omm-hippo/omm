@@ -183,9 +183,6 @@ def _run_action(command: list[str], on_output: Callable[[str], None]) -> int:
 
 
 def execute_action(plan: dict, *, on_output: Callable[[str], None]) -> dict:
-    from omm import network_policy
-
-    network_policy.require("package", "a package-manager engine change")
     key, action = plan["engine"], plan["action"]
     with operation_lock(key):
         fresh = plan_action(key, action)
