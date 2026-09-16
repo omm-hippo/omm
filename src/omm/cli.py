@@ -78,6 +78,7 @@ from omm import (
     watch_service,
 )
 from omm import contribute as contribute_mod
+from omm import install_state
 from omm.cli_views import print_scan, table as _table
 from omm.atomic import locked
 from omm.model_export import export_model_file
@@ -216,6 +217,7 @@ _JSON_CAPABLE = {
     "recommend",
     "doctor",
     "fit",
+    "setting catalog-status",
 }
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
@@ -3972,15 +3974,19 @@ def _link_model(
     session, so linking into every other installed engine for every
     downloaded candidate is unnecessary churn."""
     linked = {spec.key: False for spec in linker.ENGINES}
+    target_engines = []
 
     for spec in linker.ENGINES:
         if only_engine is not None and spec.key != only_engine:
             continue
         if not linker.is_engine_installed(spec.key):
             continue
+        target_engines.append(spec.key)
+        install_state.checkpoint("linking", target_engines=list(target_engines))
         try:
             warning = linker.link_engine(spec.key, dest, repo_id=repo_id, ollama_tag=ollama_tag)
             linked[spec.key] = True
+            install_state.checkpoint("linking", linked=dict(linked))
             if warning:
                 err_console.print(f"[warning]{warning}[/warning]")
         except linker.InsufficientLinkSpaceError:
@@ -4846,7 +4852,7 @@ def _prepare_install_artifact(
                 isinstance(existing_entry, dict)
                 and existing_entry.get("source") == url
                 and existing_entry.get("sha256") == existing_sha256
-            ):
+            ) and not install_state.verified_file_matches(filename, url, existing_sha256):
                 raise DownloadError(
                     f"{filename} already exists but its source and digest cannot "
                     "be verified; refusing to adopt or overwrite it."
@@ -4976,6 +4982,7 @@ def _prepare_install_artifact(
     return _PreparedInstallArtifact(sha256=sha256, downloaded_now=downloaded_now)
 
 
+@install_state.tracked_install
 def _install_impl(
     resolved,
     *,
@@ -5018,6 +5025,9 @@ def _install_impl(
     already-installed model never looks indistinguishable from cancelling
     a fresh one."""
     opts = _global_opts()
+    operation = install_state.current()
+    if operation is not None and operation.resumed and not opts.quiet:
+        console.print("Resuming interrupted install: rechecking the file and engine links.")
     url, filename, repo_id = resolved.url, resolved.filename, resolved.repo_id
     try:
         filename = validate_model_filename(filename)
@@ -5096,6 +5106,7 @@ def _install_impl(
         return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
     sha256 = prepared.sha256
     downloaded_now = prepared.downloaded_now
+    install_state.checkpoint("artifact_verified", sha256=sha256, size_bytes=dest.stat().st_size)
     if downloaded_state is not None:
         downloaded_state["downloaded_now"] = downloaded_now
 
@@ -5123,6 +5134,7 @@ def _install_impl(
         provider=provider,
         linked=linked,
     )
+    install_state.checkpoint("registered", linked=dict(linked))
     if force and downloaded_now and custom_links_to_refresh:
         for destination in custom_links_to_refresh:
             if not isinstance(destination, str):
@@ -5836,21 +5848,21 @@ def install(
         errors.print_cli_error(err_console, str(error), fix=error.fix)
         raise typer.Exit(1) from error
     except InstallInterrupted as e:
-        _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
+        if install_state.preserve_interrupted_file(e.filename):
+            err_console.print("Verified model file kept. Re-run the same install command to resume.")
+        else:
+            _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
         err_console.print("[warning]Cancelled.[/warning]")
         raise typer.Exit(0) from e
     except KeyboardInterrupt:
-        # Windows Ctrl+C is a console control event, not the Esc listener's
-        # stop_event - it can land mid-download, mid-checksum, or mid-link
-        # instead of at the _run_interruptible() checkpoints stop_event
-        # covers. Route it through the same unload-before-delete cleanup so
-        # it doesn't strand a partial GGUF or a linked-but-unregistered file -
-        # but only actually remove anything if this call is the one that
-        # downloaded it (see `download_state` above and
-        # `_cleanup_interrupted_install`'s docstring).
-        _cleanup_interrupted_install(
-            resolved.filename, downloaded_now=download_state["downloaded_now"]
-        )
+        # Keep a verified artifact after Ctrl+C; the install's finally blocks
+        # release only runtime work it started. Reuse must recheck the bytes.
+        if install_state.preserve_interrupted_file(resolved.filename):
+            err_console.print("Verified model file kept. Re-run the same install command to resume.")
+        else:
+            _cleanup_interrupted_install(
+                resolved.filename, downloaded_now=download_state["downloaded_now"]
+            )
         raise
     finally:
         listener.stop()
@@ -5929,7 +5941,8 @@ def _cleanup_incomplete_install(filename: str, *, respect_download_lock: bool = 
 def _unlink_unless_download_active(path: Path, lock_target: Path) -> bool:
     """Delete `path` unless an active download holds the lock for `lock_target`."""
     try:
-        with locked(_download_lock_path(lock_target), timeout=0):
+        relative = lock_target.relative_to(MODELS_DIR).as_posix()
+        with install_state.cleanup_guard(relative), locked(_download_lock_path(lock_target), timeout=0):
             path.unlink()
     except OSError:
         return False
@@ -8024,13 +8037,40 @@ def catalog_status() -> None:
             fingerprint = catalog.public_key_fingerprint(public_key)
         except catalog.CatalogVerificationError:
             fingerprint = "invalid"
+    from omm.evaluation import describe_evaluation
+
+    artifact = predictor.load_cached_model()
+    evidence = describe_evaluation(artifact.get("evaluation") if artifact else None)
+    data = {
+        "manifest_url": current.get("catalog_manifest_url"),
+        "trusted_key": fingerprint,
+        "rollback_snapshots": len(catalog.snapshots()),
+        "trained_at": artifact.get("trained_at") if artifact else None,
+        "evaluation": evidence,
+    }
+    if _global_opts().json:
+        _print_json(data=data)
+        return
     table = _table(title="Recommendation catalog", show_header=False)
     table.add_column("Field", style="label")
     table.add_column("Value")
-    table.add_row("Signed manifest", str(current.get("catalog_manifest_url") or "not configured"))
+    table.add_row("Signed manifest", str(data["manifest_url"] or "not configured"))
     table.add_row("Trusted key", fingerprint)
-    table.add_row("Rollback snapshots", str(len(catalog.snapshots())))
+    table.add_row("Rollback snapshots", str(data["rollback_snapshots"]))
+    table.add_row("Evaluation coverage", evidence["status"])
+    if data["trained_at"]:
+        table.add_row("Trained at", str(data["trained_at"]))
     console.print(table)
+    if not artifact:
+        console.print("No verified cached evaluation report is available.")
+        return
+    for check in evidence["checks"].values():
+        console.print(f"{check['label']}: {check['status']} — {check['reason']}", markup=False)
+    for gap in evidence["data_gaps"].values():
+        console.print(
+            f"More evidence needed: {gap['additional_needed']} {gap['sample_type']}. "
+            "Collect only with consent and the normal memory safeguards.", markup=False,
+        )
 
 
 @setting_app.command(name="catalog-rollback")

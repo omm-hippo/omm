@@ -548,4 +548,12 @@ def collect_report(
             )
         )
     checks.extend(_ollama_checks(registry_data))
+    from omm.install_state import pending_records
+
+    for pending in pending_records():
+        checks.append(DoctorCheck(
+            "WARN", "Install recovery",
+            f"{pending['filename']}: last checkpoint {pending.get('phase', 'unknown')}; "
+            "re-run the original install command to recheck and resume.",
+        ))
     return DoctorReport(tuple(checks))

@@ -459,6 +459,10 @@ omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `omm info` and `omm fit` both work on a model that is not installed yet, so a search result can be inspected before downloading several GB; `omm info` describes the model, `omm fit` answers whether it runs on this machine. `search`/`install` mark models predicted not to run on this machine's hardware in red.
 
+Interrupted installs keep checkpoints under `OMM_HOME/install-journal`. Re-run
+the original install command to recheck the file and repair links; `omm doctor`
+lists incomplete attempts. See [install recovery](docs/install-recovery.md).
+
 `omm install --skip-unfit` is a scripting-friendly skip, not a successful
 installation: it prints `Skipped` and leaves the model hub unchanged. If an
 uninstall cannot remove the managed model file, OMM exits with status 1 and
@@ -502,7 +506,7 @@ omm setting memory-guard --policy ask|block|observe  # Protect local runtime loa
 omm setting theme [--set NAME]  # Show or change omm's output color theme
 omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
-omm setting catalog-status  # Show signed recommendation data and rollback snapshots
+omm setting catalog-status [--json]  # Show trust, rollback snapshots, and per-check evaluation evidence
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
 ```
 
@@ -651,10 +655,13 @@ than 25% invalid rows, and reserves a deterministic 20% holdout. A 64-tree v4
 candidate replaces the incumbent only when both holdout RMSLE and P90 absolute
 percentage error stay within the configured regression limits. Selection is
 evaluated on whole hardware/request contexts, so sibling model variants never
-leak across training and holdout sets. Publishing also requires at least three
-multi-model selection groups plus complete top-1, regret, balanced-fit, and
-false-positive evidence. Missing evidence fails the gate. The artifact records
-the complete candidate/baseline evaluation report.
+leak across training and holdout sets. Publishing requires at least three multi-model selection groups and complete
+selection metrics. Fit-regression checks are only applied once the minimum
+known-unfit sample count is met. A passed publication gate therefore does not
+mean every check was evaluated: per-check `evaluation_details` and
+`omm setting catalog-status` distinguish passed, failed, and insufficient data.
+See [evaluation evidence](docs/evaluation-evidence.md). The artifact records
+the candidate/baseline evaluation report.
 
 The same gate can validate an exported local dataset without contacting the
 collector:
