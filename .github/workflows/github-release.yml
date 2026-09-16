@@ -105,10 +105,11 @@ jobs:
           python tooling/scripts/release_artifacts.py verify-release-assets \
             --dist-dir release-assets --version "${VERSION}" --asset-set "${ASSET_SET}"
 
-          release_json="$(
+          find_release() {
             gh api --paginate --slurp "repos/${GH_REPO}/releases?per_page=100" |
               jq --arg tag "${tag}" '[.[][] | select(.tag_name == $tag)]'
-          )"
+          }
+          release_json="$(find_release)"
           release_count="$(printf '%s' "${release_json}" | jq 'length')"
           if [ "${release_count}" = "0" ]; then
             gh release create "${tag}" \
@@ -117,14 +118,22 @@ jobs:
               --title "OMM ${tag}" \
               --generate-notes \
               --verify-tag
-            release_json="$(
-              gh api --paginate --slurp "repos/${GH_REPO}/releases?per_page=100" |
-                jq --arg tag "${tag}" '[.[][] | select(.tag_name == $tag)]'
-            )"
-            release_count="$(printf '%s' "${release_json}" | jq 'length')"
+            # The list endpoint is eventually consistent: the v0.3.90 run
+            # created the draft and re-listed it in the same second, saw
+            # nothing, and failed with "expected exactly one". Poll until
+            # the draft shows up before deciding anything about it.
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              release_json="$(find_release)"
+              release_count="$(printf '%s' "${release_json}" | jq 'length')"
+              if [ "${release_count}" = "1" ]; then
+                break
+              fi
+              echo "draft for ${tag} not listed yet (attempt ${attempt}); retrying"
+              sleep 6
+            done
           fi
           if [ "${release_count}" != "1" ]; then
-            echo "expected exactly one GitHub Release for ${tag}" >&2
+            echo "expected exactly one GitHub Release for ${tag}, found ${release_count}" >&2
             exit 1
           fi
           release_id="$(printf '%s' "${release_json}" | jq -r '.[0].id')"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import functools
 import inspect
+import itertools
 import json
 import math
 import os
@@ -131,6 +132,7 @@ from omm.hub import (
     fetch_repo_metadata,
     fetch_repo_param_count_b,
     model_filename_identity,
+    parse_model_ref,
     rank_quant_variants,
     remote_file_size,
     remote_file_sha256,
@@ -391,32 +393,40 @@ def marks_command_body_ran(func):
     return wrapper
 
 
-_ROOT_HELP_TEXT = """Example usage:
-  omm search TEXT
-  omm install MODEL
-  omm list
-  omm recommend
-  omm uninstall MODEL
+# Curated `omm help` sections: (title, usage lines). Each usage line is the
+# real command path followed by optional placeholder arguments (UPPERCASE or
+# [bracketed]); `help --flags` walks the lowercase prefix to find the command
+# whose options it expands, so keep entries spelled the way Click knows them.
+_ROOT_HELP_SECTIONS: list[tuple[str, list[str]]] = [
+    ("Example usage", ["search TEXT", "install MODEL", "list", "recommend", "uninstall MODEL"]),
+    ("Tuning & quality", ["tune MODEL", "benchmark MODEL...", "contribute"]),
+    (
+        "Maintenance",
+        ["scan", "doctor", "setup", "engine status", "engine install", "upgrade [MODEL]", "setting"],
+    ),
+]
 
-Tuning & quality:
-  omm tune MODEL
-  omm benchmark MODEL...
-  omm contribute
+_ROOT_HELP_FOOTER_LINES: list[str] = [
+    "Further help:",
+    "  omm help COMMAND      Show help for one command",
+    "  omm help --flags      Also show the flags of the commands above",
+    "  omm help --all        List every command",
+    "  https://github.com/omm-hippo/omm",
+]
 
-Maintenance:
-  omm scan
-  omm doctor
-  omm setup
-  omm engine status
-  omm engine install
-  omm upgrade [MODEL]
-  omm setting
 
-Further help:
-  omm help COMMAND      Show help for one command
-  omm help --all        List every command
-  https://github.com/omm-hippo/omm
-"""
+def _render_root_help_text() -> str:
+    lines: list[str] = []
+    for title, entries in _ROOT_HELP_SECTIONS:
+        lines.append(f"{title}:")
+        lines.extend(f"  omm {entry}" for entry in entries)
+        lines.append("")
+    lines.extend(_ROOT_HELP_FOOTER_LINES)
+    lines.append("")
+    return "\n".join(lines)
+
+
+_ROOT_HELP_TEXT = _render_root_help_text()
 
 _COMMAND_ALIASES = {"rm": "uninstall", "ls": "list", "up": "upgrade"}
 
@@ -819,29 +829,75 @@ def _add_command_row(grid: Table, name: str, cmd_obj: click.Command) -> None:
     grid.add_row(f"  omm {name}", cmd_obj.get_short_help_str(limit=1000))
 
 
-def _print_command_flags(root_ctx: click.Context, name: str, cmd_obj: click.Command) -> None:
-    """Indented flag block for one command, used by `help --all --flags`.
-    Built from each param's own `get_help_record` (name + help only)
-    rather than `get_help()`, which would repeat the Usage/description
-    lines already shown by the summary grid above."""
+def _command_flag_records(
+    root_ctx: click.Context, name: str, cmd_obj: click.Command
+) -> list[tuple[str, str]]:
+    """(option names, help) pairs for one command, built from each param's
+    own `get_help_record` (name + help only) rather than `get_help()`,
+    which would repeat the Usage/description lines already shown by the
+    listing above."""
     sub_ctx = cmd_obj.make_context(name, [], parent=root_ctx, resilient_parsing=True)
     # Typer's vendored click fork gives positional Arguments a
     # get_help_record() too (vanilla click.Argument returns None) - filter
     # those out by dash-prefix so this block only lists actual flags.
-    records = [
+    return [
         record
         for p in cmd_obj.params
         if (record := p.get_help_record(sub_ctx)) is not None and record[0].startswith("-")
     ]
-    if not records:
-        return
-    console.print(f"  [bold]omm {name}[/bold]")
+
+
+def _print_flag_grid(records: list[tuple[str, str]]) -> None:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(no_wrap=True)
     grid.add_column()
     for opts, help_text in records:
         grid.add_row(f"    {escape(opts)}", escape(help_text))
     console.print(grid)
+
+
+def _print_command_flags(root_ctx: click.Context, name: str, cmd_obj: click.Command) -> None:
+    """Indented flag block for one command, used by `help --all --flags`."""
+    records = _command_flag_records(root_ctx, name, cmd_obj)
+    if not records:
+        return
+    console.print(f"  [bold]omm {name}[/bold]")
+    _print_flag_grid(records)
+
+
+def _resolve_command_path(root_ctx: click.Context, path: list[str]) -> click.Command | None:
+    """Walk `path` (e.g. ["engine", "install"]) down nested groups. Uses the
+    `.commands` dict duck-typing (see `_print_full_command_reference`) so
+    Typer's vendored click groups resolve the same as plain ones."""
+    cmd: click.Command = root_ctx.command
+    for part in path:
+        commands = getattr(cmd, "commands", None)
+        if not commands or part not in commands:
+            return None
+        cmd = commands[part]
+    return cmd
+
+
+def _print_curated_command_reference(root_ctx: click.Context) -> None:
+    """`omm help --flags` (without `--all`): the same curated sections as
+    `omm help`, with each listed command's option list expanded beneath
+    its usage line. Placeholder arguments (TEXT, MODEL, [MODEL]) in the
+    usage line are kept for readability; only the lowercase command path
+    in front of them is resolved to a Click command."""
+    for title, entries in _ROOT_HELP_SECTIONS:
+        console.print(f"[bold]{title}:[/bold]")
+        for entry in entries:
+            console.print(f"  [bold]omm {escape(entry)}[/bold]")
+            path = list(itertools.takewhile(lambda tok: tok.islower(), entry.split()))
+            cmd_obj = _resolve_command_path(root_ctx, path)
+            if cmd_obj is None:
+                continue
+            records = _command_flag_records(root_ctx, " ".join(path), cmd_obj)
+            if records:
+                _print_flag_grid(records)
+        console.print()
+    for line in _ROOT_HELP_FOOTER_LINES:
+        console.print(line, markup=False, highlight=False)
 
 
 def _print_full_command_reference(root_ctx: click.Context, show_flags: bool = False) -> None:
@@ -922,7 +978,9 @@ def help_cmd(
     command: str = typer.Argument(None, help="Show help for a specific subcommand."),
     all: bool = typer.Option(False, "--all", help="List every command, not just the common ones."),
     flags: bool = typer.Option(
-        False, "--flags", help="With --all, also show each command's full option list."
+        False,
+        "--flags",
+        help="Also show each listed command's option list (the common commands, or every command with --all).",
     ),
 ) -> None:
     """Show help, same as --help."""
@@ -930,6 +988,9 @@ def help_cmd(
     if command is None:
         if all:
             _print_full_command_reference(root_ctx, show_flags=flags)
+            raise typer.Exit(0)
+        if flags:
+            _print_curated_command_reference(root_ctx)
             raise typer.Exit(0)
         console.print(root_ctx.get_help(), markup=False, highlight=False)
         raise typer.Exit(0)
@@ -5947,7 +6008,10 @@ def install(
         resolved = _resolve_model_interactive(model_name)
     except ModelResolutionError as e:
         errors.print_cli_error(err_console, str(e), fix=e.fix)
-        _print_install_suggestions(model_name)
+        # A resolution that already identified concrete alternatives (the GGUF
+        # builds of a safetensors-only repo) beats a fuzzy catalog match.
+        if not _print_ref_suggestions(getattr(e, "suggestions", [])):
+            _print_install_suggestions(model_name)
         raise typer.Exit(1) from e
 
     listener = _EscListener()
@@ -6709,8 +6773,15 @@ def _info_not_installed(model_name: str, json_output: bool) -> None:
     try:
         resolved = _resolve_model_interactive(model_name)
     except ModelResolutionError as error:
-        _print_not_installed_error(model_name)
-        err_console.print(f"[muted]{escape(str(error))}[/muted]")
+        # When the failure already names a real remote repo (it exists, it
+        # just has no GGUF), "<ref> is not installed via omm" is the wrong
+        # headline - report what the reference actually resolved to.
+        if getattr(error, "repo_id", None):
+            errors.print_cli_error(err_console, str(error), fix=error.fix)
+            _print_ref_suggestions(getattr(error, "suggestions", []))
+        else:
+            _print_not_installed_error(model_name)
+            err_console.print(f"[muted]{escape(str(error))}[/muted]")
         raise typer.Exit(1) from error
 
     provider = resolved.provider or "huggingface"
@@ -7173,7 +7244,8 @@ def fit(
         try:
             resolved = _resolve_model_interactive(model_name)
         except ModelResolutionError as error:
-            err_console.print(f"[error]{error}[/error]")
+            errors.print_cli_error(err_console, str(error), fix=error.fix)
+            _print_ref_suggestions(getattr(error, "suggestions", []))
             raise typer.Exit(1) from error
         size_bytes = None
         if resolved.repo_id and resolved.provider:
@@ -8589,6 +8661,9 @@ def search(
     if skip_ms and provider == "modelscope":
         err_console.print("[error]--skip-ms conflicts with --provider modelscope.[/error]")
         raise typer.Exit(2)
+    # A pasted provider URL is a model name too - search for the repo it names
+    # rather than for the literal URL, which matches nothing anywhere.
+    query = parse_model_ref(query).search_text
     json_output = _global_opts().json
     config = load_config()
     pool = (
@@ -8716,6 +8791,19 @@ def search(
         console.print(
             "[muted]Install with: omm install <number>  (e.g. omm install 1)[/muted]"
         )
+
+
+def _print_ref_suggestions(refs: list[str]) -> bool:
+    """Print refs a failed resolution already knows about (e.g. the GGUF
+    builds of a safetensors-only repo) in the same "Did you mean" shape
+    `_print_install_suggestions` uses. False when there was nothing to show,
+    so the caller can fall back to a fuzzy catalog search."""
+    if not refs:
+        return False
+    err_console.print("[warning]Did you mean one of these?[/warning]")
+    for ref in refs:
+        err_console.print(f"  - {escape(ref)}")
+    return True
 
 
 def _print_install_suggestions(query: str) -> None:

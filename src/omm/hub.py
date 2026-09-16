@@ -4,7 +4,11 @@ Accepts these forms for `omm install <model_name>`:
   1. A curated short name (see CURATED_INDEX below), e.g. "tinyllama-1.1b-q4"
   2. A direct https:// URL to a .gguf file
   3. An explicit provider ref: "hf:org/repo:file.gguf", "ms:org/repo:file.gguf"
-  4. A bare "org/repo" (no filename) - tried against every known provider;
+  4. A provider web-page URL pasted straight out of a browser, e.g.
+     "https://huggingface.co/org/repo", ".../tree/main", ".../blob/main/x.gguf",
+     "hf.co/org/repo" or "https://modelscope.cn/models/org/repo" - normalized
+     into form 3 by `parse_model_ref` before anything else looks at it.
+  5. A bare "org/repo" (no filename) - tried against every known provider;
      resolves automatically if only one provider has it. A bare
      "org/repo:filename" (filename already known, no prefix) always
      resolves against HuggingFace with zero network calls, matching
@@ -21,7 +25,7 @@ from pathlib import PurePosixPath
 import re
 import struct
 import unicodedata
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from omm.featurize import (
     is_mmproj_filename,
@@ -30,7 +34,12 @@ from omm.featurize import (
     parse_quant_bits,
 )
 from omm.gguf import read_gguf_metadata_bytes
-from omm.providers.base import AmbiguousModelError, AmbiguousProviderError, ModelResolutionError
+from omm.providers.base import (
+    AmbiguousModelError,
+    AmbiguousProviderError,
+    ModelResolutionError,
+    NoGgufFilesError,
+)
 
 # Small curated index of popular GGUF models. Not exhaustive - `omm search`
 # and `omm recommend` pull from a larger hosted candidate list instead.
@@ -323,7 +332,7 @@ def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> Reso
 
     candidates, param_count_b = module.fetch_repo_files(repo_id)
     if not candidates:
-        raise ModelResolutionError(f"No .gguf files found in {provider} repo '{repo_id}'.")
+        raise _no_gguf_error(provider, repo_id)
     model_candidates: list[str] = []
     seen_candidates: set[str] = set()
     had_shards = False
@@ -368,6 +377,7 @@ def _resolve_repo_ref(provider: str, repo_id: str, filename: str | None) -> Reso
 
 _URL_HOST_PROVIDER = {
     "huggingface.co": "huggingface",
+    "hf.co": "huggingface",
     "modelscope.cn": "modelscope",
 }
 
@@ -378,8 +388,165 @@ _PREFIXES = {
     "modelscope": "modelscope",
 }
 
+# The short prefix each provider's canonical ref is written with.
+_REF_PREFIXES = {"huggingface": "hf", "modelscope": "ms"}
+
+# HuggingFace namespaces things that are not models under a leading path
+# segment - a dataset URL must not be read as the model "datasets/squad".
+_HF_NON_MODEL_ROOTS = {
+    "datasets",
+    "spaces",
+    "collections",
+    "organizations",
+    "settings",
+    "docs",
+    "blog",
+    "papers",
+}
+# ".../<marker>/<revision>/<path...>" - where a provider's web UI puts a file.
+_HF_FILE_MARKERS = {"blob", "resolve", "raw"}
+
+
+@dataclass(frozen=True)
+class ModelRef:
+    """A model reference normalized to omm's canonical ref form.
+
+    `text` is what the rest of the resolver works on: either an untouched
+    passthrough (curated id, `org/repo`, direct URL) or a provider web-page
+    URL rewritten as `hf:owner/repo[:file.gguf]` / `ms:owner/repo[:file.gguf]`.
+    """
+
+    text: str
+    provider: str | None = None
+    repo_id: str | None = None
+    filename: str | None = None
+
+    @property
+    def search_text(self) -> str:
+        """What to type into a keyword search for this reference - the repo
+        name, so `omm search <pasted url>` searches for the model rather than
+        for the literal URL."""
+        return self.repo_id.split("/")[-1] if self.repo_id else self.text
+
+
+def _split_hub_page_url(text: str) -> tuple[str, str, str | None] | None:
+    """`(provider, repo_id, filename|None)` for a provider web-page URL, else
+    None so the caller passes the text through untouched."""
+    lowered = text.lower()
+    if lowered.startswith(("https://", "http://")):
+        url = text
+    elif any(
+        lowered.startswith(f"{host}/") or lowered.startswith(f"www.{host}/")
+        for host in _URL_HOST_PROVIDER
+    ):
+        url = f"https://{text}"
+    else:
+        return None
+
+    parsed = urlparse(url)
+    provider = _URL_HOST_PROVIDER.get((parsed.hostname or "").lower().removeprefix("www."))
+    if provider is None:
+        return None
+    # A `#sha256=` fragment means the user meant this as a pinned direct
+    # download, digest and all - leave that to resolve_model's URL branch
+    # instead of silently dropping the pin on the way to a repo ref.
+    if "sha256" in parse_qs(parsed.fragment):
+        return None
+
+    segments = [unquote(segment) for segment in parsed.path.split("/") if segment]
+    if provider == "huggingface":
+        return _split_huggingface_path(segments)
+    return _split_modelscope_path(segments)
+
+
+def _split_huggingface_path(segments: list[str]) -> tuple[str, str, str | None] | None:
+    if segments[:2] == ["api", "models"]:
+        segments = segments[2:]  # someone pasted the REST URL rather than the page
+    if len(segments) < 2 or segments[0] in _HF_NON_MODEL_ROOTS:
+        return None
+    rest = segments[2:]
+    filename = None
+    if len(rest) >= 3 and rest[0] in _HF_FILE_MARKERS:
+        filename = "/".join(rest[2:])
+    return "huggingface", f"{segments[0]}/{segments[1]}", filename
+
+
+def _split_modelscope_path(segments: list[str]) -> tuple[str, str, str | None] | None:
+    if segments[:1] == ["api"]:
+        return None  # /api/v1/models/... is already a direct download URL
+    if segments[:1] == ["models"]:
+        segments = segments[1:]
+    if len(segments) < 2:
+        return None
+    rest = segments[2:]
+    filename = None
+    if len(rest) >= 3 and rest[0] == "resolve":
+        filename = "/".join(rest[2:])
+    elif len(rest) >= 4 and rest[:2] == ["file", "view"]:
+        filename = "/".join(rest[3:])
+    return "modelscope", f"{segments[0]}/{segments[1]}", filename
+
+
+def parse_model_ref(text: str) -> ModelRef:
+    """Normalize whatever the user typed into one canonical model reference.
+
+    Every command that takes a model name goes through here (via
+    `resolve_model`), so a URL copied out of a HuggingFace or ModelScope page
+    works for `install`, `fit`, `info` and `search` alike instead of each
+    command growing its own URL special case (issue #340).
+    """
+    if not isinstance(text, str):
+        raise ModelResolutionError("model reference must be text")
+    candidate = text.strip()
+    if not candidate:
+        raise ModelResolutionError("model reference is empty")
+
+    split = _split_hub_page_url(candidate)
+    if split is None:
+        return ModelRef(text=candidate)
+    provider, repo_id, filename = split
+    repo_id = validate_repo_id(repo_id)
+    prefix = _REF_PREFIXES[provider]
+    # A page URL can point at any file in the repo (README.md, config.json).
+    # Only a .gguf names the model to install; anything else still identifies
+    # the repo, which is the more useful answer than a hard failure.
+    if filename and filename.lower().endswith(".gguf"):
+        filename = validate_model_filename(filename)
+        return ModelRef(f"{prefix}:{repo_id}:{filename}", provider, repo_id, filename)
+    return ModelRef(f"{prefix}:{repo_id}", provider, repo_id, None)
+
+
+def gguf_quantization_refs(provider: str, repo_id: str, limit: int = 3) -> list[str]:
+    """Installable refs for GGUF re-uploads of `repo_id`, best-effort.
+
+    Only HuggingFace publishes a model tree, so every other provider answers
+    with an empty list rather than a failure."""
+    fetch = getattr(_PROVIDER_MODULES.get(provider), "fetch_gguf_quantizations", None)
+    if fetch is None:
+        return []
+    refs: list[str] = []
+    for candidate in fetch(repo_id, limit) or []:
+        try:
+            refs.append(validate_repo_id(candidate))
+        except ModelResolutionError:
+            continue
+    return refs[:limit]
+
+
+def _no_gguf_error(provider: str, repo_id: str) -> NoGgufFilesError:
+    return NoGgufFilesError(
+        repo_id,
+        provider,
+        provider_label=_PROVIDER_LABELS.get(provider, provider),
+        suggestions=gguf_quantization_refs(provider, repo_id),
+    )
+
 
 def resolve_model(model_name: str) -> ResolvedModel:
+    # One normalizer, applied before any of the branches below look at the
+    # text, so a pasted provider URL behaves exactly like the ref it names.
+    model_name = parse_model_ref(model_name).text
+
     if model_name in CURATED_INDEX:
         repo_id, filename = CURATED_INDEX[model_name]
         repo_id = validate_repo_id(repo_id)
@@ -400,7 +567,13 @@ def resolve_model(model_name: str) -> ResolvedModel:
         digest_values = parse_qs(parsed.fragment).get("sha256", [])
         if len(digest_values) != 1 or re.fullmatch(r"[0-9a-fA-F]{64}", digest_values[0]) is None:
             raise ModelResolutionError(
-                "direct model URLs require a #sha256=<64-hex-digest> fragment"
+                "direct model URLs require a #sha256=<64-hex-digest> fragment",
+                fix=(
+                    "A host outside HuggingFace/ModelScope publishes no digest omm can "
+                    "check, so pin the file yourself: append '#sha256=<digest>' to the "
+                    "URL. A HuggingFace or ModelScope page URL needs no digest - paste "
+                    "that instead."
+                ),
             )
         return ResolvedModel(
             url=parsed._replace(fragment="").geturl(),
@@ -457,6 +630,10 @@ def resolve_model(model_name: str) -> ResolvedModel:
             results = list(executor.map(_check_provider, _PROVIDER_MODULES))
 
         matches = [provider for provider, found, _ in results if found]
+        # The provider answered, the repo is there, it just holds no GGUF -
+        # a safetensors-only base model. Saying "not found" here sends people
+        # hunting for a typo that does not exist (issue #340).
+        no_gguf = [provider for provider, found, error in results if not found and error is None]
         # A `kind` of None means the stub/legacy caller didn't classify the
         # failure - treat it as "not found" rather than "unavailable" so old
         # tests/providers keep the pre-existing not-found behavior.
@@ -478,6 +655,8 @@ def resolve_model(model_name: str) -> ResolvedModel:
                     f"({error}); using {_PROVIDER_LABELS.get(matches[0], matches[0])}."
                 )
             return resolved
+        if not matches and no_gguf:
+            raise _no_gguf_error(no_gguf[0], repo_id)
         if not matches and unavailable:
             failed_names = ", ".join(_PROVIDER_LABELS.get(p, p) for p, _ in unavailable)
             _, first_error = unavailable[0]
