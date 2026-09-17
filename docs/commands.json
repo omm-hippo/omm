@@ -164,6 +164,88 @@
     },
     {
       "path": [
+        "compare"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Compare selected catalog packages without installing or running them.",
+      "description": "",
+      "usage": "omm compare [OPTIONS] {models}...",
+      "arguments": [
+        {
+          "name": "models...",
+          "help": "Two to five exact model names, repositories, filenames, or install references from the signed recommendation catalog.",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Memory-sharing profile: dedicated, balanced, or minimal.",
+          "default": "balanced",
+          "global": false
+        },
+        {
+          "flags": [
+            "--for"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Optional measured-quality task: General, Coding, Reasoning, Writing, Translation, or Documents.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/compare"
+    },
+    {
+      "path": [
         "contribute"
       ],
       "kind": "command",
@@ -672,6 +754,88 @@
         }
       ],
       "docs_url": "https://omm.run/commands/engine#update"
+    },
+    {
+      "path": [
+        "evaluate"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Evaluate one installed model with sandboxed Python coding tasks.",
+      "description": "Generated code runs only in Docker or Podman and is never stored or uploaded. This command does not install or download models.",
+      "usage": "omm evaluate [OPTIONS] {model}",
+      "arguments": [
+        {
+          "name": "model",
+          "help": "Already-installed Ollama model tag to evaluate.",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--pack"
+          ],
+          "metavar": "<path>",
+          "is_flag": false,
+          "help": "Versioned Python coding pack JSON.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--output"
+          ],
+          "metavar": "<path>",
+          "is_flag": false,
+          "help": "Write structured evidence to this JSON path.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/evaluate"
     },
     {
       "path": [

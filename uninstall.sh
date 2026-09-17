@@ -101,7 +101,7 @@ purge_owned_data() {
     done
     for owned_file in \
         config.json runtime-profiles.json models.json link-ownership.json rules.json \
-        recommend-model.json recommend-provider-facts.json calibration.json benchmark_history.json \
+        recommend-model.json recommend-provider-facts.json model-quality.json model-quality.manifest.json calibration.json benchmark_history.json \
         contribute_state.json telemetry.log telemetry_pending.json \
         update_check.json client-id firebase_auth.json error_reports.log \
         error_reports_pending.json error_reports_backoff.json \
@@ -116,7 +116,7 @@ purge_owned_data() {
     rm -f "$RESOLVED_HOME/telemetry_pending.json.flush.lock" "$RESOLVED_HOME/error_reports_pending.json.flush.lock"
     # Corrupt backups and interrupted atomic writes use these application-
     # owned suffixes. Limit cleanup to the known JSON filenames above.
-    for owned_json in config.json runtime-profiles.json models.json link-ownership.json rules.json recommend-model.json recommend-provider-facts.json calibration.json benchmark_history.json contribute_state.json telemetry_pending.json update_check.json firebase_auth.json error_reports_pending.json error_reports_backoff.json usage-pending.json usage-state.json usage-backoff.json telemetry_last_failed.json telemetry_backoff.json ollama_manifest_compat.json; do
+    for owned_json in config.json runtime-profiles.json models.json link-ownership.json rules.json recommend-model.json recommend-provider-facts.json model-quality.json model-quality.manifest.json calibration.json benchmark_history.json contribute_state.json telemetry_pending.json update_check.json firebase_auth.json error_reports_pending.json error_reports_backoff.json usage-pending.json usage-state.json usage-backoff.json telemetry_last_failed.json telemetry_backoff.json ollama_manifest_compat.json; do
         rm -f "$RESOLVED_HOME/$owned_json".corrupt-* "$RESOLVED_HOME/.$owned_json".*.tmp
     done
     # .omm-managed must survive while src/sources are still present (e.g. a

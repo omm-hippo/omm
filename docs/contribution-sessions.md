@@ -1,4 +1,93 @@
-# 원하는 만큼 기여하기
+# 추천 데이터 기여하기
+
+macOS, Windows, Linux에서 같은 명령으로 추천 데이터를 보낼 수 있다. 가장 안전한
+시작 방법은 이미 설치된 모델 한 개를 세 번 측정하는 것이다. 새 모델을 받지 않고,
+모델 파일도 지우지 않는다.
+
+```sh
+omm --version
+omm doctor
+omm setting upload benchmark --ask
+omm benchmark <설치된-모델> --speed-runs 3 --output omm-benchmark-evidence.json
+```
+
+`<설치된-모델>`에는 Ollama의 태그 또는 LM Studio의 model key를 넣는다. 예를 들어
+Ollama에 `qwen3:4b-instruct`가 설치되어 있다면 다음처럼 실행한다.
+
+```sh
+omm benchmark qwen3:4b-instruct --speed-runs 3 --output omm-benchmark-evidence.json
+```
+
+`--speed-runs 3`은 서로 다른 컴퓨터의 결과를 비교하는 데 필요한 최소 반복 측정을
+만든다. 1회 측정도 로컬 확인에는 쓸 수 있지만, CPU/GPU 점수와 엔진이 관찰할 수 있는
+런타임 조건을 포함한 최신 텔레메트리 행이 되지 않을 수 있다. LM Studio가 노출하지
+않는 런타임 값은 추측해서 채우지 않는다. 출력의 `Benchmark result uploaded.`는
+수집기가 행을 받았다는 뜻이며, 다음 추천 모델 학습에 채택됐다는 뜻은 아니다.
+
+`--output` 파일은 생성 문장을 저장하지 않지만 모델 식별자, 하드웨어 특성, 파싱된
+정답과 속도를 포함한다. 검토 없이 GitHub 이슈나 PR에 첨부하지 않는다. 공식 공유
+경로는 OMM의 벤치마크 업로드이며, 이 데이터셋은 공개적으로 읽을 수 있다.
+
+## 새 모델까지 자동으로 측정하기
+
+설치된 모델 한 개가 아니라 해당 컴퓨터에 맞는 새 후보를 찾고 싶다면 한도가 있는
+`omm contribute`로 시작한다.
+
+```sh
+omm contribute --max-minutes 30 --max-download-gb 10 --max-models 1
+```
+
+먼저 `omm contribute --help`에서 `--max-minutes`, `--max-download-gb`,
+`--max-models`가 모두 보이는지 확인한다. 보이지 않으면 실행하지 말고, OMM을 설치한
+원래 패키지 관리자 방식으로 최신 버전으로 갱신한다. 오래된 무제한 기여 명령은
+모델을 여러 개 연속으로 받을 수 있다.
+
+| 목적 | 명령 | 새 모델 다운로드 | 기존 모델 삭제 |
+| --- | --- | --- | --- |
+| 이미 설치된 정확한 모델 비교 | `omm benchmark <모델> --speed-runs 3` | 없음 | 없음 |
+| 새 하드웨어 조합의 후보 발굴 | 제한을 둔 `omm contribute` | 있음 | 이번 세션의 임시 모델만 제거 |
+
+다른 컴퓨터에서는 OMM 홈 폴더나 측정 JSON을 복사하지 말고, 그 컴퓨터에서 명령을
+직접 실행한다. 운영체제, CPU 아키텍처, 코어 수, RAM/VRAM, 통합 메모리 여부,
+엔진 버전과 실제 속도가 그 컴퓨터에서 새로 측정되어야 의미가 있다. 비교 가능한
+결과를 위해 전원에 연결하고 다른 무거운 작업은 잠시 줄이는 것이 좋지만,
+Windows Defender 같은 보안 기능을 끄지는 않는다.
+
+## 지금 수집되는 것과 아직 부족한 것
+
+현재 벤치마크는 확인 가능한 경우의 모델 파일·digest, 파라미터 수, 양자화, 엔진과
+관찰 가능한 런타임 조건, 비식별 하드웨어 점수, RAM/VRAM, 반복 속도와 8문항
+영어·한국어 산수 추론 요약을 수집한다. 생성 문장, 사용자 이름, 개인 파일 경로와
+검색어는 보내지 않는다.
+
+이 품질 팩은 작은 재현성 검사이지 종합 순위표가 아니다. Coding, Writing,
+Translation, Documents와 일반 대화 품질을 비교하려면 각각 별도의 버전 고정 평가
+팩과 모델별 실행 결과가 더 필요하다. 공급자가 선언한 `BEST FOR` 메타데이터도
+벤치마크 점수와 구분해 수집·표시해야 한다.
+
+## 모델 비교와 로컬 코딩 평가
+
+`omm compare`는 서명된 추천 카탈로그 안의 정확한 모델 2~5개를 읽기 전용으로
+비교한다. 모델을 다운로드·설치·실행하지 않으며, 품질 데이터가 없으면 낮은 점수
+대신 `Not measured`라고 표시한다.
+
+```sh
+omm compare tinyllama-1.1b-q4 llama3.1-8b-instruct-q4 --profile balanced --for coding
+```
+
+`omm evaluate`는 이미 설치된 Ollama 모델의 Python 코드 생성·수정 결과를 로컬
+Docker/Podman 샌드박스에서 실행한다. 네트워크와 호스트 파일 접근을 허용하지 않고,
+생성 코드는 저장하거나 업로드하지 않는다. `--output`에는 문제별 성공 여부와 정확한
+모델·평가 팩 식별 정보만 기록한다.
+
+```sh
+omm evaluate qwen3-coder:7b --output coding-evidence.json
+```
+
+공식 `MEASURED` 점수는 같은 스키마의 결과를 검토해 별도로 서명한 품질 카탈로그에서만
+읽는다. 로컬 평가 파일이나 공개 커뮤니티 텔레메트리가 자동으로 공식 점수가 되지는 않는다.
+
+## 원하는 만큼 기여하기
 
 ```sh
 omm contribute --max-minutes 30 --max-download-gb 10 --max-models 3

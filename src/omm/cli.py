@@ -46,6 +46,8 @@ from omm import (
     benchmark_history,
     calibration,
     catalog,
+    coding_eval,
+    compare as compare_mod,
     config as config_mod,
     contribute_memory,
     contribute_state,
@@ -61,6 +63,7 @@ from omm import (
     predictor,
     recommend_status,
     quality as quality_mod,
+    quality_catalog,
     recommend_ui,
     registry,
     rules as rules_mod,
@@ -82,7 +85,7 @@ from omm import contribute as contribute_mod
 from omm import install_state
 from omm.cli_views import print_scan, table as _table
 from omm.cli_help import BriefUsageError, UsageError, engine_read_only_args, option_requested
-from omm.atomic import locked
+from omm.atomic import atomic_write_text, locked
 from omm.model_export import export_model_file
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
 from omm.config import MODEL_ARCHIVE_DIR, MODELS_DIR, OMM_HOME, load_config
@@ -218,6 +221,8 @@ _JSON_CAPABLE = {
     "tune",
     "scan",
     "recommend",
+    "compare",
+    "evaluate",
     "doctor",
     "fit",
     "setting catalog-status",
@@ -237,6 +242,7 @@ _YES_CAPABLE = {
     "upgrade",
     "contribute",
     "recommend",
+    "evaluate",
     "benchmark",
     "verify",
     "run",
@@ -3920,6 +3926,156 @@ def recommend(
         info, ranked_rules, refs, installations, profile, json_output=json_output,
         auto_yes=auto_yes, eligible_count=len(matches),
     )
+
+
+@app.command(name="compare")
+@global_flags
+def compare_cmd(
+    models: list[str] = typer.Argument(
+        ...,
+        help="Two to five exact model names, repositories, filenames, or install references from the signed recommendation catalog.",
+    ),
+    profile: str = typer.Option(
+        predictor.DEFAULT_RECOMMEND_PROFILE,
+        "--profile",
+        help="Memory-sharing profile: dedicated, balanced, or minimal.",
+    ),
+    purpose: str | None = typer.Option(
+        None,
+        "--for",
+        help="Optional measured-quality task: General, Coding, Reasoning, Writing, Translation, or Documents.",
+    ),
+) -> None:
+    """Compare selected catalog packages without installing or running them."""
+
+    profile = profile.casefold()
+    info = scan_hardware()
+    config = load_config()
+    artifact, changed = _load_recommendation_with_change_note(config)
+    if not artifact or not artifact.get("candidates"):
+        err_console.print("[error]No signed recommendation catalog is available.[/error]")
+        raise typer.Exit(1)
+    from omm import recommend_facts
+
+    artifact = recommend_facts.apply(artifact)
+    try:
+        selected = compare_mod.resolve_candidates(artifact["candidates"], models)
+        installations = recommend_status.detect_installation_statuses(selected)
+        result = compare_mod.compare_candidates(
+            artifact,
+            models,
+            info,
+            profile=profile,
+            purpose=purpose,
+            installations=installations,
+            quality_index=quality_catalog.load_cached(config.get("catalog_public_key")),
+        )
+    except compare_mod.CompareInputError as error:
+        err_console.print(f"[error]{escape(str(error))}[/error]")
+        raise typer.Exit(2) from error
+
+    if _global_opts().json:
+        _print_json(
+            data={
+                "profile": profile,
+                "purpose": result.purpose,
+                "quality_complete": result.quality_complete,
+                "best_fit_ref": result.best_fit_ref,
+                "fastest_ref": result.fastest_ref,
+                "best_measured_quality_ref": result.best_measured_quality_ref,
+                "best_match_ref": result.best_match_ref,
+                "models": [
+                    {
+                        "ref": row.ref,
+                        "name": row.display_name,
+                        "model_type": row.model_type,
+                        "declared_purpose": row.declared_purpose,
+                        "declared_purpose_source": row.declared_purpose_source,
+                        "predicted_tokens_per_second": row.predicted_tokens_per_second,
+                        "memory_required_gb": row.memory_required_gb,
+                        "memory_estimate_basis": row.memory_estimate_basis,
+                        "profile_budget_gb": row.profile_budget_gb,
+                        "within_profile": row.within_profile,
+                        "meets_speed_floor": row.meets_speed_floor,
+                        "eligible": row.eligible,
+                        "installed": row.installed,
+                        "managed_by_omm": row.managed_by_omm,
+                        "installed_engines": list(row.installed_engines),
+                        "quantization": row.quantization,
+                        "warning": row.warning,
+                        "measured_quality": (
+                            {
+                                "task": row.measured_quality.task,
+                                "pack_id": row.measured_quality.pack_id,
+                                "pack_version": row.measured_quality.pack_version,
+                                "score": row.measured_quality.score,
+                                "summary": row.measured_quality.summary,
+                                "source": row.measured_quality.source,
+                                "model_digest": row.measured_quality.model_digest,
+                            }
+                            if row.measured_quality is not None
+                            else None
+                        ),
+                    }
+                    for row in result.rows
+                ],
+            }
+        )
+        return
+
+    if changed and not _global_opts().quiet:
+        console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
+    table = Table(title=f"Model comparison · {profile}", box=None)
+    table.add_column("MODEL", style="bold")
+    table.add_column("TYPE")
+    table.add_column("BEST FOR")
+    if result.purpose is not None:
+        table.add_column("MEASURED")
+    table.add_column("SPEED", justify="right")
+    table.add_column("MEMORY", justify="right")
+    table.add_column("STATUS")
+    for row in result.rows:
+        status = []
+        if row.ref == result.best_fit_ref:
+            status.append("BEST FIT")
+        if row.ref == result.fastest_ref:
+            status.append("FASTEST")
+        if row.installed:
+            status.append("INSTALLED")
+        if row.warning:
+            status.append("CAUTION")
+        if row.within_profile is False:
+            status.append("OVER BUDGET")
+        if not row.meets_speed_floor:
+            status.append("TOO SLOW")
+        values = [
+            row.display_name,
+            row.model_type,
+            row.declared_purpose,
+        ]
+        if result.purpose is not None:
+            values.append(
+                f"{row.measured_quality.score * 100:.0f}% · {row.measured_quality.pack_id} v{row.measured_quality.pack_version}"
+                if row.measured_quality is not None
+                else "Not measured"
+            )
+        values.extend([
+            f"~{row.predicted_tokens_per_second:.1f} tok/s",
+            f"~{row.memory_required_gb:.1f} GB" if row.memory_required_gb is not None else "Unknown",
+            " · ".join(status) or "COMPATIBLE",
+        ])
+        table.add_row(*values)
+    console.print(table)
+    if result.purpose is not None:
+        if result.quality_complete and result.best_measured_quality_ref:
+            console.print(
+                f"[success]BEST MATCH[/success]  {escape(result.best_match_ref or '')}"
+            )
+        else:
+            console.print(
+                f"[muted]Measured {result.purpose} quality is incomplete; BEST MATCH remains hardware-only.[/muted]"
+            )
+    console.print("[muted]Compare is read-only: it did not download, install, or run a model.[/muted]")
 
 
 def _present_recommendations(
@@ -9867,6 +10023,110 @@ def benchmark_cmd(
             raise typer.Exit(1)
     finally:
         stop_started_daemon()
+
+
+@app.command(name="evaluate")
+@global_flags
+def evaluate_cmd(
+    model: str = typer.Argument(..., help="Already-installed Ollama model tag to evaluate."),
+    pack: Path | None = typer.Option(None, "--pack", help="Versioned Python coding pack JSON."),
+    output: Path | None = typer.Option(None, "--output", help="Write structured evidence to this JSON path."),
+) -> None:
+    """Evaluate one installed model with sandboxed Python coding tasks.
+
+    Generated code runs only in Docker or Podman and is never stored or
+    uploaded. This command does not install or download models.
+    """
+
+    try:
+        coding_pack = coding_eval.load_pack(pack)
+        runtime = coding_eval.find_runtime()
+        coding_eval.ensure_runtime_available(runtime)
+        coding_eval.ensure_image_available(runtime, coding_pack.image)
+    except coding_eval.CodingEvaluationError as error:
+        err_console.print(f"[error]{escape(str(error))}[/error]")
+        raise typer.Exit(1) from error
+    if not benchmark.ollama_daemon_reachable():
+        err_console.print(
+            "[error]Ollama must already be running for `omm evaluate`; no model or engine was started.[/error]"
+        )
+        raise typer.Exit(1)
+    try:
+        metadata = quality_mod._model_metadata(model)
+    except quality_mod.QualityEvaluationError as error:
+        err_console.print(f"[error]{escape(str(error))}[/error]")
+        raise typer.Exit(1) from error
+    was_loaded = quality_mod._model_is_loaded(model)
+    supports_thinking = "thinking" in (metadata.get("capabilities") or [])
+    registry_entry = None
+    entries = [
+        (filename, value)
+        for filename, value in registry.load_registry().items()
+        if isinstance(filename, str) and isinstance(value, dict)
+    ]
+    runtime_names = linker.resolve_ollama_runtime_names_batch(entries)
+    for filename, entry in entries:
+        if memory_guard_mod._same_ollama_id(runtime_names.get(filename), model):
+            registry_entry = {**entry, "filename": filename}
+            break
+
+    def generate(prompt: str) -> str:
+        response = quality_mod._generate(
+            model,
+            prompt,
+            coding_pack.generation,
+            supports_thinking=supports_thinking,
+        )
+        return response["response"]
+
+    try:
+        report = coding_eval.evaluate_pack(
+            model,
+            coding_pack,
+            generate,
+            runtime=runtime,
+            model_provider=(registry_entry or {}).get("provider"),
+            model_repo_id=(registry_entry or {}).get("repo_id"),
+            model_filename=(registry_entry or {}).get("filename"),
+            model_digest=quality_mod._normalized_digest(metadata.get("digest")),
+            quantization=metadata.get("quantization_level"),
+            engine="ollama",
+            engine_version=quality_mod.ollama_version(),
+        )
+    except quality_mod.QualityEvaluationError as error:
+        err_console.print(f"[error]{escape(str(error))}[/error]")
+        raise typer.Exit(1) from error
+    finally:
+        if was_loaded is False:
+            quality_mod.ensure_model_unloaded(model)
+    payload = report.as_dict()
+    if output is not None:
+        try:
+            atomic_write_text(output, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        except OSError as error:
+            err_console.print(f"[error]Could not write evaluation evidence: {escape(str(error))}[/error]")
+            raise typer.Exit(1) from error
+    if _global_opts().json:
+        _print_json(data=payload)
+        return
+    summary = payload["summary"]
+    table = Table(title=f"Python coding evaluation · {model}", box=None)
+    table.add_column("TASK")
+    table.add_column("SOLVED", justify="right")
+    table.add_column("TESTS", justify="right")
+    for kind, values in summary["by_kind"].items():
+        table.add_row(
+            kind.replace("_", " ").title(),
+            f"{values['solved']}/{values['total']}",
+            f"{values['tests_passed']}/{values['tests_total']}",
+        )
+    console.print(table)
+    console.print(
+        f"[muted]Pack {coding_pack.pack_id} v{coding_pack.version} · "
+        "generated source was sandboxed, not stored, and not uploaded.[/muted]"
+    )
+    if output is not None:
+        console.print(f"Saved structured evidence to {escape(str(output))}.")
 
 
 def _telemetry_send_failure_text() -> str:
