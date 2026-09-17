@@ -133,3 +133,12 @@ comparison or model-list data.
 app directories on this machine and adopts new models into the omm hub in the
 background. It is a local filesystem automation only - nothing it does is uploaded
 or sent anywhere.
+
+`omm bug-report` builds a separate local diagnostic document from a new allow-list. By
+default it includes OMM version, install source, a command name, exception
+class, and diagnostic status/counts. It excludes usernames, home/personal
+paths, tokens, environment variables, search text, command arguments,
+generated text, and model names. Optional OS, upload-policy, and check-name
+groups are included only when selected with `--include`. The full JSON is
+printed before `--save`; the command never uploads it, opens a GitHub issue,
+or sends a message.

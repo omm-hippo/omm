@@ -124,7 +124,11 @@ def _stub_install_force_common(monkeypatch):
     _no_engines(monkeypatch)
     monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
-    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: 100)
+    # These archive tests use tiny synthetic payloads whose byte lengths vary
+    # per case. Provider-size enforcement has dedicated coverage in
+    # test_install_card.py; leave size unknown here so the tests stay scoped
+    # to pin/archive behavior rather than intentionally failing that check.
+    monkeypatch.setattr(cli, "remote_file_size", lambda provider, repo_id, filename: None)
     # Plenty of room on every preflight check - these tests are about the
     # archive hook, not disk-space accounting (that's covered separately in
     # tests/test_install_impl.py).
