@@ -3147,6 +3147,86 @@ def _stream_subprocess(
     return proc.wait()
 
 
+# Phase markers `_install_via_package_manager` sends through on_output ahead
+# of the raw package-manager line that triggered them. The UI switches its
+# status line on these alone, so it never has to parse (localized) installer
+# output itself. The verifying/repairing strings predate the others.
+INSTALL_PHASE_RESOLVING = "OMM: finding package"
+INSTALL_PHASE_DOWNLOADING = "OMM: downloading installer"
+INSTALL_PHASE_INSTALLING = "OMM: running installer"
+INSTALL_PHASE_VERIFYING = "OMM: verifying installation"
+INSTALL_PHASE_REPAIRING = "OMM: repairing installation"
+INSTALL_PROGRESS_PREFIX = "OMM: progress "
+
+_URL_RE = re.compile(r"https?://\S+")
+_PERCENT_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d+)?)\s?%")
+# What is left of a progress-bar/spinner-only line once bar glyphs, sizes,
+# rates and percentages are stripped: nothing. Such a line must never be
+# mistaken for "the next real status line". A substitution, not one
+# anchored regex, so a long digit run can't backtrack.
+_PROGRESS_NOISE_RE = re.compile(r"[KMGT]?i?B(?:/s)?|[\d.,%/\s\-\\|#=>▀-▟]")
+
+
+def _is_progress_only(line: str) -> bool:
+    return not _PROGRESS_NOISE_RE.sub("", line)
+
+
+class _InstallPhaseTracker:
+    """Turn a package manager's raw output into phase markers.
+
+    winget output is localized ("Downloading" is "다운로드 중" on Korean
+    Windows), so its phases are read from the output's shape instead of its
+    words: the only line carrying a URL is the installer download, and the
+    next real line after it ("installer hash verified", in any language)
+    means the download and hash check are over and the installer runs next.
+    Homebrew and Flatpak are matched on their (English) keywords. Phases only
+    ever move forward, so a stray keyword can't send the status backwards.
+    """
+
+    _ORDER = ("resolving", "downloading", "installing")
+
+    def __init__(self, manager: str, on_output: Callable[[str], None]):
+        self.manager = manager
+        self.on_output = on_output
+        self.phase = "resolving"
+        self._last_percent: str | None = None
+        on_output(INSTALL_PHASE_RESOLVING)
+
+    def _advance(self, phase: str) -> None:
+        if self._ORDER.index(phase) <= self._ORDER.index(self.phase):
+            return
+        self.phase = phase
+        self._last_percent = None
+        self.on_output(INSTALL_PHASE_DOWNLOADING if phase == "downloading" else INSTALL_PHASE_INSTALLING)
+
+    def feed(self, line: str) -> None:
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if self.manager == "winget":
+            if self.phase == "resolving" and _URL_RE.search(stripped):
+                self._advance("downloading")
+            elif (
+                self.phase == "downloading"
+                and stripped
+                and not _URL_RE.search(stripped)
+                and not _is_progress_only(stripped)
+            ):
+                self._advance("installing")
+        else:
+            if "download" in lowered or lowered.startswith("==> fetching"):
+                self._advance("downloading")
+            elif "install" in lowered or lowered.startswith("==> moving"):
+                self._advance("installing")
+        self.on_output(line)
+        match = _PERCENT_RE.search(stripped)
+        if match and self.phase != "resolving":
+            value = float(match.group(1))
+            percent = f"{min(value, 100):.0f}%"
+            if percent != self._last_percent:
+                self._last_percent = percent
+                self.on_output(INSTALL_PROGRESS_PREFIX + percent)
+
+
 _OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
 _LMSTUDIO_DOWNLOAD_URL = "https://lmstudio.ai/download"
 
@@ -3210,7 +3290,14 @@ def _install_via_package_manager(
             "-e",
             "--id",
             winget_id,
+            # Only the community repo carries these ids. Without --source,
+            # winget also searches (and may first refresh) the msstore
+            # source on every install - measured 0.3-0.5s extra per call on
+            # a warm cache, more when the msstore index is stale.
+            "--source",
+            "winget",
             "--silent",
+            "--disable-interactivity",
             "--accept-source-agreements",
             "--accept-package-agreements",
         ]
@@ -3226,12 +3313,15 @@ def _install_via_package_manager(
         )
 
     try:
-        returncode = _stream_subprocess(args, on_output)
+        stream_output = (
+            _InstallPhaseTracker(args[0], on_output).feed if on_output is not None else None
+        )
+        returncode = _stream_subprocess(args, stream_output)
     except OSError as e:
         return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
 
     if on_output is not None:
-        on_output("OMM: verifying installation")
+        on_output(INSTALL_PHASE_VERIFYING)
     detected = is_installed()
     if returncode == 0 and detected:
         return EngineInstallResult(key, "installed", f"{label} installed successfully.")
@@ -3257,9 +3347,12 @@ def _install_via_package_manager(
         and args[:3] == ["brew", "install", "--cask"]
     ):
         if on_output is not None:
-            on_output("OMM: repairing installation")
+            on_output(INSTALL_PHASE_REPAIRING)
         try:
-            returncode = _stream_subprocess(["brew", "reinstall", "--cask", brew_cask], on_output)
+            returncode = _stream_subprocess(
+                ["brew", "reinstall", "--cask", brew_cask],
+                _InstallPhaseTracker("brew", on_output).feed if on_output is not None else None,
+            )
         except OSError as e:
             return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
         if on_output is not None:
