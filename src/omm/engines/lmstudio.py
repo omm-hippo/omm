@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 import time
 
 from omm.engines.base import (
@@ -99,6 +100,8 @@ class LMStudioAdapter:
         return models
 
     def load(self, model: RuntimeModelRef, options: LoadOptions) -> LoadReceipt:
+        if options.cpu_threads is not None or options.gpu_layers is not None:
+            raise RuntimeAdapterError("unsupported_runtime", "LM Studio's native load API does not expose CPU threads or GPU layers")
         selected = find_runtime_model(self.list_models(), model)
         if selected is None:
             raise RuntimeAdapterError("model_not_visible", "the model is not visible in LM Studio")
@@ -108,7 +111,9 @@ class LMStudioAdapter:
             response = self._client.request(
                 "POST",
                 "/api/v1/models/load",
-                payload={"model": selected.key, "context_length": options.context_length},
+                payload={"model": selected.key, "context_length": options.context_length,
+                         **({"eval_batch_size": options.batch_size} if options.batch_size is not None else {}),
+                         **({"echo_load_config": True} if options.verify_applied else {})},
                 timeout=120,
                 default_failure="load_failed",
                 timeout_failure="load_failed",
@@ -116,6 +121,15 @@ class LMStudioAdapter:
             instance_id = response.get("instance_id")
             if response.get("status") != "loaded" or not isinstance(instance_id, str) or not instance_id:
                 raise RuntimeAdapterError("load_failed", "LM Studio did not confirm the model load")
+            observed = None
+            if options.verify_applied:
+                actual = response.get("load_config")
+                requested = {"context_length": options.context_length}
+                if options.batch_size is not None:
+                    requested["eval_batch_size"] = options.batch_size
+                if not isinstance(actual, dict) or any(type(actual.get(key)) is not int or actual[key] != value for key, value in requested.items()):
+                    raise RuntimeAdapterError("load_failed", "LM Studio did not confirm the requested load settings")
+                observed = {key: actual[key] for key in requested}
             loaded_model = RuntimeModel(
                 selected.key,
                 selected.display_name,
@@ -123,7 +137,7 @@ class LMStudioAdapter:
                 instance_id,
                 selected.aliases,
             )
-            return LoadReceipt(loaded_model, instance_id, False, True)
+            return LoadReceipt(loaded_model, instance_id, False, True, options, observed)
         except RuntimeAdapterError as original:
             try:
                 uncertain = find_runtime_model(
@@ -174,7 +188,12 @@ class LMStudioAdapter:
         ) if isinstance(output, list) else ""
         if not text.strip():
             raise RuntimeAdapterError("empty_response", "LM Studio returned no text")
-        return ProbeResult(text)
+        stats = response.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        speed, count = stats.get("tokens_per_second"), stats.get("total_output_tokens")
+        if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not math.isfinite(speed) or speed <= 0:
+            speed = None
+        return ProbeResult(text, speed, count if isinstance(count, int) and not isinstance(count, bool) else None)
 
     def unload(self, receipt: LoadReceipt) -> UnloadResult:
         if not receipt.loaded_by_omm:

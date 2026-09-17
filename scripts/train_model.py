@@ -1745,6 +1745,11 @@ def main() -> None:
                 "fit_telemetry_audit": fit_audit,
             }
         )
+        from omm.evaluation import describe_evaluation
+
+        evaluation["evaluation_details"] = describe_evaluation(evaluation)
+        for name, check in evaluation["evaluation_details"]["checks"].items():
+            print(f"Evaluation {name}: {check['status']} - {check['reason']}")
         selection_group_count = evaluation.get("candidate", {}).get("selection_group_count")
         min_selection_groups = evaluation.get("thresholds", {}).get("min_selection_groups")
         insufficient_selection_groups = (

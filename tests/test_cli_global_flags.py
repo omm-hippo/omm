@@ -1,3 +1,5 @@
+import json
+
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -22,7 +24,7 @@ def test_global_flag_works_after_subcommand(isolated_omm_home):
 def test_scan_without_json_prints_table(isolated_omm_home):
     result = runner.invoke(cli.app, ["scan"])
     assert result.exit_code == 0, result.stdout
-    assert "omm hardware scan" in result.stdout.lower()
+    assert "omm resources" in result.stdout.lower()
 
 
 def test_no_color_flag_disables_ansi_codes(isolated_omm_home, monkeypatch):
@@ -82,14 +84,14 @@ def test_no_color_flag_disables_ansi_codes(isolated_omm_home, monkeypatch):
     assert accent_sgr not in without_color.stdout
 
 
-def test_json_on_unsupported_command_warns_instead_of_silently_no_opping(isolated_omm_home):
-    # `omm cleanup --json` previously exited 0 and printed plain text -
-    # a script piping that expecting JSON would get garbage silently (see
-    # #81). cleanup doesn't restructure its output for --json.
+def test_json_on_unsupported_command_is_rejected_before_cleanup(isolated_omm_home):
+    orphan = cli.MODELS_DIR / "keep.gguf"
+    orphan.write_bytes(b"must not be removed by an unsupported invocation")
     result = runner.invoke(cli.app, ["cleanup", "--json"])
 
-    assert result.exit_code == 0, result.stdout
-    assert "--json has no effect on `omm cleanup`" in result.stderr
+    assert result.exit_code == 2, result.stdout
+    assert json.loads(result.stdout)["error"]["code"] == "unsupported_json"
+    assert orphan.exists()
 
 
 def test_json_on_supported_command_does_not_warn(isolated_omm_home):
@@ -156,11 +158,11 @@ def test_json_warning_is_not_emitted_when_prog_name_has_exe_suffix(isolated_omm_
     assert "has no effect" not in result.stderr
 
 
-def test_json_warning_text_uses_plain_command_name(isolated_omm_home):
+def test_json_error_uses_plain_command_name(isolated_omm_home):
     result = runner.invoke(cli.app, ["cleanup", "--json"], prog_name="omm.exe")
 
-    assert "--json has no effect on `omm cleanup`" in result.stderr
-    assert "omm.exe" not in result.stderr
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"]["command"] == "cleanup"
 
 
 def test_yes_warning_is_not_emitted_when_prog_name_has_exe_suffix(isolated_omm_home, monkeypatch):

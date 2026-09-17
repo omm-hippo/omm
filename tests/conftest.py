@@ -323,6 +323,10 @@ def _isolate_omm_home_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CATALOG_HISTORY_DIR", home / "catalog-history")
     monkeypatch.setattr(config, "CLIENT_ID_PATH", home / "client-id")
     monkeypatch.setattr(config, "MODEL_ARCHIVE_DIR", home / "model-archive")
+    # cli binds these at import; a checkout-backed SRC_DIR can otherwise be
+    # the live worktree itself. Update/recovery tests must never remove it.
+    monkeypatch.setattr(cli, "OMM_HOME", home)
+    monkeypatch.setattr(cli, "SRC_DIR", home / "src")
 
     monkeypatch.setattr(registry, "REGISTRY_PATH", config.REGISTRY_PATH)
     monkeypatch.setattr(linker, "LINK_OWNERSHIP_PATH", config.LINK_OWNERSHIP_PATH)

@@ -548,4 +548,20 @@ def collect_report(
             )
         )
     checks.extend(_ollama_checks(registry_data))
+    from omm.install_state import pending_records
+
+    for pending in pending_records():
+        checks.append(DoctorCheck(
+            "WARN", "Install recovery",
+            f"{pending['filename']}: last checkpoint {pending.get('phase', 'unknown')}; "
+            "re-run the original install command to recheck and resume.",
+        ))
+    from omm.runtime_profiles import interrupted_runs
+
+    for pending in interrupted_runs():
+        checks.append(DoctorCheck(
+            "WARN", "Runtime profile cleanup",
+            f"A previous OMM run ended before confirming cleanup of {pending['alias']}. "
+            "Inspect this alias in Ollama; no model was automatically unloaded or deleted.",
+        ))
     return DoctorReport(tuple(checks))

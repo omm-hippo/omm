@@ -17,6 +17,10 @@ on it.
 > published build, use the [GitHub Releases](https://github.com/omm-hippo/omm/releases)
 > page or the version shown by your package manager.
 
+**Project guides:** [Contributing](CONTRIBUTING.md) ·
+[Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md) ·
+[Privacy](PRIVACY.md) · [MIT License](LICENSE)
+
 ## What omm does
 
 - Installs GGUF models into a central, configurable model hub.
@@ -24,11 +28,29 @@ on it.
   text-generation-webui, and KoboldCpp without silently duplicating large files.
 - Ranks models against live RAM, VRAM, operating-system, and runner state.
 - Verifies load and generation through local Ollama or LM Studio APIs.
-- Keeps every outbound channel opt-in — benchmark uploads, anonymous usage stats, and crash reports. See [PRIVACY.md](PRIVACY.md).
+- Keeps benchmark uploads, anonymous usage stats, and crash reports opt-in,
+  with a separate setting for each. Searches, downloads, and update checks
+  also use the network; see [PRIVACY.md](PRIVACY.md).
+
+## Quick start
+
+After [installing omm](#install), run these commands in order:
+
+```sh
+omm setup       # Scan hardware and choose a local AI runner
+omm recommend   # Review compatible models and choose one to install
+omm list        # Find the installed model's name
+```
+
+Use that name with `omm verify <name>` to check local load and generation,
+then `omm run <name>` to use it. If setup or a runner is not working, start
+with `omm doctor` and `omm log --lines 5`. A recommendation estimates fit;
+verification checks the selected model on your machine.
 
 ## Table of contents
 
 - [What omm does](#what-omm-does)
+- [Quick start](#quick-start)
 - [Install](#install)
   - [Windows](#windows)
   - [macOS](#macos)
@@ -39,11 +61,13 @@ on it.
   - [Windows portable and Winget status](#windows-portable-and-winget-status)
   - [Supported platforms](#supported-platforms)
   - [Local AI runners](#local-ai-runners)
+  - [Storage location](#storage-location)
 - [Usage](#usage)
   - [Setup & discovery](#setup--discovery)
   - [Install & manage models](#install--manage-models)
   - [Verify & benchmark](#verify--benchmark)
   - [Update & configuration](#update--configuration)
+  - [Local logs and automatic import](#local-logs-and-automatic-import)
   - [Scripting](#scripting)
 - [Self-hosted benchmark data](#self-hosted-benchmark-data)
 - [Signed recommendation data](#signed-recommendation-data)
@@ -106,7 +130,7 @@ irm https://omm.run/uninstall.ps1 | iex
 
 Download that script and run it with `-Purge` to remove the model hub and settings too.
 
-Runner note: on Windows x64 the checklist downloads the official AnythingLLM and Msty installers and runs them silently into `OMM_HOME\apps` (no winget package exists for either); on ARM Windows it prints their download page instead.
+Runner note: AnythingLLM and Msty currently require manual installation on Windows; the checklist prints guidance instead of guessing an installer or package ID.
 
 Detailed walkthrough: <https://omm.run/install/windows>
 
@@ -366,15 +390,18 @@ The first bare `omm` run on a fresh install (or `omm setup` any time after) show
 
 | Runner | Automated on | Manual elsewhere |
 |---|---|---|
-| Ollama | macOS, Linux, Windows | — |
-| LM Studio | macOS, Linux, Windows (headless `lms` CLI) | — |
+| Ollama | macOS (Homebrew), Windows (WinGet) | Linux |
+| LM Studio | macOS (Homebrew), Windows (WinGet) | Linux |
 | Jan | macOS (Homebrew), Windows (winget), Linux (Flatpak) | wherever that package manager isn't installed |
-| AnythingLLM | macOS (Homebrew), Windows x64 (official installer) | Linux, Windows ARM |
-| Msty | macOS (Homebrew), Windows x64 (official installer) | Linux, Windows ARM |
-| KoboldCpp | macOS (Apple Silicon), Linux (x86_64), Windows | Intel Mac, other architectures |
-| text-generation-webui | macOS (any arch), Linux/Windows (x86_64) | ARM Linux/Windows |
+| AnythingLLM | macOS (Homebrew) | Linux, Windows |
+| Msty | macOS (Homebrew) | Linux, Windows |
+| KoboldCpp | — | All platforms; automatic artifacts lack a pinned checksum |
+| text-generation-webui | — | All platforms; install manually from the official releases |
 
 Every currently-installed runner is also listed (marked as already installed, not selectable) rather than hidden, so the checklist always reflects what omm actually detects on the machine.
+
+See [engine management](docs/engine-management.md) for operation previews,
+package ownership checks, and verification limits.
 
 ### Storage location
 
@@ -397,10 +424,15 @@ Purge (`-Purge` on PowerShell, `--purge` on sh) removes only known omm-owned pat
 ```sh
 omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnable any time)
 omm engine install [ENGINE]  # Install one supported local runner, or choose interactively
-omm scan [--json]  # Print a hardware, runner, and model summary (RAM, VRAM, OS)
+omm engine status [ENGINE] [--json]  # Separate application, package version, and local API state
+omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
+omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
+omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
+omm scan [--details] [--json]  # Memory, storage, runners, and models; --details adds OS/CPU/GPU
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
+omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
 omm search <query> [--json] [--skip-unfit] [--skip-ms] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated, Hugging Face, and ModelScope sources
 omm help [command]  # Show help, same as --help
 ```
@@ -434,6 +466,10 @@ omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 ```
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `omm info` and `omm fit` both work on a model that is not installed yet, so a search result can be inspected before downloading several GB; `omm info` describes the model, `omm fit` answers whether it runs on this machine. `search`/`install` mark models predicted not to run on this machine's hardware in red.
+
+Interrupted installs keep checkpoints under `OMM_HOME/install-journal`. Re-run
+the original install command to recheck the file and repair links; `omm doctor`
+lists incomplete attempts. See [install recovery](docs/install-recovery.md).
 
 `omm install --skip-unfit` is a scripting-friendly skip, not a successful
 installation: it prints `Skipped` and leaves the model hub unchanged. If an
@@ -477,19 +513,49 @@ omm setting upload crash --enable|--disable|--ask  # Opt-in crash-report policy
 omm setting memory-guard --policy ask|block|observe  # Protect local runtime loads from live memory pressure
 omm setting theme [--set NAME]  # Show or change omm's output color theme
 omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
+omm setting runtime-profile <name> [--engine ollama|lmstudio] [--restore] [--json]  # Inspect or undo saved settings
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
-omm setting catalog-status  # Show signed recommendation data and rollback snapshots
+omm setting catalog-status [--json]  # Show trust, rollback snapshots, and per-check evaluation evidence
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
 ```
+
+### Local logs and automatic import
+
+```sh
+omm log --lines 5                 # Read the last five command summaries
+omm log --grep install            # Filter the local history by text
+omm setting auto-import status   # Inspect the setting and OS service registration
+omm setting auto-import enable   # Register background import of models from local runners
+omm setting auto-import disable  # Stop and unregister background import
+```
+
+Logs live under `OMM_HOME/logs/` and are not uploaded by the data-sharing
+channels. Review and redact a log before attaching it to an issue.
+
+Automatic import is off by default. Enabling it registers a per-user
+background service that adopts newly discovered models without a prompt.
+It requires the optional `watch` dependencies (`watchdog` and `plyer`);
+for a pip installation, use `python -m pip install "omm-model[watch]"` in
+that installation's environment. The status command reports configuration
+and service registration; it does not prove that a particular file has
+been imported. Check `omm list` after the file has finished downloading.
+
+Saved runtime profiles are tied to the exact model file and engine. `omm verify`
+and supported `omm run` paths use them on the next owned load; running models
+keep their current settings. See [runtime profiles](docs/runtime-profiles.md)
+for engine capabilities, memory checks, cleanup, and verification limits.
 
 ### Scripting
 
 All errors, warnings, and confirmation prompts print to stderr. For `search`,
 `list`, `info`, `tune`, `scan`, `doctor`, and `recommend`, `--json` makes
 stdout a single structured document that is safe to pipe (for example,
-`omm list --json | jq .`). `benchmark --json` appends its JSON report after
-the human-readable evidence summary, so treat the saved `--output` file as
-the machine-readable artifact instead of piping the complete stdout stream.
+`omm list --json | jq .`). `benchmark --json` also writes a single JSON report to stdout; `--output` saves
+the same evidence as a file. Supported commands emit a structured error document
+when their command body fails before producing a result, and use exit status 130
+with `status: "cancelled"` when interrupted. Argument-parser errors use a JSON
+error document when `--json` was requested, and stderr otherwise, with exit
+status 2. Successful data shapes remain unchanged.
 
 For commands that document `--yes`/`-y`, pass it to skip their confirmation
 prompts, or use the command-specific flag (`install --skip-unfit`, `install
@@ -507,9 +573,13 @@ the exact flags and placement of a specific command:
 - `--quiet` / `-q` — suppress progress bars and background status/hint lines (e.g. download progress, "Verifying checksum...", scan's "Run: omm link" nudge); errors, warnings, and the result of what you asked for still print
 - `--no-color` — disable ANSI colors on omm's own console output and its download progress bar; the `NO_COLOR` environment variable does the same
 
-Commands using the shared flag wrapper warn when `--json` or `--yes` has no
-effect. Exit codes are consistent across commands: `0` success, `1` failure,
-and `2` usage error (bad flag or argument).
+Unsupported `--json` combinations return a single `unsupported_json` error
+document and exit 2 before command actions or startup prompts run. JSON mode
+never opens the first-run setup/import dialogs, including on a terminal.
+`omm --json --version` returns a version document; explicit `--help` still
+shows normal help. The shared flag wrapper warns when `--yes` has no effect.
+Exit codes are consistent across commands: `0` success, `1` failure, and `2`
+usage error (bad flag or argument).
 
 `rm`, `ls`, and `up` are short aliases for `uninstall`, `list`, and `upgrade`.
 
@@ -567,7 +637,7 @@ Explicitly configure the endpoint and opt in before uploading:
 
 ```sh
 omm setting telemetry --endpoint http://127.0.0.1:8000/v1/benchmarks
-omm setting upload --enable
+omm setting upload benchmark --enable
 ```
 
 Loopback ingestion needs no token. Once `LOCALFIT_INGEST_TOKEN` is set, every
@@ -604,10 +674,13 @@ than 25% invalid rows, and reserves a deterministic 20% holdout. A 64-tree v4
 candidate replaces the incumbent only when both holdout RMSLE and P90 absolute
 percentage error stay within the configured regression limits. Selection is
 evaluated on whole hardware/request contexts, so sibling model variants never
-leak across training and holdout sets. Publishing also requires at least three
-multi-model selection groups plus complete top-1, regret, balanced-fit, and
-false-positive evidence. Missing evidence fails the gate. The artifact records
-the complete candidate/baseline evaluation report.
+leak across training and holdout sets. Publishing requires at least three multi-model selection groups and complete
+selection metrics. Fit-regression checks are only applied once the minimum
+known-unfit sample count is met. A passed publication gate therefore does not
+mean every check was evaluated: per-check `evaluation_details` and
+`omm setting catalog-status` distinguish passed, failed, and insufficient data.
+See [evaluation evidence](docs/evaluation-evidence.md). The artifact records
+the candidate/baseline evaluation report.
 
 The same gate can validate an exported local dataset without contacting the
 collector:
@@ -637,11 +710,12 @@ restores the most recent different snapshot.
 python -m venv .venv
 source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]" -r requirements-train.txt
-python -m pytest -q
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for platform-specific setup, scoped
-checks, signed-head requirements, and pull-request conventions.
+Run tests with the disposable home and model-hub setup in
+[CONTRIBUTING.md](CONTRIBUTING.md#development-setup). That guide also covers
+platform-specific setup, scoped checks, signed-head requirements, and
+pull-request conventions.
 
 ## Contributing
 

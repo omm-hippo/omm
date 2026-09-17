@@ -109,15 +109,15 @@ function Stop-UninstallPreservingSources {
 function Remove-OmmOwnedData {
     # Delete only paths the application owns. A custom OMM_HOME may contain
     # unrelated files, so never recursively delete the container itself.
-    foreach ($name in @("models", "evaluations", "catalog-history", "model-archive", "session", "logs", "locks", "bin")) {
+    foreach ($name in @("models", "evaluations", "runtime-sessions", "install-journal", "catalog-history", "model-archive", "session", "logs", "locks", "bin")) {
         $target = Join-Path $resolvedHome $name
         if (Test-Path -LiteralPath $target) {
             Remove-Item -LiteralPath $target -Recurse -Force
         }
     }
     $ownedFiles = @(
-        "config.json", "models.json", "link-ownership.json", "rules.json",
-        "recommend-model.json", "calibration.json", "benchmark_history.json",
+        "config.json", "runtime-profiles.json", "models.json", "link-ownership.json", "rules.json",
+        "recommend-model.json", "recommend-provider-facts.json", "calibration.json", "benchmark_history.json",
         "contribute_state.json", "telemetry.log", "telemetry_pending.json",
         "update_check.json", "client-id", "firebase_auth.json", "error_reports.log",
         "error_reports_pending.json", "error_reports_backoff.json",

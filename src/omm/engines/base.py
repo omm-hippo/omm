@@ -83,14 +83,30 @@ class RuntimeModelRef:
 @dataclass(frozen=True)
 class LoadOptions:
     context_length: int = 1024
+    cpu_threads: int | None = None
+    batch_size: int | None = None
+    gpu_layers: int | None = None
+    verify_applied: bool = False
 
     def __post_init__(self) -> None:
         if (
             isinstance(self.context_length, bool)
             or not isinstance(self.context_length, int)
-            or not 256 <= self.context_length <= 131_072
+            or not 128 <= self.context_length <= 131_072
         ):
-            raise ValueError("context_length must be an integer from 256 to 131072")
+            raise ValueError("context_length must be an integer from 128 to 131072")
+        for name, lower, upper in (("cpu_threads", 1, 1024), ("batch_size", 1, 65536), ("gpu_layers", -1, 4096)):
+            value = getattr(self, name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not lower <= value <= upper):
+                raise ValueError(f"{name} must be an integer from {lower} to {upper}")
+        if not isinstance(self.verify_applied, bool):
+            raise ValueError("verify_applied must be a boolean")
+
+    def ollama_options(self) -> dict[str, int]:
+        return {key: value for key, value in {
+            "num_ctx": self.context_length, "num_thread": self.cpu_threads,
+            "num_batch": self.batch_size, "num_gpu": self.gpu_layers,
+        }.items() if value is not None}
 
 
 @dataclass(frozen=True)
@@ -100,6 +116,7 @@ class LoadReceipt:
     was_already_loaded: bool
     loaded_by_omm: bool
     load_options: LoadOptions | None = None
+    applied_options: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +145,8 @@ class ProbeRequest:
 @dataclass(frozen=True)
 class ProbeResult:
     text: str
+    tokens_per_second: float | None = None
+    output_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -271,6 +290,7 @@ class LoopbackJsonClient:
         timeout: int | float = 10,
         default_failure: FailureReason = "unknown",
         timeout_failure: FailureReason | None = None,
+        allow_empty: bool = False,
     ) -> JsonResponse:
         import requests
 
@@ -347,6 +367,8 @@ class LoopbackJsonClient:
         try:
             data = response.json()
         except ValueError as error:
+            if allow_empty and not response.content:
+                return JsonResponse({}, {})
             raise RuntimeAdapterError(default_failure, "the local runtime returned invalid JSON") from error
         if not isinstance(data, dict):
             raise RuntimeAdapterError(default_failure, "the local runtime returned invalid data")
