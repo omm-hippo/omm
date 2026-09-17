@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.107",
+  "omm_version": "0.3.108",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -432,7 +432,7 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Diagnose the OMM install and Ollama links without changing state.",
+      "summary": "Diagnose the OMM install and Ollama links, then show safe next steps.",
       "description": "WARN findings keep exit code 0; definite FAIL findings exit 1.",
       "usage": "omm doctor [OPTIONS]",
       "arguments": [],
