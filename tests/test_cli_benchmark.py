@@ -504,10 +504,57 @@ def test_benchmark_falls_back_to_lmstudio_when_ollama_daemon_wont_start(
 
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
 
-    result = runner.invoke(cli.app, ["benchmark", "qwen2.5-0.5b-instruct"])
+    # "all" bypasses `_select_benchmark_engine_for_models` (it only matches
+    # explicitly named models), so this still exercises
+    # `_ensure_engine_running`'s ollama-start-failure fallback rather than
+    # the model-linked pre-selection covered separately below.
+    result = runner.invoke(cli.app, ["benchmark", "all"])
 
     assert seen["engine"] == "lmstudio"
     assert "falling back to LM Studio" in result.output
+
+
+def test_benchmark_prefers_engine_where_requested_model_is_actually_linked(
+    isolated_omm_home, monkeypatch
+):
+    """`_select_benchmark_engine` only checks daemon reachability, blind to
+    which engine actually has the requested model. A running-but-empty
+    Ollama must not win over an already-running LM Studio that has the
+    model, or the run fails with model_load_failed even though a usable
+    engine is one daemon away (reported 2026-09-17)."""
+    config.update_config(onboarding_completed=True)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama"))
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli.quality_mod, "list_benchmarkable_tags", lambda: ["other-model:latest"])
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: "/some/lms")
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.linker,
+        "_lmstudio_list_models",
+        lambda lms_path: [
+            {
+                "type": "llm",
+                "modelKey": "qwen2.5-0.5b-instruct",
+                "architecture": "qwen2",
+                "quantization": {"name": "Q8_0", "bits": 8},
+                "paramsString": "630M",
+                "maxContextLength": 32768,
+                "trainedForToolUse": True,
+            },
+        ],
+    )
+    seen = {}
+
+    def fake_collect_evidence(models, *a, engine=None, **k):
+        seen["engine"] = engine
+        raise cli.quality_mod.QualityEvaluationError("stop here, we only care about the engine")
+
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
+
+    result = runner.invoke(cli.app, ["benchmark", "qwen2.5-0.5b-instruct"])
+
+    assert seen["engine"] == "lmstudio"
+    assert "Using LM Studio - it's linked there, not the other runner." in result.output
 
 
 def test_benchmark_lmstudio_expands_all_and_rejects_unknown_model(isolated_omm_home, monkeypatch):

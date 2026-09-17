@@ -5084,6 +5084,52 @@ def _select_benchmark_engine() -> str | None:
     return None
 
 
+def _select_benchmark_engine_for_models(models: list[str]) -> str | None:
+    """Prefer whichever reachable engine already has every requested model
+    loaded, ahead of `_select_benchmark_engine`'s daemon-reachability-only
+    guess. Without this, a model linked only into LM Studio still gets
+    benchmarked against Ollama whenever Ollama's daemon answers first,
+    surfacing as a `model_load_failed` transient error instead of picking
+    the engine that can actually serve it (reported 2026-09-17).
+
+    Returns None - deferring to `_select_benchmark_engine` - when `models`
+    is `["all"]` (the caller expands that per-engine after selection), or
+    when no single reachable engine's live model list covers every
+    requested model (none, or an ambiguous match on both)."""
+    if models == ["all"]:
+        return None
+    candidates: list[str] = []
+    if benchmark.ollama_daemon_reachable():
+        try:
+            ollama_tags = set(quality_mod.list_benchmarkable_tags())
+        except Exception:
+            ollama_tags = set()
+        if ollama_tags and all(m in ollama_tags for m in models):
+            candidates.append("ollama")
+    if linker.lmstudio_daemon_reachable():
+        lmstudio_models = _lmstudio_installed_models()
+        if lmstudio_models and all(m in lmstudio_models for m in models):
+            candidates.append("lmstudio")
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _print_model_engine_selection_notice(engine: str, models: list[str]) -> None:
+    """Fires only when `_select_benchmark_engine_for_models` picked an
+    engine by matching where the requested models are actually loaded,
+    rather than by plain daemon-reachability order. Ollama can be running
+    fine and still lose this pick because the model isn't in it - the
+    generic `_print_engine_selection_notice` message ("Ollama isn't
+    installed or running") would be actively wrong in that case."""
+    if _global_opts().quiet:
+        return
+    which = "it's" if len(models) == 1 else "they're"
+    console.print(
+        f"[muted]Using {_engine_label(engine)} - {which} linked there, not the other runner.[/muted]"
+    )
+
+
 def _ensure_engine_running(
     engine: str, action: str, *, assume_yes: bool = False
 ) -> tuple[str, object]:
@@ -9649,12 +9695,17 @@ def benchmark_cmd(
     if "all" in models and models != ["all"]:
         err_console.print("[error]`all` must be the only argument.[/error]")
         raise typer.Exit(1)
-    engine = _select_benchmark_engine()
-    if engine is None:
-        _print_no_engine_error("benchmark")
-        raise typer.Exit(1)
-    if not json_output:
-        _print_engine_selection_notice(engine)
+    engine = _select_benchmark_engine_for_models(models)
+    if engine is not None:
+        if not json_output:
+            _print_model_engine_selection_notice(engine, models)
+    else:
+        engine = _select_benchmark_engine()
+        if engine is None:
+            _print_no_engine_error("benchmark")
+            raise typer.Exit(1)
+        if not json_output:
+            _print_engine_selection_notice(engine)
     engine, started_daemon = _ensure_engine_running(
         engine, "benchmark", assume_yes=_global_opts().yes
     )
