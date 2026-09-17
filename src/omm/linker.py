@@ -59,6 +59,7 @@ import time
 import struct
 import subprocess
 import tempfile
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from functools import lru_cache
@@ -677,6 +678,10 @@ CopyReporter = Callable[[Path, Path, int], None]
 
 class InsufficientLinkSpaceError(LinkError):
     """An engine link would exhaust its destination volume."""
+
+
+class InsufficientArchiveSpaceError(OSError):
+    """Extracting an archive would exhaust its destination volume."""
 
 
 def disk_safety_reserve(size_bytes: int) -> int:
@@ -3389,6 +3394,21 @@ _WINDOWS_RESERVED_ARCHIVE_NAMES = {
     *(f"LPT{number}" for number in range(1, 10)),
 }
 
+# A portable engine can legitimately contain tens of thousands of files.
+# Keep this high enough for such releases while still bounding the metadata
+# and filesystem work accepted from an untrusted archive.
+_MAX_ARCHIVE_MEMBERS = 200_000
+_MAX_ARCHIVE_PATH_BYTES = 4096
+_MAX_ARCHIVE_PATH_PARTS = 128
+_MAX_ARCHIVE_PART_BYTES = 255
+
+
+def _archive_utf8_size(value: str, *, kind: str) -> int:
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise OSError(f"unsafe archive {kind}: {value!r}") from error
+
 
 def _safe_archive_member_parts(name: str) -> tuple[str, ...]:
     """Return a platform-independent safe relative archive path.
@@ -3400,12 +3420,14 @@ def _safe_archive_member_parts(name: str) -> tuple[str, ...]:
     """
     if not name or "\x00" in name or "\\" in name or name.startswith("/"):
         raise OSError(f"unsafe archive member path: {name!r}")
+    if _archive_utf8_size(name, kind="member path") > _MAX_ARCHIVE_PATH_BYTES:
+        raise OSError(f"unsafe archive member path: {name!r}")
 
     raw_parts = name.split("/")
     if any(part == ".." for part in raw_parts):
         raise OSError(f"unsafe archive member path: {name!r}")
     parts = tuple(part for part in raw_parts if part not in ("", "."))
-    if not parts:
+    if not parts or len(parts) > _MAX_ARCHIVE_PATH_PARTS:
         raise OSError(f"unsafe archive member path: {name!r}")
 
     for part in parts:
@@ -3413,7 +3435,12 @@ def _safe_archive_member_parts(name: str) -> tuple[str, ...]:
         # data streams. Trailing spaces/dots and DOS device names can alias
         # other paths or devices on Windows even though they are ordinary
         # filename characters on POSIX.
-        if ":" in part or part.endswith((" ", ".")):
+        if (
+            _archive_utf8_size(part, kind="member path component")
+            > _MAX_ARCHIVE_PART_BYTES
+            or ":" in part
+            or part.endswith((" ", "."))
+        ):
             raise OSError(f"unsafe archive member path: {name!r}")
         windows_basename = part.split(".", 1)[0].upper()
         if windows_basename in _WINDOWS_RESERVED_ARCHIVE_NAMES:
@@ -3438,6 +3465,7 @@ def _safe_archive_link_target_parts(
         or "\x00" in linkname
         or "\\" in linkname
         or linkname.startswith("/")
+        or _archive_utf8_size(linkname, kind="link target") > _MAX_ARCHIVE_PATH_BYTES
     ):
         raise OSError(f"unsafe archive link target: {linkname!r}")
 
@@ -3458,6 +3486,8 @@ def _safe_archive_link_target_parts(
         if len(safe_part) != 1:
             raise OSError(f"unsafe archive link target: {linkname!r}")
         resolved.append(part)
+        if len(resolved) > _MAX_ARCHIVE_PATH_PARTS:
+            raise OSError(f"unsafe archive link target: {linkname!r}")
 
     if not resolved or resolved[0] != member_parts[0]:
         raise OSError(f"unsafe archive link target: {linkname!r}")
@@ -3468,14 +3498,48 @@ def _reject_archive_symlink_descendants(
     entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
 ) -> None:
     """No payload path may use an archive symlink as a parent directory."""
-    seen: set[tuple[str, ...]] = set()
-    symlinks = {parts for _, parts, is_dir, _ in entries if is_dir is None}
-    for _, parts, _, _ in entries:
-        if parts in seen:
-            raise OSError(f"duplicate archive member path: {'/'.join(parts)!r}")
-        seen.add(parts)
-        if any(parts[:depth] in symlinks for depth in range(1, len(parts))):
+    portable_entries = sorted(
+        [
+            (
+                tuple(unicodedata.normalize("NFC", part).casefold() for part in parts),
+                parts,
+                is_dir,
+            )
+            for _, parts, is_dir, _ in entries
+        ],
+        key=lambda entry: entry[0],
+    )
+    symlinks = {
+        portable_parts
+        for portable_parts, _, is_dir in portable_entries
+        if is_dir is None
+    }
+    previous_portable: tuple[str, ...] | None = None
+    previous_parts: tuple[str, ...] | None = None
+    for portable_parts, parts, _ in portable_entries:
+        if portable_parts == previous_portable:
+            raise OSError(
+                f"duplicate archive member path or cross-platform alias: "
+                f"{'/'.join(parts)!r}"
+            )
+        if previous_portable is not None and previous_parts is not None:
+            for index, (previous_part, part) in enumerate(
+                zip(previous_portable, portable_parts)
+            ):
+                if previous_part != part:
+                    break
+                if previous_parts[index] != parts[index]:
+                    raise OSError(
+                        f"cross-platform alias in archive member path: "
+                        f"{'/'.join(parts)!r}"
+                    )
+        if any(
+            portable_parts[:depth] in symlinks
+            for depth in range(1, len(portable_parts))
+        ):
             raise OSError(f"archive member traverses a symlink: {'/'.join(parts)!r}")
+        previous_portable = portable_parts
+        previous_parts = parts
 
 
 def _archive_top_level(
@@ -3491,7 +3555,13 @@ def _validated_zip_entries(
     zf: zipfile.ZipFile,
 ) -> list[tuple[zipfile.ZipInfo, tuple[str, ...], bool, int]]:
     entries: list[tuple[zipfile.ZipInfo, tuple[str, ...], bool, int]] = []
-    for member in zf.infolist():
+    members = zf.infolist()
+    if len(members) > _MAX_ARCHIVE_MEMBERS:
+        raise OSError(
+            f"archive has too many entries ({len(members):,}; "
+            f"maximum {_MAX_ARCHIVE_MEMBERS:,})"
+        )
+    for member in members:
         parts = _safe_archive_member_parts(member.filename)
         is_dir = member.is_dir()
         unix_mode = member.external_attr >> 16 if member.create_system == 3 else 0
@@ -3503,6 +3573,7 @@ def _validated_zip_entries(
         if mode == 0:
             mode = 0o755 if is_dir else 0o644
         entries.append((member, parts, is_dir, mode))
+    _reject_archive_symlink_descendants(entries)
     return entries
 
 
@@ -3510,7 +3581,11 @@ def _validated_tar_entries(
     tf: tarfile.TarFile,
 ) -> list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]]:
     entries: list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]] = []
-    for member in tf.getmembers():
+    for member_number, member in enumerate(tf, start=1):
+        if member_number > _MAX_ARCHIVE_MEMBERS:
+            raise OSError(
+                f"archive has too many entries (more than {_MAX_ARCHIVE_MEMBERS:,})"
+            )
         parts = _safe_archive_member_parts(member.name)
         if member.isdir():
             is_dir = True
@@ -3528,6 +3603,43 @@ def _validated_tar_entries(
         entries.append((member, parts, is_dir, member.mode & 0o777))
     _reject_archive_symlink_descendants(entries)
     return entries
+
+
+def _archive_payload_size(
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> int:
+    """Return the declared bytes regular archive members will write."""
+    total = 0
+    for member, parts, is_dir, _ in entries:
+        if is_dir is not False:
+            continue
+        size = getattr(member, "file_size", getattr(member, "size", None))
+        if not isinstance(size, int) or size < 0:
+            raise OSError(f"invalid archive member size: {'/'.join(parts)!r}")
+        total += size
+    return total
+
+
+def _ensure_archive_extraction_space(
+    staging: Path,
+    archive_path: Path,
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> None:
+    """Refuse extraction before any payload write can exhaust the volume."""
+    payload_size = _archive_payload_size(entries)
+    required = payload_size + disk_safety_reserve(payload_size)
+    try:
+        free_bytes = shutil.disk_usage(disk_usage_path(staging)).free
+    except OSError as error:
+        raise OSError(
+            f"Could not verify free space before extracting {archive_path.name}: {error}."
+        ) from error
+    if free_bytes < required:
+        raise InsufficientArchiveSpaceError(
+            f"Not enough free space to safely extract {archive_path.name}: "
+            f"{free_bytes / 1024**3:.1f} GiB free; it needs at least "
+            f"{required / 1024**3:.1f} GiB including safety space."
+        )
 
 
 def _prepare_archive_output(
@@ -3564,6 +3676,7 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
                 final_path = dest_dir / top_level
                 if final_path.exists() or final_path.is_symlink():
                     raise OSError(f"archive destination already exists: {final_path}")
+                _ensure_archive_extraction_space(staging, archive_path, entries)
                 for member, parts, is_dir, mode in entries:
                     output = _prepare_archive_output(staging, parts, is_dir is True)
                     if is_dir:
@@ -3579,6 +3692,7 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
                 final_path = dest_dir / top_level
                 if final_path.exists() or final_path.is_symlink():
                     raise OSError(f"archive destination already exists: {final_path}")
+                _ensure_archive_extraction_space(staging, archive_path, entries)
                 for member, parts, is_dir, mode in entries:
                     output = _prepare_archive_output(staging, parts, is_dir is True)
                     if is_dir is True:

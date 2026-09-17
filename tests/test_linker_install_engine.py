@@ -3,6 +3,7 @@ import stat
 import sys
 import tarfile
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -746,6 +747,169 @@ def test_extract_textgenwebui_archive_handles_tar_gz(tmp_path):
     assert (result / "start.sh").read_text(encoding="utf-8") == "#!/bin/sh\n"
     if sys.platform != "win32":
         assert (result / "start.sh").stat().st_mode & 0o111 == 0o111
+
+
+@pytest.mark.parametrize("archive_kind", ["zip", "tar"])
+def test_extract_textgenwebui_archive_checks_expanded_size_before_writing(
+    tmp_path, monkeypatch, archive_kind
+):
+    payload = b"x" * (2 * 1024 * 1024)
+    if archive_kind == "zip":
+        archive_path = tmp_path / "release.zip"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("textgen-4.9/app/payload.bin", payload)
+    else:
+        archive_path = tmp_path / "release.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            member = tarfile.TarInfo("textgen-4.9/app/payload.bin")
+            member.size = len(payload)
+            tf.addfile(member, io.BytesIO(payload))
+
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=1)
+    )
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(linker.InsufficientArchiveSpaceError, match="Not enough free space"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("archive_kind", ["zip", "tar"])
+def test_extract_textgenwebui_archive_limits_member_count(
+    tmp_path, monkeypatch, archive_kind
+):
+    monkeypatch.setattr(linker, "_MAX_ARCHIVE_MEMBERS", 2)
+    if archive_kind == "zip":
+        archive_path = tmp_path / "too-many.zip"
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            for number in range(3):
+                zf.writestr(f"textgen-4.9/file-{number}.txt", "x")
+    else:
+        archive_path = tmp_path / "too-many.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for number in range(3):
+                member = tarfile.TarInfo(f"textgen-4.9/file-{number}.txt")
+                member.size = 1
+                tf.addfile(member, io.BytesIO(b"x"))
+
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(OSError, match="too many entries"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+def test_extract_textgenwebui_zip_rejects_duplicate_member_paths(tmp_path):
+    archive_path = tmp_path / "duplicate.zip"
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr("textgen-4.9/app/server.py", "first")
+            zf.writestr("textgen-4.9/app/server.py", "second")
+
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(OSError, match="duplicate archive member path"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+def test_extract_textgenwebui_tar_rejects_file_and_symlink_at_same_path(tmp_path):
+    archive_path = tmp_path / "duplicate.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        regular = tarfile.TarInfo("textgen-4.9/app/server.py")
+        regular.size = 1
+        tf.addfile(regular, io.BytesIO(b"x"))
+
+        symlink = tarfile.TarInfo("textgen-4.9/app/server.py")
+        symlink.type = tarfile.SYMTYPE
+        symlink.linkname = "other.py"
+        tf.addfile(symlink)
+
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(OSError, match="duplicate archive member path"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("first_path", "second_path"),
+    [
+        ("textgen-4.9/App/first.py", "textgen-4.9/app/second.py"),
+        (
+            "textgen-4.9/caf\N{LATIN SMALL LETTER E WITH ACUTE}/first.py",
+            "textgen-4.9/cafe\N{COMBINING ACUTE ACCENT}/second.py",
+        ),
+    ],
+)
+@pytest.mark.parametrize("archive_kind", ["zip", "tar"])
+def test_extract_textgenwebui_archive_rejects_cross_platform_path_aliases(
+    tmp_path, archive_kind, first_path, second_path
+):
+    if archive_kind == "zip":
+        archive_path = tmp_path / "aliases.zip"
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr(first_path, "first")
+            zf.writestr(second_path, "second")
+    else:
+        archive_path = tmp_path / "aliases.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for member_path, payload in ((first_path, b"first"), (second_path, b"second")):
+                member = tarfile.TarInfo(member_path)
+                member.size = len(payload)
+                tf.addfile(member, io.BytesIO(payload))
+
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(OSError, match="cross-platform alias"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("archive_kind", ["zip", "tar"])
+@pytest.mark.parametrize(
+    "member_path",
+    [
+        "textgen-4.9/" + "a" * 256,
+        "textgen-4.9/" + "/".join("a" for _ in range(128)),
+        "textgen-4.9/" + "/".join("a" * 240 for _ in range(17)),
+    ],
+)
+def test_extract_textgenwebui_archive_rejects_oversized_paths(
+    tmp_path, archive_kind, member_path
+):
+    if archive_kind == "zip":
+        archive_path = tmp_path / "oversized.zip"
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr(member_path, "x")
+    else:
+        archive_path = tmp_path / "oversized.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            member = tarfile.TarInfo(member_path)
+            member.size = 1
+            tf.addfile(member, io.BytesIO(b"x"))
+
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(OSError, match="unsafe archive member"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+def test_archive_payload_size_rejects_negative_tar_member_size():
+    member = SimpleNamespace(size=-1)
+
+    with pytest.raises(OSError, match="invalid archive member size"):
+        linker._archive_payload_size(
+            [(member, ("textgen-4.9", "payload.bin"), False, 0o644)]
+        )
 
 
 @pytest.mark.parametrize(
