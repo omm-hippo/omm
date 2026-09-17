@@ -52,7 +52,7 @@ independently, they're derived from one classification
 |---|---|---|
 | `out_of_memory` | `model_unfit` | Ollama's own error body named a memory shortfall |
 | `unsupported_runtime` | `model_unfit` | e.g. a linked mmproj/clip model that can't run standalone |
-| `confirmed_generation_timeout` | `performance_unfit` | two generation attempts, same model/runtime, both timed out under a healthy daemon (`--confirm-performance-timeout` only) |
+| `confirmed_generation_timeout` | `performance_unfit` | two generation attempts, same model/runtime, both timed out under a healthy daemon (`--retry-on-timeout` only) |
 | `model_load_failed` | `transient_error` | the model couldn't be found/loaded - includes "not installed" and any other undiagnosed load failure |
 | `generation_timeout` | `transient_error` | the request connected but didn't finish in time (a *single*, unconfirmed timeout) |
 | `ollama_unavailable` | `transient_error` | couldn't connect to the daemon at all |
@@ -74,7 +74,7 @@ saying so explicitly. Guessing `model_unfit` from an ambiguous signal
 would poison the fit-classifier's negative examples with cases that were
 really just bad luck (or a download that simply hadn't finished yet).
 
-## Confirming a timeout: `--confirm-performance-timeout`
+## Confirming a timeout: `--retry-on-timeout`
 
 A single `generation_timeout` is cheap and common (a cold model load, a
 loaded system, a slow disk on the first read) and says nothing reliable
@@ -83,7 +83,7 @@ default `omm benchmark` never retries one - it's recorded as
 `transient_error`/`generation_timeout` and the run moves on, exactly as
 before this flag existed.
 
-Passing `--confirm-performance-timeout` changes what happens *only* when a
+Passing `--retry-on-timeout` changes what happens *only* when a
 model's first attempt times out. `omm.quality.collect_evidence` (via
 `_confirm_generation_timeout`) then:
 
@@ -277,7 +277,7 @@ since it reuses the same v7 endpoint and the same Rules file:
    download needed for a re-verification pilot.
 5. Run confirmation mode explicitly - it is never automatic:
    ```
-   omm benchmark qwen2.5:32b-instruct-q8_0 --confirm-performance-timeout
+   omm benchmark qwen2.5:32b-instruct-q8_0 --retry-on-timeout
    ```
 6. Check the result: `success`, `model_unfit`, `performance_unfit`, and
    `transient_error` are all valid, honest outcomes - report whichever one

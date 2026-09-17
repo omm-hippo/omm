@@ -9669,9 +9669,9 @@ def benchmark_cmd(
         help="Write evidence to this JSON path.",
     ),
     speed_runs: int = typer.Option(3, "--speed-runs", min=1, max=10),
-    confirm_performance_timeout: bool = typer.Option(
+    retry_on_timeout: bool = typer.Option(
         False,
-        "--confirm-performance-timeout",
+        "--retry-on-timeout",
         help=(
             "If a model's first generation attempt times out, wait for it to "
             "fully finish, health-check the daemon, and retry exactly once "
@@ -9797,7 +9797,7 @@ def benchmark_cmd(
                     speed_runs=speed_runs,
                     engine=engine,
                     lmstudio_models=lmstudio_models,
-                    confirm_performance_timeout=confirm_performance_timeout,
+                    retry_on_timeout=retry_on_timeout,
                     on_model_start=_on_model_start,
                     on_daemon_event=_on_daemon_event,
                     daemon_ref=daemon_ref,
