@@ -166,6 +166,34 @@ state exactly what you ran and separate these levels when they apply:
 - **Physical-device-verified** — a user path ran on real hardware
 - **Not verified / 미검증** — name the unexercised path and reason
 
+## Command docs stay in sync
+
+`src/omm/cli.py` is the single source of truth for the command surface. Three
+places describe it to users, and all three are derived from that one file:
+
+1. `omm <command> --help` — rendered by Click from the command objects, with a
+   `More about omm <command>: https://omm.run/commands/...` footer added
+   centrally (no per-command decorator to update).
+2. `README.md` `## Usage` — hand-written, but checked against the CLI.
+3. <https://omm.run/commands> — the website renders `docs/commands.json`, which
+   is generated from the CLI and copied into the omm.run repository.
+
+After adding, renaming, or re-documenting any command, regenerate the data and
+verify all three:
+
+```sh
+python scripts/export_command_reference.py   # rewrites docs/commands.json
+python scripts/check_docs_sync.py            # what CI job `docs-sync` runs
+```
+
+`check_docs_sync.py` fails when `docs/commands.json` no longer matches the CLI,
+when the README `## Usage` section is missing a command, names a command that
+does not exist, or passes a flag a command does not have. It also compares the
+omm.run copy of the file, but only prints a warning for that one — the website
+lives in another repository and is updated by its own pull request.
+
+Commit the regenerated `docs/commands.json` together with the CLI change.
+
 ## Pull request workflow
 
 1. Branch from the latest `main` and keep the change focused.
