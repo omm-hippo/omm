@@ -104,7 +104,7 @@ Pick your OS and follow one path from top to bottom:
 
 ```powershell
 omm        # first run: setup wizard (hardware scan + engine checklist)
-omm scan   # hardware, runner, and model summary
+omm scan   # memory, runner, and model summary
 ```
 
 **5. Windows notes.** Model exposure tries an unprivileged same-volume hard link first, then a symbolic link (Developer Mode or Administrator), then an owned copy. Before copying, omm checks destination free space and reports that the model now consumes additional bytes. File junctions do not apply because model targets are files, not directories.
@@ -150,7 +150,7 @@ curl -fsSL https://omm.run/install.sh | sh
 
 ```sh
 omm        # first run: setup wizard (hardware scan + engine checklist)
-omm scan   # hardware, runner, and model summary
+omm scan   # memory, runner, and model summary
 ```
 
 **5. Homebrew Tap (alternative).**
@@ -212,7 +212,7 @@ curl -fsSL https://omm.run/install.sh | sh
 
 ```sh
 omm        # first run: setup wizard (hardware scan + engine checklist)
-omm scan   # hardware, runner, and model summary
+omm scan   # memory, runner, and model summary
 ```
 
 **5. Linux notes.** Set `OMM_HOME` before installation and on later runs to put the model hub on another volume:
@@ -428,8 +428,9 @@ omm engine status [ENGINE] [--json]  # Separate application, package version, an
 omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
-omm scan [--details] [--json]  # Memory, storage, runners, and models; --details adds OS/CPU/GPU
+omm scan [--json]  # Memory, storage, installed runners, and models
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
+omm bug-report [--include os|policies|checks] [--save PATH]  # Preview and save an allow-listed local diagnostic bundle; never upload it
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm compare <name> <name>... [--for TASK] [--profile PROFILE] [--json]  # Read-only comparison of 2-5 catalog packages
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
@@ -472,6 +473,14 @@ omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 ```
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `omm info` and `omm fit` both work on a model that is not installed yet, so a search result can be inspected before downloading several GB; `omm info` describes the model, `omm fit` answers whether it runs on this machine. `search`/`install` mark models predicted not to run on this machine's hardware in red.
+
+Before a normal interactive install, OMM shows a source card with the
+provider, repository, file, expected size/location, GGUF format, and the
+HTTPS/size/SHA-256 checks it plans to perform. Afterward it reports the checks
+actually completed. “SHA-256 matched” means the bytes match the provider or
+pinned digest; it does not claim the file is non-malicious. `--quiet`, piped/
+non-interactive use, and internal contribution flows keep this extra
+presentation out of scripted output.
 
 Interrupted installs keep checkpoints under `OMM_HOME/install-journal`. Re-run
 the original install command to recheck the file and repair links; `omm doctor`
@@ -572,7 +581,8 @@ for engine capabilities, memory checks, cleanup, and verification limits.
 ### Scripting
 
 All errors, warnings, and confirmation prompts print to stderr. For `search`,
-`list`, `info`, `tune`, `scan`, `doctor`, `recommend`, `compare`, and `evaluate`, `--json` makes
+`list`, `info`, `tune`, `scan`, `doctor`, `recommend`, `compare`, `evaluate`, and
+`bug-report`, `--json` makes
 stdout a single structured document that is safe to pipe (for example,
 `omm list --json | jq .`). `benchmark --json` also writes a single JSON report to stdout; `--output` saves
 the same evidence as a file. Supported commands emit a structured error document

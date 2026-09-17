@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.102",
+  "omm_version": "0.3.107",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -105,6 +105,92 @@
         }
       ],
       "docs_url": "https://omm.run/commands/benchmark"
+    },
+    {
+      "path": [
+        "bug-report"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Preview and optionally save a privacy-safe local bug-report bundle. Never uploads.",
+      "description": "",
+      "usage": "omm bug-report [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--include"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Add one optional group: os, policies, or checks. Repeat as needed.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--save"
+          ],
+          "metavar": "<path>",
+          "is_flag": false,
+          "help": "Save the previewed JSON to this path. Nothing is uploaded.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--force"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Allow replacing the explicitly named output file.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/bug-report"
     },
     {
       "path": [
@@ -1817,16 +1903,6 @@
       "usage": "omm scan [OPTIONS]",
       "arguments": [],
       "options": [
-        {
-          "flags": [
-            "--details"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Also show OS, CPU, and GPU identity.",
-          "default": null,
-          "global": false
-        },
         {
           "flags": [
             "--json"

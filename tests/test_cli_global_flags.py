@@ -24,7 +24,7 @@ def test_global_flag_works_after_subcommand(isolated_omm_home):
 def test_scan_without_json_prints_table(isolated_omm_home):
     result = runner.invoke(cli.app, ["scan"])
     assert result.exit_code == 0, result.stdout
-    assert "omm resources" in result.stdout.lower()
+    assert "this machine" in result.stdout.lower()
 
 
 def test_no_color_flag_disables_ansi_codes(isolated_omm_home, monkeypatch):

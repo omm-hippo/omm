@@ -230,6 +230,7 @@ _JSON_CAPABLE = {
     "engine doctor",
     "engine update",
     "engine uninstall",
+    "bug-report",
     "setting runtime-profile",
 }
 
@@ -248,6 +249,7 @@ _YES_CAPABLE = {
     "run",
     "engine update",
     "engine uninstall",
+    "bug-report",
     "tune",
 }
 
@@ -1264,9 +1266,7 @@ def _hub_storage_bytes(reg: dict[str, Any]) -> int:
 
 @app.command()
 @global_flags
-def scan(
-    details: bool = typer.Option(False, "--details", help="Also show OS, CPU, and GPU identity."),
-) -> None:
+def scan() -> None:
     """Summarize memory, model storage, and installed local AI runners."""
     opts = _global_opts()
     info = scan_hardware()
@@ -1319,11 +1319,9 @@ def scan(
         console, info=info, budget=calculate_memory_budget(info),
         hub_storage_gb=hub_storage_gb, storage_saved_gb=storage_saved_gb,
         engine_labels=[spec.label for spec in linker.ENGINES if installed[spec.key]],
-        registry=reg, external=external, shorten_path=_shorten_home, details=details,
+        registry=reg, external=external, shorten_path=_shorten_home,
+        runners_note=None if opts.quiet else _missing_engines_note(installed),
     )
-    note = _missing_engines_note(installed)
-    if note and not opts.quiet:
-        console.print(note, style="muted")
 
     if opts.quiet:
         return
@@ -3210,6 +3208,77 @@ def doctor() -> None:
         raise typer.Exit(1)
 
 
+# Named "bug-report", not bare "report": git (`git bugreport`), Flutter
+# (`flutter bug-report`), and kubectl (`kubectl cluster-info dump`) all use a
+# compound name for a local-only diagnostic file, which reads as local by
+# convention even though "report" alone (this command's previous name) read
+# as "sends somewhere" in review.
+@app.command(name="bug-report")
+@global_flags
+def support_report_cmd(
+    include: list[str] = typer.Option(
+        None,
+        "--include",
+        help="Add one optional group: os, policies, or checks. Repeat as needed.",
+    ),
+    save: Path | None = typer.Option(
+        None,
+        "--save",
+        help="Save the previewed JSON to this path. Nothing is uploaded.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Allow replacing the explicitly named output file.",
+    ),
+) -> None:
+    """Preview and optionally save a privacy-safe local bug-report bundle. Never uploads."""
+    from omm import support_report
+
+    diagnostic = doctor_mod.collect_report(
+        module_path=Path(__file__).resolve(),
+        command_path=doctor_mod.running_command_path(),
+    )
+    try:
+        payload = support_report.build(diagnostic, include=include or [])
+    except ValueError as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(2) from error
+    preview = support_report.preview(payload)
+    if _global_opts().json:
+        _print_json(data=payload)
+    else:
+        console.print("Complete local bug-report preview (nothing has been sent or saved):")
+        console.print(preview, markup=False, highlight=False)
+    if save is None:
+        return
+    output = save.expanduser().absolute()
+    if output.is_symlink():
+        err_console.print(f"Refusing symlinked report destination: {output}", markup=False)
+        raise typer.Exit(1)
+    if output.exists() and not force:
+        err_console.print(
+            f"Report destination already exists: {output}. Use --force to replace it.",
+            markup=False,
+        )
+        raise typer.Exit(1)
+    if not _global_opts().yes:
+        if _global_opts().json or not _stdin_is_tty():
+            err_console.print("Review the complete preview, then pass --yes to save it.")
+            raise typer.Exit(1)
+        if not _ask_confirm(f"Save exactly this report to {output}?"):
+            err_console.print("Cancelled.")
+            raise typer.Exit(0)
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(output, preview)
+    except OSError as error:
+        err_console.print(f"Could not save the report: {error}", markup=False)
+        raise typer.Exit(1) from error
+    err_console.print(f"Saved locally: {output}", markup=False)
+    err_console.print("No upload, GitHub issue, browser action, or message was created.")
+
+
 def _print_reinstall_hint() -> None:
     """A stale installed copy of trust.verify_update can permanently reject a
     legitimate update it predates the logic for (see the module docstring's
@@ -4601,6 +4670,7 @@ class InstallOutcome:
     benchmark_engine: str | None = None
     upload_status: str | None = None
     upload_queued: bool = False
+    source_verification: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -5373,6 +5443,92 @@ def _verify_lmstudio_after_install(
     return result.status, False, False
 
 
+def _resolve_install_source_metadata(resolved, dest: Path) -> str | None:
+    """Populate provider digest/size once. Return a verified cache label, if used."""
+    if getattr(resolved, "source_metadata_checked", False):
+        return None
+    provider = validate_provider(resolved.provider or "huggingface")
+    repo_id = resolved.repo_id
+    filename = validate_model_filename(resolved.filename)
+
+    entry = registry.load_registry().get(filename)
+    cache_matches = (
+        dest.is_file()
+        and isinstance(entry, dict)
+        and entry.get("source") == resolved.url
+        and (entry.get("repo_id") in {None, repo_id})
+        and ((entry.get("provider") or provider) == provider)
+        and isinstance(entry.get("sha256"), str)
+        and sha256_file(dest) == entry["sha256"]
+    )
+    if cache_matches and not resolved.provider:
+        resolved.expected_sha256 = entry["sha256"]
+        resolved.expected_size_bytes = dest.stat().st_size
+        resolved.source_metadata_checked = True
+        return "verified OMM cache"
+
+    try:
+        if repo_id:
+            resolved.expected_size_bytes = remote_file_size(provider, repo_id, filename)
+        if resolved.provider and repo_id:
+            resolved.expected_sha256 = resolved.expected_sha256 or remote_file_sha256(
+                provider, repo_id, filename
+            )
+    except ModelResolutionError as error:
+        raise DownloadError(str(error), fix=error.fix) from error
+    resolved.source_metadata_checked = True
+    return None
+
+
+def _install_plan_for(resolved) -> dict[str, object]:
+    from omm import install_card
+
+    try:
+        dest = _managed_model_path(validate_model_filename(resolved.filename))
+        cache_source = _resolve_install_source_metadata(resolved, dest)
+    except ModelResolutionError as error:
+        raise DownloadError(str(error), fix=error.fix) from error
+    return install_card.plan(
+        provider=resolved.provider,
+        repository=resolved.repo_id,
+        filename=resolved.filename,
+        size_bytes=resolved.expected_size_bytes,
+        destination=dest,
+        url=resolved.url,
+        expected_sha256=resolved.expected_sha256,
+        cache_source=cache_source,
+    )
+
+
+def _print_install_plan(plan: dict[str, object]) -> None:
+    table = _table(title="Before installation: source and checks", show_header=False)
+    table.add_column("Field", style="label")
+    table.add_column("Value")
+    table.add_row("Provider", str(plan["provider"]))
+    table.add_row("Repository", str(plan["repository"]))
+    table.add_row("File", str(plan["file"]))
+    table.add_row("Size", str(plan["size"]))
+    table.add_row("Format", str(plan["format"]))
+    table.add_row("Expected location", str(plan["destination"]))
+    table.add_row("Source", str(plan["source"]))
+    checks = plan["planned_checks"]
+    table.add_row("Planned HTTPS check", "required" if checks["https"] else "not satisfied")
+    table.add_row("Planned size check", str(checks["size"]))
+    table.add_row("Planned SHA-256 check", str(checks["sha256"]))
+    console.print(table)
+
+
+def _print_install_verification(result: dict[str, object]) -> None:
+    table = _table(title="After installation: checks actually performed", show_header=False)
+    table.add_column("Check", style="label")
+    table.add_column("Result")
+    table.add_row("HTTPS", str(result["https"]))
+    table.add_row("Size", f"{result['size']} ({int(result['size_bytes']):,} bytes)")
+    table.add_row("SHA-256", str(result["sha256"]))
+    table.add_row("Meaning", str(result["meaning"]))
+    console.print(table)
+
+
 def _prepare_install_artifact(
     *,
     url: str,
@@ -5386,6 +5542,8 @@ def _prepare_install_artifact(
     stop_event: threading.Event | None,
     only_engine: str | None,
     opts: GlobalOptions,
+    expected_size_bytes: int | None = None,
+    source_metadata_checked: bool = False,
 ) -> _PreparedInstallArtifact | None:
     """Reuse or download one central artifact, then verify it for linking.
 
@@ -5436,7 +5594,9 @@ def _prepare_install_artifact(
                 )
         err_console.print(f"[warning]{filename} already downloaded, skipping fetch.[/warning]")
     else:
-        size_bytes = remote_file_size(provider, repo_id, filename) if repo_id else None
+        size_bytes = expected_size_bytes
+        if size_bytes is None and repo_id and not source_metadata_checked:
+            size_bytes = remote_file_size(provider, repo_id, filename)
         if size_bytes:
             try:
                 _ensure_install_disk_capacity(
@@ -5556,6 +5716,14 @@ def _prepare_install_artifact(
         raise DownloadError(
             f"Downloaded SHA-256 for {filename} does not match the provider metadata."
         )
+    actual_size = dest.stat().st_size
+    if expected_size_bytes is not None and actual_size != expected_size_bytes:
+        if downloaded_now:
+            dest.unlink(missing_ok=True)
+        raise DownloadError(
+            f"{filename} is {actual_size:,} bytes but the provider reported "
+            f"{expected_size_bytes:,}; refusing to install it."
+        )
     return _PreparedInstallArtifact(sha256=sha256, downloaded_now=downloaded_now)
 
 
@@ -5657,11 +5825,9 @@ def _install_impl(
                     f"(range {speed_low:.1f}–{speed_high:.1f}).[/muted]"
                 )
 
-    expected_sha256 = resolved.expected_sha256 or (
-        remote_file_sha256(provider, repo_id, filename)
-        if resolved.provider and repo_id
-        else None
-    )
+    _resolve_install_source_metadata(resolved, dest)
+    expected_sha256 = getattr(resolved, "expected_sha256", None)
+    expected_size_bytes = getattr(resolved, "expected_size_bytes", None)
     if resolved.provider and repo_id and expected_sha256 is None:
         raise DownloadError(
             f"{provider} did not provide a SHA-256 digest for {filename}; "
@@ -5674,6 +5840,8 @@ def _install_impl(
         provider=provider,
         dest=dest,
         expected_sha256=expected_sha256,
+        expected_size_bytes=expected_size_bytes,
+        source_metadata_checked=True,
         force=force,
         skip_unfit=skip_unfit,
         stop_event=stop_event,
@@ -5684,6 +5852,16 @@ def _install_impl(
         return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
     sha256 = prepared.sha256
     downloaded_now = prepared.downloaded_now
+    from omm import install_card
+
+    source_verification = install_card.result(
+        url=url,
+        actual_size=dest.stat().st_size,
+        expected_size=expected_size_bytes,
+        actual_sha256=sha256,
+        expected_sha256=expected_sha256,
+        reused_verified_cache=not downloaded_now,
+    )
     install_state.checkpoint("artifact_verified", sha256=sha256, size_bytes=dest.stat().st_size)
     if downloaded_state is not None:
         downloaded_state["downloaded_now"] = downloaded_now
@@ -6309,6 +6487,7 @@ def _install_impl(
         benchmark_engine=benchmark_engine if (run_ollama_benchmark or run_lmstudio_benchmark) else None,
         upload_status=send_status.outcome if send_status else None,
         upload_queued=bool(send_status and send_status.queued),
+        source_verification=source_verification,
     )
 
 
@@ -6397,6 +6576,17 @@ def install(
             _print_install_suggestions(model_name)
         raise typer.Exit(1) from e
 
+    try:
+        source_plan = _install_plan_for(resolved)
+    except DownloadError as error:
+        errors.print_cli_error(err_console, str(error), fix=error.fix)
+        raise typer.Exit(1) from error
+    show_source_card = (
+        not _global_opts().quiet and _stdin_is_tty() and _stdout_is_tty()
+    )
+    if show_source_card:
+        _print_install_plan(source_plan)
+
     listener = _EscListener()
     listener.start()
     # Populated by `_install_impl` as soon as it knows whether this call
@@ -6461,6 +6651,8 @@ def install(
         return
 
     console.print(f"[success]Ω Installed {outcome.filename}[/success]")
+    if outcome.source_verification and show_source_card:
+        _print_install_verification(outcome.source_verification)
     linked_labels = [
         spec.label for spec in linker.ENGINES if outcome.linked.get(spec.key)
     ]
