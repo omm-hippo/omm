@@ -462,6 +462,11 @@ omm upgrade <name> [--dry-run]  # Look for a better model than this one - a cura
 omm upgrade [--yes] [--dry-run]  # Scan every installed model for a better alternative
 omm link [models] [--engine NAME]  # Re-verify and repair installed-model links across supported runners; `models` is a comma-separated name/index list (omit for every model)
 omm link [models] --to <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
+omm unlink <models> [--runner NAME]  # Remove models' links from one runner (--runner all for every runner), keeping the hub file
+omm export <name> <destination> [--force]  # Copy a hub model out for deployment or backup (hard link when possible)
+omm pin <name>  # Archive this model's current version before its next forced reinstall
+omm unpin <name>  # Stop archiving this model and delete any version already archived for it
+omm rollback <name>  # Restore a pinned model's archived version in place of the installed one
 omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 ```
 
