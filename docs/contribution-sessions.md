@@ -65,6 +65,28 @@ Translation, Documents와 일반 대화 품질을 비교하려면 각각 별도�
 팩과 모델별 실행 결과가 더 필요하다. 공급자가 선언한 `BEST FOR` 메타데이터도
 벤치마크 점수와 구분해 수집·표시해야 한다.
 
+## 모델 비교와 로컬 코딩 평가
+
+`omm compare`는 서명된 추천 카탈로그 안의 정확한 모델 2~5개를 읽기 전용으로
+비교한다. 모델을 다운로드·설치·실행하지 않으며, 품질 데이터가 없으면 낮은 점수
+대신 `Not measured`라고 표시한다.
+
+```sh
+omm compare tinyllama-1.1b-q4 llama3.1-8b-instruct-q4 --profile balanced --for coding
+```
+
+`omm evaluate`는 이미 설치된 Ollama 모델의 Python 코드 생성·수정 결과를 로컬
+Docker/Podman 샌드박스에서 실행한다. 네트워크와 호스트 파일 접근을 허용하지 않고,
+생성 코드는 저장하거나 업로드하지 않는다. `--output`에는 문제별 성공 여부와 정확한
+모델·평가 팩 식별 정보만 기록한다.
+
+```sh
+omm evaluate qwen3-coder:7b --output coding-evidence.json
+```
+
+공식 `MEASURED` 점수는 같은 스키마의 결과를 검토해 별도로 서명한 품질 카탈로그에서만
+읽는다. 로컬 평가 파일이나 공개 커뮤니티 텔레메트리가 자동으로 공식 점수가 되지는 않는다.
+
 ## 원하는 만큼 기여하기
 
 ```sh
