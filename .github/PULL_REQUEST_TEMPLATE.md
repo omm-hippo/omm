@@ -29,4 +29,5 @@
 - [ ] 동작 변경에 테스트를 추가하거나 갱신했다
 - [ ] `pytest -q`가 통과한다
 - [ ] 관련 없는 변경을 섞지 않았다
+- [ ] 명령어를 추가/변경했다면 `python scripts/export_command_reference.py` 를 돌려 docs/commands.json 을 갱신하고 README.md Usage 도 맞췄다 (CI `docs-sync` 가 검사)
 - [ ] `published/localfit-recommend-model.json`을 손으로 고치지 않았다 (학습 파이프라인이 생성)

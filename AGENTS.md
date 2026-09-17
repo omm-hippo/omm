@@ -27,3 +27,10 @@
 - 커밋 제목은 영어 conventional 형식 그대로 둔다.
 - PR 본문은 커밋 메시지의 번역이 아니라 "이 세션에 없던 사람에게 하는 설명"이다.
 - `gh pr create --body-file`로 올릴 때도 같은 구조를 쓴다. `.github/PULL_REQUEST_TEMPLATE.md`가 그 틀이다.
+
+## 명령어를 바꾸면 문서 3종을 같이 맞춘다
+
+- `src/omm/cli.py` 가 명령어의 단일 진실 공급원이다. 명령어를 추가·이름변경·설명변경하면
+  `python scripts/export_command_reference.py` 를 돌려 `docs/commands.json` 을 다시 만들고 함께 커밋한다.
+- `README.md` 의 `## Usage` 절에도 그 명령어를 같은 `omm cmd [flags]  # 설명` 형식으로 넣는다.
+- `python scripts/check_docs_sync.py` 로 확인한다 (CI 잡 `docs-sync` 가 같은 검사를 한다).
