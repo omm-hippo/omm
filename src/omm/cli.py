@@ -25,6 +25,99 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import unquote, urlsplit
 
+# --- zero-computation fast path: `omm --version` --------------------------
+# Answering this before importing click/typer/rich/the ~30 domain
+# submodules below roughly halves interpreter boot cost (issue #369,
+# follow-up to #224's brew-vs-omm boot investigation). The match is an
+# exact argv shape - anything else (e.g. `--version --json`) falls through
+# unchanged to the normal Typer `--version` handling further down, so the
+# two can never diverge except by that one shape.
+from omm import package_metadata
+from omm.config import OMM_HOME
+
+# None unless this module really runs from an OMM source checkout - a frozen
+# npm/portable build must not adopt whatever sits two directories above its
+# extraction dir (that is the system temp dir) as its own repository.
+_PACKAGE_CHECKOUT = package_metadata._package_checkout()
+SRC_DIR = (
+    _PACKAGE_CHECKOUT
+    if _PACKAGE_CHECKOUT is not None and (_PACKAGE_CHECKOUT / ".git").exists()
+    else OMM_HOME / "src"
+)
+
+
+def _editable_install_uses_src(install_record: dict | None = None) -> bool:
+    """True only when PEP 610 proves the installed package uses SRC_DIR.
+
+    A cloned ``~/.omm/src`` is not proof that the currently executing pipx
+    environment is editable. A failed one-time migration can leave that clone
+    behind while the environment still runs an older VCS snapshot.
+    """
+    if install_record is None:
+        try:
+            install_record = package_metadata.direct_url()
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+    if not isinstance(install_record, dict):
+        return False
+    dir_info = install_record.get("dir_info")
+    if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+        return False
+    raw_url = install_record.get("url")
+    if not isinstance(raw_url, str):
+        return False
+    try:
+        parsed = urlsplit(raw_url)
+    except ValueError:
+        return False
+    if (
+        parsed.scheme != "file"
+        or parsed.netloc not in {"", "localhost"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    from urllib.request import url2pathname  # pulls in http.client/ssl - not worth paying on every command
+
+    raw_path = url2pathname(unquote(parsed.path))
+    if platform.system() == "Windows" and re.fullmatch(r"/[A-Za-z]:.*", raw_path):
+        raw_path = raw_path[1:]
+    try:
+        return Path(raw_path).resolve() == SRC_DIR.resolve()
+    except OSError:
+        return False
+
+
+def _omm_version() -> str:
+    """Reads the freshly-pulled SRC_DIR/pyproject.toml when this is a
+    migrated editable install: dist-info is frozen at the last full `pipx
+    install` (see _deps_satisfied's docstring), so importlib.metadata would
+    keep reporting a stale version after every git-pull-only `omm update`
+    even though the commit hash and code have moved on."""
+    if (
+        package_metadata.install_source() is package_metadata.InstallSource.GIT
+        and _editable_install_uses_src()
+    ):
+        try:
+            text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
+        except OSError:
+            text = None
+        if text is not None:
+            match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+            if match:
+                return match.group(1)
+
+    try:
+        return package_metadata.version()
+    except Exception:
+        return "dev"
+
+
+if sys.argv[1:] == ["--version"]:
+    print(f"omm {_omm_version()}")
+    raise SystemExit(0)
+# --- end fast path; normal (Typer-based) boot continues below -------------
+
 import click
 import typer
 from filelock import Timeout as FileLockTimeout
@@ -57,7 +150,6 @@ from omm import (
     linker,
     memory_guard as memory_guard_mod,
     onboarding,
-    package_metadata,
     predictor,
     recommend_status,
     quality as quality_mod,
@@ -696,31 +788,6 @@ def _handle_emergency_signal(artifact: dict | None, *, verified: bool) -> None:
         raise typer.Exit(1)
     console.print("[success]Updated. Restarting the interrupted command...[/success]")
     _restart_after_update()
-
-
-def _omm_version() -> str:
-    """Reads the freshly-pulled SRC_DIR/pyproject.toml when this is a
-    migrated editable install: dist-info is frozen at the last full `pipx
-    install` (see _deps_satisfied's docstring), so importlib.metadata would
-    keep reporting a stale version after every git-pull-only `omm update`
-    even though the commit hash and code have moved on."""
-    if (
-        package_metadata.install_source() is package_metadata.InstallSource.GIT
-        and _editable_install_uses_src()
-    ):
-        try:
-            text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
-        except OSError:
-            text = None
-        if text is not None:
-            match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
-            if match:
-                return match.group(1)
-
-    try:
-        return package_metadata.version()
-    except Exception:
-        return "dev"
 
 
 def _version_line(commit: str | None) -> str:
@@ -1540,16 +1607,6 @@ def _refresh_recommendation_facts(artifact: dict, info: object) -> None:
 
 _BARE_REPO_URL = REPO_URL.removeprefix("git+")
 
-# None unless this module really runs from an OMM source checkout - a frozen
-# npm/portable build must not adopt whatever sits two directories above its
-# extraction dir (that is the system temp dir) as its own repository.
-_PACKAGE_CHECKOUT = package_metadata._package_checkout()
-SRC_DIR = (
-    _PACKAGE_CHECKOUT
-    if _PACKAGE_CHECKOUT is not None and (_PACKAGE_CHECKOUT / ".git").exists()
-    else OMM_HOME / "src"
-)
-
 
 def _update_channel() -> str:
     """'stable' or 'beta', from `omm setting version` (config key
@@ -1588,48 +1645,6 @@ def _src_head_commit() -> str | None:
     if result.returncode != 0:
         return None
     return result.stdout.strip()
-
-
-def _editable_install_uses_src(install_record: dict | None = None) -> bool:
-    """True only when PEP 610 proves the installed package uses SRC_DIR.
-
-    A cloned ``~/.omm/src`` is not proof that the currently executing pipx
-    environment is editable. A failed one-time migration can leave that clone
-    behind while the environment still runs an older VCS snapshot.
-    """
-    if install_record is None:
-        try:
-            install_record = package_metadata.direct_url()
-        except (AttributeError, OSError, TypeError, ValueError):
-            return False
-    if not isinstance(install_record, dict):
-        return False
-    dir_info = install_record.get("dir_info")
-    if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
-        return False
-    raw_url = install_record.get("url")
-    if not isinstance(raw_url, str):
-        return False
-    try:
-        parsed = urlsplit(raw_url)
-    except ValueError:
-        return False
-    if (
-        parsed.scheme != "file"
-        or parsed.netloc not in {"", "localhost"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        return False
-    from urllib.request import url2pathname  # pulls in http.client/ssl - not worth paying on every command
-
-    raw_path = url2pathname(unquote(parsed.path))
-    if platform.system() == "Windows" and re.fullmatch(r"/[A-Za-z]:.*", raw_path):
-        raw_path = raw_path[1:]
-    try:
-        return Path(raw_path).resolve() == SRC_DIR.resolve()
-    except OSError:
-        return False
 
 
 def _installed_commit() -> str | None:
