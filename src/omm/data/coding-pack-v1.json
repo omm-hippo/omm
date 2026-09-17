@@ -1,0 +1,57 @@
+{
+  "schema_version": 2,
+  "pack_id": "omm-python-coding-smoke",
+  "version": "1.0.0",
+  "language": "python",
+  "evaluator": "python-unittest-v1",
+  "license": "MIT",
+  "source": "Original OMM smoke tasks",
+  "generation": {
+    "temperature": 0,
+    "seed": 0,
+    "num_ctx": 4096,
+    "num_predict": 1024,
+    "think": false
+  },
+  "sandbox": {
+    "image": "docker.io/library/python:3.12.10-alpine3.21@sha256:9c51ecce261773a684c8345b2d4673700055c513b4d54bc0719337d3e4ee552e",
+    "timeout_seconds": 30,
+    "memory_mb": 256,
+    "cpus": 1,
+    "pids": 32
+  },
+  "items": [
+    {
+      "id": "generation_chunks",
+      "kind": "generation",
+      "prompt": "Return only the complete contents of solution.py. Implement chunks(values, size), returning consecutive lists of at most size items. Raise ValueError when size is not a positive integer. Do not mutate values.",
+      "starter": "def chunks(values, size):\n    pass\n",
+      "test_count": 5,
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import chunks\nclass Tests(unittest.TestCase):\n    def test_even(self): self.assertEqual(chunks([1,2,3,4], 2), [[1,2],[3,4]])\n    def test_tail(self): self.assertEqual(chunks([1,2,3,4,5], 2), [[1,2],[3,4],[5]])\n    def test_empty(self): self.assertEqual(chunks([], 3), [])\n    def test_invalid(self):\n        for value in (0, -1, 1.5, True):\n            with self.assertRaises(ValueError): chunks([1], value)\n    def test_no_mutation(self):\n        values=[1,2,3]; chunks(values,2); self.assertEqual(values,[1,2,3])\nunittest.main()\n"
+    },
+    {
+      "id": "generation_unique",
+      "kind": "generation",
+      "prompt": "Return only the complete contents of solution.py. Implement unique_preserving_order(values). Return the first occurrence of each hashable value in input order without mutating the input.",
+      "starter": "def unique_preserving_order(values):\n    pass\n",
+      "test_count": 4,
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import unique_preserving_order\nclass Tests(unittest.TestCase):\n    def test_numbers(self): self.assertEqual(unique_preserving_order([3,1,3,2,1]), [3,1,2])\n    def test_strings(self): self.assertEqual(unique_preserving_order(['a','b','a']), ['a','b'])\n    def test_empty(self): self.assertEqual(unique_preserving_order([]), [])\n    def test_no_mutation(self):\n        values=[1,1,2]; unique_preserving_order(values); self.assertEqual(values,[1,1,2])\nunittest.main()\n"
+    },
+    {
+      "id": "repair_average",
+      "kind": "repair",
+      "prompt": "Return only the corrected complete contents of solution.py. average(values) must return 0 for an empty iterable and the arithmetic mean otherwise. It must accept generators. Preserve the public function name.",
+      "starter": "def average(values):\n    return sum(values) / len(values)\n",
+      "test_count": 4,
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import average\nclass Tests(unittest.TestCase):\n    def test_values(self): self.assertEqual(average([2,4,6]), 4)\n    def test_empty(self): self.assertEqual(average([]), 0)\n    def test_generator(self): self.assertEqual(average(x for x in [1,2,3]), 2)\n    def test_float(self): self.assertAlmostEqual(average([0.5,1.5]), 1.0)\nunittest.main()\n"
+    },
+    {
+      "id": "repair_clamp",
+      "kind": "repair",
+      "prompt": "Return only the corrected complete contents of solution.py. clamp(value, low, high) must constrain value to the inclusive range. Raise ValueError if low is greater than high.",
+      "starter": "def clamp(value, low, high):\n    return min(low, max(high, value))\n",
+      "test_count": 5,
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import clamp\nclass Tests(unittest.TestCase):\n    def test_middle(self): self.assertEqual(clamp(5,0,10),5)\n    def test_low(self): self.assertEqual(clamp(-1,0,10),0)\n    def test_high(self): self.assertEqual(clamp(11,0,10),10)\n    def test_edges(self): self.assertEqual((clamp(0,0,10),clamp(10,0,10)),(0,10))\n    def test_invalid(self):\n        with self.assertRaises(ValueError): clamp(1,2,1)\nunittest.main()\n"
+    }
+  ]
+}
