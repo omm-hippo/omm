@@ -1,0 +1,63 @@
+name: Project README sync
+
+"on":
+  issues:
+    types:
+      - opened
+      - edited
+      - transferred
+      - closed
+      - reopened
+      - assigned
+      - unassigned
+      - labeled
+      - unlabeled
+      - milestoned
+      - demilestoned
+  schedule:
+    # 00:17 KST. Avoid the top of the hour, when scheduled workflows see
+    # the highest queue pressure. The schedule also catches direct edits to
+    # Project Status fields, which do not emit a repository issue event.
+    - cron: "17 15 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-readme-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create short-lived Project token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.OMM_PROJECTS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OMM_PROJECTS_APP_PRIVATE_KEY }}
+          owner: omm-hippo
+          repositories: omm
+          permission-issues: read
+          permission-metadata: read
+          permission-organization-projects: write
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Sync open issues and Project README
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: >-
+          python scripts/sync_project_readme.py
+          --owner omm-hippo
+          --repository omm
+          --project-number 1
