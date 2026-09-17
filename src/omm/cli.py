@@ -1487,9 +1487,39 @@ def _refresh_data() -> None:
                 f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/{style}]"
             )
             if artifact.get("trees") and artifact.get("candidates"):
-                _refresh_recommendation_facts(artifact, scan_hardware())
+                if not _global_opts().json:
+                    console.print(
+                        "[muted]Refreshing model descriptions and file sizes in the "
+                        "background (up to 32 repositories)...[/muted]"
+                    )
+                _spawn_provider_facts_refresh()
         except (requests.RequestException, ValueError) as e:
             err_console.print(f"[error]Failed to fetch trained model from {model_url}: {e}[/error]")
+
+
+def _spawn_provider_facts_refresh() -> None:
+    """Detached `_provider-facts-refresh-run` child so the provider-metadata
+    fetch (up to 32 sequential repository lookups, can take about a minute)
+    survives the short-lived `omm update` parent exiting instead of blocking
+    it. Mirrors `_spawn_bg_version_check`'s detachment mechanics."""
+    args = [sys.executable, "-m", "omm.cli", "_provider-facts-refresh-run"]
+    if platform.system() == "Windows":
+        kwargs = {
+            "creationflags": subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+        }
+    else:
+        kwargs = {"start_new_session": True}
+    try:
+        subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **kwargs,
+        )
+    except OSError:
+        pass
 
 
 def _refresh_recommendation_facts(artifact: dict, info: object) -> None:
@@ -1637,7 +1667,9 @@ def _remote_head_commit(ref: str = "main") -> str | None:
     return result.stdout.split()[0]
 
 
-_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check", "_auto-import-run"}
+_SKIP_UPDATE_CHECK_SUBCOMMANDS = {
+    "update", "doctor", "help", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+}
 
 
 @app.command(name="_bg-version-check", hidden=True)
@@ -1667,6 +1699,25 @@ def _auto_import_run_cmd() -> None:
     watch.run_watch_loop()
 
 
+@app.command(name="_provider-facts-refresh-run", hidden=True)
+def _provider_facts_refresh_run_cmd() -> None:
+    """Internal. Spawned by `_spawn_provider_facts_refresh` as a detached
+    child so the provider-metadata fetch survives the short-lived `omm
+    update` parent exiting. Silently skips if another instance is already
+    running (e.g. `omm update` invoked twice in a row) rather than fetching
+    a duplicate set of repositories."""
+    from omm import recommend_facts
+
+    artifact = predictor.load_cached_model()
+    if not artifact or not artifact.get("trees") or not artifact.get("candidates"):
+        return
+    try:
+        with locked(config_mod.OMM_HOME / "locks" / "provider-facts-refresh", timeout=0):
+            recommend_facts.refresh(artifact, scan_hardware())
+    except FileLockTimeout:
+        pass
+
+
 def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
     """Whether the deferred update notice should still print by the time the
     command has finished.
@@ -1686,7 +1737,9 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
     return opts.command_body_ran and not opts.quiet
 
 
-_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check", "_auto-import-run"}
+_SKIP_ONBOARDING_SUBCOMMANDS = {
+    "setup", "doctor", "help", "update", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+}
 
 
 def _ask_setup_choice() -> str:
@@ -1810,17 +1863,22 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "doctor",
     "_bg-version-check",
     "_auto-import-run",
+    "_provider-facts-refresh-run",
 }
 
 # Hidden background children/services are not a user-issued command, so they
 # must not flush the queued-upload channels (telemetry/error_report/usage).
-_SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {"setting", "_bg-version-check", "_auto-import-run"}
+_SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
+    "setting", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+}
 
 # omm's own hidden background commands. Not something a user typed, so they
 # must not add rows to the opt-in usage aggregate, which PRIVACY.md describes
 # as a count of <command> <outcome> the user ran. Local runlog files are not
 # uploaded, so those stay untouched.
-_INTERNAL_SUBCOMMANDS = frozenset({"_bg-version-check", "_auto-import-run"})
+_INTERNAL_SUBCOMMANDS = frozenset(
+    {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run"}
+)
 
 
 def _maybe_auto_import(ctx: typer.Context) -> None:
