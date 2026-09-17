@@ -1264,9 +1264,7 @@ def _hub_storage_bytes(reg: dict[str, Any]) -> int:
 
 @app.command()
 @global_flags
-def scan(
-    details: bool = typer.Option(False, "--details", help="Also show OS, CPU, and GPU identity."),
-) -> None:
+def scan() -> None:
     """Summarize memory, model storage, and installed local AI runners."""
     opts = _global_opts()
     info = scan_hardware()
@@ -1319,11 +1317,9 @@ def scan(
         console, info=info, budget=calculate_memory_budget(info),
         hub_storage_gb=hub_storage_gb, storage_saved_gb=storage_saved_gb,
         engine_labels=[spec.label for spec in linker.ENGINES if installed[spec.key]],
-        registry=reg, external=external, shorten_path=_shorten_home, details=details,
+        registry=reg, external=external, shorten_path=_shorten_home,
+        runners_note=None if opts.quiet else _missing_engines_note(installed),
     )
-    note = _missing_engines_note(installed)
-    if note and not opts.quiet:
-        console.print(note, style="muted")
 
     if opts.quiet:
         return

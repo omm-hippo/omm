@@ -104,7 +104,7 @@ Pick your OS and follow one path from top to bottom:
 
 ```powershell
 omm        # first run: setup wizard (hardware scan + engine checklist)
-omm scan   # hardware, runner, and model summary
+omm scan   # memory, runner, and model summary
 ```
 
 **5. Windows notes.** Model exposure tries an unprivileged same-volume hard link first, then a symbolic link (Developer Mode or Administrator), then an owned copy. Before copying, omm checks destination free space and reports that the model now consumes additional bytes. File junctions do not apply because model targets are files, not directories.
@@ -150,7 +150,7 @@ curl -fsSL https://omm.run/install.sh | sh
 
 ```sh
 omm        # first run: setup wizard (hardware scan + engine checklist)
-omm scan   # hardware, runner, and model summary
+omm scan   # memory, runner, and model summary
 ```
 
 **5. Homebrew Tap (alternative).**
@@ -212,7 +212,7 @@ curl -fsSL https://omm.run/install.sh | sh
 
 ```sh
 omm        # first run: setup wizard (hardware scan + engine checklist)
-omm scan   # hardware, runner, and model summary
+omm scan   # memory, runner, and model summary
 ```
 
 **5. Linux notes.** Set `OMM_HOME` before installation and on later runs to put the model hub on another volume:
@@ -428,7 +428,7 @@ omm engine status [ENGINE] [--json]  # Separate application, package version, an
 omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
-omm scan [--details] [--json]  # Memory, storage, runners, and models; --details adds OS/CPU/GPU
+omm scan [--json]  # Memory, storage, installed runners, and models
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm compare <name> <name>... [--for TASK] [--profile PROFILE] [--json]  # Read-only comparison of 2-5 catalog packages

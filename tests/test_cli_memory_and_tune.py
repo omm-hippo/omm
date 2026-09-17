@@ -30,9 +30,9 @@ def test_scan_displays_live_safe_budget(isolated_omm_home, monkeypatch):
     result = runner.invoke(cli.app, ["scan"])
 
     assert result.exit_code == 0, result.stdout
-    assert "Safe model budget now" in result.stdout
+    assert "Safe model budget" in result.stdout
     assert "7.6 GB" in result.stdout
-    assert "Reserved for apps/OS" in result.stdout
+    assert "kept for apps/OS" in result.stdout
 
 
 def test_scan_clears_stale_link_record_for_uninstalled_engine(isolated_omm_home, monkeypatch):
@@ -83,7 +83,7 @@ def test_scan_quiet_suppresses_hints_but_keeps_the_tables(isolated_omm_home, mon
 
     assert result.exit_code == 0, result.stdout
     assert "Cleared stale link record" not in result.stdout
-    assert "omm resources" in result.stdout.lower()
+    assert "this machine" in result.stdout.lower()
 
 
 def test_scan_leaves_link_record_untouched_when_engine_still_installed(isolated_omm_home, monkeypatch):
@@ -186,7 +186,7 @@ def test_tune_uses_live_budget_for_installed_model(monkeypatch):
     result = runner.invoke(cli.app, ["tune", "model-7B-Q4.gguf"])
 
     assert result.exit_code == 0, result.stdout
-    assert "Safe model budget now" in result.stdout
+    assert "Safe model budget" in result.stdout
     assert "7.6 GB" in result.stdout
     assert "Context length" in result.stdout
 
