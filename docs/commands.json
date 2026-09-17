@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.101",
+  "omm_version": "0.3.102",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -1653,16 +1653,6 @@
       "usage": "omm scan [OPTIONS]",
       "arguments": [],
       "options": [
-        {
-          "flags": [
-            "--details"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Also show OS, CPU, and GPU identity.",
-          "default": null,
-          "global": false
-        },
         {
           "flags": [
             "--json"

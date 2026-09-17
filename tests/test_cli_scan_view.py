@@ -29,15 +29,42 @@ def test_scan_compact_view_keeps_resources_and_engine_names(scan_fixture):
         assert text not in result.stdout
 
 
-def test_scan_details_and_json_retain_hardware_identity(scan_fixture):
-    detailed = CliRunner().invoke(cli.app, ["scan", "--details"])
-    assert detailed.exit_code == 0, detailed.output
-    assert "CPU identity" in detailed.stdout
+def test_scan_hides_hardware_identity_but_json_retains_it(scan_fixture):
+    # #339: OS/CPU/GPU identity is not shown in the human view (no --details
+    # flag either); the JSON schema keeps those fields for scripts.
+    assert CliRunner().invoke(cli.app, ["scan", "--details"]).exit_code != 0
     result = CliRunner().invoke(cli.app, ["scan", "--json"])
     data = json.loads(result.stdout)
     assert data["cpu"] == "CPU identity"
     assert data["gpu_name"] == "GPU identity"
+    assert data["os"] == "TestOS 12"
     assert data["engines_installed"] == ["ollama", "lmstudio"]
+
+
+def test_scan_lists_runners_horizontally_without_status(scan_fixture):
+    result = CliRunner().invoke(cli.app, ["scan", "--quiet"], env={"COLUMNS": "100"})
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    runner_lines = [line for line in lines if "Ollama" in line]
+    assert len(runner_lines) == 1 and "LM Studio" in runner_lines[0]
+    assert "hardware" not in result.stdout.lower()
+
+
+def test_scan_does_not_dim_runner_names():
+    from types import SimpleNamespace
+    from omm.cli_views import print_scan
+    stream = io.StringIO()
+    console = Console(file=stream, width=80, force_terminal=True, color_system="truecolor",
+                      theme=theme.build_rich_theme("light"))
+    info = SimpleNamespace(ram_available_gb=12, ram_total_gb=16, unified_memory=True,
+                           vram_total_gb=None, vram_free_gb=None, gpu_name=None)
+    budget = SimpleNamespace(model_budget_gb=8.0, ram_safety_reserve_gb=2.0)
+    print_scan(console, info=info, budget=budget, hub_storage_gb=0, storage_saved_gb=0,
+               engine_labels=["Ollama"], registry={}, external=[], shorten_path=str)
+    output = stream.getvalue()
+    before_name = output[:output.index("Ollama")]
+    last_style = before_name[before_name.rindex("["):]
+    assert "[1m" in last_style and "[2m" not in last_style
 
 
 @pytest.mark.parametrize("preset", theme.THEME_NAMES)
