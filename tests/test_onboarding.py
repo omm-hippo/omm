@@ -196,9 +196,89 @@ def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
     succeeded = onboarding.install_selected_engines(console, ["ollama"])
 
     output = console.file.getvalue()
-    assert "Installing Ollama" in output
-    assert "ok" in output
+    assert "Starting the Ollama install" in output
+    assert "ok (0s)" in output
     assert succeeded is True
+
+
+def test_install_selected_engines_status_follows_phase_markers(monkeypatch):
+    """The status line must say what is happening now. It used to match
+    English keywords in winget output, which is localized, so on Korean
+    Windows it said "Installing" from start to finish."""
+    console = _console()
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
+
+    def fake_install_engine(key, on_output=None):
+        on_output(linker.INSTALL_PHASE_RESOLVING)
+        on_output(linker.INSTALL_PHASE_DOWNLOADING)
+        on_output(linker.INSTALL_PROGRESS_PREFIX + "42%")
+        on_output(linker.INSTALL_PHASE_INSTALLING)
+        on_output(linker.INSTALL_PHASE_VERIFYING)
+        return linker.EngineInstallResult(key, "installed", "Jan installed successfully.")
+
+    monkeypatch.setattr(linker, "install_engine", fake_install_engine)
+    monkeypatch.setattr(onboarding, "Progress", _eager_progress())
+
+    assert onboarding.install_selected_engines(console, ["jan"]) is True
+
+    output = console.file.getvalue()
+    for text in (
+        "Finding the Jan package",
+        "Downloading and checking the Jan installer... 42%",
+        "Running the Jan installer",
+        "Checking the Jan installation",
+    ):
+        assert text in output
+    assert "OMM:" not in output
+    assert "Jan installed successfully. (" in output
+
+
+def test_install_selected_engines_prints_each_phase_once_without_terminal(monkeypatch):
+    console = Console(
+        file=io.StringIO(), width=100, force_terminal=False,
+        theme=theme_mod.build_rich_theme("dark"),
+    )
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
+
+    def fake_install_engine(key, on_output=None):
+        for marker in (
+            linker.INSTALL_PHASE_RESOLVING,
+            linker.INSTALL_PHASE_DOWNLOADING,
+            linker.INSTALL_PROGRESS_PREFIX + "10%",
+            linker.INSTALL_PROGRESS_PREFIX + "20%",
+            "raw winget line",
+            linker.INSTALL_PHASE_INSTALLING,
+            linker.INSTALL_PHASE_VERIFYING,
+        ):
+            on_output(marker)
+        return linker.EngineInstallResult(key, "installed", "done")
+
+    monkeypatch.setattr(linker, "install_engine", fake_install_engine)
+
+    onboarding.install_selected_engines(console, ["jan"])
+
+    lines = console.file.getvalue().splitlines()
+    assert lines[:5] == [
+        "Starting the Jan install...",
+        "Finding the Jan package...",
+        "Downloading and checking the Jan installer...",
+        "Running the Jan installer...",
+        "Checking the Jan installation...",
+    ]
+    assert lines[5].startswith("done (")
+    assert len(lines) == 6
+
+
+def _eager_progress():
+    """Progress that repaints on every update, so a test sees each status."""
+    from rich.progress import Progress
+
+    class EagerProgress(Progress):
+        def update(self, *args, **kwargs):
+            super().update(*args, **kwargs)
+            self.refresh()
+
+    return EagerProgress
 
 
 def test_install_selected_engines_reports_failed_automated_install(monkeypatch):

@@ -229,6 +229,14 @@ jobs:
         run: docker build --tag localfit-test .
       - name: Run test image
         run: docker run --rm localfit-test
+      - name: Pull pinned Python coding sandbox image
+        run: >-
+          docker pull
+          docker.io/library/python:3.12.10-alpine3.21@sha256:9c51ecce261773a684c8345b2d4673700055c513b4d54bc0719337d3e4ee552e
+      - name: Verify generated-code sandbox boundaries
+        env:
+          PYTHONPATH: src
+        run: python scripts/verify_coding_sandbox.py
 
   firebase-rules:
     name: Firebase rules emulator

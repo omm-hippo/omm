@@ -261,15 +261,19 @@ def run_engine_checklist(console: Console) -> list[str] | None:
         return question.ask()
 
 
-# Installer output phrasing is unpredictable across brew/winget/flatpak, so
-# there is no reliable total stage count to show as a percentage. Advance
-# forward-only through this list as keywords are seen, same monotonic scan
-# cli.py's pipx installer progress uses, and use it only for the spinner
-# label - never a progress-bar fraction.
-_INSTALL_STAGE_LABELS: list[tuple[str, str]] = [
-    ("download", "Downloading"),
-    ("install", "Installing"),
-]
+# Installer output phrasing differs across brew/winget/flatpak and winget's
+# is localized, so linker turns it into forward-only phase markers and this
+# UI only maps those to a label. A percentage is shown only when the package
+# manager itself printed one (winget prints none when its output is piped).
+def _install_phase_label(marker: str, label: str) -> str | None:
+    """Status text for one of linker's install phase markers, else None."""
+    return {
+        linker.INSTALL_PHASE_RESOLVING: f"Finding the {label} package...",
+        linker.INSTALL_PHASE_DOWNLOADING: f"Downloading and checking the {label} installer...",
+        linker.INSTALL_PHASE_INSTALLING: f"Running the {label} installer...",
+        linker.INSTALL_PHASE_VERIFYING: f"Checking the {label} installation...",
+        linker.INSTALL_PHASE_REPAIRING: f"Repairing the {label} installation...",
+    }.get(marker)
 
 
 def install_selected_engines(console: Console, selected: list[str]) -> bool:
@@ -279,6 +283,8 @@ def install_selected_engines(console: Console, selected: list[str]) -> bool:
     installer failure returns False so callers do not print "Setup complete"
     or exit successfully after the selected runner was not installed.
     """
+    import time
+
     specs_by_key = {spec.key: spec for spec in linker.ENGINES}
     succeeded = True
     for key in selected:
@@ -292,35 +298,44 @@ def install_selected_engines(console: Console, selected: list[str]) -> bool:
             continue
 
         raw_lines: list[str] = []
-        stage = 0
+        started = time.monotonic()
+        # The status line follows linker's phase markers only - the package
+        # manager's own text is localized and is kept for failure output.
+        # Transient: once done, the result line replaces it instead of a
+        # stale "Checking..." spinner staying on screen. Without a terminal
+        # there is no live line, so each phase change prints once instead.
+        live = console.is_terminal
         with Progress(
             SpinnerColumn(),
             TextColumn("{task.description}"),
             TimeElapsedColumn(),
             console=console,
+            transient=True,
+            disable=not live,
         ) as progress:
-            task_id = progress.add_task(f"Installing {spec.label}...")
+            description = f"Starting the {spec.label} install..."
+            task_id = progress.add_task(description)
+            if not live:
+                console.print(description, style="muted", markup=False, highlight=False)
 
             def on_output(line: str) -> None:
-                nonlocal stage
-                raw_lines.append(line)
-                del raw_lines[:-200]
-                if line == "OMM: verifying installation":
-                    progress.update(task_id, description=f"Checking {spec.label} installation...")
+                nonlocal description
+                if line.startswith(linker.INSTALL_PROGRESS_PREFIX):
+                    if live:
+                        percent = line[len(linker.INSTALL_PROGRESS_PREFIX):]
+                        progress.update(task_id, description=f"{description} {percent}")
                     return
-                if line == "OMM: repairing installation":
-                    stage = 0
-                    progress.update(task_id, description=f"Repairing {spec.label} installation...")
+                phase_label = _install_phase_label(line, spec.label)
+                if phase_label is None:
+                    raw_lines.append(line)
+                    del raw_lines[:-200]
                     return
-                lowered = line.lower()
-                for i in range(stage, len(_INSTALL_STAGE_LABELS)):
-                    keyword, label = _INSTALL_STAGE_LABELS[i]
-                    if keyword in lowered:
-                        stage = i + 1
-                        progress.update(
-                            task_id, description=f"{label} {spec.label}..."
-                        )
-                        break
+                if phase_label == description:
+                    return
+                description = phase_label
+                progress.update(task_id, description=description)
+                if not live:
+                    console.print(description, style="muted", markup=False, highlight=False)
 
             result = linker.install_engine(key, on_output=on_output)
 
@@ -331,7 +346,10 @@ def install_selected_engines(console: Console, selected: list[str]) -> bool:
             for line in raw_lines:
                 console.print(line, style="muted", markup=False, highlight=False)
         style = "success" if result.status == "installed" else "error"
-        console.print(result.message, style=style, markup=False, highlight=False)
+        message = result.message
+        if result.status == "installed":
+            message += f" ({time.monotonic() - started:.0f}s)"
+        console.print(message, style=style, markup=False, highlight=False)
         if result.status != "installed":
             succeeded = False
     return succeeded

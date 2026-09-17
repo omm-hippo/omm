@@ -59,6 +59,7 @@ import time
 import struct
 import subprocess
 import tempfile
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from functools import lru_cache
@@ -677,6 +678,10 @@ CopyReporter = Callable[[Path, Path, int], None]
 
 class InsufficientLinkSpaceError(LinkError):
     """An engine link would exhaust its destination volume."""
+
+
+class InsufficientArchiveSpaceError(OSError):
+    """Extracting an archive would exhaust its destination volume."""
 
 
 def disk_safety_reserve(size_bytes: int) -> int:
@@ -3142,6 +3147,86 @@ def _stream_subprocess(
     return proc.wait()
 
 
+# Phase markers `_install_via_package_manager` sends through on_output ahead
+# of the raw package-manager line that triggered them. The UI switches its
+# status line on these alone, so it never has to parse (localized) installer
+# output itself. The verifying/repairing strings predate the others.
+INSTALL_PHASE_RESOLVING = "OMM: finding package"
+INSTALL_PHASE_DOWNLOADING = "OMM: downloading installer"
+INSTALL_PHASE_INSTALLING = "OMM: running installer"
+INSTALL_PHASE_VERIFYING = "OMM: verifying installation"
+INSTALL_PHASE_REPAIRING = "OMM: repairing installation"
+INSTALL_PROGRESS_PREFIX = "OMM: progress "
+
+_URL_RE = re.compile(r"https?://\S+")
+_PERCENT_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d+)?)\s?%")
+# What is left of a progress-bar/spinner-only line once bar glyphs, sizes,
+# rates and percentages are stripped: nothing. Such a line must never be
+# mistaken for "the next real status line". A substitution, not one
+# anchored regex, so a long digit run can't backtrack.
+_PROGRESS_NOISE_RE = re.compile(r"[KMGT]?i?B(?:/s)?|[\d.,%/\s\-\\|#=>▀-▟]")
+
+
+def _is_progress_only(line: str) -> bool:
+    return not _PROGRESS_NOISE_RE.sub("", line)
+
+
+class _InstallPhaseTracker:
+    """Turn a package manager's raw output into phase markers.
+
+    winget output is localized ("Downloading" is "다운로드 중" on Korean
+    Windows), so its phases are read from the output's shape instead of its
+    words: the only line carrying a URL is the installer download, and the
+    next real line after it ("installer hash verified", in any language)
+    means the download and hash check are over and the installer runs next.
+    Homebrew and Flatpak are matched on their (English) keywords. Phases only
+    ever move forward, so a stray keyword can't send the status backwards.
+    """
+
+    _ORDER = ("resolving", "downloading", "installing")
+
+    def __init__(self, manager: str, on_output: Callable[[str], None]):
+        self.manager = manager
+        self.on_output = on_output
+        self.phase = "resolving"
+        self._last_percent: str | None = None
+        on_output(INSTALL_PHASE_RESOLVING)
+
+    def _advance(self, phase: str) -> None:
+        if self._ORDER.index(phase) <= self._ORDER.index(self.phase):
+            return
+        self.phase = phase
+        self._last_percent = None
+        self.on_output(INSTALL_PHASE_DOWNLOADING if phase == "downloading" else INSTALL_PHASE_INSTALLING)
+
+    def feed(self, line: str) -> None:
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if self.manager == "winget":
+            if self.phase == "resolving" and _URL_RE.search(stripped):
+                self._advance("downloading")
+            elif (
+                self.phase == "downloading"
+                and stripped
+                and not _URL_RE.search(stripped)
+                and not _is_progress_only(stripped)
+            ):
+                self._advance("installing")
+        else:
+            if "download" in lowered or lowered.startswith("==> fetching"):
+                self._advance("downloading")
+            elif "install" in lowered or lowered.startswith("==> moving"):
+                self._advance("installing")
+        self.on_output(line)
+        match = _PERCENT_RE.search(stripped)
+        if match and self.phase != "resolving":
+            value = float(match.group(1))
+            percent = f"{min(value, 100):.0f}%"
+            if percent != self._last_percent:
+                self._last_percent = percent
+                self.on_output(INSTALL_PROGRESS_PREFIX + percent)
+
+
 _OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
 _LMSTUDIO_DOWNLOAD_URL = "https://lmstudio.ai/download"
 
@@ -3205,7 +3290,14 @@ def _install_via_package_manager(
             "-e",
             "--id",
             winget_id,
+            # Only the community repo carries these ids. Without --source,
+            # winget also searches (and may first refresh) the msstore
+            # source on every install - measured 0.3-0.5s extra per call on
+            # a warm cache, more when the msstore index is stale.
+            "--source",
+            "winget",
             "--silent",
+            "--disable-interactivity",
             "--accept-source-agreements",
             "--accept-package-agreements",
         ]
@@ -3221,12 +3313,15 @@ def _install_via_package_manager(
         )
 
     try:
-        returncode = _stream_subprocess(args, on_output)
+        stream_output = (
+            _InstallPhaseTracker(args[0], on_output).feed if on_output is not None else None
+        )
+        returncode = _stream_subprocess(args, stream_output)
     except OSError as e:
         return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
 
     if on_output is not None:
-        on_output("OMM: verifying installation")
+        on_output(INSTALL_PHASE_VERIFYING)
     detected = is_installed()
     if returncode == 0 and detected:
         return EngineInstallResult(key, "installed", f"{label} installed successfully.")
@@ -3252,9 +3347,12 @@ def _install_via_package_manager(
         and args[:3] == ["brew", "install", "--cask"]
     ):
         if on_output is not None:
-            on_output("OMM: repairing installation")
+            on_output(INSTALL_PHASE_REPAIRING)
         try:
-            returncode = _stream_subprocess(["brew", "reinstall", "--cask", brew_cask], on_output)
+            returncode = _stream_subprocess(
+                ["brew", "reinstall", "--cask", brew_cask],
+                _InstallPhaseTracker("brew", on_output).feed if on_output is not None else None,
+            )
         except OSError as e:
             return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
         if on_output is not None:
@@ -3389,6 +3487,21 @@ _WINDOWS_RESERVED_ARCHIVE_NAMES = {
     *(f"LPT{number}" for number in range(1, 10)),
 }
 
+# A portable engine can legitimately contain tens of thousands of files.
+# Keep this high enough for such releases while still bounding the metadata
+# and filesystem work accepted from an untrusted archive.
+_MAX_ARCHIVE_MEMBERS = 200_000
+_MAX_ARCHIVE_PATH_BYTES = 4096
+_MAX_ARCHIVE_PATH_PARTS = 128
+_MAX_ARCHIVE_PART_BYTES = 255
+
+
+def _archive_utf8_size(value: str, *, kind: str) -> int:
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise OSError(f"unsafe archive {kind}: {value!r}") from error
+
 
 def _safe_archive_member_parts(name: str) -> tuple[str, ...]:
     """Return a platform-independent safe relative archive path.
@@ -3400,12 +3513,14 @@ def _safe_archive_member_parts(name: str) -> tuple[str, ...]:
     """
     if not name or "\x00" in name or "\\" in name or name.startswith("/"):
         raise OSError(f"unsafe archive member path: {name!r}")
+    if _archive_utf8_size(name, kind="member path") > _MAX_ARCHIVE_PATH_BYTES:
+        raise OSError(f"unsafe archive member path: {name!r}")
 
     raw_parts = name.split("/")
     if any(part == ".." for part in raw_parts):
         raise OSError(f"unsafe archive member path: {name!r}")
     parts = tuple(part for part in raw_parts if part not in ("", "."))
-    if not parts:
+    if not parts or len(parts) > _MAX_ARCHIVE_PATH_PARTS:
         raise OSError(f"unsafe archive member path: {name!r}")
 
     for part in parts:
@@ -3413,7 +3528,12 @@ def _safe_archive_member_parts(name: str) -> tuple[str, ...]:
         # data streams. Trailing spaces/dots and DOS device names can alias
         # other paths or devices on Windows even though they are ordinary
         # filename characters on POSIX.
-        if ":" in part or part.endswith((" ", ".")):
+        if (
+            _archive_utf8_size(part, kind="member path component")
+            > _MAX_ARCHIVE_PART_BYTES
+            or ":" in part
+            or part.endswith((" ", "."))
+        ):
             raise OSError(f"unsafe archive member path: {name!r}")
         windows_basename = part.split(".", 1)[0].upper()
         if windows_basename in _WINDOWS_RESERVED_ARCHIVE_NAMES:
@@ -3438,6 +3558,7 @@ def _safe_archive_link_target_parts(
         or "\x00" in linkname
         or "\\" in linkname
         or linkname.startswith("/")
+        or _archive_utf8_size(linkname, kind="link target") > _MAX_ARCHIVE_PATH_BYTES
     ):
         raise OSError(f"unsafe archive link target: {linkname!r}")
 
@@ -3458,6 +3579,8 @@ def _safe_archive_link_target_parts(
         if len(safe_part) != 1:
             raise OSError(f"unsafe archive link target: {linkname!r}")
         resolved.append(part)
+        if len(resolved) > _MAX_ARCHIVE_PATH_PARTS:
+            raise OSError(f"unsafe archive link target: {linkname!r}")
 
     if not resolved or resolved[0] != member_parts[0]:
         raise OSError(f"unsafe archive link target: {linkname!r}")
@@ -3468,14 +3591,48 @@ def _reject_archive_symlink_descendants(
     entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
 ) -> None:
     """No payload path may use an archive symlink as a parent directory."""
-    seen: set[tuple[str, ...]] = set()
-    symlinks = {parts for _, parts, is_dir, _ in entries if is_dir is None}
-    for _, parts, _, _ in entries:
-        if parts in seen:
-            raise OSError(f"duplicate archive member path: {'/'.join(parts)!r}")
-        seen.add(parts)
-        if any(parts[:depth] in symlinks for depth in range(1, len(parts))):
+    portable_entries = sorted(
+        [
+            (
+                tuple(unicodedata.normalize("NFC", part).casefold() for part in parts),
+                parts,
+                is_dir,
+            )
+            for _, parts, is_dir, _ in entries
+        ],
+        key=lambda entry: entry[0],
+    )
+    symlinks = {
+        portable_parts
+        for portable_parts, _, is_dir in portable_entries
+        if is_dir is None
+    }
+    previous_portable: tuple[str, ...] | None = None
+    previous_parts: tuple[str, ...] | None = None
+    for portable_parts, parts, _ in portable_entries:
+        if portable_parts == previous_portable:
+            raise OSError(
+                f"duplicate archive member path or cross-platform alias: "
+                f"{'/'.join(parts)!r}"
+            )
+        if previous_portable is not None and previous_parts is not None:
+            for index, (previous_part, part) in enumerate(
+                zip(previous_portable, portable_parts)
+            ):
+                if previous_part != part:
+                    break
+                if previous_parts[index] != parts[index]:
+                    raise OSError(
+                        f"cross-platform alias in archive member path: "
+                        f"{'/'.join(parts)!r}"
+                    )
+        if any(
+            portable_parts[:depth] in symlinks
+            for depth in range(1, len(portable_parts))
+        ):
             raise OSError(f"archive member traverses a symlink: {'/'.join(parts)!r}")
+        previous_portable = portable_parts
+        previous_parts = parts
 
 
 def _archive_top_level(
@@ -3491,7 +3648,13 @@ def _validated_zip_entries(
     zf: zipfile.ZipFile,
 ) -> list[tuple[zipfile.ZipInfo, tuple[str, ...], bool, int]]:
     entries: list[tuple[zipfile.ZipInfo, tuple[str, ...], bool, int]] = []
-    for member in zf.infolist():
+    members = zf.infolist()
+    if len(members) > _MAX_ARCHIVE_MEMBERS:
+        raise OSError(
+            f"archive has too many entries ({len(members):,}; "
+            f"maximum {_MAX_ARCHIVE_MEMBERS:,})"
+        )
+    for member in members:
         parts = _safe_archive_member_parts(member.filename)
         is_dir = member.is_dir()
         unix_mode = member.external_attr >> 16 if member.create_system == 3 else 0
@@ -3503,6 +3666,7 @@ def _validated_zip_entries(
         if mode == 0:
             mode = 0o755 if is_dir else 0o644
         entries.append((member, parts, is_dir, mode))
+    _reject_archive_symlink_descendants(entries)
     return entries
 
 
@@ -3510,7 +3674,11 @@ def _validated_tar_entries(
     tf: tarfile.TarFile,
 ) -> list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]]:
     entries: list[tuple[tarfile.TarInfo, tuple[str, ...], bool | None, int]] = []
-    for member in tf.getmembers():
+    for member_number, member in enumerate(tf, start=1):
+        if member_number > _MAX_ARCHIVE_MEMBERS:
+            raise OSError(
+                f"archive has too many entries (more than {_MAX_ARCHIVE_MEMBERS:,})"
+            )
         parts = _safe_archive_member_parts(member.name)
         if member.isdir():
             is_dir = True
@@ -3528,6 +3696,43 @@ def _validated_tar_entries(
         entries.append((member, parts, is_dir, member.mode & 0o777))
     _reject_archive_symlink_descendants(entries)
     return entries
+
+
+def _archive_payload_size(
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> int:
+    """Return the declared bytes regular archive members will write."""
+    total = 0
+    for member, parts, is_dir, _ in entries:
+        if is_dir is not False:
+            continue
+        size = getattr(member, "file_size", getattr(member, "size", None))
+        if not isinstance(size, int) or size < 0:
+            raise OSError(f"invalid archive member size: {'/'.join(parts)!r}")
+        total += size
+    return total
+
+
+def _ensure_archive_extraction_space(
+    staging: Path,
+    archive_path: Path,
+    entries: Sequence[tuple[object, tuple[str, ...], bool | None, int]],
+) -> None:
+    """Refuse extraction before any payload write can exhaust the volume."""
+    payload_size = _archive_payload_size(entries)
+    required = payload_size + disk_safety_reserve(payload_size)
+    try:
+        free_bytes = shutil.disk_usage(disk_usage_path(staging)).free
+    except OSError as error:
+        raise OSError(
+            f"Could not verify free space before extracting {archive_path.name}: {error}."
+        ) from error
+    if free_bytes < required:
+        raise InsufficientArchiveSpaceError(
+            f"Not enough free space to safely extract {archive_path.name}: "
+            f"{free_bytes / 1024**3:.1f} GiB free; it needs at least "
+            f"{required / 1024**3:.1f} GiB including safety space."
+        )
 
 
 def _prepare_archive_output(
@@ -3564,6 +3769,7 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
                 final_path = dest_dir / top_level
                 if final_path.exists() or final_path.is_symlink():
                     raise OSError(f"archive destination already exists: {final_path}")
+                _ensure_archive_extraction_space(staging, archive_path, entries)
                 for member, parts, is_dir, mode in entries:
                     output = _prepare_archive_output(staging, parts, is_dir is True)
                     if is_dir:
@@ -3579,6 +3785,7 @@ def _extract_textgenwebui_archive(archive_path: Path, dest_dir: Path) -> Path:
                 final_path = dest_dir / top_level
                 if final_path.exists() or final_path.is_symlink():
                     raise OSError(f"archive destination already exists: {final_path}")
+                _ensure_archive_extraction_space(staging, archive_path, entries)
                 for member, parts, is_dir, mode in entries:
                     output = _prepare_archive_output(staging, parts, is_dir is True)
                     if is_dir is True:
