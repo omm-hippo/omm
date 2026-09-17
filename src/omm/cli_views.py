@@ -1,6 +1,7 @@
 """Terminal presentation only: no scans, state mutation, or runtime requests."""
 from __future__ import annotations
 
+from rich.columns import Columns
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
@@ -15,33 +16,40 @@ def table(*args, **kwargs) -> Table:
 
 def print_scan(console: Console, *, info, budget, hub_storage_gb: float,
                storage_saved_gb: float, engine_labels: list[str], registry: dict,
-               external: list, shorten_path, details: bool = False) -> None:
-    resources = table(title="omm resources", box=None)
-    resources.add_column("Resource", style="label")
-    resources.add_column("Available / used", style="value")
-    resources.add_row("RAM", f"{info.ram_available_gb:.1f} GB available / {info.ram_total_gb:.1f} GB total")
-    resources.add_row("Safe model budget now", f"{budget.model_budget_gb:.1f} GB")
-    resources.add_row("Reserved for apps/OS", f"{budget.ram_safety_reserve_gb:.1f} GB+")
+               external: list, shorten_path, runners_note: str | None = None) -> None:
+    # Layout only (#339): hardware identity (OS/CPU/GPU) stays in --json.
+    # Colours/emphasis are unchanged here; they are decided separately by
+    # people looking at real terminals.
+    console.print(Text("This machine", style="heading"))
+    resources = Table.grid(padding=(0, 2))
+    resources.add_column(style="label", no_wrap=True)
+    resources.add_column(style="value", overflow="fold")
+    resources.add_row("RAM", f"{info.ram_available_gb:.1f} GB free of {info.ram_total_gb:.1f} GB")
     if info.unified_memory:
-        resources.add_row("Memory type", "Unified (shared RAM and GPU memory)")
+        resources.add_row("VRAM", "Unified with RAM")
     elif info.vram_total_gb is not None:
-        free = f"{info.vram_free_gb:.1f}" if info.vram_free_gb is not None else "unknown"
-        resources.add_row("VRAM", f"{free} GB available / {info.vram_total_gb:.1f} GB total")
+        free = f"{info.vram_free_gb:.1f}" if info.vram_free_gb is not None else "?"
+        resources.add_row("VRAM", f"{free} GB free of {info.vram_total_gb:.1f} GB")
     elif info.gpu_name:
-        resources.add_row("VRAM", "Shared or unavailable from the OS")
-    resources.add_row("omm hub storage", f"{hub_storage_gb:.1f} GB")
-    resources.add_row("Saved via omm import", f"{storage_saved_gb:.1f} GB")
-    if details:
-        resources.add_row("OS", f"{info.os_name} {info.os_version}")
-        resources.add_row("CPU", info.cpu)
-        resources.add_row("GPU", info.gpu_name or "None detected")
+        resources.add_row("VRAM", "Shared or not reported by the OS")
+    resources.add_row("Safe model budget",
+                      f"{budget.model_budget_gb:.1f} GB now ({budget.ram_safety_reserve_gb:.1f} GB+ kept for apps/OS)")
+    resources.add_row("omm hub storage",
+                      f"{hub_storage_gb:.1f} GB ({storage_saved_gb:.1f} GB saved via omm import)")
     console.print(resources)
     console.print()
-    engines = Text("Local AI runners: ", style="heading")
-    engines.append(" · ".join(engine_labels) or "None installed", style="value")
-    console.print(engines)  # Rich wraps to the actual terminal width.
+    console.print(Text("Local AI runners", style="heading"))
+    if engine_labels:
+        # Horizontal list that wraps with the terminal; a runner name is
+        # never split across lines.
+        console.print(Columns([Text(label, style="value") for label in engine_labels],
+                              padding=(0, 3)))
+    else:
+        console.print("None installed")
+    if runners_note:
+        console.print(runners_note, style="muted")
     console.print()
-    models = table(title="Local AI models", box=None)
+    models = table(title="Local AI models", box=None, title_justify="left", pad_edge=False)
     models.add_column("Model", style="accent", overflow="fold", ratio=3)
     models.add_column("Location", style="value", overflow="fold", ratio=2)
     models.add_column("Engine(s)", style="value", overflow="fold", ratio=1)

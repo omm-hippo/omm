@@ -1819,16 +1819,6 @@
       "options": [
         {
           "flags": [
-            "--details"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Also show OS, CPU, and GPU identity.",
-          "default": null,
-          "global": false
-        },
-        {
-          "flags": [
             "--json"
           ],
           "metavar": null,

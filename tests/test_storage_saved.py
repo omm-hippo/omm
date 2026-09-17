@@ -54,7 +54,7 @@ def test_scan_table_shows_hub_storage_and_saved_rows(isolated_omm_home, monkeypa
     assert result.exit_code == 0, result.stdout
     assert "omm hub storage" in result.stdout
     assert "1.0 GB" in result.stdout
-    assert "Saved via omm import" in result.stdout
+    assert "saved via omm import" in result.stdout
     assert "0.5 GB" in result.stdout
 
 
