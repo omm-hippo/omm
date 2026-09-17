@@ -225,7 +225,7 @@ _JSON_CAPABLE = {
     "engine doctor",
     "engine update",
     "engine uninstall",
-    "support-bundle",
+    "bug-report",
     "setting runtime-profile",
 }
 
@@ -243,7 +243,7 @@ _YES_CAPABLE = {
     "run",
     "engine update",
     "engine uninstall",
-    "support-bundle",
+    "bug-report",
     "tune",
 }
 
@@ -3206,7 +3206,12 @@ def doctor() -> None:
         raise typer.Exit(1)
 
 
-@app.command(name="support-bundle")
+# Named "bug-report", not bare "report": git (`git bugreport`), Flutter
+# (`flutter bug-report`), and kubectl (`kubectl cluster-info dump`) all use a
+# compound name for a local-only diagnostic file, which reads as local by
+# convention even though "report" alone (this command's previous name) read
+# as "sends somewhere" in review.
+@app.command(name="bug-report")
 @global_flags
 def support_report_cmd(
     include: list[str] = typer.Option(
@@ -3225,7 +3230,7 @@ def support_report_cmd(
         help="Allow replacing the explicitly named output file.",
     ),
 ) -> None:
-    """Preview and optionally save a privacy-safe local support bundle. Never uploads."""
+    """Preview and optionally save a privacy-safe local bug-report bundle. Never uploads."""
     from omm import support_report
 
     diagnostic = doctor_mod.collect_report(
@@ -3241,7 +3246,7 @@ def support_report_cmd(
     if _global_opts().json:
         _print_json(data=payload)
     else:
-        console.print("Complete local support-bundle preview (nothing has been sent or saved):")
+        console.print("Complete local bug-report preview (nothing has been sent or saved):")
         console.print(preview, markup=False, highlight=False)
     if save is None:
         return

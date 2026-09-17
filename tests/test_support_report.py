@@ -67,9 +67,9 @@ def test_cli_previews_before_local_save_and_never_uploads(
     monkeypatch.setattr(cli.doctor_mod, "collect_report", lambda **kwargs: diagnostic)
     output = tmp_path / "support.json"
     result = CliRunner().invoke(
-        cli.app, ["support-bundle", "--save", str(output), "--yes"]
+        cli.app, ["bug-report", "--save", str(output), "--yes"]
     )
     assert result.exit_code == 0, result.output
-    assert "Complete local support-bundle preview" in result.output
+    assert "Complete local bug-report preview" in result.output
     assert "No upload, GitHub issue, browser action, or message was created" in result.stderr
     assert json.loads(output.read_text(encoding="utf-8"))["diagnostics"]["status"] == "PASS"

@@ -430,7 +430,7 @@ omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manag
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm scan [--details] [--json]  # Memory, storage, runners, and models; --details adds OS/CPU/GPU
 omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
-omm support-bundle [--include os|policies|checks] [--save PATH]  # Preview and save an allow-listed local diagnostic bundle; never upload it
+omm bug-report [--include os|policies|checks] [--save PATH]  # Preview and save an allow-listed local diagnostic bundle; never upload it
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
@@ -563,7 +563,7 @@ for engine capabilities, memory checks, cleanup, and verification limits.
 ### Scripting
 
 All errors, warnings, and confirmation prompts print to stderr. For `search`,
-`list`, `info`, `tune`, `scan`, `doctor`, `recommend`, and `support-bundle`, `--json` makes
+`list`, `info`, `tune`, `scan`, `doctor`, `recommend`, and `bug-report`, `--json` makes
 stdout a single structured document that is safe to pipe (for example,
 `omm list --json | jq .`). `benchmark --json` also writes a single JSON report to stdout; `--output` saves
 the same evidence as a file. Supported commands emit a structured error document

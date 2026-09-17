@@ -54,7 +54,7 @@ def latest_command_name() -> str | None:
                 if (
                     isinstance(token, str)
                     and not token.startswith("-")
-                    and token not in {"<arg>", "support-bundle"}
+                    and token not in {"<arg>", "bug-report"}
                     and _SAFE_NAME.fullmatch(token)
                 ):
                     return token
