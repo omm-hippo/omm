@@ -1509,92 +1509,6 @@
     },
     {
       "path": [
-        "report"
-      ],
-      "kind": "command",
-      "aliases": [],
-      "summary": "Preview a privacy-minimized support report and optionally save it locally.",
-      "description": "",
-      "usage": "omm report [OPTIONS]",
-      "arguments": [],
-      "options": [
-        {
-          "flags": [
-            "--include"
-          ],
-          "metavar": "<str>",
-          "is_flag": false,
-          "help": "Add one optional group: os, policies, or checks. Repeat as needed.",
-          "default": null,
-          "global": false
-        },
-        {
-          "flags": [
-            "--save"
-          ],
-          "metavar": "<path>",
-          "is_flag": false,
-          "help": "Save the previewed JSON to this path. Nothing is uploaded.",
-          "default": null,
-          "global": false
-        },
-        {
-          "flags": [
-            "--force"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Allow replacing the explicitly named output file.",
-          "default": null,
-          "global": false
-        },
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--quiet",
-            "-q"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--no-color"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Disable colored output.",
-          "default": null,
-          "global": true
-        }
-      ],
-      "docs_url": "https://omm.run/commands/report"
-    },
-    {
-      "path": [
         "rollback"
       ],
       "kind": "command",
@@ -2670,6 +2584,92 @@
         }
       ],
       "docs_url": "https://omm.run/commands/setup"
+    },
+    {
+      "path": [
+        "support-bundle"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Preview and optionally save a privacy-safe local support bundle. Never uploads.",
+      "description": "",
+      "usage": "omm support-bundle [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--include"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Add one optional group: os, policies, or checks. Repeat as needed.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--save"
+          ],
+          "metavar": "<path>",
+          "is_flag": false,
+          "help": "Save the previewed JSON to this path. Nothing is uploaded.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--force"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Allow replacing the explicitly named output file.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/support-bundle"
     },
     {
       "path": [

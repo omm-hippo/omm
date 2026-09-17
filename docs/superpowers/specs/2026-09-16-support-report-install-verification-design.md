@@ -12,7 +12,9 @@ uploads or new confirmation prompts:
 
 ## Privacy-safe support report
 
-`omm report` builds a new local allow-list document. The default fields are:
+`omm support-bundle` builds a new local allow-list document. The name makes
+the local preview/save behavior explicit and does not imply that OMM files a
+report with the maintainers. The default fields are:
 
 - schema version and creation time;
 - OMM version and installation source;

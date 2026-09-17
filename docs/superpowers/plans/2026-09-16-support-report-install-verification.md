@@ -2,7 +2,7 @@
 
 1. Add an allow-listed support-report builder that reads only scrubbed command
    names, exception classes, package metadata, and aggregate doctor status.
-2. Add `omm report` preview, explicit optional groups, and local save controls
+2. Add `omm support-bundle` preview, explicit optional groups, and local save controls
    with no outbound action.
 3. Add source-plan/result data structures for model installation and render
    them only in normal interactive installs.

@@ -225,7 +225,7 @@ _JSON_CAPABLE = {
     "engine doctor",
     "engine update",
     "engine uninstall",
-    "report",
+    "support-bundle",
     "setting runtime-profile",
 }
 
@@ -243,7 +243,7 @@ _YES_CAPABLE = {
     "run",
     "engine update",
     "engine uninstall",
-    "report",
+    "support-bundle",
     "tune",
 }
 
@@ -3206,7 +3206,7 @@ def doctor() -> None:
         raise typer.Exit(1)
 
 
-@app.command(name="report")
+@app.command(name="support-bundle")
 @global_flags
 def support_report_cmd(
     include: list[str] = typer.Option(
@@ -3225,7 +3225,7 @@ def support_report_cmd(
         help="Allow replacing the explicitly named output file.",
     ),
 ) -> None:
-    """Preview a privacy-minimized support report and optionally save it locally."""
+    """Preview and optionally save a privacy-safe local support bundle. Never uploads."""
     from omm import support_report
 
     diagnostic = doctor_mod.collect_report(
@@ -3241,7 +3241,7 @@ def support_report_cmd(
     if _global_opts().json:
         _print_json(data=payload)
     else:
-        console.print("Complete support-report preview (nothing has been sent or saved):")
+        console.print("Complete local support-bundle preview (nothing has been sent or saved):")
         console.print(preview, markup=False, highlight=False)
     if save is None:
         return
