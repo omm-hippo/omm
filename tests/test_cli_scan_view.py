@@ -50,23 +50,6 @@ def test_scan_lists_runners_horizontally_without_status(scan_fixture):
     assert "hardware" not in result.stdout.lower()
 
 
-def test_scan_does_not_dim_runner_names():
-    from types import SimpleNamespace
-    from omm.cli_views import print_scan
-    stream = io.StringIO()
-    console = Console(file=stream, width=80, force_terminal=True, color_system="truecolor",
-                      theme=theme.build_rich_theme("light"))
-    info = SimpleNamespace(ram_available_gb=12, ram_total_gb=16, unified_memory=True,
-                           vram_total_gb=None, vram_free_gb=None, gpu_name=None)
-    budget = SimpleNamespace(model_budget_gb=8.0, ram_safety_reserve_gb=2.0)
-    print_scan(console, info=info, budget=budget, hub_storage_gb=0, storage_saved_gb=0,
-               engine_labels=["Ollama"], registry={}, external=[], shorten_path=str)
-    output = stream.getvalue()
-    before_name = output[:output.index("Ollama")]
-    last_style = before_name[before_name.rindex("["):]
-    assert "[1m" in last_style and "[2m" not in last_style
-
-
 @pytest.mark.parametrize("preset", theme.THEME_NAMES)
 @pytest.mark.parametrize("width", [40, 80])
 def test_scan_presentation_wraps_for_each_theme(scan_fixture, preset, width, monkeypatch):

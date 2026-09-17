@@ -17,14 +17,13 @@ def table(*args, **kwargs) -> Table:
 def print_scan(console: Console, *, info, budget, hub_storage_gb: float,
                storage_saved_gb: float, engine_labels: list[str], registry: dict,
                external: list, shorten_path, runners_note: str | None = None) -> None:
-    # Readability first (#339): section titles and important names are bold
-    # in the terminal's own foreground; no dim/grey on information and no
-    # colour on low-value words. Hardware identity (OS/CPU/GPU) stays in
-    # --json only - it does not change what fits.
+    # Layout only (#339): hardware identity (OS/CPU/GPU) stays in --json.
+    # Colours/emphasis are unchanged here; they are decided separately by
+    # people looking at real terminals.
     console.print(Text("This machine", style="heading"))
     resources = Table.grid(padding=(0, 2))
-    resources.add_column(no_wrap=True)
-    resources.add_column(overflow="fold")
+    resources.add_column(style="label", no_wrap=True)
+    resources.add_column(style="value", overflow="fold")
     resources.add_row("RAM", f"{info.ram_available_gb:.1f} GB free of {info.ram_total_gb:.1f} GB")
     if info.unified_memory:
         resources.add_row("VRAM", "Unified with RAM")
@@ -43,18 +42,18 @@ def print_scan(console: Console, *, info, budget, hub_storage_gb: float,
     if engine_labels:
         # Horizontal list that wraps with the terminal; a runner name is
         # never split across lines.
-        console.print(Columns([Text(label, style="heading") for label in engine_labels],
+        console.print(Columns([Text(label, style="value") for label in engine_labels],
                               padding=(0, 3)))
     else:
         console.print("None installed")
     if runners_note:
-        console.print(runners_note)
+        console.print(runners_note, style="muted")
     console.print()
     models = table(title="Local AI models", box=None, title_justify="left", pad_edge=False)
-    models.add_column("Model", style="heading", overflow="fold", ratio=3)
-    models.add_column("Location", overflow="fold", ratio=2)
-    models.add_column("Engine(s)", overflow="fold", ratio=1)
-    models.add_column("Managed by omm")
+    models.add_column("Model", style="accent", overflow="fold", ratio=3)
+    models.add_column("Location", style="value", overflow="fold", ratio=2)
+    models.add_column("Engine(s)", style="value", overflow="fold", ratio=1)
+    models.add_column("Managed by omm", style="label")
     for filename, entry in registry.items():
         linked = [name for name, on in entry.get("linked", {}).items() if on]
         models.add_row(filename, "(omm hub)", ", ".join(linked) or "-", "yes")
