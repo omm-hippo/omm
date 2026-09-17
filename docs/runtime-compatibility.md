@@ -31,7 +31,7 @@ Regular interactive installs apply the same consent rule after linking. With
 Ollama, the existing local speed benchmark doubles as the non-empty generation
 proof and preserves a model that was already resident. When LM Studio is the
 configured runtime, its native local probe is used instead. Scripts must pass
-`--verify-runtime` to grant load consent or `--no-verify-runtime` to skip the
+`--load-check` to grant load consent or `--no-load-check` to skip the
 check without prompting.
 
 ## Stored result

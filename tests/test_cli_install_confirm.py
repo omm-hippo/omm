@@ -81,7 +81,7 @@ def test_install_runs_benchmark_and_telemetry_on_yes(isolated_omm_home, monkeypa
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append((event, force)))
 
     result = runner.invoke(
-        cli.app, ["install", "tinyllama-1.1b-q4", "--verify-runtime"]
+        cli.app, ["install", "tinyllama-1.1b-q4", "--load-check"]
     )
 
     assert result.exit_code == 0, result.stdout
@@ -298,7 +298,7 @@ def test_install_declined_runtime_load_skips_benchmark_and_upload(isolated_omm_h
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append((event, force)))
 
     result = runner.invoke(
-        cli.app, ["install", "tinyllama-1.1b-q4", "--no-verify-runtime"]
+        cli.app, ["install", "tinyllama-1.1b-q4", "--no-load-check"]
     )
 
     assert result.exit_code == 0, result.stdout
@@ -319,7 +319,7 @@ def test_install_no_upload_flag_skips_prompt_without_a_tty(isolated_omm_home, mo
 
     result = runner.invoke(
         cli.app,
-        ["install", "tinyllama-1.1b-q4", "--no-upload", "--verify-runtime"],
+        ["install", "tinyllama-1.1b-q4", "--no-upload", "--load-check"],
     )
 
     assert result.exit_code == 0, result.stdout
@@ -335,7 +335,7 @@ def test_install_upload_flag_sends_telemetry_without_a_tty(isolated_omm_home, mo
 
     result = runner.invoke(
         cli.app,
-        ["install", "tinyllama-1.1b-q4", "--upload", "--verify-runtime"],
+        ["install", "tinyllama-1.1b-q4", "--upload", "--load-check"],
     )
 
     assert result.exit_code == 0, result.stdout
@@ -406,7 +406,7 @@ def test_install_threads_quiet_and_no_color_into_download_file(isolated_omm_home
         [
             "install",
             "tinyllama-1.1b-q4",
-            "--verify-runtime",
+            "--load-check",
             "--quiet",
             "--no-color",
         ],
@@ -429,7 +429,7 @@ def test_install_quiet_suppresses_status_lines_but_keeps_the_result(isolated_omm
 
     result = runner.invoke(
         cli.app,
-        ["install", "tinyllama-1.1b-q4", "--verify-runtime", "--quiet"],
+        ["install", "tinyllama-1.1b-q4", "--load-check", "--quiet"],
     )
 
     assert result.exit_code == 0, result.stdout
@@ -450,7 +450,7 @@ def test_install_hint_reports_linked_runner_count_and_points_at_omm_run(
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
 
     result = runner.invoke(
-        cli.app, ["install", "tinyllama-1.1b-q4", "--no-verify-runtime"]
+        cli.app, ["install", "tinyllama-1.1b-q4", "--no-load-check"]
     )
 
     assert result.exit_code == 0, result.stdout

@@ -92,7 +92,7 @@ def test_declining_upload_confirm_logs_declined_by_user(isolated_omm_home, monke
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
 
     result = runner.invoke(
-        cli.app, ["install", "tinyllama-1.1b-q4", "--verify-runtime"]
+        cli.app, ["install", "tinyllama-1.1b-q4", "--load-check"]
     )
 
     assert result.exit_code == 0, result.stdout
@@ -132,7 +132,7 @@ def test_one_shot_upload_failure_is_not_described_as_queued(isolated_omm_home, m
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: False)
 
     result = runner.invoke(
-        cli.app, ["install", "tinyllama-1.1b-q4", "--verify-runtime"]
+        cli.app, ["install", "tinyllama-1.1b-q4", "--load-check"]
     )
 
     assert result.exit_code == 0, result.stdout
@@ -170,7 +170,7 @@ def test_report_telemetry_confirms_a_successful_upload(isolated_omm_home, monkey
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
 
     result = runner.invoke(
-        cli.app, ["install", "tinyllama-1.1b-q4", "--verify-runtime"]
+        cli.app, ["install", "tinyllama-1.1b-q4", "--load-check"]
     )
 
     assert result.exit_code == 0, result.stdout
@@ -189,7 +189,7 @@ def test_successful_upload_confirmation_is_suppressed_by_quiet(
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: True)
 
     result = runner.invoke(
-        cli.app, ["install", "tinyllama-1.1b-q4", "--verify-runtime", "--quiet"]
+        cli.app, ["install", "tinyllama-1.1b-q4", "--load-check", "--quiet"]
     )
 
     assert result.exit_code == 0, result.stdout

@@ -6178,7 +6178,7 @@ def _report_lmstudio_load_verification(outcome: InstallOutcome) -> None:
     second time for no extra signal, so it's skipped. This older probe still
     has unique value when LM Studio was linked but never selected for
     adapter-based verification (e.g. another runtime was verified instead, or
-    `--no-verify-runtime` was used)."""
+    `--no-load-check` was used)."""
     if not outcome.linked.get("lmstudio"):
         return
     if outcome.compatibility_engine == "lmstudio":
@@ -6215,9 +6215,9 @@ def install(
         "first and the download is skipped when the installed file already "
         "matches it.",
     ),
-    verify_runtime: bool | None = typer.Option(
+    load_check: bool | None = typer.Option(
         None,
-        "--verify-runtime/--no-verify-runtime",
+        "--load-check/--no-load-check",
         help="Run (or skip) a short local load/generation check after linking. "
         "Unset asks before loading an unloaded model.",
     ),
@@ -6228,8 +6228,8 @@ def install(
     # OptionInfo sentinel (all truthy) instead of the real default. Coerce
     # them back before anything reads them - an unguarded `skip_unfit`
     # silently turns a link/disk failure into a no-op install.
-    if not isinstance(verify_runtime, (bool, type(None))):
-        verify_runtime = None
+    if not isinstance(load_check, (bool, type(None))):
+        load_check = None
     if not isinstance(skip_unfit, bool):
         skip_unfit = False
     if not isinstance(force, bool):
@@ -6267,8 +6267,8 @@ def install(
             force=force,
             verify_runtime_after_install=True,
             runtime_load_consent=(
-                verify_runtime
-                if verify_runtime is not None
+                load_check
+                if load_check is not None
                 else (True if _global_opts().yes else None)
             ),
             preferred_runtime=load_config().get("default_engine"),
