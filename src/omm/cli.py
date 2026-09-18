@@ -3171,7 +3171,7 @@ _TRANSIENT_FAILURE_HINTS: dict[str, str] = {
 @app.command()
 @global_flags
 def doctor() -> None:
-    """Diagnose the OMM install and Ollama links without changing state.
+    """Diagnose the OMM install and Ollama links, then show safe next steps.
 
     WARN findings keep exit code 0; definite FAIL findings exit 1.
     """
@@ -3204,6 +3204,22 @@ def doctor() -> None:
             f"[{overall_style}]Overall: {report.status}[/{overall_style}] "
             f"({counts['PASS']} pass, {counts['WARN']} warn, {counts['FAIL']} fail)"
         )
+        if report.remediations:
+            console.print()
+            console.print("[heading]How to fix[/heading]")
+            fixes = Table.grid(padding=(0, 1))
+            fixes.add_column(style="label", no_wrap=True)
+            fixes.add_column()
+            for index, (name, remediation) in enumerate(report.remediations, start=1):
+                fixes.add_row(f"{index}.", f"[label]{escape(name)}[/label]")
+                fixes.add_row("", escape(remediation.message))
+                command = remediation.display_command()
+                if command is not None:
+                    fixes.add_row("", f"[accent]{escape(command)}[/accent]")
+            console.print(fixes)
+            console.print(
+                "[muted]No changes were made. Run omm doctor again after applying a step.[/muted]"
+            )
     if report.status == "FAIL":
         raise typer.Exit(1)
 

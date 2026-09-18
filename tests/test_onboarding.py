@@ -1,4 +1,7 @@
 import io
+import shutil
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import typer
@@ -78,6 +81,47 @@ def test_print_hardware_summary_shows_os_and_ram(monkeypatch):
     assert "TestOS" in output
     assert "16.0 GB" in output
     assert "Test GPU" in output
+
+
+def test_print_hardware_summary_separates_home_from_decimal_disk_space(monkeypatch):
+    from omm.hardware import HardwareInfo
+
+    fake_info = HardwareInfo(
+        os_name="TestOS",
+        os_version="1.0",
+        cpu="Test CPU",
+        ram_total_gb=16.0,
+        ram_available_gb=8.0,
+        unified_memory=False,
+        gpu_name=None,
+        vram_total_gb=None,
+        vram_free_gb=None,
+    )
+    monkeypatch.setattr(onboarding, "scan_hardware", lambda: fake_info)
+    home = Path("test-home") / ".omm"
+    monkeypatch.setattr(onboarding.config_mod, "OMM_HOME", home)
+    monkeypatch.setattr(onboarding, "_free_gb", lambda path: 108.8)
+    console = _console()
+
+    onboarding.print_hardware_summary(console)
+
+    output = console.file.getvalue()
+    assert "omm home" in output
+    assert str(home) in output
+    assert "Disk available" in output
+    assert "108.8 GB immediately writable on the volume above" in output
+    assert f"{home}  (108.8 GB free)" not in output
+
+
+def test_free_gb_uses_decimal_gb_instead_of_mislabelled_gib(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(free=108_800_000_000),
+    )
+    monkeypatch.setattr(onboarding.linker, "disk_usage_path", lambda path: tmp_path)
+
+    assert onboarding._free_gb(tmp_path) == pytest.approx(108.8)
 
 
 def test_engine_choices_includes_installed_engines_flagged(monkeypatch):

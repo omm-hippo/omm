@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import site
 import subprocess
@@ -27,17 +28,52 @@ _STATUS_RANK: dict[DoctorStatus, int] = {"PASS": 0, "WARN": 1, "FAIL": 2}
 
 
 @dataclass(frozen=True)
+class DoctorRemediation:
+    message: str
+    command: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.message.strip():
+            raise ValueError("doctor remediation message must not be empty")
+        if any(not isinstance(argument, str) or not argument for argument in self.command):
+            raise ValueError("doctor remediation command arguments must be non-empty strings")
+
+    def as_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {"message": self.message}
+        if self.command:
+            result["command"] = list(self.command)
+        return result
+
+    def display_command(self) -> str | None:
+        if not self.command:
+            return None
+        if platform.system() == "Windows":
+            return subprocess.list2cmdline(self.command)
+        return shlex.join(self.command)
+
+
+@dataclass(frozen=True)
 class DoctorCheck:
     status: DoctorStatus
     name: str
     detail: str
+    remediation: DoctorRemediation | None = None
 
     def __post_init__(self) -> None:
         if self.status not in _STATUS_RANK:
             raise ValueError(f"unknown doctor status: {self.status}")
+        if self.status == "PASS" and self.remediation is not None:
+            raise ValueError("PASS doctor checks cannot carry remediation")
 
-    def as_dict(self) -> dict[str, str]:
-        return {"status": self.status, "name": self.name, "detail": self.detail}
+    def as_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "status": self.status,
+            "name": self.name,
+            "detail": self.detail,
+        }
+        if self.remediation is not None:
+            result["remediation"] = self.remediation.as_dict()
+        return result
 
 
 @dataclass(frozen=True)
@@ -49,6 +85,18 @@ class DoctorReport:
         if not self.checks:
             return "PASS"
         return max(self.checks, key=lambda check: _STATUS_RANK[check.status]).status
+
+    @property
+    def remediations(self) -> tuple[tuple[str, DoctorRemediation], ...]:
+        unique: list[tuple[str, DoctorRemediation]] = []
+        seen: set[DoctorRemediation] = set()
+        for check in self.checks:
+            remediation = check.remediation
+            if check.status == "PASS" or remediation is None or remediation in seen:
+                continue
+            seen.add(remediation)
+            unique.append((check.name, remediation))
+        return tuple(unique)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -66,6 +114,44 @@ def read_theme_read_only() -> str:
         return "dark"
     theme = parsed.get("theme") if isinstance(parsed, dict) else None
     return theme if isinstance(theme, str) else "dark"
+
+
+def _update_remediation(
+    source: package_metadata.InstallSource,
+) -> DoctorRemediation:
+    choices: dict[package_metadata.InstallSource, DoctorRemediation] = {
+        package_metadata.InstallSource.GIT: DoctorRemediation(
+            "Update the editable OMM checkout, then run omm doctor again.",
+            ("omm", "update"),
+        ),
+        package_metadata.InstallSource.PIPX: DoctorRemediation(
+            "Update the pipx-managed OMM installation, then run omm doctor again.",
+            ("pipx", "upgrade", "omm-model"),
+        ),
+        package_metadata.InstallSource.PYPI: DoctorRemediation(
+            "Update the Python package, then run omm doctor again.",
+            ("python", "-m", "pip", "install", "--upgrade", "omm-model"),
+        ),
+        package_metadata.InstallSource.HOMEBREW: DoctorRemediation(
+            "Update the Homebrew package, then run omm doctor again.",
+            ("brew", "upgrade", "omm-hippo/omm/omm"),
+        ),
+        package_metadata.InstallSource.WINGET: DoctorRemediation(
+            "Update the WinGet package, then run omm doctor again.",
+            ("winget", "upgrade", "--id", "OmmHippo.OMM", "-e"),
+        ),
+        package_metadata.InstallSource.NPM: DoctorRemediation(
+            "Update the global npm package, then run omm doctor again.",
+            ("npm", "update", "--global", "@omm-hippo/omm"),
+        ),
+    }
+    return choices.get(
+        source,
+        DoctorRemediation(
+            "Confirm that this install source is intentional. Otherwise reinstall OMM "
+            "with the package manager that originally installed it, then run omm doctor again."
+        ),
+    )
 
 
 def _read_registry_read_only(path: Path) -> tuple[dict | None, str | None]:
@@ -241,6 +327,16 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
             "installation",
             f"omm {installed_version}; source={source.value}; "
             f"command={command_path}; module={module_path}",
+            (
+                DoctorRemediation(
+                    "OMM's installed version could not be read. Reinstall it with the "
+                    "same package manager, then run omm doctor again."
+                )
+                if installed_version == "unknown"
+                else _update_remediation(source)
+                if source is package_metadata.InstallSource.UNKNOWN
+                else None
+            ),
         )
     )
     # sys.argv[0] for a pipx launcher on Windows is the extension-less
@@ -272,13 +368,28 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
             f"{command_path} -> {resolved_command}"
             if resolved_command
             else f"could not resolve the invoked command path: {command_path}",
+            None
+            if command_usable
+            else DoctorRemediation(
+                "Open a new terminal so PATH is refreshed. If the omm command is "
+                "still missing, reinstall OMM with the same package manager and retry."
+            ),
         )
     )
 
     install_record = package_metadata.direct_url()
     editable_source, editable_error = _editable_source_path(install_record)
     if editable_error:
-        checks.append(DoctorCheck("FAIL", "editable source", editable_error))
+        checks.append(
+            DoctorCheck(
+                "FAIL",
+                "editable source",
+                editable_error,
+                DoctorRemediation(
+                    "Repair or reinstall the editable OMM checkout, then run omm doctor again."
+                ),
+            )
+        )
     elif editable_source is None:
         checks.append(
             DoctorCheck(
@@ -293,6 +404,10 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
                 "FAIL",
                 "editable source",
                 f"configured source does not exist: {editable_source}",
+                DoctorRemediation(
+                    "Restore the configured source directory or reinstall OMM with the "
+                    "same package manager, then run omm doctor again."
+                ),
             )
         )
     elif not _path_is_within(module_path, editable_source):
@@ -301,6 +416,10 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
                 "FAIL",
                 "editable source",
                 f"{editable_source} does not contain the running OMM module {module_path}",
+                DoctorRemediation(
+                    "The launcher and editable checkout point to different copies. "
+                    "Reinstall OMM from the intended checkout, then run omm doctor again."
+                ),
             )
         )
     else:
@@ -311,12 +430,23 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
                 "PASS" if commit else "WARN",
                 "source commit",
                 commit[:12] if commit else "source is not a readable Git checkout",
+                None
+                if commit
+                else DoctorRemediation(
+                    "Restore the editable source as a readable Git checkout or reinstall "
+                    "OMM, then run omm doctor again."
+                ),
             )
         )
         source_version = _source_version(editable_source)
         if source_version is None:
             checks.append(
-                DoctorCheck("WARN", "version agreement", "source version could not be read")
+                DoctorCheck(
+                    "WARN",
+                    "version agreement",
+                    "source version could not be read",
+                    _update_remediation(source),
+                )
             )
         elif source_version != installed_version:
             checks.append(
@@ -324,6 +454,7 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
                     "WARN",
                     "version agreement",
                     f"package metadata={installed_version}; editable source={source_version}",
+                    _update_remediation(source),
                 )
             )
         else:
@@ -341,6 +472,10 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
                     "WARN",
                     "pipx",
                     "installation is pipx-managed but the pipx command was not found",
+                    DoctorRemediation(
+                        "Repair or reinstall pipx and open a new terminal, then run "
+                        "omm doctor again."
+                    ),
                 )
             )
         else:
@@ -356,6 +491,11 @@ def _installation_checks(module_path: Path, command_path: Path) -> list[DoctorCh
                 f"pipx {version} at {pipx}"
                 if version
                 else f"found at {pipx}, but --version failed",
+                None
+                if version
+                else DoctorRemediation(
+                    "Repair or reinstall pipx, then run omm doctor again."
+                ),
             )
         )
     return checks
@@ -437,6 +577,14 @@ def _ollama_checks(registry_data: dict) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     installed = linker.is_ollama_installed()
     executable = linker.find_ollama_executable()
+    install_ollama = DoctorRemediation(
+        "If you want to use Ollama, install it and then run omm doctor again. "
+        "If you use another runner, this optional warning can be ignored."
+    )
+    start_ollama = DoctorRemediation(
+        "Start the Ollama app or service, wait for its local API to be ready, "
+        "then run omm doctor again."
+    )
     checks.append(
         DoctorCheck(
             "PASS" if installed else "WARN",
@@ -444,6 +592,7 @@ def _ollama_checks(registry_data: dict) -> list[DoctorCheck]:
             f"detected at {executable}" if executable else (
                 "application detected" if installed else "not detected"
             ),
+            None if installed else install_ollama,
         )
     )
 
@@ -456,6 +605,7 @@ def _ollama_checks(registry_data: dict) -> list[DoctorCheck]:
                 "WARN",
                 "Ollama server",
                 f"not reachable ({health.failure_reason or 'unknown'})",
+                start_ollama if installed else install_ollama,
             )
         )
         if mappings:
@@ -491,6 +641,7 @@ def _ollama_checks(registry_data: dict) -> list[DoctorCheck]:
                 "WARN",
                 "Ollama tags",
                 f"/api/tags could not be checked ({error.reason})",
+                start_ollama,
             )
         )
         return checks
@@ -503,6 +654,10 @@ def _ollama_checks(registry_data: dict) -> list[DoctorCheck]:
                     "WARN",
                     f"Ollama tag: {filename}",
                     "linked in the registry but no Ollama runtime tag is stored",
+                    DoctorRemediation(
+                        "Re-link this model into Ollama, then run omm doctor again.",
+                        ("omm", "link", filename, "--engine", "ollama"),
+                    ),
                 )
             )
             continue
@@ -514,6 +669,12 @@ def _ollama_checks(registry_data: dict) -> list[DoctorCheck]:
                 "PASS" if visible else "WARN",
                 f"Ollama tag: {filename}",
                 detail,
+                None
+                if visible
+                else DoctorRemediation(
+                    "Repair this model's Ollama link, then run omm doctor again.",
+                    ("omm", "link", filename, "--engine", "ollama"),
+                ),
             )
         )
     return checks
@@ -536,7 +697,17 @@ def collect_report(
     checks = _installation_checks(running_module, running_command)
     registry_data, registry_error = _read_registry_read_only(config.REGISTRY_PATH)
     if registry_error:
-        checks.append(DoctorCheck("FAIL", "registry", registry_error))
+        checks.append(
+            DoctorCheck(
+                "FAIL",
+                "registry",
+                registry_error,
+                DoctorRemediation(
+                    f"Back up {config.REGISTRY_PATH}, then inspect or restore valid JSON. "
+                    "Do not delete it blindly; run omm doctor again after repair."
+                ),
+            )
+        )
         registry_data = {}
     else:
         assert registry_data is not None
@@ -555,6 +726,10 @@ def collect_report(
             "WARN", "Install recovery",
             f"{pending['filename']}: last checkpoint {pending.get('phase', 'unknown')}; "
             "re-run the original install command to recheck and resume.",
+            DoctorRemediation(
+                "Re-run the original omm install command. OMM will recheck the saved "
+                "checkpoint before resuming; then run omm doctor again."
+            ),
         ))
     from omm.runtime_profiles import interrupted_runs
 
@@ -563,5 +738,10 @@ def collect_report(
             "WARN", "Runtime profile cleanup",
             f"A previous OMM run ended before confirming cleanup of {pending['alias']}. "
             "Inspect this alias in Ollama; no model was automatically unloaded or deleted.",
+            DoctorRemediation(
+                f"Inspect {pending['alias']} in Ollama and stop it only if it is no "
+                "longer in use, then run omm doctor again.",
+                ("ollama", "ps"),
+            ),
         ))
     return DoctorReport(tuple(checks))

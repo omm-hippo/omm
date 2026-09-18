@@ -405,7 +405,7 @@ package ownership checks, and verification limits.
 
 ### Storage location
 
-The model hub and omm state default to `~/.omm`. Set `OMM_HOME` before installation and on later runs to put them on another volume (see the snippet in your OS section above).
+The model hub and omm state default to `~/.omm`. Set `OMM_HOME` before installation and on later runs to put them on another volume (see the snippet in your OS section above). The setup table shows the path separately from decimal GB that is immediately writable on the volume containing it; this is not the size of the `.omm` folder, and an OS storage screen may additionally count purgeable space.
 
 Ollama's own model location follows `OLLAMA_MODELS`. LM Studio follows its home pointer; set `OMM_LMSTUDIO_MODELS_DIR` when LM Studio uses a custom directory that omm cannot discover automatically.
 
@@ -429,7 +429,7 @@ omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm scan [--json]  # Memory, storage, installed runners, and models
-omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
+omm doctor [--json]  # Read-only diagnostics plus safe next steps for installation and Ollama findings
 omm bug-report [--include os|policies|checks] [--save PATH]  # Preview and save an allow-listed local diagnostic bundle; never upload it
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm compare <name> <name>... [--for TASK] [--profile PROFILE] [--json]  # Read-only comparison of 2-5 catalog packages

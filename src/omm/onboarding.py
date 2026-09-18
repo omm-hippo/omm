@@ -82,9 +82,13 @@ def print_hardware_summary(console: Console) -> None:
     if info.gpu_name:
         table.add_row("GPU", info.gpu_name)
     home = config_mod.OMM_HOME
+    table.add_row("omm home", str(home))
     free_gb = _free_gb(home)
     if free_gb is not None:
-        table.add_row("omm home", f"{home}  ({free_gb:.1f} GB free)")
+        table.add_row(
+            "Disk available",
+            f"{free_gb:.1f} GB immediately writable on the volume above",
+        )
     console.print(table)
     console.print()
     if free_gb is not None and free_gb < LOW_DISK_GB:
@@ -102,7 +106,12 @@ def _free_gb(path) -> float | None:
     import shutil
 
     try:
-        return shutil.disk_usage(linker.disk_usage_path(path)).free / 1024**3
+        # macOS, Windows, and disk vendors display decimal GB. The old 1024^3
+        # divisor produced GiB while labelling it GB, making OMM disagree with
+        # the operating system by about 7%. Keep this conservative statvfs
+        # value rather than adding APFS purgeable space that may not be
+        # immediately reclaimable for a model download.
+        return shutil.disk_usage(linker.disk_usage_path(path)).free / 1000**3
     except OSError:
         return None
 
