@@ -10,7 +10,6 @@
     "secret:firebase-key": "wrangler secret put FIREBASE_SERVICE_ACCOUNT_JSON"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@cloudflare/workers-types": "^5.20260911.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",

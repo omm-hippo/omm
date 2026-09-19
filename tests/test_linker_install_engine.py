@@ -3,6 +3,7 @@ import stat
 import sys
 import tarfile
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -47,7 +48,13 @@ def test_install_ollama_mac_streams_output_and_reports_installed(monkeypatch):
     assert result == linker.EngineInstallResult(
         "ollama", "installed", "Ollama installed successfully."
     )
-    assert captured == ["downloading...", "done", "OMM: verifying installation"]
+    assert captured == [
+        "OMM: finding package",
+        "OMM: downloading installer",
+        "downloading...",
+        "done",
+        "OMM: verifying installation",
+    ]
 
 
 def test_install_ollama_linux_reports_failed_when_still_not_detected(monkeypatch):
@@ -273,7 +280,12 @@ def test_install_lmstudio_mac_linux_streams_output_and_reports_installed(monkeyp
     assert result == linker.EngineInstallResult(
         "lmstudio", "installed", "LM Studio installed successfully."
     )
-    assert captured == ["Downloading llmster...", "OMM: verifying installation"]
+    assert captured == [
+        "OMM: finding package",
+        "OMM: downloading installer",
+        "Downloading llmster...",
+        "OMM: verifying installation",
+    ]
 
 
 def test_install_lmstudio_linux_reports_failed_when_still_not_detected(monkeypatch):
@@ -466,7 +478,10 @@ def test_install_via_package_manager_windows_uses_winget(monkeypatch):
         "-e",
         "--id",
         "Jan.Jan",
+        "--source",
+        "winget",
         "--silent",
+        "--disable-interactivity",
         "--accept-source-agreements",
         "--accept-package-agreements",
     ]
@@ -746,6 +761,169 @@ def test_extract_textgenwebui_archive_handles_tar_gz(tmp_path):
     assert (result / "start.sh").read_text(encoding="utf-8") == "#!/bin/sh\n"
     if sys.platform != "win32":
         assert (result / "start.sh").stat().st_mode & 0o111 == 0o111
+
+
+@pytest.mark.parametrize("archive_kind", ["zip", "tar"])
+def test_extract_textgenwebui_archive_checks_expanded_size_before_writing(
+    tmp_path, monkeypatch, archive_kind
+):
+    payload = b"x" * (2 * 1024 * 1024)
+    if archive_kind == "zip":
+        archive_path = tmp_path / "release.zip"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("textgen-4.9/app/payload.bin", payload)
+    else:
+        archive_path = tmp_path / "release.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            member = tarfile.TarInfo("textgen-4.9/app/payload.bin")
+            member.size = len(payload)
+            tf.addfile(member, io.BytesIO(payload))
+
+    monkeypatch.setattr(
+        linker.shutil, "disk_usage", lambda path: SimpleNamespace(free=1)
+    )
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(linker.InsufficientArchiveSpaceError, match="Not enough free space"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("archive_kind", ["zip", "tar"])
+def test_extract_textgenwebui_archive_limits_member_count(
+    tmp_path, monkeypatch, archive_kind
+):
+    monkeypatch.setattr(linker, "_MAX_ARCHIVE_MEMBERS", 2)
+    if archive_kind == "zip":
+        archive_path = tmp_path / "too-many.zip"
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            for number in range(3):
+                zf.writestr(f"textgen-4.9/file-{number}.txt", "x")
+    else:
+        archive_path = tmp_path / "too-many.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for number in range(3):
+                member = tarfile.TarInfo(f"textgen-4.9/file-{number}.txt")
+                member.size = 1
+                tf.addfile(member, io.BytesIO(b"x"))
+
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(OSError, match="too many entries"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+def test_extract_textgenwebui_zip_rejects_duplicate_member_paths(tmp_path):
+    archive_path = tmp_path / "duplicate.zip"
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr("textgen-4.9/app/server.py", "first")
+            zf.writestr("textgen-4.9/app/server.py", "second")
+
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(OSError, match="duplicate archive member path"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+def test_extract_textgenwebui_tar_rejects_file_and_symlink_at_same_path(tmp_path):
+    archive_path = tmp_path / "duplicate.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as tf:
+        regular = tarfile.TarInfo("textgen-4.9/app/server.py")
+        regular.size = 1
+        tf.addfile(regular, io.BytesIO(b"x"))
+
+        symlink = tarfile.TarInfo("textgen-4.9/app/server.py")
+        symlink.type = tarfile.SYMTYPE
+        symlink.linkname = "other.py"
+        tf.addfile(symlink)
+
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(OSError, match="duplicate archive member path"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("first_path", "second_path"),
+    [
+        ("textgen-4.9/App/first.py", "textgen-4.9/app/second.py"),
+        (
+            "textgen-4.9/caf\N{LATIN SMALL LETTER E WITH ACUTE}/first.py",
+            "textgen-4.9/cafe\N{COMBINING ACUTE ACCENT}/second.py",
+        ),
+    ],
+)
+@pytest.mark.parametrize("archive_kind", ["zip", "tar"])
+def test_extract_textgenwebui_archive_rejects_cross_platform_path_aliases(
+    tmp_path, archive_kind, first_path, second_path
+):
+    if archive_kind == "zip":
+        archive_path = tmp_path / "aliases.zip"
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr(first_path, "first")
+            zf.writestr(second_path, "second")
+    else:
+        archive_path = tmp_path / "aliases.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for member_path, payload in ((first_path, b"first"), (second_path, b"second")):
+                member = tarfile.TarInfo(member_path)
+                member.size = len(payload)
+                tf.addfile(member, io.BytesIO(payload))
+
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(OSError, match="cross-platform alias"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("archive_kind", ["zip", "tar"])
+@pytest.mark.parametrize(
+    "member_path",
+    [
+        "textgen-4.9/" + "a" * 256,
+        "textgen-4.9/" + "/".join("a" for _ in range(128)),
+        "textgen-4.9/" + "/".join("a" * 240 for _ in range(17)),
+    ],
+)
+def test_extract_textgenwebui_archive_rejects_oversized_paths(
+    tmp_path, archive_kind, member_path
+):
+    if archive_kind == "zip":
+        archive_path = tmp_path / "oversized.zip"
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr(member_path, "x")
+    else:
+        archive_path = tmp_path / "oversized.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tf:
+            member = tarfile.TarInfo(member_path)
+            member.size = 1
+            tf.addfile(member, io.BytesIO(b"x"))
+
+    dest_dir = tmp_path / "dest"
+
+    with pytest.raises(OSError, match="unsafe archive member"):
+        linker._extract_textgenwebui_archive(archive_path, dest_dir)
+
+    assert list(dest_dir.iterdir()) == []
+
+
+def test_archive_payload_size_rejects_negative_tar_member_size():
+    member = SimpleNamespace(size=-1)
+
+    with pytest.raises(OSError, match="invalid archive member size"):
+        linker._archive_payload_size(
+            [(member, ("textgen-4.9", "payload.bin"), False, 0o644)]
+        )
 
 
 @pytest.mark.parametrize(
@@ -1312,3 +1490,79 @@ def test_stream_subprocess_decodes_utf8_regardless_of_locale(tmp_path):
 
     assert returncode == 0
     assert lines == ["찾음 Jan 버전 0.8.4"]
+
+
+def _winget_phases(lines):
+    captured = []
+    tracker = linker._InstallPhaseTracker("winget", captured.append)
+    for line in lines:
+        tracker.feed(line)
+    return captured
+
+
+def test_winget_phases_follow_output_shape_not_localized_words():
+    """Real `winget install` output on Korean Windows, as captured through a
+    pipe (winget prints no progress bar there). None of the English keywords
+    appear, so the phases must come from the URL line and the line after it.
+    Before, the status stayed on its first label for the whole install."""
+    captured = _winget_phases([
+        "\ucc3e\uc74c Jan [Jan.Jan] \ubc84\uc804 0.8.4",
+        "\uc774 \uc751\uc6a9 \ud504\ub85c\uadf8\ub7a8\uc758 \ub77c\uc774\uc120\uc2a4\ub294 \uadf8 \uc18c\uc720\uc790\uac00 \ubd80\uc5ec\ud588\uc2b5\ub2c8\ub2e4.",
+        "\ub2e4\uc6b4\ub85c\ub4dc \uc911 https://github.com/janhq/jan/releases/download/v0.8.4/Jan_0.8.4_x64-setup.exe",
+        "\uc124\uce58 \uad00\ub9ac\uc790 \ud574\uc2dc\ub97c \ud655\uc778\ud588\uc2b5\ub2c8\ub2e4.",
+        "\ud328\ud0a4\uc9c0 \uc124\uce58\ub97c \uc2dc\uc791\ud558\ub294 \uc911...",
+        "\uc124\uce58 \uc131\uacf5",
+    ])
+
+    markers = [line for line in captured if line.startswith("OMM: ")]
+    assert markers == ["OMM: finding package", "OMM: downloading installer", "OMM: running installer"]
+    assert captured.index("OMM: downloading installer") == 3
+    assert captured.index("OMM: running installer") == 5
+
+
+def test_winget_progress_bar_lines_do_not_end_the_download_phase():
+    captured = _winget_phases([
+        "Found Jan [Jan.Jan] Version 0.8.4",
+        "Downloading https://example.invalid/Jan-setup.exe",
+        "  \u2588\u2588\u2588\u2592\u2592\u2592  10.0 MB / 55.1 MB  18%",
+        "-",
+        "\\",
+        "  \u2588\u2588\u2588\u2588\u2588\u2588  55.1 MB / 55.1 MB  100%",
+        "Successfully verified installer hash",
+    ])
+
+    assert captured == [
+        "OMM: finding package",
+        "Found Jan [Jan.Jan] Version 0.8.4",
+        "OMM: downloading installer",
+        "Downloading https://example.invalid/Jan-setup.exe",
+        "  \u2588\u2588\u2588\u2592\u2592\u2592  10.0 MB / 55.1 MB  18%",
+        "OMM: progress 18%",
+        "-",
+        "\\",
+        "  \u2588\u2588\u2588\u2588\u2588\u2588  55.1 MB / 55.1 MB  100%",
+        "OMM: progress 100%",
+        "OMM: running installer",
+        "Successfully verified installer hash",
+    ]
+
+
+def test_brew_phases_never_move_backwards():
+    captured = []
+    tracker = linker._InstallPhaseTracker("brew", captured.append)
+    for line in [
+        "==> Downloading https://example.invalid/Ollama.zip",
+        "######################################## 100.0%",
+        "==> Installing Cask ollama-app",
+        "==> Moving App 'Ollama.app' to '/Applications/Ollama.app'",
+        "downloaded cache cleanup",
+    ]:
+        tracker.feed(line)
+
+    markers = [line for line in captured if line.startswith("OMM: ") and "progress" not in line]
+    assert markers == ["OMM: finding package", "OMM: downloading installer", "OMM: running installer"]
+    assert "OMM: progress 100%" in captured
+
+
+def test_progress_only_check_is_linear_on_long_digit_runs():
+    assert linker._is_progress_only("1" * 100_000 + "x") is False

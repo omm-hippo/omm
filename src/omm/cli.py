@@ -19,7 +19,7 @@ import sys
 import sysconfig
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -139,6 +139,8 @@ from omm import (
     benchmark_history,
     calibration,
     catalog,
+    coding_eval,
+    compare as compare_mod,
     config as config_mod,
     contribute_memory,
     contribute_state,
@@ -153,6 +155,7 @@ from omm import (
     predictor,
     recommend_status,
     quality as quality_mod,
+    quality_catalog,
     recommend_ui,
     registry,
     rules as rules_mod,
@@ -174,7 +177,7 @@ from omm import contribute as contribute_mod
 from omm import install_state
 from omm.cli_views import print_scan, table as _table
 from omm.cli_help import BriefUsageError, UsageError, engine_read_only_args, option_requested
-from omm.atomic import locked
+from omm.atomic import atomic_write_text, locked
 from omm.model_export import export_model_file
 from omm.completion import complete_engine_key, complete_install_name, complete_remove_filename
 from omm.config import MODEL_ARCHIVE_DIR, MODELS_DIR, OMM_HOME, load_config
@@ -235,6 +238,7 @@ from omm.hub import (
     validate_repo_id,
 )
 from omm.runtime_compatibility import CompatibilityResult, PROBE_VERSION, verify_and_record
+from omm.command_reference import DOCS_BASE_URL, docs_epilog
 
 if TYPE_CHECKING:
     import questionary
@@ -309,6 +313,8 @@ _JSON_CAPABLE = {
     "tune",
     "scan",
     "recommend",
+    "compare",
+    "evaluate",
     "doctor",
     "fit",
     "setting catalog-status",
@@ -316,6 +322,7 @@ _JSON_CAPABLE = {
     "engine doctor",
     "engine update",
     "engine uninstall",
+    "bug-report",
     "setting runtime-profile",
 }
 
@@ -328,11 +335,13 @@ _YES_CAPABLE = {
     "upgrade",
     "contribute",
     "recommend",
+    "evaluate",
     "benchmark",
     "verify",
     "run",
     "engine update",
     "engine uninstall",
+    "bug-report",
     "tune",
 }
 
@@ -411,6 +420,14 @@ def _require_json_support(command: str) -> None:
             "message": "This command does not support JSON output; no command action was performed.",
         }})
         raise typer.Exit(2)
+
+
+# The option names `global_flags` injects below. Kept next to the decorator
+# so `omm.command_reference` can mark them as shared rather than repeating
+# them on every command in docs/commands.json.
+GLOBAL_FLAG_OPTS: frozenset[str] = frozenset(
+    {"--json", "--yes", "-y", "--quiet", "-q", "--no-color"}
+)
 
 
 def global_flags(func):
@@ -545,6 +562,7 @@ _ROOT_HELP_FOOTER_LINES: list[str] = [
     "  omm help COMMAND      Show help for one command",
     "  omm help --flags      Also show the flags of the commands above",
     "  omm help --all        List every command",
+    f"  Command reference: {DOCS_BASE_URL}",
     "  https://github.com/omm-hippo/omm",
 ]
 
@@ -580,7 +598,37 @@ def _help_option_requested(args: list[str]) -> bool:
     return False
 
 
-class _RootHelpGroup(typer.core.TyperGroup):
+def _command_path_of(ctx: click.Context) -> list[str]:
+    """The command path of `ctx` without the program name, e.g. ["setting"].
+
+    Walks parents rather than splitting `ctx.command_path`, which starts
+    with whatever name the binary was invoked as (`omm.exe` on Windows).
+    """
+    names: list[str] = []
+    node: click.Context | None = ctx
+    while node is not None and node.parent is not None:
+        if node.info_name:
+            names.append(node.info_name)
+        node = node.parent
+    return list(reversed(names))
+
+
+class _DocsEpilogGroup(typer.core.TyperGroup):
+    """Adds the `More about omm ...: https://omm.run/commands/...` footer to
+    every subcommand's `--help`, at the single place Click resolves a name
+    to a command object - so a new command gets its documentation link
+    without touching its decorator."""
+
+    def get_command(self, ctx: click.Context, cmd_name: str):
+        command = super().get_command(ctx, cmd_name)
+        if command is not None and not command.epilog:
+            command.epilog = docs_epilog(
+                _command_path_of(ctx) + [command.name or cmd_name]
+            )
+        return command
+
+
+class _RootHelpGroup(_DocsEpilogGroup):
     """Homebrew-style curated `omm --help`/`omm help` - a short list of
     common commands instead of the full alphabetical listing of every
     registered subcommand. Full list stays reachable via `omm help --all`.
@@ -626,6 +674,7 @@ setting_app = typer.Typer(
     help="View or change omm settings (telemetry, upload policy, version, calibration, catalog trust).",
     invoke_without_command=True,
     rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
 )
 app.add_typer(setting_app)
 upload_app = typer.Typer(
@@ -633,18 +682,21 @@ upload_app = typer.Typer(
     help="Choose what anonymous data omm may send: benchmark results, usage stats, crash reports. Each is off or ask by default. See PRIVACY.md.",
     invoke_without_command=True,
     rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
 )
 setting_app.add_typer(upload_app)
 watch_app = typer.Typer(
     name="auto-import",
     help="Automatically adopt models that Ollama, LM Studio, and similar apps download natively into the omm hub in the background. Off by default. See PRIVACY.md.",
     rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
 )
 setting_app.add_typer(watch_app)
 engine_app = typer.Typer(
     name="engine",
     help="Inspect, install, update, and remove local AI runner programs.",
     rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
 )
 app.add_typer(engine_app)
 if platform.system() == "Windows":
@@ -1281,9 +1333,7 @@ def _hub_storage_bytes(reg: dict[str, Any]) -> int:
 
 @app.command()
 @global_flags
-def scan(
-    details: bool = typer.Option(False, "--details", help="Also show OS, CPU, and GPU identity."),
-) -> None:
+def scan() -> None:
     """Summarize memory, model storage, and installed local AI runners."""
     opts = _global_opts()
     info = scan_hardware()
@@ -1336,11 +1386,9 @@ def scan(
         console, info=info, budget=calculate_memory_budget(info),
         hub_storage_gb=hub_storage_gb, storage_saved_gb=storage_saved_gb,
         engine_labels=[spec.label for spec in linker.ENGINES if installed[spec.key]],
-        registry=reg, external=external, shorten_path=_shorten_home, details=details,
+        registry=reg, external=external, shorten_path=_shorten_home,
+        runners_note=None if opts.quiet else _missing_engines_note(installed),
     )
-    note = _missing_engines_note(installed)
-    if note and not opts.quiet:
-        console.print(note, style="muted")
 
     if opts.quiet:
         return
@@ -3196,7 +3244,7 @@ _TRANSIENT_FAILURE_HINTS: dict[str, str] = {
 @app.command()
 @global_flags
 def doctor() -> None:
-    """Diagnose the OMM install and Ollama links without changing state.
+    """Diagnose the OMM install and Ollama links, then show safe next steps.
 
     WARN findings keep exit code 0; definite FAIL findings exit 1.
     """
@@ -3229,8 +3277,95 @@ def doctor() -> None:
             f"[{overall_style}]Overall: {report.status}[/{overall_style}] "
             f"({counts['PASS']} pass, {counts['WARN']} warn, {counts['FAIL']} fail)"
         )
+        if report.remediations:
+            console.print()
+            console.print("[heading]How to fix[/heading]")
+            fixes = Table.grid(padding=(0, 1))
+            fixes.add_column(style="label", no_wrap=True)
+            fixes.add_column()
+            for index, (name, remediation) in enumerate(report.remediations, start=1):
+                fixes.add_row(f"{index}.", f"[label]{escape(name)}[/label]")
+                fixes.add_row("", escape(remediation.message))
+                command = remediation.display_command()
+                if command is not None:
+                    fixes.add_row("", f"[accent]{escape(command)}[/accent]")
+            console.print(fixes)
+            console.print(
+                "[muted]No changes were made. Run omm doctor again after applying a step.[/muted]"
+            )
     if report.status == "FAIL":
         raise typer.Exit(1)
+
+
+# Named "bug-report", not bare "report": git (`git bugreport`), Flutter
+# (`flutter bug-report`), and kubectl (`kubectl cluster-info dump`) all use a
+# compound name for a local-only diagnostic file, which reads as local by
+# convention even though "report" alone (this command's previous name) read
+# as "sends somewhere" in review.
+@app.command(name="bug-report")
+@global_flags
+def support_report_cmd(
+    include: list[str] = typer.Option(
+        None,
+        "--include",
+        help="Add one optional group: os, policies, or checks. Repeat as needed.",
+    ),
+    save: Path | None = typer.Option(
+        None,
+        "--save",
+        help="Save the previewed JSON to this path. Nothing is uploaded.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Allow replacing the explicitly named output file.",
+    ),
+) -> None:
+    """Preview and optionally save a privacy-safe local bug-report bundle. Never uploads."""
+    from omm import support_report
+
+    diagnostic = doctor_mod.collect_report(
+        module_path=Path(__file__).resolve(),
+        command_path=doctor_mod.running_command_path(),
+    )
+    try:
+        payload = support_report.build(diagnostic, include=include or [])
+    except ValueError as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(2) from error
+    preview = support_report.preview(payload)
+    if _global_opts().json:
+        _print_json(data=payload)
+    else:
+        console.print("Complete local bug-report preview (nothing has been sent or saved):")
+        console.print(preview, markup=False, highlight=False)
+    if save is None:
+        return
+    output = save.expanduser().absolute()
+    if output.is_symlink():
+        err_console.print(f"Refusing symlinked report destination: {output}", markup=False)
+        raise typer.Exit(1)
+    if output.exists() and not force:
+        err_console.print(
+            f"Report destination already exists: {output}. Use --force to replace it.",
+            markup=False,
+        )
+        raise typer.Exit(1)
+    if not _global_opts().yes:
+        if _global_opts().json or not _stdin_is_tty():
+            err_console.print("Review the complete preview, then pass --yes to save it.")
+            raise typer.Exit(1)
+        if not _ask_confirm(f"Save exactly this report to {output}?"):
+            err_console.print("Cancelled.")
+            raise typer.Exit(0)
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(output, preview)
+    except OSError as error:
+        err_console.print(f"Could not save the report: {error}", markup=False)
+        raise typer.Exit(1) from error
+    err_console.print(f"Saved locally: {output}", markup=False)
+    err_console.print("No upload, GitHub issue, browser action, or message was created.")
 
 
 def _print_reinstall_hint() -> None:
@@ -3955,6 +4090,156 @@ def recommend(
     )
 
 
+@app.command(name="compare")
+@global_flags
+def compare_cmd(
+    models: list[str] = typer.Argument(
+        ...,
+        help="Two to five exact model names, repositories, filenames, or install references from the signed recommendation catalog.",
+    ),
+    profile: str = typer.Option(
+        predictor.DEFAULT_RECOMMEND_PROFILE,
+        "--profile",
+        help="Memory-sharing profile: dedicated, balanced, or minimal.",
+    ),
+    purpose: str | None = typer.Option(
+        None,
+        "--for",
+        help="Optional measured-quality task: General, Coding, Reasoning, Writing, Translation, or Documents.",
+    ),
+) -> None:
+    """Compare selected catalog packages without installing or running them."""
+
+    profile = profile.casefold()
+    info = scan_hardware()
+    config = load_config()
+    artifact, changed = _load_recommendation_with_change_note(config)
+    if not artifact or not artifact.get("candidates"):
+        err_console.print("[error]No signed recommendation catalog is available.[/error]")
+        raise typer.Exit(1)
+    from omm import recommend_facts
+
+    artifact = recommend_facts.apply(artifact)
+    try:
+        selected = compare_mod.resolve_candidates(artifact["candidates"], models)
+        installations = recommend_status.detect_installation_statuses(selected)
+        result = compare_mod.compare_candidates(
+            artifact,
+            models,
+            info,
+            profile=profile,
+            purpose=purpose,
+            installations=installations,
+            quality_index=quality_catalog.load_cached(config.get("catalog_public_key")),
+        )
+    except compare_mod.CompareInputError as error:
+        err_console.print(f"[error]{escape(str(error))}[/error]")
+        raise typer.Exit(2) from error
+
+    if _global_opts().json:
+        _print_json(
+            data={
+                "profile": profile,
+                "purpose": result.purpose,
+                "quality_complete": result.quality_complete,
+                "best_fit_ref": result.best_fit_ref,
+                "fastest_ref": result.fastest_ref,
+                "best_measured_quality_ref": result.best_measured_quality_ref,
+                "best_match_ref": result.best_match_ref,
+                "models": [
+                    {
+                        "ref": row.ref,
+                        "name": row.display_name,
+                        "model_type": row.model_type,
+                        "declared_purpose": row.declared_purpose,
+                        "declared_purpose_source": row.declared_purpose_source,
+                        "predicted_tokens_per_second": row.predicted_tokens_per_second,
+                        "memory_required_gb": row.memory_required_gb,
+                        "memory_estimate_basis": row.memory_estimate_basis,
+                        "profile_budget_gb": row.profile_budget_gb,
+                        "within_profile": row.within_profile,
+                        "meets_speed_floor": row.meets_speed_floor,
+                        "eligible": row.eligible,
+                        "installed": row.installed,
+                        "managed_by_omm": row.managed_by_omm,
+                        "installed_engines": list(row.installed_engines),
+                        "quantization": row.quantization,
+                        "warning": row.warning,
+                        "measured_quality": (
+                            {
+                                "task": row.measured_quality.task,
+                                "pack_id": row.measured_quality.pack_id,
+                                "pack_version": row.measured_quality.pack_version,
+                                "score": row.measured_quality.score,
+                                "summary": row.measured_quality.summary,
+                                "source": row.measured_quality.source,
+                                "model_digest": row.measured_quality.model_digest,
+                            }
+                            if row.measured_quality is not None
+                            else None
+                        ),
+                    }
+                    for row in result.rows
+                ],
+            }
+        )
+        return
+
+    if changed and not _global_opts().quiet:
+        console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
+    table = Table(title=f"Model comparison · {profile}", box=None)
+    table.add_column("MODEL", style="bold")
+    table.add_column("TYPE")
+    table.add_column("BEST FOR")
+    if result.purpose is not None:
+        table.add_column("MEASURED")
+    table.add_column("SPEED", justify="right")
+    table.add_column("MEMORY", justify="right")
+    table.add_column("STATUS")
+    for row in result.rows:
+        status = []
+        if row.ref == result.best_fit_ref:
+            status.append("BEST FIT")
+        if row.ref == result.fastest_ref:
+            status.append("FASTEST")
+        if row.installed:
+            status.append("INSTALLED")
+        if row.warning:
+            status.append("CAUTION")
+        if row.within_profile is False:
+            status.append("OVER BUDGET")
+        if not row.meets_speed_floor:
+            status.append("TOO SLOW")
+        values = [
+            row.display_name,
+            row.model_type,
+            row.declared_purpose,
+        ]
+        if result.purpose is not None:
+            values.append(
+                f"{row.measured_quality.score * 100:.0f}% · {row.measured_quality.pack_id} v{row.measured_quality.pack_version}"
+                if row.measured_quality is not None
+                else "Not measured"
+            )
+        values.extend([
+            f"~{row.predicted_tokens_per_second:.1f} tok/s",
+            f"~{row.memory_required_gb:.1f} GB" if row.memory_required_gb is not None else "Unknown",
+            " · ".join(status) or "COMPATIBLE",
+        ])
+        table.add_row(*values)
+    console.print(table)
+    if result.purpose is not None:
+        if result.quality_complete and result.best_measured_quality_ref:
+            console.print(
+                f"[success]BEST MATCH[/success]  {escape(result.best_match_ref or '')}"
+            )
+        else:
+            console.print(
+                f"[muted]Measured {result.purpose} quality is incomplete; BEST MATCH remains hardware-only.[/muted]"
+            )
+    console.print("[muted]Compare is read-only: it did not download, install, or run a model.[/muted]")
+
+
 def _present_recommendations(
     info, ranked, refs, installations, profile, *, json_output: bool, auto_yes: bool,
     eligible_count: int | None = None,
@@ -4472,6 +4757,9 @@ class InstallOutcome:
     compatibility_status: str | None = None
     runtime_load_declined: bool = False
     benchmark_engine: str | None = None
+    upload_status: str | None = None
+    upload_queued: bool = False
+    source_verification: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -4584,7 +4872,8 @@ def _background_cpu_load_is_high() -> bool:
 
 
 def _maybe_auto_calibrate(
-    filename: str, repo_id: str | None, dest: Path, tokens_per_sec: float
+    filename: str, repo_id: str | None, dest: Path, tokens_per_sec: float,
+    *, engine: str = "ollama",
 ) -> None:
     """Best-effort local calibration right after a successful benchmark.
     Silent no-op if there's no cached model to compare against - this must
@@ -4603,7 +4892,7 @@ def _maybe_auto_calibrate(
             artifact["trees"],
             hardware,
             candidate,
-            engine="ollama",
+            engine=engine,
             apply_calibration=False,
         )
     except (ValueError, KeyError, TypeError, IndexError):
@@ -4615,7 +4904,7 @@ def _maybe_auto_calibrate(
             hardware,
             measured_tokens_per_sec=tokens_per_sec,
             predicted_tokens_per_sec=predicted,
-            engine="ollama",
+            engine=engine,
         )
     except OSError:
         return
@@ -5289,6 +5578,92 @@ def _verify_lmstudio_after_install(
     return result.status, False, False
 
 
+def _resolve_install_source_metadata(resolved, dest: Path) -> str | None:
+    """Populate provider digest/size once. Return a verified cache label, if used."""
+    if getattr(resolved, "source_metadata_checked", False):
+        return None
+    provider = validate_provider(resolved.provider or "huggingface")
+    repo_id = resolved.repo_id
+    filename = validate_model_filename(resolved.filename)
+
+    entry = registry.load_registry().get(filename)
+    cache_matches = (
+        dest.is_file()
+        and isinstance(entry, dict)
+        and entry.get("source") == resolved.url
+        and (entry.get("repo_id") in {None, repo_id})
+        and ((entry.get("provider") or provider) == provider)
+        and isinstance(entry.get("sha256"), str)
+        and sha256_file(dest) == entry["sha256"]
+    )
+    if cache_matches and not resolved.provider:
+        resolved.expected_sha256 = entry["sha256"]
+        resolved.expected_size_bytes = dest.stat().st_size
+        resolved.source_metadata_checked = True
+        return "verified OMM cache"
+
+    try:
+        if repo_id:
+            resolved.expected_size_bytes = remote_file_size(provider, repo_id, filename)
+        if resolved.provider and repo_id:
+            resolved.expected_sha256 = resolved.expected_sha256 or remote_file_sha256(
+                provider, repo_id, filename
+            )
+    except ModelResolutionError as error:
+        raise DownloadError(str(error), fix=error.fix) from error
+    resolved.source_metadata_checked = True
+    return None
+
+
+def _install_plan_for(resolved) -> dict[str, object]:
+    from omm import install_card
+
+    try:
+        dest = _managed_model_path(validate_model_filename(resolved.filename))
+        cache_source = _resolve_install_source_metadata(resolved, dest)
+    except ModelResolutionError as error:
+        raise DownloadError(str(error), fix=error.fix) from error
+    return install_card.plan(
+        provider=resolved.provider,
+        repository=resolved.repo_id,
+        filename=resolved.filename,
+        size_bytes=resolved.expected_size_bytes,
+        destination=dest,
+        url=resolved.url,
+        expected_sha256=resolved.expected_sha256,
+        cache_source=cache_source,
+    )
+
+
+def _print_install_plan(plan: dict[str, object]) -> None:
+    table = _table(title="Before installation: source and checks", show_header=False)
+    table.add_column("Field", style="label")
+    table.add_column("Value")
+    table.add_row("Provider", str(plan["provider"]))
+    table.add_row("Repository", str(plan["repository"]))
+    table.add_row("File", str(plan["file"]))
+    table.add_row("Size", str(plan["size"]))
+    table.add_row("Format", str(plan["format"]))
+    table.add_row("Expected location", str(plan["destination"]))
+    table.add_row("Source", str(plan["source"]))
+    checks = plan["planned_checks"]
+    table.add_row("Planned HTTPS check", "required" if checks["https"] else "not satisfied")
+    table.add_row("Planned size check", str(checks["size"]))
+    table.add_row("Planned SHA-256 check", str(checks["sha256"]))
+    console.print(table)
+
+
+def _print_install_verification(result: dict[str, object]) -> None:
+    table = _table(title="After installation: checks actually performed", show_header=False)
+    table.add_column("Check", style="label")
+    table.add_column("Result")
+    table.add_row("HTTPS", str(result["https"]))
+    table.add_row("Size", f"{result['size']} ({int(result['size_bytes']):,} bytes)")
+    table.add_row("SHA-256", str(result["sha256"]))
+    table.add_row("Meaning", str(result["meaning"]))
+    console.print(table)
+
+
 def _prepare_install_artifact(
     *,
     url: str,
@@ -5302,6 +5677,8 @@ def _prepare_install_artifact(
     stop_event: threading.Event | None,
     only_engine: str | None,
     opts: GlobalOptions,
+    expected_size_bytes: int | None = None,
+    source_metadata_checked: bool = False,
 ) -> _PreparedInstallArtifact | None:
     """Reuse or download one central artifact, then verify it for linking.
 
@@ -5352,7 +5729,9 @@ def _prepare_install_artifact(
                 )
         err_console.print(f"[warning]{filename} already downloaded, skipping fetch.[/warning]")
     else:
-        size_bytes = remote_file_size(provider, repo_id, filename) if repo_id else None
+        size_bytes = expected_size_bytes
+        if size_bytes is None and repo_id and not source_metadata_checked:
+            size_bytes = remote_file_size(provider, repo_id, filename)
         if size_bytes:
             try:
                 _ensure_install_disk_capacity(
@@ -5472,6 +5851,14 @@ def _prepare_install_artifact(
         raise DownloadError(
             f"Downloaded SHA-256 for {filename} does not match the provider metadata."
         )
+    actual_size = dest.stat().st_size
+    if expected_size_bytes is not None and actual_size != expected_size_bytes:
+        if downloaded_now:
+            dest.unlink(missing_ok=True)
+        raise DownloadError(
+            f"{filename} is {actual_size:,} bytes but the provider reported "
+            f"{expected_size_bytes:,}; refusing to install it."
+        )
     return _PreparedInstallArtifact(sha256=sha256, downloaded_now=downloaded_now)
 
 
@@ -5519,6 +5906,7 @@ def _install_impl(
     a fresh one."""
     opts = _global_opts()
     operation = install_state.current()
+    telemetry.reset_send_status()
     if operation is not None and operation.resumed and not opts.quiet:
         console.print("Resuming interrupted install: rechecking the file and engine links.")
     url, filename, repo_id = resolved.url, resolved.filename, resolved.repo_id
@@ -5572,11 +5960,9 @@ def _install_impl(
                     f"(range {speed_low:.1f}–{speed_high:.1f}).[/muted]"
                 )
 
-    expected_sha256 = resolved.expected_sha256 or (
-        remote_file_sha256(provider, repo_id, filename)
-        if resolved.provider and repo_id
-        else None
-    )
+    _resolve_install_source_metadata(resolved, dest)
+    expected_sha256 = getattr(resolved, "expected_sha256", None)
+    expected_size_bytes = getattr(resolved, "expected_size_bytes", None)
     if resolved.provider and repo_id and expected_sha256 is None:
         raise DownloadError(
             f"{provider} did not provide a SHA-256 digest for {filename}; "
@@ -5589,6 +5975,8 @@ def _install_impl(
         provider=provider,
         dest=dest,
         expected_sha256=expected_sha256,
+        expected_size_bytes=expected_size_bytes,
+        source_metadata_checked=True,
         force=force,
         skip_unfit=skip_unfit,
         stop_event=stop_event,
@@ -5599,6 +5987,16 @@ def _install_impl(
         return InstallOutcome(filename, repo_id, linked={}, skipped_low_disk=True)
     sha256 = prepared.sha256
     downloaded_now = prepared.downloaded_now
+    from omm import install_card
+
+    source_verification = install_card.result(
+        url=url,
+        actual_size=dest.stat().st_size,
+        expected_size=expected_size_bytes,
+        actual_sha256=sha256,
+        expected_sha256=expected_sha256,
+        reused_verified_cache=not downloaded_now,
+    )
     install_state.checkpoint("artifact_verified", sha256=sha256, size_bytes=dest.stat().st_size)
     if downloaded_state is not None:
         downloaded_state["downloaded_now"] = downloaded_now
@@ -6138,7 +6536,7 @@ def _install_impl(
                 and contribute_memory.speed_mad_ratio(speed_samples) <= 0.15
             )
             if stable_for_calibration and not host_cpu_busy:
-                _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec)
+                _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec, engine=benchmark_engine)
             elif not stable_for_calibration:
                 console.print(
                     "[muted]Local calibration not updated because this measurement "
@@ -6210,6 +6608,7 @@ def _install_impl(
     elif not runtime_load_declined and selected_runtime is None and not linked["ollama"]:
         telemetry.log_attempt("not_attempted_no_ollama_link", filename)
 
+    send_status = telemetry.last_send_status()
     return InstallOutcome(
         filename, repo_id, linked, ollama_tag, tokens_per_sec, telemetry_sent, sha256=sha256,
         failure_reason=(
@@ -6221,6 +6620,9 @@ def _install_impl(
         compatibility_status=compatibility_status,
         runtime_load_declined=runtime_load_declined,
         benchmark_engine=benchmark_engine if (run_ollama_benchmark or run_lmstudio_benchmark) else None,
+        upload_status=send_status.outcome if send_status else None,
+        upload_queued=bool(send_status and send_status.queued),
+        source_verification=source_verification,
     )
 
 
@@ -6309,6 +6711,17 @@ def install(
             _print_install_suggestions(model_name)
         raise typer.Exit(1) from e
 
+    try:
+        source_plan = _install_plan_for(resolved)
+    except DownloadError as error:
+        errors.print_cli_error(err_console, str(error), fix=error.fix)
+        raise typer.Exit(1) from error
+    show_source_card = (
+        not _global_opts().quiet and _stdin_is_tty() and _stdout_is_tty()
+    )
+    if show_source_card:
+        _print_install_plan(source_plan)
+
     listener = _EscListener()
     listener.start()
     # Populated by `_install_impl` as soon as it knows whether this call
@@ -6373,6 +6786,8 @@ def install(
         return
 
     console.print(f"[success]Ω Installed {outcome.filename}[/success]")
+    if outcome.source_verification and show_source_card:
+        _print_install_verification(outcome.source_verification)
     linked_labels = [
         spec.label for spec in linker.ENGINES if outcome.linked.get(spec.key)
     ]
@@ -6485,6 +6900,22 @@ class _PendingOllamaUnlinks:
 
 
 def _remove_one(
+    filename: str,
+    entry: dict,
+    *,
+    ollama_tag: str | None = None,
+    pending_ollama_unlinks: "_PendingOllamaUnlinks | None" = None,
+) -> bool:
+    try:
+        with install_state.cleanup_guard(filename):
+            return _remove_one_impl(filename, entry, ollama_tag=ollama_tag,
+                                    pending_ollama_unlinks=pending_ollama_unlinks)
+    except FileLockTimeout:
+        err_console.print(f"[warning]{filename} is in use by another model operation; kept it unchanged.[/warning]")
+        return False
+
+
+def _remove_one_impl(
     filename: str,
     entry: dict,
     *,
@@ -9926,6 +10357,110 @@ def benchmark_cmd(
         stop_started_daemon()
 
 
+@app.command(name="evaluate")
+@global_flags
+def evaluate_cmd(
+    model: str = typer.Argument(..., help="Already-installed Ollama model tag to evaluate."),
+    pack: Path | None = typer.Option(None, "--pack", help="Versioned Python coding pack JSON."),
+    output: Path | None = typer.Option(None, "--output", help="Write structured evidence to this JSON path."),
+) -> None:
+    """Evaluate one installed model with sandboxed Python coding tasks.
+
+    Generated code runs only in Docker or Podman and is never stored or
+    uploaded. This command does not install or download models.
+    """
+
+    try:
+        coding_pack = coding_eval.load_pack(pack)
+        runtime = coding_eval.find_runtime()
+        coding_eval.ensure_runtime_available(runtime)
+        coding_eval.ensure_image_available(runtime, coding_pack.image)
+    except coding_eval.CodingEvaluationError as error:
+        err_console.print(f"[error]{escape(str(error))}[/error]")
+        raise typer.Exit(1) from error
+    if not benchmark.ollama_daemon_reachable():
+        err_console.print(
+            "[error]Ollama must already be running for `omm evaluate`; no model or engine was started.[/error]"
+        )
+        raise typer.Exit(1)
+    try:
+        metadata = quality_mod._model_metadata(model)
+    except quality_mod.QualityEvaluationError as error:
+        err_console.print(f"[error]{escape(str(error))}[/error]")
+        raise typer.Exit(1) from error
+    was_loaded = quality_mod._model_is_loaded(model)
+    supports_thinking = "thinking" in (metadata.get("capabilities") or [])
+    registry_entry = None
+    entries = [
+        (filename, value)
+        for filename, value in registry.load_registry().items()
+        if isinstance(filename, str) and isinstance(value, dict)
+    ]
+    runtime_names = linker.resolve_ollama_runtime_names_batch(entries)
+    for filename, entry in entries:
+        if memory_guard_mod._same_ollama_id(runtime_names.get(filename), model):
+            registry_entry = {**entry, "filename": filename}
+            break
+
+    def generate(prompt: str) -> str:
+        response = quality_mod._generate(
+            model,
+            prompt,
+            coding_pack.generation,
+            supports_thinking=supports_thinking,
+        )
+        return response["response"]
+
+    try:
+        report = coding_eval.evaluate_pack(
+            model,
+            coding_pack,
+            generate,
+            runtime=runtime,
+            model_provider=(registry_entry or {}).get("provider"),
+            model_repo_id=(registry_entry or {}).get("repo_id"),
+            model_filename=(registry_entry or {}).get("filename"),
+            model_digest=quality_mod._normalized_digest(metadata.get("digest")),
+            quantization=metadata.get("quantization_level"),
+            engine="ollama",
+            engine_version=quality_mod.ollama_version(),
+        )
+    except quality_mod.QualityEvaluationError as error:
+        err_console.print(f"[error]{escape(str(error))}[/error]")
+        raise typer.Exit(1) from error
+    finally:
+        if was_loaded is False:
+            quality_mod.ensure_model_unloaded(model)
+    payload = report.as_dict()
+    if output is not None:
+        try:
+            atomic_write_text(output, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        except OSError as error:
+            err_console.print(f"[error]Could not write evaluation evidence: {escape(str(error))}[/error]")
+            raise typer.Exit(1) from error
+    if _global_opts().json:
+        _print_json(data=payload)
+        return
+    summary = payload["summary"]
+    table = Table(title=f"Python coding evaluation · {model}", box=None)
+    table.add_column("TASK")
+    table.add_column("SOLVED", justify="right")
+    table.add_column("TESTS", justify="right")
+    for kind, values in summary["by_kind"].items():
+        table.add_row(
+            kind.replace("_", " ").title(),
+            f"{values['solved']}/{values['total']}",
+            f"{values['tests_passed']}/{values['tests_total']}",
+        )
+    console.print(table)
+    console.print(
+        f"[muted]Pack {coding_pack.pack_id} v{coding_pack.version} · "
+        "generated source was sandboxed, not stored, and not uploaded.[/muted]"
+    )
+    if output is not None:
+        console.print(f"Saved structured evidence to {escape(str(output))}.")
+
+
 def _telemetry_send_failure_text() -> str:
     status = telemetry.last_send_status()
     if status is None:
@@ -10247,10 +10782,13 @@ def _report_telemetry(
     sent = telemetry.send_event(event, force=True)
     if not sent:
         reason = _telemetry_send_failure_text()
-        if load_config().get("telemetry_send_policy") == "always":
+        status = telemetry.last_send_status()
+        if status is not None and status.queued:
             diagnostic_console.print(
                 f"[muted]Telemetry not sent: {reason}; queued for a later retry.[/muted]"
             )
+        elif load_config().get("telemetry_send_policy") == "always":
+            diagnostic_console.print(f"[warning]Telemetry not sent: {reason}; a retry copy could not be saved.[/warning]")
         else:
             diagnostic = telemetry.last_failed_path()
             detail = (
@@ -10395,10 +10933,13 @@ def _report_failure_telemetry(model: dict, environment: dict) -> bool:
     sent = telemetry.send_event(event, force=True)
     if not sent:
         failure = _telemetry_send_failure_text()
-        if load_config().get("telemetry_send_policy") == "always":
+        status = telemetry.last_send_status()
+        if status is not None and status.queued:
             diagnostic_console.print(
                 f"[muted]Telemetry not sent for {tag}: {failure}; queued for a later retry.[/muted]"
             )
+        elif load_config().get("telemetry_send_policy") == "always":
+            diagnostic_console.print(f"[warning]Telemetry not sent for {tag}: {failure}; a retry copy could not be saved.[/warning]")
         else:
             diagnostic = telemetry.last_failed_path()
             detail = (
@@ -10522,6 +11063,16 @@ class _ContributionStats:
     given_up_on: int = 0
     machine_failures: int = 0
     exhausted: bool = False
+    preserved_models: tuple[str, ...] = ()
+    removed_models: tuple[str, ...] = ()
+    cleanup_failed_models: tuple[str, ...] = ()
+    attempted_models: int = 0
+    measured_attempts: int = 0
+    downloaded_bytes: int = 0
+    queued_uploads: int = 0
+    skipped_download_limit: int = 0
+    stop_reason: str = "completed"
+    failure_reasons: dict[str, int] = field(default_factory=dict)
 
 
 _MAX_CONSECUTIVE_DAEMON_FAILURES = 3
@@ -10946,9 +11497,60 @@ def _run_contribution_loop(
     daemon_ref: dict | None = None,
     fetch_siblings=None,
     engine: str = "ollama",
+    limits=None,
 ) -> _ContributionStats:
-    opts = _global_opts()
+    from omm.contribute_session import ContributionSession
+
+    from omm.downloader import download_budget_scope
+
+    session = ContributionSession(_cleanup_contribution_model, limits=limits, stop_event=stop_event)
     stats = _ContributionStats(benchmarked=[])
+    try:
+        with download_budget_scope(session.download_budget):
+            return _run_contribution_loop_impl(
+                queue, stop_event, refetch, quality_pack, daemon_ref,
+                fetch_siblings, engine, session, stats,
+            )
+    finally:
+        try:
+            session.close()
+        finally:
+            stats.preserved_models = tuple(sorted(session.preserved))
+            stats.removed_models = tuple(sorted(session.removed))
+            stats.cleanup_failed_models = tuple(sorted(session.cleanup_failed))
+            stats.attempted_models = len(session.attempted)
+            stats.downloaded_bytes = session.download_budget.used
+            stats.stop_reason = session.stop_reason or (
+                "user_stop" if stop_event.is_set() else "download_limit" if stats.skipped_download_limit else
+                "no_new_models" if session.preserved else "completed"
+            )
+
+
+def _cleanup_contribution_model(filename: str) -> bool | None:
+    """Called only while this session holds the lease for a new model."""
+    name, entry = _lookup_entry(filename, registry.load_registry())
+    if entry is not None:
+        return _remove_one(name, entry)
+    path = _managed_model_path(filename)
+    if not path.exists() and not list(path.parent.glob(path.name + ".part*")):
+        return None
+    _cleanup_incomplete_install(filename)
+    return not path.exists() and not list(path.parent.glob(path.name + ".part*"))
+
+
+def _contribute_native_model_exists(filename: str, repo_id: str, engine: str) -> bool:
+    """A native model can predate OMM's hub and must not become temporary."""
+    reference = _compatibility_model_ref(filename, {"repo_id": repo_id}, engine)
+    return find_runtime_model(_compatibility_adapter(engine).list_models(), reference) is not None
+
+
+def _run_contribution_loop_impl(
+    queue, stop_event, refetch, quality_pack, daemon_ref, fetch_siblings,
+    engine, session, stats,
+) -> _ContributionStats:
+    from omm.downloader import DownloadBudgetSkipped
+
+    opts = _global_opts()
     consecutive_daemon_failures = 0
     benchmark_failure_counts: dict[str, int] = {}
     deferred: dict[str, _DeferredContribution] = {}
@@ -10956,6 +11558,9 @@ def _run_contribution_loop(
     gpu_state: dict = {"force_cpu": False}
     engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
     while not stop_event.is_set():
+        session.release()
+        if session.check_limits():
+            break
         if not _engine_daemon_reachable(engine):
             err_console.print(
                 f"[warning]{engine_label} daemon isn't reachable - it likely crashed mid-session. "
@@ -10970,6 +11575,7 @@ def _run_contribution_loop(
                         f"{consecutive_daemon_failures} attempts - stopping "
                         "omm contribute instead of looping unattended.[/error]"
                     )
+                    session.stop("engine_unavailable")
                     break
                 time.sleep(_DAEMON_RESTART_BACKOFF_SECONDS)
                 continue
@@ -11018,7 +11624,9 @@ def _run_contribution_loop(
                     )
                 else:
                     console.print("[muted]No more candidates available for this hardware.[/muted]")
-            stats.exhausted = not deferred
+            stats.exhausted = not deferred and not session.preserved
+            if deferred:
+                session.stop_reason = "memory_unavailable"
             break
 
         display_name = candidate.get("name", candidate["filename"])
@@ -11093,6 +11701,27 @@ def _run_contribution_loop(
             provider = validate_provider(candidate.get("provider") or "huggingface")
             repo_id = validate_repo_id(candidate["repo_id"])
             filename = validate_model_filename(candidate["filename"])
+            try:
+                claimed = session.claim(filename, _managed_model_path(filename))
+            except FileLockTimeout:
+                session.preserved.add(filename)
+                queue.mark_seen(ref_str)
+                err_console.print(f"[warning]Keeping {filename}: another model operation is using it.[/warning]")
+                continue
+            if not claimed:
+                queue.mark_seen(ref_str)
+                if not opts.quiet:
+                    console.print(f"[muted]Keeping {filename}: it was already present before this contribution.[/muted]")
+                continue
+            if _contribute_native_model_exists(filename, repo_id, engine):
+                session.preserved.add(filename)
+                session.release()
+                queue.mark_seen(ref_str)
+                if not opts.quiet:
+                    console.print(f"[muted]Keeping {filename}: it is already installed in {engine_label}.[/muted]")
+                continue
+            if not session.begin_model(ref_str):
+                break
             resolved = ResolvedModel(
                 url=download_url(provider, repo_id, filename),
                 filename=filename,
@@ -11117,7 +11746,7 @@ def _run_contribution_loop(
                 downloaded_state=download_state,
             )
         except InstallInterrupted as e:
-            _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
+            session.clean()
             break
         except KeyboardInterrupt:
             # On Windows Ctrl+C is a console control event, not the Esc
@@ -11128,11 +11757,16 @@ def _run_contribution_loop(
             # but only actually remove anything if this call downloaded it.
             stop_event.set()
             if filename is not None:
-                _cleanup_interrupted_install(
-                    filename, downloaded_now=download_state["downloaded_now"]
-                )
+                session.clean()
             break
-        except (DownloadError, ModelResolutionError, linker.LinkError) as e:
+        except DownloadBudgetSkipped:
+            stats.skipped_download_limit += 1
+            queue.mark_seen(ref_str)
+            err_console.print(f"[warning]Skipped {candidate['filename']}: it exceeds the remaining download allowance.[/warning]")
+            continue
+        except (DownloadError, ModelResolutionError, linker.LinkError, RuntimeAdapterError) as e:
+            reason = type(e).__name__
+            stats.failure_reasons[reason] = stats.failure_reasons.get(reason, 0) + 1
             err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
             continue
 
@@ -11200,27 +11834,36 @@ def _run_contribution_loop(
                         downloaded_state=download_state,
                     )
                 except InstallInterrupted as e:
-                    _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
+                    session.clean()
                     break
                 except KeyboardInterrupt:
                     stop_event.set()
                     if filename is not None:
-                        _cleanup_interrupted_install(
-                            filename, downloaded_now=download_state["downloaded_now"]
-                        )
+                        session.clean()
                     break
+                except DownloadBudgetSkipped:
+                    stats.skipped_download_limit += 1
+                    queue.mark_seen(ref_str)
+                    continue
                 except (DownloadError, linker.LinkError) as e:
+                    reason = type(e).__name__
+                    stats.failure_reasons[reason] = stats.failure_reasons.get(reason, 0) + 1
                     err_console.print(f"[warning]Skipping {candidate['filename']}: {e}[/warning]")
                     continue
+
+        if outcome.tokens_per_sec is not None:
+            stats.measured_attempts += 1
+        if outcome.upload_queued:
+            stats.queued_uploads += 1
+        if outcome.failure_reason or (outcome.tokens_per_sec is not None and not outcome.telemetry_sent):
+            reason = outcome.failure_reason or outcome.upload_status or "not_uploaded"
+            stats.failure_reasons[reason] = stats.failure_reasons.get(reason, 0) + 1
 
         if outcome.failure_reason in {
             "memory_allocation_blocked",
             "memory_allocation_deferred",
         }:
-            reg = registry.load_registry()
-            found_name, entry = _lookup_entry(outcome.filename, reg)
-            if entry:
-                _remove_one(found_name, entry)
+            session.clean()
             item = deferred.setdefault(ref_str, _DeferredContribution(candidate))
             post_download_memory_failures[ref_str] = (
                 post_download_memory_failures.get(ref_str, 0) + 1
@@ -11276,10 +11919,7 @@ def _run_contribution_loop(
             queue.mark_seen(ref_str)
             continue
 
-        reg = registry.load_registry()
-        fn, entry = _lookup_entry(outcome.filename, reg)
-        if entry:
-            _remove_one(fn, entry)
+        session.clean()
 
         # A completed attempt has just unloaded and deleted its model. Memory
         # conditions may therefore have improved; let bounded deferred items
@@ -11363,14 +12003,51 @@ def _print_contribution_summary(
     console.print("=" * 70)
     console.print("[bold]omm contribute: session summary[/bold]")
     console.print(f"Duration: {minutes}m {seconds}s")
+    reason_text = {
+        "time_limit": "your time limit was reached (cleanup may take a little longer)",
+        "download_limit": "the download allowance was reached or remaining models would exceed it",
+        "model_limit": "your model-count limit was reached",
+        "user_stop": "you stopped the session",
+        "no_new_models": "no new models remained; your existing models were kept",
+        "completed": "no more eligible candidates remained",
+        "engine_unavailable": "the engine could not be restarted",
+        "memory_unavailable": "remaining models still needed more free memory",
+    }
+    console.print(f"Stopped: {reason_text.get(stats.stop_reason, stats.stop_reason)}")
+    console.print(f"New models attempted: {stats.attempted_models}")
+    console.print(f"Measurements completed: {stats.measured_attempts}")
+    console.print(f"Model data downloaded: {stats.downloaded_bytes / 1024**3:.3f} GiB (including retries)")
     console.print(f"Models benchmarked+uploaded: {len(stats.benchmarked)}")
+    console.print("Upload counts reflect the collector's response; they do not mean the result was used for training.")
     for name, tokens_per_sec in stats.benchmarked:
         console.print(f"  - {name:<40} {tokens_per_sec:.1f} tok/s")
     console.print(f"Skipped (predicted not to fit this hardware): {stats.skipped_unfit}")
     console.print(f"Skipped (not enough disk space): {stats.skipped_low_disk}")
     console.print(f"Deferred before download (live memory pressure): {stats.deferred_low_memory}")
     console.print(f"Still blocked after bounded memory retries: {stats.skipped_low_memory}")
-    console.print(f"Attempted but not uploaded (kept for retry): {stats.attempted_not_uploaded}")
+    console.print(f"Attempts without an accepted speed-result upload: {stats.attempted_not_uploaded}")
+    console.print(f"Failed sends saved locally for an automatic retry: {stats.queued_uploads}")
+    console.print(f"Skipped (download allowance): {stats.skipped_download_limit}")
+    for reason, count in sorted(stats.failure_reasons.items()):
+        label = {
+            "DownloadError": "Download failed", "ModelResolutionError": "Model source could not be resolved",
+            "LinkError": "Engine linking failed", "RuntimeAdapterError": "Engine status could not be checked",
+            "generation_timeout": "The model did not respond in time",
+            "memory_pressure_cancelled": "Stopped because memory became scarce",
+            "memory_allocation_blocked": "Not enough memory to load the model",
+            "memory_allocation_deferred": "Waiting for more free memory",
+            "send_failed_network": "Could not reach the result collector",
+            "not_uploaded": "A measured result was not accepted by the collector",
+        }.get(reason, reason.replace("_", " "))
+        console.print(f"  {label}: {count}", markup=False)
+    for label, names in (
+        ("Existing models kept", stats.preserved_models),
+        ("Temporary models removed", stats.removed_models),
+        ("Temporary models needing cleanup", stats.cleanup_failed_models),
+    ):
+        console.print(f"{label}: {len(names)}")
+        for name in names:
+            console.print(f"  - {name}", markup=False)
     if stats.machine_failures:
         console.print(
             f"[warning]Failed after downloading on live machine conditions: "
@@ -11414,13 +12091,32 @@ def contribute(
             "policy; ignored if error reports are explicitly turned off)."
         ),
     ),
+    max_minutes: float | None = typer.Option(None, "--max-minutes", help="Stop after this many minutes; finish safe cleanup."),
+    max_download_gb: float | None = typer.Option(None, "--max-download-gb", help="Limit model data read to this many GiB, including retries (metadata/HTTP overhead excluded)."),
+    max_models: int | None = typer.Option(None, "--max-models", help="Try at most this many new models; retries count as the same model."),
 ) -> None:
     """Benchmark models in a loop to improve `omm recommend`.
 
     Repeatedly installs, benchmarks, and uploads telemetry for
-    hardware-fit models until Esc is pressed, growing the training dataset
-    behind `omm recommend`. Deletes each model after benchmarking it (even
-    successful ones) to keep disk usage bounded."""
+    hardware-fit models until Esc or a chosen limit, growing the training
+    dataset behind `omm recommend`. Keeps existing models and removes only
+    this session's temporary models."""
+    from omm.contribute_session import ContributionLimits
+
+    try:
+        download_bytes = None
+        if max_download_gb is not None:
+            amount = max_download_gb * 1024**3
+            if not math.isfinite(amount) or amount < 1:
+                raise ValueError("The download limit must be positive and at least one byte.")
+            download_bytes = int(amount)
+        limits = ContributionLimits(
+            seconds=max_minutes * 60 if max_minutes is not None else None,
+            download_bytes=download_bytes, models=max_models,
+        )
+    except (ValueError, OverflowError) as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(2) from error
     yes = _global_opts().yes
     policy = load_config().get("telemetry_send_policy", "ask")
     if policy == "never":
@@ -11513,13 +12209,30 @@ def contribute(
 
         err_console.print("[warning]omm contribute - before you start:[/warning]")
         contribute_notice_lines = [
-            "Downloads, benchmarks, and deletes GGUF models repeatedly until you press Esc",
+            "Downloads and tests new GGUF models until you press Esc or reach a chosen limit",
+            "Keeps models and partial downloads you already have; removes only this session's temporary models",
+            "Other OMM-managed models may be unloaded from memory; their saved files are kept",
             "Uses real bandwidth, disk space, and compute; runs unattended "
             "(no per-model confirmation)",
             f"Uploads every benchmark result per your current upload policy ({policy})",
+            "Sends model identifiers, hardware characteristics, runtime versions, speed and score summaries",
+            "Generated answers and local file paths are not sent; crash reports and usage stats have separate settings",
             "Reserves space per candidate (central GGUF + worst-case engine copy + headroom); "
             "skips anything that won't fit",
         ]
+        contribute_notice_lines.append(
+            "The default shared benchmark database is publicly readable"
+            if config.get("telemetry_endpoint") == config_mod.TELEMETRY_GATEWAY_ENDPOINT
+            else "Results go to your configured collector; its operator controls who can read them"
+        )
+        chosen_limits = []
+        if max_minutes is not None:
+            chosen_limits.append(f"{max_minutes:g} minutes")
+        if max_download_gb is not None:
+            chosen_limits.append(f"{max_download_gb:g} GiB of model data, including retries")
+        if max_models is not None:
+            chosen_limits.append(f"{max_models} new model(s)")
+        contribute_notice_lines.append("Session limits: " + ("; ".join(chosen_limits) if chosen_limits else "none selected; press Esc to stop"))
         if engine == "ollama":
             # The precise, GGUF-based memory estimator (commit-limit gating,
             # measurement-stability defer/retry) only understands Ollama
@@ -11563,11 +12276,10 @@ def contribute(
                 daemon_ref=daemon_ref,
                 fetch_siblings=_fetch_sibling_candidates,
                 engine=engine,
+                **({"limits": limits} if chosen_limits else {}),
             )
         finally:
             listener.stop()
-
-        cleanup()
 
         duration = time.monotonic() - start_time
         current = [

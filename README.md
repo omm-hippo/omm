@@ -104,7 +104,7 @@ Pick your OS and follow one path from top to bottom:
 
 ```powershell
 omm        # first run: setup wizard (hardware scan + engine checklist)
-omm scan   # hardware, runner, and model summary
+omm scan   # memory, runner, and model summary
 ```
 
 **5. Windows notes.** Model exposure tries an unprivileged same-volume hard link first, then a symbolic link (Developer Mode or Administrator), then an owned copy. Before copying, omm checks destination free space and reports that the model now consumes additional bytes. File junctions do not apply because model targets are files, not directories.
@@ -150,7 +150,7 @@ curl -fsSL https://omm.run/install.sh | sh
 
 ```sh
 omm        # first run: setup wizard (hardware scan + engine checklist)
-omm scan   # hardware, runner, and model summary
+omm scan   # memory, runner, and model summary
 ```
 
 **5. Homebrew Tap (alternative).**
@@ -212,7 +212,7 @@ curl -fsSL https://omm.run/install.sh | sh
 
 ```sh
 omm        # first run: setup wizard (hardware scan + engine checklist)
-omm scan   # hardware, runner, and model summary
+omm scan   # memory, runner, and model summary
 ```
 
 **5. Linux notes.** Set `OMM_HOME` before installation and on later runs to put the model hub on another volume:
@@ -405,7 +405,7 @@ package ownership checks, and verification limits.
 
 ### Storage location
 
-The model hub and omm state default to `~/.omm`. Set `OMM_HOME` before installation and on later runs to put them on another volume (see the snippet in your OS section above).
+The model hub and omm state default to `~/.omm`. Set `OMM_HOME` before installation and on later runs to put them on another volume (see the snippet in your OS section above). The setup table shows the path separately from decimal GB that is immediately writable on the volume containing it; this is not the size of the `.omm` folder, and an OS storage screen may additionally count purgeable space.
 
 Ollama's own model location follows `OLLAMA_MODELS`. LM Studio follows its home pointer; set `OMM_LMSTUDIO_MODELS_DIR` when LM Studio uses a custom directory that omm cannot discover automatically.
 
@@ -428,9 +428,11 @@ omm engine status [ENGINE] [--json]  # Separate application, package version, an
 omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
-omm scan [--details] [--json]  # Memory, storage, runners, and models; --details adds OS/CPU/GPU
-omm doctor [--json]  # Read-only diagnostics for the installation and Ollama reachability/links
+omm scan [--json]  # Memory, storage, installed runners, and models
+omm doctor [--json]  # Read-only diagnostics plus safe next steps for installation and Ollama findings
+omm bug-report [--include os|policies|checks] [--save PATH]  # Preview and save an allow-listed local diagnostic bundle; never upload it
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
+omm compare <name> <name>... [--for TASK] [--profile PROFILE] [--json]  # Read-only comparison of 2-5 catalog packages
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
 omm search <query> [--json] [--skip-unfit] [--skip-ms] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated, Hugging Face, and ModelScope sources
@@ -462,10 +464,23 @@ omm upgrade <name> [--dry-run]  # Look for a better model than this one - a cura
 omm upgrade [--yes] [--dry-run]  # Scan every installed model for a better alternative
 omm link [models] [--engine NAME]  # Re-verify and repair installed-model links across supported runners; `models` is a comma-separated name/index list (omit for every model)
 omm link [models] --to <directory>  # Reuse central GGUF files; Windows warns if a real copy is required
+omm unlink <models> [--runner NAME]  # Remove models' links from one runner (--runner all for every runner), keeping the hub file
+omm export <name> <destination> [--force]  # Copy a hub model out for deployment or backup (hard link when possible)
+omm pin <name>  # Archive this model's current version before its next forced reinstall
+omm unpin <name>  # Stop archiving this model and delete any version already archived for it
+omm rollback <name>  # Restore a pinned model's archived version in place of the installed one
 omm cleanup  # Remove orphaned partial downloads and broken runner symlinks
 ```
 
 `install`, `uninstall`, `info`, and `upgrade` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `omm info` and `omm fit` both work on a model that is not installed yet, so a search result can be inspected before downloading several GB; `omm info` describes the model, `omm fit` answers whether it runs on this machine. `search`/`install` mark models predicted not to run on this machine's hardware in red.
+
+Before a normal interactive install, OMM shows a source card with the
+provider, repository, file, expected size/location, GGUF format, and the
+HTTPS/size/SHA-256 checks it plans to perform. Afterward it reports the checks
+actually completed. “SHA-256 matched” means the bytes match the provider or
+pinned digest; it does not claim the file is non-malicious. `--quiet`, piped/
+non-interactive use, and internal contribution flows keep this extra
+presentation out of scripted output.
 
 Interrupted installs keep checkpoints under `OMM_HOME/install-journal`. Re-run
 the original install command to recheck the file and repair links; `omm doctor`
@@ -486,7 +501,9 @@ changed, use `omm install <name> --force`.
 omm verify <name> [--engine ollama|lmstudio] [--yes] [--keep-loaded]  # Prove local load + generation works
 omm benchmark <name>... [--output PATH]  # Local quality + speed evidence for selected installed models
 omm benchmark all [--output PATH]  # Benchmark every installed model in the selected runtime
+omm evaluate <ollama-tag> [--pack PATH] [--output PATH]  # Run local Python coding tasks in Docker/Podman
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
+omm contribute --max-minutes 30 --max-download-gb 10 --max-models 3
 ```
 
 `omm verify` checks more than a link: it asks before starting a stopped local
@@ -498,6 +515,22 @@ OMM loaded for the check. LM Studio API authentication reads
 `LM_API_TOKEN` from the process environment and never writes it to
 `config.json`. Compatibility status is stored locally in `models.json` and is
 shown by `omm info`.
+
+`omm compare` resolves two to five exact packages from the signed recommendation
+catalog and compares predicted speed, estimated memory, install state, declared
+purpose, and any locally cached signed quality evidence. It never downloads,
+installs, or runs a model. `BEST FOR` remains provider-declared metadata;
+`MEASURED` is shown separately and missing evidence is `Not measured`, never a
+zero score.
+
+`omm evaluate` currently supports installed Ollama models and the versioned
+Python coding smoke pack. Model-generated source runs only through Docker or
+Podman with no network, a read-only workspace, bounded resources, dropped
+capabilities, and a timeout. Generated source is neither stored nor uploaded;
+`--output` contains only task outcomes and exact model/pack identity. This pack
+is a small reproducibility check, not a leaderboard. OMM never pulls the
+container image implicitly; if it is absent, the error prints the exact
+digest-pinned `docker pull`/`podman pull` command for the user to run explicitly.
 
 ### Update & configuration
 
@@ -548,7 +581,8 @@ for engine capabilities, memory checks, cleanup, and verification limits.
 ### Scripting
 
 All errors, warnings, and confirmation prompts print to stderr. For `search`,
-`list`, `info`, `tune`, `scan`, `doctor`, and `recommend`, `--json` makes
+`list`, `info`, `tune`, `scan`, `doctor`, `recommend`, `compare`, `evaluate`, and
+`bug-report`, `--json` makes
 stdout a single structured document that is safe to pipe (for example,
 `omm list --json | jq .`). `benchmark --json` also writes a single JSON report to stdout; `--output` saves
 the same evidence as a file. Supported commands emit a structured error document
@@ -584,6 +618,19 @@ usage error (bad flag or argument).
 `rm`, `ls`, and `up` are short aliases for `uninstall`, `list`, and `upgrade`.
 
 Set `OMM_HOME` to store everything (models, config, catalog history) under a different directory instead of `~/.omm` — useful when `$HOME`'s filesystem doesn't have room for GGUF models, e.g. `OMM_HOME=/mnt/data/omm omm contribute --yes`.
+
+`omm contribute` keeps models and partial downloads already on your computer;
+it removes only the temporary models created by that session. Choose an optional
+time, model-data download, or new-model count limit, or combine them as above.
+The download limit is in GiB and includes retries; metadata and HTTP/TLS overhead
+are excluded. A time limit requests cancellation and then allows safe cleanup
+to finish. Without these flags, the loop continues until Esc or candidate exhaustion.
+The startup notice explains what is sent and whether the configured collector is
+public. The final summary separates successful measurements, accepted uploads,
+failed sends saved for retry, and the files kept or removed. The
+[recommendation data contribution guide](docs/contribution-sessions.md) gives a
+one-model starting point, cross-computer instructions, and the current quality-data
+limits.
 
 `omm contribute` performs a 10 GiB startup free-space preflight. Before each
 download it separately budgets the central GGUF, a worst-case full runner copy,

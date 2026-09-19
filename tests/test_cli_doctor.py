@@ -2,6 +2,7 @@ import json
 import platform
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from omm import cli, doctor
@@ -65,6 +66,87 @@ def test_doctor_json_is_machine_readable_and_supported_before_or_after_command(
         ]
 
 
+def test_doctor_prints_unique_remediations_after_the_summary(monkeypatch):
+    monkeypatch.setattr(doctor, "read_theme_read_only", lambda: "dark")
+    remediation = doctor.DoctorRemediation(
+        "Start Ollama, then run omm doctor again.",
+        ("omm", "link", "model.gguf", "--engine", "ollama"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "collect_report",
+        lambda **kwargs: _report(
+            doctor.DoctorCheck("WARN", "Ollama server", "not running", remediation),
+            doctor.DoctorCheck("WARN", "Ollama tags", "not checked", remediation),
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["doctor", "--no-color"])
+
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout.index("Overall: WARN") < result.stdout.index("How to fix")
+    assert result.stdout.count("Start Ollama, then run omm doctor again.") == 1
+    assert result.stdout.count("omm link model.gguf --engine ollama") == 1
+    assert "No changes were made" in result.stdout
+
+
+def test_doctor_json_includes_structured_remediation_arguments(monkeypatch):
+    monkeypatch.setattr(doctor, "read_theme_read_only", lambda: "dark")
+    monkeypatch.setattr(
+        doctor,
+        "collect_report",
+        lambda **kwargs: _report(
+            doctor.DoctorCheck(
+                "WARN",
+                "Ollama tag: model with space.gguf",
+                "not visible",
+                doctor.DoctorRemediation(
+                    "Repair the link.",
+                    ("omm", "link", "model with space.gguf", "--engine", "ollama"),
+                ),
+            )
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["doctor", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["checks"][0]["remediation"] == {
+        "message": "Repair the link.",
+        "command": ["omm", "link", "model with space.gguf", "--engine", "ollama"],
+    }
+
+
+def test_pass_check_rejects_a_remediation():
+    with pytest.raises(ValueError, match="PASS doctor checks"):
+        doctor.DoctorCheck(
+            "PASS",
+            "healthy",
+            "ok",
+            doctor.DoctorRemediation("No action should be attached."),
+        )
+
+
+def test_remediation_command_is_quoted_only_at_the_display_boundary(monkeypatch):
+    remediation = doctor.DoctorRemediation(
+        "Repair the link.",
+        ("omm", "link", "model with space.gguf", "--engine", "ollama"),
+    )
+
+    monkeypatch.setattr(doctor.platform, "system", lambda: "Linux")
+    assert remediation.display_command() == (
+        "omm link 'model with space.gguf' --engine ollama"
+    )
+    assert remediation.as_dict()["command"] == [
+        "omm",
+        "link",
+        "model with space.gguf",
+        "--engine",
+        "ollama",
+    ]
+
+
 def test_doctor_exits_nonzero_only_for_definite_failures(monkeypatch):
     monkeypatch.setattr(doctor, "read_theme_read_only", lambda: "dark")
     reports = iter(
@@ -122,6 +204,29 @@ def test_read_registry_corruption_is_reported_without_backup_or_rewrite(tmp_path
     assert "invalid JSON" in error
     assert registry_path.read_bytes() == before
     assert list(tmp_path.iterdir()) == [registry_path]
+
+
+def test_collect_report_gives_registry_repair_guidance_without_a_delete_command(
+    monkeypatch, tmp_path
+):
+    registry_path = tmp_path / "models.json"
+    registry_path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(doctor.config, "REGISTRY_PATH", registry_path)
+    monkeypatch.setattr(doctor, "_installation_checks", lambda *args: [])
+    monkeypatch.setattr(doctor, "_ollama_checks", lambda registry: [])
+    monkeypatch.setattr("omm.install_state.pending_records", lambda: [])
+    monkeypatch.setattr("omm.runtime_profiles.interrupted_runs", lambda: [])
+
+    report = doctor.collect_report(
+        module_path=tmp_path / "cli.py", command_path=tmp_path / "omm"
+    )
+
+    registry = next(check for check in report.checks if check.name == "registry")
+    assert registry.status == "FAIL"
+    assert registry.remediation is not None
+    assert "Back up" in registry.remediation.message
+    assert "Do not delete" in registry.remediation.message
+    assert registry.remediation.command == ()
 
 
 def test_find_pipx_uses_executable_fallback_outside_path(monkeypatch, tmp_path):
@@ -298,6 +403,8 @@ def test_installation_checks_warn_on_partial_update_version_mismatch(
     assert version.status == "WARN"
     assert "package metadata=0.2.148" in version.detail
     assert "editable source=0.2.149" in version.detail
+    assert version.remediation is not None
+    assert version.remediation.command == ("pipx", "upgrade", "omm-model")
 
 
 def test_ollama_checks_compare_saved_runtime_tags_with_actual_api_tags(monkeypatch):
@@ -340,8 +447,24 @@ def test_ollama_checks_compare_saved_runtime_tags_with_actual_api_tags(monkeypat
     assert "runtime=qwen3:4b" in fixed.detail
     assert legacy.status == "WARN"
     assert "not present in /api/tags" in legacy.detail
+    assert legacy.remediation is not None
+    assert legacy.remediation.command == (
+        "omm",
+        "link",
+        "legacy.gguf",
+        "--engine",
+        "ollama",
+    )
     assert missing.status == "WARN"
     assert "no Ollama runtime tag" in missing.detail
+    assert missing.remediation is not None
+    assert missing.remediation.command == (
+        "omm",
+        "link",
+        "missing-tag.gguf",
+        "--engine",
+        "ollama",
+    )
     assert all("intentionally-unlinked" not in check.name for check in checks)
 
 
@@ -439,5 +562,7 @@ def test_ollama_server_unavailable_is_warning_and_skips_tag_listing(monkeypatch)
     server = next(check for check in checks if check.name == "Ollama server")
     tags = next(check for check in checks if check.name == "Ollama tags")
     assert server.status == "WARN"
+    assert server.remediation is not None
     assert tags.status == "WARN"
     assert "not checked" in tags.detail
+    assert tags.remediation is None

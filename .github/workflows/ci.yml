@@ -203,6 +203,21 @@ jobs:
       - name: Verify CLI entry point imports and runs cleanly
         run: omm --help
 
+  docs-sync:
+    name: Command docs in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install omm with only its runtime dependencies
+        run: python -m pip install -e .
+      - name: Compare the CLI against docs/commands.json, README Usage, and omm.run
+        run: python scripts/check_docs_sync.py
+
   docker:
     name: Reproducible Linux container
     runs-on: ubuntu-latest
@@ -214,6 +229,14 @@ jobs:
         run: docker build --tag localfit-test .
       - name: Run test image
         run: docker run --rm localfit-test
+      - name: Pull pinned Python coding sandbox image
+        run: >-
+          docker pull
+          docker.io/library/python:3.12.10-alpine3.21@sha256:9c51ecce261773a684c8345b2d4673700055c513b4d54bc0719337d3e4ee552e
+      - name: Verify generated-code sandbox boundaries
+        env:
+          PYTHONPATH: src
+        run: python scripts/verify_coding_sandbox.py
 
   firebase-rules:
     name: Firebase rules emulator
@@ -255,6 +278,8 @@ jobs:
           cache-dependency-path: cf-worker/package-lock.json
       - name: Install locked dependencies
         run: npm ci
+      - name: Reject high-severity dependency vulnerabilities
+        run: npm audit --audit-level=high
       - name: Run vitest
         run: npm test
       - name: Type-check

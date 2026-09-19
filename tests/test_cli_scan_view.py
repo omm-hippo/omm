@@ -29,15 +29,25 @@ def test_scan_compact_view_keeps_resources_and_engine_names(scan_fixture):
         assert text not in result.stdout
 
 
-def test_scan_details_and_json_retain_hardware_identity(scan_fixture):
-    detailed = CliRunner().invoke(cli.app, ["scan", "--details"])
-    assert detailed.exit_code == 0, detailed.output
-    assert "CPU identity" in detailed.stdout
+def test_scan_hides_hardware_identity_but_json_retains_it(scan_fixture):
+    # #339: OS/CPU/GPU identity is not shown in the human view (no --details
+    # flag either); the JSON schema keeps those fields for scripts.
+    assert CliRunner().invoke(cli.app, ["scan", "--details"]).exit_code != 0
     result = CliRunner().invoke(cli.app, ["scan", "--json"])
     data = json.loads(result.stdout)
     assert data["cpu"] == "CPU identity"
     assert data["gpu_name"] == "GPU identity"
+    assert data["os"] == "TestOS 12"
     assert data["engines_installed"] == ["ollama", "lmstudio"]
+
+
+def test_scan_lists_runners_horizontally_without_status(scan_fixture):
+    result = CliRunner().invoke(cli.app, ["scan", "--quiet"], env={"COLUMNS": "100"})
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    runner_lines = [line for line in lines if "Ollama" in line]
+    assert len(runner_lines) == 1 and "LM Studio" in runner_lines[0]
+    assert "hardware" not in result.stdout.lower()
 
 
 @pytest.mark.parametrize("preset", theme.THEME_NAMES)

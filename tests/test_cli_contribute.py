@@ -375,7 +375,9 @@ def test_happy_path_runs_loop_cleans_up_and_prints_summary(isolated_omm_home, mo
 
     assert result.exit_code == 0, result.stdout
     assert loop_calls == [1]
-    assert cleanup_calls == [1]
+    # Contribution now cleans only its own leased models inside the loop.
+    # A blanket orphan cleanup could delete pre-existing unregistered models.
+    assert cleanup_calls == []
     assert "session summary" in result.stdout.lower()
     assert "m" in result.stdout and "12.5" in result.stdout
 

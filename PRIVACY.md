@@ -123,7 +123,22 @@ The `error_reports` Realtime Database node is **not** publicly readable.
 human-readable `history.log`), readable with `omm log`. It is for your own
 debugging and is never sent anywhere; the channels above do not read it.
 
+`omm evaluate` runs model-generated Python only in Docker or Podman and never
+uses the benchmark-upload channel. Its optional `--output` evidence contains
+model/package identity, pack identity, task outcomes, and counts, but no
+generated source or model response. `omm compare` is read-only and sends no
+comparison or model-list data.
+
 **Auto-import** (`omm setting auto-import enable`, off by default) watches local AI
 app directories on this machine and adopts new models into the omm hub in the
 background. It is a local filesystem automation only - nothing it does is uploaded
 or sent anywhere.
+
+`omm bug-report` builds a separate local diagnostic document from a new allow-list. By
+default it includes OMM version, install source, a command name, exception
+class, and diagnostic status/counts. It excludes usernames, home/personal
+paths, tokens, environment variables, search text, command arguments,
+generated text, and model names. Optional OS, upload-policy, and check-name
+groups are included only when selected with `--include`. The full JSON is
+printed before `--save`; the command never uploads it, opens a GitHub issue,
+or sends a message.

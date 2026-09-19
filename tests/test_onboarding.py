@@ -1,4 +1,7 @@
 import io
+import shutil
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import typer
@@ -78,6 +81,47 @@ def test_print_hardware_summary_shows_os_and_ram(monkeypatch):
     assert "TestOS" in output
     assert "16.0 GB" in output
     assert "Test GPU" in output
+
+
+def test_print_hardware_summary_separates_home_from_decimal_disk_space(monkeypatch):
+    from omm.hardware import HardwareInfo
+
+    fake_info = HardwareInfo(
+        os_name="TestOS",
+        os_version="1.0",
+        cpu="Test CPU",
+        ram_total_gb=16.0,
+        ram_available_gb=8.0,
+        unified_memory=False,
+        gpu_name=None,
+        vram_total_gb=None,
+        vram_free_gb=None,
+    )
+    monkeypatch.setattr(onboarding, "scan_hardware", lambda: fake_info)
+    home = Path("test-home") / ".omm"
+    monkeypatch.setattr(onboarding.config_mod, "OMM_HOME", home)
+    monkeypatch.setattr(onboarding, "_free_gb", lambda path: 108.8)
+    console = _console()
+
+    onboarding.print_hardware_summary(console)
+
+    output = console.file.getvalue()
+    assert "omm home" in output
+    assert str(home) in output
+    assert "Disk available" in output
+    assert "108.8 GB immediately writable on the volume above" in output
+    assert f"{home}  (108.8 GB free)" not in output
+
+
+def test_free_gb_uses_decimal_gb_instead_of_mislabelled_gib(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(free=108_800_000_000),
+    )
+    monkeypatch.setattr(onboarding.linker, "disk_usage_path", lambda path: tmp_path)
+
+    assert onboarding._free_gb(tmp_path) == pytest.approx(108.8)
 
 
 def test_engine_choices_includes_installed_engines_flagged(monkeypatch):
@@ -196,9 +240,89 @@ def test_install_selected_engines_runs_installer_for_ollama(monkeypatch):
     succeeded = onboarding.install_selected_engines(console, ["ollama"])
 
     output = console.file.getvalue()
-    assert "Installing Ollama" in output
-    assert "ok" in output
+    assert "Starting the Ollama install" in output
+    assert "ok (0s)" in output
     assert succeeded is True
+
+
+def test_install_selected_engines_status_follows_phase_markers(monkeypatch):
+    """The status line must say what is happening now. It used to match
+    English keywords in winget output, which is localized, so on Korean
+    Windows it said "Installing" from start to finish."""
+    console = _console()
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
+
+    def fake_install_engine(key, on_output=None):
+        on_output(linker.INSTALL_PHASE_RESOLVING)
+        on_output(linker.INSTALL_PHASE_DOWNLOADING)
+        on_output(linker.INSTALL_PROGRESS_PREFIX + "42%")
+        on_output(linker.INSTALL_PHASE_INSTALLING)
+        on_output(linker.INSTALL_PHASE_VERIFYING)
+        return linker.EngineInstallResult(key, "installed", "Jan installed successfully.")
+
+    monkeypatch.setattr(linker, "install_engine", fake_install_engine)
+    monkeypatch.setattr(onboarding, "Progress", _eager_progress())
+
+    assert onboarding.install_selected_engines(console, ["jan"]) is True
+
+    output = console.file.getvalue()
+    for text in (
+        "Finding the Jan package",
+        "Downloading and checking the Jan installer... 42%",
+        "Running the Jan installer",
+        "Checking the Jan installation",
+    ):
+        assert text in output
+    assert "OMM:" not in output
+    assert "Jan installed successfully. (" in output
+
+
+def test_install_selected_engines_prints_each_phase_once_without_terminal(monkeypatch):
+    console = Console(
+        file=io.StringIO(), width=100, force_terminal=False,
+        theme=theme_mod.build_rich_theme("dark"),
+    )
+    monkeypatch.setattr(linker, "has_automated_installer", lambda key: True)
+
+    def fake_install_engine(key, on_output=None):
+        for marker in (
+            linker.INSTALL_PHASE_RESOLVING,
+            linker.INSTALL_PHASE_DOWNLOADING,
+            linker.INSTALL_PROGRESS_PREFIX + "10%",
+            linker.INSTALL_PROGRESS_PREFIX + "20%",
+            "raw winget line",
+            linker.INSTALL_PHASE_INSTALLING,
+            linker.INSTALL_PHASE_VERIFYING,
+        ):
+            on_output(marker)
+        return linker.EngineInstallResult(key, "installed", "done")
+
+    monkeypatch.setattr(linker, "install_engine", fake_install_engine)
+
+    onboarding.install_selected_engines(console, ["jan"])
+
+    lines = console.file.getvalue().splitlines()
+    assert lines[:5] == [
+        "Starting the Jan install...",
+        "Finding the Jan package...",
+        "Downloading and checking the Jan installer...",
+        "Running the Jan installer...",
+        "Checking the Jan installation...",
+    ]
+    assert lines[5].startswith("done (")
+    assert len(lines) == 6
+
+
+def _eager_progress():
+    """Progress that repaints on every update, so a test sees each status."""
+    from rich.progress import Progress
+
+    class EagerProgress(Progress):
+        def update(self, *args, **kwargs):
+            super().update(*args, **kwargs)
+            self.refresh()
+
+    return EagerProgress
 
 
 def test_install_selected_engines_reports_failed_automated_install(monkeypatch):
