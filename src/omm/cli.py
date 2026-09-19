@@ -10478,9 +10478,6 @@ def evaluate_cmd(
             engine="ollama",
             engine_version=quality_mod.ollama_version(),
         )
-    except quality_mod.QualityEvaluationError as error:
-        err_console.print(f"[error]{escape(str(error))}[/error]")
-        raise typer.Exit(1) from error
     finally:
         if was_loaded is False:
             quality_mod.ensure_model_unloaded(model)
