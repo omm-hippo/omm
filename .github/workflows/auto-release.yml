@@ -16,6 +16,7 @@ name: Nightly auto release
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: auto-release
@@ -96,10 +97,20 @@ jobs:
           fi
 
           # Never tag a red or still-running main: every check run on HEAD
-          # must have finished green (skipped/neutral count as fine).
+          # must have finished green (skipped/neutral count as fine). This
+          # job's own check run is still in_progress while this script runs,
+          # so it always shows up in that list too - exclude it by check
+          # run id (not by name, which would break on a rename) before
+          # judging green-ness.
+          self_check_run_id="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+              --jq '[.jobs[] | select(.status == "in_progress")][0].check_run_url' \
+              | grep -o '[0-9]*$'
+          )"
           not_green="$(
             gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/$(git rev-parse HEAD)/check-runs?per_page=100" \
-              --jq '.check_runs[] | select(.status != "completed" or (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")) | "\(.name): \(.status)/\(.conclusion)"'
+              --jq --arg self "$self_check_run_id" \
+              '.check_runs[] | select((.id | tostring) != $self) | select(.status != "completed" or (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")) | "\(.name): \(.status)/\(.conclusion)"'
           )"
           if [ -n "$not_green" ]; then
             echo "$not_green"
