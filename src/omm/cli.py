@@ -4348,7 +4348,7 @@ def tune(
     model_name: str = typer.Argument(..., autocompletion=complete_install_name),
     apply: bool = typer.Option(False, "--apply", help="Temporarily load and verify the proposed settings."),
     save: bool = typer.Option(False, "--save", help="Save settings only after a successful --apply trial."),
-    engine: str | None = typer.Option(None, "--engine", help="Runtime for the trial: ollama or lmstudio."),
+    engine: str | None = typer.Option(None, "--engine", "-e", help="Runtime for the trial: ollama or lmstudio."),
 ) -> None:
     """Recommend context, GPU offload, threads, and batch size for a model."""
     if save and not apply:
@@ -4494,7 +4494,7 @@ def _apply_runtime_profile(filename: str, entry: dict, profile, *, engine: str |
 @global_flags
 def runtime_profile_cmd(
     model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
-    engine: str = typer.Option("ollama", "--engine", help="ollama or lmstudio"),
+    engine: str = typer.Option("ollama", "--engine", "-e", help="ollama or lmstudio"),
     restore: bool = typer.Option(False, "--restore", help="Restore the previous saved profile (or defaults)."),
 ) -> None:
     """Inspect a saved runtime profile, or undo the last save without reloading models."""
@@ -7379,6 +7379,7 @@ def verify(
     engine: str = typer.Option(
         None,
         "--engine",
+        "-e",
         help="Local runtime to test: ollama or lmstudio.",
     ),
     keep_loaded: bool = typer.Option(
@@ -8490,7 +8491,7 @@ def _prune_missing_models(reg: dict) -> dict:
 @global_flags
 def list_models(
     engine: str | None = typer.Option(
-        None, "--engine", help="Only show models linked into this engine."
+        None, "--engine", "-e", help="Only show models linked into this engine."
     ),
 ) -> None:
     """Show models installed via omm and their linked status.
@@ -9670,7 +9671,7 @@ def link_models(
         "(omit for every installed model).",
     ),
     engine: str | None = typer.Option(
-        None, "--engine", help="Only re-verify/repair links for this engine."
+        None, "--engine", "-e", help="Only re-verify/repair links for this engine."
     ),
     to: Path | None = typer.Option(
         None,

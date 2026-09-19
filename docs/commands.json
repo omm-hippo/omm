@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.110",
+  "omm_version": "0.3.122",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -1211,7 +1211,8 @@
       "options": [
         {
           "flags": [
-            "--engine"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,
@@ -1278,7 +1279,8 @@
       "options": [
         {
           "flags": [
-            "--engine"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,
@@ -2036,7 +2038,8 @@
       "options": [
         {
           "flags": [
-            "--engine"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,
@@ -2367,7 +2370,8 @@
         },
         {
           "flags": [
-            "--engine"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,
@@ -2694,7 +2698,8 @@
       "options": [
         {
           "flags": [
-            "--engine"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,
