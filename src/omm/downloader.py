@@ -160,6 +160,8 @@ def _https_get(url: str, **kwargs):
     """GET without permitting an HTTPS request to downgrade on redirect."""
     import requests
 
+    from omm import auth
+
     current_url = url
     for redirect_count in range(_MAX_REDIRECTS + 1):
         if urlparse(current_url).scheme.lower() != "https":
@@ -169,7 +171,14 @@ def _https_get(url: str, **kwargs):
                 else "HTTPS-to-HTTP download redirect"
             )
             raise DownloadError(f"Refusing {kind}: {current_url}")
-        response = requests.get(current_url, allow_redirects=False, **kwargs)
+        # Recomputed every hop, never reused across one: a token scoped to
+        # the first host must not ride along to wherever a redirect lands.
+        request_kwargs = dict(kwargs)
+        request_kwargs["headers"] = {
+            **(kwargs.get("headers") or {}),
+            **auth.headers_for_url(current_url),
+        }
+        response = requests.get(current_url, allow_redirects=False, **request_kwargs)
         location = response.headers.get("Location")
         if response.status_code not in {301, 302, 303, 307, 308} or not location:
             final_url = str(getattr(response, "url", current_url))
