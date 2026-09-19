@@ -151,6 +151,7 @@ from omm import (
     launcher,
     linker,
     memory_guard as memory_guard_mod,
+    notify,
     onboarding,
     predictor,
     recommend_status,
@@ -971,11 +972,18 @@ def _root(
         # Only an `always` policy flushes unattended here; under `ask` the
         # queue deliberately waits for the next `omm contribute`, which is
         # the one place the user is asked about error reports.
+        #
+        # The cause has to be read before flush_pending() empties the queue
+        # it describes - a repeat "Sent N queued error report(s)" notice with
+        # no way to tell a one-off from the same crash recurring every run
+        # otherwise sends the user digging through ~/.omm/logs by hand.
+        pending_cause = error_report.most_common_pending_cause()
         reported = error_report.flush_pending()
         if reported and not (opts.json or opts.quiet):
+            hint = f" ({pending_cause[0]} in {pending_cause[1]})" if pending_cause else ""
             err_console.print(
                 f"[muted]Sent {reported} queued error report(s) "
-                "from a previous session.[/muted]"
+                f"from a previous session{hint}.[/muted]"
             )
         # Anonymous usage stats: at most one batch per day, silently (it is
         # a background aggregate, not a per-session event worth a notice).
@@ -1783,7 +1791,27 @@ def _auto_import_run_cmd() -> None:
     """Internal. Started by the OS service registered via
     `omm setting auto-import enable` (see watch_service.py); blocks forever
     watching every supported local AI app's model directory and adopting
-    new models into the omm hub."""
+    new models into the omm hub.
+
+    The OS service (launchd KeepAlive / systemd Restart=on-failure) restarts
+    this command on every exit, including a crash. watchdog/plyer can go
+    missing after enable (e.g. a pipx reinstall that dropped the injected
+    `[watch]` extras) without the user touching auto-import at all; letting
+    `watch.run_watch_loop()` raise `ModuleNotFoundError` in that case turns
+    into a silent, unthrottled crash loop that floods the error-report queue
+    every few seconds instead of surfacing the problem. Check the same
+    dependency `setting auto-import enable` checks and self-disable instead."""
+    if not _watch_dependencies_available():
+        try:
+            watch_service.uninstall()
+        except (OSError, subprocess.CalledProcessError, RuntimeError):
+            pass
+        config_mod.update_config(auto_import_enabled=False)
+        notify.notify(
+            "omm auto-import disabled",
+            f"Missing dependency (watchdog, plyer). {_watch_dependency_hint()}",
+        )
+        return
     watch.run_watch_loop()
 
 

@@ -131,6 +131,43 @@ def test_auto_import_run_is_hidden_from_help():
     assert "_auto-import-run" not in result.stdout
 
 
+def test_auto_import_run_self_disables_when_dependency_missing(isolated_omm_home, monkeypatch):
+    """If watchdog/plyer disappear after enable (e.g. a pipx reinstall that
+    dropped the injected extras), the OS service respawns this command
+    forever (launchd KeepAlive / systemd Restart=on-failure). Crashing here
+    turns that into an infinite crash loop that silently floods the error
+    report queue instead of surfacing the problem - see the `error_type ==
+    "ModuleNotFoundError"` flood analyzed in this branch. The command must
+    disable itself cleanly instead of crashing."""
+    monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: False)
+    config.update_config(auto_import_enabled=True)
+    watch_calls = []
+    monkeypatch.setattr(watch, "run_watch_loop", lambda: watch_calls.append(1))
+    uninstalled = []
+    monkeypatch.setattr(watch_service, "uninstall", lambda: uninstalled.append(1))
+
+    result = runner.invoke(cli.app, ["_auto-import-run"])
+
+    assert result.exit_code == 0, result.stdout
+    assert watch_calls == []
+    assert uninstalled == [1]
+    assert config.load_config()["auto_import_enabled"] is False
+
+
+def test_auto_import_run_calls_watch_loop_when_dependency_present(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli, "_watch_dependencies_available", lambda: True)
+    watch_calls = []
+    monkeypatch.setattr(watch, "run_watch_loop", lambda: watch_calls.append(1))
+    uninstalled = []
+    monkeypatch.setattr(watch_service, "uninstall", lambda: uninstalled.append(1))
+
+    result = runner.invoke(cli.app, ["_auto-import-run"])
+
+    assert result.exit_code == 0, result.stdout
+    assert watch_calls == [1]
+    assert uninstalled == []
+
+
 def test_first_run_scan_flag_preserves_concurrent_setting_change(isolated_omm_home, monkeypatch):
     """_maybe_auto_import must not clobber a config change committed by
     another process between its load and its write of external_scan_done."""

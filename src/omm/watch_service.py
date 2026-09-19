@@ -69,6 +69,12 @@ exec "{sys.executable}" -m omm.cli "$@"
 
 
 def _launchd_plist_content() -> str:
+    # ThrottleInterval floors the gap between respawns at 30s. Without it,
+    # KeepAlive respawns a crashing _auto-import-run about once a second -
+    # cli.py's own dependency self-check (see _auto_import_run_cmd) catches
+    # the missing-watchdog case, but this is the backstop for any other
+    # crash, so the OS service can't flood the error-report queue with one
+    # entry per second forever.
     log_path = OMM_HOME / "logs" / "auto-import.log"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -85,6 +91,8 @@ def _launchd_plist_content() -> str:
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
     <key>StandardOutPath</key>
     <string>{log_path}</string>
     <key>StandardErrorPath</key>
@@ -102,6 +110,8 @@ Description=omm auto-import watcher
 [Service]
 ExecStart={exec_start}
 Restart=on-failure
+# Same 30s floor as launchd's ThrottleInterval above - see its comment.
+RestartSec=30
 
 [Install]
 WantedBy=default.target
