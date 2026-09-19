@@ -11,11 +11,27 @@ from omm import coding_eval
 def test_default_pack_is_bounded_versioned_and_digest_pinned():
     pack = coding_eval.load_pack()
     assert pack.pack_id == "omm-python-coding-smoke"
-    assert pack.version == "1.0.0"
+    assert pack.version == "2.0.0"
     assert pack.image.endswith("@sha256:9c51ecce261773a684c8345b2d4673700055c513b4d54bc0719337d3e4ee552e")
     assert {task.kind for task in pack.tasks} == {"generation", "repair"}
     assert pack.generation["temperature"] == 0
     assert len(pack.sha256) == 64
+
+
+def test_load_pack_derives_test_count_from_test_methods():
+    pack = coding_eval.load_pack()
+    for task in pack.tasks:
+        assert task.test_count == len(coding_eval._TEST_METHOD_RE.findall(task.tests))
+        assert task.test_count >= 1
+
+
+def test_load_pack_rejects_old_schema_version(tmp_path):
+    source = json.loads(coding_eval.default_pack_path().read_text(encoding="utf-8"))
+    source["schema_version"] = 2
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(coding_eval.CodingEvaluationError, match="schema"):
+        coding_eval.load_pack(path)
 
 
 def test_pack_rejects_duplicate_ids_and_unpinned_image(tmp_path):
@@ -51,7 +67,7 @@ def test_sandbox_argv_has_security_boundaries(tmp_path):
     assert "no-new-privileges" in text
     assert "readonly" in text
     assert pack.image in argv
-    assert argv[-4:] == ["python", "-I", "-B", "/workspace/test_solution.py"]
+    assert argv[-4:] == ["python", "-I", "-B", "/workspace/run_tests.py"]
 
 
 def test_run_in_sandbox_reports_pass_without_storing_source(monkeypatch, tmp_path):
@@ -82,6 +98,56 @@ def test_run_in_sandbox_reports_pass_without_storing_source(monkeypatch, tmp_pat
     assert result.tests_passed == task.test_count
     assert "def chunks" not in result.output
     assert captured["argv"][0] == "docker"
+
+
+def test_run_in_sandbox_reports_partial_credit_from_json(monkeypatch):
+    pack = coding_eval.load_pack()
+    task = pack.tasks[0]
+    payload = json.dumps({"tests_run": task.test_count, "passed": task.test_count - 1}).encode() + b"\n"
+
+    class FakeStdout:
+        chunks = iter([payload, b""])
+        def read(self, _size):
+            return next(self.chunks)
+
+    class FakeProcess:
+        stdout = FakeStdout()
+        returncode = 1
+        def poll(self): return 0
+        def wait(self, timeout=None): return 0
+        def terminate(self): pass
+        def kill(self): pass
+
+    monkeypatch.setattr(coding_eval.subprocess, "Popen", lambda argv, **kwargs: FakeProcess())
+    result = coding_eval.run_in_sandbox("irrelevant source", task, pack, runtime="docker")
+    assert result.outcome == "failed_tests"
+    assert result.tests_passed == task.test_count - 1
+    assert result.tests_total == task.test_count
+
+
+def test_run_in_sandbox_reports_full_credit_from_json(monkeypatch):
+    pack = coding_eval.load_pack()
+    task = pack.tasks[0]
+    payload = json.dumps({"tests_run": task.test_count, "passed": task.test_count}).encode() + b"\n"
+
+    class FakeStdout:
+        chunks = iter([payload, b""])
+        def read(self, _size):
+            return next(self.chunks)
+
+    class FakeProcess:
+        stdout = FakeStdout()
+        returncode = 0
+        def poll(self): return 0
+        def wait(self, timeout=None): return 0
+        def terminate(self): pass
+        def kill(self): pass
+
+    monkeypatch.setattr(coding_eval.subprocess, "Popen", lambda argv, **kwargs: FakeProcess())
+    result = coding_eval.run_in_sandbox("irrelevant source", task, pack, runtime="docker")
+    assert result.outcome == "completed"
+    assert result.tests_passed == task.test_count
+    assert result.tests_total == task.test_count
 
 
 def test_find_runtime_fails_closed(monkeypatch):

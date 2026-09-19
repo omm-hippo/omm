@@ -30,6 +30,53 @@ DEFAULT_IMAGE = (
 )
 _IMAGE_RE = re.compile(r"^[a-z0-9./:_-]+@sha256:[0-9a-f]{64}$")
 _FENCE_RE = re.compile(r"```(?:python)?\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
+_TEST_METHOD_RE = re.compile(r"(?m)^\s*def test_\w+")
+
+# Written into the sandbox workspace alongside solution.py/test_solution.py and
+# run in place of test_solution.py. Reports exact per-test pass counts as one
+# trailing JSON line instead of relying on the container's exit code, which
+# only distinguishes all-tests-passed from anything-failed. test_solution.py
+# must not call unittest.main() itself - importing it here would trigger
+# unittest's own sys.exit() (a BaseException, not caught below) before this
+# script gets to run the suite and print its result.
+_RUNNER_SOURCE = (
+    "import json, sys, unittest\n"
+    "sys.path.insert(0, \"/workspace\")\n"
+    "try:\n"
+    "    import test_solution\n"
+    "    suite = unittest.defaultTestLoader.loadTestsFromModule(test_solution)\n"
+    "    result = unittest.TestResult()\n"
+    "    suite.run(result)\n"
+    "    total = result.testsRun\n"
+    "    passed = total - len(result.failures) - len(result.errors)\n"
+    "except Exception:\n"
+    "    total, passed = 0, 0\n"
+    "print(json.dumps({\"tests_run\": total, \"passed\": passed}))\n"
+    "sys.exit(0 if total and passed == total else 1)\n"
+)
+
+
+def _parse_result_line(text: str) -> tuple[int, int] | None:
+    """Parse `_RUNNER_SOURCE`'s trailing JSON line out of captured container
+    output. Only the last non-empty line is considered: anything a generated
+    solution prints to stdout during the test run lands before it."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    try:
+        data = json.loads(lines[-1])
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    tests_run, passed = data.get("tests_run"), data.get("passed")
+    if (
+        isinstance(tests_run, int) and not isinstance(tests_run, bool)
+        and isinstance(passed, int) and not isinstance(passed, bool)
+        and tests_run >= 0 and 0 <= passed <= tests_run
+    ):
+        return tests_run, passed
+    return None
 
 
 class CodingEvaluationError(RuntimeError):
@@ -174,14 +221,14 @@ def load_pack(path: Path | None = None) -> CodingPack:
         payload = json.loads(raw)
     except (UnicodeError, ValueError) as error:
         raise CodingEvaluationError("coding pack is not valid JSON") from error
-    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+    if not isinstance(payload, dict) or payload.get("schema_version") != 3:
         raise CodingEvaluationError("unsupported coding pack schema")
     required_text = ("pack_id", "version", "language", "evaluator", "license", "source")
     for key in required_text:
         value = payload.get(key)
         if not isinstance(value, str) or not value.strip() or len(value) > 200:
             raise CodingEvaluationError(f"coding pack {key} is missing or invalid")
-    if payload["language"] != "python" or payload["evaluator"] != "python-unittest-v1":
+    if payload["language"] != "python" or payload["evaluator"] != "python-unittest-v2":
         raise CodingEvaluationError("unsupported coding pack language or evaluator")
     generation = payload.get("generation")
     if not isinstance(generation, dict):
@@ -232,6 +279,9 @@ def load_pack(path: Path | None = None) -> CodingPack:
             values[key] = value
         if not values["prompt"].strip() or not values["tests"].strip():
             raise CodingEvaluationError(f"coding task {task_id} is incomplete")
+        derived_test_count = len(_TEST_METHOD_RE.findall(values["tests"]))
+        if not 1 <= derived_test_count <= 100:
+            raise CodingEvaluationError(f"coding task {task_id} must declare 1 to 100 test_ methods")
         tasks.append(
             CodingTask(
                 task_id,
@@ -239,7 +289,7 @@ def load_pack(path: Path | None = None) -> CodingPack:
                 values["prompt"],
                 values["starter"],
                 values["tests"],
-                _bounded_int(item.get("test_count"), 1, 100, f"{task_id} test_count"),
+                derived_test_count,
             )
         )
     return CodingPack(
@@ -344,7 +394,7 @@ def sandbox_argv(runtime: str, workspace: Path, pack: CodingPack, cidfile: Path)
         "python",
         "-I",
         "-B",
-        "/workspace/test_solution.py",
+        "/workspace/run_tests.py",
     ]
 
 
@@ -374,10 +424,13 @@ def run_in_sandbox(source: str, task: CodingTask, pack: CodingPack, *, runtime: 
         workspace.mkdir()
         solution_path = workspace / "solution.py"
         tests_path = workspace / "test_solution.py"
+        runner_path = workspace / "run_tests.py"
         solution_path.write_text(source, encoding="utf-8")
         tests_path.write_text(task.tests, encoding="utf-8")
+        runner_path.write_text(_RUNNER_SOURCE, encoding="utf-8")
         solution_path.chmod(0o444)
         tests_path.chmod(0o444)
+        runner_path.chmod(0o444)
         workspace.chmod(0o555)
         cidfile = root / ".container-id"
         command = sandbox_argv(runtime, workspace, pack, cidfile)
@@ -426,10 +479,18 @@ def run_in_sandbox(source: str, task: CodingTask, pack: CodingPack, *, runtime: 
         reader.join(timeout=2)
         duration = time.monotonic() - started
         text = bytes(output).decode("utf-8", errors="replace")
-        if outcome == "completed" and process.returncode != 0:
-            outcome = "failed_tests"
-        passed = task.test_count if outcome == "completed" and process.returncode == 0 else 0
-        return SandboxResult(outcome, passed, task.test_count, duration, text)
+        parsed = _parse_result_line(text) if outcome == "completed" else None
+        if parsed is not None:
+            tests_run, tests_passed = parsed
+            total = tests_run or task.test_count
+            passed = min(tests_passed, total)
+            outcome = "completed" if tests_run and tests_passed == tests_run and process.returncode == 0 else "failed_tests"
+        else:
+            if outcome == "completed" and process.returncode != 0:
+                outcome = "failed_tests"
+            total = task.test_count
+            passed = task.test_count if outcome == "completed" and process.returncode == 0 else 0
+        return SandboxResult(outcome, passed, total, duration, text)
 
 
 def task_prompt(task: CodingTask) -> str:
