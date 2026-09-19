@@ -613,6 +613,30 @@ def _command_path_of(ctx: click.Context) -> list[str]:
     return list(reversed(names))
 
 
+def _hide_unsupported_global_flags(cmd: click.Command, path: list[str]) -> None:
+    """Hide (never remove) the --yes/--json options `global_flags` attaches
+    to every decorated command, on the ones that cannot act on them (see
+    _YES_CAPABLE / _JSON_CAPABLE). Both flags stay fully functional - an
+    unsupported --yes still warns instead of silently no-opping, and an
+    unsupported --json still exits with its usual clear error - this only
+    stops `omm CMD --help` and `omm help --flags` from listing a flag that
+    does nothing on that command (issue #375: help advertised `omm fit -y`,
+    but `fit` has no confirmation prompt to skip). Runs once per invocation
+    from the root group, before Click renders help or parses the chosen
+    subcommand's own options - see _RootHelpGroup.invoke."""
+    commands = getattr(cmd, "commands", None)
+    if commands:
+        for name, sub in commands.items():
+            _hide_unsupported_global_flags(sub, path + [name])
+        return
+    full = " ".join(path)
+    for p in cmd.params:
+        if p.name == "yes_flag" and full not in _YES_CAPABLE:
+            p.hidden = True
+        elif p.name == "json_flag" and full not in _JSON_CAPABLE:
+            p.hidden = True
+
+
 class _DocsEpilogGroup(typer.core.TyperGroup):
     """Adds the `More about omm ...: https://omm.run/commands/...` footer to
     every subcommand's `--help`, at the single place Click resolves a name
@@ -650,6 +674,7 @@ class _RootHelpGroup(_DocsEpilogGroup):
             raise BriefUsageError(error, ctx) from error
 
     def invoke(self, ctx: click.Context):
+        _hide_unsupported_global_flags(ctx.command, [])
         try:
             return super().invoke(ctx)
         except BriefUsageError:
