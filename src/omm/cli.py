@@ -25,6 +25,99 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import unquote, urlsplit
 
+# --- zero-computation fast path: `omm --version` --------------------------
+# Answering this before importing click/typer/rich/the ~30 domain
+# submodules below roughly halves interpreter boot cost (issue #369,
+# follow-up to #224's brew-vs-omm boot investigation). The match is an
+# exact argv shape - anything else (e.g. `--version --json`) falls through
+# unchanged to the normal Typer `--version` handling further down, so the
+# two can never diverge except by that one shape.
+from omm import package_metadata
+from omm.config import OMM_HOME
+
+# None unless this module really runs from an OMM source checkout - a frozen
+# npm/portable build must not adopt whatever sits two directories above its
+# extraction dir (that is the system temp dir) as its own repository.
+_PACKAGE_CHECKOUT = package_metadata._package_checkout()
+SRC_DIR = (
+    _PACKAGE_CHECKOUT
+    if _PACKAGE_CHECKOUT is not None and (_PACKAGE_CHECKOUT / ".git").exists()
+    else OMM_HOME / "src"
+)
+
+
+def _editable_install_uses_src(install_record: dict | None = None) -> bool:
+    """True only when PEP 610 proves the installed package uses SRC_DIR.
+
+    A cloned ``~/.omm/src`` is not proof that the currently executing pipx
+    environment is editable. A failed one-time migration can leave that clone
+    behind while the environment still runs an older VCS snapshot.
+    """
+    if install_record is None:
+        try:
+            install_record = package_metadata.direct_url()
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+    if not isinstance(install_record, dict):
+        return False
+    dir_info = install_record.get("dir_info")
+    if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+        return False
+    raw_url = install_record.get("url")
+    if not isinstance(raw_url, str):
+        return False
+    try:
+        parsed = urlsplit(raw_url)
+    except ValueError:
+        return False
+    if (
+        parsed.scheme != "file"
+        or parsed.netloc not in {"", "localhost"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    from urllib.request import url2pathname  # pulls in http.client/ssl - not worth paying on every command
+
+    raw_path = url2pathname(unquote(parsed.path))
+    if platform.system() == "Windows" and re.fullmatch(r"/[A-Za-z]:.*", raw_path):
+        raw_path = raw_path[1:]
+    try:
+        return Path(raw_path).resolve() == SRC_DIR.resolve()
+    except OSError:
+        return False
+
+
+def _omm_version() -> str:
+    """Reads the freshly-pulled SRC_DIR/pyproject.toml when this is a
+    migrated editable install: dist-info is frozen at the last full `pipx
+    install` (see _deps_satisfied's docstring), so importlib.metadata would
+    keep reporting a stale version after every git-pull-only `omm update`
+    even though the commit hash and code have moved on."""
+    if (
+        package_metadata.install_source() is package_metadata.InstallSource.GIT
+        and _editable_install_uses_src()
+    ):
+        try:
+            text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
+        except OSError:
+            text = None
+        if text is not None:
+            match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+            if match:
+                return match.group(1)
+
+    try:
+        return package_metadata.version()
+    except Exception:
+        return "dev"
+
+
+if sys.argv[1:] == ["--version"]:
+    print(f"omm {_omm_version()}")
+    raise SystemExit(0)
+# --- end fast path; normal (Typer-based) boot continues below -------------
+
 import click
 import typer
 from filelock import Timeout as FileLockTimeout
@@ -59,7 +152,6 @@ from omm import (
     linker,
     memory_guard as memory_guard_mod,
     onboarding,
-    package_metadata,
     predictor,
     recommend_status,
     quality as quality_mod,
@@ -748,31 +840,6 @@ def _handle_emergency_signal(artifact: dict | None, *, verified: bool) -> None:
         raise typer.Exit(1)
     console.print("[success]Updated. Restarting the interrupted command...[/success]")
     _restart_after_update()
-
-
-def _omm_version() -> str:
-    """Reads the freshly-pulled SRC_DIR/pyproject.toml when this is a
-    migrated editable install: dist-info is frozen at the last full `pipx
-    install` (see _deps_satisfied's docstring), so importlib.metadata would
-    keep reporting a stale version after every git-pull-only `omm update`
-    even though the commit hash and code have moved on."""
-    if (
-        package_metadata.install_source() is package_metadata.InstallSource.GIT
-        and _editable_install_uses_src()
-    ):
-        try:
-            text = (SRC_DIR / "pyproject.toml").read_text(encoding="utf-8")
-        except OSError:
-            text = None
-        if text is not None:
-            match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
-            if match:
-                return match.group(1)
-
-    try:
-        return package_metadata.version()
-    except Exception:
-        return "dev"
 
 
 def _version_line(commit: str | None) -> str:
@@ -1535,9 +1602,39 @@ def _refresh_data() -> None:
                 f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/{style}]"
             )
             if artifact.get("trees") and artifact.get("candidates"):
-                _refresh_recommendation_facts(artifact, scan_hardware())
+                if not _global_opts().json:
+                    console.print(
+                        "[muted]Refreshing model descriptions and file sizes in the "
+                        "background (up to 32 repositories)...[/muted]"
+                    )
+                _spawn_provider_facts_refresh()
         except (requests.RequestException, ValueError) as e:
             err_console.print(f"[error]Failed to fetch trained model from {model_url}: {e}[/error]")
+
+
+def _spawn_provider_facts_refresh() -> None:
+    """Detached `_provider-facts-refresh-run` child so the provider-metadata
+    fetch (up to 32 sequential repository lookups, can take about a minute)
+    survives the short-lived `omm update` parent exiting instead of blocking
+    it. Mirrors `_spawn_bg_version_check`'s detachment mechanics."""
+    args = [sys.executable, "-m", "omm.cli", "_provider-facts-refresh-run"]
+    if platform.system() == "Windows":
+        kwargs = {
+            "creationflags": subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+        }
+    else:
+        kwargs = {"start_new_session": True}
+    try:
+        subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **kwargs,
+        )
+    except OSError:
+        pass
 
 
 def _refresh_recommendation_facts(artifact: dict, info: object) -> None:
@@ -1557,16 +1654,6 @@ def _refresh_recommendation_facts(artifact: dict, info: object) -> None:
 
 
 _BARE_REPO_URL = REPO_URL.removeprefix("git+")
-
-# None unless this module really runs from an OMM source checkout - a frozen
-# npm/portable build must not adopt whatever sits two directories above its
-# extraction dir (that is the system temp dir) as its own repository.
-_PACKAGE_CHECKOUT = package_metadata._package_checkout()
-SRC_DIR = (
-    _PACKAGE_CHECKOUT
-    if _PACKAGE_CHECKOUT is not None and (_PACKAGE_CHECKOUT / ".git").exists()
-    else OMM_HOME / "src"
-)
 
 
 def _update_channel() -> str:
@@ -1608,48 +1695,6 @@ def _src_head_commit() -> str | None:
     return result.stdout.strip()
 
 
-def _editable_install_uses_src(install_record: dict | None = None) -> bool:
-    """True only when PEP 610 proves the installed package uses SRC_DIR.
-
-    A cloned ``~/.omm/src`` is not proof that the currently executing pipx
-    environment is editable. A failed one-time migration can leave that clone
-    behind while the environment still runs an older VCS snapshot.
-    """
-    if install_record is None:
-        try:
-            install_record = package_metadata.direct_url()
-        except (AttributeError, OSError, TypeError, ValueError):
-            return False
-    if not isinstance(install_record, dict):
-        return False
-    dir_info = install_record.get("dir_info")
-    if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
-        return False
-    raw_url = install_record.get("url")
-    if not isinstance(raw_url, str):
-        return False
-    try:
-        parsed = urlsplit(raw_url)
-    except ValueError:
-        return False
-    if (
-        parsed.scheme != "file"
-        or parsed.netloc not in {"", "localhost"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        return False
-    from urllib.request import url2pathname  # pulls in http.client/ssl - not worth paying on every command
-
-    raw_path = url2pathname(unquote(parsed.path))
-    if platform.system() == "Windows" and re.fullmatch(r"/[A-Za-z]:.*", raw_path):
-        raw_path = raw_path[1:]
-    try:
-        return Path(raw_path).resolve() == SRC_DIR.resolve()
-    except OSError:
-        return False
-
-
 def _installed_commit() -> str | None:
     """The commit the installed package actually executes.
 
@@ -1685,7 +1730,9 @@ def _remote_head_commit(ref: str = "main") -> str | None:
     return result.stdout.split()[0]
 
 
-_SKIP_UPDATE_CHECK_SUBCOMMANDS = {"update", "doctor", "help", "_bg-version-check", "_auto-import-run"}
+_SKIP_UPDATE_CHECK_SUBCOMMANDS = {
+    "update", "doctor", "help", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+}
 
 
 @app.command(name="_bg-version-check", hidden=True)
@@ -1715,6 +1762,25 @@ def _auto_import_run_cmd() -> None:
     watch.run_watch_loop()
 
 
+@app.command(name="_provider-facts-refresh-run", hidden=True)
+def _provider_facts_refresh_run_cmd() -> None:
+    """Internal. Spawned by `_spawn_provider_facts_refresh` as a detached
+    child so the provider-metadata fetch survives the short-lived `omm
+    update` parent exiting. Silently skips if another instance is already
+    running (e.g. `omm update` invoked twice in a row) rather than fetching
+    a duplicate set of repositories."""
+    from omm import recommend_facts
+
+    artifact = predictor.load_cached_model()
+    if not artifact or not artifact.get("trees") or not artifact.get("candidates"):
+        return
+    try:
+        with locked(config_mod.OMM_HOME / "locks" / "provider-facts-refresh", timeout=0):
+            recommend_facts.refresh(artifact, scan_hardware())
+    except FileLockTimeout:
+        pass
+
+
 def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
     """Whether the deferred update notice should still print by the time the
     command has finished.
@@ -1734,7 +1800,9 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
     return opts.command_body_ran and not opts.quiet
 
 
-_SKIP_ONBOARDING_SUBCOMMANDS = {"setup", "doctor", "help", "update", "_bg-version-check", "_auto-import-run"}
+_SKIP_ONBOARDING_SUBCOMMANDS = {
+    "setup", "doctor", "help", "update", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+}
 
 
 def _ask_setup_choice() -> str:
@@ -1858,17 +1926,22 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "doctor",
     "_bg-version-check",
     "_auto-import-run",
+    "_provider-facts-refresh-run",
 }
 
 # Hidden background children/services are not a user-issued command, so they
 # must not flush the queued-upload channels (telemetry/error_report/usage).
-_SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {"setting", "_bg-version-check", "_auto-import-run"}
+_SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
+    "setting", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+}
 
 # omm's own hidden background commands. Not something a user typed, so they
 # must not add rows to the opt-in usage aggregate, which PRIVACY.md describes
 # as a count of <command> <outcome> the user ran. Local runlog files are not
 # uploaded, so those stay untouched.
-_INTERNAL_SUBCOMMANDS = frozenset({"_bg-version-check", "_auto-import-run"})
+_INTERNAL_SUBCOMMANDS = frozenset(
+    {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run"}
+)
 
 
 def _maybe_auto_import(ctx: typer.Context) -> None:
@@ -5300,6 +5373,52 @@ def _select_benchmark_engine() -> str | None:
     return None
 
 
+def _select_benchmark_engine_for_models(models: list[str]) -> str | None:
+    """Prefer whichever reachable engine already has every requested model
+    loaded, ahead of `_select_benchmark_engine`'s daemon-reachability-only
+    guess. Without this, a model linked only into LM Studio still gets
+    benchmarked against Ollama whenever Ollama's daemon answers first,
+    surfacing as a `model_load_failed` transient error instead of picking
+    the engine that can actually serve it (reported 2026-09-17).
+
+    Returns None - deferring to `_select_benchmark_engine` - when `models`
+    is `["all"]` (the caller expands that per-engine after selection), or
+    when no single reachable engine's live model list covers every
+    requested model (none, or an ambiguous match on both)."""
+    if models == ["all"]:
+        return None
+    candidates: list[str] = []
+    if benchmark.ollama_daemon_reachable():
+        try:
+            ollama_tags = set(quality_mod.list_benchmarkable_tags())
+        except Exception:
+            ollama_tags = set()
+        if ollama_tags and all(m in ollama_tags for m in models):
+            candidates.append("ollama")
+    if linker.lmstudio_daemon_reachable():
+        lmstudio_models = _lmstudio_installed_models()
+        if lmstudio_models and all(m in lmstudio_models for m in models):
+            candidates.append("lmstudio")
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _print_model_engine_selection_notice(engine: str, models: list[str]) -> None:
+    """Fires only when `_select_benchmark_engine_for_models` picked an
+    engine by matching where the requested models are actually loaded,
+    rather than by plain daemon-reachability order. Ollama can be running
+    fine and still lose this pick because the model isn't in it - the
+    generic `_print_engine_selection_notice` message ("Ollama isn't
+    installed or running") would be actively wrong in that case."""
+    if _global_opts().quiet:
+        return
+    which = "it's" if len(models) == 1 else "they're"
+    console.print(
+        f"[muted]Using {_engine_label(engine)} - {which} linked there, not the other runner.[/muted]"
+    )
+
+
 def _ensure_engine_running(
     engine: str, action: str, *, assume_yes: bool = False
 ) -> tuple[str, object]:
@@ -6522,7 +6641,7 @@ def _report_lmstudio_load_verification(outcome: InstallOutcome) -> None:
     second time for no extra signal, so it's skipped. This older probe still
     has unique value when LM Studio was linked but never selected for
     adapter-based verification (e.g. another runtime was verified instead, or
-    `--no-verify-runtime` was used)."""
+    `--no-load-check` was used)."""
     if not outcome.linked.get("lmstudio"):
         return
     if outcome.compatibility_engine == "lmstudio":
@@ -6559,9 +6678,9 @@ def install(
         "first and the download is skipped when the installed file already "
         "matches it.",
     ),
-    verify_runtime: bool | None = typer.Option(
+    load_check: bool | None = typer.Option(
         None,
-        "--verify-runtime/--no-verify-runtime",
+        "--load-check/--no-load-check",
         help="Run (or skip) a short local load/generation check after linking. "
         "Unset asks before loading an unloaded model.",
     ),
@@ -6572,8 +6691,8 @@ def install(
     # OptionInfo sentinel (all truthy) instead of the real default. Coerce
     # them back before anything reads them - an unguarded `skip_unfit`
     # silently turns a link/disk failure into a no-op install.
-    if not isinstance(verify_runtime, (bool, type(None))):
-        verify_runtime = None
+    if not isinstance(load_check, (bool, type(None))):
+        load_check = None
     if not isinstance(skip_unfit, bool):
         skip_unfit = False
     if not isinstance(force, bool):
@@ -6622,8 +6741,8 @@ def install(
             force=force,
             verify_runtime_after_install=True,
             runtime_load_consent=(
-                verify_runtime
-                if verify_runtime is not None
+                load_check
+                if load_check is not None
                 else (True if _global_opts().yes else None)
             ),
             preferred_runtime=load_config().get("default_engine"),
@@ -9739,10 +9858,6 @@ def export_model(
     console.print(f"[success]Exported {filename} to {exported}.[/success]")
 
 
-
-
-
-
 def _cleanup_incomplete_installs() -> int:
     if not MODELS_DIR.exists():
         return 0
@@ -9985,9 +10100,9 @@ def benchmark_cmd(
         help="Write evidence to this JSON path.",
     ),
     speed_runs: int = typer.Option(3, "--speed-runs", min=1, max=10),
-    confirm_performance_timeout: bool = typer.Option(
+    retry_on_timeout: bool = typer.Option(
         False,
-        "--confirm-performance-timeout",
+        "--retry-on-timeout",
         help=(
             "If a model's first generation attempt times out, wait for it to "
             "fully finish, health-check the daemon, and retry exactly once "
@@ -10011,12 +10126,17 @@ def benchmark_cmd(
     if "all" in models and models != ["all"]:
         err_console.print("[error]`all` must be the only argument.[/error]")
         raise typer.Exit(1)
-    engine = _select_benchmark_engine()
-    if engine is None:
-        _print_no_engine_error("benchmark")
-        raise typer.Exit(1)
-    if not json_output:
-        _print_engine_selection_notice(engine)
+    engine = _select_benchmark_engine_for_models(models)
+    if engine is not None:
+        if not json_output:
+            _print_model_engine_selection_notice(engine, models)
+    else:
+        engine = _select_benchmark_engine()
+        if engine is None:
+            _print_no_engine_error("benchmark")
+            raise typer.Exit(1)
+        if not json_output:
+            _print_engine_selection_notice(engine)
     engine, started_daemon = _ensure_engine_running(
         engine, "benchmark", assume_yes=_global_opts().yes
     )
@@ -10108,7 +10228,7 @@ def benchmark_cmd(
                     speed_runs=speed_runs,
                     engine=engine,
                     lmstudio_models=lmstudio_models,
-                    confirm_performance_timeout=confirm_performance_timeout,
+                    retry_on_timeout=retry_on_timeout,
                     on_model_start=_on_model_start,
                     on_daemon_event=_on_daemon_event,
                     daemon_ref=daemon_ref,

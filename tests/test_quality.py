@@ -1082,7 +1082,7 @@ def test_failure_entry_never_leaks_raw_exception_text_paths_or_ips(monkeypatch):
     }
 
 
-# --- performance_unfit confirmation flow (--confirm-performance-timeout) --
+# --- performance_unfit confirmation flow (--retry-on-timeout) --
 #
 # These tests mock at the _evaluate_tag_once boundary (one full attempt),
 # not evaluate_model directly. _evaluate_tag_once has only a TypeError
@@ -1182,7 +1182,7 @@ def test_default_mode_single_timeout_is_transient_error_never_confirmed(monkeypa
 
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
 
-    report = quality.collect_evidence(["big:latest"], _hardware())  # confirm_performance_timeout omitted
+    report = quality.collect_evidence(["big:latest"], _hardware())  # retry_on_timeout omitted
 
     entry = report["models"][0]
     assert entry["outcome"] == "transient_error"
@@ -1263,7 +1263,7 @@ def test_confirm_mode_second_attempt_succeeds_reports_real_success(monkeypatch):
 
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
 
-    report = quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    report = quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     entry = report["models"][0]
     assert entry["outcome"] == "success"
@@ -1285,7 +1285,7 @@ def test_confirm_mode_two_confirmed_timeouts_is_performance_unfit(monkeypatch):
 
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
 
-    report = quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    report = quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     entry = report["models"][0]
     assert entry["outcome"] == "performance_unfit"
@@ -1312,7 +1312,7 @@ def test_confirm_mode_explicit_oom_is_model_unfit(monkeypatch, attempt_of_failur
 
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
 
-    report = quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    report = quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     entry = report["models"][0]
     assert entry["outcome"] == "model_unfit"
@@ -1334,7 +1334,7 @@ def test_confirm_mode_daemon_down_before_confirmation_is_transient_error(monkeyp
 
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
 
-    report = quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    report = quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     entry = report["models"][0]
     assert entry["outcome"] == "transient_error"
@@ -1362,7 +1362,7 @@ def test_confirm_mode_model_gone_before_confirmation_is_transient_error(monkeypa
 
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
 
-    report = quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    report = quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     entry = report["models"][0]
     assert entry["outcome"] == "transient_error"
@@ -1391,7 +1391,7 @@ def test_confirm_mode_second_attempt_waits_for_confirmed_unload_not_a_fixed_slee
         quality, "ensure_model_unloaded", lambda tag, **k: events.append("unload_confirmed") or True
     )
 
-    quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     assert events == ["attempt", "unload_confirmed", "attempt"]
 
@@ -1415,7 +1415,7 @@ def test_confirm_mode_second_attempt_not_issued_before_unload_is_confirmed(monke
     monkeypatch.setattr(quality, "ensure_model_unloaded", fake_ensure_unloaded)
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
 
-    quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     # The unload confirmation fully completes between the two attempts -
     # never interleaved with, or skipped before, the second attempt.
@@ -1438,7 +1438,7 @@ def test_confirm_mode_unload_not_confirmed_is_transient_error_and_skips_second_a
 
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
 
-    report = quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    report = quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     entry = report["models"][0]
     assert entry["outcome"] == "transient_error"
@@ -1460,7 +1460,7 @@ def test_ensure_model_unloaded_is_called_with_the_correct_tag_before_confirmatio
         quality, "_evaluate_tag_once", lambda tag, hardware, pack, speed_runs, **_kwargs: _timeout_entry(tag)
     )
 
-    quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     assert seen["tag"] == "big:latest"
 
@@ -1487,7 +1487,7 @@ def test_confirm_mode_cleans_up_after_the_confirmation_attempt_regardless_of_out
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
     monkeypatch.setattr(quality, "unload_model", lambda tag: unload_calls.append(tag) or True)
 
-    quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     assert unload_calls == ["big:latest"]
 
@@ -1506,7 +1506,7 @@ def test_confirm_mode_final_cleanup_failure_does_not_change_the_verdict(monkeypa
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
     monkeypatch.setattr(quality, "unload_model", lambda tag: False)  # final cleanup "fails"
 
-    report = quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    report = quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     entry = report["models"][0]
     assert entry["outcome"] == "performance_unfit"
@@ -1630,7 +1630,7 @@ def test_performance_unfit_entry_has_no_stray_or_speed_fields(monkeypatch):
 
     monkeypatch.setattr(quality, "_evaluate_tag_once", fake_attempt)
 
-    report = quality.collect_evidence(["big:latest"], _hardware(), confirm_performance_timeout=True)
+    report = quality.collect_evidence(["big:latest"], _hardware(), retry_on_timeout=True)
 
     entry = report["models"][0]
     assert entry["outcome"] == "performance_unfit"
@@ -2121,8 +2121,8 @@ def test_collect_evidence_lmstudio_gives_up_after_max_daemon_restart_failures(mo
     assert any("won't come back" in event for event in events)
 
 
-def test_collect_evidence_lmstudio_confirm_performance_timeout_is_a_noop(monkeypatch):
-    """confirm_performance_timeout's second-attempt confirmation flow is
+def test_collect_evidence_lmstudio_retry_on_timeout_is_a_noop(monkeypatch):
+    """retry_on_timeout's second-attempt confirmation flow is
     Ollama-only (it depends on ensure_model_unloaded's /api/ps polling,
     which has no LM Studio equivalent) - a generation_timeout on the LM
     Studio path must stay a single unconfirmed transient_error rather than
@@ -2145,7 +2145,7 @@ def test_collect_evidence_lmstudio_confirm_performance_timeout_is_a_noop(monkeyp
 
     report = quality.collect_evidence(
         ["a"], _hardware(), engine="lmstudio",
-        lmstudio_models={"a": {}}, confirm_performance_timeout=True,
+        lmstudio_models={"a": {}}, retry_on_timeout=True,
     )
 
     entry = report["models"][0]

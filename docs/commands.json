@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.108",
+  "omm_version": "0.3.109",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -53,7 +53,7 @@
         },
         {
           "flags": [
-            "--confirm-performance-timeout"
+            "--retry-on-timeout"
           ],
           "metavar": null,
           "is_flag": true,
@@ -1318,8 +1318,8 @@
         },
         {
           "flags": [
-            "--verify-runtime",
-            "--no-verify-runtime"
+            "--load-check",
+            "--no-load-check"
           ],
           "metavar": null,
           "is_flag": true,

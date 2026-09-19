@@ -58,7 +58,7 @@ FAILURE_REASON_CONNECTION_ERROR = "connection_error"
 FAILURE_REASON_NO_TIMING_METRICS = "no_timing_metrics"
 FAILURE_REASON_UNKNOWN = "unknown"
 # Only ever produced by the explicit confirmation flow (see
-# collect_evidence(..., confirm_performance_timeout=True) /
+# collect_evidence(..., retry_on_timeout=True) /
 # _confirm_generation_timeout below) - never by a single, unconfirmed
 # request. A lone generation_timeout stays a transient_error.
 FAILURE_REASON_CONFIRMED_GENERATION_TIMEOUT = "confirmed_generation_timeout"
@@ -1401,7 +1401,7 @@ def collect_evidence(
     *,
     engine: str = "ollama",
     lmstudio_models: dict[str, dict] | None = None,
-    confirm_performance_timeout: bool = False,
+    retry_on_timeout: bool = False,
     on_model_start: Callable[[str, int, int], None] | None = None,
     on_daemon_event: Callable[[str], None] | None = None,
     daemon_ref: dict | None = None,
@@ -1424,7 +1424,7 @@ def collect_evidence(
     modelKey) - this keeps the `tags: list[str]` shape itself unchanged so
     callers matching results back via model["tag"] need no changes.
 
-    confirm_performance_timeout's second-attempt confirmation flow
+    retry_on_timeout's second-attempt confirmation flow
     (_confirm_generation_timeout) stays Ollama-only: it relies on
     ensure_model_unloaded's /api/ps-based "proven gone" polling, which has
     no LM Studio equivalent yet. A generation_timeout on the LM Studio path
@@ -1520,7 +1520,7 @@ def collect_evidence(
         else:
             entry = _evaluate_tag_once(tag, hardware, pack, speed_runs, cache=metadata_cache)
         if (
-            confirm_performance_timeout
+            retry_on_timeout
             and engine == "ollama"
             and entry.get("outcome") == "transient_error"
             and entry.get("failure_reason") == FAILURE_REASON_GENERATION_TIMEOUT

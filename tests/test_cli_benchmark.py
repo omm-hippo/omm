@@ -504,10 +504,57 @@ def test_benchmark_falls_back_to_lmstudio_when_ollama_daemon_wont_start(
 
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
 
-    result = runner.invoke(cli.app, ["benchmark", "qwen2.5-0.5b-instruct"])
+    # "all" bypasses `_select_benchmark_engine_for_models` (it only matches
+    # explicitly named models), so this still exercises
+    # `_ensure_engine_running`'s ollama-start-failure fallback rather than
+    # the model-linked pre-selection covered separately below.
+    result = runner.invoke(cli.app, ["benchmark", "all"])
 
     assert seen["engine"] == "lmstudio"
     assert "falling back to LM Studio" in result.output
+
+
+def test_benchmark_prefers_engine_where_requested_model_is_actually_linked(
+    isolated_omm_home, monkeypatch
+):
+    """`_select_benchmark_engine` only checks daemon reachability, blind to
+    which engine actually has the requested model. A running-but-empty
+    Ollama must not win over an already-running LM Studio that has the
+    model, or the run fails with model_load_failed even though a usable
+    engine is one daemon away (reported 2026-09-17)."""
+    config.update_config(onboarding_completed=True)
+    monkeypatch.setattr(cli.benchmark, "find_ollama_executable", lambda: cli.Path("ollama"))
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli.quality_mod, "list_benchmarkable_tags", lambda: ["other-model:latest"])
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: "/some/lms")
+    monkeypatch.setattr(cli.linker, "lmstudio_daemon_reachable", lambda: True)
+    monkeypatch.setattr(
+        cli.linker,
+        "_lmstudio_list_models",
+        lambda lms_path: [
+            {
+                "type": "llm",
+                "modelKey": "qwen2.5-0.5b-instruct",
+                "architecture": "qwen2",
+                "quantization": {"name": "Q8_0", "bits": 8},
+                "paramsString": "630M",
+                "maxContextLength": 32768,
+                "trainedForToolUse": True,
+            },
+        ],
+    )
+    seen = {}
+
+    def fake_collect_evidence(models, *a, engine=None, **k):
+        seen["engine"] = engine
+        raise cli.quality_mod.QualityEvaluationError("stop here, we only care about the engine")
+
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
+
+    result = runner.invoke(cli.app, ["benchmark", "qwen2.5-0.5b-instruct"])
+
+    assert seen["engine"] == "lmstudio"
+    assert "Using LM Studio - it's linked there, not the other runner." in result.output
 
 
 def test_benchmark_lmstudio_expands_all_and_rejects_unknown_model(isolated_omm_home, monkeypatch):
@@ -771,7 +818,7 @@ def test_benchmark_stops_started_daemon_when_installed_model_listing_raises(
     assert stopped == [("ollama", started)]
 
 
-# --- --confirm-performance-timeout wiring and performance_unfit upload ----
+# --- --retry-on-timeout wiring and performance_unfit upload ----
 
 
 def _performance_unfit_report():
@@ -795,39 +842,39 @@ def _performance_unfit_report():
     }
 
 
-def test_confirm_performance_timeout_flag_is_forwarded_to_collect_evidence(isolated_omm_home, monkeypatch):
+def test_retry_on_timeout_flag_is_forwarded_to_collect_evidence(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     seen = {}
 
     def fake_collect_evidence(
-        models, hw, pack_path=None, speed_runs=3, confirm_performance_timeout=False,
+        models, hw, pack_path=None, speed_runs=3, retry_on_timeout=False,
         on_model_start=None, on_daemon_event=None, engine="ollama", lmstudio_models=None,
         daemon_ref=None,
     ):
-        seen["confirm_performance_timeout"] = confirm_performance_timeout
+        seen["retry_on_timeout"] = retry_on_timeout
         return _full_report()
 
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
     monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
 
-    runner.invoke(cli.app, ["benchmark", "small:latest", "--confirm-performance-timeout"])
+    runner.invoke(cli.app, ["benchmark", "small:latest", "--retry-on-timeout"])
 
-    assert seen["confirm_performance_timeout"] is True
+    assert seen["retry_on_timeout"] is True
 
 
-def test_confirm_performance_timeout_flag_defaults_to_false(isolated_omm_home, monkeypatch):
+def test_retry_on_timeout_flag_defaults_to_false(isolated_omm_home, monkeypatch):
     """Never auto-runs the second attempt without the explicit flag."""
     monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
     monkeypatch.setattr(cli, "scan_hardware", _hardware)
     seen = {}
 
     def fake_collect_evidence(
-        models, hw, pack_path=None, speed_runs=3, confirm_performance_timeout=False,
+        models, hw, pack_path=None, speed_runs=3, retry_on_timeout=False,
         on_model_start=None, on_daemon_event=None, engine="ollama", lmstudio_models=None,
         daemon_ref=None,
     ):
-        seen["confirm_performance_timeout"] = confirm_performance_timeout
+        seen["retry_on_timeout"] = retry_on_timeout
         return _full_report()
 
     monkeypatch.setattr(cli.quality_mod, "collect_evidence", fake_collect_evidence)
@@ -835,7 +882,7 @@ def test_confirm_performance_timeout_flag_defaults_to_false(isolated_omm_home, m
 
     runner.invoke(cli.app, ["benchmark", "small:latest"])
 
-    assert seen["confirm_performance_timeout"] is False
+    assert seen["retry_on_timeout"] is False
 
 
 def test_benchmark_reports_and_uploads_performance_unfit_outcome(isolated_omm_home, monkeypatch):
@@ -849,7 +896,7 @@ def test_benchmark_reports_and_uploads_performance_unfit_outcome(isolated_omm_ho
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
-    result = runner.invoke(cli.app, ["benchmark", "big:latest", "--confirm-performance-timeout"])
+    result = runner.invoke(cli.app, ["benchmark", "big:latest", "--retry-on-timeout"])
 
     assert result.exit_code == 1, result.stdout  # zero successes
     assert "0 succeeded, 0 model_unfit, 1 performance_unfit, 0 transient_error" in result.stdout
@@ -881,7 +928,7 @@ def test_performance_unfit_upload_rejected_when_confirmation_attempts_is_not_two
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
-    runner.invoke(cli.app, ["benchmark", "big:latest", "--confirm-performance-timeout"])
+    runner.invoke(cli.app, ["benchmark", "big:latest", "--retry-on-timeout"])
 
     assert sent == []
 
@@ -899,7 +946,7 @@ def test_performance_unfit_upload_rejected_when_timeout_seconds_missing(isolated
     sent = []
     monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
 
-    runner.invoke(cli.app, ["benchmark", "big:latest", "--confirm-performance-timeout"])
+    runner.invoke(cli.app, ["benchmark", "big:latest", "--retry-on-timeout"])
 
     assert sent == []
 
