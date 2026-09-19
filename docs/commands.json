@@ -12,10 +12,10 @@
       "aliases": [],
       "summary": "Measure a small reproducible quality pack and decode speed.",
       "description": "",
-      "usage": "omm benchmark [OPTIONS] {models}...",
+      "usage": "omm benchmark [OPTIONS] MODELS...",
       "arguments": [
         {
-          "name": "models...",
+          "name": "MODELS...",
           "help": "One or more already-installed model identifiers for the active engine (Ollama tags, or LM Studio modelKeys when Ollama isn't available).",
           "required": true
         }
@@ -25,7 +25,7 @@
           "flags": [
             "--pack"
           ],
-          "metavar": "<path>",
+          "metavar": "PATH",
           "is_flag": false,
           "help": "Use a different versioned JSON pack.",
           "default": null,
@@ -35,7 +35,7 @@
           "flags": [
             "--output"
           ],
-          "metavar": "<path>",
+          "metavar": "PATH",
           "is_flag": false,
           "help": "Write evidence to this JSON path.",
           "default": null,
@@ -45,7 +45,7 @@
           "flags": [
             "--speed-runs"
           ],
-          "metavar": "<int range>",
+          "metavar": "INTEGER RANGE",
           "is_flag": false,
           "help": "",
           "default": 3,
@@ -53,7 +53,7 @@
         },
         {
           "flags": [
-            "--confirm-performance-timeout"
+            "--retry-on-timeout"
           ],
           "metavar": null,
           "is_flag": true,
@@ -121,7 +121,7 @@
           "flags": [
             "--include"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Add one optional group: os, policies, or checks. Repeat as needed.",
           "default": null,
@@ -131,7 +131,7 @@
           "flags": [
             "--save"
           ],
-          "metavar": "<path>",
+          "metavar": "PATH",
           "is_flag": false,
           "help": "Save the previewed JSON to this path. Nothing is uploaded.",
           "default": null,
@@ -256,10 +256,10 @@
       "aliases": [],
       "summary": "Compare selected catalog packages without installing or running them.",
       "description": "",
-      "usage": "omm compare [OPTIONS] {models}...",
+      "usage": "omm compare [OPTIONS] MODELS...",
       "arguments": [
         {
-          "name": "models...",
+          "name": "MODELS...",
           "help": "Two to five exact model names, repositories, filenames, or install references from the signed recommendation catalog.",
           "required": true
         }
@@ -269,7 +269,7 @@
           "flags": [
             "--profile"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Memory-sharing profile: dedicated, balanced, or minimal.",
           "default": "balanced",
@@ -279,7 +279,7 @@
           "flags": [
             "--for"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Optional measured-quality task: General, Coding, Reasoning, Writing, Translation, or Documents.",
           "default": null,
@@ -355,7 +355,7 @@
           "flags": [
             "--max-minutes"
           ],
-          "metavar": "<float>",
+          "metavar": "FLOAT",
           "is_flag": false,
           "help": "Stop after this many minutes; finish safe cleanup.",
           "default": null,
@@ -365,7 +365,7 @@
           "flags": [
             "--max-download-gb"
           ],
-          "metavar": "<float>",
+          "metavar": "FLOAT",
           "is_flag": false,
           "help": "Limit model data read to this many GiB, including retries (metadata/HTTP overhead excluded).",
           "default": null,
@@ -375,7 +375,7 @@
           "flags": [
             "--max-models"
           ],
-          "metavar": "<int>",
+          "metavar": "INTEGER",
           "is_flag": false,
           "help": "Try at most this many new models; retries count as the same model.",
           "default": null,
@@ -504,10 +504,10 @@
       "aliases": [],
       "summary": "Read-only engine diagnostics and the next step for missing components.",
       "description": "",
-      "usage": "omm engine doctor [OPTIONS] [engine]",
+      "usage": "omm engine doctor [OPTIONS] [ENGINE]",
       "arguments": [
         {
-          "name": "engine",
+          "name": "[ENGINE]",
           "help": "",
           "required": false
         }
@@ -567,10 +567,10 @@
       "aliases": [],
       "summary": "Install a local AI runner program (Ollama, LM Studio, etc.).",
       "description": "With no argument, interactively pick from a checklist. With an engine key, install that one runner directly.",
-      "usage": "omm engine install [OPTIONS] [engine]",
+      "usage": "omm engine install [OPTIONS] [ENGINE]",
       "arguments": [
         {
-          "name": "engine",
+          "name": "[ENGINE]",
           "help": "Engine key to install directly, skipping the checklist (ollama, lmstudio, jan, anythingllm, mstystudio, textgenwebui, koboldcpp).",
           "required": false
         }
@@ -630,10 +630,10 @@
       "aliases": [],
       "summary": "Show installation, package version, and local API state separately.",
       "description": "",
-      "usage": "omm engine status [OPTIONS] [engine]",
+      "usage": "omm engine status [OPTIONS] [ENGINE]",
       "arguments": [
         {
-          "name": "engine",
+          "name": "[ENGINE]",
           "help": "",
           "required": false
         }
@@ -704,10 +704,10 @@
       "aliases": [],
       "summary": "Remove an engine package without deleting the OMM model hub.",
       "description": "",
-      "usage": "omm engine uninstall [OPTIONS] {engine}",
+      "usage": "omm engine uninstall [OPTIONS] ENGINE",
       "arguments": [
         {
-          "name": "engine",
+          "name": "ENGINE",
           "help": "",
           "required": true
         }
@@ -777,10 +777,10 @@
       "aliases": [],
       "summary": "Update one engine through its identified package manager.",
       "description": "",
-      "usage": "omm engine update [OPTIONS] {engine}",
+      "usage": "omm engine update [OPTIONS] ENGINE",
       "arguments": [
         {
-          "name": "engine",
+          "name": "ENGINE",
           "help": "",
           "required": true
         }
@@ -849,10 +849,10 @@
       "aliases": [],
       "summary": "Evaluate one installed model with sandboxed Python coding tasks.",
       "description": "Generated code runs only in Docker or Podman and is never stored or uploaded. This command does not install or download models.",
-      "usage": "omm evaluate [OPTIONS] {model}",
+      "usage": "omm evaluate [OPTIONS] MODEL",
       "arguments": [
         {
-          "name": "model",
+          "name": "MODEL",
           "help": "Already-installed Ollama model tag to evaluate.",
           "required": true
         }
@@ -862,7 +862,7 @@
           "flags": [
             "--pack"
           ],
-          "metavar": "<path>",
+          "metavar": "PATH",
           "is_flag": false,
           "help": "Versioned Python coding pack JSON.",
           "default": null,
@@ -872,7 +872,7 @@
           "flags": [
             "--output"
           ],
-          "metavar": "<path>",
+          "metavar": "PATH",
           "is_flag": false,
           "help": "Write structured evidence to this JSON path.",
           "default": null,
@@ -931,15 +931,15 @@
       "aliases": [],
       "summary": "Export a hub model to `destination` for deployment or backup: a hard link when possible, otherwise a real copy. Never a symlink, so the exported file keeps working after `omm uninstall` or on another machine. Not tracked in the registry - uninstalling the source model never touches an exported copy. Also writes a provenance/checksum manifest sidecar next to it, so `omm import` on another machine (including an air-gapped one) can restore the source repo, version, and install date instead of treating the file as an anonymous import.",
       "description": "",
-      "usage": "omm export [OPTIONS] {filename} {destination}",
+      "usage": "omm export [OPTIONS] FILENAME DESTINATION",
       "arguments": [
         {
-          "name": "filename",
+          "name": "FILENAME",
           "help": "",
           "required": true
         },
         {
-          "name": "destination",
+          "name": "DESTINATION",
           "help": "Directory to place the exported file in.",
           "required": true
         }
@@ -1008,10 +1008,10 @@
       "aliases": [],
       "summary": "Show whether a model fits this PC's memory right now - installed or not - as a bar over what other apps use, the OS reserve, and the install cap.",
       "description": "",
-      "usage": "omm fit [OPTIONS] {model_name}",
+      "usage": "omm fit [OPTIONS] MODEL_NAME",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "MODEL_NAME",
           "help": "Installed model, curated id, repo/file, or search number.",
           "required": true
         }
@@ -1070,10 +1070,10 @@
       "aliases": [],
       "summary": "Show help, same as --help.",
       "description": "",
-      "usage": "omm help [OPTIONS] [command]",
+      "usage": "omm help [OPTIONS] [COMMAND]",
       "arguments": [
         {
-          "name": "command",
+          "name": "[COMMAND]",
           "help": "Show help for a specific subcommand.",
           "required": false
         }
@@ -1152,10 +1152,10 @@
       "aliases": [],
       "summary": "Adopt .gguf files from other local AI apps into the omm hub.",
       "description": "Scans every supported local AI app (and optionally PATH) for files not yet managed by omm, then offers to adopt each one it finds.",
-      "usage": "omm import [OPTIONS] [path]",
+      "usage": "omm import [OPTIONS] [PATH]",
       "arguments": [
         {
-          "name": "path",
+          "name": "[PATH]",
           "help": "Optional extra directory to also scan for stray .gguf files.",
           "required": false
         }
@@ -1214,10 +1214,10 @@
       "aliases": [],
       "summary": "Show what a model is - source repo, version, size and linked-program run commands once installed, or author, downloads, license and architecture for a search result. `omm fit` is what tells you whether it runs here.",
       "description": "",
-      "usage": "omm info [OPTIONS] {model_name}",
+      "usage": "omm info [OPTIONS] MODEL_NAME",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "MODEL_NAME",
           "help": "Installed model, curated id, repo/file, or search number.",
           "required": true
         }
@@ -1276,10 +1276,10 @@
       "aliases": [],
       "summary": "Download a model into the central hub and link it into installed engines.",
       "description": "",
-      "usage": "omm install [OPTIONS] {model_name}",
+      "usage": "omm install [OPTIONS] MODEL_NAME",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "MODEL_NAME",
           "help": "",
           "required": true
         }
@@ -1318,8 +1318,8 @@
         },
         {
           "flags": [
-            "--verify-runtime",
-            "--no-verify-runtime"
+            "--load-check",
+            "--no-load-check"
           ],
           "metavar": null,
           "is_flag": true,
@@ -1380,10 +1380,10 @@
       "aliases": [],
       "summary": "Link models into every supported app, an arbitrary directory, or both scoped to a chosen subset of models.",
       "description": "Without --to, re-verify the selected models' links into every supported app (Ollama, LM Studio, Jan, AnythingLLM, Msty, text-generation-webui, KoboldCpp) and repair them. Covers models that were never linked *and* ones whose link is now broken, missing, or stale - link_engine() always replaces the existing symlink/manifest, so this always re-links rather than trusting the registry's stored `linked` flag. With --to, reuse the central GGUF through zero-copy links when possible, with an explicit copy warning when Windows permissions and volume boundaries make that impossible.",
-      "usage": "omm link [OPTIONS] [models]",
+      "usage": "omm link [OPTIONS] [MODELS]",
       "arguments": [
         {
-          "name": "models",
+          "name": "[MODELS]",
           "help": "Comma-separated model filenames or list numbers to link (omit for every installed model).",
           "required": false
         }
@@ -1393,7 +1393,7 @@
           "flags": [
             "--engine"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Only re-verify/repair links for this engine.",
           "default": null,
@@ -1403,7 +1403,7 @@
           "flags": [
             "--to"
           ],
-          "metavar": "<path>",
+          "metavar": "PATH",
           "is_flag": false,
           "help": "Link into an arbitrary directory instead of the supported runners (for an unsupported local AI app).",
           "default": null,
@@ -1481,7 +1481,7 @@
           "flags": [
             "--engine"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Only show models linked into this engine.",
           "default": null,
@@ -1548,7 +1548,7 @@
             "--lines",
             "-n"
           ],
-          "metavar": "<int>",
+          "metavar": "INTEGER",
           "is_flag": false,
           "help": "Show the last N runs.",
           "default": 40,
@@ -1558,7 +1558,7 @@
           "flags": [
             "--grep"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Only show runs whose block contains TEXT.",
           "default": null,
@@ -1627,10 +1627,10 @@
       "aliases": [],
       "summary": "Mark an installed model to be archived before its next `omm install --force`, so `omm rollback` can undo that reinstall afterwards. Nothing is copied yet - GGUFs are large, so the archive is only made right before the reinstall actually replaces the file, not at pin time. `omm install --force` still replaces a pinned model same as any other; pin only decides whether the version it replaces is kept.",
       "description": "",
-      "usage": "omm pin [OPTIONS] {model_name}",
+      "usage": "omm pin [OPTIONS] MODEL_NAME",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "MODEL_NAME",
           "help": "",
           "required": true
         }
@@ -1696,7 +1696,7 @@
           "flags": [
             "--profile"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "How much of the machine to claim: dedicated, balanced, or minimal. Prompted for interactively when omitted; defaults to balanced under --yes/--json.",
           "default": null,
@@ -1765,10 +1765,10 @@
       "aliases": [],
       "summary": "Restore a pinned model's archived version in place of the one currently installed. The version it replaces takes over the archive slot, so running `omm rollback` again swaps forward to it.",
       "description": "",
-      "usage": "omm rollback [OPTIONS] {model_name}",
+      "usage": "omm rollback [OPTIONS] MODEL_NAME",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "MODEL_NAME",
           "help": "",
           "required": true
         }
@@ -1827,10 +1827,10 @@
       "aliases": [],
       "summary": "Start a chat with an installed model - Ollama chats right here in the terminal, KoboldCpp/text-generation-webui start with the model loaded, GUI apps are opened.",
       "description": "",
-      "usage": "omm run [OPTIONS] [model_name]",
+      "usage": "omm run [OPTIONS] [MODEL_NAME]",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "[MODEL_NAME]",
           "help": "Installed model (see `omm list`).",
           "required": false
         }
@@ -1841,7 +1841,7 @@
             "--engine",
             "-e"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Runner to use (ollama, lmstudio, jan, koboldcpp, textgenwebui, anythingllm, mstystudio).",
           "default": null,
@@ -1956,10 +1956,10 @@
       "aliases": [],
       "summary": "Search curated models, cached candidates, and HuggingFace by name.",
       "description": "",
-      "usage": "omm search [OPTIONS] {query}",
+      "usage": "omm search [OPTIONS] QUERY",
       "arguments": [
         {
-          "name": "query",
+          "name": "QUERY",
           "help": "",
           "required": true
         }
@@ -1979,7 +1979,7 @@
           "flags": [
             "--limit"
           ],
-          "metavar": "<int range>",
+          "metavar": "INTEGER RANGE",
           "is_flag": false,
           "help": "Show at most this many results.",
           "default": null,
@@ -1989,7 +1989,7 @@
           "flags": [
             "--provider"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Only show results from this source: curated (omm's built-in/cached catalog, not a real host), huggingface, or modelscope.",
           "default": null,
@@ -2086,10 +2086,10 @@
       "aliases": [],
       "summary": "Correct this machine's local speed estimate without uploading data.",
       "description": "",
-      "usage": "omm setting calibrate [OPTIONS] [model_name]",
+      "usage": "omm setting calibrate [OPTIONS] [MODEL_NAME]",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "[MODEL_NAME]",
           "help": "Installed Ollama-linked model; defaults to the smallest available model.",
           "required": false
         }
@@ -2270,7 +2270,7 @@
           "flags": [
             "--manifest-url"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "HTTPS manifest URL.",
           "default": null,
@@ -2280,7 +2280,7 @@
           "flags": [
             "--public-key"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Base64 Ed25519 public key.",
           "default": null,
@@ -2347,7 +2347,7 @@
           "flags": [
             "--policy"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Memory Guard policy: ask, block, or observe.",
           "default": null,
@@ -2357,7 +2357,7 @@
           "flags": [
             "--poll-seconds"
           ],
-          "metavar": "<float range>",
+          "metavar": "FLOAT RANGE",
           "is_flag": false,
           "help": "Seconds between live-memory checks during a long operation.",
           "default": null,
@@ -2367,7 +2367,7 @@
           "flags": [
             "--low-memory-seconds"
           ],
-          "metavar": "<float range>",
+          "metavar": "FLOAT RANGE",
           "is_flag": false,
           "help": "How long low memory must persist before OMM cancels its own operation.",
           "default": null,
@@ -2427,10 +2427,10 @@
       "aliases": [],
       "summary": "Inspect a saved runtime profile, or undo the last save without reloading models.",
       "description": "",
-      "usage": "omm setting runtime-profile [OPTIONS] {model_name}",
+      "usage": "omm setting runtime-profile [OPTIONS] MODEL_NAME",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "MODEL_NAME",
           "help": "",
           "required": true
         }
@@ -2440,7 +2440,7 @@
           "flags": [
             "--engine"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "ollama or lmstudio",
           "default": "ollama",
@@ -2517,7 +2517,7 @@
           "flags": [
             "--endpoint"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Self-hosted HTTPS endpoint, localhost URL, or 'none' to clear it.",
           "default": null,
@@ -2584,7 +2584,7 @@
           "flags": [
             "--set"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "One of: light, dark, high-contrast, no-color",
           "default": null,
@@ -2833,10 +2833,10 @@
       "aliases": [],
       "summary": "Recommend context, GPU offload, threads, and batch size for a model.",
       "description": "",
-      "usage": "omm tune [OPTIONS] {model_name}",
+      "usage": "omm tune [OPTIONS] MODEL_NAME",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "MODEL_NAME",
           "help": "",
           "required": true
         }
@@ -2866,7 +2866,7 @@
           "flags": [
             "--engine"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Runtime for the trial: ollama or lmstudio.",
           "default": null,
@@ -2927,10 +2927,10 @@
       ],
       "summary": "Uninstall a model and clean up all symlinks/manifests. Pass `all` to uninstall every model installed via omm.",
       "description": "",
-      "usage": "omm uninstall [OPTIONS] {filename}",
+      "usage": "omm uninstall [OPTIONS] FILENAME",
       "arguments": [
         {
-          "name": "filename",
+          "name": "FILENAME",
           "help": "",
           "required": true
         }
@@ -2999,10 +2999,10 @@
       "aliases": [],
       "summary": "Remove one or more models' links from one runner (or every runner with --runner all) without touching the hub file or links into other runners.",
       "description": "",
-      "usage": "omm unlink [OPTIONS] {filenames}",
+      "usage": "omm unlink [OPTIONS] FILENAMES",
       "arguments": [
         {
-          "name": "filenames",
+          "name": "FILENAMES",
           "help": "Comma-separated model filenames or list numbers.",
           "required": true
         }
@@ -3012,7 +3012,7 @@
           "flags": [
             "--runner"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Runner to unlink from, or 'all'.",
           "default": null,
@@ -3071,10 +3071,10 @@
       "aliases": [],
       "summary": "Undo `omm pin`: a future `omm install --force` stops archiving this model, and any version already archived for it is deleted. Run `omm rollback` first if you might still want that archived version.",
       "description": "",
-      "usage": "omm unpin [OPTIONS] {model_name}",
+      "usage": "omm unpin [OPTIONS] MODEL_NAME",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "MODEL_NAME",
           "help": "",
           "required": true
         }
@@ -3191,10 +3191,10 @@
       ],
       "summary": "Look for a better model than the ones already installed - a newer curated successor, or a higher-quality quantization from the same repo that still fits this machine's memory - and install the ones you approve. With no argument (or `all`), scans every model installed via omm.",
       "description": "To re-check an installed file against its source instead, use `omm install <model> --force`.",
-      "usage": "omm upgrade [OPTIONS] [model_name]",
+      "usage": "omm upgrade [OPTIONS] [MODEL_NAME]",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "[MODEL_NAME]",
           "help": "",
           "required": false
         }
@@ -3263,10 +3263,10 @@
       "aliases": [],
       "summary": "Prove that an installed model can load and return local text.",
       "description": "If the selected engine's daemon isn't running, this starts it (asking first unless --yes) and stops it again afterward, unless --keep-loaded left the model loaded on it.",
-      "usage": "omm verify [OPTIONS] {model_name}",
+      "usage": "omm verify [OPTIONS] MODEL_NAME",
       "arguments": [
         {
-          "name": "model_name",
+          "name": "MODEL_NAME",
           "help": "",
           "required": true
         }
@@ -3276,7 +3276,7 @@
           "flags": [
             "--engine"
           ],
-          "metavar": "<str>",
+          "metavar": "TEXT",
           "is_flag": false,
           "help": "Local runtime to test: ollama or lmstudio.",
           "default": null,
