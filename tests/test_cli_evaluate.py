@@ -59,7 +59,7 @@ def test_evaluate_json_is_structured_and_does_not_upload(monkeypatch, isolated_o
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["summary"]["solved"] == 1
-    assert payload["raw_responses_stored"] is False
+    assert "raw_responses_stored" not in payload
 
 
 def test_evaluate_writes_evidence_and_preserves_preloaded_model(monkeypatch, isolated_omm_home, tmp_path):
@@ -72,7 +72,7 @@ def test_evaluate_writes_evidence_and_preserves_preloaded_model(monkeypatch, iso
     assert result.exit_code == 0, result.output
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["model"] == "model:latest"
-    assert payload["raw_responses_stored"] is False
+    assert "raw_responses_stored" not in payload
     assert unloaded == []
 
 

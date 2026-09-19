@@ -182,7 +182,31 @@ def test_evaluate_pack_keeps_only_structured_results(monkeypatch):
     payload = report.as_dict()
     assert payload["summary"]["solved"] == len(pack.tasks)
     assert payload["model_repo_id"] == "org/model"
-    assert payload["raw_responses_stored"] is False
+    assert "raw_responses_stored" not in payload
     serialized = json.dumps(payload)
     assert "private generated output" not in serialized
     assert "def placeholder" not in serialized
+
+
+def test_evaluate_pack_isolates_generation_failures(monkeypatch):
+    pack = coding_eval.load_pack()
+    monkeypatch.setattr(
+        coding_eval,
+        "run_in_sandbox",
+        lambda response, task, pack, runtime=None: coding_eval.SandboxResult(
+            "completed", task.test_count, task.test_count, 0.1, "ok"
+        ),
+    )
+    calls = {"n": 0}
+
+    def generate(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("ollama unreachable")
+        return "```python\ndef placeholder(): return 1\n```"
+
+    report = coding_eval.evaluate_pack("model:latest", pack, generate, runtime="docker")
+    outcomes = [task.outcome for task in report.tasks]
+    assert outcomes[0] == "generation_failed"
+    assert outcomes[1:] == ["completed"] * (len(pack.tasks) - 1)
+    assert calls["n"] == len(pack.tasks)

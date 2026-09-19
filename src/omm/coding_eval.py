@@ -103,7 +103,6 @@ class CodingEvaluationReport:
     pack_version: str
     pack_sha256: str
     tasks: tuple[CodingTaskResult, ...]
-    raw_responses_stored: bool = False
 
     def as_dict(self) -> dict:
         kinds = sorted({task.kind for task in self.tasks})
@@ -150,7 +149,6 @@ class CodingEvaluationReport:
                 }
                 for task in self.tasks
             ],
-            "raw_responses_stored": self.raw_responses_stored,
         }
 
 
@@ -465,6 +463,12 @@ def evaluate_pack(
         started = time.monotonic()
         try:
             response = generate(task_prompt(task))
+        except Exception:
+            results.append(
+                CodingTaskResult(task.id, task.kind, "generation_failed", 0, task.test_count, time.monotonic() - started)
+            )
+            continue
+        try:
             sandbox = run_in_sandbox(response, task, pack, runtime=runtime)
             results.append(
                 CodingTaskResult(
