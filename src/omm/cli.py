@@ -321,6 +321,7 @@ _JSON_CAPABLE = {
     "setting catalog-status",
     "engine status",
     "engine doctor",
+    "engine security",
     "engine update",
     "engine uninstall",
     "bug-report",
@@ -342,6 +343,7 @@ _YES_CAPABLE = {
     "run",
     "engine update",
     "engine uninstall",
+    "engine security",
     "bug-report",
     "tune",
 }
@@ -1531,6 +1533,87 @@ def engine_doctor_cmd(
         print_engines(console, items, diagnostics=True)
     if any(not item["installed"] for item in items):
         raise typer.Exit(1)
+
+
+@engine_app.command(name="security")
+@global_flags
+def engine_security_cmd(
+    engine: str | None = typer.Argument(
+        None, autocompletion=complete_engine_key, help="ollama or lmstudio; omit for both"
+    ),
+    fix_local_only: bool = typer.Option(
+        False,
+        "--fix-local-only",
+        help="Restart only a positively identified OMM-owned server on loopback.",
+    ),
+) -> None:
+    """Show whether local runtime servers accept connections from other devices."""
+    from omm import engine_security
+
+    if engine is not None:
+        key = engine.strip().casefold()
+        if key not in {"ollama", "lmstudio"}:
+            err_console.print("engine must be ollama or lmstudio", markup=False)
+            raise typer.Exit(2)
+        targets = [key]
+    else:
+        targets = ["ollama", "lmstudio"]
+    if fix_local_only and len(targets) != 1:
+        err_console.print("Name one engine when using --fix-local-only.")
+        raise typer.Exit(2)
+    try:
+        items = [engine_security.inspect(key) for key in targets]
+    except engine_security.EngineSecurityError as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(1) from error
+
+    if fix_local_only:
+        item = items[0]
+        if item["status"] == "external_allowed" and item.get("owned_by_omm"):
+            if not _global_opts().json:
+                console.print("Planned change:")
+                console.print("  - Stop the Ollama server that this OMM process record still owns.")
+                console.print("  - Existing local clients will disconnect and in-memory model work will stop.")
+                console.print("  - Restart Ollama on 127.0.0.1 only; saved model files stay unchanged.")
+            if not _global_opts().yes:
+                if _global_opts().json or not _stdin_is_tty():
+                    err_console.print("Review the impact above, then pass --yes to apply it.")
+                    raise typer.Exit(1)
+                if not _ask_confirm("Restart this OMM-owned Ollama server as local-only?"):
+                    err_console.print("Cancelled.")
+                    raise typer.Exit(0)
+        try:
+            items = [engine_security.fix_local_only(targets[0])]
+        except engine_security.EngineSecurityError as error:
+            err_console.print(str(error), markup=False)
+            raise typer.Exit(1) from error
+
+    if _global_opts().json:
+        _print_json(data=items)
+        return
+    labels = {
+        "local_only": "This computer only",
+        "external_allowed": "External connections allowed",
+        "unknown": "Could not determine",
+    }
+    table = _table(title="Engine server security")
+    table.add_column("Engine")
+    table.add_column("Access")
+    table.add_column("Listener")
+    table.add_column("What OMM knows")
+    for item in items:
+        listeners = ", ".join(
+            f"{row['address']}:{row['port']}" for row in item.get("listeners", [])
+        ) or "not visible"
+        ownership = "OMM-owned" if item.get("owned_by_omm") else "not owned by OMM"
+        table.add_row(
+            str(item["engine"]), labels[str(item["status"])], listeners,
+            f"{item['reason']}; {ownership}",
+        )
+    console.print(table)
+    console.print(
+        "[muted]This reports server listening scope only. OMM does not control network activity started independently by Ollama or LM Studio.[/muted]"
+    )
 
 
 def _change_engine(engine: str, action: str, *, dry_run: bool) -> None:
