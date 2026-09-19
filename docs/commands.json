@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.109",
+  "omm_version": "0.3.122",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -205,27 +205,6 @@
       "options": [
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -292,17 +271,6 @@
           "metavar": null,
           "is_flag": true,
           "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
           "default": null,
           "global": true
         },
@@ -383,16 +351,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--yes",
             "-y"
           ],
@@ -444,17 +402,6 @@
           "metavar": null,
           "is_flag": true,
           "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
           "default": null,
           "global": true
         },
@@ -525,17 +472,6 @@
         },
         {
           "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -576,27 +512,6 @@
         }
       ],
       "options": [
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
         {
           "flags": [
             "--quiet",
@@ -657,17 +572,6 @@
           "metavar": null,
           "is_flag": true,
           "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
           "default": null,
           "global": true
         },
@@ -957,27 +861,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -1024,17 +907,6 @@
           "metavar": null,
           "is_flag": true,
           "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
           "default": null,
           "global": true
         },
@@ -1101,27 +973,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -1161,16 +1012,6 @@
         }
       ],
       "options": [
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
         {
           "flags": [
             "--yes",
@@ -1230,17 +1071,6 @@
           "metavar": null,
           "is_flag": true,
           "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
           "default": null,
           "global": true
         },
@@ -1329,16 +1159,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--yes",
             "-y"
           ],
@@ -1391,7 +1211,8 @@
       "options": [
         {
           "flags": [
-            "--engine"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,
@@ -1418,27 +1239,6 @@
           "help": "Reclaim a destination omm doesn't recognize as its own (e.g. lost ownership record, or a file placed there by something else) by deleting it and relinking, instead of skipping it as a conflict.",
           "default": null,
           "global": false
-        },
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
         },
         {
           "flags": [
@@ -1479,7 +1279,8 @@
       "options": [
         {
           "flags": [
-            "--engine"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,
@@ -1494,17 +1295,6 @@
           "metavar": null,
           "is_flag": true,
           "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
           "default": null,
           "global": true
         },
@@ -1576,27 +1366,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -1636,27 +1405,6 @@
         }
       ],
       "options": [
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
         {
           "flags": [
             "--quiet",
@@ -1776,27 +1524,6 @@
       "options": [
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -1846,16 +1573,6 @@
           "help": "Runner to use (ollama, lmstudio, jan, koboldcpp, textgenwebui, anythingllm, mstystudio).",
           "default": null,
           "global": false
-        },
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
         },
         {
           "flags": [
@@ -1910,17 +1627,6 @@
           "metavar": null,
           "is_flag": true,
           "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
           "default": null,
           "global": true
         },
@@ -2017,17 +1723,6 @@
         },
         {
           "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -2097,27 +1792,6 @@
       "options": [
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -2152,27 +1826,6 @@
       "usage": "omm setting catalog-rollback [OPTIONS]",
       "arguments": [],
       "options": [
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
         {
           "flags": [
             "--quiet",
@@ -2216,17 +1869,6 @@
           "metavar": null,
           "is_flag": true,
           "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
           "default": null,
           "global": true
         },
@@ -2285,27 +1927,6 @@
           "help": "Base64 Ed25519 public key.",
           "default": null,
           "global": false
-        },
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
         },
         {
           "flags": [
@@ -2375,27 +1996,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -2438,7 +2038,8 @@
       "options": [
         {
           "flags": [
-            "--engine"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,
@@ -2463,17 +2064,6 @@
           "metavar": null,
           "is_flag": true,
           "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
           "default": null,
           "global": true
         },
@@ -2525,27 +2115,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -2589,27 +2158,6 @@
           "help": "One of: light, dark, high-contrast, no-color",
           "default": null,
           "global": false
-        },
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
         },
         {
           "flags": [
@@ -2726,27 +2274,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -2780,27 +2307,6 @@
       "usage": "omm setup [OPTIONS]",
       "arguments": [],
       "options": [
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
         {
           "flags": [
             "--quiet",
@@ -2864,7 +2370,8 @@
         },
         {
           "flags": [
-            "--engine"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,
@@ -2948,16 +2455,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--yes",
             "-y"
           ],
@@ -3020,27 +2517,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -3082,27 +2558,6 @@
       "options": [
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--quiet",
             "-q"
           ],
@@ -3136,27 +2591,6 @@
       "usage": "omm update [OPTIONS]",
       "arguments": [],
       "options": [
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--yes",
-            "-y"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Skip confirmation prompts. For scripting.",
-          "default": null,
-          "global": true
-        },
         {
           "flags": [
             "--quiet",
@@ -3212,16 +2646,6 @@
         },
         {
           "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
             "--yes",
             "-y"
           ],
@@ -3274,7 +2698,8 @@
       "options": [
         {
           "flags": [
-            "--engine"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,

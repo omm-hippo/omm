@@ -151,6 +151,7 @@ from omm import (
     launcher,
     linker,
     memory_guard as memory_guard_mod,
+    notify,
     onboarding,
     predictor,
     recommend_status,
@@ -613,6 +614,30 @@ def _command_path_of(ctx: click.Context) -> list[str]:
     return list(reversed(names))
 
 
+def _hide_unsupported_global_flags(cmd: click.Command, path: list[str]) -> None:
+    """Hide (never remove) the --yes/--json options `global_flags` attaches
+    to every decorated command, on the ones that cannot act on them (see
+    _YES_CAPABLE / _JSON_CAPABLE). Both flags stay fully functional - an
+    unsupported --yes still warns instead of silently no-opping, and an
+    unsupported --json still exits with its usual clear error - this only
+    stops `omm CMD --help` and `omm help --flags` from listing a flag that
+    does nothing on that command (issue #375: help advertised `omm fit -y`,
+    but `fit` has no confirmation prompt to skip). Runs once per invocation
+    from the root group, before Click renders help or parses the chosen
+    subcommand's own options - see _RootHelpGroup.invoke."""
+    commands = getattr(cmd, "commands", None)
+    if commands:
+        for name, sub in commands.items():
+            _hide_unsupported_global_flags(sub, path + [name])
+        return
+    full = " ".join(path)
+    for p in cmd.params:
+        if p.name == "yes_flag" and full not in _YES_CAPABLE:
+            p.hidden = True
+        elif p.name == "json_flag" and full not in _JSON_CAPABLE:
+            p.hidden = True
+
+
 class _DocsEpilogGroup(typer.core.TyperGroup):
     """Adds the `More about omm ...: https://omm.run/commands/...` footer to
     every subcommand's `--help`, at the single place Click resolves a name
@@ -650,6 +675,7 @@ class _RootHelpGroup(_DocsEpilogGroup):
             raise BriefUsageError(error, ctx) from error
 
     def invoke(self, ctx: click.Context):
+        _hide_unsupported_global_flags(ctx.command, [])
         try:
             return super().invoke(ctx)
         except BriefUsageError:
@@ -946,11 +972,18 @@ def _root(
         # Only an `always` policy flushes unattended here; under `ask` the
         # queue deliberately waits for the next `omm contribute`, which is
         # the one place the user is asked about error reports.
+        #
+        # The cause has to be read before flush_pending() empties the queue
+        # it describes - a repeat "Sent N queued error report(s)" notice with
+        # no way to tell a one-off from the same crash recurring every run
+        # otherwise sends the user digging through ~/.omm/logs by hand.
+        pending_cause = error_report.most_common_pending_cause()
         reported = error_report.flush_pending()
         if reported and not (opts.json or opts.quiet):
+            hint = f" ({pending_cause[0]} in {pending_cause[1]})" if pending_cause else ""
             err_console.print(
                 f"[muted]Sent {reported} queued error report(s) "
-                "from a previous session.[/muted]"
+                f"from a previous session{hint}.[/muted]"
             )
         # Anonymous usage stats: at most one batch per day, silently (it is
         # a background aggregate, not a per-session event worth a notice).
@@ -1496,7 +1529,13 @@ def engine_doctor_cmd(
         _print_json(data=items)
     else:
         print_engines(console, items, diagnostics=True)
-    if any(not item["installed"] for item in items):
+    # Not-installed is not a failure: doctor's job is diagnosing an engine that
+    # IS installed but broken (query error, or API off), not flagging the 6 of
+    # 7 runners a given user never installed.
+    broken = [item for item in items if item["installed"] and (
+        item["package_error"] is not None
+        or item["api_status"] not in {"ready", "not_checked", "diagnostics_unavailable"})]
+    if broken:
         raise typer.Exit(1)
 
 
@@ -1758,7 +1797,27 @@ def _auto_import_run_cmd() -> None:
     """Internal. Started by the OS service registered via
     `omm setting auto-import enable` (see watch_service.py); blocks forever
     watching every supported local AI app's model directory and adopting
-    new models into the omm hub."""
+    new models into the omm hub.
+
+    The OS service (launchd KeepAlive / systemd Restart=on-failure) restarts
+    this command on every exit, including a crash. watchdog/plyer can go
+    missing after enable (e.g. a pipx reinstall that dropped the injected
+    `[watch]` extras) without the user touching auto-import at all; letting
+    `watch.run_watch_loop()` raise `ModuleNotFoundError` in that case turns
+    into a silent, unthrottled crash loop that floods the error-report queue
+    every few seconds instead of surfacing the problem. Check the same
+    dependency `setting auto-import enable` checks and self-disable instead."""
+    if not _watch_dependencies_available():
+        try:
+            watch_service.uninstall()
+        except (OSError, subprocess.CalledProcessError, RuntimeError):
+            pass
+        config_mod.update_config(auto_import_enabled=False)
+        notify.notify(
+            "omm auto-import disabled",
+            f"Missing dependency (watchdog, plyer). {_watch_dependency_hint()}",
+        )
+        return
     watch.run_watch_loop()
 
 
@@ -4289,7 +4348,7 @@ def tune(
     model_name: str = typer.Argument(..., autocompletion=complete_install_name),
     apply: bool = typer.Option(False, "--apply", help="Temporarily load and verify the proposed settings."),
     save: bool = typer.Option(False, "--save", help="Save settings only after a successful --apply trial."),
-    engine: str | None = typer.Option(None, "--engine", help="Runtime for the trial: ollama or lmstudio."),
+    engine: str | None = typer.Option(None, "--engine", "-e", help="Runtime for the trial: ollama or lmstudio."),
 ) -> None:
     """Recommend context, GPU offload, threads, and batch size for a model."""
     if save and not apply:
@@ -4435,7 +4494,7 @@ def _apply_runtime_profile(filename: str, entry: dict, profile, *, engine: str |
 @global_flags
 def runtime_profile_cmd(
     model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
-    engine: str = typer.Option("ollama", "--engine", help="ollama or lmstudio"),
+    engine: str = typer.Option("ollama", "--engine", "-e", help="ollama or lmstudio"),
     restore: bool = typer.Option(False, "--restore", help="Restore the previous saved profile (or defaults)."),
 ) -> None:
     """Inspect a saved runtime profile, or undo the last save without reloading models."""
@@ -7320,6 +7379,7 @@ def verify(
     engine: str = typer.Option(
         None,
         "--engine",
+        "-e",
         help="Local runtime to test: ollama or lmstudio.",
     ),
     keep_loaded: bool = typer.Option(
@@ -8087,6 +8147,21 @@ def _scan_for_upgrades(targets: list[tuple[str, dict]]) -> list[upgrade_mod.Sugg
     trees = artifact.get("trees") if artifact else None
     candidates = (artifact.get("candidates") or []) if artifact else []
 
+    # #366: a model `omm upgrade` already installed in a previous run stays
+    # installed (upgrade never auto-removes the old file), so it shows up as
+    # a scan target again on the next run. Without this, that already-
+    # installed sibling gets suggested right back as "the upgrade".
+    installed_by_repo: dict[tuple[str, str], set[str]] = {}
+    installed_successors: set[tuple[str, str, str]] = set()
+    for installed_filename, installed_entry in registry.load_registry().items():
+        installed_provider = installed_entry.get("provider") or "huggingface"
+        installed_repo_id = installed_entry.get("repo_id")
+        if not installed_repo_id:
+            continue
+        key = installed_filename.casefold()
+        installed_by_repo.setdefault((installed_provider, installed_repo_id), set()).add(key)
+        installed_successors.add((installed_provider, installed_repo_id, key))
+
     def _predict_tps(candidate: dict) -> float | None:
         if trees is None:
             return None
@@ -8102,7 +8177,8 @@ def _scan_for_upgrades(targets: list[tuple[str, dict]]) -> list[upgrade_mod.Sugg
             repo_id = entry.get("repo_id")
 
             successor = upgrade_mod.find_successor(
-                candidates, repo_id=repo_id, filename=filename, provider=provider
+                candidates, repo_id=repo_id, filename=filename, provider=provider,
+                already_installed=frozenset(installed_successors),
             )
             if successor is not None:
                 successor_provider = successor.get("provider") or "huggingface"
@@ -8133,6 +8209,9 @@ def _scan_for_upgrades(targets: list[tuple[str, dict]]) -> list[upgrade_mod.Sugg
                     file_size=remote_file_size,
                     predict_tps=_predict_tps,
                     fits_budget=lambda c: _candidate_fits_budget(hw, budget, c),
+                    already_installed=frozenset(
+                        installed_by_repo.get((quant_provider, quant_repo_id), set())
+                    ),
                 )
                 if quant is not None:
                     suggestions.append(quant)
@@ -8431,7 +8510,7 @@ def _prune_missing_models(reg: dict) -> dict:
 @global_flags
 def list_models(
     engine: str | None = typer.Option(
-        None, "--engine", help="Only show models linked into this engine."
+        None, "--engine", "-e", help="Only show models linked into this engine."
     ),
 ) -> None:
     """Show models installed via omm and their linked status.
@@ -9611,7 +9690,7 @@ def link_models(
         "(omit for every installed model).",
     ),
     engine: str | None = typer.Option(
-        None, "--engine", help="Only re-verify/repair links for this engine."
+        None, "--engine", "-e", help="Only re-verify/repair links for this engine."
     ),
     to: Path | None = typer.Option(
         None,
@@ -10425,9 +10504,6 @@ def evaluate_cmd(
             engine="ollama",
             engine_version=quality_mod.ollama_version(),
         )
-    except quality_mod.QualityEvaluationError as error:
-        err_console.print(f"[error]{escape(str(error))}[/error]")
-        raise typer.Exit(1) from error
     finally:
         if was_loaded is False:
             quality_mod.ensure_model_unloaded(model)

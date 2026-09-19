@@ -161,7 +161,7 @@ def _entry(
 def build_reference(app: typer.Typer) -> dict[str, Any]:
     """Render the whole Typer app as the `docs/commands.json` document."""
     # Imported lazily: `omm.cli` imports this module for the help epilogs.
-    from omm.cli import GLOBAL_FLAG_OPTS, _COMMAND_ALIASES
+    from omm.cli import GLOBAL_FLAG_OPTS, _COMMAND_ALIASES, _hide_unsupported_global_flags
 
     aliases_by_command: dict[str, list[str]] = {}
     for alias, target in _COMMAND_ALIASES.items():
@@ -170,6 +170,11 @@ def build_reference(app: typer.Typer) -> dict[str, Any]:
         names.sort()
 
     group = typer.main.get_command(app)
+    # This builds its own click command tree rather than reusing the live
+    # CLI's, so it needs the same --yes/--json visibility pass the real
+    # invocation gets from _RootHelpGroup.invoke - otherwise docs/commands.json
+    # keeps advertising a flag `omm <cmd> --help` already hides (issue #375).
+    _hide_unsupported_global_flags(group, [])
     root_ctx = click.Context(group, info_name="omm", resilient_parsing=True)
 
     commands: list[dict[str, Any]] = []

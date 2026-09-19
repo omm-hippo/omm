@@ -499,6 +499,31 @@ def test_upgrade_all_continues_past_one_models_provider_failure(isolated_omm_hom
     assert "Q6_K" in result.stdout
 
 
+def test_upgrade_all_does_not_resuggest_a_sibling_quant_already_installed(
+    isolated_omm_home, monkeypatch
+):
+    # #366: `omm upgrade` never removes the old file it replaces (see the
+    # "The previous model is still installed" note it prints), so a user who
+    # already accepted the Q6_K suggestion for their Q4_K_M model still has
+    # both installed. The next `omm upgrade` scans both again and must not
+    # suggest Q6_K right back for the Q4_K_M target - it's already installed.
+    registry.save_registry(
+        {
+            "model.Q4_K_M.gguf": _entry(repo_id="org/repo"),
+            "model.Q6_K.gguf": _entry(repo_id="org/repo"),
+        }
+    )
+    _stub_upgrade_pipeline(
+        monkeypatch, repo_files=["model.Q4_K_M.gguf", "model.Q6_K.gguf"], candidates=[]
+    )
+
+    result = runner.invoke(cli.app, ["upgrade", "all"])
+
+    assert result.exit_code == 0, result.output
+    assert "Q6_K" not in result.stdout
+    assert "Checked 2 model(s); nothing better found." in result.stdout
+
+
 def test_upgrade_all_mixed_approval_installs_only_approved(isolated_omm_home, monkeypatch):
     registry.save_registry(
         {

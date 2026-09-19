@@ -24,8 +24,29 @@ def test_brew_receipt_uses_exact_local_package_identity(monkeypatch):
         return subprocess.CompletedProcess(args, 0, "not-ollama-app 9\nollama-app 1.2.3\n", "")
     monkeypatch.setattr(manager, "_query", query)
     assert manager.package_receipt("ollama").version == "1.2.3"
-    assert seen == [["/usr/local/bin/brew", "list", "--cask", "--versions"],
-                    ["/usr/local/bin/brew", "list", "--formula", "--versions"]]
+    assert seen == [["/usr/local/bin/brew", "list", "--cask", "--versions", "ollama-app"],
+                    ["/usr/local/bin/brew", "list", "--formula", "--versions", "ollama"]]
+
+
+def test_brew_cask_query_by_name_survives_a_broken_bare_cask_listing(monkeypatch):
+    # Regression for a Homebrew regression where bare `brew list --cask --versions`
+    # (no name) fails outright, even though the same command with a name works.
+    monkeypatch.setattr(manager, "platform", SimpleNamespace(system=lambda: "Darwin"))
+    monkeypatch.setattr(manager.shutil, "which", lambda name: "/usr/local/bin/brew")
+    def query(args):
+        if args[-1] == "ollama-app":
+            return subprocess.CompletedProcess(args, 0, "ollama-app 1.2.3\n", "")
+        return subprocess.CompletedProcess(args, 1, "", "Error: not installed\n")
+    monkeypatch.setattr(manager, "_query", query)
+    receipt = manager.package_receipt("ollama")
+    assert receipt.kind == "cask" and receipt.version == "1.2.3"
+
+
+def test_brew_named_query_treats_a_missing_package_as_absent_not_an_error(monkeypatch):
+    monkeypatch.setattr(manager, "platform", SimpleNamespace(system=lambda: "Darwin"))
+    monkeypatch.setattr(manager.shutil, "which", lambda name: "/usr/local/bin/brew")
+    monkeypatch.setattr(manager, "_query", lambda args: subprocess.CompletedProcess(args, 1, "", "Error: not installed\n"))
+    assert manager.package_receipt("ollama") is None
 
 
 def test_brew_formula_install_is_managed_as_a_formula_not_an_app(monkeypatch):
@@ -170,6 +191,14 @@ def test_status_separates_installed_app_from_stopped_api(monkeypatch):
     result = manager.inspect_engine("ollama")
     assert result["installed"] is True
     assert result["api_status"] == "server_unavailable"
+
+
+def test_package_manageable_is_false_only_for_engines_with_no_package_identity(monkeypatch):
+    monkeypatch.setattr(manager, "package_receipt", lambda key: None)
+    monkeypatch.setattr(manager.linker, "is_engine_installed", lambda key: True)
+    assert manager.inspect_engine("ollama", check_api=False)["package_manageable"] is True
+    assert manager.inspect_engine("koboldcpp", check_api=False)["package_manageable"] is False
+    assert manager.inspect_engine("textgenwebui", check_api=False)["package_manageable"] is False
 
 
 def test_cli_dry_run_json_never_executes_or_prompts(monkeypatch):

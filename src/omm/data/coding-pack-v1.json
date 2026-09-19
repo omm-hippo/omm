@@ -1,11 +1,11 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "pack_id": "omm-python-coding-smoke",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "language": "python",
-  "evaluator": "python-unittest-v1",
+  "evaluator": "python-unittest-v2",
   "license": "MIT",
-  "source": "Original OMM smoke tasks",
+  "source": "omm built-in pack",
   "generation": {
     "temperature": 0,
     "seed": 0,
@@ -26,32 +26,56 @@
       "kind": "generation",
       "prompt": "Return only the complete contents of solution.py. Implement chunks(values, size), returning consecutive lists of at most size items. Raise ValueError when size is not a positive integer. Do not mutate values.",
       "starter": "def chunks(values, size):\n    pass\n",
-      "test_count": 5,
-      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import chunks\nclass Tests(unittest.TestCase):\n    def test_even(self): self.assertEqual(chunks([1,2,3,4], 2), [[1,2],[3,4]])\n    def test_tail(self): self.assertEqual(chunks([1,2,3,4,5], 2), [[1,2],[3,4],[5]])\n    def test_empty(self): self.assertEqual(chunks([], 3), [])\n    def test_invalid(self):\n        for value in (0, -1, 1.5, True):\n            with self.assertRaises(ValueError): chunks([1], value)\n    def test_no_mutation(self):\n        values=[1,2,3]; chunks(values,2); self.assertEqual(values,[1,2,3])\nunittest.main()\n"
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import chunks\nclass Tests(unittest.TestCase):\n    def test_even(self): self.assertEqual(chunks([1,2,3,4], 2), [[1,2],[3,4]])\n    def test_tail(self): self.assertEqual(chunks([1,2,3,4,5], 2), [[1,2],[3,4],[5]])\n    def test_empty(self): self.assertEqual(chunks([], 3), [])\n    def test_invalid(self):\n        for value in (0, -1, 1.5, True):\n            with self.assertRaises(ValueError): chunks([1], value)\n    def test_no_mutation(self):\n        values=[1,2,3]; chunks(values,2); self.assertEqual(values,[1,2,3])\n"
     },
     {
       "id": "generation_unique",
       "kind": "generation",
       "prompt": "Return only the complete contents of solution.py. Implement unique_preserving_order(values). Return the first occurrence of each hashable value in input order without mutating the input.",
       "starter": "def unique_preserving_order(values):\n    pass\n",
-      "test_count": 4,
-      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import unique_preserving_order\nclass Tests(unittest.TestCase):\n    def test_numbers(self): self.assertEqual(unique_preserving_order([3,1,3,2,1]), [3,1,2])\n    def test_strings(self): self.assertEqual(unique_preserving_order(['a','b','a']), ['a','b'])\n    def test_empty(self): self.assertEqual(unique_preserving_order([]), [])\n    def test_no_mutation(self):\n        values=[1,1,2]; unique_preserving_order(values); self.assertEqual(values,[1,1,2])\nunittest.main()\n"
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import unique_preserving_order\nclass Tests(unittest.TestCase):\n    def test_numbers(self): self.assertEqual(unique_preserving_order([3,1,3,2,1]), [3,1,2])\n    def test_strings(self): self.assertEqual(unique_preserving_order(['a','b','a']), ['a','b'])\n    def test_empty(self): self.assertEqual(unique_preserving_order([]), [])\n    def test_no_mutation(self):\n        values=[1,1,2]; unique_preserving_order(values); self.assertEqual(values,[1,1,2])\n"
+    },
+    {
+      "id": "generation_flatten",
+      "kind": "generation",
+      "prompt": "Return only the complete contents of solution.py. Implement flatten(nested), flattening one level of nesting from a list of lists into a single list, preserving order, without mutating the input.",
+      "starter": "def flatten(nested):\n    pass\n",
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import flatten\nclass Tests(unittest.TestCase):\n    def test_basic(self): self.assertEqual(flatten([[1,2],[3],[]]), [1,2,3])\n    def test_empty(self): self.assertEqual(flatten([]), [])\n    def test_singletons(self): self.assertEqual(flatten([[1],[2],[3]]), [1,2,3])\n    def test_no_mutation(self):\n        nested=[[1,2],[3]]; flatten(nested); self.assertEqual(nested,[[1,2],[3]])\n"
+    },
+    {
+      "id": "generation_word_count",
+      "kind": "generation",
+      "prompt": "Return only the complete contents of solution.py. Implement word_count(text), splitting text on whitespace and returning a dict mapping each token to the number of times it appears, case-sensitive, in first-appearance order.",
+      "starter": "def word_count(text):\n    pass\n",
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import word_count\nclass Tests(unittest.TestCase):\n    def test_basic(self): self.assertEqual(word_count(\"a b a c b a\"), {\"a\":3,\"b\":2,\"c\":1})\n    def test_empty(self): self.assertEqual(word_count(\"\"), {})\n    def test_single(self): self.assertEqual(word_count(\"x\"), {\"x\":1})\n    def test_order(self): self.assertEqual(list(word_count(\"b a b\").keys()), [\"b\",\"a\"])\n"
     },
     {
       "id": "repair_average",
       "kind": "repair",
       "prompt": "Return only the corrected complete contents of solution.py. average(values) must return 0 for an empty iterable and the arithmetic mean otherwise. It must accept generators. Preserve the public function name.",
       "starter": "def average(values):\n    return sum(values) / len(values)\n",
-      "test_count": 4,
-      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import average\nclass Tests(unittest.TestCase):\n    def test_values(self): self.assertEqual(average([2,4,6]), 4)\n    def test_empty(self): self.assertEqual(average([]), 0)\n    def test_generator(self): self.assertEqual(average(x for x in [1,2,3]), 2)\n    def test_float(self): self.assertAlmostEqual(average([0.5,1.5]), 1.0)\nunittest.main()\n"
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import average\nclass Tests(unittest.TestCase):\n    def test_values(self): self.assertEqual(average([2,4,6]), 4)\n    def test_empty(self): self.assertEqual(average([]), 0)\n    def test_generator(self): self.assertEqual(average(x for x in [1,2,3]), 2)\n    def test_float(self): self.assertAlmostEqual(average([0.5,1.5]), 1.0)\n"
     },
     {
       "id": "repair_clamp",
       "kind": "repair",
       "prompt": "Return only the corrected complete contents of solution.py. clamp(value, low, high) must constrain value to the inclusive range. Raise ValueError if low is greater than high.",
       "starter": "def clamp(value, low, high):\n    return min(low, max(high, value))\n",
-      "test_count": 5,
-      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import clamp\nclass Tests(unittest.TestCase):\n    def test_middle(self): self.assertEqual(clamp(5,0,10),5)\n    def test_low(self): self.assertEqual(clamp(-1,0,10),0)\n    def test_high(self): self.assertEqual(clamp(11,0,10),10)\n    def test_edges(self): self.assertEqual((clamp(0,0,10),clamp(10,0,10)),(0,10))\n    def test_invalid(self):\n        with self.assertRaises(ValueError): clamp(1,2,1)\nunittest.main()\n"
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import clamp\nclass Tests(unittest.TestCase):\n    def test_middle(self): self.assertEqual(clamp(5,0,10),5)\n    def test_low(self): self.assertEqual(clamp(-1,0,10),0)\n    def test_high(self): self.assertEqual(clamp(11,0,10),10)\n    def test_edges(self): self.assertEqual((clamp(0,0,10),clamp(10,0,10)),(0,10))\n    def test_invalid(self):\n        with self.assertRaises(ValueError): clamp(1,2,1)\n"
+    },
+    {
+      "id": "repair_is_palindrome",
+      "kind": "repair",
+      "prompt": "Return only the corrected complete contents of solution.py. is_palindrome(text) must return True if text reads the same forwards and backwards, ignoring case and spaces.",
+      "starter": "def is_palindrome(text):\n    return text == text[::-1]\n",
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import is_palindrome\nclass Tests(unittest.TestCase):\n    def test_simple(self): self.assertTrue(is_palindrome(\"level\"))\n    def test_case_space(self): self.assertTrue(is_palindrome(\"A man a plan a canal Panama\"))\n    def test_false(self): self.assertFalse(is_palindrome(\"hello\"))\n    def test_empty(self): self.assertTrue(is_palindrome(\"\"))\n"
+    },
+    {
+      "id": "repair_second_largest",
+      "kind": "repair",
+      "prompt": "Return only the corrected complete contents of solution.py. second_largest(values) must return the second-largest distinct value in a list of numbers. Raise ValueError if fewer than two distinct values exist.",
+      "starter": "def second_largest(values):\n    s = sorted(values)\n    return s[-2]\n",
+      "tests": "import sys, unittest\nsys.path.insert(0, '/workspace')\nfrom solution import second_largest\nclass Tests(unittest.TestCase):\n    def test_basic(self): self.assertEqual(second_largest([1,3,2]), 2)\n    def test_duplicates(self): self.assertEqual(second_largest([5,5,3,5]), 3)\n    def test_raises(self):\n        with self.assertRaises(ValueError): second_largest([1,1,1])\n    def test_negatives(self): self.assertEqual(second_largest([-1,-5,-2]), -2)\n"
     }
   ]
 }

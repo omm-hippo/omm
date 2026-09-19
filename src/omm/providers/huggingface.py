@@ -8,6 +8,7 @@ import math
 import re
 from urllib.parse import quote
 
+from omm import auth
 from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES, read_bounded_json_response
 from omm.providers.base import (
     ModelResolutionError,
@@ -84,7 +85,9 @@ def fetch_repo_files(repo_id: str) -> tuple[list[str], float | None]:
     import requests
 
     try:
-        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15, stream=True)
+        resp = requests.get(
+            HF_API.format(repo_id=repo_id), headers=auth.huggingface_headers(), timeout=15, stream=True
+        )
         resp.raise_for_status()
     except requests.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
@@ -141,7 +144,9 @@ def fetch_repo_param_count_b(repo_id: str) -> float | None:
     import requests
 
     try:
-        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15, stream=True)
+        resp = requests.get(
+            HF_API.format(repo_id=repo_id), headers=auth.huggingface_headers(), timeout=15, stream=True
+        )
         resp.raise_for_status()
     except requests.RequestException:
         return None
@@ -178,7 +183,9 @@ def fetch_repo_metadata(repo_id: str) -> dict:
     import requests
 
     try:
-        resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15, stream=True)
+        resp = requests.get(
+            HF_API.format(repo_id=repo_id), headers=auth.huggingface_headers(), timeout=15, stream=True
+        )
         resp.raise_for_status()
         payload = read_bounded_json_response(
             resp, maximum=MAX_PROVIDER_RESPONSE_BYTES, label="HF repo metadata"
@@ -233,6 +240,7 @@ def remote_file_sha256(repo_id: str, filename: str) -> str | None:
         resp = requests.post(
             HF_PATHS_INFO.format(repo_id=repo_id),
             json={"paths": [filename]},
+            headers=auth.huggingface_headers(),
             timeout=15,
             stream=True,
         )
@@ -269,7 +277,7 @@ def remote_file_size(repo_id: str, filename: str) -> int | None:
 
     url = HF_DOWNLOAD.format(repo_id=repo_id, filename=quote(filename, safe="/"))
     try:
-        response = requests.head(url, timeout=15, allow_redirects=False)
+        response = requests.head(url, headers=auth.huggingface_headers(), timeout=15, allow_redirects=False)
         response.raise_for_status()
     except requests.RequestException:
         return None
