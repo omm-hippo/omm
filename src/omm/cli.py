@@ -3896,6 +3896,46 @@ def _select_recommended_model(
     return selected
 
 
+def _build_recommend_json_rows(
+    ranked: list[tuple[dict, float | None]],
+    refs: list[str],
+    installations: list[recommend_status.InstallationStatus],
+    profile: str,
+    *,
+    info: object = None,
+    eligible_count: int | None = None,
+) -> list[dict]:
+    rows = recommend_ui.build_rows(ranked, refs, installations)
+    budget = recommend_ui._available_memory(info, profile)
+    return [
+        {
+            "rank": index + 1,
+            "ref": row.value,
+            "name": row.display_name,
+            "predicted_tokens_per_second": row.speed,
+            "memory_required_gb": row.memory_gb,
+            "model_type": row.model_type,
+            "model_type_source": row.type_source,
+            "use_case": row.use_case,
+            "use_case_source": row.use_case_source,
+            "declared_features": list(row.features),
+            "description": row.description,
+            "warning": row.warning,
+            "installed": row.installation.installed,
+            "managed_by_omm": row.installation.managed_by_omm,
+            "installed_engines": list(row.installation.engines),
+            "installation_match": row.installation.match_kind,
+            "profile": profile,
+            "profile_budget_gb": budget,
+            "within_profile": (row.memory_gb <= budget if row.memory_gb is not None and budget is not None else None),
+            "eligible_package_count": eligible_count,
+            "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
+            "quantization": recommend_ui.quantization_label(row.candidate),
+        }
+        for index, row in enumerate(rows)
+    ]
+
+
 def _print_recommend_json(
     ranked: list[tuple[dict, float | None]],
     refs: list[str],
@@ -3905,37 +3945,50 @@ def _print_recommend_json(
     info: object = None,
     eligible_count: int | None = None,
 ) -> None:
-    rows = recommend_ui.build_rows(ranked, refs, installations)
-    budget = recommend_ui._available_memory(info, profile)
     _print_json(
-        data=[
-            {
-                "rank": index + 1,
-                "ref": row.value,
-                "name": row.display_name,
-                "predicted_tokens_per_second": row.speed,
-                "memory_required_gb": row.memory_gb,
-                "model_type": row.model_type,
-                "model_type_source": row.type_source,
-                "use_case": row.use_case,
-                "use_case_source": row.use_case_source,
-                "declared_features": list(row.features),
-                "description": row.description,
-                "warning": row.warning,
-                "installed": row.installation.installed,
-                "managed_by_omm": row.installation.managed_by_omm,
-                "installed_engines": list(row.installation.engines),
-                "installation_match": row.installation.match_kind,
-                "profile": profile,
-                "profile_budget_gb": budget,
-                "within_profile": (row.memory_gb <= budget if row.memory_gb is not None and budget is not None else None),
-                "eligible_package_count": eligible_count,
-                "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
-                "quantization": recommend_ui.quantization_label(row.candidate),
-            }
-            for index, row in enumerate(rows)
-        ]
+        data=_build_recommend_json_rows(
+            ranked, refs, installations, profile, info=info, eligible_count=eligible_count,
+        )
     )
+
+
+def _shortlist_for_profile(
+    ranked: list[tuple[dict, float | None]],
+    usable: list[tuple[dict, float | None]],
+    info: object,
+    profile: str,
+) -> tuple[list[tuple[dict, float | None]], int, bool]:
+    """Apply the memory-profile filter (with graceful fallbacks) and the
+    shortlist cap for one profile. Returns (viable, eligible_count,
+    relaxed) where relaxed is True when nothing fit the profile's RAM
+    ceiling and the full usable set was shown instead."""
+    from omm.recommend_selection import shortlist
+
+    within_profile = predictor.filter_by_profile(usable, info, profile)
+    relaxed = False
+    if within_profile:
+        within_profile.sort(
+            key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
+            reverse=True,
+        )
+        viable = within_profile
+    elif usable:
+        # Nothing in the usable set clears the profile's RAM ceiling -
+        # relax the profile rather than show nothing.
+        relaxed = True
+        viable = sorted(
+            usable,
+            key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
+            reverse=True,
+        )
+    else:
+        # Nothing clears the usable-speed floor (very weak hardware) - fall
+        # back to the fastest candidates available rather than show nothing.
+        viable = [(c, speed) for c, speed in ranked if speed > 0]
+
+    eligible_count = len(viable)
+    viable = shortlist(viable)
+    return viable, eligible_count, relaxed
 
 
 def _first_uninstalled_ref(
@@ -4036,6 +4089,7 @@ def recommend(
     config = load_config()
     json_output = _global_opts().json
     auto_yes = _global_opts().yes
+    explicit_profile = profile is not None
 
     if profile is not None:
         profile = profile.casefold()
@@ -4065,34 +4119,40 @@ def recommend(
         usable = [
             (c, speed) for c, speed in ranked if speed >= predictor.MIN_USABLE_TOKENS_PER_SECOND
         ]
-        within_profile = predictor.filter_by_profile(usable, info, profile)
-        if within_profile:
-            within_profile.sort(
-                key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
-                reverse=True,
-            )
-            viable = within_profile
-        elif usable:
-            # Nothing in the usable set clears the profile's RAM ceiling -
-            # relax the profile rather than show nothing.
-            if not _global_opts().quiet and not json_output:
-                console.print(
-                    f"[muted]No model both meets the speed floor and fits the '{profile}' "
-                    "profile - showing the best fit anyway.[/muted]"
-                )
-            usable.sort(
-                key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
-                reverse=True,
-            )
-            viable = usable
-        else:
-            # Nothing clears the usable-speed floor (very weak hardware) - fall
-            # back to the fastest candidates available rather than show nothing.
-            viable = [(c, speed) for c, speed in ranked if speed > 0]
-        from omm.recommend_selection import shortlist
 
-        eligible_count = len(viable)
-        viable = shortlist(viable)
+        if json_output and not explicit_profile:
+            # No --profile was named, so --json must not silently collapse
+            # to one default profile - show what each profile would pick.
+            all_rows: list[dict] = []
+            for candidate_profile in predictor.RECOMMEND_PROFILES:
+                viable, eligible_count, _relaxed = _shortlist_for_profile(
+                    ranked, usable, info, candidate_profile
+                )
+                if not viable:
+                    continue
+                profile_refs = [search_mod.exact_install_ref(c) for c, speed in viable]
+                profile_installations = recommend_status.detect_installation_statuses(
+                    [candidate for candidate, _speed in viable]
+                )
+                session_cache.record_seen(profile_refs)
+                all_rows.extend(
+                    _build_recommend_json_rows(
+                        viable, profile_refs, profile_installations, candidate_profile,
+                        info=info, eligible_count=eligible_count,
+                    )
+                )
+            if not all_rows:
+                err_console.print("[error]No model is predicted to run on this hardware.[/error]")
+                raise typer.Exit(1)
+            _print_json(data=all_rows)
+            return
+
+        viable, eligible_count, relaxed = _shortlist_for_profile(ranked, usable, info, profile)
+        if relaxed and not _global_opts().quiet and not json_output:
+            console.print(
+                f"[muted]No model both meets the speed floor and fits the '{profile}' "
+                "profile - showing the best fit anyway.[/muted]"
+            )
         if not viable:
             err_console.print("[error]No model is predicted to run on this hardware.[/error]")
             raise typer.Exit(1)
