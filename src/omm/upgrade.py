@@ -62,11 +62,13 @@ def quant_label(filename: str) -> str | None:
 
 
 def find_successor(
-    candidates: list[dict], *, repo_id: str | None, filename: str, provider: str
+    candidates: list[dict], *, repo_id: str | None, filename: str, provider: str,
+    already_installed: frozenset[tuple[str, str, str]] = frozenset(),
 ) -> dict | None:
     """(B). candidates 에서 (provider, repo_id, filename) 이 정확히 일치하는 항목을 찾고,
     그 항목의 name 을 자신의 supersedes 에 담고 있는 **첫 번째** 다른 항목을 돌려준다.
-    없으면 None (조용한 스킵)."""
+    없으면 None (조용한 스킵). `already_installed`((provider, repo_id, filename.casefold())
+    튜플 집합)에 있는 후속작은 건너뛴다 - omm으로 이미 설치돼 있으면 더 이상 "제안"이 아니다."""
     current = None
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -105,6 +107,9 @@ def find_successor(
         ):
             # 자기 자신 계승 방지.
             continue
+        if (successor_provider, successor_repo_id, successor_filename.casefold()) in already_installed:
+            # 이미 omm으로 설치돼 있는 파일을 다시 "제안"하지 않는다 - 다음 후보를 계속 찾는다.
+            continue
         return candidate
 
     return None
@@ -119,8 +124,12 @@ def find_quant_upgrade(
     file_size: Callable[[str, str, str], int | None],
     predict_tps: Callable[[dict], float | None],
     fits_budget: Callable[[dict], bool],
+    already_installed: frozenset[str] = frozenset(),
 ) -> Suggestion | None:
-    """(A). 같은 repo 안에서 지금보다 quant_bits 가 높고 예산 안에 드는 최선의 형제 파일."""
+    """(A). 같은 repo 안에서 지금보다 quant_bits 가 높고 예산 안에 드는 최선의 형제 파일.
+    `already_installed`(같은 (provider, repo_id) 안에서 이미 omm으로 설치된 파일명의
+    casefold 집합)에 있는 파일은 후보에서 제외한다 - 다른 target을 통해 이미 제안·설치된
+    형제 quant를 다시 추천하지 않기 위해서다."""
     installed_bits = parse_quant_bits(installed_filename)
     if installed_bits is None:
         return None
@@ -136,6 +145,8 @@ def find_quant_upgrade(
         seen.add(dedupe_key)
 
         if candidate_filename == installed_filename:
+            continue
+        if dedupe_key in already_installed:
             continue
         if is_mmproj_filename(candidate_filename) or is_shard_filename(candidate_filename):
             continue

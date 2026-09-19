@@ -8147,6 +8147,21 @@ def _scan_for_upgrades(targets: list[tuple[str, dict]]) -> list[upgrade_mod.Sugg
     trees = artifact.get("trees") if artifact else None
     candidates = (artifact.get("candidates") or []) if artifact else []
 
+    # #366: a model `omm upgrade` already installed in a previous run stays
+    # installed (upgrade never auto-removes the old file), so it shows up as
+    # a scan target again on the next run. Without this, that already-
+    # installed sibling gets suggested right back as "the upgrade".
+    installed_by_repo: dict[tuple[str, str], set[str]] = {}
+    installed_successors: set[tuple[str, str, str]] = set()
+    for installed_filename, installed_entry in registry.load_registry().items():
+        installed_provider = installed_entry.get("provider") or "huggingface"
+        installed_repo_id = installed_entry.get("repo_id")
+        if not installed_repo_id:
+            continue
+        key = installed_filename.casefold()
+        installed_by_repo.setdefault((installed_provider, installed_repo_id), set()).add(key)
+        installed_successors.add((installed_provider, installed_repo_id, key))
+
     def _predict_tps(candidate: dict) -> float | None:
         if trees is None:
             return None
@@ -8162,7 +8177,8 @@ def _scan_for_upgrades(targets: list[tuple[str, dict]]) -> list[upgrade_mod.Sugg
             repo_id = entry.get("repo_id")
 
             successor = upgrade_mod.find_successor(
-                candidates, repo_id=repo_id, filename=filename, provider=provider
+                candidates, repo_id=repo_id, filename=filename, provider=provider,
+                already_installed=frozenset(installed_successors),
             )
             if successor is not None:
                 successor_provider = successor.get("provider") or "huggingface"
@@ -8193,6 +8209,9 @@ def _scan_for_upgrades(targets: list[tuple[str, dict]]) -> list[upgrade_mod.Sugg
                     file_size=remote_file_size,
                     predict_tps=_predict_tps,
                     fits_budget=lambda c: _candidate_fits_budget(hw, budget, c),
+                    already_installed=frozenset(
+                        installed_by_repo.get((quant_provider, quant_repo_id), set())
+                    ),
                 )
                 if quant is not None:
                     suggestions.append(quant)
