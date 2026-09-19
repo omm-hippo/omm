@@ -703,13 +703,23 @@ def _run_range_workers(
                 # (unlike POSIX, where a blocking syscall wakes on EINTR) until
                 # the wait itself completes - so polling with a short timeout is
                 # what lets a pending Ctrl+C actually get serviced.
-                for future in futures:
-                    while True:
-                        try:
-                            future.result(timeout=0.5)
-                            break
-                        except FutureTimeoutError:
-                            continue
+                try:
+                    for future in futures:
+                        while True:
+                            try:
+                                future.result(timeout=0.5)
+                                break
+                            except FutureTimeoutError:
+                                continue
+                except KeyboardInterrupt:
+                    # Breaking out of this loop only stops us polling - the
+                    # workers themselves are still mid network-read and have
+                    # no other way to learn a cancel happened. Without this,
+                    # the `with ThreadPoolExecutor` below blocks in
+                    # `shutdown(wait=True)` until every worker finishes on
+                    # its own, which can take as long as the whole download.
+                    abort_event.set()
+                    raise
 
     if errors:
         cancelled = next((e for e in errors if isinstance(e, DownloadCancelled)), None)

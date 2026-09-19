@@ -1,7 +1,9 @@
+import concurrent.futures
 import errno
 import io
 import json
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1651,6 +1653,67 @@ def test_range_worker_failure_sets_the_abort_event(tmp_path, monkeypatch):
     assert len(errors) == 1
     assert isinstance(errors[0], downloader.DownloadError)
     assert abort_event.is_set()
+
+
+def test_run_range_workers_aborts_pending_workers_on_keyboard_interrupt(tmp_path, monkeypatch):
+    """A Ctrl+C raised while polling `future.result()` must tell still-running
+    range workers to stop via `abort_event`, not just break the polling loop.
+    Otherwise `with ThreadPoolExecutor(...)`'s `__exit__` blocks in
+    `shutdown(wait=True)` on workers that never learn a cancel happened -
+    which is exactly what turned Ctrl+C into a hang."""
+    dest = tmp_path / "model.gguf"
+    part_path = dest.with_suffix(dest.suffix + ".part")
+    part_path.write_bytes(b"\0" * 20)
+    sidecar_path = tmp_path / "model.gguf.part.ranges.json"
+
+    saw_abort = threading.Event()
+
+    def fake_worker(
+        url, part_path, sidecar_path, range_state, ranges_state,
+        total_size, strong_etag, progress, task_id, lock, errors,
+        stop_check, abort_event=None,
+    ):
+        # Stands in for a worker blocked on a live network read: the only
+        # way it ever notices a cancel is by checking `abort_event`.
+        deadline = time.monotonic() + 5
+        while not (abort_event is not None and abort_event.is_set()):
+            if time.monotonic() > deadline:
+                return  # safety net, so a still-broken fix fails on the assert below
+            time.sleep(0.005)
+        saw_abort.set()
+
+    monkeypatch.setattr(downloader, "_download_range_worker", fake_worker)
+
+    real_result = concurrent.futures.Future.result
+    calls = {"n": 0}
+
+    def result_raises_once(self, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise KeyboardInterrupt()
+        return real_result(self, timeout=timeout)
+
+    monkeypatch.setattr(concurrent.futures.Future, "result", result_raises_once)
+
+    ranges_state = [
+        {"start": 0, "end": 9, "done": 0},
+        {"start": 10, "end": 19, "done": 0},
+    ]
+
+    with pytest.raises(KeyboardInterrupt):
+        downloader._run_range_workers(
+            "https://example.com/model.gguf",
+            dest,
+            part_path,
+            sidecar_path,
+            20,
+            ranges_state,
+            '"v1"',
+            None,
+            quiet=True,
+        )
+
+    assert saw_abort.is_set()
 
 
 def test_range_worker_fsyncs_data_before_writing_sidecar(tmp_path, monkeypatch):
