@@ -70,6 +70,21 @@ def test_installed_engine_without_package_still_gets_manager_hint():
     assert "Ollama: package changes need an identified manager" in output
 
 
+def test_no_package_manager_falls_back_to_the_apis_own_reported_version():
+    # #368: an engine with no brew/winget/flatpak identity (or one installed
+    # outside its package manager) can still tell us its version via its own
+    # API - display only, never fed into update/uninstall command assembly.
+    engines = [
+        _engine(key="ollama", label="Ollama", package=None,
+                package_manageable=False, runtime_version="0.5.1"),
+    ]
+
+    output = _render(engines)
+
+    assert "reported by API / 0.5.1" in output
+    assert "Not identified" not in output
+
+
 def test_installed_engine_with_no_package_manager_at_all_skips_the_hint():
     # koboldcpp/text-generation-webui have no brew/winget/flatpak identity at
     # all (#367): "package changes need an identified manager" is never a
