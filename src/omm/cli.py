@@ -1053,6 +1053,22 @@ def _command_flag_records(
     ]
 
 
+def _command_argument_records(
+    root_ctx: click.Context, name: str, cmd_obj: click.Command
+) -> list[tuple[str, str]]:
+    """(argument name, help) pairs for one command's positional arguments -
+    the records `_command_flag_records` filters out (see its docstring),
+    shown separately so `help --flags` can also surface a command's
+    ARGUMENTS rules (required/choices/etc), the way `omm CMD --help`
+    already does in its own ARGUMENTS section."""
+    sub_ctx = cmd_obj.make_context(name, [], parent=root_ctx, resilient_parsing=True)
+    return [
+        record
+        for p in cmd_obj.params
+        if (record := p.get_help_record(sub_ctx)) is not None and not record[0].startswith("-")
+    ]
+
+
 def _print_flag_grid(records: list[tuple[str, str]]) -> None:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(no_wrap=True)
@@ -1062,13 +1078,24 @@ def _print_flag_grid(records: list[tuple[str, str]]) -> None:
     console.print(grid)
 
 
+def _print_command_arguments_and_flags(
+    argument_records: list[tuple[str, str]], flag_records: list[tuple[str, str]]
+) -> None:
+    if argument_records:
+        console.print("    [muted]ARGUMENTS:[/muted]")
+        _print_flag_grid(argument_records)
+    if flag_records:
+        _print_flag_grid(flag_records)
+
+
 def _print_command_flags(root_ctx: click.Context, name: str, cmd_obj: click.Command) -> None:
-    """Indented flag block for one command, used by `help --all --flags`."""
-    records = _command_flag_records(root_ctx, name, cmd_obj)
-    if not records:
+    """Indented argument + flag block for one command, used by `help --all --flags`."""
+    argument_records = _command_argument_records(root_ctx, name, cmd_obj)
+    flag_records = _command_flag_records(root_ctx, name, cmd_obj)
+    if not argument_records and not flag_records:
         return
     console.print(f"  [bold]omm {name}[/bold]")
-    _print_flag_grid(records)
+    _print_command_arguments_and_flags(argument_records, flag_records)
 
 
 def _resolve_command_path(root_ctx: click.Context, path: list[str]) -> click.Command | None:
@@ -1098,9 +1125,11 @@ def _print_curated_command_reference(root_ctx: click.Context) -> None:
             cmd_obj = _resolve_command_path(root_ctx, path)
             if cmd_obj is None:
                 continue
-            records = _command_flag_records(root_ctx, " ".join(path), cmd_obj)
-            if records:
-                _print_flag_grid(records)
+            command_name = " ".join(path)
+            _print_command_arguments_and_flags(
+                _command_argument_records(root_ctx, command_name, cmd_obj),
+                _command_flag_records(root_ctx, command_name, cmd_obj),
+            )
         console.print()
     for line in _ROOT_HELP_FOOTER_LINES:
         console.print(line, markup=False, highlight=False)

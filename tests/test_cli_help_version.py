@@ -140,15 +140,26 @@ def test_help_all_flags_expands_each_command_option_list():
     assert "Add `--flags`" not in result.stdout
 
 
-def test_help_all_flags_omits_bare_positional_arguments():
-    # search/verify take a positional model/query argument; typer's own
-    # get_help_record() would otherwise surface it with no useful help text.
+def test_help_all_flags_shows_positional_argument_rules():
+    # search/verify take a positional query/model_name argument. `omm
+    # search --help` already shows it under its own ARGUMENTS section
+    # (issue #366 comment: "help --flags 의 출력에 명령어의 ARGUMENTS 규칙도
+    # 출력하게 하면 좋을 것 같습니다") - the compact --flags listing should
+    # surface the same rule (e.g. required) instead of hiding it.
     result = runner.invoke(cli.app, ["help", "--all", "--flags"])
 
     assert result.exit_code == 0, result.stdout
+    assert "ARGUMENTS:" in result.stdout
     lines = [line.strip() for line in result.stdout.splitlines()]
-    assert "query" not in lines
-    assert "model_name" not in lines
+    assert any(line.startswith("query") for line in lines)
+    assert any(line.startswith("model_name") for line in lines)
+
+
+def test_help_flags_curated_also_shows_positional_argument_rules():
+    result = runner.invoke(cli.app, ["help", "--flags"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "ARGUMENTS:" in result.stdout
 
 
 def test_help_all_excludes_hidden_commands():
