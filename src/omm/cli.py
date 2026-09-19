@@ -1529,7 +1529,13 @@ def engine_doctor_cmd(
         _print_json(data=items)
     else:
         print_engines(console, items, diagnostics=True)
-    if any(not item["installed"] for item in items):
+    # Not-installed is not a failure: doctor's job is diagnosing an engine that
+    # IS installed but broken (query error, or API off), not flagging the 6 of
+    # 7 runners a given user never installed.
+    broken = [item for item in items if item["installed"] and (
+        item["package_error"] is not None
+        or item["api_status"] not in {"ready", "not_checked", "diagnostics_unavailable"})]
+    if broken:
         raise typer.Exit(1)
 
 

@@ -193,6 +193,14 @@ def test_status_separates_installed_app_from_stopped_api(monkeypatch):
     assert result["api_status"] == "server_unavailable"
 
 
+def test_package_manageable_is_false_only_for_engines_with_no_package_identity(monkeypatch):
+    monkeypatch.setattr(manager, "package_receipt", lambda key: None)
+    monkeypatch.setattr(manager.linker, "is_engine_installed", lambda key: True)
+    assert manager.inspect_engine("ollama", check_api=False)["package_manageable"] is True
+    assert manager.inspect_engine("koboldcpp", check_api=False)["package_manageable"] is False
+    assert manager.inspect_engine("textgenwebui", check_api=False)["package_manageable"] is False
+
+
 def test_cli_dry_run_json_never_executes_or_prompts(monkeypatch):
     monkeypatch.setattr(manager, "package_receipt", lambda key: brew_receipt())
     monkeypatch.setattr(manager, "execute_action", lambda *a, **k: pytest.fail("dry run must not execute"))

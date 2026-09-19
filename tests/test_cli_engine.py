@@ -2,9 +2,67 @@ import json
 
 from typer.testing import CliRunner
 
-from omm import cli, linker, onboarding
+from omm import cli, engine_manager, linker, onboarding
 
 runner = CliRunner()
+
+
+def _doctor_item(**overrides) -> dict:
+    base = {
+        "key": "ollama", "label": "Ollama", "installed": False,
+        "package": None, "package_error": None, "package_manageable": True,
+        "api_status": "diagnostics_unavailable", "runtime_version": None,
+        "manual_url": "https://example.invalid",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_engine_doctor_with_no_args_does_not_fail_on_uninstalled_runners(monkeypatch):
+    # #367: checking all 7 runners must not fail just because most of them
+    # were never installed on this machine.
+    items = [_doctor_item(key=k, installed=False) for k in
+              ("ollama", "lmstudio", "jan", "anythingllm", "mstystudio", "koboldcpp", "textgenwebui")]
+    monkeypatch.setattr(engine_manager, "inspect_engine", lambda key, **kw: next(i for i in items if i["key"] == key))
+
+    result = runner.invoke(cli.app, ["engine", "doctor"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_engine_doctor_named_but_uninstalled_engine_is_not_a_failure(monkeypatch):
+    monkeypatch.setattr(engine_manager, "inspect_engine", lambda key, **kw: _doctor_item(installed=False))
+
+    result = runner.invoke(cli.app, ["engine", "doctor", "ollama"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_engine_doctor_fails_when_an_installed_engine_has_a_package_error(monkeypatch):
+    monkeypatch.setattr(engine_manager, "inspect_engine",
+                         lambda key, **kw: _doctor_item(installed=True, package_error="boom", api_status="ready"))
+
+    result = runner.invoke(cli.app, ["engine", "doctor", "ollama"])
+
+    assert result.exit_code == 1, result.output
+
+
+def test_engine_doctor_fails_when_an_installed_engine_api_is_unreachable(monkeypatch):
+    monkeypatch.setattr(engine_manager, "inspect_engine",
+                         lambda key, **kw: _doctor_item(installed=True, api_status="server_unavailable"))
+
+    result = runner.invoke(cli.app, ["engine", "doctor", "ollama"])
+
+    assert result.exit_code == 1, result.output
+
+
+def test_engine_doctor_passes_for_an_installed_engine_that_is_actually_fine(monkeypatch):
+    monkeypatch.setattr(engine_manager, "inspect_engine",
+                         lambda key, **kw: _doctor_item(installed=True, api_status="ready"))
+
+    result = runner.invoke(cli.app, ["engine", "doctor", "ollama"])
+
+    assert result.exit_code == 0, result.output
 
 
 def test_engine_install_runs_checklist_and_installs_selection(monkeypatch):

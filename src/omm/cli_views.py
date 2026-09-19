@@ -88,5 +88,5 @@ def print_engines(console: Console, engines: list[dict], *, diagnostics: bool = 
                 console.print(f"{engine['label']}: install with `omm engine install {engine['key']}`.", markup=False)
             elif engine["api_status"] not in {"ready", "not_checked", "diagnostics_unavailable"}:
                 console.print(f"{engine['label']}: enable its local API, then retry `omm verify MODEL --engine {engine['key']}`.", markup=False)
-            if engine["installed"] and not engine["package"]:
+            if engine["installed"] and not engine["package"] and engine["package_manageable"]:
                 console.print(f"{engine['label']}: package changes need an identified manager; manual options: {engine['manual_url']}", markup=False)

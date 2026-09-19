@@ -10,6 +10,7 @@ def _engine(**overrides) -> dict:
     base = {
         "key": "ollama", "label": "Ollama", "installed": True,
         "package": {"manager": "brew", "version": "1.0"}, "package_error": None,
+        "package_manageable": True,
         "api_status": "ready", "manual_url": "https://example.invalid",
     }
     base.update(overrides)
@@ -67,3 +68,17 @@ def test_installed_engine_without_package_still_gets_manager_hint():
     output = _render(engines)
 
     assert "Ollama: package changes need an identified manager" in output
+
+
+def test_installed_engine_with_no_package_manager_at_all_skips_the_hint():
+    # koboldcpp/text-generation-webui have no brew/winget/flatpak identity at
+    # all (#367): "package changes need an identified manager" is never a
+    # real diagnosis for them, so it must not print even once installed.
+    engines = [
+        _engine(key="koboldcpp", label="KoboldCpp", installed=True, package=None,
+                package_manageable=False, api_status="diagnostics_unavailable"),
+    ]
+
+    output = _render(engines)
+
+    assert "package changes need an identified manager" not in output

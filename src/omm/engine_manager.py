@@ -118,6 +118,8 @@ def inspect_engine(key: str, *, check_api: bool = True) -> dict:
         "key": key, "label": package.label, "installed": installed,
         "package": asdict(receipt) if receipt else None,
         "package_error": package_error,
+        "package_manageable": bool(package.brew_cask or package.brew_formula
+                                    or package.winget_id or package.flatpak_id),
         "api_status": "not_checked", "runtime_version": None,
         "manual_url": package.manual_url,
     }
