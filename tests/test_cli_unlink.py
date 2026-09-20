@@ -16,7 +16,7 @@ def test_unlink_single_runner_only_touches_that_runner(isolated_omm_home, monkey
         cli.linker, "unlink_engine", lambda key, fname, entry, **kw: calls.append(key)
     )
 
-    result = runner.invoke(cli.app, ["unlink", filename, "--runner", "ollama"])
+    result = runner.invoke(cli.app, ["unlink", filename, "--engine", "ollama"])
 
     assert result.exit_code == 0, result.stdout
     assert calls == ["ollama"]
@@ -36,7 +36,7 @@ def test_unlink_runner_all_touches_every_linked_runner(isolated_omm_home, monkey
         cli.linker, "unlink_engine", lambda key, fname, entry, **kw: calls.append(key)
     )
 
-    result = runner.invoke(cli.app, ["unlink", filename, "--runner", "all"])
+    result = runner.invoke(cli.app, ["unlink", filename, "--engine", "all"])
 
     assert result.exit_code == 0, result.stdout
     assert sorted(calls) == ["lmstudio", "ollama"]
@@ -48,10 +48,10 @@ def test_unlink_bogus_runner_errors(isolated_omm_home):
     filename = "model.gguf"
     registry.save_registry({filename: {"linked": {"ollama": True}}})
 
-    result = runner.invoke(cli.app, ["unlink", filename, "--runner", "bogus"])
+    result = runner.invoke(cli.app, ["unlink", filename, "--engine", "bogus"])
 
     assert result.exit_code == 2
-    assert "--runner must be one of" in result.stderr
+    assert "--engine must be one of" in result.stderr
 
 
 def test_unlink_not_linked_reports_and_noop(isolated_omm_home, monkeypatch):
@@ -63,7 +63,7 @@ def test_unlink_not_linked_reports_and_noop(isolated_omm_home, monkeypatch):
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not be called")),
     )
 
-    result = runner.invoke(cli.app, ["unlink", filename, "--runner", "ollama"])
+    result = runner.invoke(cli.app, ["unlink", filename, "--engine", "ollama"])
 
     assert result.exit_code == 0, result.stdout
     assert "isn't linked into" in result.stdout
@@ -73,27 +73,27 @@ def test_unlink_runner_all_with_nothing_linked_reports(isolated_omm_home):
     filename = "model.gguf"
     registry.save_registry({filename: {"linked": {"ollama": False}}})
 
-    result = runner.invoke(cli.app, ["unlink", filename, "--runner", "all"])
+    result = runner.invoke(cli.app, ["unlink", filename, "--engine", "all"])
 
     assert result.exit_code == 0, result.stdout
     assert "isn't linked into any runner" in result.stdout
 
 
 def test_unlink_missing_model_errors(isolated_omm_home):
-    result = runner.invoke(cli.app, ["unlink", "nothing-here.gguf", "--runner", "ollama"])
+    result = runner.invoke(cli.app, ["unlink", "nothing-here.gguf", "--engine", "ollama"])
 
     assert result.exit_code == 1
     assert "is not installed via omm" in result.stderr
 
 
-def test_unlink_requires_runner_option(isolated_omm_home):
+def test_unlink_requires_engine_option(isolated_omm_home):
     filename = "model.gguf"
     registry.save_registry({filename: {"linked": {"ollama": True}}})
 
     result = runner.invoke(cli.app, ["unlink", filename])
 
     assert result.exit_code != 0
-    assert "--runner" in result.stderr
+    assert "--engine" in result.stderr
 
 
 def test_unlink_comma_list_touches_every_named_model(isolated_omm_home, monkeypatch):
@@ -109,7 +109,7 @@ def test_unlink_comma_list_touches_every_named_model(isolated_omm_home, monkeypa
     )
 
     result = runner.invoke(
-        cli.app, ["unlink", "model-a.gguf,model-b.gguf", "--runner", "ollama"]
+        cli.app, ["unlink", "model-a.gguf,model-b.gguf", "--engine", "ollama"]
     )
 
     assert result.exit_code == 0, result.stdout
@@ -126,7 +126,7 @@ def test_unlink_comma_list_skips_unknown_model_and_still_unlinks_the_rest(
     )
 
     result = runner.invoke(
-        cli.app, ["unlink", "model-a.gguf,nothing-here.gguf", "--runner", "ollama"]
+        cli.app, ["unlink", "model-a.gguf,nothing-here.gguf", "--engine", "ollama"]
     )
 
     assert result.exit_code == 1
@@ -143,7 +143,7 @@ def test_unlink_link_error_reports_and_exits_nonzero(isolated_omm_home, monkeypa
 
     monkeypatch.setattr(cli.linker, "unlink_engine", _fail)
 
-    result = runner.invoke(cli.app, ["unlink", filename, "--runner", "ollama"])
+    result = runner.invoke(cli.app, ["unlink", filename, "--engine", "ollama"])
 
     assert result.exit_code == 1
     assert "boom" in result.stderr

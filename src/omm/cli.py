@@ -7372,16 +7372,17 @@ def unlink(
     ),
     engine: str = typer.Option(
         ...,
-        "--runner",
+        "--engine",
+        "-e",
         autocompletion=complete_engine_key,
         help="Runner to unlink from, or 'all'.",
     ),
 ) -> None:
     """Remove one or more models' links from one runner (or every runner
-    with --runner all) without touching the hub file or links into other
+    with --engine all) without touching the hub file or links into other
     runners."""
     if engine.lower() != "all":
-        _validate_engine(engine, flag="--runner")
+        _validate_engine(engine, flag="--engine")
 
     refs = _resolve_refs_multi(filenames)
     if not refs:
