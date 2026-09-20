@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.122",
+  "omm_version": "0.3.124",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -535,6 +535,79 @@
         }
       ],
       "docs_url": "https://omm.run/commands/engine#install"
+    },
+    {
+      "path": [
+        "engine",
+        "security"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show whether local runtime servers accept connections from other devices.",
+      "description": "",
+      "usage": "omm engine security [OPTIONS] [engine]",
+      "arguments": [
+        {
+          "name": "engine",
+          "help": "ollama or lmstudio; omit for both",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--fix-local-only"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Restart only a positively identified OMM-owned server on loopback.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/engine#security"
     },
     {
       "path": [

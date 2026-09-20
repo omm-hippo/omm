@@ -426,6 +426,7 @@ omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnab
 omm engine install [ENGINE]  # Install one supported local runner, or choose interactively
 omm engine status [ENGINE] [--json]  # Separate application, package version, and local API state
 omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
+omm engine security [ENGINE] [--fix-local-only] [--json] [--yes]  # Show whether Ollama/LM Studio accept connections from other devices
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm scan [--json]  # Memory, storage, installed runners, and models

@@ -225,6 +225,95 @@ def test_start_failure_keeps_original_reason(monkeypatch):
     assert "driver initialization failed" in (benchmark.last_daemon_start_error() or "")
 
 
+def test_start_ollama_daemon_pins_ollama_host_to_loopback(monkeypatch):
+    """A daemon omm launches itself must not inherit a stray OLLAMA_HOST
+    from the user's environment - engine security's local-only verdict
+    assumes any daemon omm starts is loopback-bound."""
+    monkeypatch.setattr(benchmark, "find_ollama_executable", lambda: Path("ollama"))
+    monkeypatch.setattr(benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(benchmark.engine_security, "record_owned_ollama", lambda *a, **k: True)
+    monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0:11434")
+    popen_calls = []
+
+    class _FakeProc:
+        pid = 999
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(
+        benchmark.subprocess,
+        "Popen",
+        lambda *a, **k: (popen_calls.append(k), _FakeProc())[1],
+    )
+
+    benchmark.start_ollama_daemon()
+
+    assert popen_calls[0]["env"]["OLLAMA_HOST"] == "127.0.0.1:11434"
+
+
+def test_start_ollama_daemon_records_ownership_on_success(monkeypatch):
+    monkeypatch.setattr(benchmark, "find_ollama_executable", lambda: Path("ollama"))
+    monkeypatch.setattr(benchmark, "ollama_daemon_reachable", lambda: True)
+
+    class _FakeProc:
+        pid = 999
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(benchmark.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    recorded = []
+    monkeypatch.setattr(
+        benchmark.engine_security,
+        "record_owned_ollama",
+        lambda proc, executable, bind: recorded.append((proc, executable, bind)),
+    )
+
+    result = benchmark.start_ollama_daemon()
+
+    assert result is not None
+    assert recorded == [(result, "ollama", "127.0.0.1:11434")]
+
+
+def test_stop_ollama_daemon_clears_ownership_receipt_when_already_exited(monkeypatch):
+    class _FakeProc:
+        pid = 4321
+
+        def poll(self):
+            return 0
+
+    cleared = []
+    monkeypatch.setattr(benchmark.engine_security, "clear_owned_ollama", lambda pid: cleared.append(pid))
+
+    benchmark.stop_ollama_daemon(_FakeProc())
+
+    assert cleared == [4321]
+
+
+def test_stop_ollama_daemon_posix_clears_ownership_receipt_after_stopping(monkeypatch):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Linux")
+
+    class _FakeProc:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    cleared = []
+    monkeypatch.setattr(benchmark.engine_security, "clear_owned_ollama", lambda pid: cleared.append(pid))
+
+    benchmark.stop_ollama_daemon(_FakeProc())
+
+    assert cleared == [4321]
+
+
 def test_one_token_or_implausible_timing_is_not_a_speed_measurement(monkeypatch):
     monkeypatch.setattr(benchmark, "ollama_daemon_reachable", lambda: True)
 
