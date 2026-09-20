@@ -71,10 +71,15 @@ def print_engines(console: Console, engines: list[dict], *, diagnostics: bool = 
         package = engine["package"]
         if package:
             package_label = f"{package['manager']} / {package['version'] or 'unknown'}"
-        elif engine.get("runtime_version"):
-            # Not manageable via a package manager, but the running app told
-            # us its version through its own API (#368) - display only, this
+        elif engine.get("detected_version"):
+            # Not manageable via a package manager, but its own Info.plist
+            # or a --version flag told us (#368) - works even with the app
+            # not running, unlike runtime_version below. Display only,
             # never feeds update/uninstall command assembly.
+            package_label = f"detected / {engine['detected_version']}"
+        elif engine.get("runtime_version"):
+            # Weaker fallback: the already-running app told us its version
+            # through its own API - only available while it's up.
             package_label = f"reported by API / {engine['runtime_version']}"
         else:
             package_label = "Not identified"

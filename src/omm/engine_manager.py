@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import os
 import platform
+import plistlib
 import re
 import shutil
 import subprocess
@@ -44,6 +45,55 @@ def _query(args: list[str]) -> subprocess.CompletedProcess | None:
                               errors="replace", timeout=15, env=_environment())
     except (OSError, subprocess.TimeoutExpired):
         return None
+
+
+_VERSION_TOKEN_RE = re.compile(r"\b(\d+\.\d+\.\d+)\b")
+
+
+def _ollama_cli_version() -> str | None:
+    """`ollama --version` (#368): reports the installed binary's version
+    without starting the daemon - so it works even when the local API is
+    off, unlike `runtime_version`. LM Studio's `lms` CLI has no equivalent:
+    `lms --version` only prints the `lms` tool's own build commit, not the
+    LM Studio app version, so there's nothing safe to surface from it."""
+    binary = shutil.which("ollama")
+    if binary is None:
+        return None
+    result = _query([binary, "--version"])
+    if result is None or result.returncode != 0:
+        return None
+    match = _VERSION_TOKEN_RE.search(result.stdout)
+    return match.group(1) if match else None
+
+
+def _macos_bundle_version(key: str) -> str | None:
+    """The app's own Info.plist CFBundleShortVersionString (#368) - ground
+    truth for "what's actually installed", and needs no new dependency
+    (plistlib is stdlib). Works for any engine with a native macOS app
+    bundle (ollama/lmstudio/jan/anythingllm/mstystudio); None elsewhere,
+    including koboldcpp/textgenwebui which have no bundle at all."""
+    path = linker.engine_app_bundle_path(key)
+    if path is None:
+        return None
+    try:
+        with (path / "Contents" / "Info.plist").open("rb") as plist_file:
+            data = plistlib.load(plist_file)
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    version = data.get("CFBundleShortVersionString")
+    return version if isinstance(version, str) and version else None
+
+
+def _detected_version(key: str) -> str | None:
+    """Best-effort version for an engine `package_receipt()` couldn't
+    identify (#368): the installed app's own Info.plist first (works
+    whether or not it's running), then a CLI --version flag where one
+    exists and is trustworthy. Display only - never touches
+    `PackageReceipt`/update/uninstall command assembly."""
+    version = _macos_bundle_version(key)
+    if version is None and key == "ollama":
+        version = _ollama_cli_version()
+    return version
 
 
 def package_receipt(key: str) -> PackageReceipt | None:
@@ -120,6 +170,7 @@ def inspect_engine(key: str, *, check_api: bool = True) -> dict:
         "package_error": package_error,
         "package_manageable": bool(package.brew_cask or package.brew_formula
                                     or package.winget_id or package.flatpak_id),
+        "detected_version": _detected_version(key) if receipt is None else None,
         "api_status": "not_checked", "runtime_version": None,
         "manual_url": package.manual_url,
     }

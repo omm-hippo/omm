@@ -185,6 +185,34 @@ def _app_bundle_installed(app_name: str) -> bool:
     return any((root / f"{app_name}.app").exists() for root in _APP_BUNDLE_SEARCH_ROOTS)
 
 
+# The .app bundle name for every engine that actually has one on macOS.
+# koboldcpp/textgenwebui ship as a plain executable/script, not a bundle -
+# deliberately absent here.
+_ENGINE_APP_BUNDLE_NAMES = {
+    "ollama": "Ollama",
+    "lmstudio": "LM Studio",
+    "jan": "Jan",
+    "anythingllm": "AnythingLLM",
+    "mstystudio": "MstyStudio",
+}
+
+
+def engine_app_bundle_path(key: str) -> Path | None:
+    """macOS-only: the installed .app bundle path for an engine, or None
+    (other platforms, an engine with no bundle convention, or not found).
+    Public so engine_manager can read the bundle's own Info.plist (#368)."""
+    if platform.system() != "Darwin":
+        return None
+    app_name = _ENGINE_APP_BUNDLE_NAMES.get(key)
+    if app_name is None:
+        return None
+    for root in _APP_BUNDLE_SEARCH_ROOTS:
+        candidate = root / f"{app_name}.app"
+        if candidate.exists():
+            return candidate
+    return None
+
+
 _DESKTOP_ENTRY_SEARCH_ROOTS = [
     Path.home() / ".local" / "share" / "applications",
     Path("/usr/local/share/applications"),

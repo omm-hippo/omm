@@ -30,12 +30,14 @@ def test_engine_doctor_with_no_args_does_not_fail_on_uninstalled_runners(monkeyp
     assert result.exit_code == 0, result.output
 
 
-def test_engine_doctor_named_but_uninstalled_engine_is_not_a_failure(monkeypatch):
+def test_engine_doctor_naming_an_uninstalled_engine_is_a_failure(monkeypatch):
+    # Unlike the bare/all scan, naming one engine is a real "is this ready"
+    # check - not installed is worth failing on here.
     monkeypatch.setattr(engine_manager, "inspect_engine", lambda key, **kw: _doctor_item(installed=False))
 
     result = runner.invoke(cli.app, ["engine", "doctor", "ollama"])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
 
 
 def test_engine_doctor_fails_when_an_installed_engine_has_a_package_error(monkeypatch):
@@ -47,13 +49,27 @@ def test_engine_doctor_fails_when_an_installed_engine_has_a_package_error(monkey
     assert result.exit_code == 1, result.output
 
 
-def test_engine_doctor_fails_when_an_installed_engine_api_is_unreachable(monkeypatch):
+def test_engine_doctor_all_still_fails_on_a_package_error_from_an_installed_engine(monkeypatch):
+    items = [
+        _doctor_item(key="ollama", installed=True, package_error="boom"),
+        _doctor_item(key="lmstudio", installed=False),
+    ]
+    monkeypatch.setattr(engine_manager, "inspect_engine", lambda key, **kw: next(i for i in items if i["key"] == key))
+
+    result = runner.invoke(cli.app, ["engine", "doctor"])
+
+    assert result.exit_code == 1, result.output
+
+
+def test_engine_doctor_does_not_fail_when_an_installed_engines_api_is_just_off(monkeypatch):
+    # A local API that's off just means the user hasn't started that runner
+    # right now - normal, not broken.
     monkeypatch.setattr(engine_manager, "inspect_engine",
                          lambda key, **kw: _doctor_item(installed=True, api_status="server_unavailable"))
 
     result = runner.invoke(cli.app, ["engine", "doctor", "ollama"])
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 0, result.output
 
 
 def test_engine_doctor_passes_for_an_installed_engine_that_is_actually_fine(monkeypatch):

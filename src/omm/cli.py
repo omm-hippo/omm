@@ -1560,13 +1560,16 @@ def engine_doctor_cmd(
         _print_json(data=items)
     else:
         print_engines(console, items, diagnostics=True)
-    # Not-installed is not a failure: doctor's job is diagnosing an engine that
-    # IS installed but broken (query error, or API off), not flagging the 6 of
-    # 7 runners a given user never installed.
-    broken = [item for item in items if item["installed"] and (
-        item["package_error"] is not None
-        or item["api_status"] not in {"ready", "not_checked", "diagnostics_unavailable"})]
-    if broken:
+    # A local API that's simply off is not a failure - the user just hasn't
+    # started that runner right now, which is normal, not broken. Only a real
+    # package-query error counts as "broken".
+    broken = any(item["installed"] and item["package_error"] is not None for item in items)
+    # Scanning every runner (no argument) must not fail just because most of
+    # the 7 were never installed - almost nobody has all 7. Naming one
+    # specific engine is a real "is this ready" check, so not-installed there
+    # still fails.
+    missing_named_engine = engine is not None and any(not item["installed"] for item in items)
+    if broken or missing_named_engine:
         raise typer.Exit(1)
 
 

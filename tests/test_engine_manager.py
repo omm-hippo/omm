@@ -1,5 +1,6 @@
 from dataclasses import asdict
 import json
+import plistlib
 import subprocess
 from types import SimpleNamespace
 
@@ -196,9 +197,106 @@ def test_status_separates_installed_app_from_stopped_api(monkeypatch):
 def test_package_manageable_is_false_only_for_engines_with_no_package_identity(monkeypatch):
     monkeypatch.setattr(manager, "package_receipt", lambda key: None)
     monkeypatch.setattr(manager.linker, "is_engine_installed", lambda key: True)
+    # Hermetic: don't let this test's outcome depend on whatever's actually
+    # installed on the machine running it.
+    monkeypatch.setattr(manager, "_detected_version", lambda key: None)
     assert manager.inspect_engine("ollama", check_api=False)["package_manageable"] is True
     assert manager.inspect_engine("koboldcpp", check_api=False)["package_manageable"] is False
     assert manager.inspect_engine("textgenwebui", check_api=False)["package_manageable"] is False
+
+
+def test_ollama_cli_version_parses_the_version_flags_output(monkeypatch):
+    monkeypatch.setattr(manager.shutil, "which", lambda name: "/usr/local/bin/ollama")
+    monkeypatch.setattr(
+        manager, "_query",
+        lambda args: subprocess.CompletedProcess(args, 0, "ollama version is 0.33.1\n", ""),
+    )
+    assert manager._ollama_cli_version() == "0.33.1"
+
+
+def test_ollama_cli_version_is_none_when_ollama_is_not_on_path(monkeypatch):
+    monkeypatch.setattr(manager.shutil, "which", lambda name: None)
+    assert manager._ollama_cli_version() is None
+
+
+def test_ollama_cli_version_is_none_when_the_command_fails(monkeypatch):
+    monkeypatch.setattr(manager.shutil, "which", lambda name: "/usr/local/bin/ollama")
+    monkeypatch.setattr(manager, "_query", lambda args: subprocess.CompletedProcess(args, 1, "", "boom"))
+    assert manager._ollama_cli_version() is None
+
+
+def _write_info_plist(path, **fields):
+    bundle = path / "Contents"
+    bundle.mkdir(parents=True)
+    with (bundle / "Info.plist").open("wb") as plist_file:
+        plistlib.dump(fields, plist_file)
+
+
+def test_macos_bundle_version_reads_cfbundleshortversionstring(tmp_path, monkeypatch):
+    app_path = tmp_path / "LM Studio.app"
+    _write_info_plist(app_path, CFBundleShortVersionString="0.4.24+1")
+    monkeypatch.setattr(manager.linker, "engine_app_bundle_path", lambda key: app_path)
+
+    assert manager._macos_bundle_version("lmstudio") == "0.4.24+1"
+
+
+def test_macos_bundle_version_is_none_when_no_bundle_is_installed(monkeypatch):
+    monkeypatch.setattr(manager.linker, "engine_app_bundle_path", lambda key: None)
+    assert manager._macos_bundle_version("lmstudio") is None
+
+
+def test_macos_bundle_version_is_none_when_info_plist_is_missing_or_unreadable(tmp_path, monkeypatch):
+    app_path = tmp_path / "LM Studio.app"  # Contents/Info.plist never written
+    monkeypatch.setattr(manager.linker, "engine_app_bundle_path", lambda key: app_path)
+    assert manager._macos_bundle_version("lmstudio") is None
+
+
+def test_detected_version_prefers_the_bundle_over_the_cli_flag(monkeypatch):
+    monkeypatch.setattr(manager, "_macos_bundle_version", lambda key: "0.33.1")
+    calls = []
+    monkeypatch.setattr(manager, "_ollama_cli_version", lambda: calls.append(1) or "9.9.9")
+
+    assert manager._detected_version("ollama") == "0.33.1"
+    assert calls == []  # never needed the weaker fallback
+
+
+def test_detected_version_falls_back_to_ollama_cli_flag(monkeypatch):
+    monkeypatch.setattr(manager, "_macos_bundle_version", lambda key: None)
+    monkeypatch.setattr(manager, "_ollama_cli_version", lambda: "0.33.1")
+
+    assert manager._detected_version("ollama") == "0.33.1"
+
+
+def test_detected_version_has_no_cli_fallback_for_non_ollama_engines(monkeypatch):
+    # lms --version prints the CLI tool's own build commit, not the LM
+    # Studio app version - nothing safe to fall back to there.
+    monkeypatch.setattr(manager, "_macos_bundle_version", lambda key: None)
+    assert manager._detected_version("lmstudio") is None
+
+
+def test_inspect_engine_falls_back_to_detected_version_when_not_package_managed(monkeypatch):
+    # #368: works even with the daemon not running (an official-installer
+    # Ollama, or any engine's .app read straight from its own Info.plist,
+    # has no brew/winget identity at all).
+    monkeypatch.setattr(manager, "package_receipt", lambda key: None)
+    monkeypatch.setattr(manager.linker, "is_engine_installed", lambda key: True)
+    monkeypatch.setattr(manager, "_detected_version", lambda key: "0.33.1")
+
+    result = manager.inspect_engine("ollama", check_api=False)
+
+    assert result["detected_version"] == "0.33.1"
+
+
+def test_inspect_engine_skips_the_detection_probe_when_a_package_is_already_identified(monkeypatch):
+    monkeypatch.setattr(manager, "package_receipt", lambda key: brew_receipt())
+    monkeypatch.setattr(manager.linker, "is_engine_installed", lambda key: True)
+    calls = []
+    monkeypatch.setattr(manager, "_detected_version", lambda key: calls.append(1) or "0.33.1")
+
+    result = manager.inspect_engine("ollama", check_api=False)
+
+    assert result["detected_version"] is None
+    assert calls == []
 
 
 def test_cli_dry_run_json_never_executes_or_prompts(monkeypatch):
