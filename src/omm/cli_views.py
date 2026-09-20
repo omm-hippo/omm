@@ -69,8 +69,15 @@ def print_engines(console: Console, engines: list[dict], *, diagnostics: bool = 
     seen_errors: set[str] = set()
     for engine in engines:
         package = engine["package"]
-        package_label = (f"{package['manager']} / {package['version'] or 'unknown'}"
-                         if package else "Not identified")
+        if package:
+            package_label = f"{package['manager']} / {package['version'] or 'unknown'}"
+        elif engine.get("runtime_version"):
+            # Not manageable via a package manager, but the running app told
+            # us its version through its own API (#368) - display only, this
+            # never feeds update/uninstall command assembly.
+            package_label = f"reported by API / {engine['runtime_version']}"
+        else:
+            package_label = "Not identified"
         api = engine["api_status"]
         api_label = {"ready": "Ready", "not_checked": "Not checked",
                      "diagnostics_unavailable": "Not supported",
@@ -88,5 +95,5 @@ def print_engines(console: Console, engines: list[dict], *, diagnostics: bool = 
                 console.print(f"{engine['label']}: install with `omm engine install {engine['key']}`.", markup=False)
             elif engine["api_status"] not in {"ready", "not_checked", "diagnostics_unavailable"}:
                 console.print(f"{engine['label']}: enable its local API, then retry `omm verify MODEL --engine {engine['key']}`.", markup=False)
-            if engine["installed"] and not engine["package"]:
+            if engine["installed"] and not engine["package"] and engine["package_manageable"]:
                 console.print(f"{engine['label']}: package changes need an identified manager; manual options: {engine['manual_url']}", markup=False)

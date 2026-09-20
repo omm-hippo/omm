@@ -393,6 +393,24 @@ def pending_count() -> int:
     return len(_load_pending())
 
 
+def most_common_pending_cause() -> tuple[str, str] | None:
+    """(error_type, subcommand) of whichever cause makes up the most queued
+    reports, or None if the queue is empty.
+
+    A repeat "Sent N queued error report(s)" notice with no way to tell
+    whether it is the same crash recurring names nothing - the user has to
+    go dig through ~/.omm/logs by hand to find out. This lets the CLI's
+    flush notice say what actually failed."""
+    reports = _load_pending()
+    if not reports:
+        return None
+    counts: dict[tuple[str, str], int] = {}
+    for report in reports:
+        key = (report.get("error_type") or "unknown", report.get("subcommand") or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    return max(counts.items(), key=lambda item: item[1])[0]
+
+
 def catalog_ref(repo_id: str | None, filename: str | None) -> str | None:
     """`repo_id:filename` - the catalog coordinates of a model, never the
     local absolute path it was downloaded to."""

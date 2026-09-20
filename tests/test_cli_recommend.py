@@ -266,19 +266,22 @@ def test_recommend_json_lists_candidates_without_installing(monkeypatch, isolate
 
     assert result.exit_code == 0, result.stdout
     rows = json.loads(result.stdout)
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["rank"] == 1
-    assert row["ref"] == "ms:org/repo:model.gguf"
-    assert row["name"] == cli.recommend_ui.humanize_model_name(candidate)
-    assert row["model_type"] == "LLM"
-    assert row["use_case"] == "Coding"
-    assert row["model_type_source"] == row["use_case_source"] == "Catalog metadata"
-    assert row["declared_features"] == []
-    assert row["predicted_tokens_per_second"] == 42.0
-    assert row["installed"] is False
-    assert row["managed_by_omm"] is False
-    assert row["installed_engines"] == []
+    # No --profile was given, so every profile (dedicated/balanced/minimal)
+    # is represented - the sole candidate clears all of their budgets.
+    assert {row["profile"] for row in rows} == {"dedicated", "balanced", "minimal"}
+    assert len(rows) == 3
+    for row in rows:
+        assert row["rank"] == 1
+        assert row["ref"] == "ms:org/repo:model.gguf"
+        assert row["name"] == cli.recommend_ui.humanize_model_name(candidate)
+        assert row["model_type"] == "LLM"
+        assert row["use_case"] == "Coding"
+        assert row["model_type_source"] == row["use_case_source"] == "Catalog metadata"
+        assert row["declared_features"] == []
+        assert row["predicted_tokens_per_second"] == 42.0
+        assert row["installed"] is False
+        assert row["managed_by_omm"] is False
+        assert row["installed_engines"] == []
     assert row["installation_match"] is None
 
 
@@ -585,9 +588,12 @@ def test_recommend_yes_chooses_normal_candidate_before_specialized(monkeypatch, 
     assert installed_refs == ["org/Qwen3-4B-GGUF:Qwen3-4B-Q4_K_M.gguf"]
 
 
-def test_recommend_json_defaults_to_balanced_profile_and_filters_by_it(
+def test_recommend_json_covers_every_profile_when_none_requested(
     monkeypatch, isolated_omm_home
 ):
+    """`omm recommend --json` with no --profile must not silently collapse
+    to the balanced profile - it should show what each profile (dedicated,
+    balanced, minimal) would recommend."""
     small, big = _two_candidates()
     artifact = {"candidates": [small, big]}
 
@@ -604,6 +610,42 @@ def test_recommend_json_defaults_to_balanced_profile_and_filters_by_it(
     monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
 
     result = runner.invoke(cli.app, ["recommend", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    rows = json.loads(result.stdout)
+    by_profile: dict[str, list[str]] = {}
+    for row in rows:
+        by_profile.setdefault(row["profile"], []).append(row["ref"])
+
+    assert set(by_profile) == {"dedicated", "balanced", "minimal"}
+    # 16GB * 0.80/0.45/0.20 = 12.8GB/7.2GB/3.2GB caps - the ~9.6GB big
+    # candidate only clears the dedicated (0.80) cap.
+    assert by_profile["dedicated"] == ["ms:big/repo:big.gguf", "ms:small/repo:small.gguf"]
+    assert by_profile["balanced"] == ["ms:small/repo:small.gguf"]
+    assert by_profile["minimal"] == ["ms:small/repo:small.gguf"]
+
+
+def test_recommend_json_with_explicit_profile_still_filters_to_just_it(
+    monkeypatch, isolated_omm_home
+):
+    """Passing --profile explicitly alongside --json must keep narrowing to
+    that one profile, not the new every-profile default."""
+    small, big = _two_candidates()
+    artifact = {"candidates": [small, big]}
+
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _hardware())
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(
+        cli, "_load_recommendation_with_change_note", lambda config: (artifact, False)
+    )
+    monkeypatch.setattr(
+        cli.predictor,
+        "rank_candidates",
+        lambda artifact, hw: [(small, 20.0), (big, 14.0)],
+    )
+    monkeypatch.setattr(cli.session_cache, "record_seen", lambda refs: None)
+
+    result = runner.invoke(cli.app, ["recommend", "--json", "--profile", "balanced"])
 
     assert result.exit_code == 0, result.stdout
     rows = json.loads(result.stdout)

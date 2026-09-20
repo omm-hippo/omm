@@ -151,6 +151,7 @@ from omm import (
     launcher,
     linker,
     memory_guard as memory_guard_mod,
+    notify,
     onboarding,
     predictor,
     recommend_status,
@@ -320,6 +321,7 @@ _JSON_CAPABLE = {
     "setting catalog-status",
     "engine status",
     "engine doctor",
+    "engine security",
     "engine update",
     "engine uninstall",
     "bug-report",
@@ -341,6 +343,7 @@ _YES_CAPABLE = {
     "run",
     "engine update",
     "engine uninstall",
+    "engine security",
     "bug-report",
     "tune",
 }
@@ -613,6 +616,30 @@ def _command_path_of(ctx: click.Context) -> list[str]:
     return list(reversed(names))
 
 
+def _hide_unsupported_global_flags(cmd: click.Command, path: list[str]) -> None:
+    """Hide (never remove) the --yes/--json options `global_flags` attaches
+    to every decorated command, on the ones that cannot act on them (see
+    _YES_CAPABLE / _JSON_CAPABLE). Both flags stay fully functional - an
+    unsupported --yes still warns instead of silently no-opping, and an
+    unsupported --json still exits with its usual clear error - this only
+    stops `omm CMD --help` and `omm help --flags` from listing a flag that
+    does nothing on that command (issue #375: help advertised `omm fit -y`,
+    but `fit` has no confirmation prompt to skip). Runs once per invocation
+    from the root group, before Click renders help or parses the chosen
+    subcommand's own options - see _RootHelpGroup.invoke."""
+    commands = getattr(cmd, "commands", None)
+    if commands:
+        for name, sub in commands.items():
+            _hide_unsupported_global_flags(sub, path + [name])
+        return
+    full = " ".join(path)
+    for p in cmd.params:
+        if p.name == "yes_flag" and full not in _YES_CAPABLE:
+            p.hidden = True
+        elif p.name == "json_flag" and full not in _JSON_CAPABLE:
+            p.hidden = True
+
+
 class _DocsEpilogGroup(typer.core.TyperGroup):
     """Adds the `More about omm ...: https://omm.run/commands/...` footer to
     every subcommand's `--help`, at the single place Click resolves a name
@@ -650,6 +677,7 @@ class _RootHelpGroup(_DocsEpilogGroup):
             raise BriefUsageError(error, ctx) from error
 
     def invoke(self, ctx: click.Context):
+        _hide_unsupported_global_flags(ctx.command, [])
         try:
             return super().invoke(ctx)
         except BriefUsageError:
@@ -946,11 +974,18 @@ def _root(
         # Only an `always` policy flushes unattended here; under `ask` the
         # queue deliberately waits for the next `omm contribute`, which is
         # the one place the user is asked about error reports.
+        #
+        # The cause has to be read before flush_pending() empties the queue
+        # it describes - a repeat "Sent N queued error report(s)" notice with
+        # no way to tell a one-off from the same crash recurring every run
+        # otherwise sends the user digging through ~/.omm/logs by hand.
+        pending_cause = error_report.most_common_pending_cause()
         reported = error_report.flush_pending()
         if reported and not (opts.json or opts.quiet):
+            hint = f" ({pending_cause[0]} in {pending_cause[1]})" if pending_cause else ""
             err_console.print(
                 f"[muted]Sent {reported} queued error report(s) "
-                "from a previous session.[/muted]"
+                f"from a previous session{hint}.[/muted]"
             )
         # Anonymous usage stats: at most one batch per day, silently (it is
         # a background aggregate, not a per-session event worth a notice).
@@ -1020,6 +1055,22 @@ def _command_flag_records(
     ]
 
 
+def _command_argument_records(
+    root_ctx: click.Context, name: str, cmd_obj: click.Command
+) -> list[tuple[str, str]]:
+    """(argument name, help) pairs for one command's positional arguments -
+    the records `_command_flag_records` filters out (see its docstring),
+    shown separately so `help --flags` can also surface a command's
+    ARGUMENTS rules (required/choices/etc), the way `omm CMD --help`
+    already does in its own ARGUMENTS section."""
+    sub_ctx = cmd_obj.make_context(name, [], parent=root_ctx, resilient_parsing=True)
+    return [
+        record
+        for p in cmd_obj.params
+        if (record := p.get_help_record(sub_ctx)) is not None and not record[0].startswith("-")
+    ]
+
+
 def _print_flag_grid(records: list[tuple[str, str]]) -> None:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(no_wrap=True)
@@ -1029,13 +1080,24 @@ def _print_flag_grid(records: list[tuple[str, str]]) -> None:
     console.print(grid)
 
 
+def _print_command_arguments_and_flags(
+    argument_records: list[tuple[str, str]], flag_records: list[tuple[str, str]]
+) -> None:
+    if argument_records:
+        console.print("    [muted]ARGUMENTS:[/muted]")
+        _print_flag_grid(argument_records)
+    if flag_records:
+        _print_flag_grid(flag_records)
+
+
 def _print_command_flags(root_ctx: click.Context, name: str, cmd_obj: click.Command) -> None:
-    """Indented flag block for one command, used by `help --all --flags`."""
-    records = _command_flag_records(root_ctx, name, cmd_obj)
-    if not records:
+    """Indented argument + flag block for one command, used by `help --all --flags`."""
+    argument_records = _command_argument_records(root_ctx, name, cmd_obj)
+    flag_records = _command_flag_records(root_ctx, name, cmd_obj)
+    if not argument_records and not flag_records:
         return
     console.print(f"  [bold]omm {name}[/bold]")
-    _print_flag_grid(records)
+    _print_command_arguments_and_flags(argument_records, flag_records)
 
 
 def _resolve_command_path(root_ctx: click.Context, path: list[str]) -> click.Command | None:
@@ -1065,9 +1127,11 @@ def _print_curated_command_reference(root_ctx: click.Context) -> None:
             cmd_obj = _resolve_command_path(root_ctx, path)
             if cmd_obj is None:
                 continue
-            records = _command_flag_records(root_ctx, " ".join(path), cmd_obj)
-            if records:
-                _print_flag_grid(records)
+            command_name = " ".join(path)
+            _print_command_arguments_and_flags(
+                _command_argument_records(root_ctx, command_name, cmd_obj),
+                _command_flag_records(root_ctx, command_name, cmd_obj),
+            )
         console.print()
     for line in _ROOT_HELP_FOOTER_LINES:
         console.print(line, markup=False, highlight=False)
@@ -1496,8 +1560,95 @@ def engine_doctor_cmd(
         _print_json(data=items)
     else:
         print_engines(console, items, diagnostics=True)
-    if any(not item["installed"] for item in items):
+    # Not-installed is not a failure: doctor's job is diagnosing an engine that
+    # IS installed but broken (query error, or API off), not flagging the 6 of
+    # 7 runners a given user never installed.
+    broken = [item for item in items if item["installed"] and (
+        item["package_error"] is not None
+        or item["api_status"] not in {"ready", "not_checked", "diagnostics_unavailable"})]
+    if broken:
         raise typer.Exit(1)
+
+
+@engine_app.command(name="security")
+@global_flags
+def engine_security_cmd(
+    engine: str | None = typer.Argument(
+        None, autocompletion=complete_engine_key, help="ollama or lmstudio; omit for both"
+    ),
+    fix_local_only: bool = typer.Option(
+        False,
+        "--fix-local-only",
+        help="Restart only a positively identified OMM-owned server on loopback.",
+    ),
+) -> None:
+    """Show whether local runtime servers accept connections from other devices."""
+    from omm import engine_security
+
+    if engine is not None:
+        key = engine.strip().casefold()
+        if key not in {"ollama", "lmstudio"}:
+            err_console.print("engine must be ollama or lmstudio", markup=False)
+            raise typer.Exit(2)
+        targets = [key]
+    else:
+        targets = ["ollama", "lmstudio"]
+    if fix_local_only and len(targets) != 1:
+        err_console.print("Name one engine when using --fix-local-only.")
+        raise typer.Exit(2)
+    try:
+        items = [engine_security.inspect(key) for key in targets]
+    except engine_security.EngineSecurityError as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(1) from error
+
+    if fix_local_only:
+        item = items[0]
+        if item["status"] == "external_allowed" and item.get("owned_by_omm"):
+            if not _global_opts().json:
+                console.print("Planned change:")
+                console.print("  - Stop the Ollama server that this OMM process record still owns.")
+                console.print("  - Existing local clients will disconnect and in-memory model work will stop.")
+                console.print("  - Restart Ollama on 127.0.0.1 only; saved model files stay unchanged.")
+            if not _global_opts().yes:
+                if _global_opts().json or not _stdin_is_tty():
+                    err_console.print("Review the impact above, then pass --yes to apply it.")
+                    raise typer.Exit(1)
+                if not _ask_confirm("Restart this OMM-owned Ollama server as local-only?"):
+                    err_console.print("Cancelled.")
+                    raise typer.Exit(0)
+        try:
+            items = [engine_security.fix_local_only(targets[0])]
+        except engine_security.EngineSecurityError as error:
+            err_console.print(str(error), markup=False)
+            raise typer.Exit(1) from error
+
+    if _global_opts().json:
+        _print_json(data=items)
+        return
+    labels = {
+        "local_only": "This computer only",
+        "external_allowed": "External connections allowed",
+        "unknown": "Could not determine",
+    }
+    table = _table(title="Engine server security")
+    table.add_column("Engine")
+    table.add_column("Access")
+    table.add_column("Listener")
+    table.add_column("What OMM knows")
+    for item in items:
+        listeners = ", ".join(
+            f"{row['address']}:{row['port']}" for row in item.get("listeners", [])
+        ) or "not visible"
+        ownership = "OMM-owned" if item.get("owned_by_omm") else "not owned by OMM"
+        table.add_row(
+            str(item["engine"]), labels[str(item["status"])], listeners,
+            f"{item['reason']}; {ownership}",
+        )
+    console.print(table)
+    console.print(
+        "[muted]This reports server listening scope only. OMM does not control network activity started independently by Ollama or LM Studio.[/muted]"
+    )
 
 
 def _change_engine(engine: str, action: str, *, dry_run: bool) -> None:
@@ -1758,7 +1909,27 @@ def _auto_import_run_cmd() -> None:
     """Internal. Started by the OS service registered via
     `omm setting auto-import enable` (see watch_service.py); blocks forever
     watching every supported local AI app's model directory and adopting
-    new models into the omm hub."""
+    new models into the omm hub.
+
+    The OS service (launchd KeepAlive / systemd Restart=on-failure) restarts
+    this command on every exit, including a crash. watchdog/plyer can go
+    missing after enable (e.g. a pipx reinstall that dropped the injected
+    `[watch]` extras) without the user touching auto-import at all; letting
+    `watch.run_watch_loop()` raise `ModuleNotFoundError` in that case turns
+    into a silent, unthrottled crash loop that floods the error-report queue
+    every few seconds instead of surfacing the problem. Check the same
+    dependency `setting auto-import enable` checks and self-disable instead."""
+    if not _watch_dependencies_available():
+        try:
+            watch_service.uninstall()
+        except (OSError, subprocess.CalledProcessError, RuntimeError):
+            pass
+        config_mod.update_config(auto_import_enabled=False)
+        notify.notify(
+            "omm auto-import disabled",
+            f"Missing dependency (watchdog, plyer). {_watch_dependency_hint()}",
+        )
+        return
     watch.run_watch_loop()
 
 
@@ -3843,6 +4014,46 @@ def _select_recommended_model(
     return selected
 
 
+def _build_recommend_json_rows(
+    ranked: list[tuple[dict, float | None]],
+    refs: list[str],
+    installations: list[recommend_status.InstallationStatus],
+    profile: str,
+    *,
+    info: object = None,
+    eligible_count: int | None = None,
+) -> list[dict]:
+    rows = recommend_ui.build_rows(ranked, refs, installations)
+    budget = recommend_ui._available_memory(info, profile)
+    return [
+        {
+            "rank": index + 1,
+            "ref": row.value,
+            "name": row.display_name,
+            "predicted_tokens_per_second": row.speed,
+            "memory_required_gb": row.memory_gb,
+            "model_type": row.model_type,
+            "model_type_source": row.type_source,
+            "use_case": row.use_case,
+            "use_case_source": row.use_case_source,
+            "declared_features": list(row.features),
+            "description": row.description,
+            "warning": row.warning,
+            "installed": row.installation.installed,
+            "managed_by_omm": row.installation.managed_by_omm,
+            "installed_engines": list(row.installation.engines),
+            "installation_match": row.installation.match_kind,
+            "profile": profile,
+            "profile_budget_gb": budget,
+            "within_profile": (row.memory_gb <= budget if row.memory_gb is not None and budget is not None else None),
+            "eligible_package_count": eligible_count,
+            "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
+            "quantization": recommend_ui.quantization_label(row.candidate),
+        }
+        for index, row in enumerate(rows)
+    ]
+
+
 def _print_recommend_json(
     ranked: list[tuple[dict, float | None]],
     refs: list[str],
@@ -3852,37 +4063,50 @@ def _print_recommend_json(
     info: object = None,
     eligible_count: int | None = None,
 ) -> None:
-    rows = recommend_ui.build_rows(ranked, refs, installations)
-    budget = recommend_ui._available_memory(info, profile)
     _print_json(
-        data=[
-            {
-                "rank": index + 1,
-                "ref": row.value,
-                "name": row.display_name,
-                "predicted_tokens_per_second": row.speed,
-                "memory_required_gb": row.memory_gb,
-                "model_type": row.model_type,
-                "model_type_source": row.type_source,
-                "use_case": row.use_case,
-                "use_case_source": row.use_case_source,
-                "declared_features": list(row.features),
-                "description": row.description,
-                "warning": row.warning,
-                "installed": row.installation.installed,
-                "managed_by_omm": row.installation.managed_by_omm,
-                "installed_engines": list(row.installation.engines),
-                "installation_match": row.installation.match_kind,
-                "profile": profile,
-                "profile_budget_gb": budget,
-                "within_profile": (row.memory_gb <= budget if row.memory_gb is not None and budget is not None else None),
-                "eligible_package_count": eligible_count,
-                "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
-                "quantization": recommend_ui.quantization_label(row.candidate),
-            }
-            for index, row in enumerate(rows)
-        ]
+        data=_build_recommend_json_rows(
+            ranked, refs, installations, profile, info=info, eligible_count=eligible_count,
+        )
     )
+
+
+def _shortlist_for_profile(
+    ranked: list[tuple[dict, float | None]],
+    usable: list[tuple[dict, float | None]],
+    info: object,
+    profile: str,
+) -> tuple[list[tuple[dict, float | None]], int, bool]:
+    """Apply the memory-profile filter (with graceful fallbacks) and the
+    shortlist cap for one profile. Returns (viable, eligible_count,
+    relaxed) where relaxed is True when nothing fit the profile's RAM
+    ceiling and the full usable set was shown instead."""
+    from omm.recommend_selection import shortlist
+
+    within_profile = predictor.filter_by_profile(usable, info, profile)
+    relaxed = False
+    if within_profile:
+        within_profile.sort(
+            key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
+            reverse=True,
+        )
+        viable = within_profile
+    elif usable:
+        # Nothing in the usable set clears the profile's RAM ceiling -
+        # relax the profile rather than show nothing.
+        relaxed = True
+        viable = sorted(
+            usable,
+            key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
+            reverse=True,
+        )
+    else:
+        # Nothing clears the usable-speed floor (very weak hardware) - fall
+        # back to the fastest candidates available rather than show nothing.
+        viable = [(c, speed) for c, speed in ranked if speed > 0]
+
+    eligible_count = len(viable)
+    viable = shortlist(viable)
+    return viable, eligible_count, relaxed
 
 
 def _first_uninstalled_ref(
@@ -3983,6 +4207,7 @@ def recommend(
     config = load_config()
     json_output = _global_opts().json
     auto_yes = _global_opts().yes
+    explicit_profile = profile is not None
 
     if profile is not None:
         profile = profile.casefold()
@@ -4012,34 +4237,40 @@ def recommend(
         usable = [
             (c, speed) for c, speed in ranked if speed >= predictor.MIN_USABLE_TOKENS_PER_SECOND
         ]
-        within_profile = predictor.filter_by_profile(usable, info, profile)
-        if within_profile:
-            within_profile.sort(
-                key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
-                reverse=True,
-            )
-            viable = within_profile
-        elif usable:
-            # Nothing in the usable set clears the profile's RAM ceiling -
-            # relax the profile rather than show nothing.
-            if not _global_opts().quiet and not json_output:
-                console.print(
-                    f"[muted]No model both meets the speed floor and fits the '{profile}' "
-                    "profile - showing the best fit anyway.[/muted]"
-                )
-            usable.sort(
-                key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
-                reverse=True,
-            )
-            viable = usable
-        else:
-            # Nothing clears the usable-speed floor (very weak hardware) - fall
-            # back to the fastest candidates available rather than show nothing.
-            viable = [(c, speed) for c, speed in ranked if speed > 0]
-        from omm.recommend_selection import shortlist
 
-        eligible_count = len(viable)
-        viable = shortlist(viable)
+        if json_output and not explicit_profile:
+            # No --profile was named, so --json must not silently collapse
+            # to one default profile - show what each profile would pick.
+            all_rows: list[dict] = []
+            for candidate_profile in predictor.RECOMMEND_PROFILES:
+                viable, eligible_count, _relaxed = _shortlist_for_profile(
+                    ranked, usable, info, candidate_profile
+                )
+                if not viable:
+                    continue
+                profile_refs = [search_mod.exact_install_ref(c) for c, speed in viable]
+                profile_installations = recommend_status.detect_installation_statuses(
+                    [candidate for candidate, _speed in viable]
+                )
+                session_cache.record_seen(profile_refs)
+                all_rows.extend(
+                    _build_recommend_json_rows(
+                        viable, profile_refs, profile_installations, candidate_profile,
+                        info=info, eligible_count=eligible_count,
+                    )
+                )
+            if not all_rows:
+                err_console.print("[error]No model is predicted to run on this hardware.[/error]")
+                raise typer.Exit(1)
+            _print_json(data=all_rows)
+            return
+
+        viable, eligible_count, relaxed = _shortlist_for_profile(ranked, usable, info, profile)
+        if relaxed and not _global_opts().quiet and not json_output:
+            console.print(
+                f"[muted]No model both meets the speed floor and fits the '{profile}' "
+                "profile - showing the best fit anyway.[/muted]"
+            )
         if not viable:
             err_console.print("[error]No model is predicted to run on this hardware.[/error]")
             raise typer.Exit(1)
@@ -4289,7 +4520,7 @@ def tune(
     model_name: str = typer.Argument(..., autocompletion=complete_install_name),
     apply: bool = typer.Option(False, "--apply", help="Temporarily load and verify the proposed settings."),
     save: bool = typer.Option(False, "--save", help="Save settings only after a successful --apply trial."),
-    engine: str | None = typer.Option(None, "--engine", help="Runtime for the trial: ollama or lmstudio."),
+    engine: str | None = typer.Option(None, "--engine", "-e", help="Runtime for the trial: ollama or lmstudio."),
 ) -> None:
     """Recommend context, GPU offload, threads, and batch size for a model."""
     if save and not apply:
@@ -4435,7 +4666,7 @@ def _apply_runtime_profile(filename: str, entry: dict, profile, *, engine: str |
 @global_flags
 def runtime_profile_cmd(
     model_name: str = typer.Argument(..., autocompletion=complete_remove_filename),
-    engine: str = typer.Option("ollama", "--engine", help="ollama or lmstudio"),
+    engine: str = typer.Option("ollama", "--engine", "-e", help="ollama or lmstudio"),
     restore: bool = typer.Option(False, "--restore", help="Restore the previous saved profile (or defaults)."),
 ) -> None:
     """Inspect a saved runtime profile, or undo the last save without reloading models."""
@@ -7320,6 +7551,7 @@ def verify(
     engine: str = typer.Option(
         None,
         "--engine",
+        "-e",
         help="Local runtime to test: ollama or lmstudio.",
     ),
     keep_loaded: bool = typer.Option(
@@ -8087,6 +8319,21 @@ def _scan_for_upgrades(targets: list[tuple[str, dict]]) -> list[upgrade_mod.Sugg
     trees = artifact.get("trees") if artifact else None
     candidates = (artifact.get("candidates") or []) if artifact else []
 
+    # #366: a model `omm upgrade` already installed in a previous run stays
+    # installed (upgrade never auto-removes the old file), so it shows up as
+    # a scan target again on the next run. Without this, that already-
+    # installed sibling gets suggested right back as "the upgrade".
+    installed_by_repo: dict[tuple[str, str], set[str]] = {}
+    installed_successors: set[tuple[str, str, str]] = set()
+    for installed_filename, installed_entry in registry.load_registry().items():
+        installed_provider = installed_entry.get("provider") or "huggingface"
+        installed_repo_id = installed_entry.get("repo_id")
+        if not installed_repo_id:
+            continue
+        key = installed_filename.casefold()
+        installed_by_repo.setdefault((installed_provider, installed_repo_id), set()).add(key)
+        installed_successors.add((installed_provider, installed_repo_id, key))
+
     def _predict_tps(candidate: dict) -> float | None:
         if trees is None:
             return None
@@ -8102,7 +8349,8 @@ def _scan_for_upgrades(targets: list[tuple[str, dict]]) -> list[upgrade_mod.Sugg
             repo_id = entry.get("repo_id")
 
             successor = upgrade_mod.find_successor(
-                candidates, repo_id=repo_id, filename=filename, provider=provider
+                candidates, repo_id=repo_id, filename=filename, provider=provider,
+                already_installed=frozenset(installed_successors),
             )
             if successor is not None:
                 successor_provider = successor.get("provider") or "huggingface"
@@ -8133,6 +8381,9 @@ def _scan_for_upgrades(targets: list[tuple[str, dict]]) -> list[upgrade_mod.Sugg
                     file_size=remote_file_size,
                     predict_tps=_predict_tps,
                     fits_budget=lambda c: _candidate_fits_budget(hw, budget, c),
+                    already_installed=frozenset(
+                        installed_by_repo.get((quant_provider, quant_repo_id), set())
+                    ),
                 )
                 if quant is not None:
                     suggestions.append(quant)
@@ -8431,7 +8682,7 @@ def _prune_missing_models(reg: dict) -> dict:
 @global_flags
 def list_models(
     engine: str | None = typer.Option(
-        None, "--engine", help="Only show models linked into this engine."
+        None, "--engine", "-e", help="Only show models linked into this engine."
     ),
 ) -> None:
     """Show models installed via omm and their linked status.
@@ -9611,7 +9862,7 @@ def link_models(
         "(omit for every installed model).",
     ),
     engine: str | None = typer.Option(
-        None, "--engine", help="Only re-verify/repair links for this engine."
+        None, "--engine", "-e", help="Only re-verify/repair links for this engine."
     ),
     to: Path | None = typer.Option(
         None,
@@ -10425,9 +10676,6 @@ def evaluate_cmd(
             engine="ollama",
             engine_version=quality_mod.ollama_version(),
         )
-    except quality_mod.QualityEvaluationError as error:
-        err_console.print(f"[error]{escape(str(error))}[/error]")
-        raise typer.Exit(1) from error
     finally:
         if was_loaded is False:
             quality_mod.ensure_model_unloaded(model)

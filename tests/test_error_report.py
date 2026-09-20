@@ -310,6 +310,23 @@ def test_a_long_error_message_is_truncated_to_the_documented_cap(isolated_omm_ho
     assert len(report["error_message"]) == 2000
 
 
+def test_most_common_pending_cause_is_none_for_an_empty_queue(isolated_omm_home):
+    assert error_report.most_common_pending_cause() is None
+
+
+def test_most_common_pending_cause_picks_the_majority_error_type(isolated_omm_home):
+    _write_config(error_report_send_policy="always")
+    for _ in range(3):
+        error_report.queue_report(
+            ModuleNotFoundError("No module named 'watchdog'"),
+            trigger="crash",
+            subcommand="_auto-import-run",
+        )
+    error_report.queue_report(RuntimeError("unrelated"), trigger="crash", subcommand="install")
+
+    assert error_report.most_common_pending_cause() == ("ModuleNotFoundError", "_auto-import-run")
+
+
 def test_flush_sends_queued_reports_to_the_derived_endpoint(isolated_omm_home, monkeypatch):
     _write_config(error_report_send_policy="always")
     error_report.queue_report(RuntimeError("boom"), trigger="crash")

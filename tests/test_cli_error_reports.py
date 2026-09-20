@@ -105,6 +105,39 @@ def test_setting_error_reports_shows_the_derived_write_only_destination(isolated
     assert error_report.endpoint() == ERROR_REPORT_URL
 
 
+# --- root-callback flush notice ---------------------------------------------
+
+
+def test_root_flush_notice_names_the_recurring_cause(isolated_omm_home, monkeypatch):
+    """The plain "Sent N queued error report(s)" notice gives no way to tell
+    a one-off from the same crash recurring every run - the user has to dig
+    through ~/.omm/logs by hand to find out what is actually failing."""
+    monkeypatch.setattr(cli.error_report, "flush_pending", lambda: 3)
+    monkeypatch.setattr(
+        cli.error_report,
+        "most_common_pending_cause",
+        lambda: ("ModuleNotFoundError", "_auto-import-run"),
+    )
+
+    result = runner.invoke(cli.app, ["list"])
+
+    assert result.exit_code == 0, result.stdout
+    message = result.stderr.lower()
+    assert "sent 3 queued error report" in message
+    assert "modulenotfounderror" in message
+    assert "_auto-import-run" in message
+
+
+def test_root_flush_notice_omits_hint_when_cause_unavailable(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.error_report, "flush_pending", lambda: 3)
+    monkeypatch.setattr(cli.error_report, "most_common_pending_cause", lambda: None)
+
+    result = runner.invoke(cli.app, ["list"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "sent 3 queued error report" in result.stderr.lower()
+
+
 # --- consent resolution at `omm contribute` start ---------------------------
 
 

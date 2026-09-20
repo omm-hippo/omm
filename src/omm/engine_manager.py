@@ -54,9 +54,11 @@ def package_receipt(key: str) -> PackageReceipt | None:
         for kind, package_id in (("cask", package.brew_cask), ("formula", package.brew_formula)):
             if package_id is None:
                 continue
-            result = _query([binary, "list", f"--{kind}", "--versions"])
-            if result is None or result.returncode != 0:
+            result = _query([binary, "list", f"--{kind}", "--versions", package_id])
+            if result is None:
                 raise EngineManagementError(f"Could not read Homebrew's installed {kind} packages.")
+            if result.returncode != 0:
+                continue
             matches = [line.split() for line in result.stdout.splitlines()
                        if line.split() and line.split()[0] == package_id]
             if len(matches) == 1 and len(matches[0]) > 1:
@@ -116,6 +118,8 @@ def inspect_engine(key: str, *, check_api: bool = True) -> dict:
         "key": key, "label": package.label, "installed": installed,
         "package": asdict(receipt) if receipt else None,
         "package_error": package_error,
+        "package_manageable": bool(package.brew_cask or package.brew_formula
+                                    or package.winget_id or package.flatpak_id),
         "api_status": "not_checked", "runtime_version": None,
         "manual_url": package.manual_url,
     }

@@ -39,6 +39,23 @@ def test_darwin_install_writes_plist_and_loads_it(fake_home, isolated_omm_home, 
     assert sys.executable in wrapper_content
 
 
+def test_darwin_plist_throttles_restarts(fake_home, isolated_omm_home, monkeypatch):
+    """KeepAlive with no ThrottleInterval makes launchd respawn a crashing
+    `_auto-import-run` about once a second (its default minimum), which
+    floods the error-report queue with one entry per restart. This is
+    defense in depth alongside the self-disable in cli.py -
+    `_watch_dependencies_available` only catches the missing-dependency
+    case; any other crash reason still needs a floor on restart frequency."""
+    monkeypatch.setattr(watch_service.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(watch_service.subprocess, "run", lambda *a, **k: None)
+
+    watch_service.install()
+
+    content = watch_service._launchd_plist_path().read_text(encoding="utf-8")
+    assert "<key>ThrottleInterval</key>" in content
+    assert "<integer>30</integer>" in content
+
+
 def test_darwin_uninstall_unloads_and_removes_plist(fake_home, isolated_omm_home, monkeypatch):
     monkeypatch.setattr(watch_service.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(watch_service.subprocess, "run", lambda *a, **k: None)
@@ -76,6 +93,7 @@ def test_linux_install_writes_unit_and_enables_it(fake_home, isolated_omm_home, 
     commands = [c[0][0] for c in calls]
     assert ["systemctl", "--user", "daemon-reload"] in commands
     assert ["systemctl", "--user", "enable", "--now", "omm-auto-import.service"] in commands
+    assert "RestartSec=30" in content
 
 
 @pytest.fixture

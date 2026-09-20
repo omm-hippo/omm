@@ -66,6 +66,48 @@ def test_quant_upgrade_picks_highest_bits_within_budget():
     assert result.ref == "hf:org/repo:model-Q6_K.gguf"
 
 
+def test_quant_upgrade_skips_a_sibling_already_installed_via_omm():
+    # #366: `omm upgrade` never removes the old file it replaces, so the
+    # next run still targets it - it must not suggest the sibling quant
+    # that's already installed right back as "the upgrade".
+    filenames = [
+        "model-Q4_K_M.gguf",  # installed (this target)
+        "model-Q6_K.gguf",    # installed too, via a previous `omm upgrade`
+        "model-Q8_0.gguf",
+    ]
+
+    result = upgrade.find_quant_upgrade(
+        provider="huggingface",
+        repo_id="org/repo",
+        installed_filename="model-Q4_K_M.gguf",
+        list_repo_files=_list_repo_files(filenames),
+        file_size=_file_size({}),
+        predict_tps=_predict_none,
+        fits_budget=_fits_all,
+        already_installed=frozenset({"model-q6_k.gguf"}),
+    )
+
+    assert result is not None
+    assert result.filename == "model-Q8_0.gguf"
+
+
+def test_quant_upgrade_returns_none_when_every_better_sibling_is_already_installed():
+    filenames = ["model-Q4_K_M.gguf", "model-Q6_K.gguf"]
+
+    result = upgrade.find_quant_upgrade(
+        provider="huggingface",
+        repo_id="org/repo",
+        installed_filename="model-Q4_K_M.gguf",
+        list_repo_files=_list_repo_files(filenames),
+        file_size=_file_size({}),
+        predict_tps=_predict_none,
+        fits_budget=_fits_all,
+        already_installed=frozenset({"model-q6_k.gguf"}),
+    )
+
+    assert result is None
+
+
 def test_quant_upgrade_excludes_lower_or_equal_bits():
     filenames = [
         "model-Q4_K_M.gguf",  # installed
@@ -277,6 +319,37 @@ def test_find_successor_matches_exact_coordinates():
 
     assert result is not None
     assert result["name"] == "llama3.3-8b-instruct-q4"
+
+
+def test_find_successor_skips_a_successor_already_installed_via_omm():
+    # #366: the successor was already installed by a previous `omm upgrade`
+    # run and the superseded original is still around too (upgrade never
+    # auto-removes it) - don't suggest the already-installed successor again.
+    candidates = [
+        {
+            "name": "llama3.1-8b-instruct-q4",
+            "repo_id": "org/llama31",
+            "filename": "llama-3.1-8b-Q4_K_M.gguf",
+            "provider": "huggingface",
+        },
+        {
+            "name": "llama3.3-8b-instruct-q4",
+            "repo_id": "org/llama33",
+            "filename": "llama-3.3-8b-Q4_K_M.gguf",
+            "provider": "huggingface",
+            "supersedes": ["llama3.1-8b-instruct-q4"],
+        },
+    ]
+
+    result = upgrade.find_successor(
+        candidates,
+        repo_id="org/llama31",
+        filename="llama-3.1-8b-Q4_K_M.gguf",
+        provider="huggingface",
+        already_installed=frozenset({("huggingface", "org/llama33", "llama-3.3-8b-q4_k_m.gguf")}),
+    )
+
+    assert result is None
 
 
 def test_find_successor_returns_none_when_installed_model_not_curated():

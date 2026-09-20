@@ -247,10 +247,13 @@ def _remote_gguf_prefix_cached(
     """
     import requests
 
+    from omm import auth
+
     url = download_url(provider, repo_id, filename)
+    headers = {"Range": f"bytes=0-{max_prefix_bytes - 1}", **auth.headers_for_url(url)}
     with requests.get(
         url,
-        headers={"Range": f"bytes=0-{max_prefix_bytes - 1}"},
+        headers=headers,
         stream=True,
         timeout=(10, 30),
     ) as response:

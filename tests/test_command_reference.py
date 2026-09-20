@@ -59,11 +59,43 @@ def test_global_flags_are_marked_and_command_flags_are_not():
     flagged = {
         flag: option["global"] for option in install["options"] for flag in option["flags"]
     }
-    assert flagged["--json"] is True
+    # `install` doesn't support --json (see cli._JSON_CAPABLE), so it's hidden
+    # here entirely - see test_json_flag_is_hidden_on_a_command_that_cannot_use_it.
+    assert "--json" not in flagged
     assert flagged["--quiet"] is True
     assert flagged["--skip-unfit"] is False
     assert [a["name"] for a in install["arguments"]] == ["model_name"]
     assert install["arguments"][0]["required"] is True
+
+
+def test_every_engine_selector_flag_supports_the_same_short_alias():
+    # #366: commands that filter/select by runner via `--engine` must all
+    # accept the same `-e` short form (`omm list -e ollama`, not just `omm
+    # run -e ollama`). `--runner` (on `unlink`) is a deliberately different,
+    # required-not-optional selector and is out of scope here.
+    reference = build_reference(cli.app)
+    offenders = []
+    for entry in reference["commands"]:
+        for option in entry["options"]:
+            if "--engine" in option["flags"] and "-e" not in option["flags"]:
+                offenders.append(tuple(entry["path"]))
+    assert offenders == []
+
+
+def test_json_flag_is_hidden_on_a_command_that_cannot_use_it():
+    """docs/commands.json must not advertise a flag that has no effect on a
+    given command (issue #375: `omm fit -y` used to show up in
+    `omm help --all --flags` even though `fit` has no confirmation prompt).
+    """
+    reference = build_reference(cli.app)
+    fit = _by_path(reference, "fit")
+    fit_flags = {flag for option in fit["options"] for flag in option["flags"]}
+    assert "--yes" not in fit_flags and "-y" not in fit_flags
+    assert "--json" in fit_flags  # fit IS json-capable, per cli._JSON_CAPABLE
+
+    search = _by_path(reference, "search")
+    search_flags = {flag for option in search["options"] for flag in option["flags"]}
+    assert "--json" in search_flags
 
 
 def test_usage_is_plain_text_prefixed_with_the_real_program_path():
