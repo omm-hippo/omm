@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.128",
+  "omm_version": "0.3.129",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
