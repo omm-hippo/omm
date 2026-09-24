@@ -11334,6 +11334,11 @@ _DAEMON_RESTART_BACKOFF_SECONDS = 5.0
 _MAX_CANDIDATE_BENCHMARK_FAILURES = 2
 _MAX_CANDIDATE_MEMORY_DEFERRALS = 3
 _DEFERRED_MEMORY_RECHECK_SECONDS = 30.0
+# Safety net for the deferred-memory wait (issue #390): after a recheck
+# releases every retryable deferred candidate, the queue must hand at least
+# one of them back. If it returns nothing this many times in a row, the
+# release did not make progress and waiting again would spin forever.
+_MAX_STALLED_DEFERRED_RECHECKS = 1
 _MIN_CONTRIBUTE_START_FREE_BYTES = 10 * 1024**3
 
 
@@ -11804,6 +11809,7 @@ def _run_contribution_loop_impl(
     deferred: dict[str, _DeferredContribution] = {}
     post_download_memory_failures: dict[str, int] = {}
     gpu_state: dict = {"force_cpu": False}
+    stalled_deferred_rechecks = 0
     engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
     while not stop_event.is_set():
         session.release()
@@ -11852,7 +11858,8 @@ def _run_contribution_loop_impl(
                 for candidate_ref, item in deferred.items()
                 if item.attempts < _MAX_CANDIDATE_MEMORY_DEFERRALS
             ]
-            if retryable and hasattr(queue, "release_deferred"):
+            can_release = retryable and hasattr(queue, "release_deferred")
+            if can_release and stalled_deferred_rechecks < _MAX_STALLED_DEFERRED_RECHECKS:
                 if not opts.quiet:
                     console.print(
                         f"[muted]Waiting {int(_DEFERRED_MEMORY_RECHECK_SECONDS)}s for "
@@ -11863,7 +11870,17 @@ def _run_contribution_loop_impl(
                     break
                 for candidate_ref, _item in retryable:
                     queue.release_deferred(candidate_ref)
+                stalled_deferred_rechecks += 1
                 continue
+            if can_release:
+                # Released candidates never came back from the queue, so
+                # another wait cannot change anything - stop instead of
+                # printing the same "Waiting..." line forever.
+                err_console.print(
+                    f"[warning]{len(retryable)} deferred candidate(s) were released "
+                    "for a memory recheck but none was offered again - giving up on "
+                    "them for this session.[/warning]"
+                )
             if not opts.quiet:
                 if deferred:
                     console.print(
@@ -11877,6 +11894,7 @@ def _run_contribution_loop_impl(
                 session.stop_reason = "memory_unavailable"
             break
 
+        stalled_deferred_rechecks = 0
         display_name = candidate.get("name", candidate["filename"])
         ref_str = contribute_mod.ref(candidate)
         if not opts.quiet:

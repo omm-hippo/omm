@@ -1409,3 +1409,146 @@ def test_successful_benchmark_clears_an_earlier_cancelled_attempt(isolated_omm_h
     cli._run_contribution_loop(queue, stop_event, refetch=None)
 
     assert benchmark_history.failure_record("huggingface:org/repo:model.gguf") is None
+
+
+def _always_defer_memory_plan(plans):
+    """Memory never becomes available: every preflight says DEFER."""
+
+    def memory_plan(candidate, **_kwargs):
+        plans.append(cli.contribute_mod.ref(candidate))
+        return _memory_plan(
+            decision=contribute_memory.ContributionMemoryDecision.DEFER,
+            sample=_memory_sample(
+                samples_gb=(12.0,), median_gb=12.0, minimum_gb=12.0, maximum_gb=12.0
+            ),
+            reasons=("committed_ram_temporarily_unavailable",),
+        )
+
+    return memory_plan
+
+
+class _BoundedStopEvent(threading.Event):
+    """Stop event whose `wait` never sleeps and trips itself after
+    `max_waits` deferred-memory rechecks, so a regression of issue #390 (a
+    recheck loop that never makes progress) fails the test instead of
+    hanging it forever."""
+
+    def __init__(self, max_waits):
+        super().__init__()
+        self.max_waits = max_waits
+        self.waits = 0
+
+    def wait(self, timeout=None):
+        self.waits += 1
+        if self.waits > self.max_waits:
+            self.set()
+            return True
+        return super().wait(0)
+
+
+def test_many_deferred_candidates_including_phase_c_siblings_are_all_retried(
+    isolated_omm_home, monkeypatch, capsys
+):
+    """Issue #390: 18 large candidates were deferred for memory, some from
+    the ranked pool and some from Phase C (other quants of the boundary
+    repo). Once released, the Phase C siblings were never handed out again,
+    so the loop printed "Waiting 30s ... 18 deferred candidate(s)" forever.
+    With the real queue, every deferred candidate must be re-tried on every
+    recheck until its budget is spent, and the loop must then end."""
+    pool = [
+        _candidate(repo_id="org/big", filename=f"big-{i}-Q4_K_M.gguf", name=f"big-{i}")
+        | {"size_bytes": 20 * 1024**3}
+        for i in range(4)
+    ]
+    siblings = [
+        _candidate(repo_id="org/big", filename=f"big-3-sib{i}-Q{i % 8 + 2}_K.gguf", name=f"sib-{i}")
+        | {"size_bytes": 30 * 1024**3}
+        for i in range(14)
+    ]
+    monkeypatch.setattr(
+        cli.contribute_mod.predictor,
+        "rank_candidates",
+        lambda artifact, hw: [(c, 5.0) for c in pool],
+    )
+    queue = cli.contribute_mod.ContributionQueue({}, object(), history_refs=set())
+    fetched = []
+
+    def fetch_siblings(boundary):
+        fetched.append(boundary["filename"])
+        return [dict(sibling) for sibling in siblings]
+
+    plans = []
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "_DEFERRED_MEMORY_RECHECK_SECONDS", 0.0)
+    monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", _always_defer_memory_plan(plans))
+    monkeypatch.setattr(
+        cli,
+        "_install_impl",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a deferred candidate must not download")
+        ),
+    )
+    stop_event = _BoundedStopEvent(max_waits=20)
+
+    stats = cli._run_contribution_loop(
+        queue, stop_event, refetch=None, fetch_siblings=fetch_siblings
+    )
+
+    every_ref = {cli.contribute_mod.ref(c) for c in pool + siblings}
+    assert fetched == ["big-3-Q4_K_M.gguf"]
+    assert {ref: plans.count(ref) for ref in every_ref} == {
+        ref: cli._MAX_CANDIDATE_MEMORY_DEFERRALS for ref in every_ref
+    }
+    # One recheck per retry round, never an idle one.
+    assert stop_event.waits == cli._MAX_CANDIDATE_MEMORY_DEFERRALS - 1
+    assert stats.deferred_low_memory == len(every_ref)
+    assert stats.skipped_low_memory == len(every_ref)
+    assert stats.stop_reason == "memory_unavailable"
+    out = capsys.readouterr().out
+    assert "No deferred candidate became memory-safe" in out
+    assert "Trying sib-13..." in out
+
+
+class _ReleaseIgnoringQueue:
+    """A queue that accepts `release_deferred` but never re-offers the
+    candidates - the shape of the issue #390 bug, used to prove the loop's
+    own safety net stops instead of waiting forever."""
+
+    def __init__(self, candidates):
+        self._candidates = list(candidates)
+        self.released = []
+
+    def next_candidate(self, refetch=None, fetch_siblings=None):
+        return self._candidates.pop(0) if self._candidates else None
+
+    def defer(self, ref):
+        pass
+
+    def release_deferred(self, ref):
+        self.released.append(ref)
+
+    def mark_seen(self, ref):
+        pass
+
+
+def test_deferred_recheck_gives_up_when_release_makes_no_progress(
+    isolated_omm_home, monkeypatch, capsys
+):
+    candidates = [_candidate(filename=f"huge-{i}.gguf", name=f"huge-{i}") for i in range(18)]
+    queue = _ReleaseIgnoringQueue(candidates)
+    plans = []
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "_DEFERRED_MEMORY_RECHECK_SECONDS", 0.0)
+    monkeypatch.setattr(cli, "_contribute_candidate_memory_plan", _always_defer_memory_plan(plans))
+    stop_event = _BoundedStopEvent(max_waits=20)
+
+    stats = cli._run_contribution_loop(queue, stop_event, refetch=None)
+
+    assert len(plans) == 18
+    assert stop_event.waits == cli._MAX_STALLED_DEFERRED_RECHECKS
+    assert len(queue.released) == 18 * cli._MAX_STALLED_DEFERRED_RECHECKS
+    assert stats.stop_reason == "memory_unavailable"
+    captured = capsys.readouterr()
+    assert captured.out.count("Waiting 0s for memory") == cli._MAX_STALLED_DEFERRED_RECHECKS
+    assert "none was offered again" in " ".join(captured.err.split())
+    assert "No deferred candidate became memory-safe" in captured.out
