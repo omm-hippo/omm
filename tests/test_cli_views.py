@@ -97,3 +97,45 @@ def test_installed_engine_with_no_package_manager_at_all_skips_the_hint():
     output = _render(engines)
 
     assert "package changes need an identified manager" not in output
+
+
+def test_package_error_is_followed_by_its_fix_line():
+    # #388: a lookup failure must come with a concrete next step.
+    engines = [
+        _engine(package=None, package_error="WinGet package lookup failed (5).",
+                package_fix={"kind": "query_failed",
+                             "fix": "run `winget list --id Ollama.Ollama --exact --source winget` to see WinGet's full message."}),
+    ]
+
+    output = _render(engines)
+
+    lines = output.splitlines()
+    error_at = next(i for i, line in enumerate(lines) if "WinGet package lookup failed (5)." in line)
+    assert lines[error_at + 1].startswith("→ Ollama: run `winget list --id Ollama.Ollama")
+    # The generic manager hint is redundant once the specific fix is shown.
+    assert "package changes need an identified manager" not in output
+
+
+def test_missing_manager_fix_replaces_generic_manager_hint():
+    engines = [
+        _engine(package=None, package_fix={"kind": "manager_missing",
+                                           "fix": "Homebrew was not found. It is optional."}),
+    ]
+
+    output = _render(engines)
+
+    assert "Ollama: Homebrew was not found. It is optional." in output
+    assert "package changes need an identified manager" not in output
+
+
+def test_uninstalled_engine_fix_only_when_its_error_line_is_shown():
+    error = "WinGet package lookup did not finish."
+    engines = [
+        _engine(key="ollama", label="Ollama", package=None, package_error=error,
+                package_fix={"kind": "timeout", "fix": "ollama fix."}),
+        _engine(key="jan", label="Jan", installed=False, package=None, package_error=error,
+                package_fix={"kind": "timeout", "fix": "jan fix."}),
+    ]
+    assert "jan fix." not in _render(engines)
+    # Nothing installed at all: the one error line still gets a next step.
+    assert "→ Jan: jan fix." in _render(engines[1:])
