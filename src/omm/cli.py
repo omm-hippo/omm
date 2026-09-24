@@ -7009,7 +7009,13 @@ def install(
 
     model_name = _resolve_ref(model_name)
     try:
-        resolved = _resolve_model_interactive(model_name, quant=quant)
+        # Only pass `quant` when given, so the no-flag path calls the resolver
+        # exactly as before.
+        resolved = (
+            _resolve_model_interactive(model_name, quant=quant)
+            if quant is not None
+            else _resolve_model_interactive(model_name)
+        )
     except QuantSelectionError as e:
         errors.print_cli_error(err_console, str(e), fix=e.fix)
         raise typer.Exit(1) from e
