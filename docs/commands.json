@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.127",
+  "omm_version": "0.3.128",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -1227,6 +1227,16 @@
           "metavar": null,
           "is_flag": true,
           "help": "Run (or skip) a short local load/generation check after linking. Unset asks before loading an unloaded model.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--quant"
+          ],
+          "metavar": "NAME",
+          "is_flag": false,
+          "help": "Install this quantization (e.g. Q4_K_M, case-insensitive) instead of choosing from the quant picker.",
           "default": null,
           "global": false
         },

@@ -240,6 +240,7 @@ from omm.hub import (
 )
 from omm.runtime_compatibility import CompatibilityResult, PROBE_VERSION, verify_and_record
 from omm.command_reference import DOCS_BASE_URL, docs_epilog
+from omm.recommend_selection import quantization_label
 
 if TYPE_CHECKING:
     import questionary
@@ -4802,7 +4803,54 @@ def _predicted_fastest_filenames(
     return best_filenames_by_tier(variants, predicted_speed)
 
 
-def _resolve_model_interactive(model_name: str) -> ResolvedModel:
+class QuantSelectionError(ModelResolutionError):
+    """`omm install --quant` named a quant the resolved repo/file doesn't
+    have (or has more than one file for). Kept apart from other resolution
+    failures so the CLI prints the available quants instead of fuzzy
+    catalog suggestions for a ref that resolved fine."""
+
+
+def _quant_label(filename: str) -> str:
+    """The quant token a filename carries ("Q4_K_M", "UD-Q4_K_XL", "BF16"),
+    or "Unknown" - the same label `omm recommend` shows."""
+    return quantization_label({"filename": filename})
+
+
+def _quant_key(text: str) -> str:
+    # `q4-k-m` / `Q4.K.M` / `Q4_K_M` all name the same quant.
+    return re.sub(r"[-.\s]", "_", text.strip()).casefold()
+
+
+def _select_quant_file(repo_id: str | None, candidates: list[str], quant: str) -> str:
+    """Pick the one candidate whose quant label matches `quant`
+    (case-insensitive). No match or several matches raise
+    QuantSelectionError naming what the user can pick instead - never a
+    silent guess."""
+    wanted = _quant_key(quant)
+    matches = [name for name in candidates if _quant_key(_quant_label(name)) == wanted]
+    if len(matches) == 1:
+        return matches[0]
+    where = f"'{repo_id}'" if repo_id else "this model"
+    if not matches:
+        labels = list(dict.fromkeys(
+            label for label in map(_quant_label, candidates) if label != "Unknown"
+        ))
+        available = ", ".join(labels) if labels else "none detected"
+        raise QuantSelectionError(
+            f"No '{quant}' quant in {where}. Available quants: {available}",
+            fix=(
+                f"Use one of those with --quant, or run `omm install {repo_id}` to pick interactively."
+                if repo_id
+                else "Use one of those with --quant."
+            ),
+        )
+    raise QuantSelectionError(
+        f"{where} has {len(matches)} files for quant '{quant}': {', '.join(matches)}",
+        fix=f"Name the file instead: omm install {repo_id or '<owner>/<repo>'}:<file>.gguf",
+    )
+
+
+def _resolve_model_interactive(model_name: str, *, quant: str | None = None) -> ResolvedModel:
     """`resolve_model()`, but the two "which one did you mean?" outcomes walk
     the user through a picker instead of dead-ending on an error message: a
     bare `org/repo` that exists on both HuggingFace and ModelScope asks which
@@ -4814,7 +4862,19 @@ def _resolve_model_interactive(model_name: str) -> ResolvedModel:
     Escaping a picker exits 0 with "Cancelled.". Every other
     ModelResolutionError propagates: only the caller knows what its own
     failure text and suggestions should be.
+
+    `quant` (`omm install --quant`) replaces the quant picker with a
+    by-label match, and checks that a ref which already resolved to one
+    file really is that quant.
     """
+    if quant is not None:
+        resolved = _resolve_model_interactive_picking(model_name, quant)
+        _select_quant_file(resolved.repo_id, [resolved.filename], quant)
+        return resolved
+    return _resolve_model_interactive_picking(model_name, None)
+
+
+def _resolve_model_interactive_picking(model_name: str, quant: str | None) -> ResolvedModel:
     import questionary
 
     # Two rounds at most: picking a provider can surface a quant choice, but
@@ -4838,6 +4898,10 @@ def _resolve_model_interactive(model_name: str) -> ResolvedModel:
                 raise typer.Exit(0) from e
             model_name = f"{chosen_provider}:{e.repo_id}"
         except AmbiguousModelError as e:
+            if quant is not None:
+                chosen = _select_quant_file(e.repo_id, e.candidates, quant)
+                model_name = f"{e.provider}:{e.repo_id}:{chosen}"
+                continue
             chosen = _pick_quant_variant(e)
             if chosen is None:
                 err_console.print("[warning]Cancelled.[/warning]")
@@ -6915,6 +6979,13 @@ def install(
         help="Run (or skip) a short local load/generation check after linking. "
         "Unset asks before loading an unloaded model.",
     ),
+    quant: str | None = typer.Option(
+        None,
+        "--quant",
+        metavar="NAME",
+        help="Install this quantization (e.g. Q4_K_M, case-insensitive) "
+        "instead of choosing from the quant picker.",
+    ),
 ) -> None:
     """Download a model into the central hub and link it into installed engines."""
     # `_finish_recommendation` calls this as a plain function with only
@@ -6930,10 +7001,18 @@ def install(
         force = False
     if not isinstance(upload, (bool, type(None))):
         upload = None
+    if not isinstance(quant, (str, type(None))):
+        quant = None
+    if quant is not None and not quant.strip():
+        errors.print_cli_error(err_console, "--quant needs a quant name.", fix="e.g. --quant Q4_K_M")
+        raise typer.Exit(1)
 
     model_name = _resolve_ref(model_name)
     try:
-        resolved = _resolve_model_interactive(model_name)
+        resolved = _resolve_model_interactive(model_name, quant=quant)
+    except QuantSelectionError as e:
+        errors.print_cli_error(err_console, str(e), fix=e.fix)
+        raise typer.Exit(1) from e
     except ModelResolutionError as e:
         errors.print_cli_error(err_console, str(e), fix=e.fix)
         # A resolution that already identified concrete alternatives (the GGUF
