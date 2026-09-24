@@ -157,12 +157,10 @@ def _output_tail(result: subprocess.CompletedProcess, limit: int = 160) -> str |
     return None
 
 
-def _display_command(command: list[str]) -> str:
-    """The query as a person would type it: bare manager name, no automation flags."""
-    name = os.path.basename(command[0])
-    if name.lower().endswith(".exe"):
-        name = name[:-4]
-    return " ".join([name, *(arg for arg in command[1:] if arg != "--disable-interactivity")])
+def _display_command(manager: str, command: list[str]) -> str:
+    """The query as a person would type it: bare manager name (not the resolved
+    path, which may be a Windows path on any host), no automation flags."""
+    return " ".join([manager, *(arg for arg in command[1:] if arg != "--disable-interactivity")])
 
 
 def _platform_manager(key: str) -> str | None:
@@ -192,7 +190,7 @@ def diagnose_package_error(key: str, error: EngineManagementError) -> dict:
                 "fix": f"if {label} was installed from its official installer, this is expected; "
                        f"otherwise manage it from {url}."}
     name = _MANAGER_NAMES.get(error.manager, error.manager)
-    command = _display_command(error.command)
+    command = _display_command(error.manager, error.command)
     if error.kind == "manager_unavailable":
         fix = (f"`{error.manager}` could not be started; repair or reinstall {name}. "
                f"{name} is optional: without it, manage {label} from {url}.")
