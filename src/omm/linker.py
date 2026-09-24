@@ -220,6 +220,21 @@ _DESKTOP_ENTRY_SEARCH_ROOTS = [
 ]
 
 
+def _windows_program_roots() -> list[Path]:
+    """Where Windows installers put program folders: the OMM-owned engine
+    dir, the electron-builder per-user default (%LOCALAPPDATA%\\Programs),
+    and %ProgramFiles% / %ProgramFiles(x86)% for machine-wide installs."""
+    roots = [engine_install_dir()]
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        roots.append(Path(local_app_data) / "Programs")
+    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        value = os.environ.get(variable)
+        if value:
+            roots.append(Path(value))
+    return roots
+
+
 def _windows_install_artifact_exists(dir_names: Sequence[str], shortcut_glob: str) -> bool:
     """Windows-only: whether an installer left install-*time* artifacts behind.
 
@@ -239,15 +254,7 @@ def _windows_install_artifact_exists(dir_names: Sequence[str], shortcut_glob: st
     """
     if platform.system() != "Windows":
         return False
-    program_roots = [engine_install_dir()]
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        program_roots.append(Path(local_app_data) / "Programs")
-    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
-        value = os.environ.get(variable)
-        if value:
-            program_roots.append(Path(value))
-    for root in program_roots:
+    for root in _windows_program_roots():
         for name in dir_names:
             # A failed or manually cancelled installer can leave an empty
             # folder behind; only a folder holding an .exe counts as installed.
@@ -346,6 +353,72 @@ def find_ollama_executable() -> Path | None:
                 return candidate
         except OSError:
             continue
+    return None
+
+
+# The main executable name(s) each GUI engine's Windows installer drops into
+# its program folder (#368). The folder names are the same *_WINDOWS_INSTALL_DIRS
+# install detection already probes.
+_ENGINE_WINDOWS_EXE_NAMES = {
+    "lmstudio": ("LM Studio.exe",),
+    "jan": ("Jan.exe", "jan.exe"),
+    "anythingllm": ("AnythingLLM.exe",),
+    "mstystudio": ("Msty Studio.exe", "MstyStudio.exe", "Msty.exe"),
+}
+
+
+def _windows_engine_install_dirs(key: str) -> list[Path]:
+    names = {
+        "lmstudio": _LMSTUDIO_WINDOWS_INSTALL_DIRS,
+        "jan": _JAN_WINDOWS_INSTALL_DIRS,
+        "anythingllm": _ANYTHINGLLM_WINDOWS_INSTALL_DIRS,
+        "mstystudio": _MSTYSTUDIO_WINDOWS_INSTALL_DIRS,
+    }.get(key, ())
+    dirs = [root / name for root in _windows_program_roots() for name in names]
+    if key == "jan":
+        # Tauri NSIS per-user default: %LOCALAPPDATA%\Jan, outside Programs.
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            dirs.append(Path(local) / "Jan")
+    return dirs
+
+
+def _main_exe_in(directory: Path, preferred: Sequence[str]) -> Path | None:
+    for name in preferred:
+        candidate = directory / name
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    # Unknown exe name: accept it only when it's the single non-uninstaller
+    # exe in the folder, so a helper binary is never mistaken for the app.
+    try:
+        exes = [
+            p for p in directory.iterdir()
+            if p.suffix.lower() == ".exe" and not p.name.lower().startswith("uninstall")
+        ]
+    except OSError:
+        return None
+    return exes[0] if len(exes) == 1 else None
+
+
+def engine_windows_executable(key: str) -> Path | None:
+    """Windows-only: the installed main .exe for an engine, or None (other
+    platforms, koboldcpp/textgenwebui, or not found). The Windows
+    counterpart of engine_app_bundle_path - engine_manager reads the exe's
+    own version resource from it (#368)."""
+    if platform.system() != "Windows":
+        return None
+    if key == "ollama":
+        return find_ollama_executable()
+    preferred = _ENGINE_WINDOWS_EXE_NAMES.get(key)
+    if preferred is None:
+        return None
+    for directory in _windows_engine_install_dirs(key):
+        found = _main_exe_in(directory, preferred)
+        if found is not None:
+            return found
     return None
 
 
