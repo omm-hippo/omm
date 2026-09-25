@@ -412,3 +412,35 @@ def test_releasing_deferrals_does_not_release_an_excluded_ref(monkeypatch):
     queue.release_deferred(contribute.ref(a))
 
     assert queue.next_candidate() is None
+
+
+def test_released_phase_c_siblings_are_offered_again(monkeypatch):
+    """Issue #390: Phase C siblings are popped from a one-shot queue and are
+    in no ranked pool, so a deferred-then-released sibling must be put back
+    or it is lost for the rest of the session."""
+    boundary = _candidate("o", "big-Q4_K_M.gguf")
+    monkeypatch.setattr(
+        contribute.predictor, "rank_candidates", lambda artifact, hw: [(boundary, 5.0)]
+    )
+    siblings = [_candidate("o", f"big-sib{i}.gguf") for i in range(5)]
+    queue = contribute.ContributionQueue({}, _hw(), history_refs=set())
+
+    def fetch_siblings(_boundary):
+        return list(siblings)
+
+    handed_out = []
+    while (candidate := queue.next_candidate(fetch_siblings=fetch_siblings)) is not None:
+        handed_out.append(candidate)
+        queue.defer(contribute.ref(candidate))
+    assert handed_out == [boundary, *siblings]
+
+    for candidate in handed_out:
+        queue.release_deferred(contribute.ref(candidate))
+    # Releasing twice must not queue a sibling twice.
+    queue.release_deferred(contribute.ref(siblings[0]))
+
+    again = []
+    while (candidate := queue.next_candidate(fetch_siblings=fetch_siblings)) is not None:
+        again.append(candidate)
+        queue.mark_seen(contribute.ref(candidate))
+    assert again == [boundary, *siblings]

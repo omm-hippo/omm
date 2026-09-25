@@ -453,7 +453,7 @@ the command exits without downloading.
 ### Install & manage models
 
 ```sh
-omm install <name> [--skip-unfit] [--upload/--no-upload] [--force] [--load-check|--no-load-check]  # Download, link, and optionally verify a model (--force re-checks the source and only re-downloads when it actually changed)
+omm install <name> [--quant NAME] [--skip-unfit] [--upload/--no-upload] [--force] [--load-check|--no-load-check]  # Download, link, and optionally verify a model (--quant Q4_K_M skips the quant picker; --force re-checks the source and only re-downloads when it actually changed)
 omm fit <name>  # Memory card: does this model (installed or not) fit next to what is running right now?
 omm run [name] [--engine NAME]  # Chat with an installed model: Ollama in the terminal, KoboldCpp/text-generation-webui with the model loaded, GUI apps opened
 omm import [directory] [--yes]  # Adopt GGUF files found across supported runners (and an optional directory) into the hub
@@ -486,6 +486,11 @@ presentation out of scripted output.
 Interrupted installs keep checkpoints under `OMM_HOME/install-journal`. Re-run
 the original install command to recheck the file and repair links; `omm doctor`
 lists incomplete attempts. See [install recovery](docs/install-recovery.md).
+
+`omm install org/repo --quant Q4_K_M` installs that quantization in one step
+instead of opening the quant picker (case-insensitive). If the repo has no such
+quant, it exits 1 and lists the quants it does have; if several files share that
+quant, name the file instead (`omm install org/repo:<file>.gguf`).
 
 `omm install --skip-unfit` is a scripting-friendly skip, not a successful
 installation: it prints `Skipped` and leaves the model hub unchanged. If an

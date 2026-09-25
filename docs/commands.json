@@ -1232,6 +1232,16 @@
         },
         {
           "flags": [
+            "--quant"
+          ],
+          "metavar": "NAME",
+          "is_flag": false,
+          "help": "Install this quantization (e.g. Q4_K_M, case-insensitive) instead of choosing from the quant picker.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
             "--yes",
             "-y"
           ],

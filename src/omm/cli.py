@@ -240,6 +240,7 @@ from omm.hub import (
 )
 from omm.runtime_compatibility import CompatibilityResult, PROBE_VERSION, verify_and_record
 from omm.command_reference import DOCS_BASE_URL, docs_epilog
+from omm.recommend_selection import quantization_label
 
 if TYPE_CHECKING:
     import questionary
@@ -4810,7 +4811,54 @@ def _predicted_fastest_filenames(
     return best_filenames_by_tier(variants, predicted_speed)
 
 
-def _resolve_model_interactive(model_name: str) -> ResolvedModel:
+class QuantSelectionError(ModelResolutionError):
+    """`omm install --quant` named a quant the resolved repo/file doesn't
+    have (or has more than one file for). Kept apart from other resolution
+    failures so the CLI prints the available quants instead of fuzzy
+    catalog suggestions for a ref that resolved fine."""
+
+
+def _quant_label(filename: str) -> str:
+    """The quant token a filename carries ("Q4_K_M", "UD-Q4_K_XL", "BF16"),
+    or "Unknown" - the same label `omm recommend` shows."""
+    return quantization_label({"filename": filename})
+
+
+def _quant_key(text: str) -> str:
+    # `q4-k-m` / `Q4.K.M` / `Q4_K_M` all name the same quant.
+    return re.sub(r"[-.\s]", "_", text.strip()).casefold()
+
+
+def _select_quant_file(repo_id: str | None, candidates: list[str], quant: str) -> str:
+    """Pick the one candidate whose quant label matches `quant`
+    (case-insensitive). No match or several matches raise
+    QuantSelectionError naming what the user can pick instead - never a
+    silent guess."""
+    wanted = _quant_key(quant)
+    matches = [name for name in candidates if _quant_key(_quant_label(name)) == wanted]
+    if len(matches) == 1:
+        return matches[0]
+    where = f"'{repo_id}'" if repo_id else "this model"
+    if not matches:
+        labels = list(dict.fromkeys(
+            label for label in map(_quant_label, candidates) if label != "Unknown"
+        ))
+        available = ", ".join(labels) if labels else "none detected"
+        raise QuantSelectionError(
+            f"No '{quant}' quant in {where}. Available quants: {available}",
+            fix=(
+                f"Use one of those with --quant, or run `omm install {repo_id}` to pick interactively."
+                if repo_id
+                else "Use one of those with --quant."
+            ),
+        )
+    raise QuantSelectionError(
+        f"{where} has {len(matches)} files for quant '{quant}': {', '.join(matches)}",
+        fix=f"Name the file instead: omm install {repo_id or '<owner>/<repo>'}:<file>.gguf",
+    )
+
+
+def _resolve_model_interactive(model_name: str, *, quant: str | None = None) -> ResolvedModel:
     """`resolve_model()`, but the two "which one did you mean?" outcomes walk
     the user through a picker instead of dead-ending on an error message: a
     bare `org/repo` that exists on both HuggingFace and ModelScope asks which
@@ -4822,7 +4870,19 @@ def _resolve_model_interactive(model_name: str) -> ResolvedModel:
     Escaping a picker exits 0 with "Cancelled.". Every other
     ModelResolutionError propagates: only the caller knows what its own
     failure text and suggestions should be.
+
+    `quant` (`omm install --quant`) replaces the quant picker with a
+    by-label match, and checks that a ref which already resolved to one
+    file really is that quant.
     """
+    if quant is not None:
+        resolved = _resolve_model_interactive_picking(model_name, quant)
+        _select_quant_file(resolved.repo_id, [resolved.filename], quant)
+        return resolved
+    return _resolve_model_interactive_picking(model_name, None)
+
+
+def _resolve_model_interactive_picking(model_name: str, quant: str | None) -> ResolvedModel:
     import questionary
 
     # Two rounds at most: picking a provider can surface a quant choice, but
@@ -4846,6 +4906,10 @@ def _resolve_model_interactive(model_name: str) -> ResolvedModel:
                 raise typer.Exit(0) from e
             model_name = f"{chosen_provider}:{e.repo_id}"
         except AmbiguousModelError as e:
+            if quant is not None:
+                chosen = _select_quant_file(e.repo_id, e.candidates, quant)
+                model_name = f"{e.provider}:{e.repo_id}:{chosen}"
+                continue
             chosen = _pick_quant_variant(e)
             if chosen is None:
                 err_console.print("[warning]Cancelled.[/warning]")
@@ -6923,6 +6987,13 @@ def install(
         help="Run (or skip) a short local load/generation check after linking. "
         "Unset asks before loading an unloaded model.",
     ),
+    quant: str | None = typer.Option(
+        None,
+        "--quant",
+        metavar="NAME",
+        help="Install this quantization (e.g. Q4_K_M, case-insensitive) "
+        "instead of choosing from the quant picker.",
+    ),
 ) -> None:
     """Download a model into the central hub and link it into installed engines."""
     # `_finish_recommendation` calls this as a plain function with only
@@ -6938,10 +7009,24 @@ def install(
         force = False
     if not isinstance(upload, (bool, type(None))):
         upload = None
+    if not isinstance(quant, (str, type(None))):
+        quant = None
+    if quant is not None and not quant.strip():
+        errors.print_cli_error(err_console, "--quant needs a quant name.", fix="e.g. --quant Q4_K_M")
+        raise typer.Exit(1)
 
     model_name = _resolve_ref(model_name)
     try:
-        resolved = _resolve_model_interactive(model_name)
+        # Only pass `quant` when given, so the no-flag path calls the resolver
+        # exactly as before.
+        resolved = (
+            _resolve_model_interactive(model_name, quant=quant)
+            if quant is not None
+            else _resolve_model_interactive(model_name)
+        )
+    except QuantSelectionError as e:
+        errors.print_cli_error(err_console, str(e), fix=e.fix)
+        raise typer.Exit(1) from e
     except ModelResolutionError as e:
         errors.print_cli_error(err_console, str(e), fix=e.fix)
         # A resolution that already identified concrete alternatives (the GGUF
@@ -11343,6 +11428,11 @@ _DAEMON_RESTART_BACKOFF_SECONDS = 5.0
 _MAX_CANDIDATE_BENCHMARK_FAILURES = 2
 _MAX_CANDIDATE_MEMORY_DEFERRALS = 3
 _DEFERRED_MEMORY_RECHECK_SECONDS = 30.0
+# Safety net for the deferred-memory wait (issue #390): after a recheck
+# releases every retryable deferred candidate, the queue must hand at least
+# one of them back. If it returns nothing this many times in a row, the
+# release did not make progress and waiting again would spin forever.
+_MAX_STALLED_DEFERRED_RECHECKS = 1
 _MIN_CONTRIBUTE_START_FREE_BYTES = 10 * 1024**3
 
 
@@ -11813,6 +11903,7 @@ def _run_contribution_loop_impl(
     deferred: dict[str, _DeferredContribution] = {}
     post_download_memory_failures: dict[str, int] = {}
     gpu_state: dict = {"force_cpu": False}
+    stalled_deferred_rechecks = 0
     engine_label = "LM Studio" if engine == "lmstudio" else "Ollama"
     while not stop_event.is_set():
         session.release()
@@ -11861,7 +11952,8 @@ def _run_contribution_loop_impl(
                 for candidate_ref, item in deferred.items()
                 if item.attempts < _MAX_CANDIDATE_MEMORY_DEFERRALS
             ]
-            if retryable and hasattr(queue, "release_deferred"):
+            can_release = retryable and hasattr(queue, "release_deferred")
+            if can_release and stalled_deferred_rechecks < _MAX_STALLED_DEFERRED_RECHECKS:
                 if not opts.quiet:
                     console.print(
                         f"[muted]Waiting {int(_DEFERRED_MEMORY_RECHECK_SECONDS)}s for "
@@ -11872,7 +11964,17 @@ def _run_contribution_loop_impl(
                     break
                 for candidate_ref, _item in retryable:
                     queue.release_deferred(candidate_ref)
+                stalled_deferred_rechecks += 1
                 continue
+            if can_release:
+                # Released candidates never came back from the queue, so
+                # another wait cannot change anything - stop instead of
+                # printing the same "Waiting..." line forever.
+                err_console.print(
+                    f"[warning]{len(retryable)} deferred candidate(s) were released "
+                    "for a memory recheck but none was offered again - giving up on "
+                    "them for this session.[/warning]"
+                )
             if not opts.quiet:
                 if deferred:
                     console.print(
@@ -11886,6 +11988,7 @@ def _run_contribution_loop_impl(
                 session.stop_reason = "memory_unavailable"
             break
 
+        stalled_deferred_rechecks = 0
         display_name = candidate.get("name", candidate["filename"])
         ref_str = contribute_mod.ref(candidate)
         if not opts.quiet:

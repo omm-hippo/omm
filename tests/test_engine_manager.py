@@ -470,3 +470,103 @@ def test_engine_status_has_no_general_prelude_side_effects(monkeypatch, tmp_path
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)[0]["installed"] is False
     assert not config.OMM_HOME.exists()
+
+
+# --- #388: package lookup failures carry a concrete next step ---------------
+
+def _brew_env(monkeypatch, binary="/opt/homebrew/bin/brew"):
+    monkeypatch.setattr(manager, "platform", SimpleNamespace(system=lambda: "Darwin"))
+    monkeypatch.setattr(manager.shutil, "which", lambda name: binary)
+
+
+def _diagnose(key="ollama"):
+    with pytest.raises(manager.EngineManagementError) as caught:
+        manager.package_receipt(key)
+    return manager.diagnose_package_error(key, caught.value)
+
+
+def test_diagnose_manager_that_cannot_be_started(monkeypatch):
+    _brew_env(monkeypatch, binary="/does/not/exist/brew")
+    monkeypatch.setattr(manager, "_query", lambda args: None)
+    diagnosis = _diagnose()
+    assert diagnosis["kind"] == "manager_unavailable"
+    assert "repair or reinstall Homebrew" in diagnosis["fix"]
+    assert "optional" in diagnosis["fix"] and "https://ollama.com/download" in diagnosis["fix"]
+
+
+def test_diagnose_query_that_timed_out(monkeypatch):
+    import sys
+    _brew_env(monkeypatch, binary=sys.executable)  # a real, runnable file
+    monkeypatch.setattr(manager, "_query", lambda args: None)
+    diagnosis = _diagnose()
+    assert diagnosis["kind"] == "timeout"
+    assert "did not answer in time" in diagnosis["fix"]
+    assert "retry `omm engine doctor ollama`" in diagnosis["fix"]
+
+
+def test_diagnose_winget_nonzero_shows_its_own_error_and_the_command(monkeypatch):
+    monkeypatch.setattr(manager, "platform", SimpleNamespace(system=lambda: "Windows"))
+    monkeypatch.setattr(manager.shutil, "which", lambda name: r"C:\WindowsApps\winget.exe")
+    monkeypatch.setattr(manager, "_query", lambda args: subprocess.CompletedProcess(
+        args, 0x8A15000F, "   -\r\nFailed when searching source: winget\n", ""))
+    diagnosis = _diagnose()
+    assert diagnosis["kind"] == "query_failed"
+    assert 'WinGet said "Failed when searching source: winget"; run' in diagnosis["fix"]
+    assert "`winget list --id Ollama.Ollama --exact --source winget`" in diagnosis["fix"]
+
+
+def test_diagnose_flatpak_nonzero_uses_stderr_tail(monkeypatch):
+    monkeypatch.setattr(manager, "platform", SimpleNamespace(system=lambda: "Linux"))
+    monkeypatch.setattr(manager.shutil, "which", lambda name: "/usr/bin/flatpak")
+    monkeypatch.setattr(manager, "_query", lambda args: subprocess.CompletedProcess(
+        args, 1, "", "error: Unable to open system installation\n"))
+    diagnosis = _diagnose("jan")
+    assert diagnosis["kind"] == "query_failed"
+    assert 'Flatpak said "error: Unable to open system installation"; run' in diagnosis["fix"]
+    assert "`flatpak list --app --columns=application,version,installation`" in diagnosis["fix"]
+
+
+def test_diagnose_duplicate_installs(monkeypatch):
+    _brew_env(monkeypatch)
+    monkeypatch.setattr(manager, "_query", lambda args: subprocess.CompletedProcess(
+        args, 0, "ollama 0.30.10\n" if "--formula" in args else "ollama-app 0.30.10\n", ""))
+    diagnosis = _diagnose()
+    assert diagnosis["kind"] == "duplicate"
+    assert "`brew list --versions ollama-app ollama`" in diagnosis["fix"]
+    assert "omm will not pick one" in diagnosis["fix"]
+
+
+def test_diagnose_unreadable_listing_is_ambiguous(monkeypatch):
+    monkeypatch.setattr(manager, "platform", SimpleNamespace(system=lambda: "Windows"))
+    monkeypatch.setattr(manager.shutil, "which", lambda name: "winget.exe")
+    monkeypatch.setattr(manager, "_query", lambda args: subprocess.CompletedProcess(args, 0, "garbled\n", ""))
+    diagnosis = _diagnose()
+    assert diagnosis["kind"] == "ambiguous"
+    assert "`winget list --id Ollama.Ollama --exact --source winget`" in diagnosis["fix"]
+
+
+def test_diagnose_unclassified_error_falls_back_to_official_installer_note():
+    diagnosis = manager.diagnose_package_error("ollama", manager.EngineManagementError("odd"))
+    assert diagnosis["kind"] == "unknown"
+    assert "official installer, this is expected" in diagnosis["fix"]
+
+
+def test_inspect_engine_exposes_package_fix_for_json(monkeypatch):
+    _brew_env(monkeypatch, binary="/does/not/exist/brew")
+    monkeypatch.setattr(manager, "_query", lambda args: None)
+    monkeypatch.setattr(manager.linker, "is_engine_installed", lambda key: True)
+    result = manager.inspect_engine("ollama", check_api=False)
+    assert result["package_error"] == "Could not read Homebrew's installed cask packages."
+    assert result["package_fix"]["kind"] == "manager_unavailable"
+
+
+def test_inspect_engine_suggests_optional_manager_when_it_is_missing(monkeypatch):
+    monkeypatch.setattr(manager, "platform", SimpleNamespace(system=lambda: "Windows"))
+    monkeypatch.setattr(manager.shutil, "which", lambda name: None)
+    monkeypatch.setattr(manager.linker, "is_engine_installed", lambda key: True)
+    result = manager.inspect_engine("ollama", check_api=False)
+    assert result["package_error"] is None
+    assert result["package_fix"]["kind"] == "manager_missing"
+    assert "WinGet was not found. It is optional" in result["package_fix"]["fix"]
+    # Nothing to suggest for a runner with no package identity at all.
+    assert manager.inspect_engine("koboldcpp", check_api=False)["package_fix"] is None

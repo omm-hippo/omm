@@ -121,6 +121,12 @@ class ContributionQueue:
         self._phase_c_below_fetched = False
         self._phase_c_above_fetched = False
         self._next_side_is_below = True
+        # Phase C siblings live only in the one-shot `_phase_c_*_queue`
+        # deques: once popped they are in no ranked pool, so `_rebuild`
+        # cannot bring them back. Remember which side each one came from so
+        # `release_deferred` can re-queue it (issue #390 - a released
+        # sibling otherwise vanished and the loop waited on it forever).
+        self._phase_c_origin: dict[str, tuple[str, dict]] = {}
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -170,6 +176,12 @@ class ContributionQueue:
     def release_deferred(self, deferred_ref: str) -> None:
         if deferred_ref in self._deferred_refs:
             self._deferred_refs.remove(deferred_ref)
+            origin = self._phase_c_origin.get(deferred_ref)
+            if origin is not None:
+                queue_attr, candidate = origin
+                queue = getattr(self, queue_attr)
+                if all(ref(queued) != deferred_ref for queued in queue):
+                    queue.append(candidate)
             self._rebuild()
 
     def next_candidate(
@@ -253,5 +265,6 @@ class ContributionQueue:
                     not matches_history(candidate, self.history_refs)
                     and ref(candidate) not in self._blocked_refs
                 ):
+                    self._phase_c_origin[ref(candidate)] = (queue_attr, candidate)
                     return candidate
         return None
