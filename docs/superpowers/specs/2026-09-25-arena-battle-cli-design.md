@@ -20,7 +20,38 @@ The five sub-projects, in dependency order:
   `database.rules.json`).
 - **C** — server-side aggregation: a composite score combining Bradley-Terry
   vote outcomes with hardware-normalized speed/power/memory measurements.
-  The scoring formula itself is new design work, not specified here.
+  Full implementation spec still lands when C's turn comes, but the shape
+  is fixed now because it drives what A/B must not lose:
+
+  - **Quality axis** (votes only): standard Bradley-Terry MLE fit over
+    `winner in {a, b}` outcomes; `both_bad` excluded from the pairwise fit
+    but tracked per-model as a separate rate, surfaced as a quality-floor
+    warning badge regardless of tier. Models are grouped into tiers by
+    overlapping confidence intervals (low vote counts stay wide and
+    provisional) rather than shown as one falsely-precise scalar.
+  - **Efficiency axis** (telemetry, hardware-normalized as *ratios*, not
+    bucket percentiles): tokens/sec ÷ measured memory (GB), and
+    tokens/sec ÷ watts when available. Dividing by the resource actually
+    used, rather than binning by hardware class, is what makes "faster
+    because of a bigger GPU" distinct from "genuinely more efficient per
+    resource." Memory: Ollama's existing `/api/ps` response already
+    reports `size`/`size_vram` for a loaded model, so a measured (not
+    file-size-predicted) figure is close to free to add for Ollama;
+    LM Studio's API doesn't expose this today, so its rows fall back to
+    `memory_required_gb`-based estimate with a lower-confidence flag until
+    that gap is closed. Power (watts): genuinely new instrumentation,
+    **best-effort only** — `nvidia-smi --query-gpu=power.draw` for
+    NVIDIA, `rocm-smi` for AMD when present, null on Apple Silicon
+    (`powermetrics` needs sudo, unusable from unattended telemetry) and on
+    Windows CPU-only inference (no standard reader). A row with null watts
+    still contributes its tokens/sec÷GB term; the efficiency axis never
+    requires watts to exist.
+  - **Leaderboard display**: never collapses to one blended number. Primary
+    sort is quality tier; efficiency score only breaks ties *within* a
+    tier. This mirrors `compare`'s existing principle of keeping BEST
+    FIT/FASTEST/MEASURED QUALITY as separate facts rather than one
+    opaque score, and is what stops a merely-fast model from outranking a
+    clearly-better one.
 - **D** — public leaderboard: `omm arena --leaderboard` fetching a signed
   artifact (same Ed25519 trust pattern as the recommendation catalog) plus a
   public web page.
@@ -110,9 +141,22 @@ New pieces, all local:
   elapsed_b     float, seconds
   tokens_a      int
   tokens_b      int
+  memory_gb_a   float | null, measured (Ollama /api/ps size_vram) when
+                available, null for LM Studio or on read failure
+  memory_gb_b   float | null, same as memory_gb_a
+  watt_a        float | null, best-effort (nvidia-smi/rocm-smi), null on
+                Apple Silicon / Windows CPU-only / no supported reader
+  watt_b        float | null, same as watt_a
   winner        "a" | "b" | "both_bad"
   pinned        bool, whether --pin was active this round
   ```
+
+  `memory_gb_*`/`watt_*` exist purely so sub-project C's efficiency axis
+  (tokens/sec ÷ measured memory, tokens/sec ÷ watts — see roadmap above)
+  has the raw numbers it needs without a schema migration later. A itself
+  makes no use of these fields beyond collecting and storing them; the
+  post-vote reveal (see Round flow) may optionally surface them but that
+  is a display detail, not a scoring one.
 
 ## Round flow
 
@@ -148,7 +192,9 @@ not kill the whole session.
   number before the vote is cast (this is a real regression risk worth a
   dedicated assertion, not just eyeballing).
 - `votes.jsonl` schema: one well-formed JSON object per line, correct
-  field set, `winner` constrained to the three allowed values.
+  field set, `winner` constrained to the three allowed values,
+  `memory_gb_*`/`watt_*` degrade to `null` (not a crash) when the engine
+  or platform can't supply them.
 - CLI plumbing with mocked engines, following the existing
   `test_cli_evaluate.py` / benchmark test pattern (mock
   `linker.resolve_lmstudio_model` etc. rather than relying on no real `lms`
