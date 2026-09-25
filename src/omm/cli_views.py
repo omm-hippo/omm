@@ -67,6 +67,7 @@ def print_engines(console: Console, engines: list[dict], *, diagnostics: bool = 
     for name in ("Engine", "Application", "Package / version", "Local API"):
         view.add_column(name, style="value" if name != "Engine" else "heading", overflow="fold")
     seen_errors: set[str] = set()
+    seen_fixes: set[str] = set()
     for engine in engines:
         package = engine["package"]
         if package:
@@ -85,9 +86,18 @@ def print_engines(console: Console, engines: list[dict], *, diagnostics: bool = 
         view.add_row(engine["label"], "Installed" if engine["installed"] else "Not detected",
                      package_label, api_label)
         error = engine.get("package_error")
-        if diagnostics and error and error not in seen_errors:
+        printed_error = bool(diagnostics and error and error not in seen_errors)
+        if printed_error:
             seen_errors.add(error)
             console.print(error, markup=False)
+        # #388: the concrete next step for that lookup failure, cause -> fix.
+        # Installed engines always get theirs; an uninstalled one only when
+        # its error line is the one on screen, so no error is left without one.
+        fix = (engine.get("package_fix") or {}).get("fix")
+        if (diagnostics and error and fix and fix not in seen_fixes
+                and (engine["installed"] or printed_error)):
+            seen_fixes.add(fix)
+            console.print(f"→ {engine['label']}: {fix}", markup=False)
     console.print(view)
     if diagnostics:
         for engine in engines:
@@ -96,4 +106,8 @@ def print_engines(console: Console, engines: list[dict], *, diagnostics: bool = 
             elif engine["api_status"] not in {"ready", "not_checked", "diagnostics_unavailable"}:
                 console.print(f"{engine['label']}: enable its local API, then retry `omm verify MODEL --engine {engine['key']}`.", markup=False)
             if engine["installed"] and not engine["package"] and engine["package_manageable"]:
-                console.print(f"{engine['label']}: package changes need an identified manager; manual options: {engine['manual_url']}", markup=False)
+                fix = (engine.get("package_fix") or {}).get("fix")
+                if engine.get("package_error") and fix:
+                    continue  # already answered with its own fix line above
+                console.print(f"{engine['label']}: {fix}" if fix else
+                              f"{engine['label']}: package changes need an identified manager; manual options: {engine['manual_url']}", markup=False)

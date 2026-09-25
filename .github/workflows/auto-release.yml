@@ -105,12 +105,18 @@ jobs:
           self_check_run_id="$(
             gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
               --jq '[.jobs[] | select(.status == "in_progress")][0].check_run_url' \
-              | grep -o '[0-9]*$'
+              | grep -o '[0-9]*$' || true
           )"
+          if [ -z "$self_check_run_id" ]; then
+            echo "could not find this job's own check run id; it will count as not green" >&2
+            self_check_run_id="none"
+          fi
+          # `gh api --jq` has no `--arg` (that is a jq flag, and passing it made
+          # gh fail with "accepts 1 arg(s), received 4" every night), so the id
+          # is spliced into the filter. It is digits-only (see the grep above).
           not_green="$(
             gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/$(git rev-parse HEAD)/check-runs?per_page=100" \
-              --jq --arg self "$self_check_run_id" \
-              '.check_runs[] | select((.id | tostring) != $self) | select(.status != "completed" or (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")) | "\(.name): \(.status)/\(.conclusion)"'
+              --jq ".check_runs[] | select((.id | tostring) != \"${self_check_run_id}\") | select(.status != \"completed\" or (.conclusion != \"success\" and .conclusion != \"skipped\" and .conclusion != \"neutral\")) | \"\(.name): \(.status)/\(.conclusion)\""
           )"
           if [ -n "$not_green" ]; then
             echo "$not_green"
