@@ -1561,13 +1561,16 @@ def engine_doctor_cmd(
         _print_json(data=items)
     else:
         print_engines(console, items, diagnostics=True)
-    # Not-installed is not a failure: doctor's job is diagnosing an engine that
-    # IS installed but broken (query error, or API off), not flagging the 6 of
-    # 7 runners a given user never installed.
-    broken = [item for item in items if item["installed"] and (
-        item["package_error"] is not None
-        or item["api_status"] not in {"ready", "not_checked", "diagnostics_unavailable"})]
-    if broken:
+    # A local API that's simply off is not a failure - the user just hasn't
+    # started that runner right now, which is normal, not broken. Only a real
+    # package-query error counts as "broken".
+    broken = any(item["installed"] and item["package_error"] is not None for item in items)
+    # Scanning every runner (no argument) must not fail just because most of
+    # the 7 were never installed - almost nobody has all 7. Naming one
+    # specific engine is a real "is this ready" check, so not-installed there
+    # still fails.
+    missing_named_engine = engine is not None and any(not item["installed"] for item in items)
+    if broken or missing_named_engine:
         raise typer.Exit(1)
 
 
@@ -4019,7 +4022,7 @@ def _build_recommend_json_rows(
     ranked: list[tuple[dict, float | None]],
     refs: list[str],
     installations: list[recommend_status.InstallationStatus],
-    profile: str,
+    profile: str | None,
     *,
     info: object = None,
     eligible_count: int | None = None,
@@ -4241,29 +4244,34 @@ def recommend(
 
         if json_output and not explicit_profile:
             # No --profile was named, so --json must not silently collapse
-            # to one default profile - show what each profile would pick.
-            all_rows: list[dict] = []
-            for candidate_profile in predictor.RECOMMEND_PROFILES:
-                viable, eligible_count, _relaxed = _shortlist_for_profile(
-                    ranked, usable, info, candidate_profile
-                )
-                if not viable:
-                    continue
-                profile_refs = [search_mod.exact_install_ref(c) for c, speed in viable]
-                profile_installations = recommend_status.detect_installation_statuses(
-                    [candidate for candidate, _speed in viable]
-                )
-                session_cache.record_seen(profile_refs)
-                all_rows.extend(
-                    _build_recommend_json_rows(
-                        viable, profile_refs, profile_installations, candidate_profile,
-                        info=info, eligible_count=eligible_count,
-                    )
-                )
-            if not all_rows:
+            # to one default profile. Skip profile-budget filtering
+            # entirely rather than showing each profile's shortlist
+            # separately - a script gets one row per candidate (each
+            # already carrying memory_required_gb to self-filter with),
+            # the same row shape as an explicit --profile call.
+            from omm.recommend_selection import shortlist
+
+            candidates = usable if usable else [(c, speed) for c, speed in ranked if speed > 0]
+            candidates = sorted(
+                candidates,
+                key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0.0,
+                reverse=True,
+            )
+            eligible_count = len(candidates)
+            viable = shortlist(candidates)
+            if not viable:
                 err_console.print("[error]No model is predicted to run on this hardware.[/error]")
                 raise typer.Exit(1)
-            _print_json(data=all_rows)
+            refs = [search_mod.exact_install_ref(c) for c, speed in viable]
+            installations = recommend_status.detect_installation_statuses(
+                [candidate for candidate, _speed in viable]
+            )
+            session_cache.record_seen(refs)
+            _print_json(
+                data=_build_recommend_json_rows(
+                    viable, refs, installations, None, info=info, eligible_count=eligible_count,
+                )
+            )
             return
 
         viable, eligible_count, relaxed = _shortlist_for_profile(ranked, usable, info, profile)
@@ -4827,7 +4835,10 @@ def _select_quant_file(repo_id: str | None, candidates: list[str], quant: str) -
     QuantSelectionError naming what the user can pick instead - never a
     silent guess."""
     wanted = _quant_key(quant)
-    matches = [name for name in candidates if _quant_key(_quant_label(name)) == wanted]
+    matches = [
+        name for name in candidates
+        if _quant_label(name) != "Unknown" and _quant_key(_quant_label(name)) == wanted
+    ]
     if len(matches) == 1:
         return matches[0]
     where = f"'{repo_id}'" if repo_id else "this model"
@@ -7452,16 +7463,17 @@ def unlink(
     ),
     engine: str = typer.Option(
         ...,
-        "--runner",
+        "--engine",
+        "-e",
         autocompletion=complete_engine_key,
         help="Runner to unlink from, or 'all'.",
     ),
 ) -> None:
     """Remove one or more models' links from one runner (or every runner
-    with --runner all) without touching the hub file or links into other
+    with --engine all) without touching the hub file or links into other
     runners."""
     if engine.lower() != "all":
-        _validate_engine(engine, flag="--runner")
+        _validate_engine(engine, flag="--engine")
 
     refs = _resolve_refs_multi(filenames)
     if not refs:

@@ -71,8 +71,9 @@ def test_global_flags_are_marked_and_command_flags_are_not():
 def test_every_engine_selector_flag_supports_the_same_short_alias():
     # #366: commands that filter/select by runner via `--engine` must all
     # accept the same `-e` short form (`omm list -e ollama`, not just `omm
-    # run -e ollama`). `--runner` (on `unlink`) is a deliberately different,
-    # required-not-optional selector and is out of scope here.
+    # run -e ollama`). `unlink` used to have its own `--runner` name for this
+    # (same concept, different flag) - unified to `--engine` too, so every
+    # instance of the flag is covered by this one check now.
     reference = build_reference(cli.app)
     offenders = []
     for entry in reference["commands"]:

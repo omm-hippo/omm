@@ -4,9 +4,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import os
 import platform
+import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import time
 from typing import Callable
 
@@ -60,6 +62,135 @@ def _query(args: list[str]) -> subprocess.CompletedProcess | None:
                               errors="replace", timeout=15, env=_environment())
     except (OSError, subprocess.TimeoutExpired):
         return None
+
+
+_VERSION_TOKEN_RE = re.compile(r"\b(\d+\.\d+\.\d+)\b")
+
+
+def _ollama_cli_version() -> str | None:
+    """`ollama --version` (#368): reports the installed binary's version
+    without starting the daemon - so it works even when the local API is
+    off, unlike `runtime_version`. LM Studio's `lms` CLI has no equivalent:
+    `lms --version` only prints the `lms` tool's own build commit, not the
+    LM Studio app version, so there's nothing safe to surface from it."""
+    binary = shutil.which("ollama")
+    if binary is None:
+        return None
+    result = _query([binary, "--version"])
+    if result is None or result.returncode != 0:
+        return None
+    match = _VERSION_TOKEN_RE.search(result.stdout)
+    return match.group(1) if match else None
+
+
+def _macos_bundle_version(key: str) -> str | None:
+    """The app's own Info.plist CFBundleShortVersionString (#368) - ground
+    truth for "what's actually installed", and needs no new dependency
+    (plistlib is stdlib). Works for any engine with a native macOS app
+    bundle (ollama/lmstudio/jan/anythingllm/mstystudio); None elsewhere,
+    including koboldcpp/textgenwebui which have no bundle at all."""
+    path = linker.engine_app_bundle_path(key)
+    if path is None:
+        return None
+    try:
+        with (path / "Contents" / "Info.plist").open("rb") as plist_file:
+            data = plistlib.load(plist_file)
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    version = data.get("CFBundleShortVersionString")
+    return version if isinstance(version, str) and version else None
+
+
+# Codepage/language pairs to try when an exe's VarFileInfo\Translation
+# table is missing: US English + Unicode / Windows-1252, then language-neutral.
+_FALLBACK_VERSION_TRANSLATIONS = ("040904b0", "040904e4", "000004b0")
+
+
+def _load_version_dll():
+    """Seam for tests: the real version.dll, only ever loaded on Windows."""
+    import ctypes
+    from ctypes import wintypes
+
+    dll = ctypes.WinDLL("version")
+    dll.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    dll.GetFileVersionInfoSizeW.restype = wintypes.DWORD
+    dll.GetFileVersionInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+    dll.GetFileVersionInfoW.restype = wintypes.BOOL
+    dll.VerQueryValueW.argtypes = [
+        ctypes.c_void_p, wintypes.LPCWSTR,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.UINT),
+    ]
+    dll.VerQueryValueW.restype = wintypes.BOOL
+    return dll
+
+
+def _read_exe_version(path) -> str | None:
+    """An .exe's own version resource - `ProductVersion`, falling back to
+    `FileVersion` - the same string Explorer's Details tab and PowerShell's
+    `(Get-Item x.exe).VersionInfo.ProductVersion` show (#368). stdlib ctypes
+    + version.dll, no new dependency. None off Windows, for an exe with no
+    version resource, and on any ctypes/OS error: this is display only."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    try:
+        dll = _load_version_dll()
+        path_str = str(path)
+        size = dll.GetFileVersionInfoSizeW(path_str, None)
+        if not size:
+            return None
+        data = ctypes.create_string_buffer(size)
+        if not dll.GetFileVersionInfoW(path_str, 0, size, data):
+            return None
+        pointer = ctypes.c_void_p()
+        length = ctypes.c_uint()
+        translations = []
+        if (dll.VerQueryValueW(data, "\\VarFileInfo\\Translation", ctypes.byref(pointer), ctypes.byref(length))
+                and pointer.value and length.value >= 4):
+            words = (ctypes.c_ushort * (length.value // 2)).from_address(pointer.value)
+            translations = [f"{words[i]:04x}{words[i + 1]:04x}" for i in range(0, len(words) - 1, 2)]
+        translations += [t for t in _FALLBACK_VERSION_TRANSLATIONS if t not in translations]
+        for field in ("ProductVersion", "FileVersion"):
+            for translation in translations:
+                pointer = ctypes.c_void_p()
+                length = ctypes.c_uint()
+                if not dll.VerQueryValueW(
+                    data, f"\\StringFileInfo\\{translation}\\{field}",
+                    ctypes.byref(pointer), ctypes.byref(length),
+                ) or not pointer.value or not length.value:
+                    continue
+                value = ctypes.wstring_at(pointer.value, length.value).split("\x00", 1)[0].strip()
+                if value:
+                    return value
+    except Exception:  # noqa: BLE001 - any ctypes/loader failure means "unknown", never a crash
+        return None
+    return None
+
+
+def _windows_exe_version(key: str) -> str | None:
+    """Windows counterpart of _macos_bundle_version (#368): the installed
+    main .exe's own version resource. Works whether or not the app is
+    running; None for koboldcpp/textgenwebui and anything not found."""
+    path = linker.engine_windows_executable(key)
+    if path is None:
+        return None
+    return _read_exe_version(path)
+
+
+def _detected_version(key: str) -> str | None:
+    """Best-effort version for an engine `package_receipt()` couldn't
+    identify (#368): the installed app's own metadata first - macOS
+    Info.plist or the Windows exe version resource, both work whether or
+    not it's running - then a CLI --version flag where one exists and is
+    trustworthy. Display only - never touches
+    `PackageReceipt`/update/uninstall command assembly."""
+    version = _macos_bundle_version(key)
+    if version is None:
+        version = _windows_exe_version(key)
+    if version is None and key == "ollama":
+        version = _ollama_cli_version()
+    return version
 
 
 def package_receipt(key: str) -> PackageReceipt | None:
@@ -241,6 +372,7 @@ def inspect_engine(key: str, *, check_api: bool = True) -> dict:
         "package_error": package_error,
         "package_manageable": bool(package.brew_cask or package.brew_formula
                                     or package.winget_id or package.flatpak_id),
+        "detected_version": _detected_version(key) if receipt is None else None,
         "api_status": "not_checked", "runtime_version": None,
         "manual_url": package.manual_url,
     }

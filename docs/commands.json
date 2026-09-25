@@ -2577,7 +2577,7 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Remove one or more models' links from one runner (or every runner with --runner all) without touching the hub file or links into other runners.",
+      "summary": "Remove one or more models' links from one runner (or every runner with --engine all) without touching the hub file or links into other runners.",
       "description": "",
       "usage": "omm unlink [OPTIONS] {filenames}",
       "arguments": [
@@ -2590,7 +2590,8 @@
       "options": [
         {
           "flags": [
-            "--runner"
+            "--engine",
+            "-e"
           ],
           "metavar": "<str>",
           "is_flag": false,
