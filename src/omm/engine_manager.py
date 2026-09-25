@@ -20,6 +20,22 @@ class EngineManagementError(RuntimeError):
     pass
 
 
+class PackageQueryError(EngineManagementError):
+    """A package-manager read that failed in a known way (#388).
+
+    ``kind`` feeds :func:`diagnose_package_error`; ``command`` is the
+    read-only query a person can re-run to see the manager's own message.
+    """
+
+    def __init__(self, message: str, *, kind: str, manager: str,
+                 command: list[str], detail: str | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.manager = manager
+        self.command = command
+        self.detail = detail
+
+
 @dataclass(frozen=True)
 class PackageReceipt:
     manager: str
@@ -54,9 +70,8 @@ def package_receipt(key: str) -> PackageReceipt | None:
         for kind, package_id in (("cask", package.brew_cask), ("formula", package.brew_formula)):
             if package_id is None:
                 continue
-            result = _query([binary, "list", f"--{kind}", "--versions", package_id])
-            if result is None:
-                raise EngineManagementError(f"Could not read Homebrew's installed {kind} packages.")
+            args = [binary, "list", f"--{kind}", "--versions", package_id]
+            result = _package_query("brew", args, f"Could not read Homebrew's installed {kind} packages.")
             if result.returncode != 0:
                 continue
             matches = [line.split() for line in result.stdout.splitlines()
@@ -64,20 +79,25 @@ def package_receipt(key: str) -> PackageReceipt | None:
             if len(matches) == 1 and len(matches[0]) > 1:
                 found.append(PackageReceipt("brew", binary, package_id, " ".join(matches[0][1:]), kind=kind))
             elif matches:
-                raise EngineManagementError("Homebrew returned ambiguous package information.")
+                raise PackageQueryError("Homebrew returned ambiguous package information.",
+                                        kind="ambiguous", manager="brew", command=args)
         if len(found) > 1:
-            raise EngineManagementError("Both Ollama app and formula are installed; manage the intended package explicitly with Homebrew.")
+            raise PackageQueryError(
+                "Both Ollama app and formula are installed; manage the intended package explicitly with Homebrew.",
+                kind="duplicate", manager="brew",
+                command=[binary, "list", "--versions", *(item.package_id for item in found)])
         return found[0] if found else None
     elif system == "Windows" and package.winget_id and (binary := shutil.which("winget")):
-        result = _query([binary, "list", "--id", package.winget_id, "--exact",
-                         "--source", "winget", "--disable-interactivity"])
-        if result is None:
-            raise EngineManagementError("WinGet package lookup did not finish.")
+        args = [binary, "list", "--id", package.winget_id, "--exact",
+                "--source", "winget", "--disable-interactivity"]
+        result = _package_query("winget", args, "WinGet package lookup did not finish.")
         if result.returncode != 0:
             # APPINSTALLER_CLI_ERROR_NO_APPLICATIONS_FOUND, not a generic failure.
             if result.returncode & 0xFFFFFFFF == 0x8A150014:
                 return None
-            raise EngineManagementError(f"WinGet package lookup failed ({result.returncode}).")
+            raise PackageQueryError(f"WinGet package lookup failed ({result.returncode}).",
+                                    kind="query_failed", manager="winget", command=args,
+                                    detail=_output_tail(result))
         if result and result.returncode == 0:
             # Match the complete ID, not translated headers or a truncated name.
             pattern = re.compile(r"^.+?\s+" + re.escape(package.winget_id) + r"\s+(\S+)(?:\s|$)")
@@ -85,35 +105,136 @@ def package_receipt(key: str) -> PackageReceipt | None:
                        if (match := pattern.match(line.strip()))]
             if len(matches) == 1:
                 return PackageReceipt("winget", binary, package.winget_id, matches[0])
-            raise EngineManagementError("WinGet did not return one exact, readable package identity.")
+            raise PackageQueryError("WinGet did not return one exact, readable package identity.",
+                                    kind="ambiguous", manager="winget", command=args)
     elif system == "Linux" and package.flatpak_id and (binary := shutil.which("flatpak")):
         found = []
-        result = _query([binary, "list", "--app", "--columns=application,version,installation"])
-        if result is None or result.returncode != 0:
-            raise EngineManagementError("Could not read Flatpak's installed applications.")
+        args = [binary, "list", "--app", "--columns=application,version,installation"]
+        result = _package_query("flatpak", args, "Could not read Flatpak's installed applications.")
+        if result.returncode != 0:
+            raise PackageQueryError("Could not read Flatpak's installed applications.",
+                                    kind="query_failed", manager="flatpak", command=args,
+                                    detail=_output_tail(result))
         for line in result.stdout.splitlines():
             fields = line.split()
             if len(fields) >= 2 and fields[0] == package.flatpak_id:
                 if fields[-1] not in {"user", "system"}:
-                    raise EngineManagementError("This Flatpak uses a custom installation; manage it explicitly with Flatpak.")
+                    raise PackageQueryError(
+                        "This Flatpak uses a custom installation; manage it explicitly with Flatpak.",
+                        kind="ambiguous", manager="flatpak", command=args)
                 found.append(PackageReceipt("flatpak", binary, package.flatpak_id,
                                              fields[1] if len(fields) >= 3 else None, fields[-1]))
         # Never select one arbitrarily when both installations exist.
         if len(found) > 1:
-            raise EngineManagementError("Multiple Flatpak installations were found; select one with Flatpak itself.")
+            raise PackageQueryError(
+                "Multiple Flatpak installations were found; select one with Flatpak itself.",
+                kind="duplicate", manager="flatpak", command=args)
         return found[0] if found else None
     return None
+
+
+_MANAGER_NAMES = {"brew": "Homebrew", "winget": "WinGet", "flatpak": "Flatpak"}
+
+
+def _package_query(manager: str, args: list[str], message: str) -> subprocess.CompletedProcess:
+    result = _query(args)
+    if result is None:
+        # _query folds "could not start" and "timed out" into None. A manager
+        # binary that is still a runnable file most likely just timed out.
+        runnable = os.path.isfile(args[0]) and os.access(args[0], os.X_OK)
+        raise PackageQueryError(message, kind="timeout" if runnable else "manager_unavailable",
+                                manager=manager, command=args)
+    return result
+
+
+def _output_tail(result: subprocess.CompletedProcess, limit: int = 160) -> str | None:
+    """Last non-empty line the manager printed (stderr first), for the hint."""
+    for stream in (result.stderr, result.stdout):
+        lines = [line.strip() for line in (stream or "").splitlines() if line.strip()]
+        if lines:
+            tail = lines[-1]
+            return tail if len(tail) <= limit else tail[:limit - 3] + "..."
+    return None
+
+
+def _display_command(manager: str, command: list[str]) -> str:
+    """The query as a person would type it: bare manager name (not the resolved
+    path, which may be a Windows path on any host), no automation flags."""
+    return " ".join([manager, *(arg for arg in command[1:] if arg != "--disable-interactivity")])
+
+
+def _platform_manager(key: str) -> str | None:
+    """The package manager omm would use for this engine on this OS, if any."""
+    package = PACKAGES[key]
+    system = platform.system()
+    if system == "Darwin" and (package.brew_cask or package.brew_formula):
+        return "brew"
+    if system == "Windows" and package.winget_id:
+        return "winget"
+    if system == "Linux" and package.flatpak_id:
+        return "flatpak"
+    return None
+
+
+def diagnose_package_error(key: str, error: EngineManagementError) -> dict:
+    """Classify a package lookup failure into ``{"kind", "fix"}`` (#388).
+
+    The one place that turns a lookup failure into a next step; views only
+    print ``fix``. Kinds: manager_unavailable, timeout, query_failed,
+    ambiguous, duplicate, unknown.
+    """
+    package = PACKAGES[key]
+    label, url = package.label, package.manual_url
+    if not isinstance(error, PackageQueryError):
+        return {"kind": "unknown",
+                "fix": f"if {label} was installed from its official installer, this is expected; "
+                       f"otherwise manage it from {url}."}
+    name = _MANAGER_NAMES.get(error.manager, error.manager)
+    command = _display_command(error.manager, error.command)
+    if error.kind == "manager_unavailable":
+        fix = (f"`{error.manager}` could not be started; repair or reinstall {name}. "
+               f"{name} is optional: without it, manage {label} from {url}.")
+    elif error.kind == "timeout":
+        fix = (f"`{command}` did not answer in time; retry `omm engine doctor {key}`, "
+               f"and check your network or proxy if it keeps timing out.")
+    elif error.kind == "query_failed":
+        said = f'{name} said "{error.detail}"; run' if error.detail else "run"
+        fix = f"{said} `{command}` to see {name}'s full message."
+    elif error.kind == "ambiguous":
+        fix = (f"run `{command}` and check that {label} is listed once with a version; "
+               f"omm will not guess which package to manage.")
+    elif error.kind == "duplicate":
+        fix = (f"run `{command}` and remove the copy you don't use with {name}; "
+               f"omm will not pick one for you.")
+    else:
+        fix = (f"run `{command}` to see {name}'s message; if {label} was installed "
+               f"from its official installer, this is expected: {url}")
+    return {"kind": error.kind, "fix": fix}
+
+
+def _missing_manager_fix(key: str) -> dict | None:
+    """Installed, but this OS's package manager is not on PATH at all."""
+    manager = _platform_manager(key)
+    if manager is None or shutil.which(manager):
+        return None
+    package = PACKAGES[key]
+    name = _MANAGER_NAMES[manager]
+    return {"kind": "manager_missing",
+            "fix": f"{name} was not found. It is optional: install {name} to let omm update "
+                   f"{package.label}, or manage it from {package.manual_url}."}
 
 
 def inspect_engine(key: str, *, check_api: bool = True) -> dict:
     package = PACKAGES[key]
     installed = linker.is_engine_installed(key)
     package_error = None
+    package_fix = None
     try:
         receipt = package_receipt(key)
     except EngineManagementError as error:
         receipt = None
         package_error = str(error)
+        package_fix = diagnose_package_error(key, error)
     result = {
         "key": key, "label": package.label, "installed": installed,
         "package": asdict(receipt) if receipt else None,
@@ -123,6 +244,9 @@ def inspect_engine(key: str, *, check_api: bool = True) -> dict:
         "api_status": "not_checked", "runtime_version": None,
         "manual_url": package.manual_url,
     }
+    if package_fix is None and installed and receipt is None and result["package_manageable"]:
+        package_fix = _missing_manager_fix(key)
+    result["package_fix"] = package_fix
     if check_api and key in {"ollama", "lmstudio"}:
         adapter = OllamaAdapter() if key == "ollama" else LMStudioAdapter()
         health = adapter.health()
