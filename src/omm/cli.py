@@ -4835,7 +4835,10 @@ def _select_quant_file(repo_id: str | None, candidates: list[str], quant: str) -
     QuantSelectionError naming what the user can pick instead - never a
     silent guess."""
     wanted = _quant_key(quant)
-    matches = [name for name in candidates if _quant_key(_quant_label(name)) == wanted]
+    matches = [
+        name for name in candidates
+        if _quant_label(name) != "Unknown" and _quant_key(_quant_label(name)) == wanted
+    ]
     if len(matches) == 1:
         return matches[0]
     where = f"'{repo_id}'" if repo_id else "this model"

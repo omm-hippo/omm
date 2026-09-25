@@ -153,6 +153,7 @@ class ContributionQueue:
         self._deferred_refs.discard(seen_ref)
         self.excluded_refs.discard(seen_ref)
         self.history_refs.add(seen_ref)
+        self._phase_c_origin.pop(seen_ref, None)
         self._rebuild()
 
     @property
