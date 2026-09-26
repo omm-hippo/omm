@@ -150,4 +150,40 @@ const usageFixed = `usage/fixed-${Date.now()}`;
 const usageFixedWrite = await request(usageFixed, "PUT", validUsage);
 assert.equal(usageFixedWrite.ok, false, "direct fixed-key usage write was accepted");
 
+// --- /votes: gateway-only and unreadable -------------------------------
+//
+// Arena battle votes. Same posture as /usage and /error_reports, and
+// deliberately NOT the world-readable posture of /telemetry: a vote row
+// carries a per-install client_id, so letting anyone collect one device's
+// voting history has no upside. The prompt the user typed is never part of
+// the payload at all (see cf-worker/src/validate.ts:validateVoteEvent).
+const validVote = {
+  schema_version: 1,
+  battle_id: "0a8c1f22-5c1e-4a0e-9d3b-1f2e3d4c5b6a",
+  client_id: "0123456789abcdef0123456789abcdef",
+  client_version: "0.3.140",
+  recorded_at: "2026-09-26T04:05:06.700000+00:00",
+  engine: "ollama",
+  winner: "a",
+  pinned: false,
+  model_filename_a: "alpha-4b-Q4_K_M.gguf",
+  model_filename_b: "beta-8b-Q5_K_M.gguf",
+  elapsed_a: 3.25,
+  elapsed_b: 9.5,
+  tokens_a: 120,
+  tokens_b: 300,
+};
+
+for (const auth of [true, false]) {
+  const voteCreated = await request("votes", "POST", validVote, { auth });
+  assert.equal(voteCreated.ok, false, `direct vote write was accepted (auth: ${auth})`);
+  const voteRead = await request("votes", "GET", undefined, { auth });
+  assert.equal(voteRead.ok, false, `votes was readable (auth: ${auth})`);
+  const voteReadChild = await request("votes/some-battle-id", "GET", undefined, { auth });
+  assert.equal(voteReadChild.ok, false, `a vote child was readable (auth: ${auth})`);
+}
+const voteFixed = `votes/fixed-${Date.now()}`;
+const voteFixedWrite = await request(voteFixed, "PUT", validVote);
+assert.equal(voteFixedWrite.ok, false, "direct fixed-key vote write was accepted");
+
 console.log("Firebase rules scenarios passed.");

@@ -629,3 +629,96 @@ export function validateUsageEvent(event: TelemetryEvent): { valid: boolean; rea
   if (has(event, "errors") && !validTally(event.errors)) return { valid: false, reason: "invalid errors" };
   return { valid: true };
 }
+
+const VOTE_SIDE_FIELDS = [
+  "model_provider", "model_repo_id", "model_filename", "model_digest",
+  "quant_bits", "elapsed", "tokens", "tokens_per_second", "memory_gb", "watt",
+] as const;
+const VOTE_FIELDS = new Set<string>([
+  "schema_version", "battle_id", "client_id", "client_version",
+  "recorded_at", "engine", "winner", "pinned",
+  ...VOTE_SIDE_FIELDS.flatMap((n) => [`${n}_a`, `${n}_b`]),
+]);
+// Symmetry is required for the measurements only: sub-project C compares the
+// two sides of one battle, so half a measurement is not comparable. Identity
+// fields are independently optional per side - one model can carry a provider
+// sha256 while the other was adopted locally with none, and refusing that row
+// would throw away a perfectly good battle.
+const VOTE_SYMMETRIC_FIELDS = ["memory_gb", "tokens_per_second", "watt"] as const;
+const VOTE_WINNERS = new Set(["a", "b", "both_bad"]);
+const VOTE_ENGINES = new Set(["ollama", "lmstudio"]);
+const VOTE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const VOTE_HEX64_RE = /^[0-9a-f]{64}$/;
+const VOTE_NUMERIC_RANGES: Record<string, [number, number]> = {
+  elapsed: [0, 3600],
+  tokens: [0, 1_000_000],
+  tokens_per_second: [0, 100_000],
+  memory_gb: [0, 1024],
+  watt: [0, 2000],
+  quant_bits: [0.5, 32],
+};
+const VOTE_STRING_LIMITS: Record<string, number> = {
+  model_provider: 64,
+  model_repo_id: 512,
+  model_filename: 300,
+};
+
+export function validateVoteEvent(event: TelemetryEvent): { valid: boolean; reason?: string } {
+  for (const key of Object.keys(event)) {
+    if (!VOTE_FIELDS.has(key)) return { valid: false, reason: `unknown field: ${key}` };
+  }
+  // Named explicitly although the allow-list above already rejects it: not
+  // uploading the user's prompt text is the core promise of this channel, and
+  // it must be verifiable by eye and by its own test.
+  if ("prompt" in event) return { valid: false, reason: "prompt must never be uploaded" };
+  if (
+    !hasAll(event, [
+      "schema_version", "battle_id", "client_id", "recorded_at", "engine", "winner",
+      "model_filename_a", "model_filename_b", "elapsed_a", "elapsed_b", "tokens_a", "tokens_b",
+    ])
+  ) {
+    return { valid: false, reason: "missing required vote field" };
+  }
+  if (num(event, "schema_version") !== 1) return { valid: false, reason: "unsupported schema_version" };
+  if (!VOTE_UUID_RE.test(str(event, "battle_id"))) return { valid: false, reason: "invalid battle_id" };
+  if (!/^[0-9a-f]{8,64}$/.test(str(event, "client_id"))) return { valid: false, reason: "invalid client_id" };
+  if (!VOTE_WINNERS.has(str(event, "winner"))) return { valid: false, reason: "invalid winner" };
+  if (!VOTE_ENGINES.has(str(event, "engine"))) return { valid: false, reason: "invalid engine" };
+  if (has(event, "pinned") && bool(event, "pinned") === undefined) {
+    return { valid: false, reason: "invalid pinned" };
+  }
+  if (!(str(event, "recorded_at").length >= 20 && str(event, "recorded_at").length <= 50)) {
+    return { valid: false, reason: "invalid recorded_at" };
+  }
+  if (has(event, "client_version") && !safeStr(event, "client_version", 100)) {
+    return { valid: false, reason: "invalid client_version" };
+  }
+  for (const name of VOTE_SYMMETRIC_FIELDS) {
+    const a = `${name}_a`;
+    const b = `${name}_b`;
+    if (has(event, a) !== has(event, b)) {
+      return { valid: false, reason: `asymmetric row: ${has(event, a) ? b : a} missing` };
+    }
+  }
+  for (const name of VOTE_SIDE_FIELDS) {
+    for (const key of [`${name}_a`, `${name}_b`]) {
+      if (!has(event, key)) continue;
+      const stringLimit = VOTE_STRING_LIMITS[name];
+      if (stringLimit !== undefined && !safeStr(event, key, stringLimit)) {
+        return { valid: false, reason: `invalid ${key}` };
+      }
+      if (name === "model_digest" && !VOTE_HEX64_RE.test(str(event, key))) {
+        return { valid: false, reason: `invalid ${key}` };
+      }
+      const range = VOTE_NUMERIC_RANGES[name];
+      if (range !== undefined) {
+        const value = num(event, key);
+        if (!Number.isFinite(value) || value < range[0] || value > range[1]) {
+          return { valid: false, reason: `invalid ${key}` };
+        }
+        if (name === "tokens" && !isInt(value)) return { valid: false, reason: `invalid ${key}` };
+      }
+    }
+  }
+  return { valid: true };
+}
