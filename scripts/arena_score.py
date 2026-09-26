@@ -481,3 +481,158 @@ def fit_efficiency(battles: list[Battle], weights: list[float]) -> dict[str, dic
         }
         for key in keys
     }
+
+
+ARTIFACT_SCHEMA_VERSION = 1
+
+_METADATA_FIELDS = (
+    ("display_filename", "model_filename"),
+    ("repo_id", "model_repo_id"),
+    ("provider", "model_provider"),
+    ("quant_bits", "quant_bits"),
+)
+
+
+def collect_metadata(rows: list[dict]) -> dict[str, dict]:
+    """Display metadata per model key, last non-empty value winning.
+
+    Rows arrive sorted ascending by recorded_at, so "last" means "most
+    recently reported" - a renamed file or a newly known repo id wins over a
+    stale one. Identity fields are independently optional per side, so a key
+    can end up with a filename and nothing else.
+    """
+    metadata: dict[str, dict] = {}
+    for row in sorted(
+        rows,
+        key=lambda item: (
+            item.get("recorded_at") if isinstance(item.get("recorded_at"), str) else "",
+            item.get("battle_id") if isinstance(item.get("battle_id"), str) else "",
+        ),
+    ):
+        for side in SIDES:
+            key = model_key(row, side)
+            if key is None:
+                continue
+            entry = metadata.setdefault(
+                key, {name: None for name, _field in _METADATA_FIELDS}
+            )
+            for name, field in _METADATA_FIELDS:
+                value = row.get(f"{field}_{side}")
+                if isinstance(value, str) and value.strip():
+                    entry[name] = value.strip()
+                elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                    entry[name] = float(value)
+    return metadata
+
+
+def build_artifact(
+    rows: list[dict],
+    *,
+    generated_at: str,
+    resamples: int = BOOTSTRAP_RESAMPLES,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict:
+    """The full leaderboard artifact, deterministic for a given corpus."""
+    battles, dropped = validate_rows(rows)
+    weights = battle_weights(battles)
+    metadata = collect_metadata(rows)
+
+    total_weight = sum(weights)
+    per_client: dict[str, float] = defaultdict(float)
+    for battle, weight in zip(battles, weights):
+        per_client[battle.client_id] += weight
+
+    strengths = fit_quality(battles, weights)
+    intervals = bootstrap_intervals(battles, resamples=resamples, seed=seed)
+    counts = effective_battles(battles, weights)
+    rates = both_bad_rates(battles, weights)
+    efficiency = fit_efficiency(battles, weights)
+
+    raw_battles: dict[str, int] = defaultdict(int)
+    for battle in battles:
+        raw_battles[battle.key_a] += 1
+        raw_battles[battle.key_b] += 1
+
+    ranked_input = [
+        (key, strengths[key], intervals[key][0], intervals[key][1])
+        for key in sorted(strengths, key=lambda item: (-strengths[item], item))
+        if counts.get(key, 0.0) >= MIN_EFFECTIVE_BATTLES
+    ]
+    tiers = assign_tiers(ranked_input)
+
+    models = []
+    for key in sorted(strengths):
+        low, high = intervals[key]
+        tier = tiers.get(key)
+        models.append(
+            {
+                "key": key,
+                "display_filename": metadata.get(key, {}).get("display_filename"),
+                "repo_id": metadata.get(key, {}).get("repo_id"),
+                "provider": metadata.get(key, {}).get("provider"),
+                "quant_bits": metadata.get(key, {}).get("quant_bits"),
+                "battles": raw_battles[key],
+                "effective_battles": counts.get(key, 0.0),
+                "provisional": tier is None,
+                "quality": {
+                    "strength": strengths[key],
+                    "ci_low": low,
+                    "ci_high": high,
+                    "tier": tier,
+                },
+                "both_bad_rate": rates.get(key, 0.0),
+                "quality_warning": (
+                    rates.get(key, 0.0) >= BOTH_BAD_WARNING_RATE
+                    and counts.get(key, 0.0) >= MIN_EFFECTIVE_BATTLES
+                ),
+                "efficiency": efficiency.get(key),
+            }
+        )
+
+    def order(entry: dict) -> tuple:
+        tier = entry["quality"]["tier"]
+        measured = entry["efficiency"]
+        return (
+            tier if tier is not None else math.inf,
+            -measured["rating"] if measured else math.inf,
+            entry["key"],
+        )
+
+    models.sort(key=order)
+
+    grouped_tiers: dict[int, list[str]] = defaultdict(list)
+    for entry in models:
+        tier = entry["quality"]["tier"]
+        if tier is not None:
+            grouped_tiers[tier].append(entry["key"])
+
+    component_sizes: dict[int, int] = defaultdict(int)
+    for measured in efficiency.values():
+        component_sizes[measured["component"]] += 1
+
+    return {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "corpus": {
+            "rows_fetched": len(rows),
+            "rows_used": len(battles),
+            "rows_dropped": dropped,
+            "effective_votes": total_weight,
+            "client_count": len(per_client),
+            "largest_client_share": (
+                max(per_client.values()) / total_weight if total_weight else 0.0
+            ),
+        },
+        "models": models,
+        "tiers": [
+            {"tier": tier, "model_keys": grouped_tiers[tier]}
+            for tier in sorted(grouped_tiers)
+        ],
+        "efficiency_components": [
+            {"component": component, "model_count": component_sizes[component]}
+            for component in sorted(component_sizes)
+        ],
+        "provisional_models": sorted(
+            entry["key"] for entry in models if entry["provisional"]
+        ),
+    }

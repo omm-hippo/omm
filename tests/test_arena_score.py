@@ -374,3 +374,139 @@ def test_the_sample_count_is_the_number_of_eligible_rows():
     battles.append(_battle("A", "B", "a", 99))
     fitted = arena_score.fit_efficiency(battles, arena_score.battle_weights(battles))
     assert fitted["A"]["sample"] == 3
+
+
+def _corpus(count: int = 60) -> list[dict]:
+    """A corpus large enough that both models clear MIN_EFFECTIVE_BATTLES."""
+    rows = []
+    for index in range(count):
+        rows.append(
+            _row(
+                battle_id=f"{index:08d}-1111-1111-1111-111111111111",
+                client_id=f"{index:08x}",
+                winner="a" if index % 4 else "b",
+            )
+        )
+    return rows
+
+
+def test_the_artifact_reports_the_corpus_it_used():
+    artifact = arena_score.build_artifact(
+        _corpus(), generated_at="2026-09-27T04:00:00+00:00", resamples=20
+    )
+    assert artifact["schema_version"] == arena_score.ARTIFACT_SCHEMA_VERSION
+    assert artifact["generated_at"] == "2026-09-27T04:00:00+00:00"
+    assert artifact["corpus"]["rows_fetched"] == 60
+    assert artifact["corpus"]["rows_used"] == 60
+    assert artifact["corpus"]["client_count"] == 60
+    assert artifact["corpus"]["effective_votes"] == pytest.approx(60.0)
+
+
+def test_drop_reasons_are_reported_not_absorbed():
+    rows = _corpus(4) + [
+        _row(battle_id="ffffffff-1111-1111-1111-111111111111", winner="tie")
+    ]
+    artifact = arena_score.build_artifact(
+        rows, generated_at="2026-09-27T04:00:00+00:00", resamples=5
+    )
+    assert artifact["corpus"]["rows_fetched"] == 5
+    assert artifact["corpus"]["rows_used"] == 4
+    assert artifact["corpus"]["rows_dropped"] == {"winner": 1}
+
+
+def test_a_thin_model_is_provisional_and_untiered():
+    artifact = arena_score.build_artifact(
+        _corpus(4), generated_at="2026-09-27T04:00:00+00:00", resamples=5
+    )
+    entry = artifact["models"][0]
+    assert entry["provisional"] is True
+    assert entry["quality"]["tier"] is None
+    assert artifact["tiers"] == []
+    assert sorted(artifact["provisional_models"]) == sorted(
+        model["key"] for model in artifact["models"]
+    )
+
+
+def test_a_well_supported_model_gets_a_tier():
+    artifact = arena_score.build_artifact(
+        _corpus(), generated_at="2026-09-27T04:00:00+00:00", resamples=20
+    )
+    assert artifact["provisional_models"] == []
+    assert all(model["quality"]["tier"] is not None for model in artifact["models"])
+    assert artifact["tiers"][0]["tier"] == 1
+
+
+def test_metadata_travels_with_the_model():
+    rows = _corpus()
+    for row in rows:
+        row["model_provider_a"] = "huggingface"
+        row["model_repo_id_a"] = "Vendor/Alpha-GGUF"
+        row["quant_bits_a"] = 4.0
+    artifact = arena_score.build_artifact(
+        rows, generated_at="2026-09-27T04:00:00+00:00", resamples=20
+    )
+    alpha = next(
+        m for m in artifact["models"] if m["key"] == "filename:alpha-q4_k_m.gguf"
+    )
+    assert alpha["display_filename"] == "alpha-q4_k_m.gguf"
+    assert alpha["repo_id"] == "Vendor/Alpha-GGUF"
+    assert alpha["provider"] == "huggingface"
+    assert alpha["quant_bits"] == 4.0
+
+
+def test_the_artifact_is_byte_identical_for_a_shuffled_corpus():
+    import json
+    import random as stdlib_random
+
+    rows = _corpus()
+    shuffled = list(rows)
+    stdlib_random.Random(7).shuffle(shuffled)
+    first = arena_score.build_artifact(
+        rows, generated_at="2026-09-27T04:00:00+00:00", resamples=20
+    )
+    second = arena_score.build_artifact(
+        shuffled, generated_at="2026-09-27T04:00:00+00:00", resamples=20
+    )
+    assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
+
+
+def test_efficiency_is_null_when_nothing_was_measured():
+    rows = _corpus()
+    for row in rows:
+        del row["memory_gb_a"]
+        del row["memory_gb_b"]
+    artifact = arena_score.build_artifact(
+        rows, generated_at="2026-09-27T04:00:00+00:00", resamples=20
+    )
+    assert all(model["efficiency"] is None for model in artifact["models"])
+    assert artifact["efficiency_components"] == []
+
+
+def test_an_empty_corpus_produces_an_empty_but_valid_artifact():
+    artifact = arena_score.build_artifact(
+        [], generated_at="2026-09-27T04:00:00+00:00", resamples=5
+    )
+    assert artifact["models"] == []
+    assert artifact["tiers"] == []
+    assert artifact["corpus"]["effective_votes"] == 0.0
+    assert artifact["corpus"]["largest_client_share"] == 0.0
+
+
+def test_the_largest_client_share_is_reported():
+    rows = [
+        _row(battle_id=f"{index:08d}-1111-1111-1111-111111111111", client_id="deadbeef")
+        for index in range(30)
+    ]
+    rows += [
+        _row(
+            battle_id=f"{100 + index:08d}-1111-1111-1111-111111111111",
+            client_id=f"{index:08x}",
+        )
+        for index in range(10)
+    ]
+    artifact = arena_score.build_artifact(
+        rows, generated_at="2026-09-27T04:00:00+00:00", resamples=5
+    )
+    # The spammer's 30 rows are capped to 10 effective votes against 10 honest
+    # ones, so its share is half - not 75%.
+    assert artifact["corpus"]["largest_client_share"] == pytest.approx(0.5)
