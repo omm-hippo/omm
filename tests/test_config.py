@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from omm import config
@@ -37,3 +38,29 @@ def test_load_config_tolerates_a_cache_it_cannot_delete(isolated_omm_home, monke
     loaded = config.load_config()  # must not raise
 
     assert isinstance(loaded, dict)
+
+
+def test_arena_vote_policy_defaults_to_ask(isolated_omm_home):
+    assert config.DEFAULT_CONFIG["arena_vote_send_policy"] == "ask"
+    assert config.load_config()["arena_vote_send_policy"] == "ask"
+
+
+def test_arena_vote_policy_rejects_an_unknown_value(isolated_omm_home):
+    """Same coercion telemetry_send_policy gets: an unreadable policy must
+    fall back to the safe default, never be treated as consent."""
+    config.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_PATH.write_text(
+        json.dumps({"arena_vote_send_policy": "yes-please"}), encoding="utf-8"
+    )
+    assert config.load_config()["arena_vote_send_policy"] == "ask"
+
+
+def test_votes_gateway_endpoint_is_the_shared_worker():
+    assert config.VOTES_GATEWAY_ENDPOINT.endswith("/votes")
+    assert config.VOTES_GATEWAY_ENDPOINT.startswith("https://")
+    # Same Worker host as every other channel - a second host would need its
+    # own PoW/rate-limit deployment.
+    assert (
+        config.VOTES_GATEWAY_ENDPOINT.rsplit("/", 1)[0]
+        == config.USAGE_GATEWAY_ENDPOINT.rsplit("/", 1)[0]
+    )
