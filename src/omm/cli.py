@@ -3882,7 +3882,10 @@ def _ensure_ollama_running(action: str, *, assume_yes: bool = False):
     started = benchmark.start_ollama_daemon()
     if started is None:
         detail = benchmark.last_daemon_start_error() or "unknown startup failure"
-        err_console.print(f"[error]Could not start Ollama: {detail}[/error]")
+        # detail is the daemon's raw stderr - Ollama's own log lines carry
+        # bracketed paths like [/Applications/Ollama.app/...], which Rich
+        # would otherwise read as markup tags and raise MarkupError on.
+        err_console.print(f"[error]Could not start Ollama: {escape(detail)}[/error]")
         raise typer.Exit(1)
     return started
 

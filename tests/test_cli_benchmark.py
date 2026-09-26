@@ -1524,3 +1524,24 @@ def test_benchmark_registry_filename_without_ollama_tag_says_to_link(isolated_om
 
     assert result.exit_code == 1
     assert "omm link" in result.output
+
+
+def test_ollama_start_failure_keeps_bracketed_stderr_out_of_rich_markup(
+    isolated_omm_home, monkeypatch, capsys
+):
+    """The daemon's raw stderr reaches Rich verbatim. Ollama's own log lines
+    carry bracketed paths, and an unescaped one used to raise MarkupError -
+    the user saw a traceback instead of the startup failure."""
+    monkeypatch.setattr(cli.benchmark, "ollama_install_state", lambda: "stopped")
+    monkeypatch.setattr(cli.benchmark, "start_ollama_daemon", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli.benchmark,
+        "last_daemon_start_error",
+        lambda: "boom [/Applications/Ollama.app]",
+    )
+
+    with pytest.raises(cli.typer.Exit) as exit_info:
+        cli._ensure_ollama_running("run", assume_yes=True)
+
+    assert exit_info.value.exit_code == 1
+    assert "boom [/Applications/Ollama.app]" in capsys.readouterr().err
