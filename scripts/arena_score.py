@@ -386,3 +386,98 @@ def assign_tiers(ranked: list[tuple[str, float, float, float]]) -> dict[str, int
             leader_low = ci_low
         tiers[key] = tier
     return tiers
+
+
+def _components(adjacency: dict[str, list[tuple[str, float, float]]]) -> dict[str, int]:
+    """Connected components of the efficiency graph, numbered by size.
+
+    Component 0 is the largest (ties broken by lowest member key), so the
+    consumer's "main board" is stable across runs.
+    """
+    seen: set[str] = set()
+    groups: list[list[str]] = []
+    for start in sorted(adjacency):
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        group = []
+        while stack:
+            key = stack.pop()
+            group.append(key)
+            for neighbour, _ratio, _weight in adjacency[key]:
+                if neighbour not in seen:
+                    seen.add(neighbour)
+                    stack.append(neighbour)
+        groups.append(sorted(group))
+    groups.sort(key=lambda group: (-len(group), group[0]))
+    return {key: index for index, group in enumerate(groups) for key in group}
+
+
+def fit_efficiency(battles: list[Battle], weights: list[float]) -> dict[str, dict]:
+    """Per-model efficiency ratings fitted from within-battle log-ratios.
+
+    tokens/sec per GiB on its own measures the machine, not the model: the same
+    model scores 30 on one GPU and 7.5 on another. Both sides of an arena row
+    were measured on the same machine in the same session, so the ratio between
+    them cancels the machine - 30/20 and 7.5/5.0 are both 1.5.
+
+    For each eligible row, r = ln(e_a) - ln(e_b). Ratings f minimize
+    sum(weight * (r - (f_a - f_b))^2), solved by weighted iterative averaging.
+    Only differences are determined, so each connected component is centered on
+    its own weighted mean and ratings from different components are not
+    comparable - hence the reported `component`.
+    """
+    adjacency: dict[str, list[tuple[str, float, float]]] = defaultdict(list)
+    observations: dict[str, list[float]] = defaultdict(list)
+    mass: dict[str, float] = defaultdict(float)
+    for battle, weight in zip(battles, weights):
+        if battle.efficiency_a is None or battle.efficiency_b is None:
+            continue
+        ratio = math.log(battle.efficiency_a) - math.log(battle.efficiency_b)
+        adjacency[battle.key_a].append((battle.key_b, ratio, weight))
+        adjacency[battle.key_b].append((battle.key_a, -ratio, weight))
+        observations[battle.key_a].append(battle.efficiency_a)
+        observations[battle.key_b].append(battle.efficiency_b)
+        mass[battle.key_a] += weight
+        mass[battle.key_b] += weight
+    if not adjacency:
+        return {}
+
+    keys = sorted(adjacency)
+    ratings = {key: 0.0 for key in keys}
+    for _ in range(MAX_ITERATIONS):
+        change = 0.0
+        for key in keys:
+            numerator = 0.0
+            denominator = 0.0
+            for neighbour, ratio, weight in adjacency[key]:
+                numerator += weight * (ratings[neighbour] + ratio)
+                denominator += weight
+            updated = numerator / denominator
+            change = max(change, abs(updated - ratings[key]))
+            ratings[key] = updated
+        if change < TOLERANCE:
+            break
+
+    component_of = _components(adjacency)
+    grouped: dict[int, list[str]] = defaultdict(list)
+    for key in keys:
+        grouped[component_of[key]].append(key)
+    for members in grouped.values():
+        total = sum(mass[key] for key in members)
+        centre = (
+            sum(ratings[key] * mass[key] for key in members) / total if total else 0.0
+        )
+        for key in members:
+            ratings[key] -= centre
+
+    return {
+        key: {
+            "rating": ratings[key],
+            "component": component_of[key],
+            "raw_median_tok_s_per_gb": statistics.median(observations[key]),
+            "sample": len(observations[key]),
+        }
+        for key in keys
+    }

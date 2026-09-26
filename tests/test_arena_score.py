@@ -277,3 +277,100 @@ def test_tiers_anchor_on_the_leader_not_the_previous_model():
         ("C", 0.80, 0.70, 0.89),
     ]
     assert arena_score.assign_tiers(ranked) == {"A": 1, "B": 1, "C": 2}
+
+
+def _measured(key_a, key_b, e_a, e_b, index, client="abcdef12", winner="a"):
+    return arena_score.Battle(
+        battle_id=f"{index:08d}-1111-1111-1111-111111111111",
+        recorded_at="2026-09-26T10:00:00+00:00",
+        client_id=client,
+        key_a=key_a,
+        key_b=key_b,
+        winner=winner,
+        efficiency_a=e_a,
+        efficiency_b=e_b,
+    )
+
+
+def test_a_uniformly_faster_machine_does_not_change_the_ratings():
+    # The whole justification for the paired design. One machine is 4x faster
+    # across the board; the ratings must be identical.
+    slow = [_measured("A", "B", 7.5, 5.0, 0, client="1111aaaa")]
+    fast = [_measured("A", "B", 30.0, 20.0, 1, client="2222bbbb")]
+    slow_fit = arena_score.fit_efficiency(slow, arena_score.battle_weights(slow))
+    fast_fit = arena_score.fit_efficiency(fast, arena_score.battle_weights(fast))
+    assert slow_fit["A"]["rating"] == pytest.approx(fast_fit["A"]["rating"])
+    assert slow_fit["B"]["rating"] == pytest.approx(fast_fit["B"]["rating"])
+
+
+def test_the_raw_median_does_not_cancel_the_machine():
+    # Same fixture, proving the reference number is only a reference number.
+    slow = [_measured("A", "B", 7.5, 5.0, 0)]
+    fast = [_measured("A", "B", 30.0, 20.0, 1)]
+    slow_fit = arena_score.fit_efficiency(slow, arena_score.battle_weights(slow))
+    fast_fit = arena_score.fit_efficiency(fast, arena_score.battle_weights(fast))
+    assert slow_fit["A"]["raw_median_tok_s_per_gb"] == pytest.approx(7.5)
+    assert fast_fit["A"]["raw_median_tok_s_per_gb"] == pytest.approx(30.0)
+
+
+def test_the_more_efficient_model_rates_higher():
+    battles = [_measured("A", "B", 30.0, 20.0, index) for index in range(5)]
+    fitted = arena_score.fit_efficiency(battles, arena_score.battle_weights(battles))
+    assert fitted["A"]["rating"] > fitted["B"]["rating"]
+
+
+def test_ratings_are_centered_inside_a_component():
+    battles = [_measured("A", "B", 30.0, 20.0, index) for index in range(5)]
+    fitted = arena_score.fit_efficiency(battles, arena_score.battle_weights(battles))
+    assert fitted["A"]["rating"] + fitted["B"]["rating"] == pytest.approx(0.0)
+
+
+def test_a_transitive_chain_recovers_the_ratio_it_never_measured():
+    battles = [
+        _measured("A", "B", 30.0, 20.0, 0),
+        _measured("B", "C", 20.0, 10.0, 1),
+    ]
+    fitted = arena_score.fit_efficiency(battles, arena_score.battle_weights(battles))
+    recovered = math.exp(fitted["A"]["rating"] - fitted["C"]["rating"])
+    assert recovered == pytest.approx(3.0, rel=1e-6)
+
+
+def test_disconnected_groups_get_different_components():
+    battles = [
+        _measured("A", "B", 30.0, 20.0, 0),
+        _measured("C", "D", 30.0, 20.0, 1),
+    ]
+    fitted = arena_score.fit_efficiency(battles, arena_score.battle_weights(battles))
+    assert fitted["A"]["component"] == fitted["B"]["component"]
+    assert fitted["C"]["component"] == fitted["D"]["component"]
+    assert fitted["A"]["component"] != fitted["C"]["component"]
+
+
+def test_the_largest_component_is_component_zero():
+    battles = [
+        _measured("A", "B", 30.0, 20.0, 0),
+        _measured("B", "C", 20.0, 10.0, 1),
+        _measured("D", "E", 30.0, 20.0, 2),
+    ]
+    fitted = arena_score.fit_efficiency(battles, arena_score.battle_weights(battles))
+    assert fitted["A"]["component"] == 0
+    assert fitted["D"]["component"] == 1
+
+
+def test_a_corpus_with_no_measurements_yields_no_ratings():
+    # Every row from LM Studio, which exposes no memory API.
+    battles = [_battle("A", "B", "a", index) for index in range(5)]
+    assert arena_score.fit_efficiency(battles, arena_score.battle_weights(battles)) == {}
+
+
+def test_both_bad_rows_still_carry_usable_measurements():
+    battles = [_measured("A", "B", 30.0, 20.0, 0, winner="both_bad")]
+    fitted = arena_score.fit_efficiency(battles, arena_score.battle_weights(battles))
+    assert fitted["A"]["rating"] > fitted["B"]["rating"]
+
+
+def test_the_sample_count_is_the_number_of_eligible_rows():
+    battles = [_measured("A", "B", 30.0, 20.0, index) for index in range(3)]
+    battles.append(_battle("A", "B", "a", 99))
+    fitted = arena_score.fit_efficiency(battles, arena_score.battle_weights(battles))
+    assert fitted["A"]["sample"] == 3
