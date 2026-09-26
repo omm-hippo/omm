@@ -135,6 +135,7 @@ from rich.progress import (
 from rich.table import Table
 
 from omm import (
+    arena,
     benchmark,
     benchmark_history,
     calibration,
@@ -10804,6 +10805,231 @@ def evaluate_cmd(
     )
     if output is not None:
         console.print(f"Saved structured evidence to {escape(str(output))}.")
+
+
+def _arena_eligible_models(engine: str) -> dict[str, str]:
+    """Registry-linked models that `engine` can actually serve right now,
+    as {runtime ref -> registry filename}.
+
+    Registry-linked only, per the design: arena rows identify a model by its
+    omm registry entry so sub-projects B-E can aggregate across machines. A
+    model the user pulled straight into Ollama has no such identity and is
+    left out; the caller's error text points those users at `omm import`.
+    """
+    entries = [
+        (filename, value)
+        for filename, value in registry.load_registry().items()
+        if isinstance(filename, str) and isinstance(value, dict)
+    ]
+    eligible: dict[str, str] = {}
+    if engine == "lmstudio":
+        installed = _lmstudio_installed_models()
+        for filename, entry in entries:
+            resolved = linker.resolve_lmstudio_model(entry.get("repo_id"), filename)
+            key = (resolved or {}).get("model_key")
+            if isinstance(key, str) and key in installed:
+                eligible[key] = filename
+        return eligible
+    try:
+        live = set(quality_mod.list_benchmarkable_tags())
+    except quality_mod.QualityEvaluationError:
+        live = set()
+    runtime_names = linker.resolve_ollama_runtime_names_batch(entries)
+    for filename, _entry in entries:
+        tag = runtime_names.get(filename)
+        if isinstance(tag, str) and tag in live:
+            eligible[tag] = filename
+    return eligible
+
+
+def _arena_reveal(
+    pair: tuple[str, str], engine: str, result_a, result_b, winner: str
+) -> None:
+    """Post-vote only. Never call this before a vote is recorded."""
+    table = Table(title="Reveal", box=None)
+    table.add_column("SIDE")
+    table.add_column("MODEL")
+    table.add_column("RUNNER")
+    table.add_column("TIME", justify="right")
+    table.add_column("TOK/S", justify="right")
+    for label, ref, result in (
+        ("Response 1", pair[0], result_a),
+        ("Response 2", pair[1], result_b),
+    ):
+        speed = "-" if result.tokens_per_second is None else f"{result.tokens_per_second:.1f}"
+        table.add_row(label, ref, _engine_label(engine), f"{result.elapsed:.1f}s", speed)
+    console.print(table)
+    verdict = {
+        "a": "You picked Response 1.",
+        "b": "You picked Response 2.",
+        "both_bad": "You rated both responses bad.",
+    }[winner]
+    console.print(f"[muted]{verdict}[/muted]")
+
+
+def _arena_vote() -> str | None:
+    """The vote prompt, re-asked on a bare Enter.
+
+    `_ask_single_key` returns its `default_value` on Enter and raises
+    KeyboardInterrupt on Escape/Ctrl-C. Those two gestures must not mean the
+    same thing here: a stray Enter mid-session would throw away a round the
+    user already waited through, while Escape really does mean "stop".
+    Returns None only when the user cancelled.
+    """
+    while True:
+        try:
+            winner = _ask_single_key(
+                "Which response is better?",
+                [
+                    ("1", "Response 1", "a"),
+                    ("2", "Response 2", "b"),
+                    ("x", "Both bad", "both_bad"),
+                ],
+                default_value=None,
+                instruction="(1/2/x)",
+            )
+        except KeyboardInterrupt:
+            return None
+        if winner in arena.WINNERS:
+            return winner
+        console.print("[muted]Press 1, 2, or x.[/muted]")
+
+
+def _arena_session(
+    pairing, pool: dict[str, str], engine: str, lmstudio_port, keep: bool
+) -> None:
+    """The round loop. Split out of `arena_cmd` so the daemon-stop `finally`
+    there stays readable and covers every exit path out of the loop."""
+    rounds = 0
+    while True:
+        pair = pairing.next_pair()
+        prompt = _ask_text("Your prompt for both models:")
+        if not prompt or not prompt.strip():
+            break
+        prompt = prompt.strip()
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[accent]{task.description}[/accent]"),
+                TimeElapsedColumn(),
+                console=console,
+                disable=_global_opts().quiet,
+            ) as progress:
+                # One undifferentiated description for both sides: a per-model
+                # spinner label would name the model before the vote.
+                task_id = progress.add_task("Generating both responses...", total=2)
+                result_a = arena.generate_side(
+                    pair[0], prompt, engine=engine, lmstudio_port=lmstudio_port
+                )
+                progress.advance(task_id)
+                result_b = arena.generate_side(
+                    pair[1], prompt, engine=engine, lmstudio_port=lmstudio_port
+                )
+                progress.advance(task_id)
+        except quality_mod.QualityEvaluationError as error:
+            err_console.print(f"[error]This round failed: {escape(str(error))}[/error]")
+        else:
+            console.print()
+            console.print("[accent]Response 1[/accent]")
+            console.print(result_a.text or "[muted](empty response)[/muted]")
+            console.print()
+            console.print("[accent]Response 2[/accent]")
+            console.print(result_b.text or "[muted](empty response)[/muted]")
+            console.print()
+            winner = _arena_vote()
+            if winner is None:
+                break
+            _arena_reveal(pair, engine, result_a, result_b, winner)
+            row = arena.build_vote_row(
+                prompt=prompt,
+                model_a=pool[pair[0]],
+                model_b=pool[pair[1]],
+                engine=engine,
+                result_a=result_a,
+                result_b=result_b,
+                winner=winner,
+                kept=keep,
+            )
+            if not arena.append_vote(row):
+                err_console.print(
+                    "[warn]Could not write this vote to "
+                    f"{escape(str(arena.votes_path()))}; the round still counted "
+                    "on screen but was not saved.[/warn]"
+                )
+            rounds += 1
+        try:
+            another = _ask_confirm("Another round?", default=True)
+        except KeyboardInterrupt:
+            # _ask_confirm wraps _ask_single_key, so Escape here raises too.
+            break
+        if not another:
+            break
+    if rounds and not _global_opts().quiet:
+        console.print(
+            f"[muted]{rounds} round(s) recorded in {escape(str(arena.votes_path()))}.[/muted]"
+        )
+
+
+@app.command(name="arena")
+@global_flags
+def arena_cmd(
+    models: list[str] = typer.Argument(
+        None,
+        help="Optionally seed the first round with two installed models. "
+        "Omit them to draw a random pair.",
+    ),
+    keep: bool = typer.Option(
+        False,
+        "--keep",
+        help="Reuse the first round's pair for every round instead of "
+        "drawing a fresh pair each time.",
+    ),
+) -> None:
+    """Compare two installed models blind, on your own prompt, and vote.
+
+    Responses are shown as "Response 1"/"Response 2" with no name, runner or
+    timing until you have voted. Votes are appended to
+    `~/.omm/arena/votes.jsonl` and are never uploaded.
+    """
+    models = list(models or [])
+    engine = _select_benchmark_engine_for_models(models) if models else None
+    if engine is None:
+        engine = _select_benchmark_engine()
+        if engine is None:
+            _print_no_engine_error("arena")
+            raise typer.Exit(1)
+        if not _global_opts().quiet:
+            _print_engine_selection_notice(engine)
+    engine, started_daemon = _ensure_engine_running(
+        engine, "arena", assume_yes=_global_opts().yes
+    )
+    try:
+        pool = _arena_eligible_models(engine)
+        if len(pool) < 2:
+            errors.print_cli_error(
+                err_console,
+                f"`omm arena` needs at least 2 models installed through omm and "
+                f"linked into {_engine_label(engine)}; found {len(pool)}.",
+                fix="Run `omm list` to see what omm manages, `omm install` to add "
+                "one, or `omm import` to adopt models this runner already has.",
+            )
+            raise typer.Exit(1)
+        try:
+            seed_pair = arena.validate_seed_pair(models, sorted(pool)) if models else None
+            pairing = arena.Pairing(sorted(pool), seed_pair=seed_pair, keep=keep)
+        except arena.ArenaError as error:
+            errors.print_cli_error(
+                err_console,
+                str(error),
+                fix="Run `omm list` to see the models omm manages, or `omm import` "
+                "to adopt models this runner already has.",
+            )
+            raise typer.Exit(1) from error
+        lmstudio_port = linker.lmstudio_server_port() if engine == "lmstudio" else None
+        _arena_session(pairing, pool, engine, lmstudio_port, keep)
+    finally:
+        if started_daemon is not None:
+            _stop_engine_daemon(engine, started_daemon)
 
 
 def _telemetry_send_failure_text() -> str:
