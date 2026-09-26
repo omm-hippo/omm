@@ -2204,3 +2204,59 @@ def test_numeric_normalization_preserves_digits_beyond_decimal_context_precision
     assert quality._normalize_number(first) == first
     assert quality._normalize_number(second) == second
     assert quality._normalize_number(first) != quality._normalize_number(second)
+
+
+def test_generate_without_a_generation_dict_sends_no_sampling_overrides(monkeypatch):
+    captured = {}
+
+    def _fake_request(method, path, payload=None, timeout=None):
+        captured["payload"] = payload
+        return {"response": "hi", "eval_count": 5, "eval_duration": 1_000_000_000}
+
+    monkeypatch.setattr(quality, "_request_json", _fake_request)
+    quality._generate("m:latest", "hello", None)
+    assert "options" not in captured["payload"]
+    assert "think" not in captured["payload"]
+    assert captured["payload"]["stream"] is False
+
+
+def test_generate_lmstudio_without_a_generation_dict_sends_no_sampling_overrides(monkeypatch):
+    captured = {}
+
+    def _fake_request(port, method, path, payload=None, timeout=None):
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": "hi"}}]}
+
+    monkeypatch.setattr(quality, "_lmstudio_request_json", _fake_request)
+    quality._generate_lmstudio("key", "hello", None, None, 1234)
+    assert "temperature" not in captured["payload"]
+    assert "max_tokens" not in captured["payload"]
+
+
+def test_loaded_model_memory_gb_prefers_vram_then_total(monkeypatch):
+    monkeypatch.setattr(
+        quality,
+        "_request_json",
+        lambda *a, **k: {"models": [{"name": "m:latest", "size": 8_000_000_000,
+                                     "size_vram": 4_000_000_000}]},
+    )
+    assert quality.loaded_model_memory_gb("m:latest") == pytest.approx(4.0, rel=1e-3)
+
+    monkeypatch.setattr(
+        quality,
+        "_request_json",
+        lambda *a, **k: {"models": [{"name": "m:latest", "size": 8_000_000_000,
+                                     "size_vram": 0}]},
+    )
+    assert quality.loaded_model_memory_gb("m:latest") == pytest.approx(8.0, rel=1e-3)
+
+
+def test_loaded_model_memory_gb_is_none_when_unknown(monkeypatch):
+    monkeypatch.setattr(quality, "_request_json", lambda *a, **k: {"models": []})
+    assert quality.loaded_model_memory_gb("m:latest") is None
+
+    def _raise(*a, **k):
+        raise quality.QualityEvaluationError("down", failure_reason="unknown")
+
+    monkeypatch.setattr(quality, "_request_json", _raise)
+    assert quality.loaded_model_memory_gb("m:latest") is None

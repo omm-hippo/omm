@@ -704,6 +704,31 @@ def _model_is_loaded(tag: str) -> bool | None:
     return any(isinstance(item, dict) and _tag_matches(item.get("name"), tag) for item in models)
 
 
+def loaded_model_memory_gb(tag: str) -> float | None:
+    """GB `tag` actually occupies right now, per Ollama's own /api/ps.
+
+    Prefers `size_vram` (what the GPU holds) and falls back to `size` when
+    the model is running on CPU, where size_vram is 0. Returns None whenever
+    the daemon can't be reached or the model isn't resident - sub-project C's
+    efficiency axis treats a null as "no measurement", never as zero.
+    """
+    try:
+        models = _request_json("GET", "/api/ps", timeout=10).get("models")
+    except QualityEvaluationError:
+        return None
+    if not isinstance(models, list):
+        return None
+    for item in models:
+        if not isinstance(item, dict) or not _tag_matches(item.get("name"), tag):
+            continue
+        for key in ("size_vram", "size"):
+            value = item.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return value / 1_000_000_000
+        return None
+    return None
+
+
 def ensure_model_unloaded(
     tag: str,
     *,
@@ -758,27 +783,32 @@ def ensure_model_unloaded(
         elapsed = max(elapsed + sleep_seconds, time.monotonic() - started)
 
 
-def _generate(tag: str, prompt: str, generation: dict, num_predict: int | None = None,
+def _generate(tag: str, prompt: str, generation: dict | None, num_predict: int | None = None,
               runtime_options: dict | None = None, supports_thinking: bool = True) -> dict:
-    options = {
-        "temperature": generation["temperature"],
-        "seed": generation["seed"],
-        "num_ctx": generation["num_ctx"],
-        "num_predict": num_predict or generation["num_predict"],
-    }
-    options.update(runtime_options or {})
-    payload = {
+    payload: dict = {
         "model": tag,
         "prompt": prompt,
         "stream": False,
-        "options": options,
     }
-    if supports_thinking:
-        # Ollama rejects the top-level `think` field outright - HTTP 400
-        # "does not support thinking" - for any model whose capabilities
-        # don't list "thinking", even when the value is False. Omitting the
-        # field entirely is the documented-safe choice for those models.
-        payload["think"] = generation["think"]
+    if generation is not None:
+        options = {
+            "temperature": generation["temperature"],
+            "seed": generation["seed"],
+            "num_ctx": generation["num_ctx"],
+            "num_predict": num_predict or generation["num_predict"],
+        }
+        options.update(runtime_options or {})
+        payload["options"] = options
+        if supports_thinking:
+            # Ollama rejects the top-level `think` field outright - HTTP 400
+            # "does not support thinking" - for any model whose capabilities
+            # don't list "thinking", even when the value is False. Omitting the
+            # field entirely is the documented-safe choice for those models.
+            payload["think"] = generation["think"]
+    elif runtime_options:
+        payload["options"] = dict(runtime_options)
+    # generation is None (`omm arena`): the model's own sampling defaults
+    # apply, which is the point - arena compares what a user actually gets.
     data = _request_json("POST", "/api/generate", payload)
     if not isinstance(data.get("response"), str):
         raise QualityEvaluationError(
@@ -788,7 +818,7 @@ def _generate(tag: str, prompt: str, generation: dict, num_predict: int | None =
 
 
 def _generate_with_runtime(
-    tag: str, prompt: str, generation: dict, num_predict: int | None, runtime_options: dict | None,
+    tag: str, prompt: str, generation: dict | None, num_predict: int | None, runtime_options: dict | None,
     supports_thinking: bool = True,
     *, engine: str = "ollama", lmstudio_port: int | None = None,
 ) -> dict:
@@ -844,7 +874,7 @@ def _lmstudio_request_json(
 
 
 def _generate_lmstudio(
-    model_key: str, prompt: str, generation: dict, num_predict: int | None, port: int | None,
+    model_key: str, prompt: str, generation: dict | None, num_predict: int | None, port: int | None,
 ) -> dict:
     """POST /api/v0/chat/completions and normalize the response into
     Ollama's response shape at this transport boundary:
@@ -866,13 +896,16 @@ def _generate_lmstudio(
         raise QualityEvaluationError(
             "LM Studio server port is unavailable", failure_reason=FAILURE_REASON_OLLAMA_UNAVAILABLE,
         )
-    payload = {
+    payload: dict = {
         "model": model_key,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": num_predict or generation["num_predict"],
-        "temperature": generation["temperature"],
         "stream": False,
     }
+    if generation is not None:
+        payload["max_tokens"] = num_predict or generation["num_predict"]
+        payload["temperature"] = generation["temperature"]
+    elif num_predict is not None:
+        payload["max_tokens"] = num_predict
     data = _lmstudio_request_json(port, "POST", "/api/v0/chat/completions", payload)
     choices = data.get("choices")
     message = (
