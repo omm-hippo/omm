@@ -12,13 +12,15 @@ from __future__ import annotations
 import json
 import logging
 import random
+import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from filelock import Timeout as FileLockTimeout
 
-from . import config
+from . import config, linker, quality
 from .atomic import locked
 
 logger = logging.getLogger("omm.arena")
@@ -147,3 +149,53 @@ class Pairing:
         if self._keep:
             self._held = pair
         return pair
+
+
+@dataclass(frozen=True)
+class GenerationResult:
+    text: str
+    elapsed: float
+    tokens: int
+    tokens_per_second: float | None
+    memory_gb: float | None
+
+
+def generate_side(
+    model_ref: str,
+    prompt: str,
+    *,
+    engine: str,
+    lmstudio_port: int | None,
+) -> GenerationResult:
+    """One side of a round: load-by-generating, time it, read memory, unload.
+
+    Sampling is the model's own default (`generation=None`) - arena compares
+    what a user would actually get, not a reproducible fixture. Extended
+    thinking is never displayed or stored: Ollama returns the trace in a
+    separate `thinking` field, and only `response` is read here.
+
+    Always unloads afterwards, including on failure, so the next side gets a
+    clean machine. Raises QualityEvaluationError with the engine's existing
+    FailureReason on any load/generate failure; the caller aborts the round.
+    """
+    started = time.monotonic()
+    try:
+        if engine == "lmstudio":
+            data = quality._generate_lmstudio(model_ref, prompt, None, None, lmstudio_port)
+        else:
+            data = quality._generate(model_ref, prompt, None)
+        elapsed = time.monotonic() - started
+        memory_gb = None if engine == "lmstudio" else quality.loaded_model_memory_gb(model_ref)
+    finally:
+        if engine == "lmstudio":
+            linker.unload_lmstudio_model(model_ref)
+        else:
+            quality.ensure_model_unloaded(model_ref)
+    tokens = data.get("eval_count")
+    return GenerationResult(
+        text=str(data.get("response", "")).strip(),
+        elapsed=elapsed,
+        tokens=int(tokens) if isinstance(tokens, int) and not isinstance(tokens, bool) else 0,
+        tokens_per_second=quality._tokens_per_second(data),
+        memory_gb=memory_gb,
+    )

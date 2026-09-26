@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from omm import arena, config
+from omm import arena, config, quality
 
 
 @dataclass
@@ -131,3 +131,69 @@ def test_validate_seed_pair_rejects_a_model_outside_the_pool():
 
 def test_validate_seed_pair_returns_the_pair():
     assert arena.validate_seed_pair(["m2", "m3"], POOL) == ("m2", "m3")
+
+
+def test_generate_side_times_the_call_and_unloads_afterwards(monkeypatch):
+    calls = []
+    clock = iter([100.0, 103.5])
+
+    monkeypatch.setattr(arena.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        arena.quality,
+        "_generate",
+        lambda tag, prompt, generation, **kwargs: {
+            "response": "  an answer  ",
+            "eval_count": 70,
+            "eval_duration": 3_500_000_000,
+        },
+    )
+    monkeypatch.setattr(arena.quality, "loaded_model_memory_gb", lambda tag: 2.5)
+    monkeypatch.setattr(
+        arena.quality, "ensure_model_unloaded", lambda tag: calls.append(tag) or True
+    )
+
+    result = arena.generate_side("m:latest", "hi", engine="ollama", lmstudio_port=None)
+    assert result.text == "an answer"
+    assert result.elapsed == pytest.approx(3.5)
+    assert result.tokens == 70
+    assert result.tokens_per_second == pytest.approx(20.0)
+    assert result.memory_gb == 2.5
+    assert calls == ["m:latest"]
+
+
+def test_generate_side_unloads_even_when_generation_fails(monkeypatch):
+    calls = []
+
+    def _boom(*args, **kwargs):
+        raise quality.QualityEvaluationError("oom", failure_reason="out_of_memory")
+
+    monkeypatch.setattr(arena.quality, "_generate", _boom)
+    monkeypatch.setattr(
+        arena.quality, "ensure_model_unloaded", lambda tag: calls.append(tag) or True
+    )
+    with pytest.raises(quality.QualityEvaluationError):
+        arena.generate_side("m:latest", "hi", engine="ollama", lmstudio_port=None)
+    assert calls == ["m:latest"]
+
+
+def test_generate_side_on_lmstudio_reports_null_memory_and_unloads_there(monkeypatch):
+    unloaded = []
+    monkeypatch.setattr(
+        arena.quality,
+        "_generate_lmstudio",
+        lambda key, prompt, generation, num_predict, port: {
+            "response": "ok", "eval_count": 10, "eval_duration": 1_000_000_000
+        },
+    )
+    monkeypatch.setattr(
+        arena.quality,
+        "loaded_model_memory_gb",
+        lambda tag: pytest.fail("LM Studio must not be asked for Ollama's /api/ps"),
+    )
+    monkeypatch.setattr(
+        arena.linker, "unload_lmstudio_model", lambda key: unloaded.append(key) or True
+    )
+    result = arena.generate_side("key", "hi", engine="lmstudio", lmstudio_port=1234)
+    assert result.memory_gb is None
+    assert result.tokens == 10
+    assert unloaded == ["key"]
