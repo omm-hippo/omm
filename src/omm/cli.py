@@ -136,6 +136,7 @@ from rich.table import Table
 
 from omm import (
     arena,
+    arena_upload,
     benchmark,
     benchmark_history,
     calibration,
@@ -994,6 +995,14 @@ def _root(
         # a background aggregate, not a per-session event worth a notice).
         try:
             usage.flush_pending()
+        except Exception:
+            pass
+        # Arena battle votes. Nothing reaches this queue until the user said
+        # yes at the end of a battle session, so there is no policy gate to
+        # re-check here - see arena_upload.flush_pending. Silent like usage:
+        # the user already agreed once and does not need a receipt per run.
+        try:
+            arena_upload.flush_pending()
         except Exception:
             pass
 
@@ -8921,6 +8930,7 @@ def _print_upload_policy_table() -> None:
         "usage", "enabled" if usage.policy(cfg) == "enabled" else "off (default)"
     )
     table.add_row("crash", cfg.get("error_report_send_policy") or "off (default)")
+    table.add_row("votes", cfg.get("arena_vote_send_policy", "ask"))
     console.print(table)
 
 
@@ -8934,7 +8944,7 @@ def upload_menu(ctx: typer.Context) -> None:
     if not _stdin_is_tty():
         _print_upload_policy_table()
         console.print(
-            "[muted]omm setting upload <benchmark|usage|crash> --enable / --disable[/muted]"
+            "[muted]omm setting upload <benchmark|usage|crash|votes> --enable / --disable[/muted]"
         )
         return
     _upload_channel_menu()
@@ -9098,6 +9108,56 @@ def configure_upload_usage(
             )
         console.print("\n[label]Next batch would send:[/label]")
         _print_json(data=usage.build_payload(create_client_id=opted_in))
+
+
+@upload_app.command(name="votes")
+@global_flags
+def configure_upload_votes(
+    enable: bool = typer.Option(False, "--enable", help="Always upload battle votes."),
+    disable: bool = typer.Option(False, "--disable", help="Never upload battle votes."),
+    ask: bool = typer.Option(
+        False, "--ask", help="Ask after each battle session (the default)."
+    ),
+) -> None:
+    """Arena battle vote uploads (opt-in, asked after each session).
+
+    The prompt you typed is never uploaded - only which model won, the two
+    models' identities, and their measured speed and memory. See PRIVACY.md.
+    Run with no flags to print the current policy and how many votes wait.
+    """
+    # `_upload_channel_menu` calls this as a plain function, so an omitted
+    # keyword binds to the truthy OptionInfo default. Coerce defensively,
+    # exactly as configure_upload_usage does.
+    if not isinstance(enable, bool):
+        enable = False
+    if not isinstance(disable, bool):
+        disable = False
+    if not isinstance(ask, bool):
+        ask = False
+    _reject_conflicting_policy_flags(enable, disable, ask)
+    if enable:
+        config_mod.update_config(arena_vote_send_policy="always")
+        console.print(
+            "[success]Battle vote uploads enabled.[/success] "
+            "Turn off any time: `omm setting upload votes --disable`."
+        )
+    elif disable:
+        config_mod.update_config(arena_vote_send_policy="never")
+        # Consent given earlier does not survive turning the channel off.
+        discarded = arena_upload.discard_pending()
+        console.print(
+            "[success]Battle vote uploads disabled.[/success]"
+            + (f" Discarded {discarded} queued vote(s)." if discarded else "")
+        )
+    elif ask:
+        config_mod.update_config(arena_vote_send_policy="ask")
+        console.print(
+            "[success]Battle votes will be asked about after each session.[/success]"
+        )
+    else:
+        cfg = load_config()
+        console.print(f"Policy: {cfg.get('arena_vote_send_policy', 'ask')}")
+        console.print(f"Queued: {arena_upload.pending_count()} vote(s)")
 
 
 @setting_app.command(name="memory-guard")
@@ -9503,7 +9563,7 @@ def auto_import_status() -> None:
 
 
 def _upload_channel_menu() -> None:
-    """Interactive picker for the three outbound-data channels, shared by
+    """Interactive picker for the four outbound-data channels, shared by
     bare `omm setting upload` and the `omm setting` menu's Upload entry.
     Each configure_* call is guarded: a bad value (e.g. --enable with no
     endpoint) prints its reason and returns to the picker instead of
@@ -9517,6 +9577,7 @@ def _upload_channel_menu() -> None:
         bench = cfg.get("telemetry_send_policy", "ask")
         usage_pol = "enabled" if usage.policy(cfg) == "enabled" else "off (default)"
         crash_pol = error_report.send_policy(cfg)
+        votes_pol = cfg.get("arena_vote_send_policy", "ask")
 
         channel = _ask_select(
             questionary.select(
@@ -9525,6 +9586,7 @@ def _upload_channel_menu() -> None:
                     questionary.Choice(f"Benchmark results (current: {bench})", value="benchmark"),
                     questionary.Choice(f"Usage stats (current: {usage_pol})", value="usage"),
                     questionary.Choice(f"Crash reports (current: {crash_pol})", value="crash"),
+                    questionary.Choice(f"Battle votes (current: {votes_pol})", value="votes"),
                     questionary.Choice("← Back", value="back"),
                 ],
             )
@@ -9593,6 +9655,25 @@ def _upload_channel_menu() -> None:
                 if action in (None, "back"):
                     continue
                 configure_upload_crash(
+                    enable=(action == "enable"),
+                    disable=(action == "disable"),
+                    ask=(action == "ask"),
+                )
+            elif channel == "votes":
+                action = _ask_select(
+                    questionary.select(
+                        f"Battle vote uploads (current: {votes_pol}):",
+                        choices=[
+                            questionary.Choice("Ask after each session (default)", value="ask"),
+                            questionary.Choice("Always send", value="enable"),
+                            questionary.Choice("Never send", value="disable"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
+                )
+                if action in (None, "back"):
+                    continue
+                configure_upload_votes(
                     enable=(action == "enable"),
                     disable=(action == "disable"),
                     ask=(action == "ask"),
@@ -10940,12 +11021,53 @@ def _arena_vote() -> str | None:
         console.print("[muted]Press 1, 2, or x.[/muted]")
 
 
+def _arena_consent_and_enqueue(rows: list[dict]) -> None:
+    """Ask once, at the end of the session, whether to upload this session's
+    votes - then queue them.
+
+    Nothing is queued before this point: the queue must never hold data the
+    user has not agreed to send, so a session killed mid-way contributes
+    nothing to it (its votes are still in the local votes.jsonl, which is the
+    user's own record). The prompt is the same y/n/a `_ask_upload_choice`
+    serves for benchmark uploads, where `a` saves the policy.
+
+    Never raises: an upload problem must not change `omm arena`'s exit code.
+    """
+    if not rows:
+        return
+    try:
+        decision = arena_upload.policy()
+        if decision == "never":
+            return
+        if decision == "ask":
+            answer = _ask_upload_choice(
+                f"Upload {len(rows)} battle vote(s)? Your prompt text is never sent."
+            )
+            if answer == "no":
+                return
+            if answer == "always":
+                config_mod.update_config(arena_vote_send_policy="always")
+        queued = arena_upload.enqueue(rows)
+        if queued and not _global_opts().quiet:
+            console.print(
+                f"[muted]{queued} vote(s) queued; they upload on your next "
+                "omm command.[/muted]"
+            )
+    except typer.Exit:
+        raise
+    except Exception:
+        # Includes a non-TTY _ask_upload_choice and any disk error. The votes
+        # stay local; nothing is lost that the user can see.
+        return
+
+
 def _arena_session(
     pairing, pool: dict[str, str], engine: str, lmstudio_port, keep: bool
 ) -> None:
     """The round loop. Split out of `arena_cmd` so the daemon-stop `finally`
     there stays readable and covers every exit path out of the loop."""
     rounds = 0
+    recorded: list[dict] = []
     while True:
         pair = pairing.next_pair()
         prompt = _ask_text("Your prompt for both models:")
@@ -11000,6 +11122,7 @@ def _arena_session(
             )
             if arena.append_vote(row):
                 rounds += 1
+                recorded.append(row)
             else:
                 # Not counted: the closing line names votes.jsonl, and saying
                 # "1 round(s) recorded" there right after warning that nothing
@@ -11020,6 +11143,7 @@ def _arena_session(
         console.print(
             f"[muted]{rounds} round(s) recorded in {escape(str(arena.votes_path()))}.[/muted]"
         )
+    _arena_consent_and_enqueue(recorded)
 
 
 @app.command(name="arena")
