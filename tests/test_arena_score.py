@@ -125,3 +125,81 @@ def test_a_client_under_the_cap_keeps_full_weight():
     ]
     battles, _ = arena_score.validate_rows(rows)
     assert arena_score.battle_weights(battles) == [1.0, 1.0, 1.0]
+
+
+def _battle(key_a: str, key_b: str, winner: str, index: int, client: str = "abcdef12"):
+    return arena_score.Battle(
+        battle_id=f"{index:08d}-1111-1111-1111-111111111111",
+        recorded_at="2026-09-26T10:00:00+00:00",
+        client_id=client,
+        key_a=key_a,
+        key_b=key_b,
+        winner=winner,
+        efficiency_a=None,
+        efficiency_b=None,
+    )
+
+
+def _fit(battles):
+    return arena_score.fit_quality(battles, arena_score.battle_weights(battles))
+
+
+def test_symmetric_results_give_equal_strengths():
+    battles = [_battle("A", "B", "a", 0), _battle("A", "B", "b", 1)]
+    strengths = _fit(battles)
+    assert strengths["A"] == pytest.approx(strengths["B"])
+
+
+def test_a_dominance_chain_comes_out_in_order():
+    battles = []
+    index = 0
+    for _ in range(20):
+        battles.append(_battle("A", "B", "a", index))
+        index += 1
+        battles.append(_battle("B", "C", "a", index))
+        index += 1
+    strengths = _fit(battles)
+    assert strengths["A"] > strengths["B"] > strengths["C"]
+
+
+def test_the_prior_shrinks_a_thin_undefeated_record():
+    thin = [_battle("A", "B", "a", index, client=f"{index:08x}") for index in range(3)]
+    thick = [_battle("A", "B", "a", index, client=f"{index:08x}") for index in range(30)]
+    assert _fit(thin)["A"] < _fit(thick)["A"]
+
+
+def test_both_bad_rows_do_not_feed_the_fit():
+    with_both_bad = [
+        _battle("A", "B", "a", 0),
+        _battle("A", "B", "both_bad", 1),
+        _battle("A", "B", "both_bad", 2),
+    ]
+    without = [_battle("A", "B", "a", 0)]
+    assert _fit(with_both_bad)["A"] == pytest.approx(_fit(without)["A"])
+
+
+def test_a_model_with_only_both_bad_battles_still_gets_a_finite_strength():
+    # Zero wins and zero losses: the fit is prior-only. It must not be NaN.
+    battles = [_battle("A", "B", "both_bad", index) for index in range(5)]
+    strengths = _fit(battles)
+    assert math.isfinite(strengths["A"])
+    assert math.isfinite(strengths["B"])
+    assert strengths["A"] == pytest.approx(strengths["B"])
+
+
+def test_an_undefeated_model_does_not_diverge():
+    battles = [_battle("A", "B", "a", index, client=f"{index:08x}") for index in range(50)]
+    strengths = _fit(battles)
+    assert math.isfinite(strengths["A"])
+    assert strengths["A"] > strengths["B"]
+
+
+def test_weights_are_honored_by_the_fit():
+    # One client hammering one pair must not beat many clients voting the other
+    # way, even with far more rows.
+    spam = [_battle("A", "B", "a", index, client="deadbeef") for index in range(1000)]
+    honest = [
+        _battle("A", "B", "b", 2000 + index, client=f"{index:08x}") for index in range(30)
+    ]
+    strengths = _fit(spam + honest)
+    assert strengths["B"] > strengths["A"]

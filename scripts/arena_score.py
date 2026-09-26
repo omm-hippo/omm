@@ -228,3 +228,59 @@ def battle_weights(battles: list[Battle]) -> list[float]:
         min(1.0, CLIENT_PAIR_VOTE_CAP / sizes[(battle.client_id, battle.pair)])
         for battle in battles
     ]
+
+
+def fit_quality(
+    battles: list[Battle],
+    weights: list[float],
+    *,
+    prior: float = BT_PRIOR_STRENGTH,
+) -> dict[str, float]:
+    """Weighted Bradley-Terry log-strengths, one per model key.
+
+    Minorization-maximization iteration:
+
+        p_i  <-  (W_i + prior) / ( sum_j n_ij/(p_i + p_j) + 2*prior/(p_i + 1) )
+
+    where W_i is i's total weighted wins and n_ij the total weighted
+    comparisons between i and j. `both_bad` rows are excluded from the fit and
+    tracked separately by `both_bad_rates`.
+
+    The trailing term is a phantom opponent of fixed strength 1 carrying
+    `prior` wins and `prior` losses for every model. It keeps the MLE finite
+    for an undefeated or never-winning model, connects the comparison graph so
+    this axis needs no component handling, and shrinks thin records toward the
+    middle. Because the phantom's strength is fixed, the scale is already
+    identified - do not renormalize the result.
+    """
+    keys = sorted({key for battle in battles for key in (battle.key_a, battle.key_b)})
+    if not keys:
+        return {}
+
+    wins: dict[str, float] = {key: 0.0 for key in keys}
+    comparisons: dict[str, dict[str, float]] = {key: defaultdict(float) for key in keys}
+    for battle, weight in zip(battles, weights):
+        if battle.winner == "a":
+            winner, loser = battle.key_a, battle.key_b
+        elif battle.winner == "b":
+            winner, loser = battle.key_b, battle.key_a
+        else:
+            continue
+        wins[winner] += weight
+        comparisons[winner][loser] += weight
+        comparisons[loser][winner] += weight
+
+    strengths = {key: 1.0 for key in keys}
+    for _ in range(MAX_ITERATIONS):
+        change = 0.0
+        for key in keys:
+            own = strengths[key]
+            denominator = 2.0 * prior / (own + 1.0)
+            for opponent, total in comparisons[key].items():
+                denominator += total / (own + strengths[opponent])
+            updated = (wins[key] + prior) / denominator
+            change = max(change, abs(updated - own) / max(own, 1e-12))
+            strengths[key] = updated
+        if change < TOLERANCE:
+            break
+    return {key: math.log(value) for key, value in strengths.items()}
