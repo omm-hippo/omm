@@ -209,3 +209,31 @@ def test_the_queued_payload_still_has_no_prompt(monkeypatch, isolated_omm_home):
     assert "p" == json.loads(
         arena.votes_path().read_text(encoding="utf-8").splitlines()[0]
     )["prompt"]
+
+
+def test_arena_help_does_not_claim_votes_are_never_uploaded(isolated_omm_home):
+    """Sub-project A's docstring said "never uploaded", which was true then
+    and is false now that this channel exists. `omm arena --help` is the most
+    visible place the promise is made, and it must not contradict PRIVACY.md.
+    """
+    result = runner.invoke(cli.app, ["arena", "--help"])
+    assert result.exit_code == 0, result.output
+    # The exact claim sub-project A made, now false.
+    assert "are never uploaded" not in result.output
+    # ...and it must say what actually happens instead.
+    assert "opt in" in result.output
+    assert "setting upload votes" in result.output
+    # The prompt promise still has to be there - that part never changed.
+    assert "never sent" in result.output
+
+
+def test_yes_is_not_consent_to_upload(isolated_omm_home, monkeypatch):
+    """`--yes` skips confirmation prompts, but _ask_upload_choice documents
+    that it is deliberately NOT consent to send data. Pin that here: a
+    scripted `omm arena --yes` must queue nothing."""
+    _patch_arena(monkeypatch)
+    _one_round(monkeypatch)
+    result = runner.invoke(cli.app, ["arena", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert arena_upload.pending_count() == 0
+    assert config.load_config()["arena_vote_send_policy"] == "ask"

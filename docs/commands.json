@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.153",
+  "omm_version": "0.3.154",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -11,7 +11,7 @@
       "kind": "command",
       "aliases": [],
       "summary": "Compare two installed models blind, on your own prompt, and vote.",
-      "description": "Responses are shown as \"Response 1\"/\"Response 2\" with no name, runner or timing until you have voted. Votes are appended to `~/.omm/arena/votes.jsonl` and are never uploaded.",
+      "description": "Responses are shown as \"Response 1\"/\"Response 2\" with no name, runner or timing until you have voted. Votes are appended to `~/.omm/arena/votes.jsonl`, and are uploaded only if you opt in when asked at the end of a session (`omm setting upload votes`). The prompt you typed is never sent, whichever you choose. See PRIVACY.md.",
       "usage": "omm arena [OPTIONS] [models]...",
       "arguments": [
         {

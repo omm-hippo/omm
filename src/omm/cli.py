@@ -11054,10 +11054,16 @@ def _arena_consent_and_enqueue(rows: list[dict]) -> None:
                 "omm command.[/muted]"
             )
     except typer.Exit:
+        # Nothing in the block raises this today (_ask_upload_choice answers
+        # "no" without a terminal rather than exiting, and arena_upload
+        # swallows its own errors). Kept so a future addition that does mean
+        # to exit is not silently turned into "no upload, exit 0" by the
+        # catch-all below - typer.Exit subclasses Exception.
         raise
     except Exception:
-        # Includes a non-TTY _ask_upload_choice and any disk error. The votes
-        # stay local; nothing is lost that the user can see.
+        # A failed config write or a disk error queueing the rows. The votes
+        # stay in votes.jsonl; nothing the user can see is lost, and an upload
+        # problem must not change this command's exit code.
         return
 
 
@@ -11165,7 +11171,9 @@ def arena_cmd(
 
     Responses are shown as "Response 1"/"Response 2" with no name, runner or
     timing until you have voted. Votes are appended to
-    `~/.omm/arena/votes.jsonl` and are never uploaded.
+    `~/.omm/arena/votes.jsonl`, and are uploaded only if you opt in when
+    asked at the end of a session (`omm setting upload votes`). The prompt
+    you typed is never sent, whichever you choose. See PRIVACY.md.
     """
     models = list(models or [])
     # Arity and duplication need no engine and no model pool, so they are

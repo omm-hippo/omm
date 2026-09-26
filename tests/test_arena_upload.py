@@ -252,9 +252,11 @@ def test_flush_on_an_empty_queue_does_no_http(isolated_omm_home, monkeypatch):
 
 
 def test_flush_refuses_a_foreign_endpoint(isolated_omm_home, monkeypatch):
-    """This channel has no self-hosted variant; only the shared Worker."""
+    """This channel has no self-hosted variant; only the shared Worker. A bad
+    endpoint is a programming error, so it is "drop", never "retry" - retrying
+    it would park the row at the head of the queue forever."""
     _stub_post(monkeypatch, raises=AssertionError("must not POST"))
-    assert arena_upload._post_to("https://evil.example/votes", {"a": 1}) is False
+    assert arena_upload._post_to("https://evil.example/votes", {"a": 1}) == "drop"
 
 
 def test_an_http_error_sets_a_backoff_and_keeps_the_queue(isolated_omm_home, monkeypatch):
@@ -346,3 +348,123 @@ def test_the_attempt_log_is_local_and_bounded(isolated_omm_home):
         arena_upload.log_attempt("sent_ok", f"row {i}")
     lines = arena_upload._log_path().read_text(encoding="utf-8").splitlines()
     assert len(lines) <= arena_upload._MAX_LOG_LINES
+
+
+def _stub_post_statuses(monkeypatch, statuses):
+    """One status code per POST, in order. Records the battle_id sent each
+    time so a test can assert which rows actually went out."""
+    sent = []
+    seq = iter(statuses)
+
+    class _Requests:
+        class RequestException(Exception):
+            pass
+
+        @staticmethod
+        def post(endpoint, json=None, timeout=None):
+            body = __import__("json").loads(json["event_json"])
+            sent.append(body["battle_id"])
+
+            class _Resp:
+                status_code = next(seq)
+                text = ""
+
+            return _Resp()
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "requests", _Requests)
+    monkeypatch.setattr("omm.telemetry._solve_proof_of_work", lambda event_json: (1, 2))
+    return sent
+
+
+def _rows(n):
+    return [
+        _local_row(battle_id=f"{i:08d}-2222-4333-8444-555555555555") for i in range(n)
+    ]
+
+
+def test_a_permanently_rejected_row_is_dropped_and_the_rest_still_send(
+    isolated_omm_home, monkeypatch
+):
+    """A 400 means the Worker's validateVoteEvent refused this row for good -
+    retrying it forever blocks every valid vote queued behind it. Real
+    trigger: `elapsed` is wall clock including the model load, and the server
+    caps it at 3600s, so one slow cold load on constrained hardware can
+    produce a row that will never be accepted.
+    """
+    rows = _rows(3)
+    arena_upload.enqueue(rows)
+    sent = _stub_post_statuses(monkeypatch, [200, 400, 200])
+    assert arena_upload.flush_pending() == 2
+    # All three rows were attempted, in order.
+    assert sent == [r["battle_id"] for r in rows]
+    # Nothing is left behind: two sent, one dropped as permanently invalid.
+    assert arena_upload.pending_count() == 0
+    # And no backoff, because nothing transient happened.
+    assert arena_upload._backoff_active() is False
+
+
+def test_a_transient_failure_still_stops_and_backs_off(isolated_omm_home, monkeypatch):
+    """A 500 or a network error is worth retrying, so the loop stops there
+    and keeps the unsent tail."""
+    rows = _rows(3)
+    arena_upload.enqueue(rows)
+    sent = _stub_post_statuses(monkeypatch, [200, 500])
+    assert arena_upload.flush_pending() == 1
+    assert sent == [rows[0]["battle_id"], rows[1]["battle_id"]]
+    remaining = [r["battle_id"] for r in arena_upload._read_pending()]
+    assert remaining == [rows[1]["battle_id"], rows[2]["battle_id"]]
+    assert arena_upload._backoff_active() is True
+
+
+def test_a_rate_limit_is_treated_as_transient(isolated_omm_home, monkeypatch):
+    """429/408 are the server asking us to wait, not to give up - same
+    classification telemetry.py already uses."""
+    rows = _rows(2)
+    arena_upload.enqueue(rows)
+    _stub_post_statuses(monkeypatch, [429])
+    assert arena_upload.flush_pending() == 0
+    assert arena_upload.pending_count() == 2
+    assert arena_upload._backoff_active() is True
+
+
+def test_dropping_a_middle_row_removes_exactly_the_resolved_ones(
+    isolated_omm_home, monkeypatch
+):
+    """With a permanent rejection in the middle, the resolved set is no longer
+    a contiguous prefix of the queue. _remove_sent_rows must map those
+    positions correctly against a queue another process appended to meanwhile.
+    """
+    rows = _rows(4)
+    arena_upload.enqueue(rows)
+    late = _local_row(battle_id="99999999-2222-4333-8444-555555555555")
+
+    seq = iter([200, 400, 200, 500])
+    appended = {"done": False}
+
+    class _Requests:
+        class RequestException(Exception):
+            pass
+
+        @staticmethod
+        def post(endpoint, json=None, timeout=None):
+            if not appended["done"]:
+                arena_upload.enqueue([late])
+                appended["done"] = True
+
+            class _Resp:
+                status_code = next(seq)
+                text = ""
+
+            return _Resp()
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "requests", _Requests)
+    monkeypatch.setattr("omm.telemetry._solve_proof_of_work", lambda event_json: (1, 2))
+
+    assert arena_upload.flush_pending() == 2
+    remaining = [r["battle_id"] for r in arena_upload._read_pending()]
+    # rows[0] sent, rows[1] dropped (400), rows[2] sent, rows[3] transient.
+    assert remaining == [rows[3]["battle_id"], late["battle_id"]]

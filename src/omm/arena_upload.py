@@ -384,13 +384,29 @@ def _clear_backoff() -> None:
 # --- send --------------------------------------------------------------
 
 
-def _post_to(endpoint: str, payload: dict) -> bool:
+#: HTTP statuses worth retrying. Anything else in the 4xx range means the
+#: Worker's validateVoteEvent refused this row and always will, so retrying it
+#: forever would park it at the head of a FIFO queue and block every valid vote
+#: behind it. Same classification telemetry.py:_post_to already uses; usage.py
+#: gets away without one only because its payload is built from enums and
+#: buckets the server validator shares byte for byte, while a vote row carries
+#: raw measured floats (`elapsed` is wall clock including the model load, and
+#: the server caps it at 3600s).
+_RETRYABLE_STATUSES = frozenset({408, 425, 429})
+
+
+def _post_to(endpoint: str, payload: dict) -> str:
     """POST one PoW-signed vote. Only the shared Worker endpoint is ever an
     allowed target - this channel has no self-hosted variant, matching
-    usage.py."""
+    usage.py.
+
+    Returns "sent", "retry" (transient; stop the batch and back off), or
+    "drop" (this row will never be accepted; discard it and keep going).
+    """
     if endpoint != config.VOTES_GATEWAY_ENDPOINT:
+        # A programming error, not a server problem: never retry it.
         log_attempt("skipped_bad_endpoint")
-        return False
+        return "drop"
     import requests
 
     from omm.telemetry import _solve_proof_of_work
@@ -406,22 +422,35 @@ def _post_to(endpoint: str, payload: dict) -> bool:
         )
     except requests.RequestException as error:
         log_attempt("send_failed_network", str(error))
-        return False
+        return "retry"
     if 200 <= resp.status_code < 300:
         log_attempt("sent_ok")
-        return True
-    log_attempt(
-        f"send_failed_http_{resp.status_code}", str(getattr(resp, "text", "") or "")
-    )
-    return False
+        return "sent"
+    detail = str(getattr(resp, "text", "") or "")
+    if 400 <= resp.status_code < 500 and resp.status_code not in _RETRYABLE_STATUSES:
+        log_attempt(f"dropped_http_{resp.status_code}", detail)
+        return "drop"
+    log_attempt(f"send_failed_http_{resp.status_code}", detail)
+    return "retry"
 
 
-def _remove_sent_rows(snapshot: list[dict]) -> None:
-    """Remove exactly the rows in `snapshot`, keeping anything enqueued while
-    the send was in flight. Same read-snapshot-then-diff pattern
-    telemetry/usage use, for the same reason: a value-based removal can drop
-    a newly appended identical payload instead of the sent one."""
-    if not snapshot:
+def _remove_resolved_rows(snapshot: list[dict], resolved_indices: list[int]) -> None:
+    """Remove the rows at `resolved_indices` of `snapshot`, keeping anything
+    enqueued while the send was in flight.
+
+    `snapshot` is the FULL queue as read at the start of the flush and
+    `resolved_indices` are positions into it - the shape
+    `_remove_sent_snapshot_entries` is written for, and the shape
+    telemetry.py calls it with. Passing only the resolved subset instead
+    would happen to work while the resolved set is a contiguous prefix, but
+    it stopped being one when a permanently-rejected row in the middle of a
+    batch started being dropped rather than ending the batch.
+
+    Same read-snapshot-then-diff pattern telemetry/usage use, for the same
+    reason: a value-based removal can drop a newly appended identical payload
+    instead of the resolved one.
+    """
+    if not resolved_indices:
         return
     from omm.telemetry import _remove_sent_snapshot_entries
 
@@ -430,7 +459,7 @@ def _remove_sent_rows(snapshot: list[dict]) -> None:
         with locked(path, timeout=10):
             current = _read_pending_unlocked(path)
             remaining = _remove_sent_snapshot_entries(
-                current, snapshot, list(range(len(snapshot)))
+                current, snapshot, sorted(resolved_indices)
             )
             _write_pending_unlocked(path, remaining)
     except (OSError, FileLockTimeout):
@@ -460,17 +489,27 @@ def flush_pending(force: bool = False) -> int:
                 return 0
             if not force and _backoff_active():
                 return 0
-            sent: list[dict] = []
-            for row in rows:
-                if not _post_to(config.VOTES_GATEWAY_ENDPOINT, row):
+            sent = 0
+            resolved: list[int] = []
+            stopped_early = False
+            for index, row in enumerate(rows):
+                outcome = _post_to(config.VOTES_GATEWAY_ENDPOINT, row)
+                if outcome == "retry":
+                    # Transient: stop here and keep this row and everything
+                    # after it for a later run.
+                    stopped_early = True
                     break
-                sent.append(row)
-            if sent:
-                _remove_sent_rows(sent)
-            if len(sent) == len(rows):
-                _clear_backoff()
-            else:
+                # "sent" and "drop" are both resolved - a dropped row will
+                # never be accepted, so keeping it would block the queue.
+                resolved.append(index)
+                if outcome == "sent":
+                    sent += 1
+            if resolved:
+                _remove_resolved_rows(rows, resolved)
+            if stopped_early:
                 _set_backoff(_BACKOFF_SECONDS)
-            return len(sent)
+            else:
+                _clear_backoff()
+            return sent
     except Exception:
         return 0
