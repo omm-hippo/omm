@@ -80,10 +80,16 @@ the task that owns the code.
 3. **Consent declined, then the channel enabled later.** If `n` left rows on
    disk, a later `omm setting upload votes --enable` would silently ship
    votes the user refused. `n` must leave nothing behind. (Test in Task 4.)
-4. **A half-sided row.** If one side's generation produced no token count,
+4. **A half-measured row.** If one side's generation produced no token count,
    its `tokens_per_second_b` is omitted while `_a` is present. The validator
-   rejects asymmetric rows, so the builder must omit symmetrically or the
-   row is silently dropped server-side forever. (Tests in Tasks 2 and 5.)
+   rejects a row whose *measurements* are asymmetric, so the builder must omit
+   them symmetrically or the row is silently dropped server-side forever.
+   Symmetry applies to `memory_gb`, `tokens_per_second`, and `watt` **only**:
+   identity fields (`model_provider`, `model_repo_id`, `model_digest`,
+   `quant_bits`) are independently optional per side, because one model can
+   come from a provider that supplied a sha256 while the other was adopted
+   from a local directory with none — requiring symmetry there would discard
+   perfectly good rows. (Tests in Tasks 2 and 5.)
 5. **A flush racing another `omm` process.** Two processes flushing the same
    queue must not both POST it, and the loser must not stall a user-facing
    command. (Test in Task 3.)
@@ -1602,7 +1608,7 @@ describe("validateVoteEvent", () => {
     expect(validateVoteEvent(validVote({ engine: "llamacpp" })).valid).toBe(false);
   });
 
-  it("rejects an asymmetric row", () => {
+  it("rejects an asymmetric measurement", () => {
     const r = validateVoteEvent(validVote({ memory_gb_a: 3.4 }));
     expect(r.valid).toBe(false);
     expect(r.reason).toContain("memory_gb_b");
@@ -1612,6 +1618,19 @@ describe("validateVoteEvent", () => {
     expect(
       validateVoteEvent(validVote({ memory_gb_a: 3.4, memory_gb_b: 7.1 })).valid,
     ).toBe(true);
+  });
+
+  it("accepts an asymmetric identity field", () => {
+    // One model can come from a provider that supplied a sha256 while the
+    // other was adopted locally with none. Requiring symmetry here would
+    // discard good rows; only measurements must match side to side.
+    expect(
+      validateVoteEvent(validVote({ model_digest_a: "a".repeat(64) })).valid,
+    ).toBe(true);
+    expect(
+      validateVoteEvent(validVote({ model_provider_a: "huggingface" })).valid,
+    ).toBe(true);
+    expect(validateVoteEvent(validVote({ quant_bits_a: 4 })).valid).toBe(true);
   });
 
   it("accepts an absent watt and rejects one out of range", () => {
@@ -1629,10 +1648,7 @@ describe("validateVoteEvent", () => {
   });
 
   it("rejects a bad digest", () => {
-    expect(
-      validateVoteEvent(validVote({ model_digest_a: "abc", model_digest_b: "b".repeat(64) }))
-        .valid,
-    ).toBe(false);
+    expect(validateVoteEvent(validVote({ model_digest_a: "abc" })).valid).toBe(false);
   });
 
   it("rejects a filename with a path separator", () => {
@@ -1674,6 +1690,11 @@ const VOTE_FIELDS = new Set<string>([
   "recorded_at", "engine", "winner", "pinned",
   ...VOTE_SIDE_FIELDS.flatMap((n) => [`${n}_a`, `${n}_b`]),
 ]);
+// Symmetry is required for the measurements only. Identity fields are
+// independently optional per side: one model can carry a provider sha256
+// while the other was adopted locally with none, and refusing that row
+// would throw away a perfectly good battle.
+const VOTE_SYMMETRIC_FIELDS = ["memory_gb", "tokens_per_second", "watt"] as const;
 const VOTE_WINNERS = new Set(["a", "b", "both_bad"]);
 const VOTE_ENGINES = new Set(["ollama", "lmstudio"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -1721,14 +1742,18 @@ export function validateVoteEvent(event: TelemetryEvent): { valid: boolean; reas
   if (has(event, "client_version") && !safeStr(event, "client_version", 100)) {
     return { valid: false, reason: "invalid client_version" };
   }
-  for (const name of VOTE_SIDE_FIELDS) {
+  for (const name of VOTE_SYMMETRIC_FIELDS) {
     const a = `${name}_a`;
     const b = `${name}_b`;
     if (has(event, a) !== has(event, b)) {
       return { valid: false, reason: `asymmetric row: ${has(event, a) ? b : a} missing` };
     }
-    if (!has(event, a)) continue;
+  }
+  for (const name of VOTE_SIDE_FIELDS) {
+    const a = `${name}_a`;
+    const b = `${name}_b`;
     for (const key of [a, b]) {
+      if (!has(event, key)) continue;
       if (name === "model_provider" && !safeStr(event, key, 64)) return { valid: false, reason: `invalid ${key}` };
       if (name === "model_repo_id" && !safeStr(event, key, 512)) return { valid: false, reason: `invalid ${key}` };
       if (name === "model_filename" && !safeStr(event, key, 300)) return { valid: false, reason: `invalid ${key}` };
@@ -1769,7 +1794,7 @@ In `database.rules.json`, add beside the `usage` block:
       ".read": false,
       ".write": false,
       "$vote": {
-        ".validate": "newData.hasChildren(['schema_version', 'battle_id', 'client_id', 'recorded_at', 'engine', 'winner', 'model_filename_a', 'model_filename_b', 'elapsed_a', 'elapsed_b', 'tokens_a', 'tokens_b']) && !newData.child('prompt').exists() && newData.child('memory_gb_a').exists() == newData.child('memory_gb_b').exists() && newData.child('tokens_per_second_a').exists() == newData.child('tokens_per_second_b').exists() && newData.child('model_digest_a').exists() == newData.child('model_digest_b').exists() && newData.child('watt_a').exists() == newData.child('watt_b').exists()",
+        ".validate": "newData.hasChildren(['schema_version', 'battle_id', 'client_id', 'recorded_at', 'engine', 'winner', 'model_filename_a', 'model_filename_b', 'elapsed_a', 'elapsed_b', 'tokens_a', 'tokens_b']) && !newData.child('prompt').exists() && newData.child('memory_gb_a').exists() == newData.child('memory_gb_b').exists() && newData.child('tokens_per_second_a').exists() == newData.child('tokens_per_second_b').exists() && newData.child('watt_a').exists() == newData.child('watt_b').exists()",
         "schema_version": { ".validate": "newData.isNumber() && newData.val() == 1" },
         "battle_id": { ".validate": "newData.isString() && newData.val().matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)" },
         "client_id": { ".validate": "newData.isString() && newData.val().matches(/^[0-9a-f]{8,64}$/)" },
