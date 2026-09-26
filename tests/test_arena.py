@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass
 
 import pytest
@@ -73,3 +74,60 @@ def test_append_vote_returns_false_instead_of_raising_when_unwritable(
 
     monkeypatch.setattr(arena.Path, "mkdir", _boom)
     assert arena.append_vote(_row()) is False
+
+
+POOL = ["m1", "m2", "m3", "m4"]
+
+
+def test_seed_pair_is_used_for_round_one_only():
+    pairing = arena.Pairing(POOL, seed_pair=("m1", "m2"), rng=random.Random(0))
+    assert pairing.next_pair() == ("m1", "m2")
+    later = [pairing.next_pair() for _ in range(20)]
+    assert any(pair != ("m1", "m2") for pair in later)
+
+
+def test_keep_holds_the_seed_pair_for_every_round():
+    pairing = arena.Pairing(POOL, seed_pair=("m1", "m2"), keep=True, rng=random.Random(0))
+    assert [pairing.next_pair() for _ in range(5)] == [("m1", "m2")] * 5
+
+
+def test_keep_holds_a_randomly_drawn_pair_too():
+    pairing = arena.Pairing(POOL, keep=True, rng=random.Random(7))
+    first = pairing.next_pair()
+    assert [pairing.next_pair() for _ in range(4)] == [first] * 4
+
+
+def test_random_draw_never_pairs_a_model_with_itself():
+    pairing = arena.Pairing(POOL, rng=random.Random(3))
+    for _ in range(200):
+        left, right = pairing.next_pair()
+        assert left != right
+        assert left in POOL and right in POOL
+
+
+def test_random_draw_does_not_favour_either_slot():
+    """A draw that always put the lower-indexed model in slot A would leak
+    identity across rounds to an attentive user and bias sub-project C's
+    Bradley-Terry fit, which reads `winner` against a/b positions."""
+    pairing = arena.Pairing(["m1", "m2"], rng=random.Random(11))
+    seen = {pairing.next_pair() for _ in range(200)}
+    assert seen == {("m1", "m2"), ("m2", "m1")}
+
+
+def test_validate_seed_pair_rejects_one_model():
+    with pytest.raises(arena.ArenaError, match="two models"):
+        arena.validate_seed_pair(["m1"], POOL)
+
+
+def test_validate_seed_pair_rejects_the_same_model_twice():
+    with pytest.raises(arena.ArenaError, match="two different"):
+        arena.validate_seed_pair(["m1", "m1"], POOL)
+
+
+def test_validate_seed_pair_rejects_a_model_outside_the_pool():
+    with pytest.raises(arena.ArenaError, match="nope"):
+        arena.validate_seed_pair(["m1", "nope"], POOL)
+
+
+def test_validate_seed_pair_returns_the_pair():
+    assert arena.validate_seed_pair(["m2", "m3"], POOL) == ("m2", "m3")

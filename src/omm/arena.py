@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,3 +91,59 @@ def append_vote(row: dict) -> bool:
         return False
     logger.info("arena vote recorded", extra={"winner": row.get("winner")})
     return True
+
+
+class ArenaError(RuntimeError):
+    """A user-facing arena setup problem; cli.py prints str(error)."""
+
+
+def validate_seed_pair(models: list[str], pool: list[str]) -> tuple[str, str]:
+    if len(models) != 2:
+        raise ArenaError(
+            "`omm arena` takes two models or none at all - pass two models to "
+            "seed the first round, or no models to draw a random pair."
+        )
+    left, right = models
+    if left == right:
+        raise ArenaError("Pass two different models; a model cannot battle itself.")
+    missing = [m for m in (left, right) if m not in pool]
+    if missing:
+        raise ArenaError("Not available for this arena session: " + ", ".join(missing))
+    return left, right
+
+
+class Pairing:
+    """Which two models face off in each round.
+
+    A seed pair applies to round 1 only unless `keep` is set; `keep` freezes
+    whatever round 1 ended up using (seeded or drawn) for the whole session.
+    """
+
+    def __init__(
+        self,
+        pool: list[str],
+        seed_pair: tuple[str, str] | None = None,
+        keep: bool = False,
+        rng: random.Random | None = None,
+    ) -> None:
+        if len(set(pool)) < 2:
+            raise ArenaError("An arena round needs at least 2 distinct models.")
+        self._pool = list(pool)
+        self._seed_pair = seed_pair
+        self._keep = keep
+        self._rng = rng or random.Random()
+        self._held: tuple[str, str] | None = None
+
+    def next_pair(self) -> tuple[str, str]:
+        if self._held is not None:
+            return self._held
+        if self._seed_pair is not None:
+            pair = self._seed_pair
+            self._seed_pair = None
+        else:
+            # sample() draws without replacement and returns them in a random
+            # order, so neither slot is biased toward any model.
+            pair = tuple(self._rng.sample(self._pool, 2))
+        if self._keep:
+            self._held = pair
+        return pair
