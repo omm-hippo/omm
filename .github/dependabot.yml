@@ -8,7 +8,6 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 0
     ignore:
       # requirements-npm-binary.txt pins cryptography==48.0.0 on darwin-x64 on
       # purpose (49.0.0+ drops the Intel macOS wheel; bumping breaks the frozen
