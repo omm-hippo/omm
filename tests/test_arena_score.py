@@ -203,3 +203,77 @@ def test_weights_are_honored_by_the_fit():
     ]
     strengths = _fit(spam + honest)
     assert strengths["B"] > strengths["A"]
+
+
+def test_effective_battles_counts_weight_on_both_sides():
+    battles = [_battle("A", "B", "a", 0), _battle("A", "C", "a", 1)]
+    counts = arena_score.effective_battles(battles, arena_score.battle_weights(battles))
+    assert counts == {"A": 2.0, "B": 1.0, "C": 1.0}
+
+
+def test_both_bad_rate_is_weighted_and_per_model():
+    battles = [
+        _battle("A", "B", "both_bad", 0),
+        _battle("A", "B", "a", 1),
+        _battle("A", "C", "a", 2),
+    ]
+    rates = arena_score.both_bad_rates(battles, arena_score.battle_weights(battles))
+    assert rates["A"] == pytest.approx(1 / 3)
+    assert rates["B"] == pytest.approx(1 / 2)
+    assert rates["C"] == pytest.approx(0.0)
+
+
+def test_a_model_with_only_both_bad_battles_has_rate_one():
+    battles = [_battle("A", "B", "both_bad", index) for index in range(4)]
+    rates = arena_score.both_bad_rates(battles, arena_score.battle_weights(battles))
+    assert rates["A"] == pytest.approx(1.0)
+    assert rates["A"] >= arena_score.BOTH_BAD_WARNING_RATE
+
+
+def test_bootstrap_intervals_bracket_the_point_estimate():
+    battles = []
+    for index in range(60):
+        winner = "a" if index % 4 else "b"
+        battles.append(_battle("A", "B", winner, index, client=f"{index:08x}"))
+    strengths = _fit(battles)
+    intervals = arena_score.bootstrap_intervals(battles, resamples=40)
+    low, high = intervals["A"]
+    assert low <= strengths["A"] <= high
+    assert low < high
+
+
+def test_bootstrap_intervals_are_reproducible():
+    battles = [
+        _battle("A", "B", "a" if index % 3 else "b", index, client=f"{index:08x}")
+        for index in range(30)
+    ]
+    first = arena_score.bootstrap_intervals(battles, resamples=25)
+    second = arena_score.bootstrap_intervals(battles, resamples=25)
+    assert first == second
+
+
+def test_overlapping_intervals_share_a_tier():
+    ranked = [
+        ("A", 1.0, 0.5, 1.5),
+        ("B", 0.9, 0.4, 1.4),
+    ]
+    assert arena_score.assign_tiers(ranked) == {"A": 1, "B": 1}
+
+
+def test_a_separated_model_opens_the_next_tier():
+    ranked = [
+        ("A", 1.0, 0.8, 1.2),
+        ("B", 0.1, -0.1, 0.3),
+    ]
+    assert arena_score.assign_tiers(ranked) == {"A": 1, "B": 2}
+
+
+def test_tiers_anchor_on_the_leader_not_the_previous_model():
+    # A~B and B~C overlap pairwise, but C is disjoint from A. Chaining would
+    # put all three in one tier and let it drift arbitrarily wide.
+    ranked = [
+        ("A", 1.0, 0.90, 1.10),
+        ("B", 0.95, 0.85, 1.05),
+        ("C", 0.80, 0.70, 0.89),
+    ]
+    assert arena_score.assign_tiers(ranked) == {"A": 1, "B": 1, "C": 2}

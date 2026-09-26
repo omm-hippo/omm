@@ -15,7 +15,9 @@ Spec: docs/superpowers/specs/2026-09-26-arena-vote-aggregation-design.md
 from __future__ import annotations
 
 import math
+import random
 import re
+import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 
@@ -284,3 +286,103 @@ def fit_quality(
         if change < TOLERANCE:
             break
     return {key: math.log(value) for key, value in strengths.items()}
+
+
+def effective_battles(battles: list[Battle], weights: list[float]) -> dict[str, float]:
+    """Total weight each model took part in, on either side."""
+    totals: dict[str, float] = defaultdict(float)
+    for battle, weight in zip(battles, weights):
+        totals[battle.key_a] += weight
+        totals[battle.key_b] += weight
+    return dict(totals)
+
+
+def both_bad_rates(battles: list[Battle], weights: list[float]) -> dict[str, float]:
+    """Share of a model's weighted battles the user rejected outright.
+
+    Reported next to the tier, never folded into it: "wins its matchups" and
+    "often fails outright" are different facts about a model.
+    """
+    totals: dict[str, float] = defaultdict(float)
+    rejected: dict[str, float] = defaultdict(float)
+    for battle, weight in zip(battles, weights):
+        for key in (battle.key_a, battle.key_b):
+            totals[key] += weight
+            if battle.winner == "both_bad":
+                rejected[key] += weight
+    return {
+        key: (rejected[key] / total if total else 0.0) for key, total in totals.items()
+    }
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = fraction * (len(ordered) - 1)
+    low = math.floor(position)
+    high = math.ceil(position)
+    if low == high:
+        return ordered[low]
+    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+
+def bootstrap_intervals(
+    battles: list[Battle],
+    *,
+    resamples: int = BOOTSTRAP_RESAMPLES,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict[str, tuple[float, float]]:
+    """95% percentile intervals on each model's log-strength.
+
+    Resamples battles with replacement and refits, recomputing the abuse
+    weights inside each resample so a resample that happens to repeat one
+    client's rows is capped the same way the real corpus is.
+
+    The seed is fixed: the nightly job commits this artifact, so an unchanged
+    corpus has to produce an unchanged file.
+    """
+    keys = sorted({key for battle in battles for key in (battle.key_a, battle.key_b)})
+    if not battles or not keys:
+        return {}
+    point = fit_quality(battles, battle_weights(battles))
+    samples: dict[str, list[float]] = {key: [] for key in keys}
+    generator = random.Random(seed)
+    size = len(battles)
+    for _ in range(resamples):
+        picked = [battles[generator.randrange(size)] for _ in range(size)]
+        fitted = fit_quality(picked, battle_weights(picked))
+        for key, strength in fitted.items():
+            samples[key].append(strength)
+    intervals: dict[str, tuple[float, float]] = {}
+    for key in keys:
+        drawn = samples[key]
+        if len(drawn) < 2:
+            # The model appeared in almost no resample; there is nothing to
+            # spread. Its effective battle count will mark it provisional.
+            intervals[key] = (point[key], point[key])
+            continue
+        intervals[key] = (_percentile(drawn, 0.025), _percentile(drawn, 0.975))
+    return intervals
+
+
+def assign_tiers(ranked: list[tuple[str, float, float, float]]) -> dict[str, int]:
+    """Group models whose interval overlaps their tier leader's.
+
+    `ranked` is (key, strength, ci_low, ci_high), descending by strength.
+
+    The anchor is the tier's leader, not the previous model. Interval overlap
+    is not transitive - A overlaps B and B overlaps C while A and C are
+    disjoint - so chaining would let one tier grow without bound. Anchoring on
+    the leader makes a tier mean "not distinguishable from this tier's best",
+    which holds for every member.
+    """
+    tiers: dict[str, int] = {}
+    leader_low: float | None = None
+    tier = 0
+    for key, _strength, ci_low, ci_high in ranked:
+        if leader_low is None or ci_high < leader_low:
+            tier += 1
+            leader_low = ci_low
+        tiers[key] = tier
+    return tiers
