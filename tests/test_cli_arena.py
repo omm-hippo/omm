@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 from typer.testing import CliRunner
 
@@ -54,8 +55,9 @@ def test_one_round_writes_a_vote_row(monkeypatch, isolated_omm_home):
         for line in arena.votes_path().read_text(encoding="utf-8").splitlines()
     ]
     assert len(rows) == 1
-    assert rows[0]["model_a"] == "alpha.gguf"
-    assert rows[0]["model_b"] == "beta.gguf"
+    # Slot order is randomized per round to keep a seeded pair blind, so the
+    # row holds the two models without a fixed a/b assignment.
+    assert {rows[0]["model_a"], rows[0]["model_b"]} == {"alpha.gguf", "beta.gguf"}
     assert rows[0]["winner"] == "a"
     assert rows[0]["pinned"] is False
 
@@ -116,7 +118,11 @@ def test_keep_reuses_the_same_pair_every_round(monkeypatch, isolated_omm_home):
         for line in arena.votes_path().read_text(encoding="utf-8").splitlines()
     ]
     assert len(rows) == 2
-    assert {(r["model_a"], r["model_b"]) for r in rows} == {("alpha.gguf", "beta.gguf")}
+    # The same two models every round; slot order is randomized per round so
+    # a --keep session stays blind (see test_arena.py's Pairing tests).
+    assert {frozenset((r["model_a"], r["model_b"])) for r in rows} == {
+        frozenset(("alpha.gguf", "beta.gguf"))
+    }
     assert all(r["pinned"] is True for r in rows)
 
 
@@ -228,3 +234,158 @@ def test_arena_never_uploads(monkeypatch, isolated_omm_home):
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("arena must not upload")),
     )
     assert runner.invoke(cli.app, ["arena"]).exit_code == 0
+
+
+def test_a_registry_filename_argument_resolves_to_its_runtime_ref(
+    monkeypatch, isolated_omm_home
+):
+    """Fix for review finding #2: `omm list` prints registry filenames, so
+    pasting them is the natural invocation. Rejecting them with a fix hint
+    that points back at `omm list` is circular."""
+    _patch_engine(monkeypatch)
+    _patch_prompts(monkeypatch, texts=["p"], votes=["a"], continues=[False])
+    monkeypatch.setattr(cli.arena, "generate_side", lambda *a, **k: _result("x"))
+    result = runner.invoke(cli.app, ["arena", "alpha.gguf", "beta.gguf"])
+    assert result.exit_code == 0, result.output
+    row = json.loads(arena.votes_path().read_text(encoding="utf-8").splitlines()[0])
+    assert {row["model_a"], row["model_b"]} == {"alpha.gguf", "beta.gguf"}
+
+
+def test_a_numbered_ref_argument_resolves_to_its_runtime_ref(
+    monkeypatch, isolated_omm_home
+):
+    """`omm list` also prints a numeric index, recorded by session_cache."""
+    _patch_engine(monkeypatch)
+    _patch_prompts(monkeypatch, texts=["p"], votes=["a"], continues=[False])
+    monkeypatch.setattr(cli.arena, "generate_side", lambda *a, **k: _result("x"))
+    monkeypatch.setattr(
+        cli.session_cache, "load_last_results", lambda: ["alpha.gguf", "beta.gguf"]
+    )
+    result = runner.invoke(cli.app, ["arena", "1", "2"])
+    assert result.exit_code == 0, result.output
+    row = json.loads(arena.votes_path().read_text(encoding="utf-8").splitlines()[0])
+    assert {row["model_a"], row["model_b"]} == {"alpha.gguf", "beta.gguf"}
+
+
+def test_arena_is_yes_capable_so_the_flag_is_not_reported_as_useless(
+    monkeypatch, isolated_omm_home
+):
+    """Fix for review finding #3: --yes IS forwarded to
+    `_ensure_engine_running`, where it skips the "start the daemon?" confirm,
+    so the "has no effect" warning is false."""
+    assert "arena" in cli._YES_CAPABLE
+    _patch_engine(monkeypatch)
+    _patch_prompts(monkeypatch, texts=[None], votes=[], continues=[])
+    result = runner.invoke(cli.app, ["arena", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "has no effect" not in result.output
+
+
+def test_a_bad_argument_count_errors_before_the_engine_is_started(
+    monkeypatch, isolated_omm_home
+):
+    """Fix for review finding #4: the plan requires the arity error "before
+    any engine is started". Starting Ollama and walking the manifest tree
+    first, only to reject the argument, wastes the user's time - and on a
+    machine with no engine it reports the wrong problem entirely."""
+    monkeypatch.setattr(
+        cli,
+        "_ensure_engine_running",
+        lambda *a, **k: pytest_fail_no_generation(),
+    )
+    monkeypatch.setattr(
+        cli, "_select_benchmark_engine", lambda: pytest_fail_no_generation()
+    )
+    monkeypatch.setattr(
+        cli,
+        "_select_benchmark_engine_for_models",
+        lambda models: pytest_fail_no_generation(),
+    )
+    one = runner.invoke(cli.app, ["arena", "alpha:latest"])
+    assert one.exit_code == 1
+    assert "two models" in one.output
+    twice = runner.invoke(cli.app, ["arena", "alpha:latest", "alpha:latest"])
+    assert twice.exit_code == 1
+    assert "two different" in twice.output
+
+
+def test_no_elapsed_clock_is_rendered_during_the_blind_phase(
+    monkeypatch, isolated_omm_home
+):
+    """Fix for review finding #5: the rich Progress render never goes through
+    console.print, so the previous leak test could not see it - and it
+    carried a live TimeElapsedColumn, an on-screen pre-vote timing number."""
+    _patch_engine(monkeypatch)
+    seen = {}
+
+    def _vote(*args, **kwargs):
+        # CliRunner's replaced stdout, which DOES include the rich Progress
+        # render (console.print does not - that was the old test's blind spot).
+        # CliRunner wraps it in a _NamedTextIOWrapper, so read the byte buffer.
+        sys.stdout.flush()
+        seen["output"] = sys.stdout.buffer.getvalue().decode("utf-8", "replace")
+        return "a"
+
+    monkeypatch.setattr(cli, "_ask_text", lambda *a, **k: "hello")
+    monkeypatch.setattr(cli, "_ask_single_key", _vote)
+    monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(
+        cli.arena,
+        "generate_side",
+        lambda ref, prompt, **kwargs: _result("neutral", elapsed=7.25, tokens=99, tps=13.6),
+    )
+    result = runner.invoke(cli.app, ["arena", "alpha:latest", "beta:latest"])
+    assert result.exit_code == 0, result.output
+    before = seen["output"]
+    assert "Response 1" in before, before
+    for leak in ("alpha", "beta", "Ollama", "0:00:", "7.2", "99", "13.6"):
+        assert leak not in before, f"blind phase leaked {leak!r}:\n{before}"
+
+
+def test_an_unsaved_round_is_not_counted_as_recorded(monkeypatch, isolated_omm_home):
+    """Warning that the vote was not saved and then reporting "1 round(s)
+    recorded in .../votes.jsonl" contradicts itself."""
+    _patch_engine(monkeypatch)
+    _patch_prompts(monkeypatch, texts=["p"], votes=["a"], continues=[False])
+    monkeypatch.setattr(cli.arena, "generate_side", lambda *a, **k: _result("x"))
+    monkeypatch.setattr(cli.arena, "append_vote", lambda row: False)
+    result = runner.invoke(cli.app, ["arena"])
+    assert result.exit_code == 0, result.output
+    assert "was not saved" in result.output
+    assert "round(s) recorded" not in result.output
+
+
+def test_lmstudio_eligibility_runs_one_lms_listing_for_the_whole_registry(
+    monkeypatch, isolated_omm_home
+):
+    """Fix for review finding #8: `linker.resolve_lmstudio_model` spawns its
+    own `lms ls --json` subprocess per call, so a per-registry-entry loop is
+    N+1 Node process launches before the user sees a prompt."""
+    calls = {"n": 0}
+    entries = [
+        {"type": "llm", "modelKey": "pub/alpha", "path": "pub/alpha/alpha.gguf"},
+        {"type": "llm", "modelKey": "pub/beta", "path": "pub/beta/beta.gguf"},
+    ]
+
+    def _list(lms_path, timeout=15):
+        calls["n"] += 1
+        return entries
+
+    monkeypatch.setattr(cli.linker, "_lms_cli_path", lambda: "/usr/local/bin/lms")
+    monkeypatch.setattr(cli.linker, "_lmstudio_list_models", _list)
+    monkeypatch.setattr(
+        cli.linker,
+        "resolve_lmstudio_model",
+        lambda repo_id, filename: pytest_fail_no_generation(),
+    )
+    monkeypatch.setattr(
+        cli.registry,
+        "load_registry",
+        lambda: {
+            "alpha.gguf": {"repo_id": "pub/alpha"},
+            "beta.gguf": {"repo_id": "pub/beta"},
+        },
+    )
+    pool = cli._arena_eligible_models("lmstudio")
+    assert pool == {"pub/alpha": "alpha.gguf", "pub/beta": "beta.gguf"}
+    assert calls["n"] == 1, f"expected one `lms ls --json`, got {calls['n']}"

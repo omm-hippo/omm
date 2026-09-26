@@ -333,6 +333,7 @@ _JSON_CAPABLE = {
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
 _YES_CAPABLE = {
+    "arena",
     "install",
     "import",
     "uninstall",
@@ -10823,10 +10824,27 @@ def _arena_eligible_models(engine: str) -> dict[str, str]:
     ]
     eligible: dict[str, str] = {}
     if engine == "lmstudio":
-        installed = _lmstudio_installed_models()
+        # One `lms ls --json` for the whole registry, not one per entry:
+        # linker.resolve_lmstudio_model spawns its own subprocess on every
+        # call, which is what _lmstudio_find_model_key was factored out to
+        # avoid (linker.py's own docstring says so).
+        lms_path = linker._lms_cli_path()
+        if lms_path is None:
+            return eligible
+        listed = linker._lmstudio_list_models(lms_path) or []
+        installed = {
+            entry["modelKey"]
+            for entry in listed
+            if isinstance(entry, dict)
+            and entry.get("type") == "llm"
+            and isinstance(entry.get("modelKey"), str)
+        }
         for filename, entry in entries:
-            resolved = linker.resolve_lmstudio_model(entry.get("repo_id"), filename)
-            key = (resolved or {}).get("model_key")
+            try:
+                publisher, repo = linker._lmstudio_publisher_repo(entry.get("repo_id"), filename)
+            except linker.LinkError:
+                continue
+            key = linker._lmstudio_find_model_key(listed, publisher, repo, filename)
             if isinstance(key, str) and key in installed:
                 eligible[key] = filename
         return eligible
@@ -10840,6 +10858,33 @@ def _arena_eligible_models(engine: str) -> dict[str, str]:
         if isinstance(tag, str) and tag in live:
             eligible[tag] = filename
     return eligible
+
+
+def _arena_normalize_refs(models: list[str], pool: dict[str, str]) -> list[str]:
+    """Accept whatever `omm list` showed the user, not only the engine's own
+    runtime ref.
+
+    `pool` is keyed by runtime ref (Ollama tag / LM Studio modelKey), while
+    `omm list` prints the registry filename and a numbered ref - so pasting
+    either was rejected with a fix line that pointed straight back at `omm
+    list`. Same class of bug `_resolve_benchmark_tag` exists to prevent
+    (registry filename is not an Ollama tag, promo dry run 2026-08-23); done
+    against `pool` here rather than through that helper, which is Ollama-only
+    and hard-exits for a model linked solely into LM Studio.
+    """
+    by_filename = {filename: ref for ref, filename in pool.items()}
+    resolved: list[str] = []
+    for arg in models:
+        if arg in pool:
+            resolved.append(arg)
+            continue
+        candidate = arg
+        if arg.isdecimal():
+            # fatal=False: a bad index warns and is left as-is so the
+            # pool-membership error below names what the user actually typed.
+            candidate = _resolve_ref(arg, fatal=False) or arg
+        resolved.append(by_filename.get(candidate, arg))
+    return resolved
 
 
 def _arena_reveal(
@@ -10911,12 +10956,15 @@ def _arena_session(
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[accent]{task.description}[/accent]"),
-                TimeElapsedColumn(),
                 console=console,
                 disable=_global_opts().quiet,
             ) as progress:
-                # One undifferentiated description for both sides: a per-model
-                # spinner label would name the model before the vote.
+                # No TimeElapsedColumn here, unlike every other Progress in
+                # this file: an elapsed clock on screen before the vote is a
+                # pre-vote timing number, and timing alone can leak identity
+                # for a model the user knows well. One undifferentiated
+                # description for both sides, for the same reason - a
+                # per-model spinner label would name the model.
                 task_id = progress.add_task("Generating both responses...", total=2)
                 result_a = arena.generate_side(
                     pair[0], prompt, engine=engine, lmstudio_port=lmstudio_port
@@ -10950,13 +10998,17 @@ def _arena_session(
                 winner=winner,
                 kept=keep,
             )
-            if not arena.append_vote(row):
+            if arena.append_vote(row):
+                rounds += 1
+            else:
+                # Not counted: the closing line names votes.jsonl, and saying
+                # "1 round(s) recorded" there right after warning that nothing
+                # reached the file contradicts itself.
                 err_console.print(
                     "[warn]Could not write this vote to "
                     f"{escape(str(arena.votes_path()))}; the round still counted "
                     "on screen but was not saved.[/warn]"
                 )
-            rounds += 1
         try:
             another = _ask_confirm("Another round?", default=True)
         except KeyboardInterrupt:
@@ -10992,6 +11044,17 @@ def arena_cmd(
     `~/.omm/arena/votes.jsonl` and are never uploaded.
     """
     models = list(models or [])
+    # Arity and duplication need no engine and no model pool, so they are
+    # decided here - before a daemon is started and a manifest tree walked.
+    try:
+        arena.validate_pair_arity(models)
+    except arena.ArenaError as error:
+        errors.print_cli_error(
+            err_console,
+            str(error),
+            fix="Run `omm list` to see the models omm manages.",
+        )
+        raise typer.Exit(1) from error
     engine = _select_benchmark_engine_for_models(models) if models else None
     if engine is None:
         engine = _select_benchmark_engine()
@@ -11014,6 +11077,7 @@ def arena_cmd(
                 "one, or `omm import` to adopt models this runner already has.",
             )
             raise typer.Exit(1)
+        models = _arena_normalize_refs(models, pool)
         try:
             seed_pair = arena.validate_seed_pair(models, sorted(pool)) if models else None
             pairing = arena.Pairing(sorted(pool), seed_pair=seed_pair, keep=keep)

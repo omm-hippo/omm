@@ -14,6 +14,7 @@ class _FakeResult:
     elapsed: float
     tokens: int
     memory_gb: float | None
+    tokens_per_second: float | None = None
 
 
 def _row(**overrides):
@@ -22,8 +23,8 @@ def _row(**overrides):
         model_a="qwen3-4b-Q4_K_M.gguf",
         model_b="llama3-8b-Q4_K_M.gguf",
         engine="ollama",
-        result_a=_FakeResult(elapsed=1.5, tokens=40, memory_gb=3.1),
-        result_b=_FakeResult(elapsed=2.5, tokens=60, memory_gb=None),
+        result_a=_FakeResult(elapsed=1.5, tokens=40, memory_gb=3.1, tokens_per_second=26.5),
+        result_b=_FakeResult(elapsed=2.5, tokens=60, memory_gb=None, tokens_per_second=None),
         winner="a",
         kept=False,
     )
@@ -42,6 +43,7 @@ def test_build_vote_row_has_exactly_the_spec_fields():
         "model_a", "model_b", "engine_a", "engine_b",
         "elapsed_a", "elapsed_b", "tokens_a", "tokens_b",
         "memory_gb_a", "memory_gb_b", "watt_a", "watt_b",
+        "tokens_per_second_a", "tokens_per_second_b",
         "winner", "pinned",
     }
     assert row["engine_a"] == "ollama"
@@ -80,21 +82,24 @@ POOL = ["m1", "m2", "m3", "m4"]
 
 
 def test_seed_pair_is_used_for_round_one_only():
+    """Slot order is randomized every round (see the blindness tests below),
+    so compare the *set* of models, not the tuple."""
     pairing = arena.Pairing(POOL, seed_pair=("m1", "m2"), rng=random.Random(0))
-    assert pairing.next_pair() == ("m1", "m2")
-    later = [pairing.next_pair() for _ in range(20)]
-    assert any(pair != ("m1", "m2") for pair in later)
+    assert set(pairing.next_pair()) == {"m1", "m2"}
+    later = [frozenset(pairing.next_pair()) for _ in range(20)]
+    assert any(pair != frozenset({"m1", "m2"}) for pair in later)
 
 
 def test_keep_holds_the_seed_pair_for_every_round():
     pairing = arena.Pairing(POOL, seed_pair=("m1", "m2"), keep=True, rng=random.Random(0))
-    assert [pairing.next_pair() for _ in range(5)] == [("m1", "m2")] * 5
+    held = [frozenset(pairing.next_pair()) for _ in range(5)]
+    assert held == [frozenset({"m1", "m2"})] * 5
 
 
 def test_keep_holds_a_randomly_drawn_pair_too():
     pairing = arena.Pairing(POOL, keep=True, rng=random.Random(7))
-    first = pairing.next_pair()
-    assert [pairing.next_pair() for _ in range(4)] == [first] * 4
+    first = frozenset(pairing.next_pair())
+    assert [frozenset(pairing.next_pair()) for _ in range(4)] == [first] * 4
 
 
 def test_random_draw_never_pairs_a_model_with_itself():
@@ -197,3 +202,64 @@ def test_generate_side_on_lmstudio_reports_null_memory_and_unloads_there(monkeyp
     assert result.memory_gb is None
     assert result.tokens == 10
     assert unloaded == ["key"]
+
+
+def test_keep_randomizes_slot_order_so_every_round_stays_blind():
+    """Fix for review finding #1: --keep must hold the same two models, not
+    the same two *slots*. Round 1's reveal names Response 1; if slot order
+    were frozen, every later round would be voted knowing which is which."""
+    pairing = arena.Pairing(["m1", "m2"], keep=True, rng=random.Random(5))
+    seen = {pairing.next_pair() for _ in range(200)}
+    assert seen == {("m1", "m2"), ("m2", "m1")}
+
+
+def test_seeded_round_one_randomizes_slot_order_too():
+    """A user who typed `omm arena m1 m2` must not know that Response 1 is
+    the first argument they typed."""
+    seen = set()
+    for seed in range(60):
+        pairing = arena.Pairing(["m1", "m2", "m3"], seed_pair=("m1", "m2"), rng=random.Random(seed))
+        pair = pairing.next_pair()
+        assert set(pair) == {"m1", "m2"}
+        seen.add(pair)
+    assert seen == {("m1", "m2"), ("m2", "m1")}
+
+
+def test_validate_pair_arity_is_engine_independent():
+    """Fix for review finding #4: arity/duplication must be checkable before
+    any engine is selected or started, so it takes no pool."""
+    assert arena.validate_pair_arity([]) is None
+    assert arena.validate_pair_arity(["m1", "m2"]) is None
+    with pytest.raises(arena.ArenaError, match="two models"):
+        arena.validate_pair_arity(["m1"])
+    with pytest.raises(arena.ArenaError, match="two different"):
+        arena.validate_pair_arity(["m1", "m1"])
+
+
+def test_build_vote_row_persists_measured_tokens_per_second():
+    """Fix for review finding #7: `elapsed_*` is wall clock and includes the
+    model load, so tokens/elapsed is not the decode speed sub-project C's
+    efficiency axis needs. Persist the clean figure now - B ships this
+    schema as-is, and adding a field later is a migration."""
+    row = _row()
+    assert row["tokens_per_second_a"] == 26.5
+    assert row["tokens_per_second_b"] is None
+
+
+def test_generate_side_strips_an_inline_thinking_trace(monkeypatch):
+    """The spec says only the final answer is shown. Ollama returns the
+    trace in a separate `thinking` field for tags whose template declares
+    thinking, but a GGUF adopted with a generic template inlines it."""
+    monkeypatch.setattr(
+        arena.quality,
+        "_generate",
+        lambda tag, prompt, generation, **kwargs: {
+            "response": "<think>\nthey want a haiku\n</think>\n\nSilent platters spin.",
+            "eval_count": 12,
+            "eval_duration": 1_000_000_000,
+        },
+    )
+    monkeypatch.setattr(arena.quality, "loaded_model_memory_gb", lambda tag: None)
+    monkeypatch.setattr(arena.quality, "ensure_model_unloaded", lambda tag: True)
+    result = arena.generate_side("m:latest", "haiku", engine="ollama", lmstudio_port=None)
+    assert result.text == "Silent platters spin."

@@ -100,7 +100,11 @@ that judgment locally in a schema that sub-project B can upload as-is.
 - Blind by default, no opt-out in this sub-project: responses are shown as
   "Response 1" / "Response 2" only. No model name, engine name, elapsed
   time, or token count is shown before the vote — timing alone can leak
-  identity for models a user already knows well.
+  identity for models a user already knows well. Which of the pair lands in
+  slot A is redrawn every round, including round 1 and every round of a
+  `--keep` session — otherwise the post-vote reveal of round 1 tells the
+  user which slot is which for every later round, and a user who typed
+  `omm arena A B` knows the order they typed (confirmed 2026-09-26).
 - Vote options: **A wins**, **B wins**, **both bad**. No tie option.
 - Immediately after the vote, the round reveals: real model name, engine
   used, elapsed generation time, and measured tokens/sec for each side.
@@ -146,13 +150,26 @@ New pieces, all local:
   model_b       string, model registry ref
   engine_a      "ollama" | "lmstudio"
   engine_b      "ollama" | "lmstudio"
-  elapsed_a     float, seconds
-  elapsed_b     float, seconds
+  elapsed_a     float, seconds of wall clock around the whole request,
+                model load included (see tokens_per_second_a below)
+  elapsed_b     float, same as elapsed_a
   tokens_a      int
   tokens_b      int
-  memory_gb_a   float | null, measured (Ollama /api/ps size_vram) when
-                available, null for LM Studio or on read failure
+  memory_gb_a   float | null, measured GiB (Ollama /api/ps size_vram, or
+                size for CPU-only inference) when available, null for
+                LM Studio or on read failure
   memory_gb_b   float | null, same as memory_gb_a
+  tokens_per_second_a
+                float | null, decode-only speed from the engine's own
+                counters (eval_count / eval_duration). Added 2026-09-26:
+                `elapsed_*` is wall clock around the whole request and so
+                includes the model load, which dominates a cold short
+                answer — tokens ÷ elapsed is NOT the decode speed C's
+                efficiency axis needs, and adding the field after B ships
+                would be a migration. Null when the engine reported too
+                few tokens or no duration.
+  tokens_per_second_b
+                float | null, same as tokens_per_second_a
   watt_a        float | null, best-effort (nvidia-smi/rocm-smi), null on
                 Apple Silicon / Windows CPU-only / no supported reader
   watt_b        float | null, same as watt_a

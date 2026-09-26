@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -71,6 +72,13 @@ def build_vote_row(
         "tokens_b": int(result_b.tokens),
         "memory_gb_a": result_a.memory_gb,
         "memory_gb_b": result_b.memory_gb,
+        # Decode-only speed from the engine's own counters. `elapsed_*` is wall
+        # clock around the whole request and so includes the model load, which
+        # dominates a cold short answer - tokens/elapsed is NOT the decode
+        # speed sub-project C's "tokens/sec / memory" axis needs. None when the
+        # engine reported too few tokens or no duration to measure.
+        "tokens_per_second_a": result_a.tokens_per_second,
+        "tokens_per_second_b": result_b.tokens_per_second,
         "watt_a": None,
         "watt_b": None,
         "winner": winner,
@@ -99,6 +107,23 @@ class ArenaError(RuntimeError):
     """A user-facing arena setup problem; cli.py prints str(error)."""
 
 
+def validate_pair_arity(models: list[str]) -> None:
+    """The half of seed-pair validation that needs no engine and no model
+    pool, so `cli.py` can run it before selecting or starting a runner -
+    a wrong argument count must not first cost the user a daemon start and
+    a manifest-tree walk.
+    """
+    if not models:
+        return
+    if len(models) != 2:
+        raise ArenaError(
+            "`omm arena` takes two models or none at all - pass two models to "
+            "seed the first round, or no models to draw a random pair."
+        )
+    if models[0] == models[1]:
+        raise ArenaError("Pass two different models; a model cannot battle itself.")
+
+
 def validate_seed_pair(models: list[str], pool: list[str]) -> tuple[str, str]:
     if len(models) != 2:
         raise ArenaError(
@@ -115,10 +140,15 @@ def validate_seed_pair(models: list[str], pool: list[str]) -> tuple[str, str]:
 
 
 class Pairing:
-    """Which two models face off in each round.
+    """Which two models face off in each round, and in which slot.
 
     A seed pair applies to round 1 only unless `keep` is set; `keep` freezes
-    whatever round 1 ended up using (seeded or drawn) for the whole session.
+    the *set* of two models round 1 used (seeded or drawn) for the whole
+    session - never their slot order. Slot order is redrawn on every round
+    including the first, because the reveal names Response 1 after the vote:
+    a frozen order would mean every round after the first (and every seeded
+    round, whose order the user typed themselves) is voted already knowing
+    which side is which.
     """
 
     def __init__(
@@ -138,17 +168,37 @@ class Pairing:
 
     def next_pair(self) -> tuple[str, str]:
         if self._held is not None:
-            return self._held
+            return self._shuffled(self._held)
         if self._seed_pair is not None:
             pair = self._seed_pair
             self._seed_pair = None
         else:
-            # sample() draws without replacement and returns them in a random
-            # order, so neither slot is biased toward any model.
+            # sample() draws without replacement, so a model never faces itself.
             pair = tuple(self._rng.sample(self._pool, 2))
         if self._keep:
             self._held = pair
-        return pair
+        return self._shuffled(pair)
+
+    def _shuffled(self, pair: tuple[str, str]) -> tuple[str, str]:
+        """Which of the two goes in slot A, decided fresh every round."""
+        left, right = self._rng.sample(list(pair), 2)
+        return left, right
+
+
+_THINKING_BLOCK = re.compile(r"<(think|thinking)\b[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_thinking_trace(text: str) -> str:
+    """Drop an inline `<think>...</think>` block, leaving the final answer.
+
+    Ollama returns the trace in its own `thinking` field for a tag whose
+    template declares thinking, so this never fires there. It fires for a
+    GGUF adopted with a generic template, and for LM Studio models that
+    inline the trace instead of using `reasoning_content` - the spec says
+    only the final answer is shown. Only this exact tag pair is removed;
+    an unclosed tag is left alone rather than guessing where it ends.
+    """
+    return _THINKING_BLOCK.sub("", text).strip()
 
 
 @dataclass(frozen=True)
@@ -193,7 +243,7 @@ def generate_side(
             quality.ensure_model_unloaded(model_ref)
     tokens = data.get("eval_count")
     return GenerationResult(
-        text=str(data.get("response", "")).strip(),
+        text=strip_thinking_trace(str(data.get("response", ""))),
         elapsed=elapsed,
         tokens=int(tokens) if isinstance(tokens, int) and not isinstance(tokens, bool) else 0,
         tokens_per_second=quality._tokens_per_second(data),

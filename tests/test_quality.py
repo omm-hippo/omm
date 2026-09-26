@@ -2234,21 +2234,25 @@ def test_generate_lmstudio_without_a_generation_dict_sends_no_sampling_overrides
 
 
 def test_loaded_model_memory_gb_prefers_vram_then_total(monkeypatch):
+    """GiB, not decimal GB: omm's byte->GB convention is 1024**3 everywhere
+    else (featurize.py model size, `omm list`), and sub-project C's
+    efficiency axis divides by this number alongside GiB-based LM Studio
+    estimates - mixing the two units would bias one engine by ~7.4%."""
     monkeypatch.setattr(
         quality,
         "_request_json",
-        lambda *a, **k: {"models": [{"name": "m:latest", "size": 8_000_000_000,
-                                     "size_vram": 4_000_000_000}]},
+        lambda *a, **k: {"models": [{"name": "m:latest", "size": 8 * 1024**3,
+                                     "size_vram": 4 * 1024**3}]},
     )
-    assert quality.loaded_model_memory_gb("m:latest") == pytest.approx(4.0, rel=1e-3)
+    assert quality.loaded_model_memory_gb("m:latest") == pytest.approx(4.0, rel=1e-6)
 
     monkeypatch.setattr(
         quality,
         "_request_json",
-        lambda *a, **k: {"models": [{"name": "m:latest", "size": 8_000_000_000,
+        lambda *a, **k: {"models": [{"name": "m:latest", "size": 8 * 1024**3,
                                      "size_vram": 0}]},
     )
-    assert quality.loaded_model_memory_gb("m:latest") == pytest.approx(8.0, rel=1e-3)
+    assert quality.loaded_model_memory_gb("m:latest") == pytest.approx(8.0, rel=1e-6)
 
 
 def test_loaded_model_memory_gb_is_none_when_unknown(monkeypatch):

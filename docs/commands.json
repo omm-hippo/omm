@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.144",
+  "omm_version": "0.3.145",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -30,6 +30,17 @@
           "help": "Reuse the first round's pair for every round instead of drawing a fresh pair each time.",
           "default": null,
           "global": false
+        },
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
         },
         {
           "flags": [

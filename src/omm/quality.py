@@ -711,6 +711,11 @@ def loaded_model_memory_gb(tag: str) -> float | None:
     the model is running on CPU, where size_vram is 0. Returns None whenever
     the daemon can't be reached or the model isn't resident - sub-project C's
     efficiency axis treats a null as "no measurement", never as zero.
+
+    GB here means GiB (1024**3), matching every other byte->GB conversion in
+    omm (featurize.py's model size, `omm list`). C divides by this number
+    alongside GiB-based LM Studio estimates, so a decimal-GB value here would
+    bias one engine's efficiency by ~7.4%.
     """
     try:
         models = _request_json("GET", "/api/ps", timeout=10).get("models")
@@ -724,7 +729,7 @@ def loaded_model_memory_gb(tag: str) -> float | None:
         for key in ("size_vram", "size"):
             value = item.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-                return value / 1_000_000_000
+                return value / (1024 ** 3)
         return None
     return None
 
