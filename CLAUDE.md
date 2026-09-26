@@ -145,6 +145,25 @@ retrains nightly from telemetry (`scripts/train_model.py`, gated by `scripts/mod
 and commits the artifacts straight into the repo. `featurize.py` turns raw hardware into model
 features; `rules.py` holds the old heuristic thresholds used as synthetic bootstrap rows.
 
+**Arena leaderboard scoring.** `scripts/arena_score.py` turns uploaded votes into
+`published/arena-leaderboard.json`: a weighted Bradley-Terry quality fit (with a
+fixed-strength phantom opponent, so an undefeated model neither diverges nor outranks a
+well-supported one) grouped into confidence-interval tiers, plus a separate efficiency
+rating fitted from **within-battle** `tok/s ÷ GiB` log-ratios so a model is never
+credited for running on a bigger GPU. Efficiency only breaks ties inside a quality tier;
+the two numbers are never blended. One `(client_id, model pair)` contributes at most
+`CLIENT_PAIR_VOTE_CAP` effective votes. `scripts/arena_quality_gate.py` blocks
+publication on a thin corpus or a single dominating machine;
+`scripts/aggregate_arena_votes.py` is the CLI and `.github/workflows/arena-aggregate.yml`
+runs it nightly (04:00 UTC, an hour after `train.yml`), signing with the same Ed25519
+catalog key as the recommendation model. The math lives in `scripts/`, never in
+`src/omm/` — the runtime only reads the artifact. Note the deliberate asymmetry with
+telemetry: the `votes` RTDB node is `.read: false`, so the aggregator sends an
+`Authorization: Bearer` credential (`LOCALFIT_VOTES_ADMIN_TOKEN`), while
+`train_model.py:fetch_real_rows` refuses to send one to the world-readable `telemetry`
+node. Artifact fields and thresholds:
+`docs/superpowers/specs/2026-09-26-arena-vote-aggregation-design.md`.
+
 **Signing.** The recommendation artifact is Ed25519-signed by `scripts/sign_catalog.py` in the
 nightly job and verified by `catalog.py:verify_signed_artifact` (called from `predictor.py` and
 `search.py`). Public key is baked into `config.py` `DEFAULT_CONFIG["catalog_public_key"]`; the
