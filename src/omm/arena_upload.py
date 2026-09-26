@@ -235,3 +235,242 @@ def build_payload(vote_row: dict, *, registry_entries: dict | None = None) -> di
     # validator and rules accept the field so sub-project C, its first
     # consumer, needs no rules redeploy.
     return payload
+
+
+# --- queue -------------------------------------------------------------
+
+
+def _read_pending_unlocked(path: Path) -> list[dict]:
+    """Every well-formed JSON object line. An unparseable line is skipped
+    rather than treated as a corrupt queue: one bad append must not cost the
+    user the votes around it."""
+    try:
+        if not path.exists():
+            return []
+        rows = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
+    except (OSError, UnicodeError):
+        return []
+
+
+def _read_pending() -> list[dict]:
+    path = _pending_path()
+    try:
+        with locked(path, timeout=10):
+            return _read_pending_unlocked(path)
+    except (OSError, FileLockTimeout):
+        return []
+
+
+def _write_pending_unlocked(path: Path, rows: list[dict]) -> None:
+    if rows:
+        atomic_write_text(
+            path, "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows[-_PENDING_MAX:])
+        )
+    else:
+        path.unlink(missing_ok=True)
+
+
+def pending_count() -> int:
+    return len(_read_pending())
+
+
+def enqueue(vote_rows: list[dict]) -> int:
+    """Convert consented local rows into wire payloads and queue them.
+
+    Callers must already have consent (design decision 7): the queue never
+    holds data the user has not agreed to send, which is also what makes a
+    one-time "yes" work - `flush_pending` sends the queue without
+    re-checking the policy. Returns how many rows were queued; never raises.
+    """
+    try:
+        if policy() == "never":
+            return 0
+        payloads = []
+        for row in vote_rows or []:
+            payload = build_payload(row)
+            if payload is not None:
+                payloads.append(payload)
+        if not payloads:
+            return 0
+        path = _pending_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with locked(path, timeout=10):
+            existing = _read_pending_unlocked(path)
+            _write_pending_unlocked(path, existing + payloads)
+        logger.info("arena votes queued", extra={"queued": len(payloads)})
+        return len(payloads)
+    except Exception as error:
+        logger.debug("arena vote enqueue failed: %s", error)
+        return 0
+
+
+def discard_pending() -> int:
+    """Drop the queue unsent. Used when the user declines and when the
+    channel is turned off - a refused vote must not linger on disk where a
+    later `--enable` would ship it."""
+    try:
+        path = _pending_path()
+        with locked(path, timeout=10):
+            count = len(_read_pending_unlocked(path))
+            path.unlink(missing_ok=True)
+        return count
+    except (OSError, FileLockTimeout):
+        return 0
+
+
+def log_attempt(outcome: str, detail: str = "") -> None:
+    """Local-only attempt log. Never uploaded, bounded, best-effort."""
+    try:
+        path = _log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        line = f"{stamp} {outcome} {detail[:_DETAIL_SLICE]}".rstrip()
+        with locked(path, timeout=5):
+            try:
+                existing = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeError):
+                existing = []
+            kept = (existing + [line])[-_MAX_LOG_LINES:]
+            atomic_write_text(path, "\n".join(kept) + "\n")
+    except Exception:
+        pass
+
+
+# --- backoff -----------------------------------------------------------
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _backoff_active() -> bool:
+    until = _read_json(_backoff_path()).get("until")
+    if isinstance(until, bool) or not isinstance(until, (int, float)):
+        return False
+    return time.time() < until
+
+
+def _set_backoff(seconds: float) -> None:
+    try:
+        path = _backoff_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, json.dumps({"until": time.time() + seconds}))
+    except OSError:
+        pass
+
+
+def _clear_backoff() -> None:
+    try:
+        _backoff_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+# --- send --------------------------------------------------------------
+
+
+def _post_to(endpoint: str, payload: dict) -> bool:
+    """POST one PoW-signed vote. Only the shared Worker endpoint is ever an
+    allowed target - this channel has no self-hosted variant, matching
+    usage.py."""
+    if endpoint != config.VOTES_GATEWAY_ENDPOINT:
+        log_attempt("skipped_bad_endpoint")
+        return False
+    import requests
+
+    from omm.telemetry import _solve_proof_of_work
+
+    wire = {k: v for k, v in payload.items() if v is not None}
+    event_json = json.dumps(wire, sort_keys=True, separators=(",", ":"))
+    timestamp_ms, nonce = _solve_proof_of_work(event_json)
+    try:
+        resp = requests.post(
+            endpoint,
+            json={"event_json": event_json, "timestamp": timestamp_ms, "nonce": nonce},
+            timeout=10,
+        )
+    except requests.RequestException as error:
+        log_attempt("send_failed_network", str(error))
+        return False
+    if 200 <= resp.status_code < 300:
+        log_attempt("sent_ok")
+        return True
+    log_attempt(
+        f"send_failed_http_{resp.status_code}", str(getattr(resp, "text", "") or "")
+    )
+    return False
+
+
+def _remove_sent_rows(snapshot: list[dict]) -> None:
+    """Remove exactly the rows in `snapshot`, keeping anything enqueued while
+    the send was in flight. Same read-snapshot-then-diff pattern
+    telemetry/usage use, for the same reason: a value-based removal can drop
+    a newly appended identical payload instead of the sent one."""
+    if not snapshot:
+        return
+    from omm.telemetry import _remove_sent_snapshot_entries
+
+    path = _pending_path()
+    try:
+        with locked(path, timeout=10):
+            current = _read_pending_unlocked(path)
+            remaining = _remove_sent_snapshot_entries(
+                current, snapshot, list(range(len(snapshot)))
+            )
+            _write_pending_unlocked(path, remaining)
+    except (OSError, FileLockTimeout):
+        pass
+
+
+def flush_pending(force: bool = False) -> int:
+    """Send every queued vote, one POST each. Returns how many were sent.
+
+    No policy gate on "always": the queue only ever holds rows the user
+    consented to (design decision 7), so a "yes, this session" queue must
+    still go out. A policy of "never" discards instead of sending - turning
+    the channel off means earlier consent does not carry.
+
+    Guarded by a non-blocking flush lock so two `omm` processes racing do not
+    both post the same queue, and the loser gives up immediately rather than
+    stalling a user-facing command. Swallows every error.
+    """
+    try:
+        if policy() == "never":
+            discard_pending()
+            return 0
+        path = _pending_path()
+        with locked(path.with_name(f"{path.name}.flush"), timeout=0):
+            rows = _read_pending()
+            if not rows:
+                return 0
+            if not force and _backoff_active():
+                return 0
+            sent: list[dict] = []
+            for row in rows:
+                if not _post_to(config.VOTES_GATEWAY_ENDPOINT, row):
+                    break
+                sent.append(row)
+            if sent:
+                _remove_sent_rows(sent)
+            if len(sent) == len(rows):
+                _clear_backoff()
+            else:
+                _set_backoff(_BACKOFF_SECONDS)
+            return len(sent)
+    except Exception:
+        return 0
