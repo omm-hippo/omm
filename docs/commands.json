@@ -1,9 +1,60 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.129",
+  "omm_version": "0.3.144",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
+    {
+      "path": [
+        "arena"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Compare two installed models blind, on your own prompt, and vote.",
+      "description": "Responses are shown as \"Response 1\"/\"Response 2\" with no name, runner or timing until you have voted. Votes are appended to `~/.omm/arena/votes.jsonl` and are never uploaded.",
+      "usage": "omm arena [OPTIONS] [models]...",
+      "arguments": [
+        {
+          "name": "models...",
+          "help": "Optionally seed the first round with two installed models. Omit them to draw a random pair.",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--keep"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Reuse the first round's pair for every round instead of drawing a fresh pair each time.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/arena"
+    },
     {
       "path": [
         "benchmark"
