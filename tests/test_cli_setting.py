@@ -343,9 +343,9 @@ def test_setting_bare_menu_upload_submenu_has_back_option(isolated_omm_home, mon
     assert config.load_config()["telemetry_send_policy"] == "ask"
 
 
-def test_setting_bare_menu_upload_entry_lists_all_three_channels(isolated_omm_home, monkeypatch):
-    """benchmark, usage and crash are all reachable from the one Upload
-    entry - matching the `omm setting upload <channel>` command tree.
+def test_setting_bare_menu_upload_entry_lists_all_channels(isolated_omm_home, monkeypatch):
+    """benchmark, usage, crash and votes are all reachable from the one
+    Upload entry - matching the `omm setting upload <channel>` command tree.
     Crash/usage are no longer loose top-level entries."""
     answers = iter(["upload", "back", None])
     captured_choices: list = []
@@ -365,7 +365,7 @@ def test_setting_bare_menu_upload_entry_lists_all_three_channels(isolated_omm_ho
     assert "upload" in top_values
     assert "error-reports" not in top_values and "usage-stats" not in top_values
     channel_values = [choice.value for choice in captured_choices[1]]
-    assert channel_values == ["benchmark", "usage", "crash", "back"]
+    assert channel_values == ["benchmark", "usage", "crash", "votes", "back"]
 
 
 def test_setting_bare_menu_crash_submenu_saves_policy(isolated_omm_home, monkeypatch):
