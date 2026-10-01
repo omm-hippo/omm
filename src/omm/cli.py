@@ -4333,7 +4333,96 @@ def recommend(
     )
 
 
+@app.command(name="daemon")
+@global_flags
+def daemon_cmd(
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="Binding host for the daemon server.",
+    ),
+    port: int = typer.Option(
+        8000,
+        "--port",
+        "-p",
+        help="Binding port for the daemon server.",
+    ),
+    open_browser: bool = typer.Option(
+        True,
+        "--open/--no-open",
+        help="Open the default web browser when the daemon starts.",
+    ),
+) -> None:
+    """Start a local server with web UI for OMM.
+
+    Runs a self-hosted server that provides API endpoints for benchmark data
+    collection and model management. The server runs until interrupted
+    (Ctrl+C).
+    """
+    try:
+        import uvicorn
+    except ModuleNotFoundError as error:
+        raise SystemExit(
+            "Install the daemon dependencies with: "
+            "pip install 'omm-model[server]'"
+        ) from error
+
+    # Show startup information
+    console.print(f"[info]Starting OMM daemon server on http://{host}:{port}[/info]")
+    console.print("[info]API documentation available at http://{host}:{port}/docs[/info]")
+    console.print("[info]Press Ctrl+C to stop the server[/info]")
+    
+    # Optionally open browser
+    if open_browser and _stdin_is_tty():
+        try:
+            import webbrowser
+            webbrowser.open(f"http://{host}:{port}")
+            console.print("[info]Opened default web browser[/info]")
+        except ImportError:
+            console.print("[warning]Could not import webbrowser module[/warning]")
+        except Exception as e:
+            console.print(f"[warning]Could not open browser: {e}[/warning]")
+
+    # Run the server
+    try:
+        uvicorn.run(
+            "localfit_server.app:app",
+            host=host,
+            port=port,
+            log_level="info",
+        )
+    except KeyboardInterrupt:
+        console.print("\n[info]Daemon server stopped.[/info]"
+        )
+    except Exception as e:
+        err_console.print(f"[error]Daemon server failed: {e}[/error]"
+        )
+        raise typer.Exit(1)
+
+
 @app.command(name="compare")
+@global_flags
+def compare_cmd(
+    models: list[str] = typer.Argument(
+        ...,
+        help="Two to five exact model names, repositories, filenames, or install references from the signed recommendation catalog.",
+    ),
+    profile: str = typer.Option(
+        predictor.DEFAULT_RECOMMEND_PROFILE,
+        "--profile",
+        help="Memory-sharing profile: dedicated, balanced, or minimal.",
+    ),
+    purpose: str | None = typer.Option(
+        None,
+        "--for",
+        help="Optional measured-quality task: General, Coding, Reasoning, Writing, Translation, or Documents.",
+    ),
+) -> None:
+    """Compare selected catalog packages without installing or running them."""
+    from omm import compare as compare_mod
+
+    _global_opts().command_body_ran = True
+    compare_mod.compare_cmd(models, profile, purpose)
 @global_flags
 def compare_cmd(
     models: list[str] = typer.Argument(

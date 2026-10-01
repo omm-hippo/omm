@@ -566,6 +566,7 @@ omm log --grep install            # Filter the local history by text
 omm setting auto-import status   # Inspect the setting and OS service registration
 omm setting auto-import enable   # Register background import of models from local runners
 omm setting auto-import disable  # Stop and unregister background import
+omm daemon [--host HOST] [--port PORT] [--open|--no-open]  # Start a local server with web UI for OMM
 ```
 
 Logs live under `OMM_HOME/logs/` and are not uploaded by the data-sharing
