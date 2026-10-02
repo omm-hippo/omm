@@ -4363,8 +4363,8 @@ def daemon_cmd(
         import uvicorn
     except ModuleNotFoundError as error:
         raise SystemExit(
-            "Install the daemon dependencies with: "
-            "pip install omm[server] (or using the same method you used to install OMM)."
+            "Daemon dependencies are missing. ",
+            "Please reinstall OMM to install the required dependencies."
         ) from error
 
     # Show startup information
