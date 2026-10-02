@@ -51,7 +51,7 @@ class WebServer(ThreadingHTTPServer):
     def server_close(self):
         if hasattr(self, "info_path") and self.info_path.exists() and not self.info_path.is_symlink():
             try:
-                if json.loads(self.info_path.read_text()).get("instance") == self.instance:
+                if json.loads(self.info_path.read_text(encoding="utf-8")).get("instance") == self.instance:
                     self.info_path.unlink()
             except (OSError, ValueError):
                 pass
@@ -192,7 +192,7 @@ def running_url():
     try:
         if path.stat().st_size > 1024:
             return None
-        info = json.loads(path.read_text())
+        info = json.loads(path.read_text(encoding="utf-8"))
         url = urlsplit(info["url"])
         if url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port or url.username or url.password or url.path != "/" or url.query or url.fragment:
             return None

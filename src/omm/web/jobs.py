@@ -46,7 +46,7 @@ class JobManager:
             try:
                 if path.is_symlink() or path.stat().st_size > 65536:
                     continue
-                value = json.loads(path.read_text())
+                value = json.loads(path.read_text(encoding="utf-8"))
                 if str(uuid.UUID(value["id"])) != path.stem:
                     continue
                 if value["status"] in {"queued", "running", "cancelling"}:

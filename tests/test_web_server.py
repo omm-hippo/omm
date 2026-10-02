@@ -19,7 +19,7 @@ from omm.hardware import HardwareInfo
 def server(tmp_path, isolated_omm_home):
     assets = tmp_path / "assets"
     assets.mkdir()
-    (assets / "index.html").write_text("<!doctype html><title>OMM</title>")
+    (assets / "index.html").write_text("<!doctype html><title>OMM</title>",encoding="utf-8")
     instance = WebServer(0, static_root=assets)
     thread = threading.Thread(target=instance.serve_forever, daemon=True)
     thread.start()
@@ -201,8 +201,8 @@ def test_catalog_refresh_is_same_origin_and_rejects_override_urls(server, monkey
 def test_local_correction_does_not_claim_environment_confidence(monkeypatch, isolated_omm_home):
     from omm.web import service as module
     hw = HardwareInfo("macOS", "", "Apple M5", 24, 20, True, "Apple M5", 24, 20)
-    monkeypatch.setattr(module.calibration, "load_profiles", lambda: {"profiles": {
-        module.calibration.hardware_bucket(hw): {"sample_count": 3, "factor": 1.2}
+    monkeypatch.setattr(module.recommend_evidence.calibration, "load_profiles", lambda: {"profiles": {
+        module.recommend_evidence.calibration.hardware_bucket(hw): {"sample_count": 3, "factor": 1.2}
     }})
     evidence = module.recommendation_evidence({"trees": []}, hw)
     assert evidence["status"] == "local_calibrated"
@@ -267,6 +267,6 @@ def test_second_click_reuses_the_confirmed_manager_address(server,monkeypatch):
 def test_stale_or_foreign_manager_address_is_not_opened(isolated_omm_home,monkeypatch):
     from omm.web import server as module
     path=config.OMM_HOME/'web-jobs'/'server-info.json';path.parent.mkdir(parents=True,exist_ok=True)
-    path.write_text(json.dumps({'url':'https://example.com/','instance':'stale'}))
+    path.write_text(json.dumps({'url':'https://example.com/','instance':'stale'}),encoding='utf-8')
     monkeypatch.setattr(requests,'get',lambda *args,**kwargs:pytest.fail('foreign manager address was fetched'))
     assert module.running_url() is None
