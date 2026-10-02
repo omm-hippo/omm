@@ -4364,7 +4364,7 @@ def daemon_cmd(
     except ModuleNotFoundError as error:
         raise SystemExit(
             "Install the daemon dependencies with: "
-            "pip install omm[server]"
+            "pip install omm[server] (or using the same method you used to install OMM)."
         ) from error
 
     # Show startup information
