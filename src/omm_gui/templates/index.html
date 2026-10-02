@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>omm GUI - Open source Model Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f5f5;
+            color: #1a1a1a;
+            min-height: 100vh;
+        }
+        .header {
+            background: #fff;
+            border-bottom: 1px solid #e0e0e0;
+            padding: 16px 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+        .header .version {
+            font-size: 12px;
+            color: #666;
+            background: #f0f0f0;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+        .tabs {
+            display: flex;
+            gap: 4px;
+            background: #fff;
+            border-radius: 8px;
+            padding: 4px;
+            margin-bottom: 24px;
+            border: 1px solid #e0e0e0;
+            overflow-x: auto;
+        }
+        .tab {
+            padding: 10px 20px;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: #666;
+            border-radius: 6px;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+        .tab:hover {
+            background: #f5f5f5;
+            color: #1a1a1a;
+        }
+        .tab.active {
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .card {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .card h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #1a1a1a;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 16px;
+        }
+        .stat {
+            background: #fafafa;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin-top: 4px;
+        }
+        .form-group {
+            margin-bottom: 16px;
+        }
+        .form-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 6px;
+        }
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #1a1a1a;
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background: #333;
+        }
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #1a1a1a;
+        }
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+        .btn-danger {
+            background: #dc3545;
+            color: #fff;
+        }
+        .btn-danger:hover {
+            background: #c82333;
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .model-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .model-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: #fafafa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            gap: 12px;
+        }
+        .model-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .model-name {
+            font-weight: 500;
+            font-size: 14px;
+        }
+        .model-meta {
+            font-size: 12px;
+            color: #666;
+            margin-top: 2px;
+        }
+        .model-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .engine-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            background: #e8f5e9;
+            color: #2e7d32;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .output {
+            background: #1a1a1a;
+            color: #e0e0e0;
+            padding: 16px;
+            border-radius: 6px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            max-height: 400px;
+            overflow: auto;
+            white-space: pre-wrap;
+        }
+        .output.error {
+            border: 1px solid #dc3545;
+        }
+        .output.success {
+            border: 1px solid #28a745;
+        }
+        .hidden {
+            display: none !important;
+        }
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #e0e0e0;
+            border-top-color: #1a1a1a;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .engine-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: #fafafa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+        .engine-info {
+            flex: 1;
+        }
+        .engine-name {
+            font-weight: 500;
+        }
+        .engine-status {
+            font-size: 12px;
+            color: #666;
+        }
+        .status-installed {
+            color: #28a745;
+        }
+        .status-not-installed {
+            color: #dc3545;
+        }
+        .search-results {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .search-result {
+            padding: 12px 16px;
+            background: #fafafa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .search-result:hover {
+            background: #f0f0f0;
+        }
+        .search-result .repo {
+            font-weight: 500;
+        }
+        .search-result .meta {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
+        .recommendation {
+            padding: 16px;
+            background: #fafafa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            margin-bottom: 12px;
+        }
+        .recommendation-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .recommendation-model {
+            font-weight: 600;
+            font-size: 15px;
+        }
+        .recommendation-score {
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .recommendation-reason {
+            font-size: 13px;
+            color: #666;
+        }
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 12px 20px;
+            border-radius: 6px;
+            background: #1a1a1a;
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 1000;
+            animation: slideIn 0.3s;
+        }
+        .toast.error {
+            background: #dc3545;
+        }
+        .toast.success {
+            background: #28a745;
+        }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .quality-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            background: #fff3e0;
+            color: #e65100;
+            border-radius: 3px;
+            font-size: 11px;
+            margin-left: 8px;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>omm GUI <span class="version">v0.1.0</span></h1>
+        <div style="display: flex; gap: 12px; align-items: center;">
+            <span id="hardware-summary" style="font-size: 13px; color: #666;">Loading...</span>
+            <button class="btn btn-secondary" onclick="refreshHardware()">새로고침</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <nav class="tabs" id="tabs">
+            <button class="tab active" data-tab="dashboard">대시보드</button>
+            <button class="tab" data-tab="models">모델 관리</button>
+            <button class="tab" data-tab="search">모델 검색</button>
+            <button class="tab" data-tab="recommend">추천</button>
+            <button class="tab" data-tab="run">실행</button>
+            <button class="tab" data-tab="benchmark">벤치마크</button>
+            <button class="tab" data-tab="tune">튜닝</button>
+            <button class="tab" data-tab="engines">엔진</button>
+            <button class="tab" data-tab="settings">설정</button>
+        </nav>
+
+        <!-- Dashboard Tab -->
+        <section class="tab-content active" id="tab-dashboard">
+            <div class="card">
+                <h2>시스템 정보</h2>
+                <div class="grid" id="hardware-stats">
+                    <div class="stat"><div class="stat-label">OS</div><div class="stat-value" id="hw-os">-</div></div>
+                    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value" id="hw-cpu">-</div></div>
+                    <div class="stat"><div class="stat-label">RAM</div><div class="stat-value" id="hw-ram">-</div></div>
+                    <div class="stat"><div class="stat-label">모델 예산</div><div class="stat-value" id="hw-budget">-</div></div>
+                    <div class="stat"><div class="stat-label">GPU</div><div class="stat-value" id="hw-gpu">-</div></div>
+                    <div class="stat"><div class="stat-label">VRAM</div><div class="stat-value" id="hw-vram">-</div></div>
+                </div>
+            </div>
+            <div class="card">
+                <h2>빠른 작업</h2>
+                <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                    <button class="btn btn-primary" onclick="switchTab('scan')">시스템 스캔</button>
+                    <button class="btn btn-primary" onclick="switchTab('doctor')">진단 실행</button>
+                    <button class="btn btn-secondary" onclick="switchTab('search')">모델 검색</button>
+                    <button class="btn btn-secondary" onclick="switchTab('recommend')">추천 받기</button>
+                </div>
+            </div>
+            <div class="card">
+                <h2>최근 활동</h2>
+                <div id="recent-activity" class="output" style="min-height: 100px;">활동 내역이 여기에 표시됩니다.</div>
+            </div>
+        </section>
+
+        <!-- Models Tab -->
+        <section class="tab-content" id="tab-models">
+            <div class="card">
+                <h2>설치된 모델 (omm 허브)</h2>
+                <div class="model-list" id="installed-models">로딩 중...</div>
+            </div>
+            <div class="card">
+                <h2>외부 모델 (다른 엔진에서 다운로드)</h2>
+                <div class="model-list" id="external-models">로딩 중...</div>
+            </div>
+            <div class="card">
+                <h2>모델 가져오기</h2>
+                <div class="form-group">
+                    <label>모델 이름 또는 경로</label>
+                    <input type="text" id="import-model" placeholder="예: llama-3-8b-instruct 또는 /path/to/model.gguf">
+                </div>
+                <button class="btn btn-primary" onclick="importModel()">가져오기</button>
+            </div>
+        </section>
+
+        <!-- Search Tab -->
+        <section class="tab-content" id="tab-search">
+            <div class="card">
+                <h2>모델 검색</h2>
+                <div class="form-row">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>검색어</label>
+                        <input type="text" id="search-query" placeholder="예: llama, qwen, phi, coding, korean">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>결과 수</label>
+                        <select id="search-limit">
+                            <option value="10">10</option>
+                            <option value="20" selected>20</option>
+                            <option value="50">50</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="searchModels()">검색</button>
+                <div class="search-results" id="search-results" style="margin-top: 16px;"></div>
+            </div>
+        </section>
+
+        <!-- Recommend Tab -->
+        <section class="tab-content" id="tab-recommend">
+            <div class="card">
+                <h2>모델 추천 받기</h2>
+                <div class="form-row">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>메모리 프로필</label>
+                        <select id="rec-profile">
+                            <option value="dedicated">Dedicated (전용 GPU)</option>
+                            <option value="balanced" selected>Balanced (균형)</option>
+                            <option value="minimal">Minimal (최소)</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>용도</label>
+                        <select id="rec-purpose">
+                            <option value="">자동</option>
+                            <option value="General">General</option>
+                            <option value="Coding">Coding</option>
+                            <option value="Reasoning">Reasoning</option>
+                            <option value="Writing">Writing</option>
+                            <option value="Translation">Translation</option>
+                            <option value="Documents">Documents</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="getRecommendations()">추천 받기</button>
+                <div id="recommendations" style="margin-top: 16px;"></div>
+            </div>
+        </section>
+
+        <!-- Run Tab -->
+        <section class="tab-content" id="tab-run">
+            <div class="card">
+                <h2>모델 실행</h2>
+                <div class="form-row">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>모델</label>
+                        <input type="text" id="run-model" placeholder="설치된 모델 이름 또는 파일명" list="model-list">
+                        <datalist id="model-list"></datalist>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>엔진</label>
+                        <select id="run-engine">
+                            <option value="">자동 선택</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>추가 인자 (선택사항)</label>
+                    <input type="text" id="run-args" placeholder="예: --ctx-size 4096 --temp 0.7">
+                </div>
+                <button class="btn btn-primary" onclick="runModel()">실행</button>
+                <div id="run-output" class="output hidden" style="margin-top: 16px;"></div>
+            </div>
+        </section>
+
+        <!-- Benchmark Tab -->
+        <section class="tab-content" id="tab-benchmark">
+            <div class="card">
+                <h2>벤치마크 실행</h2>
+                <div class="form-group">
+                    <label>모델들 (여러 개 선택 가능, 쉼표로 구분)</label>
+                    <input type="text" id="bench-models" placeholder="예: llama-3-8b-instruct, qwen2.5-7b-instruct" list="model-list-bench">
+                    <datalist id="model-list-bench"></datalist>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>엔진</label>
+                        <select id="bench-engine">
+                            <option value="">자동 선택</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>프로필</label>
+                        <select id="bench-profile">
+                            <option value="dedicated">Dedicated</option>
+                            <option value="balanced" selected>Balanced</option>
+                            <option value="minimal">Minimal</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="runBenchmark()">벤치마크 시작</button>
+                <div id="bench-output" class="output hidden" style="margin-top: 16px;"></div>
+            </div>
+        </section>
+
+        <!-- Tune Tab -->
+        <section class="tab-content" id="tab-tune">
+            <div class="card">
+                <h2>모델 튜닝</h2>
+                <div class="form-row">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>모델</label>
+                        <input type="text" id="tune-model" placeholder="설치된 모델 이름" list="model-list-tune">
+                        <datalist id="model-list-tune"></datalist>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>프로필</label>
+                        <select id="tune-profile">
+                            <option value="dedicated">Dedicated</option>
+                            <option value="balanced" selected>Balanced</option>
+                            <option value="minimal">Minimal</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>용도 (선택사항)</label>
+                    <select id="tune-purpose">
+                        <option value="">자동</option>
+                        <option value="General">General</option>
+                        <option value="Coding">Coding</option>
+                        <option value="Reasoning">Reasoning</option>
+                        <option value="Writing">Writing</option>
+                        <option value="Translation">Translation</option>
+                        <option value="Documents">Documents</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="runTune()">튜닝 시작</button>
+                <div id="tune-output" class="output hidden" style="margin-top: 16px;"></div>
+            </div>
+        </section>
+
+        <!-- Engines Tab -->
+        <section class="tab-content" id="tab-engines">
+            <div class="card">
+                <h2>설치된 엔진</h2>
+                <div id="engines-list"></div>
+            </div>
+            <div class="card">
+                <h2>엔진 설치</h2>
+                <div class="form-group">
+                    <label>설치할 엔진</label>
+                    <select id="engine-to-install">
+                        <option value="ollama">Ollama</option>
+                        <option value="lmstudio">LM Studio</option>
+                        <option value="jan">Jan</option>
+                        <option value="anythingllm">AnythingLLM</option>
+                        <option value="mstystudio">Msty Studio</option>
+                        <option value="textgenwebui">text-generation-webui</option>
+                        <option value="koboldcpp">KoboldCpp</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="installEngine()">설치</button>
+            </div>
+        </section>
+
+        <!-- Settings Tab -->
+        <section class="tab-content" id="tab-settings">
+            <div class="card">
+                <h2>설정</h2>
+                <div class="form-group">
+                    <label>테마</label>
+                    <select id="setting-theme">
+                        <option value="dark">다크</option>
+                        <option value="light">라이트</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>텔레메트리 정책</label>
+                    <select id="setting-telemetry">
+                        <option value="ask">묻기</option>
+                        <option value="always">항상 전송</option>
+                        <option value="never">전송 안 함</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="saveSettings()">저장</button>
+            </div>
+        </section>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script>
+        // --- State ---
+        let currentTab = 'dashboard';
+        let engines = [];
+
+        // --- Utility Functions ---
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.animation = 'slideIn 0.3s reverse';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        function setLoading(btn, loading) {
+            if (loading) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="loading"></span> 처리 중...';
+            } else {
+                btn.disabled = false;
+            }
+        }
+
+        async function api(path, options = {}) {
+            const res = await fetch('/api' + path, {
+                headers: { 'Content-Type': 'application/json' },
+                ...options,
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+                throw new Error(err.detail || `HTTP ${res.status}`);
+            }
+            return res.json();
+        }
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.tab === tabName);
+            });
+            document.querySelectorAll('.tab-content').forEach(c => {
+                c.classList.toggle('active', c.id === 'tab-' + tabName);
+            });
+            currentTab = tabName;
+        }
+
+        function populateModelLists(models) {
+            const lists = ['model-list', 'model-list-bench', 'model-list-tune'];
+            lists.forEach(id => {
+                const dl = document.getElementById(id);
+                dl.innerHTML = '';
+                models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.filename;
+                    dl.appendChild(opt);
+                });
+            });
+        }
+
+        function populateEngineSelects(engineList) {
+            const selects = ['run-engine', 'bench-engine'];
+            selects.forEach(id => {
+                const sel = document.getElementById(id);
+                const current = sel.value;
+                sel.innerHTML = '<option value="">자동 선택</option>';
+                engineList.forEach(e => {
+                    if (e.installed) {
+                        const opt = document.createElement('option');
+                        opt.value = e.key;
+                        opt.textContent = e.label;
+                        sel.appendChild(opt);
+                    }
+                });
+                sel.value = current;
+            });
+        }
+
+        // --- Tab Loaders ---
+        async function loadDashboard() {
+            try {
+                const hw = await api('/hardware');
+                document.getElementById('hw-os').textContent = hw.os;
+                document.getElementById('hw-cpu').textContent = hw.cpu;
+                document.getElementById('hw-ram').textContent = `${hw.ram_total_gb} GB (사용가능: ${hw.ram_available_gb} GB)`;
+                document.getElementById('hw-budget').textContent = `${hw.model_budget_gb} GB`;
+                document.getElementById('hw-gpu').textContent = hw.gpu_name || '없음';
+                document.getElementById('hw-vram').textContent = hw.vram_total_gb ? `${hw.vram_total_gb} GB (자유: ${hw.vram_free_gb} GB)` : 'N/A';
+                document.getElementById('hardware-summary').textContent = `RAM ${hw.ram_total_gb}GB · 예산 ${hw.model_budget_gb}GB · ${hw.gpu_name || 'GPU 없음'}`;
+            } catch (e) {
+                showToast('하드웨어 정보 로드 실패: ' + e.message, 'error');
+            }
+        }
+
+        async function loadModels() {
+            try {
+                const data = await api('/models');
+                const installed = data.installed || [];
+                const external = data.external || [];
+
+                const installedEl = document.getElementById('installed-models');
+                if (installed.length === 0) {
+                    installedEl.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">설치된 모델이 없습니다. "모델 검색" 탭에서 모델을 찾아 설치하세요.</div>';
+                } else {
+                    installedEl.innerHTML = installed.map(m => `
+                        <div class="model-item">
+                            <div class="model-info">
+                                <div class="model-name">${m.filename}</div>
+                                <div class="model-meta">
+                                    ${m.size_gb} GB · ${m.parameter_count_b ? m.parameter_count_b + 'B' : '?'} · ${m.quant_bits ? m.quant_bits + 'bit' : '?'}
+                                    ${m.engines.map(e => `<span class="engine-badge">${e}</span>`).join(' ')}
+                                </div>
+                            </div>
+                            <div class="model-actions">
+                                <button class="btn btn-secondary" onclick="runFit('${m.filename}')">Fit 확인</button>
+                                <button class="btn btn-danger" onclick="uninstallModel('${m.filename}')">제거</button>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+
+                const externalEl = document.getElementById('external-models');
+                if (external.length === 0) {
+                    externalEl.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">외부 모델이 없습니다.</div>';
+                } else {
+                    externalEl.innerHTML = external.map(m => `
+                        <div class="model-item">
+                            <div class="model-info">
+                                <div class="model-name">${m.filename}</div>
+                                <div class="model-meta">${m.path} · ${m.engine} · ${m.size_gb || '?'} GB</div>
+                            </div>
+                            <div class="model-actions">
+                                <button class="btn btn-primary" onclick="importExternal('${m.path.replace(/'/g, "\\'")}')">가져오기</button>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+
+                populateModelLists(installed);
+            } catch (e) {
+                showToast('모델 목록 로드 실패: ' + e.message, 'error');
+            }
+        }
+
+        async function loadEngines() {
+            try {
+                const data = await api('/engines');
+                engines = data.engines || [];
+                const el = document.getElementById('engines-list');
+                el.innerHTML = engines.map(e => `
+                    <div class="engine-card">
+                        <div class="engine-info">
+                            <div class="engine-name">${e.label}</div>
+                            <div class="engine-status ${e.installed ? 'status-installed' : 'status-not-installed'}">
+                                ${e.installed ? '설치됨' : '미설치'}
+                            </div>
+                        </div>
+                        ${!e.installed ? `<button class="btn btn-primary" onclick="installSpecificEngine('${e.key}')">설치</button>` : ''}
+                    </div>
+                `).join('');
+                populateEngineSelects(engines);
+            } catch (e) {
+                showToast('엔진 목록 로드 실패: ' + e.message, 'error');
+            }
+        }
+
+        async function loadSettings() {
+            try {
+                const settings = await api('/settings');
+                document.getElementById('setting-theme').value = settings.theme || 'dark';
+                document.getElementById('setting-telemetry').value = settings.telemetry_send_policy || 'ask';
+            } catch (e) {
+                showToast('설정 로드 실패: ' + e.message, 'error');
+            }
+        }
+
+        // --- Actions ---
+        async function refreshHardware() {
+            await loadDashboard();
+            showToast('하드웨어 정보가 갱신되었습니다', 'success');
+        }
+
+        async function searchModels() {
+            const query = document.getElementById('search-query').value.trim();
+            const limit = parseInt(document.getElementById('search-limit').value);
+            if (!query) { showToast('검색어를 입력하세요', 'error'); return; }
+
+            const btn = event.target;
+            setLoading(btn, true);
+            try {
+                const data = await api('/search', {
+                    method: 'POST',
+                    body: JSON.stringify({ query, limit })
+                });
+                const results = data.results || [];
+                const el = document.getElementById('search-results');
+                if (results.length === 0) {
+                    el.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">검색 결과가 없습니다.</div>';
+                } else {
+                    el.innerHTML = results.map(r => `
+                        <div class="search-result" onclick="installFromSearch('${r.repo_id.replace(/'/g, "\\'")}', '${(r.quant || '').replace(/'/g, "\\'")}')">
+                            <div class="repo">${r.repo_id}</div>
+                            <div class="meta">
+                                ${r.filename} · ${r.param_count_b ? r.param_count_b + 'B' : '?'} · ${r.quant_bits ? r.quant_bits + 'bit' : '?'} · ${r.size_gb ? r.size_gb.toFixed(1) + ' GB' : '?'}
+                            </div>
+                        </div>
+                    `).join('');
+                }
+                showToast(`${results.length}개 결과`, 'success');
+            } catch (e) {
+                showToast('검색 실패: ' + e.message, 'error');
+            } finally {
+                setLoading(btn, false);
+            }
+        }
+
+        async function installFromSearch(repoId, quant) {
+            if (!confirm(`"${repoId}"${quant ? ` (${quant})` : ''} 모델을 설치하시겠습니까?`)) return;
+            showToast('설치 중... 이 작업은 시간이 걸릴 수 있습니다.', 'info');
+            try {
+                const result = await api('/install', {
+                    method: 'POST',
+                    body: JSON.stringify({ model: repoId, quant: quant || undefined, yes: true })
+                });
+                showToast('설치 완료!', 'success');
+                loadModels();
+                switchTab('models');
+            } catch (e) {
+                showToast('설치 실패: ' + e.message, 'error');
+            }
+        }
+
+        async function importModel() {
+            const model = document.getElementById('import-model').value.trim();
+            if (!model) { showToast('모델 이름 또는 경로를 입력하세요', 'error'); return; }
+            try {
+                const result = await api('/install', {
+                    method: 'POST',
+                    body: JSON.stringify({ model, yes: true })
+                });
+                showToast('가져오기 완료!', 'success');
+                document.getElementById('import-model').value = '';
+                loadModels();
+            } catch (e) {
+                showToast('가져오기 실패: ' + e.message, 'error');
+            }
+        }
+
+        async function importExternal(path) {
+            if (!confirm(`이 모델을 omm 허브로 가져오시겠습니까?\n${path}`)) return;
+            try {
+                const result = await api('/install', {
+                    method: 'POST',
+                    body: JSON.stringify({ model: path, yes: true })
+                });
+                showToast('가져오기 완료!', 'success');
+                loadModels();
+            } catch (e) {
+                showToast('가져오기 실패: ' + e.message, 'error');
+            }
+        }
+
+        async function uninstallModel(filename) {
+            if (!confirm(`"${filename}" 모델을 제거하시겠습니까?`)) return;
+            try {
+                const result = await api('/uninstall', {
+                    method: 'POST',
+                    body: new URLSearchParams({ model: filename, yes: 'true' })
+                });
+                showToast('제거 완료!', 'success');
+                loadModels();
+            } catch (e) {
+                showToast('제거 실패: ' + e.message, 'error');
+            }
+        }
+
+        async function runFit(model) {
+            const profile = document.getElementById('rec-profile').value;
+            try {
+                const result = await api('/fit', {
+                    method: 'POST',
+                    body: new URLSearchParams({ model, profile })
+                });
+                const out = document.getElementById('run-output');
+                out.classList.remove('hidden', 'error', 'success');
+                out.classList.add(result.fits ? 'success' : 'error');
+                out.textContent = JSON.stringify(result, null, 2);
+                showToast(result.fits ? '메모리에 맞음 ✓' : '메모리 부족 ✗', result.fits ? 'success' : 'error');
+            } catch (e) {
+                showToast('Fit 확인 실패: ' + e.message, 'error');
+            }
+        }
+
+        async function getRecommendations() {
+            const profile = document.getElementById('rec-profile').value;
+            const purpose = document.getElementById('rec-purpose').value;
+            const btn = event.target;
+            setLoading(btn, true);
+            try {
+                const data = await api('/recommend', {
+                    method: 'POST',
+                    body: JSON.stringify({ profile, purpose: purpose || undefined, json: true })
+                });
+                const el = document.getElementById('recommendations');
+                if (data.recommendations && data.recommendations.length > 0) {
+                    el.innerHTML = data.recommendations.map(r => `
+                        <div class="recommendation">
+                            <div class="recommendation-header">
+                                <span class="recommendation-model">${r.model}</span>
+                                <span class="recommendation-score">${(r.score * 100).toFixed(0)}%</span>
+                            </div>
+                            <div class="recommendation-reason">${r.reason || '추천 이유 정보 없음'}</div>
+                            <div class="recommendation-reason" style="margin-top: 8px;">
+                                ${r.quant ? `양자화: ${r.quant}` : ''}
+                                ${r.estimated_size_gb ? ` · 예상 크기: ${r.estimated_size_gb.toFixed(1)} GB` : ''}
+                                ${r.quality_pack ? ` <span class="quality-badge">${r.quality_pack}</span>` : ''}
+                            </div>
+                            <div style="margin-top: 12px;">
+                                <button class="btn btn-primary" onclick="installFromSearch('${r.repo_id.replace(/'/g, "\\'")}', '${(r.quant || '').replace(/'/g, "\\'")}')">설치</button>
+                                <button class="btn btn-secondary" onclick="runFit('${r.model.replace(/'/g, "\\'")}')">Fit 확인</button>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    el.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">추천 결과가 없습니다.</div>';
+                }
+                showToast('추천 완료', 'success');
+            } catch (e) {
+                showToast('추천 실패: ' + e.message, 'error');
+            } finally {
+                setLoading(btn, false);
+            }
+        }
+
+        async function runModel() {
+            const model = document.getElementById('run-model').value.trim();
+            const engine = document.getElementById('run-engine').value;
+            const args = document.getElementById('run-args').value.trim().split(/\s+/).filter(Boolean);
+            if (!model) { showToast('모델을 선택하세요', 'error'); return; }
+
+            const btn = event.target;
+            setLoading(btn, true);
+            const out = document.getElementById('run-output');
+            out.classList.remove('hidden', 'error', 'success');
+            out.textContent = '실행 중...\n';
+            try {
+                const result = await api('/run', {
+                    method: 'POST',
+                    body: JSON.stringify({ model, engine: engine || undefined, args })
+                });
+                out.textContent = result.stdout || result.stderr || '완료';
+                out.classList.add(result.exit_code === 0 ? 'success' : 'error');
+                showToast(result.exit_code === 0 ? '실행 완료' : '실행 실패', result.exit_code === 0 ? 'success' : 'error');
+            } catch (e) {
+                out.textContent = '오류: ' + e.message;
+                out.classList.add('error');
+                showToast('실행 실패: ' + e.message, 'error');
+            } finally {
+                setLoading(btn, false);
+            }
+        }
+
+        async function runBenchmark() {
+            const modelsStr = document.getElementById('bench-models').value.trim();
+            const models = modelsStr.split(',').map(m => m.trim()).filter(Boolean);
+            const engine = document.getElementById('bench-engine').value;
+            const profile = document.getElementById('bench-profile').value;
+            if (models.length === 0) { showToast('최소 하나의 모델을 선택하세요', 'error'); return; }
+
+            const btn = event.target;
+            setLoading(btn, true);
+            const out = document.getElementById('bench-output');
+            out.classList.remove('hidden', 'error', 'success');
+            out.textContent = '벤치마크 실행 중... (시간이 걸릴 수 있습니다)\n';
+            try {
+                const result = await api('/benchmark', {
+                    method: 'POST',
+                    body: JSON.stringify({ models, engine: engine || undefined, profile })
+                });
+                out.textContent = JSON.stringify(result, null, 2);
+                out.classList.add('success');
+                showToast('벤치마크 완료', 'success');
+            } catch (e) {
+                out.textContent = '오류: ' + e.message;
+                out.classList.add('error');
+                showToast('벤치마크 실패: ' + e.message, 'error');
+            } finally {
+                setLoading(btn, false);
+            }
+        }
+
+        async function runTune() {
+            const model = document.getElementById('tune-model').value.trim();
+            const profile = document.getElementById('tune-profile').value;
+            const purpose = document.getElementById('tune-purpose').value;
+            if (!model) { showToast('모델을 선택하세요', 'error'); return; }
+
+            const btn = event.target;
+            setLoading(btn, true);
+            const out = document.getElementById('tune-output');
+            out.classList.remove('hidden', 'error', 'success');
+            out.textContent = '튜닝 중... (시간이 걸릴 수 있습니다)\n';
+            try {
+                const result = await api('/tune', {
+                    method: 'POST',
+                    body: JSON.stringify({ model, profile, purpose: purpose || undefined })
+                });
+                out.textContent = JSON.stringify(result, null, 2);
+                out.classList.add('success');
+                showToast('튜닝 완료', 'success');
+            } catch (e) {
+                out.textContent = '오류: ' + e.message;
+                out.classList.add('error');
+                showToast('튜닝 실패: ' + e.message, 'error');
+            } finally {
+                setLoading(btn, false);
+            }
+        }
+
+        async function installEngine() {
+            const engine = document.getElementById('engine-to-install').value;
+            await installSpecificEngine(engine);
+        }
+
+        async function installSpecificEngine(engine) {
+            if (!confirm(`"${engine}" 엔진을 설치하시겠습니까?`)) return;
+            showToast(`${engine} 설치 중...`, 'info');
+            try {
+                const result = await api('/install', {
+                    method: 'POST',
+                    body: JSON.stringify({ model: engine, yes: true }) // engine install uses different endpoint
+                });
+                // Actually engine install is different - use cli directly
+                const cliResult = await api('/cli', {
+                    method: 'POST',
+                    body: JSON.stringify({ args: ['engine', 'install', engine, '--yes'] })
+                }).catch(() => ({ exit_code: 1 }));
+                if (cliResult.exit_code === 0) {
+                    showToast(`${engine} 설치 완료!`, 'success');
+                    loadEngines();
+                } else {
+                    showToast(`${engine} 설치 실패`, 'error');
+                }
+            } catch (e) {
+                showToast('설치 실패: ' + e.message, 'error');
+            }
+        }
+
+        async function saveSettings() {
+            const settings = {
+                theme: document.getElementById('setting-theme').value,
+                telemetry_send_policy: document.getElementById('setting-telemetry').value,
+            };
+            try {
+                await api('/settings', {
+                    method: 'POST',
+                    body: JSON.stringify(settings)
+                });
+                showToast('설정 저장됨', 'success');
+            } catch (e) {
+                showToast('저장 실패: ' + e.message, 'error');
+            }
+        }
+
+        // --- Initialize ---
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+        });
+
+        // Load initial data
+        Promise.all([
+            loadDashboard(),
+            loadModels(),
+            loadEngines(),
+            loadSettings(),
+        ]).catch(e => showToast('초기화 실패: ' + e.message, 'error'));
+
+        // Enter key handlers
+        document.getElementById('search-query').addEventListener('keypress', e => {
+            if (e.key === 'Enter') searchModels();
+        });
+    </script>
+</body>
+</html>

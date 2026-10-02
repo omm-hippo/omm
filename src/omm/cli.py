@@ -4339,37 +4339,36 @@ def daemon_cmd(
     host: str = typer.Option(
         "127.0.0.1",
         "--host",
-        help="Binding host for the daemon server.",
+        help="Binding host for the GUI server.",
     ),
     port: int = typer.Option(
         8000,
         "--port",
         "-p",
-        help="Binding port for the daemon server.",
+        help="Binding port for the GUI server.",
     ),
     open_browser: bool = typer.Option(
         True,
         "--open/--no-open",
-        help="Open the default web browser when the daemon starts.",
+        help="Open the default web browser when the GUI starts.",
     ),
 ) -> None:
-    """Start a local server with web UI for OMM.
+    """Start the omm web GUI for managing models visually.
 
-    Runs a self-hosted server that provides API endpoints for benchmark data
-    collection and model management. The server runs until interrupted
-    (Ctrl+C).
+    Runs a local web server with a browser-based interface for core omm
+    commands: search, install, run, fit, recommend, benchmark, tune, and more.
+    The server runs until interrupted (Ctrl+C).
     """
     try:
         import uvicorn
     except ModuleNotFoundError as error:
         raise SystemExit(
-            "Daemon dependencies are missing. ",
+            "GUI dependencies are missing. ",
             "Please reinstall OMM to install the required dependencies."
         ) from error
 
     # Show startup information
-    console.print(f"[info]Starting OMM daemon server on http://{host}:{port}[/info]")
-    console.print("[info]API documentation available at http://{host}:{port}/docs[/info]")
+    console.print(f"[info]Starting omm GUI on http://{host}:{port}[/info]")
     console.print("[info]Press Ctrl+C to stop the server[/info]")
     
     # Optionally open browser
@@ -4383,19 +4382,19 @@ def daemon_cmd(
         except Exception as e:
             console.print(f"[warning]Could not open browser: {e}[/warning]")
 
-    # Run the server
+    # Run the GUI server
     try:
         uvicorn.run(
-            "localfit_server.app:app",
+            "omm_gui.app:app",
             host=host,
             port=port,
             log_level="info",
         )
     except KeyboardInterrupt:
-        console.print("\n[info]Daemon server stopped.[/info]"
+        console.print("\n[info]GUI server stopped.[/info]"
         )
     except Exception as e:
-        err_console.print(f"[error]Daemon server failed: {e}[/error]"
+        err_console.print(f"[error]GUI server failed: {e}[/error]"
         )
         raise typer.Exit(1)
 
