@@ -4391,7 +4391,7 @@ def daemon_cmd(
         help="Open the default web browser when the GUI starts.",
     ),
 ) -> None:
-    """Start the omm web GUI for managing models visually.
+    """Start the existing daemon web GUI.
 
     Runs a local web server with a browser-based interface for core omm
     commands: search, install, run, fit, recommend, benchmark, tune, and more.

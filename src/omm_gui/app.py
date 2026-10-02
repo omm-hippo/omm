@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import jinja2
@@ -99,10 +100,14 @@ class RecommendRequest(BaseModel):
 
 def run_omm_command(args: list[str], json_output: bool = False) -> dict[str, Any]:
     """Run an omm command and return the result."""
-    cmd = [sys.executable, "-m", "omm"] + args
+    cmd = ([sys.executable] if getattr(sys, "frozen", False)
+           else [sys.executable, "-m", "omm.cli"]) + args
     if json_output:
         cmd.append("--json")
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=OMM_SRC)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=OMM_SRC, env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
     if json_output:
         try:
             return json.loads(result.stdout)

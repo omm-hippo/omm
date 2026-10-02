@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.147",
+  "omm_version": "0.3.148",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -390,7 +390,7 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Start the omm web GUI for managing models visually.",
+      "summary": "Start the existing daemon web GUI.",
       "description": "Runs a local web server with a browser-based interface for core omm commands: search, install, run, fit, recommend, benchmark, tune, and more. The server runs until interrupted (Ctrl+C).",
       "usage": "omm daemon [OPTIONS]",
       "arguments": [],
