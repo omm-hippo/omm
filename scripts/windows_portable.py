@@ -23,6 +23,8 @@ from pathlib import Path
 DISTRIBUTION_NAME = "omm-model"
 EXECUTABLE_NAME = "omm.exe"
 LICENSE_NAME = "LICENSE.txt"
+WEB_LAUNCHER_NAME = "Open-OMM.cmd"
+WEB_LAUNCHER_BYTES = b'@echo off\r\nsetlocal DisableDelayedExpansion\r\n"%~dp0omm.exe" web --open\r\nif errorlevel 1 pause\r\n'
 SUBPROCESS_TIMEOUT_SECONDS = 900
 _VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 
@@ -121,6 +123,8 @@ def pyinstaller_command(
         DISTRIBUTION_NAME,
         "--collect-data",
         "omm",
+        "--collect-all",
+        "omm_gui",
         "--version-file",
         str(version_file),
         str(entry_script),
@@ -254,6 +258,7 @@ def package_windows_portable(
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         bundle.writestr(_zip_info(EXECUTABLE_NAME, 0o755), executable_bytes)
         bundle.writestr(_zip_info(LICENSE_NAME, 0o644), license_bytes)
+        bundle.writestr(_zip_info(WEB_LAUNCHER_NAME, 0o644), WEB_LAUNCHER_BYTES)
 
     checksum.write_text(f"{sha256(archive)}  {archive.name}\n", encoding="ascii", newline="\n")
     verify_windows_archive(archive, version)
@@ -273,6 +278,8 @@ def verify_windows_archive(archive: Path, version: str) -> None:
     with zipfile.ZipFile(archive) as bundle:
         names = bundle.namelist()
         expected = [EXECUTABLE_NAME, LICENSE_NAME]
+        if WEB_LAUNCHER_NAME in names:
+            expected.append(WEB_LAUNCHER_NAME)
         if names != expected or len(set(names)) != len(names):
             raise WindowsPortableError(
                 f"archive contains {names!r}, expected exactly {expected!r}"
@@ -286,6 +293,8 @@ def verify_windows_archive(archive: Path, version: str) -> None:
             raise WindowsPortableError("archive executable has no Windows MZ header")
         if not bundle.read(LICENSE_NAME).strip():
             raise WindowsPortableError("archive license is empty")
+        if WEB_LAUNCHER_NAME in names and bundle.read(WEB_LAUNCHER_NAME) != WEB_LAUNCHER_BYTES:
+            raise WindowsPortableError("archive click launcher differs from the verified template")
 
 
 def _parser() -> argparse.ArgumentParser:

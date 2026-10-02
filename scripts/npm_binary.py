@@ -100,6 +100,8 @@ def pyinstaller_command(entry_script: Path, output_dir: Path, work_dir: Path) ->
         DISTRIBUTION_NAME,
         "--collect-data",
         "omm",
+        "--collect-all",
+        "omm_gui",
         str(entry_script),
     ]
 

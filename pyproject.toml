@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "omm-model"
-version = "0.3.146"
+version = "0.3.147"
 description = "Open source Model Manager - a package manager for local LLMs (GGUF)"
 requires-python = ">=3.10"
 license = "MIT"
@@ -28,6 +28,8 @@ dependencies = [
     "fastapi>=0.115",
     "pydantic>=2.9",
     "uvicorn>=0.30",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.18",
 ]
 
 [project.optional-dependencies]
@@ -59,13 +61,14 @@ omm = "omm.cli:main"
 localfit-server = "localfit_server.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/omm", "src/localfit_server"]
+packages = ["src/omm", "src/localfit_server", "src/omm_gui"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
     "/.venv*",
     "/venv*",
     "/cf-worker/node_modules",
+    "/web-ui/node_modules",
     "/cf-worker/.wrangler",
     "/dist",
     "/build",

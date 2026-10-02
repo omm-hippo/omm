@@ -928,7 +928,7 @@ def _root(
         else:
             unresolved_json_command = True
     side_effect_minimal_mode = (
-        ctx.invoked_subcommand in {"doctor", "help", "engine"}
+        ctx.invoked_subcommand in {"doctor", "help", "engine", "web", "_web-worker"}
         or bool(ctx.meta.get("omm_help_requested"))
         or bool(ctx.meta.get("omm_engine_read_only"))
         or unresolved_json_command
@@ -1394,6 +1394,36 @@ def _hub_storage_bytes(reg: dict[str, Any]) -> int:
     """Total on-disk size of every omm-hub-managed model; a missing file
     contributes 0."""
     return sum(_entry_size_bytes(filename, entry) or 0 for filename, entry in reg.items())
+
+
+@app.command(name="web")
+@global_flags
+def web_cmd(
+    port: int = typer.Option(0, "--port", min=0, max=65535, help="Local loopback port; 0 chooses an available port."),
+    open_browser: bool = typer.Option(False, "--open", help="Open a browser only when explicitly requested."),
+    create_launchers: Path = typer.Option(None, "--create-launchers", help="Write personal desktop launchers and exit without opening a browser."),
+) -> None:
+    """Start the local browser interface for model management."""
+    from omm.web.server import serve
+
+    if create_launchers is not None:
+        from omm.web.launchers import create
+        try:
+            paths = create(create_launchers)
+        except (OSError, ValueError) as error:
+            err_console.print(str(error), markup=False)
+            raise typer.Exit(1) from error
+        for path in paths:
+            typer.echo(str(path))
+        return
+    serve(port, open_browser=open_browser)
+
+
+@app.command(name="_web-worker", hidden=True)
+def _web_worker_cmd() -> None:
+    """Internal worker entry for packaged executables."""
+    from omm.web.worker import main as worker_main
+    raise typer.Exit(worker_main())
 
 
 @app.command()
@@ -1976,7 +2006,7 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
 
 
 _SKIP_ONBOARDING_SUBCOMMANDS = {
-    "setup", "doctor", "help", "update", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+    "setup", "doctor", "help", "update", "web", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
 }
 
 
@@ -2094,6 +2124,7 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
 
 
 _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
+    "web",
     "update",
     "help",
     "import",
@@ -2115,7 +2146,7 @@ _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
 # as a count of <command> <outcome> the user ran. Local runlog files are not
 # uploaded, so those stay untouched.
 _INTERNAL_SUBCOMMANDS = frozenset(
-    {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run"}
+    {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run", "_web-worker"}
 )
 
 
@@ -4030,6 +4061,7 @@ def _build_recommend_json_rows(
     info: object = None,
     eligible_count: int | None = None,
 ) -> list[dict]:
+    from omm import model_wiki
     rows = recommend_ui.build_rows(ranked, refs, installations)
     budget = recommend_ui._available_memory(info, profile)
     return [
@@ -4056,6 +4088,8 @@ def _build_recommend_json_rows(
             "eligible_package_count": eligible_count,
             "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
             "quantization": recommend_ui.quantization_label(row.candidate),
+            "evidence": row.candidate.get("recommendation_evidence", {"status": "insufficient", "matching_environment_samples": None, "calibrated_interval": False}),
+            "wiki": model_wiki.describe(row.candidate),
         }
         for index, row in enumerate(rows)
     ]
@@ -4240,6 +4274,7 @@ def recommend(
         if refresh_metadata:
             _refresh_recommendation_facts(artifact, info)
         artifact = recommend_facts.apply(artifact)
+        from omm import recommend_evidence
         ranked = predictor.rank_candidates(artifact, info)
         usable = [
             (c, speed) for c, speed in ranked if speed >= predictor.MIN_USABLE_TOKENS_PER_SECOND
@@ -4269,6 +4304,7 @@ def recommend(
             installations = recommend_status.detect_installation_statuses(
                 [candidate for candidate, _speed in viable]
             )
+            viable = recommend_evidence.annotate(viable, artifact, info)
             session_cache.record_seen(refs)
             _print_json(
                 data=_build_recommend_json_rows(
@@ -4291,6 +4327,7 @@ def recommend(
         installations = recommend_status.detect_installation_statuses(
             [candidate for candidate, _speed in viable]
         )
+        viable = recommend_evidence.annotate(viable, artifact, info)
         session_cache.record_seen(refs)
         _present_recommendations(
             info, viable, refs, installations, profile, json_output=json_output,
@@ -4323,7 +4360,8 @@ def recommend(
         err_console.print("[error]No model in the current rules fits this hardware.[/error]")
         raise typer.Exit(1)
 
-    ranked_rules = [(rule, None) for rule in matches]
+    from omm import recommend_evidence
+    ranked_rules = recommend_evidence.annotate([(rule, None) for rule in matches], None, info)
     refs = [rule["name"] for rule in matches]
     installations = recommend_status.detect_installation_statuses(matches)
     session_cache.record_seen(refs)
@@ -4400,28 +4438,6 @@ def daemon_cmd(
 
 
 @app.command(name="compare")
-@global_flags
-def compare_cmd(
-    models: list[str] = typer.Argument(
-        ...,
-        help="Two to five exact model names, repositories, filenames, or install references from the signed recommendation catalog.",
-    ),
-    profile: str = typer.Option(
-        predictor.DEFAULT_RECOMMEND_PROFILE,
-        "--profile",
-        help="Memory-sharing profile: dedicated, balanced, or minimal.",
-    ),
-    purpose: str | None = typer.Option(
-        None,
-        "--for",
-        help="Optional measured-quality task: General, Coding, Reasoning, Writing, Translation, or Documents.",
-    ),
-) -> None:
-    """Compare selected catalog packages without installing or running them."""
-    from omm import compare as compare_mod
-
-    _global_opts().command_body_ran = True
-    compare_mod.compare_cmd(models, profile, purpose)
 @global_flags
 def compare_cmd(
     models: list[str] = typer.Argument(
@@ -6278,6 +6294,7 @@ def _install_impl(
     enforce_memory_guard: bool = False,
     gpu_state: dict | None = None,
     benchmark_engine: str = "ollama",
+    benchmark_after_install: bool = True,
     contribute_mode: bool = False,
     contribution_memory_estimate: contribute_memory.ContributionMemoryEstimate | None = None,
     downloaded_state: dict | None = None,
@@ -6468,7 +6485,7 @@ def _install_impl(
     guard_failure_reason = "memory_guard_blocked" if lmstudio_guard_blocked else None
     eval_error: quality_mod.QualityEvaluationError | None = None
     run_ollama_benchmark = (
-        linked["ollama"] and selected_runtime != "lmstudio" and benchmark_engine == "ollama"
+        benchmark_after_install and linked["ollama"] and selected_runtime != "lmstudio" and benchmark_engine == "ollama"
     )
     # verify_runtime_after_install (plain `omm install`'s compat check) never
     # combines with benchmark_engine != "ollama" - only `omm contribute`
@@ -6477,7 +6494,7 @@ def _install_impl(
     # this condition reduces to "the contribute loop picked LM Studio and
     # linked it."
     run_lmstudio_benchmark = (
-        linked["lmstudio"] and selected_runtime != "ollama" and benchmark_engine == "lmstudio"
+        benchmark_after_install and linked["lmstudio"] and selected_runtime != "ollama" and benchmark_engine == "lmstudio"
     )
     model_was_preloaded = False
     ollama_runtime_version = None
