@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import jinja2
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 # Add omm to path so we can import its modules
@@ -50,8 +50,12 @@ static_dir = Path(__file__).parent / "static"
 templates_dir.mkdir(exist_ok=True)
 static_dir.mkdir(exist_ok=True)
 
-templates = Jinja2Templates(directory=str(templates_dir))
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+# Use direct Jinja2 environment to avoid Starlette 1.7 + Jinja2 3.1 cache bug
+_jinja_env = jinja2.Environment(
+    loader=jinja2.FileSystemLoader(str(templates_dir.resolve())),
+    autoescape=jinja2.select_autoescape(['html', 'xml']),
+)
+app.mount("/static", StaticFiles(directory=str(static_dir.resolve())), name="static")
 
 
 # --- Pydantic Models ---
@@ -163,7 +167,8 @@ def get_external_models() -> list[dict[str, Any]]:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Main GUI page."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    template = _jinja_env.get_template("index.html")
+    return HTMLResponse(template.render(request=request))
 
 
 @app.get("/api/health")
