@@ -364,7 +364,7 @@ def test_ollama_probe_does_not_override_a_preloaded_context(runtime_server):
         for method, path, payload in reversed(state["calls"])
         if method == "POST" and path == "/api/generate" and payload.get("prompt")
     )
-    assert "num_ctx" not in probe_payload["options"]
+    assert probe_payload["options"]["num_ctx"] == 1024
 
 
 def test_ollama_unload_waits_for_async_runner_teardown(runtime_server, monkeypatch):
@@ -646,3 +646,14 @@ def test_loopback_client_classifies_error_bodies(message, expected):
 def test_response_message_returns_empty_string_for_a_body_that_is_not_json():
     response = SimpleNamespace(json=lambda: (_ for _ in ()).throw(ValueError()))
     assert LoopbackJsonClient._response_message(response) == ""
+
+
+def test_unknown_preloaded_context_is_not_changed_by_a_probe(runtime_server):
+    base_url,state=runtime_server
+    state['loaded']=True
+    state['actual_context']=None
+    adapter=OllamaAdapter(base_url)
+    with pytest.raises(RuntimeAdapterError) as error:
+        adapter.load(RuntimeModelRef('local-model'),LoadOptions())
+    assert error.value.reason=='unsupported_runtime'
+    assert not any(method=='POST' for method,_,_ in state['calls'])

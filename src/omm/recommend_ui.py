@@ -455,6 +455,19 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
     console.print(
         "[muted]Predicted speed is an estimate; actual performance can vary by runtime settings.[/muted]"
     )
+    evidence = row.candidate.get("recommendation_evidence")
+    if isinstance(evidence, dict):
+        console.print(Text("Prediction evidence: " + str(evidence.get("reason", "Unknown")), style=MUTED))
+        support = evidence.get("matching_feature_configurations")
+        if support is not None:
+            console.print(Text(f"Matching feature configurations: training {support['training']}, holdout {support['holdout']}. Exact checkpoint/device counts are unknown.", style=MUTED))
+    from omm import model_wiki
+    wiki = model_wiki.describe(row.candidate, "en")
+    if wiki:
+        console.print(Text(wiki["summary"], style="value"))
+        console.print(Text(f"Model wiki {wiki['contentVersion']} / reviewed {wiki['reviewedAt']}; descriptions are publisher/editorial claims.", style=MUTED))
+        for source in wiki["sources"]:
+            console.print(Text(source["url"], style=MUTED))
     basis = predictor.memory_estimate_basis(row.candidate)
     if basis == "model_name":
         console.print(Text(
