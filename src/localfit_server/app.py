@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from localfit_server.db import BenchmarkStore
@@ -475,6 +476,18 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url=None,
 )
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    """Redirect root to API documentation."""
+    return RedirectResponse(url="/docs")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    """Return empty response for favicon requests."""
+    return Response(status_code=204)
 
 
 def require_ingest(
