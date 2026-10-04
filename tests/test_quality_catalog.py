@@ -7,7 +7,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from omm import catalog, compare, quality_catalog
+from omm import catalog, quality_catalog
 
 
 def document(**overrides):

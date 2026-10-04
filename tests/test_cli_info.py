@@ -7,6 +7,47 @@ from omm import cli, linker, registry
 runner = CliRunner()
 
 
+def test_info_compares_installed_packages_without_catalog(isolated_omm_home, monkeypatch):
+    registry.save_registry({"small.gguf": _entry(), "large.gguf": _entry(size_bytes=5 * 1024**3)})
+    monkeypatch.setattr(cli, "_load_recommendation_with_change_note", lambda *a, **k: (_ for _ in ()).throw(AssertionError("catalog must not be loaded")))
+    result = runner.invoke(cli.app, ["info", "small.gguf", "large.gguf", "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert [row["size_bytes"] for row in data["models"]] == [2 * 1024**3, 5 * 1024**3]
+    assert all(row["installed"] for row in data["models"])
+
+
+def test_info_mixes_installed_and_remote_packages(isolated_omm_home, monkeypatch):
+    registry.save_registry({"local.gguf": _entry()})
+    _stub_remote(monkeypatch, metadata={"license": "apache-2.0", "architecture": "qwen2"})
+    result = runner.invoke(cli.app, ["info", "local.gguf", "another/repo"])
+    assert result.exit_code == 0, result.output
+    assert "local.gguf" in result.stdout
+    assert "apache-2.0" in result.stdout
+    assert "Unknown" in result.stdout
+    assert "not installed" in result.stdout
+
+
+def test_info_multiple_numeric_references_and_duplicate_alias(isolated_omm_home, monkeypatch):
+    registry.save_registry({"small.gguf": _entry(), "large.gguf": _entry()})
+    monkeypatch.setattr(cli.session_cache, "load_last_results", lambda: ["small.gguf", "large.gguf"])
+    result = runner.invoke(cli.app, ["info", "1", "2", "--json"])
+    assert result.exit_code == 0, result.output
+    assert [row["filename"] for row in json.loads(result.stdout)["models"]] == ["small.gguf", "large.gguf"]
+    duplicate = runner.invoke(cli.app, ["info", "1", "small.gguf", "--json"])
+    assert duplicate.exit_code == 2
+    assert "more than once" in duplicate.stderr
+    assert json.loads(duplicate.stdout)["status"] == "error"
+    assert "models" not in json.loads(duplicate.stdout)
+
+
+def test_compare_command_is_removed_without_hidden_alias(isolated_omm_home):
+    assert "compare" not in cli._REGISTERED_COMMAND_NAMES
+    result = runner.invoke(cli.app, ["compare", "a", "b"])
+    assert result.exit_code == 2
+    assert "No such command" in result.stderr
+
+
 def _all_linked(**overrides) -> dict:
     linked = {spec.key: False for spec in linker.ENGINES}
     linked.update(overrides)

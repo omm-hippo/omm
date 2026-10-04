@@ -455,6 +455,9 @@ def test_training_audit_explains_rejections_and_duplicate_collapse():
 
     assert len(X) == 1
     assert y == [15]
+    repetition = audit.pop("repetition_balance")
+    assert repetition["effective_speed_groups"] == 2
+    assert repetition["independent_device_count"] is None
     assert audit == {
         "raw_rows": 5,
         "valid_rows": 2,
@@ -824,14 +827,29 @@ def test_training_data_with_synthetic_prior_weights_real_rows(monkeypatch):
     assert weights == [1.0, 8.0, 8.0]
 
 
-def test_configuration_median_uses_all_bounded_rows_not_only_first_fifty():
+def test_configuration_balance_uses_all_rows_without_a_frequency_vote():
     rows = [_v6_row(1) for _ in range(50)] + [_v6_row(100) for _ in range(51)]
 
     _X, y, audit = train_model.real_rows_to_training_data_with_audit(rows)
 
-    assert y == [100]
+    assert y == [50.5]
     assert audit["samples_used"] == 101
     assert audit["samples_capped"] == 0
+    assert audit["repetition_balance"]["effective_speed_groups"] == 2
+    assert audit["repetition_balance"]["repeat_samples_collapsed"] == 99
+
+
+def test_near_duplicate_poisoning_keeps_same_configurations_and_speed_order():
+    honest = [_v6_row(speed) for speed in (10, 15, 20)] + [_v6_row(22, ram_gb=32)]
+    reference = honest + [_v6_row(40)]
+    burst = honest + [_v6_row(40 + i / 1000) for i in range(1000)]
+    X1, y1, audit1 = train_model.real_rows_to_training_data_with_audit(reference)
+    X2, y2, audit2 = train_model.real_rows_to_training_data_with_audit(burst)
+    assert X1 == X2
+    assert y1 == y2 == [17.5, 22]
+    assert audit1["unique_configurations"] == audit2["unique_configurations"] == 2
+    assert audit2["valid_rows"] == len(burst)
+    assert audit2["repetition_balance"]["repeat_samples_collapsed"] == 999
 
 
 @pytest.mark.parametrize("weight", [0.0, -1.0, float("inf"), float("nan")])

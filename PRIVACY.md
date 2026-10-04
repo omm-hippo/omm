@@ -138,7 +138,16 @@ or sent anywhere.
 default it includes OMM version, install source, a command name, exception
 class, and diagnostic status/counts. It excludes usernames, home/personal
 paths, tokens, environment variables, search text, command arguments,
-generated text, and model names. Optional OS, upload-policy, and check-name
+generated text, and model names. Optional OS, upload-policy, check-name, and stage-count
 groups are included only when selected with `--include`. The full JSON is
 printed before `--save`; the command never uploads it, opens a GitHub issue,
 or sends a message.
+
+`--include stages` counts setup, recommendation, installation, download and link
+outcomes in at most 50 recent local logs. Only fixed stage names, numeric counts
+and fixed recovery instructions enter the report. A later success is labelled
+as a later success, not proof that the same failed request recovered. These
+local summaries are never read by the usage, crash or benchmark senders.
+Usage tallies accept only registered command names and known outcomes; malformed
+pending records become `unknown`. Only known exception identifiers appear;
+other values are grouped as `OtherError`, and exception messages are excluded.

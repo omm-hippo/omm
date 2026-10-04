@@ -15,6 +15,7 @@ about. See ``docs/superpowers/specs/2026-08-30-usage-stats-design.md`` and
 from __future__ import annotations
 
 import json
+import builtins
 import platform
 import re
 import time
@@ -33,6 +34,20 @@ _TALLY_MAX_KEYS = 100
 _FLUSH_INTERVAL_S = 24 * 3600
 _MAX_LOG_LINES = 500
 _DETAIL_SLICE = 300
+_ERROR_NAMES = {
+    name for name, value in vars(builtins).items()
+    if isinstance(value, type) and issubclass(value, BaseException)
+} | {
+    "Timeout", "ReadTimeout", "ConnectTimeout", "HTTPError", "RequestException",
+    "TooManyRedirects", "DownloadError", "ModelResolutionError", "RuntimeAdapterError",
+    "CatalogVerificationError", "QualityCatalogError", "EngineManagementError",
+    "PackageQueryError", "FileLockTimeout", "GenerationError", "ProfileError",
+}
+
+
+def error_category(value: object) -> str:
+    """Only known exception identifiers, never an arbitrary pending value."""
+    return value if isinstance(value, str) and value in _ERROR_NAMES else "OtherError"
 
 
 def _pending_path():
@@ -213,14 +228,20 @@ def _snapshot(*, create_client_id: bool = True) -> dict:
 
 
 def _aggregate(rows: list[dict]) -> tuple[dict, dict]:
+    from omm.cli import _REGISTERED_COMMAND_NAMES
+
     commands: Counter = Counter()
     errors: Counter = Counter()
     for r in rows:
-        cmd = r.get("c", "unknown")
-        out = r.get("o", "unknown")
+        command = r.get("c")
+        cmd = command if isinstance(command, str) and command in _REGISTERED_COMMAND_NAMES else "unknown"
+        outcome = r.get("o")
+        out = outcome if isinstance(outcome, str) and outcome in {"ok", "failed", "cancelled", "usage_error"} else "unknown"
         commands[f"{cmd} {out}"] += 1
-        if r.get("e"):
-            errors[f"{cmd} {r['e']}"] += 1
+        error = r.get("e")
+        if isinstance(error, str) and error:
+            name = error_category(error)
+            errors[f"{cmd} {name}"] += 1
     return (
         dict(sorted(commands.items())[:_TALLY_MAX_KEYS]),
         dict(sorted(errors.items())[:_TALLY_MAX_KEYS]),
