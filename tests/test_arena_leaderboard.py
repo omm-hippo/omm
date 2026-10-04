@@ -82,9 +82,9 @@ def test_cache_survives_restart_and_is_reverified_without_network(isolated_omm_h
     restored, cached = board.load(public, offline=True)
     assert restored == data and cached
     path = config.OMM_HOME / "arena" / "leaderboard-cache.json"
-    envelope = json.loads(path.read_text())
+    envelope = json.loads(path.read_text(encoding="utf-8"))
     envelope["content"] += " "
-    path.write_text(json.dumps(envelope))
+    path.write_text(json.dumps(envelope), encoding="utf-8")
     with pytest.raises(board.LeaderboardError):
         board.load(public, offline=True)
 

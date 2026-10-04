@@ -42,10 +42,10 @@ def test_training_diagnostics_keep_holdout_separate_from_synthetic_prior():
 
 def test_standalone_report_writes_reopenable_json_and_markdown(tmp_path):
     source = tmp_path / "empty.json"
-    source.write_text("[]")
+    source.write_text("[]", encoding="utf-8")
     output, text = tmp_path / "coverage.json", tmp_path / "coverage.md"
     result = subprocess.run([sys.executable, "scripts/benchmark_coverage.py", "--telemetry-file", str(source), "--output", str(output), "--markdown", str(text)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    report = json.loads(output.read_text())
+    report = json.loads(output.read_text(encoding="utf-8"))
     assert report["raw_measurement_rows"] == report["real_training_configurations"] == 0
-    assert "Benchmark coverage" in text.read_text()
+    assert "Benchmark coverage" in text.read_text(encoding="utf-8")

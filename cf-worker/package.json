@@ -9,6 +9,9 @@
     "test": "vitest run",
     "secret:firebase-key": "wrangler secret put FIREBASE_SERVICE_ACCOUNT_JSON"
   },
+  "overrides": {
+    "undici": "7.29.1"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260918.1",
     "typescript": "^7.0.2",

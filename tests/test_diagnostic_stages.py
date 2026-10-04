@@ -11,7 +11,7 @@ def write_run(home, name, command, outcome=None, events=()):
     records.extend({"event": e, "file": "private-model.gguf", "url": "https://user:TEST_SECRET@example.test/"} for e in events)
     if outcome:
         records.append({"event": "run_end", "outcome": outcome})
-    (root / name).write_text("\n".join(map(json.dumps, records)))
+    (root / name).write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
 
 
 def test_local_stage_counts_explain_failure_and_later_success_without_identity(isolated_omm_home):
@@ -38,7 +38,7 @@ def test_symlinked_logs_are_not_read(isolated_omm_home, tmp_path):
     root = isolated_omm_home / "logs"
     root.mkdir()
     secret = tmp_path / "private.jsonl"
-    secret.write_text("not a log")
+    secret.write_text("not a log", encoding="utf-8")
     (root / "1.jsonl").symlink_to(secret)
     report = diagnostic_stages.collect()
     assert report["files_scanned"] == 0
@@ -78,7 +78,7 @@ def test_usage_opt_out_and_wire_payload_with_real_local_receiver(isolated_omm_ho
     monkeypatch.setattr(telemetry, "_solve_proof_of_work", lambda payload: (1, 0))
     monkeypatch.setattr(usage, "_snapshot", lambda **kwargs: {"schema_version": 1, "client_id": "test-local-device"})
     try:
-        usage._pending_path().write_text(json.dumps([{"c": "install", "o": "failed", "e": "RuntimeError", "message": "TEST_SECRET /private/model.gguf"}]))
+        usage._pending_path().write_text(json.dumps([{"c": "install", "o": "failed", "e": "RuntimeError", "message": "TEST_SECRET /private/model.gguf"}]), encoding="utf-8")
         config.update_config(usage_stats_policy="never")
         assert not usage.flush_pending(force=True)
         assert received == []
@@ -99,7 +99,7 @@ def test_usage_opt_out_and_wire_payload_with_real_local_receiver(isolated_omm_ho
 
 def test_optional_policy_group_does_not_echo_invalid_config_values(isolated_omm_home, monkeypatch):
     from types import SimpleNamespace
-    support_report.config.CONFIG_PATH.write_text(json.dumps({"telemetry_send_policy": "TEST_SECRET", "error_report_send_policy": "TEST_SECRET"}))
+    support_report.config.CONFIG_PATH.write_text(json.dumps({"telemetry_send_policy": "TEST_SECRET", "error_report_send_policy": "TEST_SECRET"}), encoding="utf-8")
     report = support_report.build(SimpleNamespace(status="PASS", checks=[]), include=["policies", "stages"])
     assert "TEST_SECRET" not in support_report.preview(report)
     assert "stage_diagnostics" in report
