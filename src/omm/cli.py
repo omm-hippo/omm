@@ -314,6 +314,7 @@ _JSON_CAPABLE = {
     "tune",
     "scan",
     "recommend",
+    "arena",
     "evaluate",
     "doctor",
     "fit",
@@ -654,6 +655,12 @@ class _DocsEpilogGroup(typer.core.TyperGroup):
         return command
 
 
+def _local_read_only_args(args: list[str]) -> bool:
+    before = args[:args.index("--")] if "--" in args else args
+    commands = [token for token in before if not token.startswith("-")]
+    return bool(commands) and commands[0] in {"doctor", "bug-report", "arena"}
+
+
 class _RootHelpGroup(_DocsEpilogGroup):
     """Homebrew-style curated `omm --help`/`omm help` - a short list of
     common commands instead of the full alphabetical listing of every
@@ -670,6 +677,7 @@ class _RootHelpGroup(_DocsEpilogGroup):
         ctx.meta["omm_help_requested"] = _help_option_requested(args)
         ctx.meta["omm_json_requested"] = option_requested(args, "--json")
         ctx.meta["omm_engine_read_only"] = engine_read_only_args(args)
+        ctx.meta["omm_local_read_only"] = _local_read_only_args(args)
         try:
             return super().parse_args(ctx, args)
         except UsageError as error:
@@ -926,9 +934,10 @@ def _root(
         else:
             unresolved_json_command = True
     side_effect_minimal_mode = (
-        ctx.invoked_subcommand in {"doctor", "help", "engine"}
+        ctx.invoked_subcommand in {"doctor", "bug-report", "help", "engine"}
         or bool(ctx.meta.get("omm_help_requested"))
         or bool(ctx.meta.get("omm_engine_read_only"))
+        or bool(ctx.meta.get("omm_local_read_only"))
         or unresolved_json_command
     )
     theme = (
@@ -4326,6 +4335,54 @@ def recommend(
         info, ranked_rules, refs, installations, profile, json_output=json_output,
         auto_yes=auto_yes, eligible_count=len(matches),
     )
+
+
+@app.command(name="arena")
+@global_flags
+def arena_cmd(
+    leaderboard: bool = typer.Option(False, "--leaderboard", help="Show signed public quality tiers and efficiency comparison groups."),
+    offline: bool = typer.Option(False, "--offline", help="Use only the verified cached leaderboard."),
+) -> None:
+    """Read verified public arena rankings without loading models or sending votes.
+
+    Use --leaderboard to select this read-only view and --offline for its cache.
+    """
+    if not leaderboard:
+        err_console.print("Use `omm arena --leaderboard` to read the public quality tiers.")
+        raise typer.Exit(2)
+    from omm import arena_leaderboard
+
+    try:
+        document, cached = arena_leaderboard.load(
+            arena_leaderboard.read_public_key(), offline=offline
+        )
+    except (arena_leaderboard.LeaderboardError, OSError, ValueError) as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(1) from error
+    models = arena_leaderboard.ordered_models(document)
+    if _global_opts().json:
+        _print_json(data={**document, "models": models, "verified": True, "cached": cached, "age_days": arena_leaderboard.age_days(document)})
+        return
+    view = _table(title="Arena quality tiers")
+    for heading in ("Tier", "Model", "Effective battles", "Efficiency group / rating", "Both bad"):
+        view.add_column(heading, overflow="fold")
+    for model in models:
+        measured = model.get("efficiency")
+        view.add_row(
+            "Provisional" if model["provisional"] else str(model["quality"]["tier"]),
+            escape(model.get("display_filename") or model["key"]),
+            f"{model['effective_battles']:.1f}",
+            f"{measured['component']} / {measured['rating']:+.2f}" if measured else "Not measured",
+            f"{model['both_bad_rate']:.0%}" + (" · warning" if model["quality_warning"] else ""),
+        )
+    console.print(view)
+    console.print(f"[muted]Verified artifact · {escape(document['generated_at'])}" + (" · cached" if cached else "") + "[/muted]")
+    console.print("[muted]Efficiency is comparable only inside the same quality tier and efficiency group. Provisional models are not ranked.[/muted]")
+    if arena_leaderboard.age_days(document) > 7:
+        console.print("[warning]This leaderboard is more than seven days old.[/warning]")
+    if not models:
+        console.print("No ranked or provisional models are available.")
+    return
 
 
 def _present_recommendations(
@@ -12666,7 +12723,7 @@ def main() -> None:
     # of git/pipx/ollama before any verification happens. Shared with trust so
     # there is one implementation; harmless on POSIX.
     trust._forbid_cwd_executable_lookup()
-    if engine_read_only_args(sys.argv[1:]):
+    if engine_read_only_args(sys.argv[1:]) or _local_read_only_args(sys.argv[1:]):
         # Diagnostics must not create a run log, usage batch, or crash queue.
         app(prog_name="omm")
         return

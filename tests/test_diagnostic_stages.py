@@ -99,7 +99,7 @@ def test_usage_opt_out_and_wire_payload_with_real_local_receiver(isolated_omm_ho
 
 def test_optional_policy_group_does_not_echo_invalid_config_values(isolated_omm_home, monkeypatch):
     from types import SimpleNamespace
-    monkeypatch.setattr(support_report.config, "load_config", lambda: {"telemetry_send_policy": "TEST_SECRET", "error_report_send_policy": "TEST_SECRET"})
+    support_report.config.CONFIG_PATH.write_text(json.dumps({"telemetry_send_policy": "TEST_SECRET", "error_report_send_policy": "TEST_SECRET"}))
     report = support_report.build(SimpleNamespace(status="PASS", checks=[]), include=["policies", "stages"])
     assert "TEST_SECRET" not in support_report.preview(report)
     assert "stage_diagnostics" in report

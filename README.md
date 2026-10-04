@@ -432,6 +432,7 @@ omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, ke
 omm scan [--json]  # Memory, storage, installed runners, and models
 omm doctor [--json]  # Read-only diagnostics plus safe next steps for installation and Ollama findings
 omm bug-report [--include os|policies|checks|stages] [--save PATH]  # Preview and save local diagnostics and optional stage counts
+omm arena --leaderboard [--offline] [--json]  # Read signed public quality tiers and efficiency groups
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save

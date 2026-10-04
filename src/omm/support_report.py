@@ -109,8 +109,8 @@ def build(doctor_report, *, include: Iterable[str] = ()) -> dict[str, object]:
         report["os"] = {"name": platform.system() or "unknown", "arch": platform.machine() or "unknown"}
     if "policies" in selected:
         try:
-            data = config.load_config()
-        except Exception:
+            data = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             data = {}
         if not isinstance(data, dict):
             data = {}

@@ -236,7 +236,7 @@ def _aggregate(rows: list[dict]) -> tuple[dict, dict]:
         command = r.get("c")
         cmd = command if isinstance(command, str) and command in _REGISTERED_COMMAND_NAMES else "unknown"
         outcome = r.get("o")
-        out = outcome if isinstance(outcome, str) and outcome in {"ok", "failed", "cancelled", "usage_error"} else "unknown"
+        out = outcome if isinstance(outcome, str) and outcome in {"ok", "failed", "cancelled", "interrupted", "usage-error", "usage_error"} else "unknown"
         commands[f"{cmd} {out}"] += 1
         error = r.get("e")
         if isinstance(error, str) and error:
