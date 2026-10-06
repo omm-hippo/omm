@@ -100,7 +100,12 @@ def test_help_all_is_a_compact_listing_not_a_full_flag_dump():
     assert "--skip-unfit" not in result.stdout
     assert "--manifest-url" not in result.stdout
     assert "full option list" in result.stdout
-    assert len(result.stdout.splitlines()) < 100
+    # Measured against the full dump rather than a fixed line count: a fixed
+    # cap of 100 started failing the day the command list itself grew to 100
+    # lines, with no flag text anywhere in it.
+    full_dump = runner.invoke(cli.app, ["help", "--all", "--flags"])
+    assert full_dump.exit_code == 0, full_dump.stdout
+    assert len(result.stdout.splitlines()) * 2 < len(full_dump.stdout.splitlines())
 
 
 def test_help_all_hints_at_flags_option():
