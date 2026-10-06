@@ -2299,6 +2299,8 @@ class _LegacyPipxState:
 
 
 def _run_pipx_query(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
+    # `pipx uninstall` rewrites the shared app links just like an install.
+    _release_launcher_file_handles()
     try:
         return subprocess.run(
             args,
@@ -2837,7 +2839,30 @@ def _pipx_child_env() -> dict[str, str]:
     return env
 
 
+def _release_launcher_file_handles() -> None:
+    """Let a pipx child replace the `omm.exe` this process was started from.
+
+    The Windows pipx launcher runs `python.exe <bin>\\omm.exe`, which makes
+    the launcher itself `sys.path[0]` (it is a zip holding `__main__.py`).
+    `importlib.metadata` opens every zip on `sys.path` it scans and keeps
+    that `ZipFile` alive in its `FastPath` cache, so after the first version
+    or dependency lookup this process holds `omm.exe` open without delete
+    sharing. pipx can then neither unlink the old launcher nor move it to
+    its trash, and `pipx install --force` dies with WinError 32 at the very
+    last step. Dropping the cache closes the handle; the still-running
+    launcher image itself only blocks the unlink, and pipx already falls
+    back to a rename for that."""
+    if platform.system() != "Windows":
+        return
+    import gc
+    import importlib
+
+    importlib.invalidate_caches()
+    gc.collect()
+
+
 def _run_pipx_install(args: list[str], progress: Progress, task_id) -> subprocess.CompletedProcess:
+    _release_launcher_file_handles()
     proc = subprocess.Popen(
         args,
         stdout=subprocess.PIPE,

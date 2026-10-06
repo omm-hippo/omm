@@ -1764,6 +1764,66 @@ def test_pipx_child_env_adds_the_user_scripts_directory(monkeypatch, tmp_path):
     assert env["PYTHONIOENCODING"] == "utf-8"
 
 
+def _open_handles_on(path: Path) -> list:
+    import gc
+    import io
+
+    target = str(path)
+    return [
+        obj
+        for obj in gc.get_objects()
+        if isinstance(obj, io.IOBase) and not obj.closed and getattr(obj, "name", None) == target
+    ]
+
+
+def test_release_launcher_file_handles_closes_the_metadata_zip_handle(monkeypatch, tmp_path):
+    # Stand-in for `~/.local/bin/omm.exe`: the Windows launcher is a zip on
+    # sys.path[0], and an importlib.metadata lookup leaves it open - which is
+    # what stopped pipx from replacing the running launcher (WinError 32).
+    import importlib.metadata
+    import zipfile
+
+    launcher = tmp_path / "omm.exe"
+    with zipfile.ZipFile(launcher, "w") as archive:
+        archive.writestr("__main__.py", "")
+    monkeypatch.syspath_prepend(str(launcher))
+    monkeypatch.setattr(cli.platform, "system", lambda: "Windows")
+
+    # `distributions()` rather than `version()`: this file's autouse fixture
+    # stubs `importlib.metadata.distribution`, which would skip the real scan.
+    list(importlib.metadata.distributions())
+    assert _open_handles_on(launcher)
+
+    cli._release_launcher_file_handles()
+
+    assert _open_handles_on(launcher) == []
+    launcher.rename(tmp_path / "trashed.omm.exe")
+
+
+@pytest.mark.parametrize("runner", ["install", "query"])
+def test_pipx_children_start_after_launcher_handles_are_released(monkeypatch, runner):
+    events = []
+    monkeypatch.setattr(cli, "_release_launcher_file_handles", lambda: events.append("release"))
+    monkeypatch.setattr(
+        cli.subprocess, "Popen", lambda args, **kwargs: events.append("pipx") or _FakeProc([])
+    )
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda args, **kwargs: events.append("pipx")
+        or subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+
+    if runner == "install":
+        with Progress(console=Console(quiet=True)) as progress:
+            task_id = progress.add_task("upgrade", total=len(cli._PIPX_INSTALL_STAGES))
+            cli._run_pipx_install(["pipx", "install"], progress, task_id)
+    else:
+        cli._run_pipx_query(["pipx", "uninstall", "omm"])
+
+    assert events == ["release", "pipx"]
+
+
 def test_run_pipx_install_advances_progress_on_known_stage_lines(monkeypatch):
     lines = [
         "creating virtual environment...\n",
