@@ -89,6 +89,41 @@ def _hardware() -> HardwareInfo:
     )
 
 
+@pytest.mark.parametrize("profile, expected_sizes", [
+    ("minimal", {"1.2B", "2.4B"}),
+    ("balanced", {"1.2B", "2.4B", "7.8B"}),
+    ("dedicated", {"1.2B", "2.4B", "7.8B"}),
+])
+def test_exaone_is_visible_with_published_predictor_on_24gb_mac(
+    monkeypatch, isolated_omm_home, profile, expected_sizes,
+):
+    from pathlib import Path
+    from scripts.fetch_candidates import curated_candidates
+
+    # Use the published forest with a controlled candidate pool, so unrelated
+    # nightly popularity changes cannot invalidate this eligibility check.
+    artifact_path = Path(__file__).resolve().parents[1] / "published" / "localfit-recommend-model.json"
+    artifact = json.loads(artifact_path.read_text())
+    artifact["candidates"] = [
+        c for c in curated_candidates() if c["repo_id"].startswith("LGAI-EXAONE/")
+    ]
+    hw = HardwareInfo("macOS", "", "Apple M5", 24, 18, True, "Apple M5", 24, 18)
+    monkeypatch.setattr(cli, "scan_hardware", lambda: hw)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(cli, "_load_recommendation_with_change_note", lambda config: (artifact, False))
+
+    result = runner.invoke(cli.app, ["recommend", "--profile", profile, "--json"])
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    exaone = [row for row in rows if "exaone" in row["ref"].lower()]
+    assert len(rows) <= 10
+    assert len(exaone) == len(expected_sizes)
+    assert all(any(size.lower() in row["ref"] for row in exaone) for size in expected_sizes)
+    assert all(row["model_type"] == "LLM" and row["within_profile"] for row in exaone)
+    assert all("32b" not in row["ref"] for row in exaone)
+
+
 def test_recommend_builds_choice_values_via_exact_install_ref(monkeypatch, isolated_omm_home):
     candidate = {
         "name": "org/repo",

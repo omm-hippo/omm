@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Exact bundled artifacts only: another filename/provider is not evidence of
+# the same capabilities. Sources are documented in recommendation-labels.md.
+from omm.hub import CURATED_INDEX as _CURATED
 
 @dataclass(frozen=True)
 class ModelLabels:
@@ -19,23 +22,6 @@ class ModelLabels:
     features: tuple[str, ...] = ()
 
 
-# Exact bundled artifacts only: a similar name or another provider is not
-# evidence that a model has the same capabilities. Sources are documented in
-# docs/recommendation-labels.md.
-_CURATED = {
-    "tinyllama-1.1b-q4": (
-        "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
-        "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-    ),
-    "llama3.1-8b-instruct-q4": (
-        "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
-        "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-    ),
-    "mistral-7b-instruct-q4": (
-        "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
-        "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
-    ),
-}
 _VLM_TASKS = {
     "vlm", "vision", "image-text-to-text", "image-to-text",
     "visual-question-answering", "document-question-answering",

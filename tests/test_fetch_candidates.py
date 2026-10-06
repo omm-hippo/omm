@@ -28,6 +28,43 @@ class _FakeResponse:
         return self.payload
 
 
+def test_exaone_survives_repeated_refreshes_and_provider_outages(monkeypatch, tmp_path):
+    def unavailable():
+        raise fetch_candidates.requests.RequestException("provider unavailable")
+
+    monkeypatch.setattr(fetch_candidates, "fetch_trending_candidates", unavailable)
+    monkeypatch.setattr(fetch_candidates, "fetch_modelscope_candidates", unavailable)
+    output = tmp_path / "candidates.json"
+    monkeypatch.setattr(fetch_candidates, "OUTPUT_PATH", output)
+
+    for _ in range(2):
+        fetch_candidates.main()
+        candidates = json.loads(output.read_text(encoding="utf-8"))
+        exaone = [c for c in candidates if c["repo_id"].startswith("LGAI-EXAONE/")]
+        assert {c["filename"] for c in exaone} == {
+            "EXAONE-4.0-1.2B-Q4_K_M.gguf",
+            "EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf",
+            "EXAONE-3.5-7.8B-Instruct-Q4_K_M.gguf",
+            "EXAONE-4.0-32B-Q4_K_M.gguf",
+        }
+        assert all(recommend_metadata.classify(c).model_type == "LLM" for c in exaone)
+
+
+def test_curated_exaone_keeps_exact_q4_file_when_trending_repeats_repo(monkeypatch, tmp_path):
+    original = next(c for c in fetch_candidates.curated_candidates() if c["name"] == "exaone4.0-1.2b-q4")
+    monkeypatch.setattr(fetch_candidates, "fetch_trending_candidates", lambda: [
+        dict(original, filename="EXAONE-4.0-1.2B-Q8_0.gguf"),
+    ])
+    monkeypatch.setattr(fetch_candidates, "fetch_modelscope_candidates", lambda: [])
+    output = tmp_path / "candidates.json"
+    monkeypatch.setattr(fetch_candidates, "OUTPUT_PATH", output)
+
+    fetch_candidates.main()
+
+    matching = [c for c in json.loads(output.read_text()) if c["repo_id"] == original["repo_id"]]
+    assert matching == [original]
+
+
 def test_provider_metadata_survives_fetch_publish_and_display(monkeypatch, tmp_path):
     import json
 

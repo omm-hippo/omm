@@ -1174,6 +1174,22 @@ def test_quality_gate_insufficient_data_refuses_malformed_baseline(tmp_path, mon
     assert not output.exists()
 
 
+def test_training_fallback_retains_exaone_task_metadata(tmp_path, monkeypatch):
+    from omm.recommend_metadata import classify
+
+    script = tmp_path / "scripts" / "train_model.py"
+    monkeypatch.setattr(train_model, "__file__", str(script))
+    train_model.load_candidates.cache_clear()
+    try:
+        candidates = train_model.load_candidates()
+    finally:
+        train_model.load_candidates.cache_clear()
+
+    exaone = [c for c in candidates if c["repo_id"].startswith("LGAI-EXAONE/")]
+    assert len(exaone) == 4
+    assert all(classify(c).model_type == "LLM" for c in exaone)
+
+
 def test_load_candidates_rejects_malformed_or_duplicate_publication(tmp_path, monkeypatch):
     scripts_dir = tmp_path / "scripts"
     published_dir = tmp_path / "published"

@@ -29,6 +29,7 @@ FAMILY_KEYWORDS: list[str] = [
     "StableLM",
     "Falcon",
     "Yi",
+    "EXAONE",
 ]
 
 # HF is full of spam repos claiming to be "distilled" or "fine-tuned" from
@@ -188,6 +189,7 @@ def _curated_as_candidates() -> list[dict]:
             "repo_id": repo_id,
             "filename": filename,
             "description": "Curated default",
+            **hub.CURATED_METADATA.get(name, {}),
         }
         for name, (repo_id, filename) in hub.CURATED_INDEX.items()
     ]

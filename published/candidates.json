@@ -21,6 +21,38 @@
     "provider": "huggingface"
   },
   {
+    "name": "exaone4.0-1.2b-q4",
+    "repo_id": "LGAI-EXAONE/EXAONE-4.0-1.2B-GGUF",
+    "filename": "EXAONE-4.0-1.2B-Q4_K_M.gguf",
+    "description": "Curated default",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation"
+  },
+  {
+    "name": "exaone3.5-2.4b-instruct-q4",
+    "repo_id": "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct-GGUF",
+    "filename": "EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf",
+    "description": "Curated default",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation"
+  },
+  {
+    "name": "exaone3.5-7.8b-instruct-q4",
+    "repo_id": "LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct-GGUF",
+    "filename": "EXAONE-3.5-7.8B-Instruct-Q4_K_M.gguf",
+    "description": "Curated default",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation"
+  },
+  {
+    "name": "exaone4.0-32b-q4",
+    "repo_id": "LGAI-EXAONE/EXAONE-4.0-32B-GGUF",
+    "filename": "EXAONE-4.0-32B-Q4_K_M.gguf",
+    "description": "Curated default",
+    "provider": "huggingface",
+    "pipeline_tag": "text-generation"
+  },
+  {
     "name": "unsloth-qwen3-coder-30b-a3b-instruct-gguf",
     "repo_id": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
     "filename": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",

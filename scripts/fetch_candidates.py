@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from omm import search as search_mod  # noqa: E402
 from omm.atomic import atomic_write_text, locked  # noqa: E402
 from omm.featurize import parse_param_count_billions  # noqa: E402
-from omm.hub import CURATED_INDEX  # noqa: E402
+from omm.hub import CURATED_INDEX, CURATED_METADATA  # noqa: E402
 from omm.linker import sanitize_ollama_tag  # noqa: E402
 from omm.recommend_metadata import catalog_metadata  # noqa: E402
 from omm.search import _claims_fake_provenance, pick_gguf_file  # noqa: E402
@@ -104,6 +104,7 @@ def curated_candidates() -> list[dict]:
             "filename": filename,
             "description": "Curated default",
             "provider": "huggingface",
+            **CURATED_METADATA.get(name, {}),
         }
         for name, (repo_id, filename) in CURATED_INDEX.items()
     ]

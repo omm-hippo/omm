@@ -72,8 +72,19 @@ def test_local_candidate_pool_merges_curated_and_cached_and_dedupes(monkeypatch)
     repo_ids = [c["repo_id"] for c in pool]
     assert repo_ids.count("TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF") == 1
     assert "Qwen/Qwen2.5-7B-Instruct-GGUF" in repo_ids
-    # 3 curated (tinyllama/llama3.1/mistral) + 1 new qwen from the cache = 4
-    assert len(pool) == 4
+    assert len(pool) == len(search_mod.hub.CURATED_INDEX) + 1
+
+
+def test_exaone_search_is_available_without_a_catalog_or_network(monkeypatch):
+    from omm.recommend_metadata import classify
+
+    monkeypatch.setattr(search_mod.predictor, "load_model", lambda *args: None)
+    pool = search_mod.local_candidate_pool(None)
+    exaone = [c for c in pool if search_mod.guess_family(c["repo_id"]) == "EXAONE"]
+
+    assert len(exaone) == 4
+    assert all(classify(c).model_type == "LLM" for c in exaone)
+    assert all(search_mod.exact_install_ref(c) in search_mod.hub.CURATED_INDEX for c in exaone)
 
 
 def test_local_candidate_pool_forwards_manifest_and_public_key_to_load_model(monkeypatch):

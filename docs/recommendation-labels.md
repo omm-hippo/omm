@@ -38,6 +38,16 @@ their static-rule aliases), classified as LLM / General from their model cards:
 - [TinyLlama Chat](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)
 - [Llama 3.1 Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct)
 - [Mistral v0.2 Instruct](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2)
+- [EXAONE 4.0 1.2B](https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-1.2B-GGUF)
+- [EXAONE 3.5 2.4B Instruct](https://huggingface.co/LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct-GGUF)
+- [EXAONE 3.5 7.8B Instruct](https://huggingface.co/LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct-GGUF)
+- [EXAONE 4.0 32B](https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-32B-GGUF)
+
+These official LG Q4_K_M packages are included in the curated candidate source,
+so refreshes retain them even when they are absent from provider popularity
+results. Hardware memory and speed checks still apply, and shortlist diversity
+treats their versions and sizes as one EXAONE family. Inclusion does not imply
+measured quality or that every package will fit every machine.
 
 The existing HF and ModelScope searches now preserve task metadata they already
 receive. This adds no provider requests. Future generated/signed catalogs carry
