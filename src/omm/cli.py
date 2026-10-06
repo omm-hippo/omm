@@ -4234,6 +4234,7 @@ def recommend(
     if artifact and artifact.get("candidates"):
         from omm import recommend_facts
 
+        artifact = search_mod.with_curated_candidates(artifact)
         if refresh_metadata:
             _refresh_recommendation_facts(artifact, info)
         artifact = recommend_facts.apply(artifact)

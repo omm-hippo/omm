@@ -87,6 +87,23 @@ def test_exaone_search_is_available_without_a_catalog_or_network(monkeypatch):
     assert all(search_mod.exact_install_ref(c) in search_mod.hub.CURATED_INDEX for c in exaone)
 
 
+def test_curated_overlay_preserves_signed_rows_and_deduplicates_exact_packages():
+    from copy import deepcopy
+
+    signed = dict(search_mod._curated_as_candidates()[-1], size_bytes=123456789)
+    artifact = {"candidates": [signed], "trees": [{"value": 10.0}]}
+    before = deepcopy(artifact)
+
+    enriched = search_mod.with_curated_candidates(artifact)
+
+    matches = [c for c in enriched["candidates"] if c["repo_id"] == signed["repo_id"]]
+    assert matches == [signed]
+    assert len(enriched["candidates"]) == len(search_mod.hub.CURATED_INDEX)
+    assert enriched["trees"] is artifact["trees"]
+    assert artifact == before
+    assert search_mod.with_curated_candidates(enriched) == enriched
+
+
 def test_local_candidate_pool_forwards_manifest_and_public_key_to_load_model(monkeypatch):
     captured = {}
 

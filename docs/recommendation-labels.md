@@ -49,6 +49,13 @@ results. Hardware memory and speed checks still apply, and shortlist diversity
 treats their versions and sizes as one EXAONE family. Inclusion does not imply
 measured quality or that every package will fit every machine.
 
+If a nightly retrain is rejected or skipped, updated OMM versions supplement
+the verified predictor's candidates with missing bundled exact packages in
+memory. Existing signed rows take precedence. This does not rewrite the signed
+catalog, change the trained trees, or contact providers, and does not bypass the
+training quality gate. Older OMM versions need a newly published signed catalog
+or an OMM update to see these additions in recommendations.
+
 The existing HF and ModelScope searches now preserve task metadata they already
 receive. This adds no provider requests. Future generated/signed catalogs carry
 those fields through the existing training path. Label classification does not

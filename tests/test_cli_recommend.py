@@ -67,12 +67,17 @@ def test_json_exposes_candidates_above_requested_profile_in_fallback(monkeypatch
 
 
 @pytest.fixture(autouse=True)
-def _default_to_uninstalled_candidates(monkeypatch):
+def _isolate_recommendation_sources(monkeypatch):
     monkeypatch.setattr(
         cli.recommend_status,
         "detect_installation_statuses",
         lambda candidates: [cli.recommend_status.NOT_INSTALLED] * len(candidates),
     )
+    # UI unit tests specify their own candidate pool; the integration check
+    # below restores bundled candidates and exercises their real ranking.
+    curated_source = cli.search_mod._curated_as_candidates
+    monkeypatch.setattr(cli.search_mod, "_curated_as_candidates", lambda: [])
+    return curated_source
 
 
 def _hardware() -> HardwareInfo:
@@ -95,22 +100,22 @@ def _hardware() -> HardwareInfo:
     ("dedicated", {"1.2B", "2.4B", "7.8B"}),
 ])
 def test_exaone_is_visible_with_published_predictor_on_24gb_mac(
-    monkeypatch, isolated_omm_home, profile, expected_sizes,
+    monkeypatch, isolated_omm_home, _isolate_recommendation_sources, profile, expected_sizes,
 ):
     from pathlib import Path
-    from scripts.fetch_candidates import curated_candidates
+    from copy import deepcopy
 
-    # Use the published forest with a controlled candidate pool, so unrelated
-    # nightly popularity changes cannot invalidate this eligibility check.
+    monkeypatch.setattr(cli.search_mod, "_curated_as_candidates", _isolate_recommendation_sources)
+    # An old published forest whose candidate list predates EXAONE must still
+    # evaluate bundled packages. Keep popularity out of this eligibility test.
     artifact_path = Path(__file__).resolve().parents[1] / "published" / "localfit-recommend-model.json"
     artifact = json.loads(artifact_path.read_text())
-    artifact["candidates"] = [
-        c for c in curated_candidates() if c["repo_id"].startswith("LGAI-EXAONE/")
-    ]
+    artifact["candidates"] = artifact["candidates"][:1]
+    before = deepcopy(artifact)
     hw = HardwareInfo("macOS", "", "Apple M5", 24, 18, True, "Apple M5", 24, 18)
     monkeypatch.setattr(cli, "scan_hardware", lambda: hw)
     monkeypatch.setattr(cli, "load_config", lambda: {})
-    monkeypatch.setattr(cli, "_load_recommendation_with_change_note", lambda config: (artifact, False))
+    monkeypatch.setattr(cli.predictor, "load_model_with_change_note", lambda *args: (artifact, False))
 
     result = runner.invoke(cli.app, ["recommend", "--profile", profile, "--json"])
 
@@ -122,6 +127,7 @@ def test_exaone_is_visible_with_published_predictor_on_24gb_mac(
     assert all(any(size.lower() in row["ref"] for row in exaone) for size in expected_sizes)
     assert all(row["model_type"] == "LLM" and row["within_profile"] for row in exaone)
     assert all("32b" not in row["ref"] for row in exaone)
+    assert artifact == before
 
 
 def test_recommend_builds_choice_values_via_exact_install_ref(monkeypatch, isolated_omm_home):
