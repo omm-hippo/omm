@@ -1197,7 +1197,7 @@ def test_run_contribution_loop_builds_url_via_provider_dispatch(isolated_omm_hom
     cli._run_contribution_loop(queue, stop_event, refetch=lambda: (None, False))
 
     assert seen_urls == [
-        "https://modelscope.cn/api/v1/models/org/repo/repo?Revision=master&FilePath=model.gguf"
+        "https://modelscope.cn/models/org/repo/resolve/master/model.gguf"
     ]
 
 
