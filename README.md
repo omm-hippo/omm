@@ -433,6 +433,7 @@ omm scan [--json]  # Memory, storage, installed runners, and models
 omm doctor [--json]  # Read-only diagnostics plus safe next steps for installation and Ollama findings
 omm bug-report [--include os|policies|checks] [--save PATH]  # Preview and save an allow-listed local diagnostic bundle; never upload it
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
+omm web [--port PORT] [--open] [--create-launchers DIRECTORY]  # Start the local interface or create personal click launchers
 omm compare <name> <name>... [--for TASK] [--profile PROFILE] [--json]  # Read-only comparison of 2-5 catalog packages
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
@@ -449,6 +450,37 @@ model-and-parameter-size identity in a manifest-based runner, whose local
 quantization may differ. With `--yes`, the highest-ranked model that is not
 installed is selected; if every displayed recommendation is already present,
 the command exits without downloading.
+
+`omm web` prints a loopback-only URL for the local model manager. Open it to
+search the existing model wiki by purpose and description, select an exact GGUF
+package, review hardware, choose a memory budget, and
+inspect or remove OMM-managed models and runner links. Each file operation
+requires confirmation in the page. Installation verifies the downloaded file
+and registry; it does not automatically load the model, run a benchmark, or
+upload measurements. Recommendation evidence distinguishes bundled rules,
+signed catalog data, and local speed correction; missing environment-specific
+support is shown without a confidence percentage.
+
+The page initially uses the cached catalog or bundled rules. Its catalog-update
+button explicitly downloads and verifies the configured catalog. Job history
+persists across restarts; an unconfirmed result is marked interrupted. Stop
+the server with Ctrl+C. To build the interface from source, run `npm ci` and
+`npm run build` in `web-ui` before starting the server; `npm run dev` rebuilds
+assets on changes while the same-origin Python server serves them.
+
+After linking a model, the page can separately confirm a short real response
+through Ollama or LM Studio's local API, preserve a preloaded model's context,
+and release only its own test load. The response and compatibility outcome are
+shown separately from installation. See [local manager guidance](docs/local-web.md)
+for click launchers, description sources, memory checks and verification limits.
+
+Secondary screens show runner/API and explicit external connectivity checks,
+read-only diagnostics, storage and external-file previews, and sharing policies.
+The comparison screen measures selected local models with an eight-question
+arithmetic smoke check and three speed samples; evidence is saved locally and
+can be downloaded as JSON. It is not a general quality ranking. Per-model runtime
+settings support real baseline/proposed trials, saving and restoring verified
+profiles; busy runtimes are left unchanged.
 
 ### Install & manage models
 
