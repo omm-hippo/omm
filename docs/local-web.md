@@ -108,3 +108,43 @@ timestamps and symlinks are rejected. CLI sharing policies and memory guard
 settings are validated and saved while preserving unrelated fields. Merely
 opening settings does not initialize or repair the configuration. Web comparisons
 remain local regardless of the CLI benchmark-sharing policy.
+
+## Local text conversations
+
+**내 모델 → 대화** selects a linked Ollama or LM Studio model for the **채팅**
+screen. Starting a conversation explicitly prepares that runtime. Saved load
+settings are reused for a new load; a preloaded model keeps its observed context.
+If another model is already loaded, a new load is rejected without unloading it.
+Before each reply the GUI checks that the selected load still exists; it does
+not implicitly reload an expired model or replace a different runtime instance.
+
+The server reads Ollama's `/api/chat` NDJSON or LM Studio's OpenAI-compatible
+`/v1/chat/completions` SSE stream. Browser snapshots display partial text while
+the reply is generated. Requests stay on the adapter's validated loopback origin,
+ignore proxy configuration, do not follow redirects and do not use a cloud
+fallback. No tools are declared or executed. Only completed question/answer
+pairs become the next request's context; interrupted and failed answers remain
+visible as partial records and are excluded from inference history.
+
+Each request has an idempotency ID. Input is limited to 8192 characters, replies
+to at most 1024 output tokens and 16384 characters, and conversations to 40 turns
+with a conservative context-character guard and a 512 KiB transcript budget.
+The GUI asks for a new conversation instead of silently truncating old turns.
+An incomplete runtime stream is never labeled a completed response. Cancelling
+closes the owned response connection and waits for the in-flight operation to
+finish before accepting another message. It can wait for the runtime's current
+read timeout if that runtime has not sent headers or text yet.
+
+UTF-8 question/answer records are written under `OMM_HOME/web-chats`; they are
+not included in telemetry. Refresh/navigation preserves the active conversation.
+A server restart keeps text, marks an unconfirmed response interrupted, and
+requires explicit reconnection. A changed model digest cannot resume the old
+history. **대화 기록 삭제** deletes a closed local record after confirmation;
+explicit data removal also clears this directory. JSON export is available.
+
+Closing a conversation or shutting down the server cancels its in-flight reply
+and releases a load owned by this GUI. A preloaded or externally replaced model
+is retained. Failed release remains visible and blocks further management until
+the user retries or checks the runtime. Management jobs are blocked while a
+conversation owns the runtime. The API obeys the manager's session, Origin and
+bounded-input checks. There is no automatic startup/reload of saved chats.

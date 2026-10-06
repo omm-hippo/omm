@@ -90,6 +90,11 @@ class WebService:
             raise ValueError("설치된 모델을 선택해 주세요.")
         return management.model_settings(selected["filename"], registry.load_registry()[selected["filename"]])
 
+    def chat_request(self, body: dict) -> dict:
+        if not isinstance(body, dict) or set(body) - {"id", "engine", "confirmed", "request_id", "chat_id"}:
+            raise ValueError("지원하지 않는 채팅 입력이에요.")
+        return self.request({k: v for k, v in {**body, "operation": "verify"}.items() if k != "chat_id"})
+
     def machine(self) -> dict:
         info = hardware.scan_hardware()
         return {

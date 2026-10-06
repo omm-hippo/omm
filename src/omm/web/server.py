@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from omm.web.jobs import JobConflict, JobManager
 from omm.web.service import WebService
+from omm.web.chat import ChatManager
 from omm import config
 from omm.atomic import atomic_write_text
 
@@ -30,7 +31,10 @@ class WebServer(ThreadingHTTPServer):
         self.static_root = Path(static_root).resolve()
         self.session = secrets.token_urlsafe(32)
         self.instance = secrets.token_urlsafe(16)
+        self.chats = None
         try:
+            self.chats = ChatManager(self.jobs)
+            self.jobs.operation_guard = self.chats.guard_jobs
             super().__init__(("127.0.0.1", port), Handler)
         except BaseException:
             self.jobs.close()
@@ -49,6 +53,8 @@ class WebServer(ThreadingHTTPServer):
         return f"http://127.0.0.1:{self.server_port}/"
 
     def server_close(self):
+        if self.chats is not None:
+            self.chats.close()
         if hasattr(self, "info_path") and self.info_path.exists() and not self.info_path.is_symlink():
             try:
                 if json.loads(self.info_path.read_text(encoding="utf-8")).get("instance") == self.instance:
@@ -157,6 +163,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self.server.service.recommendations(query.get("profile", ["balanced"])[0], query.get("q", [""])[0]))
             if parsed.path == "/api/jobs":
                 return self._json(200, self.server.jobs.list())
+            if parsed.path == "/api/chats":
+                return self._json(200, self.server.chats.list())
+            if len(parts) == 3 and parts[:2] == ["api", "chats"]:
+                return self._json(200, self.server.chats.get(parts[2]))
             if parsed.path.startswith("/api/"):
                 return self._json(404, {"error": "Unknown API route"})
             if parsed.path != "/" and not parsed.path.startswith("/assets/"):
@@ -185,6 +195,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(413, {"error": "Request body is too large or has no length"})
             body = json.loads(self.rfile.read(length))
             path = urlsplit(self.path).path
+            if path == "/api/chats":
+                request = self.server.service.chat_request(body)
+                return self._json(202, self.server.chats.start(request, body.get("request_id"), body.get("chat_id")))
+            parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "chats"]:
+                action, key = parts[3], parts[2]
+                if action == "messages":
+                    if not isinstance(body, dict) or set(body) != {"text", "request_id"}:
+                        raise ValueError("메시지와 요청 ID만 전송할 수 있어요.")
+                    return self._json(202, self.server.chats.send(key, body["text"], body["request_id"]))
+                if action in {"cancel", "end", "delete"}:
+                    if body != {"confirmed": True}:
+                        raise ValueError("대화 작업을 확인해 주세요.")
+                    return self._json(200, getattr(self.server.chats, {"cancel": "cancel", "end": "end", "delete": "delete"}[action])(key))
             if path == "/api/connections/check":
                 if body != {}:
                     raise ValueError("연결 확인에는 추가 입력을 사용하지 않아요.")

@@ -34,6 +34,7 @@ class JobManager:
         self.jobs = {}
         self.processes = {}
         self.closed = False
+        self.operation_guard = None
         if self.root.is_symlink():
             raise ValueError("Refusing a symlinked job directory")
         self.root.mkdir(parents=True, exist_ok=True)
@@ -72,6 +73,8 @@ class JobManager:
                 if existing.get("request_digest") != digest:
                     raise JobConflict("This request ID already belongs to another operation")
                 return dict(existing)
+            if self.operation_guard is not None:
+                self.operation_guard()
             if any(j["status"] in {"queued", "running", "cancelling"} for j in self.jobs.values()):
                 raise JobConflict("Another model operation is still running")
             if len(self.jobs) >= 100:

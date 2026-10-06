@@ -482,6 +482,14 @@ can be downloaded as JSON. It is not a general quality ranking. Per-model runtim
 settings support real baseline/proposed trials, saving and restoring verified
 profiles; busy runtimes are left unchanged.
 
+Use **내 모델 → 대화** or the **채팅** screen to converse with a linked local
+Ollama or LM Studio model. Replies appear incrementally, completed turns are
+sent as conversation context, and **응답 중단** interrupts the current reply.
+The GUI stores text history locally, supports reopening and deleting it, and
+releases only its own model load when the connection ends. Chat and model
+management jobs are serialized; no external AI provider or tool execution is
+enabled. See the local manager guide for runtime and persistence limits.
+
 ### Install & manage models
 
 ```sh
