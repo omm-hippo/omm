@@ -24,7 +24,7 @@ def managed(isolated_omm_home):
 def test_settings_preserve_other_fields_and_cli_policy(isolated_omm_home):
     config.CONFIG_PATH.write_text(json.dumps({"default_engine": "jan", "custom": 7}), encoding="utf-8")
     result = management.save_settings({"usage_stats_policy": "enabled", "telemetry_send_policy": "never"})
-    persisted = json.loads(config.CONFIG_PATH.read_text())
+    persisted = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
     assert persisted["custom"] == 7 and persisted["default_engine"] == "jan"
     assert usage.policy(persisted) == "enabled"
     assert result["telemetry_send_policy"] == "never"
@@ -43,7 +43,7 @@ def test_settings_inspection_does_not_initialize_or_repair(isolated_omm_home):
     config.CONFIG_PATH.write_text("broken",encoding="utf-8")
     with pytest.raises(ValueError):
         management.save_settings({"usage_stats_policy":"enabled"})
-    assert config.CONFIG_PATH.read_text() == "broken"
+    assert config.CONFIG_PATH.read_text(encoding="utf-8") == "broken"
 
 
 def test_cleanup_requires_preview_and_preserves_changed_download(managed):
@@ -62,7 +62,7 @@ def test_cleanup_requires_preview_and_preserves_changed_download(managed):
     assert (config.MODELS_DIR / managed).exists()
 
 
-def test_cleanup_does_not_follow_symlink(managed,tmp_path):
+def test_cleanup_does_not_follow_symlink(managed,tmp_path,requires_symlink_support):
     target = tmp_path / "outside"
     target.write_bytes(b"preserve")
     (config.MODELS_DIR / "unsafe.gguf.part").symlink_to(target)
@@ -159,7 +159,7 @@ def test_comparison_persists_actual_protocol_and_releases_load(comparison_runtim
     assert value["models"][0]["samples"] == [20.0]*3
     assert value["models"][0]["total"] == 8
     assert value["raw_responses_stored"] is False and value["uploaded"] is False
-    saved=json.loads((config.EVALUATIONS_DIR/value["report_filename"]).read_text())
+    saved=json.loads((config.EVALUATIONS_DIR/value["report_filename"]).read_text(encoding="utf-8"))
     assert saved["pack_sha256"] == value["pack_sha256"]
     assert saved["generation"]["max_output_tokens"] == 64
 
