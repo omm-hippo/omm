@@ -81,7 +81,7 @@ def _family(candidate: dict) -> tuple[str, ...]:
         return ("gpt", "oss")
     if identity and identity[0] in {
         "qwen", "llama", "tinyllama", "mistral", "mixtral", "gemma", "phi",
-        "deepseek", "lfm", "ornith", "glm", "bonsai",
+        "deepseek", "lfm", "ornith", "glm", "bonsai", "exaone",
     }:
         return identity[:1]
     # Unrecognized models are not all one "Other" family.

@@ -38,6 +38,23 @@ their static-rule aliases), classified as LLM / General from their model cards:
 - [TinyLlama Chat](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)
 - [Llama 3.1 Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct)
 - [Mistral v0.2 Instruct](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2)
+- [EXAONE 4.0 1.2B](https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-1.2B-GGUF)
+- [EXAONE 3.5 2.4B Instruct](https://huggingface.co/LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct-GGUF)
+- [EXAONE 3.5 7.8B Instruct](https://huggingface.co/LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct-GGUF)
+- [EXAONE 4.0 32B](https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-32B-GGUF)
+
+These official LG Q4_K_M packages are included in the curated candidate source,
+so refreshes retain them even when they are absent from provider popularity
+results. Hardware memory and speed checks still apply, and shortlist diversity
+treats their versions and sizes as one EXAONE family. Inclusion does not imply
+measured quality or that every package will fit every machine.
+
+If a nightly retrain is rejected or skipped, updated OMM versions supplement
+the verified predictor's candidates with missing bundled exact packages in
+memory. Existing signed rows take precedence. This does not rewrite the signed
+catalog, change the trained trees, or contact providers, and does not bypass the
+training quality gate. Older OMM versions need a newly published signed catalog
+or an OMM update to see these additions in recommendations.
 
 The existing HF and ModelScope searches now preserve task metadata they already
 receive. This adds no provider requests. Future generated/signed catalogs carry

@@ -1297,10 +1297,13 @@ def load_candidates() -> list[dict]:
         candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
     else:
         print("Warning: no published/candidates.json found, falling back to curated index only.")
-        from omm.hub import CURATED_INDEX
+        from omm.hub import CURATED_INDEX, CURATED_METADATA
 
         candidates = [
-            {"name": name, "repo_id": repo_id, "filename": filename, "description": ""}
+            {
+                "name": name, "repo_id": repo_id, "filename": filename,
+                "description": "", **CURATED_METADATA.get(name, {}),
+            }
             for name, (repo_id, filename) in CURATED_INDEX.items()
         ]
     if not isinstance(candidates, list):
