@@ -431,9 +431,9 @@ omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manag
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm scan [--json]  # Memory, storage, installed runners, and models
 omm doctor [--json]  # Read-only diagnostics plus safe next steps for installation and Ollama findings
-omm bug-report [--include os|policies|checks] [--save PATH]  # Preview and save an allow-listed local diagnostic bundle; never upload it
+omm bug-report [--include os|policies|checks|stages] [--save PATH]  # Preview and save local diagnostics and optional stage counts
+omm arena --leaderboard [--offline] [--json]  # Read signed public quality tiers and efficiency groups
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
-omm compare <name> <name>... [--for TASK] [--profile PROFILE] [--json]  # Read-only comparison of 2-5 catalog packages
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
 omm search <query> [--json] [--skip-unfit] [--skip-ms] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated, Hugging Face, and ModelScope sources
@@ -460,7 +460,7 @@ omm import [directory] [--yes]  # Adopt GGUF files found across supported runner
 omm uninstall <name> [--dry-run]  # Uninstall a model and clean up its symlinks/manifests (alias: rm)
 omm uninstall all [--yes] [--dry-run]  # Uninstall every model installed via omm
 omm list [--json] [--engine NAME]  # Show models installed via omm and their linked status (alias: ls)
-omm info <name> [--json]  # What a model is: source repo, version, size and run commands once installed; author, downloads, license and architecture for a search result
+omm info <name> [<name>...] [--json]  # Inspect one installed or remote model, or compare several side by side
 omm upgrade <name> [--dry-run]  # Look for a better model than this one - a curated successor, or a higher quantization from the same repo that still fits (alias: up)
 omm upgrade [--yes] [--dry-run]  # Scan every installed model for a better alternative
 omm link [models] [--engine NAME]  # Re-verify and repair installed-model links across supported runners; `models` is a comma-separated name/index list (omit for every model)
@@ -522,12 +522,12 @@ OMM loaded for the check. LM Studio API authentication reads
 `config.json`. Compatibility status is stored locally in `models.json` and is
 shown by `omm info`.
 
-`omm compare` resolves two to five exact packages from the signed recommendation
-catalog and compares predicted speed, estimated memory, install state, declared
-purpose, and any locally cached signed quality evidence. It never downloads,
-installs, or runs a model. `BEST FOR` remains provider-declared metadata;
-`MEASURED` is shown separately and missing evidence is `Not measured`, never a
-zero score.
+`omm info MODEL_A MODEL_B` compares installed and remote model packages side by
+side, without requiring membership in the recommendation catalog. Source,
+version, size, license, architecture and local links stay separate facts;
+unreported values remain unknown. One model keeps the detailed view and flat
+JSON; multiple models return a `models` array with `--json`. Use `omm fit` for
+hardware suitability and `omm recommend` for ranked suggestions.
 
 `omm evaluate` currently supports installed Ollama models and the versioned
 Python coding smoke pack. Model-generated source runs only through Docker or
@@ -587,7 +587,7 @@ for engine capabilities, memory checks, cleanup, and verification limits.
 ### Scripting
 
 All errors, warnings, and confirmation prompts print to stderr. For `search`,
-`list`, `info`, `tune`, `scan`, `doctor`, `recommend`, `compare`, `evaluate`, and
+`list`, `info`, `tune`, `scan`, `doctor`, `recommend`, `evaluate`, and
 `bug-report`, `--json` makes
 stdout a single structured document that is safe to pipe (for example,
 `omm list --json | jq .`). `benchmark --json` also writes a single JSON report to stdout; `--output` saves

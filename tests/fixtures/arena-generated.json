@@ -1,0 +1,218 @@
+{
+  "corpus": {
+    "client_count": 20,
+    "effective_votes": 362.0,
+    "largest_client_share": 0.052486187845303865,
+    "rows_dropped": {},
+    "rows_fetched": 362,
+    "rows_used": 362
+  },
+  "efficiency_components": [
+    {
+      "component": 0,
+      "model_count": 4
+    },
+    {
+      "component": 1,
+      "model_count": 3
+    }
+  ],
+  "generated_at": "2026-10-04T00:00:00+00:00",
+  "models": [
+    {
+      "battles": 120,
+      "both_bad_rate": 0.2,
+      "display_filename": "검증용-Coder-14B-Q8_0.gguf",
+      "effective_battles": 120.0,
+      "efficiency": {
+        "component": 0,
+        "rating": 0.005093057258906049,
+        "raw_median_tok_s_per_gb": 5.25,
+        "sample": 120
+      },
+      "key": "filename:검증용-coder-14b-q8_0.gguf",
+      "provider": "huggingface",
+      "provisional": false,
+      "quality": {
+        "ci_high": 0.6233295167769239,
+        "ci_low": -0.11099487600955865,
+        "strength": 0.3051623007523286,
+        "tier": 1
+      },
+      "quality_warning": false,
+      "quant_bits": 4.0,
+      "repo_id": "verification/model-1"
+    },
+    {
+      "battles": 120,
+      "both_bad_rate": 0.2,
+      "display_filename": "Verification-Reasoning-8B-Q4_K_M.gguf",
+      "effective_battles": 120.0,
+      "efficiency": {
+        "component": 1,
+        "rating": -0.041980407785354924,
+        "raw_median_tok_s_per_gb": 5.75,
+        "sample": 120
+      },
+      "key": "filename:verification-reasoning-8b-q4_k_m.gguf",
+      "provider": "huggingface",
+      "provisional": false,
+      "quality": {
+        "ci_high": 1.1131210354754784,
+        "ci_low": 0.4705943152084596,
+        "strength": 0.7411196741804219,
+        "tier": 1
+      },
+      "quality_warning": false,
+      "quant_bits": 4.0,
+      "repo_id": "verification/model-3"
+    },
+    {
+      "battles": 122,
+      "both_bad_rate": 0.19672131147540983,
+      "display_filename": "검증용-한국어-요약-7B-Q4_K_M.gguf",
+      "effective_battles": 122.0,
+      "efficiency": {
+        "component": 0,
+        "rating": -0.04369710691136172,
+        "raw_median_tok_s_per_gb": 5.0,
+        "sample": 122
+      },
+      "key": "filename:검증용-한국어-요약-7b-q4_k_m.gguf",
+      "provider": "huggingface",
+      "provisional": false,
+      "quality": {
+        "ci_high": 1.3606201407294118,
+        "ci_low": 0.6057236725120178,
+        "strength": 1.0628032112158832,
+        "tier": 1
+      },
+      "quality_warning": false,
+      "quant_bits": 4.0,
+      "repo_id": "verification/model-0"
+    },
+    {
+      "battles": 120,
+      "both_bad_rate": 0.2,
+      "display_filename": "검증용-문서-질의응답-3B-Q4_K_M.gguf",
+      "effective_battles": 120.0,
+      "efficiency": {
+        "component": 0,
+        "rating": 0.05161307289220599,
+        "raw_median_tok_s_per_gb": 5.5,
+        "sample": 120
+      },
+      "key": "filename:검증용-문서-질의응답-3b-q4_k_m.gguf",
+      "provider": "huggingface",
+      "provisional": false,
+      "quality": {
+        "ci_high": -0.16408112372155503,
+        "ci_low": -0.904838770575457,
+        "strength": -0.44450317372808995,
+        "tier": 2
+      },
+      "quality_warning": false,
+      "quant_bits": 4.0,
+      "repo_id": "verification/model-2"
+    },
+    {
+      "battles": 120,
+      "both_bad_rate": 0.2,
+      "display_filename": "Verification-Writer-12B-Q5_K_M.gguf",
+      "effective_battles": 120.0,
+      "efficiency": {
+        "component": 1,
+        "rating": 0.0005792066328468622,
+        "raw_median_tok_s_per_gb": 6.0,
+        "sample": 120
+      },
+      "key": "filename:verification-writer-12b-q5_k_m.gguf",
+      "provider": "huggingface",
+      "provisional": false,
+      "quality": {
+        "ci_high": 0.23876469936529687,
+        "ci_low": -0.28006346056999043,
+        "strength": -0.007862265131476472,
+        "tier": 2
+      },
+      "quality_warning": false,
+      "quant_bits": 4.0,
+      "repo_id": "verification/model-4"
+    },
+    {
+      "battles": 120,
+      "both_bad_rate": 0.2,
+      "display_filename": "Verification-Translation-9B-Q4_K_M.gguf",
+      "effective_battles": 120.0,
+      "efficiency": {
+        "component": 1,
+        "rating": 0.04140120115250806,
+        "raw_median_tok_s_per_gb": 6.25,
+        "sample": 120
+      },
+      "key": "filename:verification-translation-9b-q4_k_m.gguf",
+      "provider": "huggingface",
+      "provisional": false,
+      "quality": {
+        "ci_high": -0.35420696570153604,
+        "ci_low": -1.1692135087739262,
+        "strength": -0.756911648196167,
+        "tier": 3
+      },
+      "quality_warning": false,
+      "quant_bits": 4.0,
+      "repo_id": "verification/model-5"
+    },
+    {
+      "battles": 2,
+      "both_bad_rate": 0.0,
+      "display_filename": "검증용-표본부족-1B-Q4_K_M.gguf",
+      "effective_battles": 2.0,
+      "efficiency": {
+        "component": 0,
+        "rating": -0.7368442874736575,
+        "raw_median_tok_s_per_gb": 5.0,
+        "sample": 2
+      },
+      "key": "filename:검증용-표본부족-1b-q4_k_m.gguf",
+      "provider": null,
+      "provisional": true,
+      "quality": {
+        "ci_high": -0.6213924544805518,
+        "ci_low": -1.5456075166213854,
+        "strength": -0.9862239136511995,
+        "tier": null
+      },
+      "quality_warning": false,
+      "quant_bits": null,
+      "repo_id": null
+    }
+  ],
+  "provisional_models": [
+    "filename:검증용-표본부족-1b-q4_k_m.gguf"
+  ],
+  "schema_version": 1,
+  "tiers": [
+    {
+      "model_keys": [
+        "filename:검증용-coder-14b-q8_0.gguf",
+        "filename:verification-reasoning-8b-q4_k_m.gguf",
+        "filename:검증용-한국어-요약-7b-q4_k_m.gguf"
+      ],
+      "tier": 1
+    },
+    {
+      "model_keys": [
+        "filename:검증용-문서-질의응답-3b-q4_k_m.gguf",
+        "filename:verification-writer-12b-q5_k_m.gguf"
+      ],
+      "tier": 2
+    },
+    {
+      "model_keys": [
+        "filename:verification-translation-9b-q4_k_m.gguf"
+      ],
+      "tier": 3
+    }
+  ]
+}

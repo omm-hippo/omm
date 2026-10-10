@@ -12,8 +12,12 @@ from typing import Iterable
 from omm import config, package_metadata
 
 SCHEMA_VERSION = 1
-OPTIONAL_GROUPS = ("os", "policies", "checks")
+OPTIONAL_GROUPS = ("os", "policies", "checks", "stages")
 _SAFE_NAME = re.compile(r"[A-Za-z0-9_. -]{1,80}")
+
+
+def _safe_policy(value, fallback):
+    return value if isinstance(value, str) and value in {"always", "never", "ask"} else fallback
 
 
 def _version() -> str:
@@ -32,6 +36,8 @@ def _install_source() -> str:
 
 def latest_command_name() -> str | None:
     """Read only the already-scrubbed command token from the latest run log."""
+    from omm.cli import _REGISTERED_COMMAND_NAMES
+
     logs = config.OMM_HOME / "logs"
     try:
         paths = sorted(logs.glob("*.jsonl"), reverse=True)
@@ -39,7 +45,10 @@ def latest_command_name() -> str | None:
         return None
     for path in paths[:50]:
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+                continue
+            with path.open(encoding="utf-8") as stream:
+                lines = [stream.readline() for _ in range(3)]
         except (OSError, UnicodeError):
             continue
         for line in lines[:3]:
@@ -55,7 +64,7 @@ def latest_command_name() -> str | None:
                     isinstance(token, str)
                     and not token.startswith("-")
                     and token not in {"<arg>", "bug-report"}
-                    and _SAFE_NAME.fullmatch(token)
+                    and token in _REGISTERED_COMMAND_NAMES
                 ):
                     return token
     return None
@@ -72,7 +81,9 @@ def latest_error_type() -> str | None:
     for row in reversed(rows):
         value = row.get("error_type") if isinstance(row, dict) else None
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,200}", value):
-            return value
+            from omm.usage import error_category
+
+            return error_category(value)
     return None
 
 
@@ -98,14 +109,20 @@ def build(doctor_report, *, include: Iterable[str] = ()) -> dict[str, object]:
         report["os"] = {"name": platform.system() or "unknown", "arch": platform.machine() or "unknown"}
     if "policies" in selected:
         try:
-            data = config.load_config()
-        except Exception:
+            data = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
             data = {}
         report["upload_policies"] = {
-            "benchmark": data.get("telemetry_send_policy", "ask"),
+            "benchmark": _safe_policy(data.get("telemetry_send_policy"), "ask"),
             "usage": "enabled" if data.get("usage_stats_policy") == "enabled" else "off",
-            "crash": data.get("error_report_send_policy") or "off",
+            "crash": _safe_policy(data.get("error_report_send_policy"), "off"),
         }
+    if "stages" in selected:
+        from omm.diagnostic_stages import collect
+
+        report["stage_diagnostics"] = collect()
     if "checks" in selected:
         report["checks"] = [
             {"name": check.name[:80], "status": check.status}

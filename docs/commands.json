@@ -1,9 +1,74 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.129",
+  "omm_version": "0.3.139",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
+    {
+      "path": [
+        "arena"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Read verified public arena rankings without loading models or sending votes.",
+      "description": "Use --leaderboard to select this read-only view and --offline for its cache.",
+      "usage": "omm arena [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--leaderboard"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Show signed public quality tiers and efficiency comparison groups.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--offline"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Use only the verified cached leaderboard.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/arena"
+    },
     {
       "path": [
         "benchmark"
@@ -123,7 +188,7 @@
           ],
           "metavar": "<str>",
           "is_flag": false,
-          "help": "Add one optional group: os, policies, or checks. Repeat as needed.",
+          "help": "Add one optional group: os, policies, checks, or stages. Repeat as needed.",
           "default": null,
           "global": false
         },
@@ -226,77 +291,6 @@
         }
       ],
       "docs_url": "https://omm.run/commands/cleanup"
-    },
-    {
-      "path": [
-        "compare"
-      ],
-      "kind": "command",
-      "aliases": [],
-      "summary": "Compare selected catalog packages without installing or running them.",
-      "description": "",
-      "usage": "omm compare [OPTIONS] {models}...",
-      "arguments": [
-        {
-          "name": "models...",
-          "help": "Two to five exact model names, repositories, filenames, or install references from the signed recommendation catalog.",
-          "required": true
-        }
-      ],
-      "options": [
-        {
-          "flags": [
-            "--profile"
-          ],
-          "metavar": "<str>",
-          "is_flag": false,
-          "help": "Memory-sharing profile: dedicated, balanced, or minimal.",
-          "default": "balanced",
-          "global": false
-        },
-        {
-          "flags": [
-            "--for"
-          ],
-          "metavar": "<str>",
-          "is_flag": false,
-          "help": "Optional measured-quality task: General, Coding, Reasoning, Writing, Translation, or Documents.",
-          "default": null,
-          "global": false
-        },
-        {
-          "flags": [
-            "--json"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Print output as JSON where supported.",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--quiet",
-            "-q"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--no-color"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Disable colored output.",
-          "default": null,
-          "global": true
-        }
-      ],
-      "docs_url": "https://omm.run/commands/compare"
     },
     {
       "path": [
@@ -1126,13 +1120,13 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Show what a model is - source repo, version, size and linked-program run commands once installed, or author, downloads, license and architecture for a search result. `omm fit` is what tells you whether it runs here.",
-      "description": "",
-      "usage": "omm info [OPTIONS] {model_name}",
+      "summary": "Inspect one model, or compare several models side by side.",
+      "description": "Installed and remote packages can be mixed; no recommendation catalog is required. A single model keeps its detailed view and flat JSON response.",
+      "usage": "omm info [OPTIONS] {model_names}...",
       "arguments": [
         {
-          "name": "model_name",
-          "help": "Installed model, curated id, repo/file, or search number.",
+          "name": "model_names...",
+          "help": "One or more installed models, curated ids, repo/files, or search numbers.",
           "required": true
         }
       ],

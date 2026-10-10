@@ -140,7 +140,6 @@ from omm import (
     calibration,
     catalog,
     coding_eval,
-    compare as compare_mod,
     config as config_mod,
     contribute_memory,
     contribute_state,
@@ -315,7 +314,7 @@ _JSON_CAPABLE = {
     "tune",
     "scan",
     "recommend",
-    "compare",
+    "arena",
     "evaluate",
     "doctor",
     "fit",
@@ -656,6 +655,12 @@ class _DocsEpilogGroup(typer.core.TyperGroup):
         return command
 
 
+def _local_read_only_args(args: list[str]) -> bool:
+    before = args[:args.index("--")] if "--" in args else args
+    commands = [token for token in before if not token.startswith("-")]
+    return bool(commands) and commands[0] in {"doctor", "bug-report", "arena"}
+
+
 class _RootHelpGroup(_DocsEpilogGroup):
     """Homebrew-style curated `omm --help`/`omm help` - a short list of
     common commands instead of the full alphabetical listing of every
@@ -672,6 +677,7 @@ class _RootHelpGroup(_DocsEpilogGroup):
         ctx.meta["omm_help_requested"] = _help_option_requested(args)
         ctx.meta["omm_json_requested"] = option_requested(args, "--json")
         ctx.meta["omm_engine_read_only"] = engine_read_only_args(args)
+        ctx.meta["omm_local_read_only"] = _local_read_only_args(args)
         try:
             return super().parse_args(ctx, args)
         except UsageError as error:
@@ -928,9 +934,10 @@ def _root(
         else:
             unresolved_json_command = True
     side_effect_minimal_mode = (
-        ctx.invoked_subcommand in {"doctor", "help", "engine"}
+        ctx.invoked_subcommand in {"doctor", "bug-report", "help", "engine"}
         or bool(ctx.meta.get("omm_help_requested"))
         or bool(ctx.meta.get("omm_engine_read_only"))
+        or bool(ctx.meta.get("omm_local_read_only"))
         or unresolved_json_command
     )
     theme = (
@@ -3483,7 +3490,7 @@ def support_report_cmd(
     include: list[str] = typer.Option(
         None,
         "--include",
-        help="Add one optional group: os, policies, or checks. Repeat as needed.",
+        help="Add one optional group: os, policies, checks, or stages. Repeat as needed.",
     ),
     save: Path | None = typer.Option(
         None,
@@ -4330,154 +4337,52 @@ def recommend(
     )
 
 
-@app.command(name="compare")
+@app.command(name="arena")
 @global_flags
-def compare_cmd(
-    models: list[str] = typer.Argument(
-        ...,
-        help="Two to five exact model names, repositories, filenames, or install references from the signed recommendation catalog.",
-    ),
-    profile: str = typer.Option(
-        predictor.DEFAULT_RECOMMEND_PROFILE,
-        "--profile",
-        help="Memory-sharing profile: dedicated, balanced, or minimal.",
-    ),
-    purpose: str | None = typer.Option(
-        None,
-        "--for",
-        help="Optional measured-quality task: General, Coding, Reasoning, Writing, Translation, or Documents.",
-    ),
+def arena_cmd(
+    leaderboard: bool = typer.Option(False, "--leaderboard", help="Show signed public quality tiers and efficiency comparison groups."),
+    offline: bool = typer.Option(False, "--offline", help="Use only the verified cached leaderboard."),
 ) -> None:
-    """Compare selected catalog packages without installing or running them."""
+    """Read verified public arena rankings without loading models or sending votes.
 
-    profile = profile.casefold()
-    info = scan_hardware()
-    config = load_config()
-    artifact, changed = _load_recommendation_with_change_note(config)
-    if not artifact or not artifact.get("candidates"):
-        err_console.print("[error]No signed recommendation catalog is available.[/error]")
-        raise typer.Exit(1)
-    from omm import recommend_facts
+    Use --leaderboard to select this read-only view and --offline for its cache.
+    """
+    if not leaderboard:
+        err_console.print("Use `omm arena --leaderboard` to read the public quality tiers.")
+        raise typer.Exit(2)
+    from omm import arena_leaderboard
 
-    artifact = recommend_facts.apply(artifact)
     try:
-        selected = compare_mod.resolve_candidates(artifact["candidates"], models)
-        installations = recommend_status.detect_installation_statuses(selected)
-        result = compare_mod.compare_candidates(
-            artifact,
-            models,
-            info,
-            profile=profile,
-            purpose=purpose,
-            installations=installations,
-            quality_index=quality_catalog.load_cached(config.get("catalog_public_key")),
+        document, cached = arena_leaderboard.load(
+            arena_leaderboard.read_public_key(), offline=offline
         )
-    except compare_mod.CompareInputError as error:
-        err_console.print(f"[error]{escape(str(error))}[/error]")
-        raise typer.Exit(2) from error
-
+    except (arena_leaderboard.LeaderboardError, OSError, ValueError) as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(1) from error
+    models = arena_leaderboard.ordered_models(document)
     if _global_opts().json:
-        _print_json(
-            data={
-                "profile": profile,
-                "purpose": result.purpose,
-                "quality_complete": result.quality_complete,
-                "best_fit_ref": result.best_fit_ref,
-                "fastest_ref": result.fastest_ref,
-                "best_measured_quality_ref": result.best_measured_quality_ref,
-                "best_match_ref": result.best_match_ref,
-                "models": [
-                    {
-                        "ref": row.ref,
-                        "name": row.display_name,
-                        "model_type": row.model_type,
-                        "declared_purpose": row.declared_purpose,
-                        "declared_purpose_source": row.declared_purpose_source,
-                        "predicted_tokens_per_second": row.predicted_tokens_per_second,
-                        "memory_required_gb": row.memory_required_gb,
-                        "memory_estimate_basis": row.memory_estimate_basis,
-                        "profile_budget_gb": row.profile_budget_gb,
-                        "within_profile": row.within_profile,
-                        "meets_speed_floor": row.meets_speed_floor,
-                        "eligible": row.eligible,
-                        "installed": row.installed,
-                        "managed_by_omm": row.managed_by_omm,
-                        "installed_engines": list(row.installed_engines),
-                        "quantization": row.quantization,
-                        "warning": row.warning,
-                        "measured_quality": (
-                            {
-                                "task": row.measured_quality.task,
-                                "pack_id": row.measured_quality.pack_id,
-                                "pack_version": row.measured_quality.pack_version,
-                                "score": row.measured_quality.score,
-                                "summary": row.measured_quality.summary,
-                                "source": row.measured_quality.source,
-                                "model_digest": row.measured_quality.model_digest,
-                            }
-                            if row.measured_quality is not None
-                            else None
-                        ),
-                    }
-                    for row in result.rows
-                ],
-            }
-        )
+        _print_json(data={**document, "models": models, "verified": True, "cached": cached, "age_days": arena_leaderboard.age_days(document)})
         return
-
-    if changed and not _global_opts().quiet:
-        console.print("[muted]Fetched updated recommendation data from GitHub.[/muted]")
-    table = Table(title=f"Model comparison · {profile}", box=None)
-    table.add_column("MODEL", style="bold")
-    table.add_column("TYPE")
-    table.add_column("BEST FOR")
-    if result.purpose is not None:
-        table.add_column("MEASURED")
-    table.add_column("SPEED", justify="right")
-    table.add_column("MEMORY", justify="right")
-    table.add_column("STATUS")
-    for row in result.rows:
-        status = []
-        if row.ref == result.best_fit_ref:
-            status.append("BEST FIT")
-        if row.ref == result.fastest_ref:
-            status.append("FASTEST")
-        if row.installed:
-            status.append("INSTALLED")
-        if row.warning:
-            status.append("CAUTION")
-        if row.within_profile is False:
-            status.append("OVER BUDGET")
-        if not row.meets_speed_floor:
-            status.append("TOO SLOW")
-        values = [
-            row.display_name,
-            row.model_type,
-            row.declared_purpose,
-        ]
-        if result.purpose is not None:
-            values.append(
-                f"{row.measured_quality.score * 100:.0f}% · {row.measured_quality.pack_id} v{row.measured_quality.pack_version}"
-                if row.measured_quality is not None
-                else "Not measured"
-            )
-        values.extend([
-            f"~{row.predicted_tokens_per_second:.1f} tok/s",
-            f"~{row.memory_required_gb:.1f} GB" if row.memory_required_gb is not None else "Unknown",
-            " · ".join(status) or "COMPATIBLE",
-        ])
-        table.add_row(*values)
-    console.print(table)
-    if result.purpose is not None:
-        if result.quality_complete and result.best_measured_quality_ref:
-            console.print(
-                f"[success]BEST MATCH[/success]  {escape(result.best_match_ref or '')}"
-            )
-        else:
-            console.print(
-                f"[muted]Measured {result.purpose} quality is incomplete; BEST MATCH remains hardware-only.[/muted]"
-            )
-    console.print("[muted]Compare is read-only: it did not download, install, or run a model.[/muted]")
+    view = _table(title="Arena quality tiers")
+    for heading in ("Tier", "Model", "Effective battles", "Efficiency group / rating", "Both bad"):
+        view.add_column(heading, overflow="fold")
+    for model in models:
+        measured = model.get("efficiency")
+        view.add_row(
+            "Provisional" if model["provisional"] else str(model["quality"]["tier"]),
+            escape(model.get("display_filename") or model["key"]),
+            f"{model['effective_battles']:.1f}",
+            f"{measured['component']} / {measured['rating']:+.2f}" if measured else "Not measured",
+            f"{model['both_bad_rate']:.0%}" + (" · warning" if model["quality_warning"] else ""),
+        )
+    console.print(view)
+    console.print(f"[muted]Verified artifact · {escape(document['generated_at'])}" + (" · cached" if cached else "") + "[/muted]")
+    console.print("[muted]Efficiency is comparable only inside the same quality tier and efficiency group. Provisional models are not ranked.[/muted]")
+    if arena_leaderboard.age_days(document) > 7:
+        console.print("[warning]This leaderboard is more than seven days old.[/warning]")
+    if not models:
+        console.print("No ranked or provisional models are available.")
+    return
 
 
 def _present_recommendations(
@@ -7828,15 +7733,8 @@ def _fit_hint(ref: str) -> str:
     return f"[muted]Run `omm fit {escape(ref)}` to see whether it fits this PC.[/muted]"
 
 
-def _info_not_installed(model_name: str, json_output: bool) -> None:
-    """`omm info` for a reference that is not in the registry: a numbered
-    `omm search` result, a curated id, or any `org/repo[:file.gguf]`.
-
-    Resolution goes through the same `_resolve_model_interactive` path
-    `omm fit` and `omm install` use, so every shape `omm search` prints
-    resolves here too. Since that already costs a provider round trip, the
-    repo-level metadata worth having before starting a multi-GB download is
-    fetched alongside it."""
+def _remote_info(model_name: str):
+    """Resolve provider facts once for both detailed and multi-model views."""
     try:
         resolved = _resolve_model_interactive(model_name)
     except ModelResolutionError as error:
@@ -7857,6 +7755,13 @@ def _info_not_installed(model_name: str, json_output: bool) -> None:
     if resolved.repo_id:
         size_bytes = remote_file_size(provider, resolved.repo_id, resolved.filename)
         metadata = fetch_repo_metadata(provider, resolved.repo_id)
+
+    return resolved, size_bytes, metadata
+
+
+def _info_not_installed(model_name: str, json_output: bool) -> None:
+    resolved, size_bytes, metadata = _remote_info(model_name)
+    provider = resolved.provider or "huggingface"
 
     if json_output:
         _print_json(
@@ -7895,20 +7800,104 @@ def _info_not_installed(model_name: str, json_output: bool) -> None:
     console.print(_fit_hint(ref))
 
 
+def _installed_info(filename: str, entry: dict) -> dict:
+    linked = entry.get("linked", {})
+    if not isinstance(linked, dict):
+        linked = {}
+    size = entry.get("size_bytes")
+    tag = linker.resolve_ollama_runtime_name(filename, entry)
+    return {
+        "filename": filename,
+        "repo_id": entry.get("repo_id"),
+        "provider": entry.get("provider") or ("huggingface" if entry.get("repo_id") else None),
+        "installed": True,
+        "version": _entry_version(entry),
+        "size_bytes": size if _positive_finite_number(size) else 0,
+        "installed_at": entry.get("installed_at", "unknown"),
+        "linked": {spec.key: bool(linked.get(spec.key)) for spec in linker.ENGINES},
+        "ollama_run_command": f"ollama run {tag}" if linked.get("ollama") else None,
+        "compatibility": entry.get("compatibility", {}),
+    }
+
+
+def _info_many(model_names: list[str], json_output: bool) -> None:
+    reg = registry.load_registry()
+    rows = []
+    seen = set()
+    for name in model_names:
+        filename, entry = _lookup_entry(name, reg)
+        if entry is not None:
+            data = _installed_info(filename, entry)
+        else:
+            resolved, size, metadata = _remote_info(name)
+            data = {
+                **metadata,
+                "filename": resolved.filename,
+                "repo_id": resolved.repo_id,
+                "provider": resolved.provider or "huggingface",
+                "installed": False,
+                "size_bytes": size,
+                "download_url": resolved.url,
+            }
+        key = (data.get("provider"), data.get("repo_id"), data["filename"])
+        if key in seen:
+            err_console.print(f"Model selected more than once: {name}", markup=False)
+            raise typer.Exit(2)
+        seen.add(key)
+        rows.append(data)
+    if json_output:
+        _print_json(data={"models": rows})
+        return
+    view = _table(title="Model information")
+    view.add_column("Field", style="label")
+    for data in rows:
+        view.add_column(escape(data["filename"]), overflow="fold")
+    fields = [("Repo", "repo_id"), ("Provider", "provider"), ("Version", "version"),
+              ("Size", "size_bytes"), ("Status", "installed"), *_REMOTE_INFO_ROWS]
+    for label, key in fields:
+        if key not in {"repo_id", "provider", "version", "size_bytes", "installed"} and not any(key in data for data in rows):
+            continue
+        values = []
+        for data in rows:
+            value = data.get(key)
+            if key == "installed":
+                rendered = "installed" if value else "not installed"
+            elif key == "size_bytes":
+                rendered = f"{value / (1024**3):.2f} GB" if _positive_finite_number(value) else "Unknown"
+            else:
+                rendered = "Unknown" if value is None else _format_metadata_value(key, value)
+            values.append(escape(rendered))
+        view.add_row(label, *values)
+    view.add_row("Linked programs", *[
+        escape(", ".join(spec.label for spec in linker.ENGINES if data.get("linked", {}).get(spec.key)) or "None recorded")
+        for data in rows
+    ])
+    console.print(view)
+    console.print("[muted]Use `omm fit MODEL` to check hardware suitability.[/muted]")
+
+
 @app.command()
 @global_flags
 def info(
-    model_name: str = typer.Argument(
+    model_names: list[str] = typer.Argument(
         ...,
         autocompletion=complete_install_name,
-        help="Installed model, curated id, repo/file, or search number.",
+        help="One or more installed models, curated ids, repo/files, or search numbers.",
     ),
 ) -> None:
-    """Show what a model is - source repo, version, size and linked-program run
-    commands once installed, or author, downloads, license and architecture for
-    a search result. `omm fit` is what tells you whether it runs here."""
-    json_output = _global_opts().json
-    model_name = _resolve_ref(model_name)
+    """Inspect one model, or compare several models side by side.
+
+    Installed and remote packages can be mixed; no recommendation catalog is
+    required. A single model keeps its detailed view and flat JSON response.
+    """
+    names = [_resolve_ref(name) for name in model_names]
+    if len(names) == 1:
+        _info_one(names[0], _global_opts().json)
+        return
+    _info_many(names, _global_opts().json)
+
+
+def _info_one(model_name: str, json_output: bool) -> None:
     reg = registry.load_registry()
     filename, entry = _lookup_entry(model_name, reg)
     if entry is None:
@@ -7923,20 +7912,7 @@ def info(
     ollama_tag = linker.resolve_ollama_runtime_name(filename, entry)
 
     if json_output:
-        _print_json(
-            data={
-                "filename": filename,
-                "repo_id": entry.get("repo_id"),
-                "provider": entry.get("provider") or ("huggingface" if entry.get("repo_id") else None),
-                "installed": True,
-                "version": _entry_version(entry),
-                "size_bytes": size_bytes,
-                "installed_at": entry.get("installed_at", "unknown"),
-                "linked": {spec.key: bool(linked.get(spec.key)) for spec in linker.ENGINES},
-                "ollama_run_command": f"ollama run {ollama_tag}" if linked.get("ollama") else None,
-                "compatibility": entry.get("compatibility", {}),
-            }
-        )
+        _print_json(data=_installed_info(filename, entry))
         return
 
     table = _table(title=filename, show_header=False)
@@ -12747,7 +12723,7 @@ def main() -> None:
     # of git/pipx/ollama before any verification happens. Shared with trust so
     # there is one implementation; harmless on POSIX.
     trust._forbid_cwd_executable_lookup()
-    if engine_read_only_args(sys.argv[1:]):
+    if engine_read_only_args(sys.argv[1:]) or _local_read_only_args(sys.argv[1:]):
         # Diagnostics must not create a run log, usage batch, or crash queue.
         app(prog_name="omm")
         return
