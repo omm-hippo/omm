@@ -114,7 +114,8 @@ def test_package_is_deterministic_and_has_an_exact_allowlist(tmp_path):
         encoding="ascii"
     )
     with zipfile.ZipFile(first) as archive:
-        assert archive.namelist() == ["omm.exe", "LICENSE.txt"]
+        assert archive.namelist() == ["omm.exe", "LICENSE.txt", "Open-OMM.cmd"]
+        assert archive.read("Open-OMM.cmd") == windows_portable.WEB_LAUNCHER_BYTES
         assert archive.read("omm.exe").startswith(b"MZ")
 
     raw = first_checksum.read_bytes()
@@ -303,3 +304,13 @@ def test_missing_installed_distribution_becomes_a_windows_portable_error(monkeyp
 
     with pytest.raises(windows_portable.WindowsPortableError, match="install omm-model"):
         windows_portable.installed_distribution_version()
+
+
+def test_archive_verifier_rejects_a_modified_click_launcher(tmp_path):
+    archive=tmp_path/'omm-windows-x64-1.2.3.zip'
+    with zipfile.ZipFile(archive,'w') as bundle:
+        bundle.writestr(windows_portable._zip_info('omm.exe',0o755),b'MZ executable')
+        bundle.writestr(windows_portable._zip_info('LICENSE.txt',0o644),b'MIT')
+        bundle.writestr(windows_portable._zip_info('Open-OMM.cmd',0o644),b'@echo off\r\nstart https://example.com\r\n')
+    with pytest.raises(windows_portable.WindowsPortableError,match='click launcher'):
+        windows_portable.verify_windows_archive(archive,'1.2.3')

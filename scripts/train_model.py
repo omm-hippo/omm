@@ -1257,6 +1257,8 @@ def train_artifact(
     telemetry_audit: dict,
     input_sources: list[str],
     evaluation: dict | None,
+    real_training_features: list[list[float]] | None = None,
+    holdout_features: list[list[float]] | None = None,
 ) -> dict:
     model = RandomForestRegressor(
         n_estimators=64,
@@ -1283,6 +1285,9 @@ def train_artifact(
         "trees": [export_node(estimator.tree_, 0) for estimator in model.estimators_],
         "candidates": candidates,
     }
+    if real_training_features is not None:
+        from omm.recommend_evidence import build_support
+        artifact["measurement_support"] = build_support(FEATURE_ORDER, real_training_features, holdout_features or [])
     validate_artifact(artifact, FEATURE_ORDER)
     return artifact
 
@@ -1734,6 +1739,7 @@ def main() -> None:
             telemetry_audit=telemetry_audit,
             input_sources=input_sources,
             evaluation=None,
+            real_training_features=train_X, holdout_features=holdout_X,
         )
         fit_X, fit_y, fit_audit = real_rows_to_fit_training_data_with_audit(real_rows)
         # Evaluation-only: the regressor never trains on these (it only ever
@@ -1833,6 +1839,7 @@ def main() -> None:
             X, y, sample_weight=sample_weight, training_mode=training_mode,
             bootstrap_method=BOOTSTRAP_METHOD, real_rows=real_rows,
             telemetry_audit=telemetry_audit, input_sources=input_sources, evaluation=None,
+            real_training_features=real_X, holdout_features=[],
         )
     else:
         X, y = real_X, real_y
@@ -1840,7 +1847,7 @@ def main() -> None:
         artifact = train_artifact(
             X, y, sample_weight=None, training_mode=training_mode, bootstrap_method=None,
             real_rows=real_rows, telemetry_audit=telemetry_audit, input_sources=input_sources,
-            evaluation=None,
+            evaluation=None, real_training_features=real_X, holdout_features=[],
         )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with locked(args.output):

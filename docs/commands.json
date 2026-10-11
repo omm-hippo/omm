@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.129",
+  "omm_version": "0.3.137",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -2814,6 +2814,71 @@
         }
       ],
       "docs_url": "https://omm.run/commands/verify"
+    },
+    {
+      "path": [
+        "web"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Start the local browser interface for model management.",
+      "description": "",
+      "usage": "omm web [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--port"
+          ],
+          "metavar": "<int range>",
+          "is_flag": false,
+          "help": "Local loopback port; 0 chooses an available port.",
+          "default": 0,
+          "global": false
+        },
+        {
+          "flags": [
+            "--open"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Open a browser only when explicitly requested.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--create-launchers"
+          ],
+          "metavar": "<path>",
+          "is_flag": false,
+          "help": "Write personal desktop launchers and exit without opening a browser.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/web"
     }
   ]
 }

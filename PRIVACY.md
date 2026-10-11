@@ -142,3 +142,13 @@ generated text, and model names. Optional OS, upload-policy, and check-name
 groups are included only when selected with `--include`. The full JSON is
 printed before `--save`; the command never uploads it, opens a GitHub issue,
 or sends a message.
+
+## Local GUI chat history
+
+The local manager's chat screen sends questions and completed conversation turns
+only to the selected loopback Ollama or LM Studio API. It does not use a cloud AI
+fallback and does not upload prompts or responses through telemetry. UTF-8 text
+history is stored under `OMM_HOME/web-chats`. Interrupted and failed partial
+answers stay visible locally but are not used in later inference context.
+The GUI provides JSON export and confirmed deletion of closed conversations.
+Explicit data removal also removes `web-chats`; ordinary updates retain it.
