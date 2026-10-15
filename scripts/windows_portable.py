@@ -123,8 +123,6 @@ def pyinstaller_command(
         DISTRIBUTION_NAME,
         "--collect-data",
         "omm",
-        "--collect-all",
-        "omm_gui",
         "--version-file",
         str(version_file),
         str(entry_script),

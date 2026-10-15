@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.148",
+  "omm_version": "0.3.150",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -383,73 +383,6 @@
         }
       ],
       "docs_url": "https://omm.run/commands/contribute"
-    },
-    {
-      "path": [
-        "daemon"
-      ],
-      "kind": "command",
-      "aliases": [],
-      "summary": "Start the existing daemon web GUI.",
-      "description": "Runs a local web server with a browser-based interface for core omm commands: search, install, run, fit, recommend, benchmark, tune, and more. The server runs until interrupted (Ctrl+C).",
-      "usage": "omm daemon [OPTIONS]",
-      "arguments": [],
-      "options": [
-        {
-          "flags": [
-            "--host"
-          ],
-          "metavar": "<str>",
-          "is_flag": false,
-          "help": "Binding host for the GUI server.",
-          "default": "127.0.0.1",
-          "global": false
-        },
-        {
-          "flags": [
-            "--port",
-            "-p"
-          ],
-          "metavar": "<int>",
-          "is_flag": false,
-          "help": "Binding port for the GUI server.",
-          "default": 8000,
-          "global": false
-        },
-        {
-          "flags": [
-            "--open",
-            "--no-open"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Open the default web browser when the GUI starts.",
-          "default": true,
-          "global": false
-        },
-        {
-          "flags": [
-            "--quiet",
-            "-q"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--no-color"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Disable colored output.",
-          "default": null,
-          "global": true
-        }
-      ],
-      "docs_url": "https://omm.run/commands/daemon"
     },
     {
       "path": [
