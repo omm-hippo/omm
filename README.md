@@ -532,6 +532,7 @@ omm benchmark <name>... [--output PATH]  # Local quality + speed evidence for se
 omm benchmark all [--output PATH]  # Benchmark every installed model in the selected runtime
 omm evaluate <ollama-tag> [--pack PATH] [--output PATH]  # Run local Python coding tasks in Docker/Podman
 omm arena [MODEL1 MODEL2] [--keep]  # Compare two installed models blind on your own prompt and vote; votes stay in ~/.omm/arena/votes.jsonl
+omm arena --leaderboard  # Show how people with machines like yours rated models, numbered for omm install / omm arena
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
 omm contribute --max-minutes 30 --max-download-gb 10 --max-models 3
 ```

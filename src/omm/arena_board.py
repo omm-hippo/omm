@@ -20,7 +20,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import catalog, config, memory_group
+from . import catalog, config, memory_group, session_cache
 from .atomic import atomic_write_bytes, atomic_write_text
 
 #: The artifact layout this client understands (memory groups + pairs).
@@ -29,7 +29,7 @@ SUPPORTED_SCHEMA = 2
 #: A numbered row for a model the votes named without a source repo. Kept in
 #: the session cache so the number still means something, and turned into a
 #: plain "can't install this from the leaderboard" by cli._resolve_ref.
-UNSOURCED_REF_PREFIX = "arena-unsourced:"
+UNSOURCED_REF_PREFIX = session_cache.UNSOURCED_REF_PREFIX
 
 MAX_BOARD_BYTES = 8 * 1024 * 1024
 MAX_MANIFEST_BYTES = 64 * 1024
