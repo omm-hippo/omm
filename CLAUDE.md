@@ -208,7 +208,9 @@ rows, world-readable), `error_reports` (`error_report.py`, private), `usage`
 bucketed RAM/VRAM, GPU vendor, and a `<command> <outcome>` tally; **never** model names,
 paths, args, or IP), and `votes` (`arena_upload.py`, private — one row per `omm arena`
 vote: winner, both models' provider/repo/filename/sha256/quant, each side's elapsed time,
-tokens, and measured speed/memory, plus the same `client-id`; **never** the prompt the
+tokens, and measured speed/memory, a coarse marketed-size memory group
+(`memory_kind`/`memory_bucket` from `memory_group.py`, both or neither), plus the same
+`client-id`; **never** the prompt the
 user typed or anything derived from it — `validateVoteEvent` rejects a `prompt` key by
 name). All four are configured under `omm setting upload {benchmark,usage,crash,votes}`
 (bare `omm setting upload`, or `omm setting` → "Upload", opens an interactive picker over the

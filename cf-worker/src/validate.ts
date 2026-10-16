@@ -637,8 +637,18 @@ const VOTE_SIDE_FIELDS = [
 const VOTE_FIELDS = new Set<string>([
   "schema_version", "battle_id", "client_id", "client_version",
   "recorded_at", "engine", "winner", "pinned",
+  "memory_kind", "memory_bucket",
   ...VOTE_SIDE_FIELDS.flatMap((n) => [`${n}_a`, `${n}_b`]),
 ]);
+// Sub-project D: the voter's coarse memory group, named after marketed sizes.
+// Mirrors BUCKET_LABELS in src/omm/memory_group.py and the votes block in
+// database.rules.json; tests/test_vote_wire_contract.py keeps them in sync.
+// Optional as a pair: a row without one still counts in the overall ranking.
+const VOTE_MEMORY_BUCKETS: Record<string, Set<string>> = {
+  unified: new Set(["8", "16", "18-24", "32-36", "48-64", "96-128", "192+"]),
+  vram: new Set(["0-6", "8", "10-12", "16", "20-24", "32+"]),
+  cpu: new Set(["0-8", "16", "32", "64+"]),
+};
 // Symmetry is required for the measurements only: sub-project C compares the
 // two sides of one battle, so half a measurement is not comparable. Identity
 // fields are independently optional per side - one model can carry a provider
@@ -692,6 +702,17 @@ export function validateVoteEvent(event: TelemetryEvent): { valid: boolean; reas
   }
   if (has(event, "client_version") && !safeStr(event, "client_version", 100)) {
     return { valid: false, reason: "invalid client_version" };
+  }
+  if (has(event, "memory_kind") !== has(event, "memory_bucket")) {
+    return { valid: false, reason: "asymmetric row: memory group needs both fields" };
+  }
+  if (has(event, "memory_kind")) {
+    const buckets = Object.prototype.hasOwnProperty.call(VOTE_MEMORY_BUCKETS, str(event, "memory_kind"))
+      ? VOTE_MEMORY_BUCKETS[str(event, "memory_kind")]
+      : undefined;
+    if (typeof event.memory_bucket !== "string" || !buckets?.has(event.memory_bucket)) {
+      return { valid: false, reason: "invalid memory group" };
+    }
   }
   for (const name of VOTE_SYMMETRIC_FIELDS) {
     const a = `${name}_a`;

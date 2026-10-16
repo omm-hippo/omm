@@ -671,6 +671,48 @@ describe("validateVoteEvent", () => {
     expect(validateVoteEvent(validVote({ engine: "llamacpp" })).valid).toBe(false);
   });
 
+  it("accepts a memory group pair", () => {
+    expect(
+      validateVoteEvent(validVote({ memory_kind: "unified", memory_bucket: "16" })).valid,
+    ).toBe(true);
+    expect(
+      validateVoteEvent(validVote({ memory_kind: "vram", memory_bucket: "0-6" })).valid,
+    ).toBe(true);
+    expect(
+      validateVoteEvent(validVote({ memory_kind: "cpu", memory_bucket: "64+" })).valid,
+    ).toBe(true);
+  });
+
+  it("accepts a vote with no memory group", () => {
+    // Linux without a detected GPU, and every pre-D client, send none.
+    expect(validateVoteEvent(validVote()).valid).toBe(true);
+  });
+
+  it("rejects half a memory group", () => {
+    const kindOnly = validateVoteEvent(validVote({ memory_kind: "unified" }));
+    expect(kindOnly.valid).toBe(false);
+    expect(kindOnly.reason).toContain("memory group");
+    expect(validateVoteEvent(validVote({ memory_bucket: "16" })).valid).toBe(false);
+  });
+
+  it("rejects a bucket from another kind", () => {
+    const r = validateVoteEvent(validVote({ memory_kind: "vram", memory_bucket: "18-24" }));
+    expect(r.valid).toBe(false);
+    expect(r.reason).toContain("memory group");
+  });
+
+  it("rejects an unknown memory kind", () => {
+    expect(
+      validateVoteEvent(validVote({ memory_kind: "gpu", memory_bucket: "8" })).valid,
+    ).toBe(false);
+  });
+
+  it("rejects a non-string memory bucket", () => {
+    expect(
+      validateVoteEvent(validVote({ memory_kind: "cpu", memory_bucket: 16 })).valid,
+    ).toBe(false);
+  });
+
   it("rejects an asymmetric measurement", () => {
     const r = validateVoteEvent(validVote({ memory_gb_a: 3.4 }));
     expect(r.valid).toBe(false);

@@ -276,7 +276,7 @@
       ".read": false,
       ".write": false,
       "$vote": {
-        ".validate": "newData.hasChildren(['schema_version', 'battle_id', 'client_id', 'recorded_at', 'engine', 'winner', 'model_filename_a', 'model_filename_b', 'elapsed_a', 'elapsed_b', 'tokens_a', 'tokens_b']) && !newData.child('prompt').exists() && newData.child('memory_gb_a').exists() == newData.child('memory_gb_b').exists() && newData.child('tokens_per_second_a').exists() == newData.child('tokens_per_second_b').exists() && newData.child('watt_a').exists() == newData.child('watt_b').exists()",
+        ".validate": "newData.hasChildren(['schema_version', 'battle_id', 'client_id', 'recorded_at', 'engine', 'winner', 'model_filename_a', 'model_filename_b', 'elapsed_a', 'elapsed_b', 'tokens_a', 'tokens_b']) && !newData.child('prompt').exists() && newData.child('memory_gb_a').exists() == newData.child('memory_gb_b').exists() && newData.child('tokens_per_second_a').exists() == newData.child('tokens_per_second_b').exists() && newData.child('watt_a').exists() == newData.child('watt_b').exists() && newData.child('memory_kind').exists() == newData.child('memory_bucket').exists()",
         "schema_version": { ".validate": "newData.isNumber() && newData.val() == 1" },
         "battle_id": { ".validate": "newData.isString() && newData.val().matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)" },
         "client_id": { ".validate": "newData.isString() && newData.val().matches(/^[0-9a-f]{8,64}$/)" },
@@ -305,6 +305,8 @@
         "tokens_per_second_b": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000)" },
         "memory_gb_b": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1024)" },
         "watt_b": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 2000)" },
+        "memory_kind": { ".validate": "newData.isString() && (newData.val() == 'unified' || newData.val() == 'vram' || newData.val() == 'cpu')" },
+        "memory_bucket": { ".validate": "newData.isString() && ((newData.parent().child('memory_kind').val() == 'unified' && (newData.val() == '8' || newData.val() == '16' || newData.val() == '18-24' || newData.val() == '32-36' || newData.val() == '48-64' || newData.val() == '96-128' || newData.val() == '192+')) || (newData.parent().child('memory_kind').val() == 'vram' && (newData.val() == '0-6' || newData.val() == '8' || newData.val() == '10-12' || newData.val() == '16' || newData.val() == '20-24' || newData.val() == '32+')) || (newData.parent().child('memory_kind').val() == 'cpu' && (newData.val() == '0-8' || newData.val() == '16' || newData.val() == '32' || newData.val() == '64+')))" },
         "$other": {
           ".validate": false
         }

@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from omm import arena, arena_upload, cli, config
 
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_hardware_scan(monkeypatch):
+    monkeypatch.setattr(arena_upload, "current_memory_group", lambda: None)
 
 
 def _result(text="x"):
@@ -237,3 +243,25 @@ def test_yes_is_not_consent_to_upload(isolated_omm_home, monkeypatch):
     assert result.exit_code == 0, result.output
     assert arena_upload.pending_count() == 0
     assert config.load_config()["arena_vote_send_policy"] == "ask"
+
+
+def test_the_consent_prompt_names_the_memory_group(monkeypatch, isolated_omm_home):
+    _patch_arena(monkeypatch)
+    _one_round(monkeypatch)
+    monkeypatch.setattr(arena_upload, "current_memory_group", lambda: ("unified", "16"))
+    asked = []
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: asked.append(prompt) or "no")
+    assert runner.invoke(cli.app, ["arena"]).exit_code == 0
+    assert asked == [
+        "Upload 1 battle vote(s) and this machine's memory group "
+        "(Mac · unified memory 16GB)? Your prompt text is never sent."
+    ]
+
+
+def test_the_consent_prompt_without_a_group_is_unchanged(monkeypatch, isolated_omm_home):
+    _patch_arena(monkeypatch)
+    _one_round(monkeypatch)
+    asked = []
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: asked.append(prompt) or "no")
+    assert runner.invoke(cli.app, ["arena"]).exit_code == 0
+    assert asked == ["Upload 1 battle vote(s)? Your prompt text is never sent."]

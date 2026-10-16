@@ -7,6 +7,19 @@ import pytest
 from omm import arena_upload, config
 
 
+#: Captured before the autouse stub below replaces it, so the tests that
+#: exercise the real classifier can still call it. (monkeypatch.undo() would
+#: also undo conftest's OMM_HOME isolation.)
+_real_current_memory_group = getattr(arena_upload, "current_memory_group", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_hardware_scan(monkeypatch):
+    """enqueue classifies the machine; never shell out to the real hardware
+    probes from a unit test. Tests that care set their own group."""
+    monkeypatch.setattr(arena_upload, "current_memory_group", lambda: None)
+
+
 def _local_row(**overrides):
     """A full sub-project A votes.jsonl row."""
     row = {
@@ -468,3 +481,73 @@ def test_dropping_a_middle_row_removes_exactly_the_resolved_ones(
     remaining = [r["battle_id"] for r in arena_upload._read_pending()]
     # rows[0] sent, rows[1] dropped (400), rows[2] sent, rows[3] transient.
     assert remaining == [rows[3]["battle_id"], late["battle_id"]]
+
+
+# --- memory group (sub-project D) ----------------------------------------
+
+
+def test_payload_carries_the_memory_group_pair(isolated_omm_home):
+    payload = arena_upload.build_payload(
+        _local_row(), registry_entries=_registry(), memory_group=("unified", "16")
+    )
+    assert payload["memory_kind"] == "unified"
+    assert payload["memory_bucket"] == "16"
+    assert set(payload) <= arena_upload.WIRE_FIELDS
+
+
+def test_payload_without_a_group_omits_both_keys(isolated_omm_home):
+    payload = arena_upload.build_payload(_local_row(), registry_entries=_registry())
+    assert "memory_kind" not in payload
+    assert "memory_bucket" not in payload
+
+
+def test_an_invalid_group_is_dropped_not_sent(isolated_omm_home):
+    """The validator would reject the whole row for a cross-kind bucket;
+    losing the group is better than losing the vote."""
+    payload = arena_upload.build_payload(
+        _local_row(), registry_entries=_registry(), memory_group=("unified", "0-6")
+    )
+    assert "memory_kind" not in payload
+    assert "memory_bucket" not in payload
+
+
+def test_enqueue_classifies_once_and_stamps_every_row(isolated_omm_home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        arena_upload, "current_memory_group", lambda: calls.append(1) or ("vram", "8")
+    )
+    config.update_config(arena_vote_send_policy="always")
+    rows = [_local_row(), _local_row(battle_id="1b8c1f22-5c1e-4a0e-9d3b-1f2e3d4c5b6a")]
+    assert arena_upload.enqueue(rows) == 2
+    assert len(calls) == 1
+    queued = arena_upload._read_pending()
+    assert [row["memory_kind"] for row in queued] == ["vram", "vram"]
+    assert [row["memory_bucket"] for row in queued] == ["8", "8"]
+
+
+def test_current_memory_group_survives_a_hardware_scan_failure(monkeypatch):
+    from omm import hardware
+
+    monkeypatch.setattr(hardware, "last_scan", lambda: None)
+
+    def boom():
+        raise OSError("denied")
+
+    monkeypatch.setattr(hardware, "scan_hardware", boom)
+    assert _real_current_memory_group() is None
+
+
+def test_current_memory_group_reuses_the_last_scan(monkeypatch):
+    from omm import hardware
+
+    scanned = hardware.HardwareInfo(
+        os_name="macOS", os_version="15", cpu="M3", ram_total_gb=15.8,
+        ram_available_gb=8.0, unified_memory=True, gpu_name="M3",
+        vram_total_gb=15.8, vram_free_gb=8.0,
+    )
+    monkeypatch.setattr(hardware, "last_scan", lambda: scanned)
+    monkeypatch.setattr(
+        hardware, "scan_hardware", lambda: (_ for _ in ()).throw(AssertionError("rescanned"))
+    )
+    monkeypatch.setattr("omm.memory_group.platform.system", lambda: "Darwin")
+    assert _real_current_memory_group() == ("unified", "16")

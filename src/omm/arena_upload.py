@@ -60,6 +60,9 @@ WIRE_FIELDS = frozenset(
         "engine",
         "winner",
         "pinned",
+        # Sub-project D: this machine's coarse memory group, both or neither.
+        "memory_kind",
+        "memory_bucket",
     }
     | {
         f"{name}_{side}"
@@ -137,7 +140,28 @@ def _digest(value: object) -> str | None:
     return None
 
 
-def build_payload(vote_row: dict, *, registry_entries: dict | None = None) -> dict | None:
+def current_memory_group() -> tuple[str, str] | None:
+    """This machine's (memory_kind, memory_bucket), or None. Never raises.
+
+    Reuses a scan the command already made rather than forcing a new one; a
+    failed scan only costs the group - the votes still go out and count
+    toward the overall leaderboard.
+    """
+    try:
+        from . import hardware, memory_group
+
+        scanned = hardware.last_scan() or hardware.scan_hardware()
+        return memory_group.classify(scanned)
+    except Exception:
+        return None
+
+
+def build_payload(
+    vote_row: dict,
+    *,
+    registry_entries: dict | None = None,
+    memory_group: tuple[str, str] | None = None,
+) -> dict | None:
     """One wire payload from one local votes.jsonl row, or None when the row
     cannot make a valid one.
 
@@ -231,6 +255,14 @@ def build_payload(vote_row: dict, *, registry_entries: dict | None = None) -> di
             payload[f"{name}_a"] = left
             payload[f"{name}_b"] = right
 
+    if memory_group is not None:
+        from . import memory_group as memory_group_mod
+
+        if memory_group_mod.is_valid(*memory_group):
+            # An invalid pair would make the validator reject the whole row;
+            # losing the group is better than losing the vote.
+            payload["memory_kind"], payload["memory_bucket"] = memory_group
+
     # watt_* is never sent by sub-project B - no power reader exists yet. The
     # validator and rules accept the field so sub-project C, its first
     # consumer, needs no rules redeploy.
@@ -297,8 +329,9 @@ def enqueue(vote_rows: list[dict]) -> int:
         if policy() == "never":
             return 0
         payloads = []
+        group = current_memory_group() if vote_rows else None
         for row in vote_rows or []:
-            payload = build_payload(row)
+            payload = build_payload(row, memory_group=group)
             if payload is not None:
                 payloads.append(payload)
         if not payloads:

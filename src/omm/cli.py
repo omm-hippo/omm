@@ -11107,9 +11107,17 @@ def _arena_consent_and_enqueue(rows: list[dict]) -> None:
         if decision == "never":
             return
         if decision == "ask":
-            answer = _ask_upload_choice(
-                f"Upload {len(rows)} battle vote(s)? Your prompt text is never sent."
-            )
+            group = arena_upload.current_memory_group()
+            if group is None:
+                question = f"Upload {len(rows)} battle vote(s)? Your prompt text is never sent."
+            else:
+                from omm import memory_group
+
+                question = (
+                    f"Upload {len(rows)} battle vote(s) and this machine's memory group "
+                    f"({memory_group.display_label(*group)})? Your prompt text is never sent."
+                )
+            answer = _ask_upload_choice(question)
             if answer == "no":
                 return
             if answer == "always":
