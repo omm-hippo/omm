@@ -322,32 +322,86 @@ def test_a_passing_run_writes_the_artifact(tmp_path):
     artifact = json.loads(output.read_text(encoding="utf-8"))
     assert artifact["schema_version"] == 2
     assert artifact["models"]
-    assert "gate_status=passed" in outputs.read_text(encoding="utf-8")
+    assert artifact["status"] == "ranked" and artifact["ranked"] is True
+    assert "status=ranked" in outputs.read_text(encoding="utf-8")
     assert "artifact_changed=true" in outputs.read_text(encoding="utf-8")
 
 
-def test_a_blocked_run_exits_zero_and_writes_nothing(tmp_path, capsys):
-    votes = tmp_path / "votes.jsonl"
-    votes.write_text(json.dumps(_row(0, "aa", "a")), encoding="utf-8")
+def _run(tmp_path, rows, *extra, name="votes.jsonl"):
+    votes = tmp_path / name
+    votes.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
     output = tmp_path / "arena-leaderboard.json"
     outputs = tmp_path / "github-output"
+    outputs.unlink(missing_ok=True)
     exit_code = aggregate.main(
         [
-            "--votes-file",
-            str(votes),
-            "--output",
-            str(output),
+            "--votes-file", str(votes),
+            "--output", str(output),
             "--quality-gate",
-            "--github-output",
-            str(outputs),
-            "--resamples",
-            "5",
+            "--github-output", str(outputs),
+            "--resamples", "5",
+            *extra,
         ]
     )
+    return exit_code, output, outputs.read_text(encoding="utf-8")
+
+
+def test_a_first_blocked_run_writes_a_collecting_file(tmp_path, capsys):
+    exit_code, output, outputs = _run(tmp_path, [_row(0, "aa", "a"), _row(1, "bb", "b")])
     assert exit_code == 0
-    assert not output.exists()
-    assert "gate_status=blocked" in outputs.read_text(encoding="utf-8")
+    artifact = json.loads(output.read_text(encoding="utf-8"))
+    assert artifact["status"] == "collecting"
+    assert artifact["models"] == []
+    assert artifact["corpus"]["rows_used"] == 2
+    assert artifact["corpus"]["client_count"] == 2
+    assert any("effective votes" in reason for reason in artifact["reasons"])
+    assert "status=collecting" in outputs
+    assert "artifact_changed=true" in outputs
     assert "effective votes" in capsys.readouterr().out
+
+
+def test_a_quiet_night_writes_nothing(tmp_path):
+    rows = [_row(0, "aa", "a")]
+    _run(tmp_path, rows, "--generated-at", "2026-10-16T04:00:00+00:00")
+    output = tmp_path / "arena-leaderboard.json"
+    first = output.read_bytes()
+    _code, _output, outputs = _run(tmp_path, rows, "--generated-at", "2026-10-17T04:00:00+00:00")
+    assert output.read_bytes() == first
+    assert "artifact_changed=false" in outputs
+
+
+def test_a_thin_night_keeps_the_ranked_board_without_an_incumbent_flag(tmp_path):
+    """The previous output doubles as the incumbent, so a run that forgot
+    --incumbent still cannot blank the public board."""
+    _run(tmp_path, _healthy_rows(), "--generated-at", "2026-10-16T04:00:00+00:00")
+    output = tmp_path / "arena-leaderboard.json"
+    ranked = json.loads(output.read_text(encoding="utf-8"))
+    _code, _output, outputs = _run(
+        tmp_path, [_row(0, "aa", "a")], "--generated-at", "2026-10-17T04:00:00+00:00",
+        name="thin.jsonl",
+    )
+    kept = json.loads(output.read_text(encoding="utf-8"))
+    assert kept["status"] == "ranked"
+    assert kept["models"] == ranked["models"]
+    assert "artifact_changed=false" in outputs
+
+
+def test_a_collecting_result_never_replaces_a_schema_1_file(tmp_path, capsys):
+    output = tmp_path / "arena-leaderboard.json"
+    legacy = json.dumps({"schema_version": 1, "models": [{"key": "x"}]})
+    output.write_text(legacy, encoding="utf-8")
+    _code, _output, outputs = _run(tmp_path, [_row(0, "aa", "a")])
+    assert output.read_text(encoding="utf-8") == legacy
+    assert "artifact_changed=false" in outputs
+    assert "schema" in capsys.readouterr().out
+
+
+def test_a_ranked_result_replaces_a_schema_1_file(tmp_path):
+    output = tmp_path / "arena-leaderboard.json"
+    output.write_text(json.dumps({"schema_version": 1, "models": []}), encoding="utf-8")
+    _code, _output, outputs = _run(tmp_path, _healthy_rows())
+    assert json.loads(output.read_text(encoding="utf-8"))["schema_version"] == 2
+    assert "artifact_changed=true" in outputs
 
 
 def test_an_unchanged_corpus_reports_no_change(tmp_path):
@@ -421,6 +475,34 @@ def test_the_written_artifact_verifies_against_its_signature(tmp_path):
             "--public",
             str(public),
         ],
+        check=True,
+    )
+    catalog.verify_signed_artifact(
+        output.read_bytes(),
+        json.loads(manifest.read_text(encoding="utf-8")),
+        public.read_text(encoding="utf-8").strip(),
+    )
+
+
+def test_the_written_collecting_file_verifies_against_its_signature(tmp_path):
+    """The workflow signs a collecting file exactly like a ranked board."""
+    import subprocess
+    import sys
+
+    from omm import catalog
+
+    _code, output, _outputs = _run(tmp_path, [_row(0, "aa", "a"), _row(1, "bb", "b")])
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "collecting"
+    private, public = tmp_path / "key", tmp_path / "key.pub"
+    manifest = tmp_path / "arena-leaderboard.manifest.json"
+    script = "scripts/sign_catalog.py"
+    subprocess.run(
+        [sys.executable, script, "generate", "--private", str(private), "--public", str(public)],
+        check=True,
+    )
+    subprocess.run(
+        [sys.executable, script, "sign", str(output), "--private", str(private),
+         "--manifest", str(manifest), "--public", str(public)],
         check=True,
     )
     catalog.verify_signed_artifact(
