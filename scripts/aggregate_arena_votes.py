@@ -13,9 +13,11 @@ Spec: docs/superpowers/specs/2026-09-26-arena-vote-aggregation-design.md
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -35,6 +37,16 @@ from scripts.retrain_decision import append_github_outputs  # noqa: E402
 ARENA_MAX_ROWS = 100000
 
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
+
+#: Where the service-account assertion is exchanged. Fixed rather than read
+#: from the key file's `token_uri`, so a tampered key file cannot send the
+#: signed assertion to a host of its choosing. Same endpoint and scopes as
+#: cf-worker/src/rtdb.ts, which mints the Worker's write token the same way.
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_RTDB_SCOPES = (
+    "https://www.googleapis.com/auth/firebase.database "
+    "https://www.googleapis.com/auth/userinfo.email"
+)
 
 
 class VotesFetchError(RuntimeError):
@@ -67,6 +79,85 @@ def extract_rows(payload: object) -> list[dict]:
     return []
 
 
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def access_token_from_service_account(raw: str, *, now: int | None = None) -> str:
+    """Mint a short-lived OAuth2 access token from a service-account key.
+
+    A Google access token lives one hour, so storing one as a CI secret means
+    it has expired before the first nightly run. The workflow stores the
+    service-account key JSON instead and this mints a fresh token per run.
+
+    Error messages never quote the key file or the token endpoint's response
+    body beyond its status, so the private key cannot end up in CI output.
+    """
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+    try:
+        account = json.loads(raw)
+    except ValueError:
+        raise VotesFetchError("the service account key is not valid JSON") from None
+    if not isinstance(account, dict):
+        raise VotesFetchError("the service account key is not a JSON object")
+    client_email = account.get("client_email")
+    private_key = account.get("private_key")
+    if not isinstance(client_email, str) or not client_email:
+        raise VotesFetchError("the service account key has no client_email")
+    if not isinstance(private_key, str) or not private_key:
+        raise VotesFetchError("the service account key has no private_key")
+    try:
+        key = serialization.load_pem_private_key(private_key.encode(), password=None)
+    except (ValueError, TypeError):
+        raise VotesFetchError("the service account private_key is not a PEM key") from None
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise VotesFetchError("the service account private_key is not an RSA key")
+
+    issued_at = int(time.time()) if now is None else now
+    header = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    claims = _b64url(
+        json.dumps(
+            {
+                "iss": client_email,
+                "scope": _RTDB_SCOPES,
+                "aud": _GOOGLE_TOKEN_URL,
+                "iat": issued_at,
+                "exp": issued_at + 3600,
+            }
+        ).encode()
+    )
+    signing_input = f"{header}.{claims}".encode()
+    signature = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+    assertion = f"{header}.{claims}.{_b64url(signature)}"
+
+    try:
+        response = requests.post(
+            _GOOGLE_TOKEN_URL,
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "assertion": assertion,
+            },
+            timeout=30,
+            # Never follow a redirect off oauth2.googleapis.com with the
+            # signed assertion in the body.
+            allow_redirects=False,
+        )
+    except requests.RequestException as error:
+        raise VotesFetchError(f"token exchange failed: {type(error).__name__}") from None
+    if response.status_code != 200:
+        raise VotesFetchError(f"token exchange failed: HTTP {response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError:
+        raise VotesFetchError("token exchange returned non-JSON") from None
+    token = payload.get("access_token") if isinstance(payload, dict) else None
+    if not isinstance(token, str) or not token:
+        raise VotesFetchError("token exchange returned no access_token")
+    return token
+
+
 def fetch_votes(
     url: str, token: str | None, *, limit: int = ARENA_MAX_ROWS
 ) -> list[dict]:
@@ -91,7 +182,7 @@ def fetch_votes(
     if not token and hostname not in _LOOPBACK:
         raise VotesFetchError(
             "a credential is required to read the private votes node "
-            "(set LOCALFIT_VOTES_ADMIN_TOKEN)"
+            "(set LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON)"
         )
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     params: dict[str, object] = {}
@@ -167,7 +258,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.votes_file:
         rows = load_votes_file(args.votes_file)
     else:
-        rows = fetch_votes(args.votes_url, os.environ.get("LOCALFIT_VOTES_ADMIN_TOKEN"))
+        service_account = os.environ.get("LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON")
+        token = (
+            access_token_from_service_account(service_account)
+            if service_account
+            else None
+        )
+        rows = fetch_votes(args.votes_url, token)
 
     generated_at = args.generated_at or datetime.now(timezone.utc).isoformat()
     artifact = build_artifact(rows, generated_at=generated_at, resamples=args.resamples)

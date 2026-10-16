@@ -159,7 +159,8 @@ runs it nightly (04:00 UTC, an hour after `train.yml`), signing with the same Ed
 catalog key as the recommendation model. The math lives in `scripts/`, never in
 `src/omm/` — the runtime only reads the artifact. Note the deliberate asymmetry with
 telemetry: the `votes` RTDB node is `.read: false`, so the aggregator sends an
-`Authorization: Bearer` credential (`LOCALFIT_VOTES_ADMIN_TOKEN`), while
+`Authorization: Bearer` access token it mints each run from the read-only service-account
+key in secret `LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON` (a stored token would expire in an hour), while
 `train_model.py:fetch_real_rows` refuses to send one to the world-readable `telemetry`
 node. Artifact fields and thresholds:
 `docs/superpowers/specs/2026-09-26-arena-vote-aggregation-design.md`.

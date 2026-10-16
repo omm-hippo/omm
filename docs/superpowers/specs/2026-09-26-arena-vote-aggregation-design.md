@@ -309,13 +309,20 @@ C therefore gets its own fetch in `aggregate_arena_votes.py`:
 - URL from `--votes-url` / `LOCALFIT_VOTES_EXPORT_URL`, validated as an
   `https://` Firebase RTDB `.json` endpoint (loopback `http://` allowed, for
   emulator testing — see `reference_firebase_rtdb_emulator_auth_testing`).
-- Credential from a **new** secret `LOCALFIT_VOTES_ADMIN_TOKEN`, sent as an
-  `Authorization: Bearer` header — never as a query parameter, which would put
-  the credential into request logs and CI output. A legacy Firebase database
-  secret (`?auth=`) is deliberately not supported; the secret is expected to be
-  a service-account OAuth2 access token. Absent credential is a hard error, not
-  a silent empty corpus: an unauthenticated read of a private node returns 401,
-  and treating that as "no votes yet" would publish an empty leaderboard.
+- Credential from a **new** secret `LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON`: the
+  JSON key of a read-only service account (role Firebase Realtime Database
+  Viewer). Each run mints a fresh OAuth2 access token from it with a JWT-bearer
+  exchange at `oauth2.googleapis.com/token` - the same flow
+  `cf-worker/src/rtdb.ts` uses - and sends it as an `Authorization: Bearer`
+  header, never as a query parameter, which would put the credential into
+  request logs and CI output. The token endpoint is fixed, not read from the key
+  file's `token_uri`. A legacy Firebase database secret (`?auth=`) is
+  deliberately not supported. Absent credential is a hard error, not a silent
+  empty corpus: an unauthenticated read of a private node returns 401, and
+  treating that as "no votes yet" would publish an empty leaderboard.
+  (Revised 2026-10-16: the first version stored an access token as
+  `LOCALFIT_VOTES_ADMIN_TOKEN`, but a Google access token lives one hour, so it
+  would have expired before the first nightly run.)
 - `orderBy="$key"` + `limitToLast=ARENA_MAX_ROWS`, as the telemetry fetch does.
   RTDB keys here are PoW digests, not timestamps, so this is a uniform sample
   and must not be described as "the newest rows".
@@ -408,7 +415,7 @@ skipped rather than treated as a 100% drop.
 - `concurrency: group: arena-aggregate, cancel-in-progress: false`, matching
   `train.yml`'s reason: a dispatched run must queue behind the cron run instead
   of racing it into a conflicted PR.
-- Preflight that `LOCALFIT_VOTES_EXPORT_URL` and `LOCALFIT_VOTES_ADMIN_TOKEN`
+- Preflight that `LOCALFIT_VOTES_EXPORT_URL` and `LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON`
   are both set, and copy the incumbent artifact aside for the gate.
 - Run the aggregator; sign only when the gate passed and the artifact changed.
 - Open an auto-merging PR whose head commit is SSH-signed with
