@@ -5,9 +5,11 @@ Pure functions over vote rows: validation, abuse weighting, a weighted
 Bradley-Terry quality fit with confidence-interval tiers, and a
 machine-independent efficiency rating fitted from within-battle log-ratios.
 
-No I/O, no network, no dependency outside the standard library. The runtime
-package never imports this module - it only reads the artifact this produces,
-the same boundary that keeps scikit-learn out of omm's runtime dependencies.
+No I/O, no network, no dependency outside the standard library and omm's
+pure `memory_group` table (the one place the memory-group labels are defined).
+The runtime package never imports this module - it only reads the artifact
+this produces, the same boundary that keeps scikit-learn out of omm's runtime
+dependencies.
 
 Spec: docs/superpowers/specs/2026-09-26-arena-vote-aggregation-design.md
 """
@@ -20,6 +22,8 @@ import re
 import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+
+from omm import memory_group
 
 #: One (client_id, unordered model pair) group contributes at most this many
 #: effective votes. Rows are never discarded, only down-weighted.
@@ -483,7 +487,7 @@ def fit_efficiency(battles: list[Battle], weights: list[float]) -> dict[str, dic
     }
 
 
-ARTIFACT_SCHEMA_VERSION = 1
+ARTIFACT_SCHEMA_VERSION = 2
 
 _METADATA_FIELDS = (
     ("display_filename", "model_filename"),
@@ -672,6 +676,16 @@ def score_scope(
     }
 
 
+def group_key(row: dict) -> str | None:
+    """"<memory_kind>:<memory_bucket>" for a row carrying a valid memory group
+    (sub-project D), else None. A row without one still counts overall."""
+    kind = row.get("memory_kind")
+    bucket = row.get("memory_bucket")
+    if not memory_group.is_valid(kind, bucket):
+        return None
+    return f"{kind}:{bucket}"
+
+
 def build_artifact(
     rows: list[dict],
     *,
@@ -679,9 +693,32 @@ def build_artifact(
     resamples: int = BOOTSTRAP_RESAMPLES,
     seed: int = BOOTSTRAP_SEED,
 ) -> dict:
-    """The full leaderboard artifact, deterministic for a given corpus."""
+    """The full leaderboard artifact, deterministic for a given corpus.
+
+    The overall board keeps the top-level fields schema 1 had; `groups` adds
+    the same scoring run once per memory group on that group's rows. Whether
+    a scope may be shown is not decided here - arena_quality_gate.publish
+    gates each scope and adds `status`/`ranked`.
+    """
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        key = group_key(row)
+        if key is not None:
+            grouped[key].append(row)
+    groups = []
+    for key in sorted(grouped):
+        kind, bucket = key.split(":", 1)
+        groups.append(
+            {
+                "key": key,
+                "memory_kind": kind,
+                "memory_bucket": bucket,
+                **score_scope(grouped[key], resamples=resamples, seed=seed),
+            }
+        )
     return {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
         "generated_at": generated_at,
         **score_scope(rows, resamples=resamples, seed=seed),
+        "groups": groups,
     }

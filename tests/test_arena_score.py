@@ -622,3 +622,76 @@ def test_pair_counts_respect_the_client_pair_cap():
     (pair,) = arena_score.score_scope(rows, resamples=5)["pairs"]
     assert pair["battles"] == 30
     assert pair["wins_a"] == pytest.approx(arena_score.CLIENT_PAIR_VOTE_CAP)
+
+
+# --- sub-project D: memory groups, artifact v2 ----------------------------
+
+
+def _grouped_corpus() -> list[dict]:
+    rows = []
+    for index, (kind, bucket) in enumerate(
+        [("unified", "16")] * 30 + [("vram", "8")] * 12 + [(None, None)] * 8
+    ):
+        row = _row(
+            battle_id=f"{index:08d}-5555-5555-5555-555555555555",
+            client_id=f"{index:08x}",
+            winner="a" if index % 3 else "b",
+        )
+        if kind is not None:
+            row["memory_kind"] = kind
+            row["memory_bucket"] = bucket
+        rows.append(row)
+    return rows
+
+
+def test_group_key_reads_a_valid_pair_only():
+    assert arena_score.group_key(_row(memory_kind="unified", memory_bucket="16")) == "unified:16"
+    assert arena_score.group_key(_row()) is None
+    assert arena_score.group_key(_row(memory_kind="vram", memory_bucket="18-24")) is None
+    assert arena_score.group_key(_row(memory_kind="unified")) is None
+
+
+def test_a_group_scores_exactly_like_the_scorer_on_its_own_rows():
+    rows = _grouped_corpus()
+    artifact = arena_score.build_artifact(rows, generated_at="t", resamples=20)
+    group = next(g for g in artifact["groups"] if g["key"] == "unified:16")
+    alone = arena_score.score_scope(
+        [row for row in rows if arena_score.group_key(row) == "unified:16"], resamples=20
+    )
+    assert {key: group[key] for key in alone} == alone
+    assert (group["memory_kind"], group["memory_bucket"]) == ("unified", "16")
+
+
+def test_rows_without_a_group_count_only_in_overall():
+    rows = _grouped_corpus()
+    artifact = arena_score.build_artifact(rows, generated_at="t", resamples=5)
+    assert artifact["corpus"]["rows_used"] == 50
+    assert [g["key"] for g in artifact["groups"]] == ["unified:16", "vram:8"]
+    assert sum(g["corpus"]["rows_fetched"] for g in artifact["groups"]) == 42
+
+
+def test_an_invalid_pair_is_ungrouped_not_dropped():
+    rows = _corpus(4)
+    rows[0]["memory_kind"] = "vram"
+    rows[0]["memory_bucket"] = "18-24"
+    artifact = arena_score.build_artifact(rows, generated_at="t", resamples=5)
+    assert artifact["corpus"]["rows_used"] == 4
+    assert artifact["groups"] == []
+
+
+def test_the_artifact_is_schema_2_with_no_publication_decision():
+    artifact = arena_score.build_artifact(_grouped_corpus(), generated_at="t", resamples=5)
+    assert artifact["schema_version"] == 2
+    assert "status" not in artifact and "ranked" not in artifact
+
+
+def test_a_grouped_corpus_is_byte_identical_across_runs():
+    import json
+    import random as stdlib_random
+
+    rows = _grouped_corpus()
+    shuffled = list(rows)
+    stdlib_random.Random(3).shuffle(shuffled)
+    first = arena_score.build_artifact(rows, generated_at="t", resamples=10)
+    second = arena_score.build_artifact(shuffled, generated_at="t", resamples=10)
+    assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)

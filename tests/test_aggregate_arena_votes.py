@@ -320,7 +320,7 @@ def test_a_passing_run_writes_the_artifact(tmp_path):
     )
     assert exit_code == 0
     artifact = json.loads(output.read_text(encoding="utf-8"))
-    assert artifact["schema_version"] == 1
+    assert artifact["schema_version"] == 2
     assert artifact["models"]
     assert "gate_status=passed" in outputs.read_text(encoding="utf-8")
     assert "artifact_changed=true" in outputs.read_text(encoding="utf-8")
