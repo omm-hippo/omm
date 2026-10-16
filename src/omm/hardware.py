@@ -549,6 +549,36 @@ def _windows_registry_gpus() -> list[dict]:
     return list(unique.values())
 
 
+def is_integrated_gpu(name: str) -> bool:
+    """Whether a Windows adapter name is an integrated / shared-memory GPU.
+
+    Such adapters report no dedicated VRAM on purpose (see _scan_windows_gpu);
+    memory_group needs the same call to tell them apart from a discrete card
+    whose size could not be read."""
+    lowered = name.lower()
+    if "intel" in lowered:
+        # Intel Arc A/B-series names denote discrete adapters; generic
+        # "Intel Arc Graphics", Iris, and UHD are integrated/shared.
+        normalized = re.sub(r"\((?:tm|r)\)|[™®]", " ", lowered)
+        normalized = " ".join(normalized.split())
+        return re.search(r"\barc\s+(?:pro\s+)?[ab]\d", normalized) is None
+    if "radeon" in lowered or "firepro" in lowered or re.search(r"(?<![a-z])amd(?![a-z])", lowered):
+        # AMD's Ryzen APU adapters are named "AMD Radeon(TM) Graphics",
+        # "... Vega 8 Graphics", "... 780M Graphics", "AMD Radeon 890M
+        # Graphics" and so on - an open-ended family. Mirror the Intel
+        # branch and treat every AMD adapter as shared unless the name
+        # carries an unambiguous discrete-series marker, so an APU's UMA
+        # carve-out is never reported as dedicated VRAM.
+        normalized = re.sub(r"\((?:tm|r)\)|[™®]", " ", lowered)
+        normalized = " ".join(normalized.split())
+        discrete = re.search(
+            r"\b(?:rx|pro|instinct|firepro|wx|vii)\b|\b(?:hd|r[579])\s*\d{3,4}\b",
+            normalized,
+        )
+        return discrete is None
+    return False
+
+
 def _scan_windows_gpu() -> tuple[str | None, float | None, float | None]:
     """Return the best physical Windows adapter when NVML is unavailable.
 
@@ -584,44 +614,20 @@ def _scan_windows_gpu() -> tuple[str | None, float | None, float | None]:
     if not adapters:
         return None, None, None
 
-    def is_integrated(name: str) -> bool:
-        lowered = name.lower()
-        if "intel" in lowered:
-            # Intel Arc A/B-series names denote discrete adapters; generic
-            # "Intel Arc Graphics", Iris, and UHD are integrated/shared.
-            normalized = re.sub(r"\((?:tm|r)\)|[™®]", " ", lowered)
-            normalized = " ".join(normalized.split())
-            return re.search(r"\barc\s+(?:pro\s+)?[ab]\d", normalized) is None
-        if "radeon" in lowered or "firepro" in lowered or re.search(r"(?<![a-z])amd(?![a-z])", lowered):
-            # AMD's Ryzen APU adapters are named "AMD Radeon(TM) Graphics",
-            # "... Vega 8 Graphics", "... 780M Graphics", "AMD Radeon 890M
-            # Graphics" and so on - an open-ended family. Mirror the Intel
-            # branch and treat every AMD adapter as shared unless the name
-            # carries an unambiguous discrete-series marker, so an APU's UMA
-            # carve-out is never reported as dedicated VRAM.
-            normalized = re.sub(r"\((?:tm|r)\)|[™®]", " ", lowered)
-            normalized = " ".join(normalized.split())
-            discrete = re.search(
-                r"\b(?:rx|pro|instinct|firepro|wx|vii)\b|\b(?:hd|r[579])\s*\d{3,4}\b",
-                normalized,
-            )
-            return discrete is None
-        return False
-
     # Hybrid laptops often enumerate the integrated adapter first. Prefer a
     # likely discrete adapter, then the largest credible dedicated-memory
     # value, while preserving stable input order for otherwise equal rows.
     ranked = list(adapters.values())
     ranked.sort(
         key=lambda adapter: (
-            not is_integrated(adapter[0]),
+            not is_integrated_gpu(adapter[0]),
             adapter[1] is not None,
             adapter[1] or 0,
         ),
         reverse=True,
     )
     name, raw_vram = ranked[0]
-    if is_integrated(name):
+    if is_integrated_gpu(name):
         return name, None, None
     total = raw_vram / (1024**3) if raw_vram is not None else 0.0
     return name, total if total > 0 else None, None

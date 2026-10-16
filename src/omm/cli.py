@@ -11247,7 +11247,9 @@ def _arena_session(
     _arena_consent_and_enqueue(recorded)
 
 
-_LEADERBOARD_WEB_URL = "https://omm.run/leaderboard"
+# The English page: omm.run's unprefixed default locale is Korean, and the CLI
+# speaks English.
+_LEADERBOARD_WEB_URL = "https://omm.run/en/leaderboard"
 
 
 def _arena_board_name(display: str) -> tuple[str, str]:
@@ -11293,7 +11295,7 @@ def _arena_leaderboard() -> None:
     json_output = _global_opts().json
     public_key = config_mod.load_config().get("catalog_public_key") or ""
     try:
-        artifact = arena_board.fetch_board(public_key)
+        board = arena_board.fetch_board(public_key)
     except arena_board.BoardTooNew as error:
         errors.print_cli_error(
             err_console,
@@ -11305,7 +11307,7 @@ def _arena_leaderboard() -> None:
         errors.print_cli_error(
             err_console,
             "The published arena leaderboard failed its signature check, so it isn't shown.",
-            fix="Try again later.",
+            fix="It may be mid-update; try again in a few minutes.",
         )
         raise typer.Exit(1) from error
     except arena_board.BoardUnavailable as error:
@@ -11328,6 +11330,7 @@ def _arena_leaderboard() -> None:
         }
     )
 
+    artifact = board.artifact if board is not None else None
     if artifact is None:
         if json_output:
             _print_json(
@@ -11402,7 +11405,8 @@ def _arena_leaderboard() -> None:
     )
     console.print(
         f"[muted]{_arena_board_counts(scope)} · updated "
-        f"{_arena_board_updated(scope.get('updated_at'))} · signature verified[/muted]"
+        f"{_arena_board_updated(scope.get('updated_at'))} · signature verified"
+        f"{' · cached copy' if board.cached else ''}[/muted]"
     )
 
     # expand + ratio: MODEL takes whatever width the fixed columns leave, so

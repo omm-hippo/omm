@@ -129,13 +129,24 @@ def _save_cache(raw: bytes, manifest_raw: bytes) -> None:
         pass
 
 
-def fetch_board(public_key: str) -> dict | None:
-    """The verified leaderboard artifact, or None when none is published yet
-    (404 - before the arena work reaches `main` and the first nightly run).
+@dataclass(frozen=True)
+class Board:
+    artifact: dict
+    #: True when this is the last verified copy on disk rather than a live
+    #: fetch - the CLI says so, since it may be a day or more old.
+    cached: bool = False
+
+
+def fetch_board(public_key: str) -> Board | None:
+    """The verified leaderboard, or None when none is published yet (404 -
+    before the arena work reaches `main` and the first nightly run).
 
     Live first; on a network failure, the last cached copy if it still
-    verifies. A live board that fails verification is an error, never a
-    reason to fall back to an older cached one.
+    verifies. When the live bytes fail verification, the last verified copy
+    is used too: right after a nightly publish the raw CDN can serve the new
+    artifact next to the old manifest for a few minutes, and that must not
+    read as tampering. Unverified bytes are never returned and never cached;
+    with no verified copy on disk the verification error stands.
     """
     import requests
 
@@ -149,10 +160,18 @@ def fetch_board(public_key: str) -> dict | None:
             label="arena leaderboard manifest",
         )
     except (requests.RequestException, ValueError):
-        return _load_cache(public_key)
-    artifact = _verified(raw, manifest_raw, public_key)
+        return Board(_load_cache(public_key), cached=True)
+    try:
+        artifact = _verified(raw, manifest_raw, public_key)
+    except BoardVerificationError:
+        try:
+            return Board(_load_cache(public_key), cached=True)
+        except BoardUnavailable:
+            raise BoardVerificationError(
+                "the published leaderboard did not verify and no verified copy is cached"
+            ) from None
     _save_cache(raw, manifest_raw or b"")
-    return artifact
+    return Board(artifact)
 
 
 def group_label(key: str) -> str:

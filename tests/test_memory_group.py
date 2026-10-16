@@ -4,7 +4,7 @@ from omm import memory_group as mg
 from omm.hardware import HardwareInfo
 
 
-def _hw(*, unified=False, ram=16.0, vram=None):
+def _hw(*, unified=False, ram=16.0, vram=None, gpu=None):
     return HardwareInfo(
         os_name="x",
         os_version="x",
@@ -12,7 +12,7 @@ def _hw(*, unified=False, ram=16.0, vram=None):
         ram_total_gb=ram,
         ram_available_gb=ram,
         unified_memory=unified,
-        gpu_name=None,
+        gpu_name=gpu,
         vram_total_gb=vram,
         vram_free_gb=None,
     )
@@ -111,3 +111,20 @@ def test_is_valid_rejects_cross_kind_buckets():
 )
 def test_display_label(kind, bucket, label):
     assert mg.display_label(kind, bucket) == label
+
+
+def test_a_detected_gpu_with_unknown_vram_sends_no_group():
+    """hardware.py reports a discrete Windows adapter whose size it cannot
+    read as (name, None). That machine has a GPU, so "CPU only" would be a
+    lie; better no group than a wrong one."""
+    assert mg.classify(_hw(ram=32, gpu="AMD Radeon RX 7800 XT"), system="Windows") is None
+    assert mg.classify(_hw(ram=32, vram=0.0, gpu="NVIDIA GeForce RTX 4070"), system="Linux") is None
+
+
+@pytest.mark.parametrize(
+    "gpu", ["Intel(R) UHD Graphics 770", "AMD Radeon(TM) Graphics", "Intel(R) Arc(TM) Graphics"]
+)
+def test_an_integrated_gpu_is_still_cpu_only(gpu):
+    """Shared-memory adapters report no VRAM on purpose; the model runs out
+    of system RAM there, which is exactly the CPU-only group."""
+    assert mg.classify(_hw(ram=31.6, gpu=gpu), system="Windows") == ("cpu", "32")

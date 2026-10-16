@@ -81,7 +81,7 @@ def board(monkeypatch, isolated_omm_home):
         value = state["artifact"]
         if isinstance(value, Exception):
             raise value
-        return value
+        return None if value is None else arena_board.Board(value, cached=state.get("cached", False))
 
     monkeypatch.setattr(arena_board, "fetch_board", fetch)
     monkeypatch.setattr(arena_upload, "current_memory_group", lambda: state["group"])
@@ -131,7 +131,7 @@ def test_ranked_group_output(board):
     assert "installed" in out
     assert "often fails" in out
     assert "1 more model needs more votes" in out
-    assert "https://omm.run/leaderboard" in out
+    assert "https://omm.run/en/leaderboard" in out
     assert "not comparable" in out  # gemma's rating lives in component 1
 
 
@@ -262,3 +262,19 @@ def test_a_battle_with_json_is_still_unsupported(board, monkeypatch):
     result = runner.invoke(cli.app, ["arena", "--json"])
     assert result.exit_code == 2
     assert json.loads(result.output)["error"]["code"] == "unsupported_json"
+
+
+def test_a_cached_board_says_so(board):
+    board["cached"] = True
+    out = _run().output
+    assert "cached copy" in out
+    assert "signature verified" in out
+
+
+def test_a_live_board_does_not_say_cached(board):
+    assert "cached copy" not in _run().output
+
+
+def test_the_signature_error_mentions_a_possible_mid_update(board):
+    board["artifact"] = arena_board.BoardVerificationError("bad")
+    assert "mid-update" in _run().output

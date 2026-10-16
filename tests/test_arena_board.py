@@ -131,7 +131,8 @@ def test_the_urls_point_at_main_published():
 def test_a_verified_board_is_returned_and_cached(isolated_omm_home, served):
     private, public = _keypair()
     raw = _publish(served, private, _artifact())
-    assert arena_board.fetch_board(public)["status"] == "ranked"
+    board = arena_board.fetch_board(public)
+    assert board.artifact["status"] == "ranked" and board.cached is False
     assert (config.OMM_HOME / "arena" / "leaderboard.json").read_bytes() == raw
 
 
@@ -171,7 +172,8 @@ def test_offline_uses_a_cache_that_still_verifies(isolated_omm_home, served):
     _publish(served, private, _artifact())
     arena_board.fetch_board(public)
     served.clear()
-    assert arena_board.fetch_board(public)["status"] == "ranked"
+    board = arena_board.fetch_board(public)
+    assert board.artifact["status"] == "ranked" and board.cached is True
 
 
 def test_a_tampered_cache_is_not_used_offline(isolated_omm_home, served):
@@ -274,3 +276,18 @@ def test_a_modelscope_model_gets_its_provider_prefix():
 def test_a_model_without_repo_gets_an_unsourced_ref():
     rows = arena_board.numbered_rows(_artifact(), {})
     assert rows[2].ref == "arena-unsourced:local-only.gguf"
+
+
+def test_a_live_signature_failure_falls_back_to_a_verified_cache(isolated_omm_home, served):
+    """Right after a nightly publish the raw CDN can serve the new artifact
+    with the old manifest for a few minutes. The last verified copy is still
+    verified data; showing it beats a tampering-like error."""
+    private, public = _keypair()
+    raw = _publish(served, private, _artifact())
+    arena_board.fetch_board(public)
+    served[config.ARENA_LEADERBOARD_URL] = (200, raw.replace(b"ranked", b"rankeD", 1))
+    board = arena_board.fetch_board(public)
+    assert board.cached is True
+    assert board.artifact["status"] == "ranked"
+    # The unverified live bytes never replaced the cache.
+    assert b"rankeD" not in (config.OMM_HOME / "arena" / "leaderboard.json").read_bytes()

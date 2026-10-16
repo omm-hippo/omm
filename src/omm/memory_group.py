@@ -18,7 +18,8 @@ cf-worker/src/validate.ts and the `votes` block in database.rules.json, and
 stored in every uploaded row - so changing one means a redeploy and mixed
 data. tests/test_vote_wire_contract.py keeps the three in sync.
 
-Pure standard library: scripts/arena_score.py imports this module too.
+Pure standard library at import time: scripts/arena_score.py imports this
+module too (`classify` imports omm.hardware lazily).
 """
 
 from __future__ import annotations
@@ -93,6 +94,15 @@ def classify(hw: HardwareInfo, *, system: str | None = None) -> tuple[str, str] 
         return ("vram", bucket) if bucket else None
     if system not in _TRUSTED_NO_GPU_SYSTEMS:
         return None
+    if hw.gpu_name:
+        # A GPU was detected but its size was not: either an integrated /
+        # shared-memory adapter (the model runs from RAM - CPU only is
+        # right) or a discrete card hardware.py could not size (a GPU
+        # machine - no group beats a wrong one).
+        from omm.hardware import is_integrated_gpu
+
+        if not is_integrated_gpu(hw.gpu_name):
+            return None
     bucket = bucket_for("cpu", hw.ram_total_gb)
     return ("cpu", bucket) if bucket else None
 
