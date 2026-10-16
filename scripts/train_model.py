@@ -945,6 +945,8 @@ def _speed_outlier_reasons(
 def real_rows_to_training_data_with_audit(
     rows: list[dict],
 ) -> tuple[list[list[float]], list[float], dict]:
+    from scripts.measurement_balance import RELATIVE_SPAN, balanced_speed
+
     groups: dict[tuple[float, ...], list[float]] = {}
     group_row_counts: dict[tuple[float, ...], int] = {}
     rejections: dict[str, int] = {}
@@ -961,9 +963,9 @@ def real_rows_to_training_data_with_audit(
             continue
         valid_rows += 1
         features, tokens_per_sec = sample
-        # Collapse repeated measurements of the same configuration to a
-        # median. This makes community retraining useful without allowing one
-        # noisy client or a burst of duplicate uploads to dominate the fit.
+        # One training example per encoded configuration. Repetition within
+        # its speed observations is balanced below, not counted as device
+        # diversity or proof that a frequently submitted value is true.
         group_key = tuple(round(value, 3) for value in features)
         benchmark_version = row.get("benchmark_version")
         if benchmark_version == 6:
@@ -989,12 +991,13 @@ def real_rows_to_training_data_with_audit(
         samples_used += 1
 
     # Statistical outlier pass (issue #134). Deliberately run on the
-    # per-configuration medians rather than on individual rows: the median
+    # per-configuration balanced targets rather than on individual rows: the
     # collapse above already gives every distinct configuration exactly one
     # vote, so a burst of fabricated uploads cannot drag the quartiles it is
     # about to be measured against.
+    balanced = {features: balanced_speed(samples) for features, samples in groups.items()}
     outlier_reasons, outlier_report = _speed_outlier_reasons(
-        {features: statistics.median(samples) for features, samples in groups.items()}
+        {features: target for features, (target, _count) in balanced.items()}
     )
     outlier_rows_dropped = 0
     low_rows_reported = 0
@@ -1004,6 +1007,7 @@ def real_rows_to_training_data_with_audit(
             low_rows_reported += group_row_counts[group_key]
             continue
         dropped_samples = groups.pop(group_key)
+        balanced.pop(group_key)
         dropped_rows = group_row_counts.pop(group_key)
         rejections[reason] = rejections.get(reason, 0) + dropped_rows
         valid_rows -= dropped_rows
@@ -1019,7 +1023,7 @@ def real_rows_to_training_data_with_audit(
     outlier_report["reported_low_rows"] = low_rows_reported
 
     X = [list(features) for features in groups]
-    y = [statistics.median(samples) for samples in groups.values()]
+    y = [balanced[features][0] for features in groups]
     audit = {
         "raw_rows": len(rows),
         "valid_rows": valid_rows,
@@ -1043,6 +1047,19 @@ def real_rows_to_training_data_with_audit(
             direct_v6_groups | direct_v7_groups | direct_v8_groups | direct_v9_groups
         ),
         "duplicates_collapsed": samples_used - len(groups),
+        "repetition_balance": {
+            "method": "median_of_bounded_speed_groups",
+            "relative_span": RELATIVE_SPAN,
+            "raw_samples": samples_used,
+            "effective_speed_groups": sum(count for _target, count in balanced.values()),
+            "repeat_samples_collapsed": samples_used - sum(count for _target, count in balanced.values()),
+            "configurations_with_repeats": sum(len(groups[key]) > count for key, (_target, count) in balanced.items()),
+            "independent_device_count": None,
+            "limits": [
+                "Speed groups are observations, not independently authenticated devices.",
+                "Fabricated distinct configurations and values spread across groups remain unverified.",
+            ],
+        },
         # Never truncate silently: both defenses report what they removed and
         # why (issue #134). The per-row physical check appears in
         # `rejections` under "implausible_speed_for_hardware"; the
@@ -1409,7 +1426,9 @@ def _redacted_outlier_inventory(rows: list[dict]) -> tuple[list[dict], dict]:
         row_counts[key] = row_counts.get(key, 0) + 1
         metadata.setdefault(key, row)
 
-    medians = {key: statistics.median(values) for key, values in groups.items()}
+    from scripts.measurement_balance import balanced_speed
+
+    medians = {key: balanced_speed(values)[0] for key, values in groups.items()}
     reasons, _report = _speed_outlier_reasons(medians)
     implied = {
         key: _implied_memory_bandwidth(key, median) for key, median in medians.items()
@@ -1754,6 +1773,8 @@ def main() -> None:
             }
         )
         from scripts.recommendation_diagnostics import build_report, training_provenance
+
+        candidate["synthetic_row_count"] = len(candidate_X) - len(train_X)
 
         candidate["training_provenance"] = training_provenance(FEATURE_ORDER, train_X, holdout_X)
         candidate["real_training_row_count"] = len(train_X)
