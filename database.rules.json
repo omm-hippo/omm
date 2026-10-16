@@ -272,6 +272,44 @@
         }
       }
     },
+    "votes": {
+      ".read": false,
+      ".write": false,
+      "$vote": {
+        ".validate": "newData.hasChildren(['schema_version', 'battle_id', 'client_id', 'recorded_at', 'engine', 'winner', 'model_filename_a', 'model_filename_b', 'elapsed_a', 'elapsed_b', 'tokens_a', 'tokens_b']) && !newData.child('prompt').exists() && newData.child('memory_gb_a').exists() == newData.child('memory_gb_b').exists() && newData.child('tokens_per_second_a').exists() == newData.child('tokens_per_second_b').exists() && newData.child('watt_a').exists() == newData.child('watt_b').exists()",
+        "schema_version": { ".validate": "newData.isNumber() && newData.val() == 1" },
+        "battle_id": { ".validate": "newData.isString() && newData.val().matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)" },
+        "client_id": { ".validate": "newData.isString() && newData.val().matches(/^[0-9a-f]{8,64}$/)" },
+        "client_version": { ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 100)" },
+        "recorded_at": { ".validate": "newData.isString() && newData.val().length >= 20 && newData.val().length <= 50" },
+        "engine": { ".validate": "newData.val() == 'ollama' || newData.val() == 'lmstudio'" },
+        "winner": { ".validate": "newData.val() == 'a' || newData.val() == 'b' || newData.val() == 'both_bad'" },
+        "pinned": { ".validate": "!newData.exists() || newData.isBoolean()" },
+        "model_provider_a": { ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 64)" },
+        "model_repo_id_a": { ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 512)" },
+        "model_filename_a": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 300 && !newData.val().contains('/') && !newData.val().contains('\\\\')" },
+        "model_digest_a": { ".validate": "!newData.exists() || (newData.isString() && newData.val().matches(/^[0-9a-f]{64}$/))" },
+        "quant_bits_a": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0.5 && newData.val() <= 32)" },
+        "elapsed_a": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3600" },
+        "tokens_a": { ".validate": "newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 0 && newData.val() <= 1000000" },
+        "tokens_per_second_a": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000)" },
+        "memory_gb_a": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1024)" },
+        "watt_a": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 2000)" },
+        "model_provider_b": { ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 64)" },
+        "model_repo_id_b": { ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 512)" },
+        "model_filename_b": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 300 && !newData.val().contains('/') && !newData.val().contains('\\\\')" },
+        "model_digest_b": { ".validate": "!newData.exists() || (newData.isString() && newData.val().matches(/^[0-9a-f]{64}$/))" },
+        "quant_bits_b": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0.5 && newData.val() <= 32)" },
+        "elapsed_b": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3600" },
+        "tokens_b": { ".validate": "newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 0 && newData.val() <= 1000000" },
+        "tokens_per_second_b": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000)" },
+        "memory_gb_b": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1024)" },
+        "watt_b": { ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 2000)" },
+        "$other": {
+          ".validate": false
+        }
+      }
+    },
     "$other": {
       ".read": false,
       ".write": false

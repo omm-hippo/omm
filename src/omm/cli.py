@@ -135,6 +135,8 @@ from rich.progress import (
 from rich.table import Table
 
 from omm import (
+    arena,
+    arena_upload,
     benchmark,
     benchmark_history,
     calibration,
@@ -332,6 +334,7 @@ _JSON_CAPABLE = {
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
 _YES_CAPABLE = {
+    "arena",
     "install",
     "import",
     "uninstall",
@@ -992,6 +995,14 @@ def _root(
         # a background aggregate, not a per-session event worth a notice).
         try:
             usage.flush_pending()
+        except Exception:
+            pass
+        # Arena battle votes. Nothing reaches this queue until the user said
+        # yes at the end of a battle session, so there is no policy gate to
+        # re-check here - see arena_upload.flush_pending. Silent like usage:
+        # the user already agreed once and does not need a receipt per run.
+        try:
+            arena_upload.flush_pending()
         except Exception:
             pass
 
@@ -8986,6 +8997,7 @@ def _print_upload_policy_table() -> None:
         "usage", "enabled" if usage.policy(cfg) == "enabled" else "off (default)"
     )
     table.add_row("crash", cfg.get("error_report_send_policy") or "off (default)")
+    table.add_row("votes", cfg.get("arena_vote_send_policy", "ask"))
     console.print(table)
 
 
@@ -8999,7 +9011,7 @@ def upload_menu(ctx: typer.Context) -> None:
     if not _stdin_is_tty():
         _print_upload_policy_table()
         console.print(
-            "[muted]omm setting upload <benchmark|usage|crash> --enable / --disable[/muted]"
+            "[muted]omm setting upload <benchmark|usage|crash|votes> --enable / --disable[/muted]"
         )
         return
     _upload_channel_menu()
@@ -9163,6 +9175,56 @@ def configure_upload_usage(
             )
         console.print("\n[label]Next batch would send:[/label]")
         _print_json(data=usage.build_payload(create_client_id=opted_in))
+
+
+@upload_app.command(name="votes")
+@global_flags
+def configure_upload_votes(
+    enable: bool = typer.Option(False, "--enable", help="Always upload battle votes."),
+    disable: bool = typer.Option(False, "--disable", help="Never upload battle votes."),
+    ask: bool = typer.Option(
+        False, "--ask", help="Ask after each battle session (the default)."
+    ),
+) -> None:
+    """Arena battle vote uploads (opt-in, asked after each session).
+
+    The prompt you typed is never uploaded - only which model won, the two
+    models' identities, and their measured speed and memory. See PRIVACY.md.
+    Run with no flags to print the current policy and how many votes wait.
+    """
+    # `_upload_channel_menu` calls this as a plain function, so an omitted
+    # keyword binds to the truthy OptionInfo default. Coerce defensively,
+    # exactly as configure_upload_usage does.
+    if not isinstance(enable, bool):
+        enable = False
+    if not isinstance(disable, bool):
+        disable = False
+    if not isinstance(ask, bool):
+        ask = False
+    _reject_conflicting_policy_flags(enable, disable, ask)
+    if enable:
+        config_mod.update_config(arena_vote_send_policy="always")
+        console.print(
+            "[success]Battle vote uploads enabled.[/success] "
+            "Turn off any time: `omm setting upload votes --disable`."
+        )
+    elif disable:
+        config_mod.update_config(arena_vote_send_policy="never")
+        # Consent given earlier does not survive turning the channel off.
+        discarded = arena_upload.discard_pending()
+        console.print(
+            "[success]Battle vote uploads disabled.[/success]"
+            + (f" Discarded {discarded} queued vote(s)." if discarded else "")
+        )
+    elif ask:
+        config_mod.update_config(arena_vote_send_policy="ask")
+        console.print(
+            "[success]Battle votes will be asked about after each session.[/success]"
+        )
+    else:
+        cfg = load_config()
+        console.print(f"Policy: {cfg.get('arena_vote_send_policy', 'ask')}")
+        console.print(f"Queued: {arena_upload.pending_count()} vote(s)")
 
 
 @setting_app.command(name="memory-guard")
@@ -9568,7 +9630,7 @@ def auto_import_status() -> None:
 
 
 def _upload_channel_menu() -> None:
-    """Interactive picker for the three outbound-data channels, shared by
+    """Interactive picker for the four outbound-data channels, shared by
     bare `omm setting upload` and the `omm setting` menu's Upload entry.
     Each configure_* call is guarded: a bad value (e.g. --enable with no
     endpoint) prints its reason and returns to the picker instead of
@@ -9582,6 +9644,7 @@ def _upload_channel_menu() -> None:
         bench = cfg.get("telemetry_send_policy", "ask")
         usage_pol = "enabled" if usage.policy(cfg) == "enabled" else "off (default)"
         crash_pol = error_report.send_policy(cfg)
+        votes_pol = cfg.get("arena_vote_send_policy", "ask")
 
         channel = _ask_select(
             questionary.select(
@@ -9590,6 +9653,7 @@ def _upload_channel_menu() -> None:
                     questionary.Choice(f"Benchmark results (current: {bench})", value="benchmark"),
                     questionary.Choice(f"Usage stats (current: {usage_pol})", value="usage"),
                     questionary.Choice(f"Crash reports (current: {crash_pol})", value="crash"),
+                    questionary.Choice(f"Battle votes (current: {votes_pol})", value="votes"),
                     questionary.Choice("← Back", value="back"),
                 ],
             )
@@ -9658,6 +9722,25 @@ def _upload_channel_menu() -> None:
                 if action in (None, "back"):
                     continue
                 configure_upload_crash(
+                    enable=(action == "enable"),
+                    disable=(action == "disable"),
+                    ask=(action == "ask"),
+                )
+            elif channel == "votes":
+                action = _ask_select(
+                    questionary.select(
+                        f"Battle vote uploads (current: {votes_pol}):",
+                        choices=[
+                            questionary.Choice("Ask after each session (default)", value="ask"),
+                            questionary.Choice("Always send", value="enable"),
+                            questionary.Choice("Never send", value="disable"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
+                )
+                if action in (None, "back"):
+                    continue
+                configure_upload_votes(
                     enable=(action == "enable"),
                     disable=(action == "disable"),
                     ask=(action == "ask"),
@@ -10871,6 +10954,345 @@ def evaluate_cmd(
     )
     if output is not None:
         console.print(f"Saved structured evidence to {escape(str(output))}.")
+
+
+def _arena_eligible_models(engine: str) -> dict[str, str]:
+    """Registry-linked models that `engine` can actually serve right now,
+    as {runtime ref -> registry filename}.
+
+    Registry-linked only, per the design: arena rows identify a model by its
+    omm registry entry so sub-projects B-E can aggregate across machines. A
+    model the user pulled straight into Ollama has no such identity and is
+    left out; the caller's error text points those users at `omm import`.
+    """
+    entries = [
+        (filename, value)
+        for filename, value in registry.load_registry().items()
+        if isinstance(filename, str) and isinstance(value, dict)
+    ]
+    eligible: dict[str, str] = {}
+    if engine == "lmstudio":
+        # One `lms ls --json` for the whole registry, not one per entry:
+        # linker.resolve_lmstudio_model spawns its own subprocess on every
+        # call, which is what _lmstudio_find_model_key was factored out to
+        # avoid (linker.py's own docstring says so).
+        lms_path = linker._lms_cli_path()
+        if lms_path is None:
+            return eligible
+        listed = linker._lmstudio_list_models(lms_path) or []
+        installed = {
+            entry["modelKey"]
+            for entry in listed
+            if isinstance(entry, dict)
+            and entry.get("type") == "llm"
+            and isinstance(entry.get("modelKey"), str)
+        }
+        for filename, entry in entries:
+            try:
+                publisher, repo = linker._lmstudio_publisher_repo(entry.get("repo_id"), filename)
+            except linker.LinkError:
+                continue
+            key = linker._lmstudio_find_model_key(listed, publisher, repo, filename)
+            if isinstance(key, str) and key in installed:
+                eligible[key] = filename
+        return eligible
+    try:
+        live = set(quality_mod.list_benchmarkable_tags())
+    except quality_mod.QualityEvaluationError:
+        live = set()
+    runtime_names = linker.resolve_ollama_runtime_names_batch(entries)
+    for filename, _entry in entries:
+        tag = runtime_names.get(filename)
+        if isinstance(tag, str) and tag in live:
+            eligible[tag] = filename
+    return eligible
+
+
+def _arena_normalize_refs(models: list[str], pool: dict[str, str]) -> list[str]:
+    """Accept whatever `omm list` showed the user, not only the engine's own
+    runtime ref.
+
+    `pool` is keyed by runtime ref (Ollama tag / LM Studio modelKey), while
+    `omm list` prints the registry filename and a numbered ref - so pasting
+    either was rejected with a fix line that pointed straight back at `omm
+    list`. Same class of bug `_resolve_benchmark_tag` exists to prevent
+    (registry filename is not an Ollama tag, promo dry run 2026-08-23); done
+    against `pool` here rather than through that helper, which is Ollama-only
+    and hard-exits for a model linked solely into LM Studio.
+    """
+    by_filename = {filename: ref for ref, filename in pool.items()}
+    resolved: list[str] = []
+    for arg in models:
+        if arg in pool:
+            resolved.append(arg)
+            continue
+        candidate = arg
+        if arg.isdecimal():
+            # fatal=False: a bad index warns and is left as-is so the
+            # pool-membership error below names what the user actually typed.
+            candidate = _resolve_ref(arg, fatal=False) or arg
+        resolved.append(by_filename.get(candidate, arg))
+    return resolved
+
+
+def _arena_reveal(
+    pair: tuple[str, str], engine: str, result_a, result_b, winner: str
+) -> None:
+    """Post-vote only. Never call this before a vote is recorded."""
+    table = Table(title="Reveal", box=None)
+    table.add_column("SIDE")
+    table.add_column("MODEL")
+    table.add_column("RUNNER")
+    table.add_column("TIME", justify="right")
+    table.add_column("TOK/S", justify="right")
+    for label, ref, result in (
+        ("Response 1", pair[0], result_a),
+        ("Response 2", pair[1], result_b),
+    ):
+        speed = "-" if result.tokens_per_second is None else f"{result.tokens_per_second:.1f}"
+        table.add_row(label, ref, _engine_label(engine), f"{result.elapsed:.1f}s", speed)
+    console.print(table)
+    verdict = {
+        "a": "You picked Response 1.",
+        "b": "You picked Response 2.",
+        "both_bad": "You rated both responses bad.",
+    }[winner]
+    console.print(f"[muted]{verdict}[/muted]")
+
+
+def _arena_vote() -> str | None:
+    """The vote prompt, re-asked on a bare Enter.
+
+    `_ask_single_key` returns its `default_value` on Enter and raises
+    KeyboardInterrupt on Escape/Ctrl-C. Those two gestures must not mean the
+    same thing here: a stray Enter mid-session would throw away a round the
+    user already waited through, while Escape really does mean "stop".
+    Returns None only when the user cancelled.
+    """
+    while True:
+        try:
+            winner = _ask_single_key(
+                "Which response is better?",
+                [
+                    ("1", "Response 1", "a"),
+                    ("2", "Response 2", "b"),
+                    ("x", "Both bad", "both_bad"),
+                ],
+                default_value=None,
+                instruction="(1/2/x)",
+            )
+        except KeyboardInterrupt:
+            return None
+        if winner in arena.WINNERS:
+            return winner
+        console.print("[muted]Press 1, 2, or x.[/muted]")
+
+
+def _arena_consent_and_enqueue(rows: list[dict]) -> None:
+    """Ask once, at the end of the session, whether to upload this session's
+    votes - then queue them.
+
+    Nothing is queued before this point: the queue must never hold data the
+    user has not agreed to send, so a session killed mid-way contributes
+    nothing to it (its votes are still in the local votes.jsonl, which is the
+    user's own record). The prompt is the same y/n/a `_ask_upload_choice`
+    serves for benchmark uploads, where `a` saves the policy.
+
+    Never raises: an upload problem must not change `omm arena`'s exit code.
+    """
+    if not rows:
+        return
+    try:
+        decision = arena_upload.policy()
+        if decision == "never":
+            return
+        if decision == "ask":
+            answer = _ask_upload_choice(
+                f"Upload {len(rows)} battle vote(s)? Your prompt text is never sent."
+            )
+            if answer == "no":
+                return
+            if answer == "always":
+                config_mod.update_config(arena_vote_send_policy="always")
+        queued = arena_upload.enqueue(rows)
+        if queued and not _global_opts().quiet:
+            console.print(
+                f"[muted]{queued} vote(s) queued; they upload on your next "
+                "omm command.[/muted]"
+            )
+    except typer.Exit:
+        # Nothing in the block raises this today (_ask_upload_choice answers
+        # "no" without a terminal rather than exiting, and arena_upload
+        # swallows its own errors). Kept so a future addition that does mean
+        # to exit is not silently turned into "no upload, exit 0" by the
+        # catch-all below - typer.Exit subclasses Exception.
+        raise
+    except Exception:
+        # A failed config write or a disk error queueing the rows. The votes
+        # stay in votes.jsonl; nothing the user can see is lost, and an upload
+        # problem must not change this command's exit code.
+        return
+
+
+def _arena_session(
+    pairing, pool: dict[str, str], engine: str, lmstudio_port, keep: bool
+) -> None:
+    """The round loop. Split out of `arena_cmd` so the daemon-stop `finally`
+    there stays readable and covers every exit path out of the loop."""
+    rounds = 0
+    recorded: list[dict] = []
+    while True:
+        pair = pairing.next_pair()
+        prompt = _ask_text("Your prompt for both models:")
+        if not prompt or not prompt.strip():
+            break
+        prompt = prompt.strip()
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[accent]{task.description}[/accent]"),
+                console=console,
+                disable=_global_opts().quiet,
+            ) as progress:
+                # No TimeElapsedColumn here, unlike every other Progress in
+                # this file: an elapsed clock on screen before the vote is a
+                # pre-vote timing number, and timing alone can leak identity
+                # for a model the user knows well. One undifferentiated
+                # description for both sides, for the same reason - a
+                # per-model spinner label would name the model.
+                task_id = progress.add_task("Generating both responses...", total=2)
+                result_a = arena.generate_side(
+                    pair[0], prompt, engine=engine, lmstudio_port=lmstudio_port
+                )
+                progress.advance(task_id)
+                result_b = arena.generate_side(
+                    pair[1], prompt, engine=engine, lmstudio_port=lmstudio_port
+                )
+                progress.advance(task_id)
+        except quality_mod.QualityEvaluationError as error:
+            err_console.print(f"[error]This round failed: {escape(str(error))}[/error]")
+        else:
+            console.print()
+            console.print("[accent]Response 1[/accent]")
+            console.print(result_a.text or "[muted](empty response)[/muted]")
+            console.print()
+            console.print("[accent]Response 2[/accent]")
+            console.print(result_b.text or "[muted](empty response)[/muted]")
+            console.print()
+            winner = _arena_vote()
+            if winner is None:
+                break
+            _arena_reveal(pair, engine, result_a, result_b, winner)
+            row = arena.build_vote_row(
+                prompt=prompt,
+                model_a=pool[pair[0]],
+                model_b=pool[pair[1]],
+                engine=engine,
+                result_a=result_a,
+                result_b=result_b,
+                winner=winner,
+                kept=keep,
+            )
+            if arena.append_vote(row):
+                rounds += 1
+                recorded.append(row)
+            else:
+                # Not counted: the closing line names votes.jsonl, and saying
+                # "1 round(s) recorded" there right after warning that nothing
+                # reached the file contradicts itself.
+                err_console.print(
+                    "[warn]Could not write this vote to "
+                    f"{escape(str(arena.votes_path()))}; the round still counted "
+                    "on screen but was not saved.[/warn]"
+                )
+        try:
+            another = _ask_confirm("Another round?", default=True)
+        except KeyboardInterrupt:
+            # _ask_confirm wraps _ask_single_key, so Escape here raises too.
+            break
+        if not another:
+            break
+    if rounds and not _global_opts().quiet:
+        console.print(
+            f"[muted]{rounds} round(s) recorded in {escape(str(arena.votes_path()))}.[/muted]"
+        )
+    _arena_consent_and_enqueue(recorded)
+
+
+@app.command(name="arena")
+@global_flags
+def arena_cmd(
+    models: list[str] = typer.Argument(
+        None,
+        help="Optionally seed the first round with two installed models. "
+        "Omit them to draw a random pair.",
+    ),
+    keep: bool = typer.Option(
+        False,
+        "--keep",
+        help="Reuse the first round's pair for every round instead of "
+        "drawing a fresh pair each time.",
+    ),
+) -> None:
+    """Compare two installed models blind, on your own prompt, and vote.
+
+    Responses are shown as "Response 1"/"Response 2" with no name, runner or
+    timing until you have voted. Votes are appended to
+    `~/.omm/arena/votes.jsonl`, and are uploaded only if you opt in when
+    asked at the end of a session (`omm setting upload votes`). The prompt
+    you typed is never sent, whichever you choose. See PRIVACY.md.
+    """
+    models = list(models or [])
+    # Arity and duplication need no engine and no model pool, so they are
+    # decided here - before a daemon is started and a manifest tree walked.
+    try:
+        arena.validate_pair_arity(models)
+    except arena.ArenaError as error:
+        errors.print_cli_error(
+            err_console,
+            str(error),
+            fix="Run `omm list` to see the models omm manages.",
+        )
+        raise typer.Exit(1) from error
+    engine = _select_benchmark_engine_for_models(models) if models else None
+    if engine is None:
+        engine = _select_benchmark_engine()
+        if engine is None:
+            _print_no_engine_error("arena")
+            raise typer.Exit(1)
+        if not _global_opts().quiet:
+            _print_engine_selection_notice(engine)
+    engine, started_daemon = _ensure_engine_running(
+        engine, "arena", assume_yes=_global_opts().yes
+    )
+    try:
+        pool = _arena_eligible_models(engine)
+        if len(pool) < 2:
+            errors.print_cli_error(
+                err_console,
+                f"`omm arena` needs at least 2 models installed through omm and "
+                f"linked into {_engine_label(engine)}; found {len(pool)}.",
+                fix="Run `omm list` to see what omm manages, `omm install` to add "
+                "one, or `omm import` to adopt models this runner already has.",
+            )
+            raise typer.Exit(1)
+        models = _arena_normalize_refs(models, pool)
+        try:
+            seed_pair = arena.validate_seed_pair(models, sorted(pool)) if models else None
+            pairing = arena.Pairing(sorted(pool), seed_pair=seed_pair, keep=keep)
+        except arena.ArenaError as error:
+            errors.print_cli_error(
+                err_console,
+                str(error),
+                fix="Run `omm list` to see the models omm manages, or `omm import` "
+                "to adopt models this runner already has.",
+            )
+            raise typer.Exit(1) from error
+        lmstudio_port = linker.lmstudio_server_port() if engine == "lmstudio" else None
+        _arena_session(pairing, pool, engine, lmstudio_port, keep)
+    finally:
+        if started_daemon is not None:
+            _stop_engine_daemon(engine, started_daemon)
 
 
 def _telemetry_send_failure_text() -> str:

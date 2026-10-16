@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { validateErrorReport, validateTelemetryEvent, validateUsageEvent } from "../src/validate";
+import {
+  validateErrorReport,
+  validateTelemetryEvent,
+  validateUsageEvent,
+  validateVoteEvent,
+} from "../src/validate";
 
 // Fixtures and expected outcomes are ported 1:1 from
 // scripts/test_firebase_rules.mjs (the emulator-based rules test suite) so
@@ -611,4 +616,121 @@ describe("v9 schema (contribute-v1)", () => {
       num_batch: undefined,
     }));
   it("rejects missing engine_version", () => rejected({ ...v9Success, engine_version: undefined }));
+});
+
+function validVote(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: 1,
+    battle_id: "0a8c1f22-5c1e-4a0e-9d3b-1f2e3d4c5b6a",
+    client_id: "0123456789abcdef0123456789abcdef",
+    client_version: "0.3.140",
+    recorded_at: "2026-09-26T04:05:06.700000+00:00",
+    engine: "ollama",
+    winner: "a",
+    pinned: false,
+    model_filename_a: "alpha-4b-Q4_K_M.gguf",
+    model_filename_b: "beta-8b-Q5_K_M.gguf",
+    elapsed_a: 3.25,
+    elapsed_b: 9.5,
+    tokens_a: 120,
+    tokens_b: 300,
+    ...overrides,
+  };
+}
+
+describe("validateVoteEvent", () => {
+  it("accepts a minimal valid vote", () => {
+    expect(validateVoteEvent(validVote()).valid).toBe(true);
+  });
+
+  it("rejects a prompt key by name", () => {
+    const r = validateVoteEvent(validVote({ prompt: "our internal runbook" }));
+    expect(r.valid).toBe(false);
+    expect(r.reason).toContain("prompt");
+  });
+
+  it("rejects any prompt-derived key", () => {
+    for (const key of ["prompt_sha256", "prompt_length_bucket", "prompt_category"]) {
+      expect(validateVoteEvent(validVote({ [key]: "x" })).valid).toBe(false);
+    }
+  });
+
+  it("rejects an unknown field", () => {
+    expect(validateVoteEvent(validVote({ some_future_field: 1 })).valid).toBe(false);
+  });
+
+  it("rejects a tie winner", () => {
+    expect(validateVoteEvent(validVote({ winner: "tie" })).valid).toBe(false);
+  });
+
+  it("accepts both_bad", () => {
+    expect(validateVoteEvent(validVote({ winner: "both_bad" })).valid).toBe(true);
+  });
+
+  it("rejects an unknown engine", () => {
+    expect(validateVoteEvent(validVote({ engine: "llamacpp" })).valid).toBe(false);
+  });
+
+  it("rejects an asymmetric measurement", () => {
+    const r = validateVoteEvent(validVote({ memory_gb_a: 3.4 }));
+    expect(r.valid).toBe(false);
+    expect(r.reason).toContain("memory_gb_b");
+  });
+
+  it("accepts a symmetric optional measurement", () => {
+    expect(
+      validateVoteEvent(validVote({ memory_gb_a: 3.4, memory_gb_b: 7.1 })).valid,
+    ).toBe(true);
+  });
+
+  it("accepts an asymmetric identity field", () => {
+    // One model can come from a provider that supplied a sha256 while the
+    // other was adopted locally with none. Requiring symmetry here would
+    // discard good rows; only measurements must match side to side.
+    expect(
+      validateVoteEvent(validVote({ model_digest_a: "a".repeat(64) })).valid,
+    ).toBe(true);
+    expect(
+      validateVoteEvent(validVote({ model_provider_a: "huggingface" })).valid,
+    ).toBe(true);
+    expect(validateVoteEvent(validVote({ quant_bits_a: 4 })).valid).toBe(true);
+  });
+
+  it("accepts an absent watt and rejects one out of range", () => {
+    expect(validateVoteEvent(validVote()).valid).toBe(true);
+    expect(validateVoteEvent(validVote({ watt_a: 180, watt_b: 220 })).valid).toBe(true);
+    expect(validateVoteEvent(validVote({ watt_a: 99999, watt_b: 220 })).valid).toBe(false);
+  });
+
+  it("rejects a bad client_id", () => {
+    expect(validateVoteEvent(validVote({ client_id: "NOTHEX" })).valid).toBe(false);
+  });
+
+  it("rejects a bad battle_id", () => {
+    expect(validateVoteEvent(validVote({ battle_id: "not-a-uuid" })).valid).toBe(false);
+  });
+
+  it("rejects a bad digest", () => {
+    expect(validateVoteEvent(validVote({ model_digest_a: "abc" })).valid).toBe(false);
+  });
+
+  it("rejects a filename with a path separator", () => {
+    expect(
+      validateVoteEvent(validVote({ model_filename_a: "../../etc/passwd" })).valid,
+    ).toBe(false);
+  });
+
+  it("rejects an out-of-range elapsed", () => {
+    expect(validateVoteEvent(validVote({ elapsed_a: 99999 })).valid).toBe(false);
+  });
+
+  it("rejects a non-integer token count", () => {
+    expect(validateVoteEvent(validVote({ tokens_a: 1.5 })).valid).toBe(false);
+  });
+
+  it("rejects a missing required field", () => {
+    const row = validVote();
+    delete (row as Record<string, unknown>).winner;
+    expect(validateVoteEvent(row).valid).toBe(false);
+  });
 });

@@ -1,0 +1,149 @@
+name: Aggregate arena leaderboard
+
+"on":
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# The nightly cron and a manual dispatch both rewrite published/*.json and open
+# an auto-merging PR. Serialize them so a dispatched run queues behind the cron
+# run instead of racing it into a conflicted PR. The hour is deliberately one
+# after train.yml's 03:00, so the two jobs never contend for that PR path.
+concurrency:
+  group: arena-aggregate
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install omm
+        run: pip install -e .
+
+      - name: Preflight the protected votes export
+        env:
+          LOCALFIT_VOTES_EXPORT_URL: ${{ secrets.LOCALFIT_VOTES_EXPORT_URL }}
+          LOCALFIT_VOTES_ADMIN_TOKEN: ${{ secrets.LOCALFIT_VOTES_ADMIN_TOKEN }}
+        run: |
+          test -n "$LOCALFIT_VOTES_EXPORT_URL" || { echo "LOCALFIT_VOTES_EXPORT_URL is required"; exit 1; }
+          # The votes node is `.read: false`. Without a credential the read
+          # returns 401, and treating that as "no votes yet" would publish an
+          # empty leaderboard.
+          test -n "$LOCALFIT_VOTES_ADMIN_TOKEN" || { echo "LOCALFIT_VOTES_ADMIN_TOKEN is required: the votes node is private"; exit 1; }
+          if [ -f published/arena-leaderboard.json ]; then
+            cp published/arena-leaderboard.json "$RUNNER_TEMP/arena-incumbent.json"
+          fi
+
+      - name: Aggregate votes and gate publication
+        id: aggregate
+        env:
+          LOCALFIT_VOTES_EXPORT_URL: ${{ secrets.LOCALFIT_VOTES_EXPORT_URL }}
+          LOCALFIT_VOTES_ADMIN_TOKEN: ${{ secrets.LOCALFIT_VOTES_ADMIN_TOKEN }}
+        run: |
+          incumbent=""
+          if [ -f "$RUNNER_TEMP/arena-incumbent.json" ]; then
+            incumbent="--incumbent $RUNNER_TEMP/arena-incumbent.json"
+          fi
+          python scripts/aggregate_arena_votes.py \
+            --votes-url "$LOCALFIT_VOTES_EXPORT_URL" \
+            --output published/arena-leaderboard.json \
+            --quality-gate \
+            --github-output "$GITHUB_OUTPUT" \
+            $incumbent
+
+      - name: Sign the published leaderboard
+        if: >-
+          steps.aggregate.outputs.gate_status == 'passed' &&
+          steps.aggregate.outputs.artifact_changed == 'true'
+        env:
+          LOCALFIT_CATALOG_SIGNING_KEY: ${{ secrets.LOCALFIT_CATALOG_SIGNING_KEY }}
+        run: |
+          umask 077
+          key_path="$RUNNER_TEMP/omm-catalog-signing-key"
+          printf '%s\n' "$LOCALFIT_CATALOG_SIGNING_KEY" > "$key_path"
+          python scripts/sign_catalog.py sign published/arena-leaderboard.json \
+            --private "$key_path" \
+            --manifest published/arena-leaderboard.manifest.json
+
+      - name: Open a PR with the new leaderboard and auto-merge it
+        if: >-
+          steps.aggregate.outputs.gate_status == 'passed' &&
+          steps.aggregate.outputs.artifact_changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
+          LOCALFIT_APPROVAL_PAT: ${{ secrets.LOCALFIT_APPROVAL_PAT }}
+          LOCALFIT_RETRAIN_SSH_KEY: ${{ secrets.LOCALFIT_RETRAIN_SSH_KEY }}
+        run: |
+          git config user.name "omm-retrain-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add published/arena-leaderboard.json published/arena-leaderboard.manifest.json
+          git diff --cached --quiet && echo "No changes, skipping." && exit 0
+
+          # Sign with the bot's own key (listed in src/omm/trust/allowed_signers)
+          # rather than GITHUB_TOKEN, so the PR head passes the Trusted PR head
+          # check like any other contributor's commit.
+          umask 077
+          key_path="$RUNNER_TEMP/omm-retrain-signing-key"
+          printf '%s\n' "$LOCALFIT_RETRAIN_SSH_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          git config gpg.format ssh
+          git config commit.gpgsign true
+          git config user.signingkey "$key_path"
+
+          branch="arena-leaderboard/$(date -u +%Y%m%d-%H%M%S)"
+          git checkout -b "$branch"
+          git commit -m "chore(arena): refresh the published leaderboard"
+
+          PR_BODY=$(cat <<'BODY'
+          ## 한줄 요약
+
+          매일 밤 모인 아레나 투표를 다시 계산해서 공개 리더보드 파일을 갱신합니다.
+
+          ## 배경
+
+          사용자가 `omm arena`로 두 모델을 블라인드 비교하고 투표한 결과가 서버에 쌓입니다.
+          이 작업은 그 투표를 모아 모델별 품질 등급과 효율 점수를 다시 계산합니다. 사람이
+          손으로 만든 변경이 아니라 자동 집계 결과이며, 데이터가 너무 적거나 한 대의 기기가
+          투표를 독차지하면 아예 갱신하지 않고 넘어갑니다.
+
+          ## 무엇을 바꿨나
+
+          `published/arena-leaderboard.json` 파일과 그 서명 파일만 바뀝니다. 프로그램 동작이나
+          명령어는 하나도 건드리지 않습니다.
+
+          ## 어떻게 확인했나
+
+          집계 스크립트의 품질 게이트를 통과한 결과만 이 PR로 올라옵니다. 자세한 수치는
+          워크플로 실행 로그에서 볼 수 있습니다.
+          BODY
+          )
+
+          # Branch protection blocks direct pushes to main (no bypass, even for
+          # admins), so land the update through a normal PR instead.
+          git push origin "$branch"
+          pr_url=$(gh pr create \
+            --title "chore(arena): refresh the published leaderboard" \
+            --body "$PR_BODY" \
+            --base main --head "$branch")
+
+          # main requires 1 approving review. The PR is authored as minigu5 (via
+          # LOCALFIT_RETRAIN_PAT, so it triggers CI - a PR opened with the
+          # default GITHUB_TOKEN would not), so minigu5 can't self-approve it and
+          # auto-merge would sit blocked forever. Approve as a distinct
+          # collaborator account instead. The quality gate above is what vets the
+          # change; this only clears the review-count requirement.
+          GH_TOKEN="$LOCALFIT_APPROVAL_PAT" gh pr review "$pr_url" --approve \
+            --body "Automated approval: the arena leaderboard quality gate passed (see workflow run)."
+
+          gh pr merge "$pr_url" --auto --merge

@@ -74,6 +74,11 @@ ERROR_REPORTS_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/
 # stream is opt-in and off by default (see omm.usage, usage_stats_policy in
 # DEFAULT_CONFIG below, and PRIVACY.md).
 USAGE_GATEWAY_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/usage"
+# Arena battle votes (`omm arena`). Same Worker, its own route and its own
+# RTDB node, which - unlike `telemetry` - is not publicly readable. The
+# prompt the user typed is never part of the payload; see omm.arena_upload,
+# arena_vote_send_policy in DEFAULT_CONFIG below, and PRIVACY.md.
+VOTES_GATEWAY_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/votes"
 # model_url has gone through two GitHub org renames (minigu5/Localfit ->
 # minigu5/Omm -> omm-hippo/omm) plus one artifact rename (recommend-model.json
 # -> localfit-recommend-model.json). It's never user-settable, so any config
@@ -96,6 +101,12 @@ LEGACY_MANIFEST_URLS = frozenset(
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "telemetry_send_policy": "ask",
+    # Arena battle votes. "ask" means the user is asked at the end of a
+    # battle session, the same y/n/a prompt the benchmark channel uses, where
+    # "a" saves "always" - hence the same three values rather than usage's
+    # enabled/never pair. The prompt text is never uploaded; see PRIVACY.md
+    # and cf-worker/src/validate.ts:validateVoteEvent.
+    "arena_vote_send_policy": "ask",
     # New installs point at the PoW-gated Cloudflare Worker gateway by
     # default (see TELEMETRY_GATEWAY_ENDPOINT). Existing configs already
     # migrated to local-only or the legacy direct-Firebase endpoint are
@@ -208,6 +219,10 @@ def _merge_config(data: dict[str, Any]) -> dict[str, Any]:
         # default the same way memory_guard_policy is below. "ask" is the
         # same value DEFAULT_CONFIG uses.
         merged["telemetry_send_policy"] = "ask"
+    if merged.get("arena_vote_send_policy") not in {"always", "never", "ask"}:
+        # Same reasoning as telemetry_send_policy above: a damaged value must
+        # fold back to the default, never be read as consent.
+        merged["arena_vote_send_policy"] = "ask"
     if merged.get("memory_guard_policy") not in {"ask", "block", "observe"}:
         merged["memory_guard_policy"] = "ask"
     poll_seconds = merged.get("memory_guard_poll_seconds")
@@ -310,8 +325,8 @@ def client_id() -> str:
     """Stable random per-install identifier (uuid4 hex), created on first
     read. Its own file, never config.json - config gets copied between
     machines and this must not travel with it. Best-effort: any I/O failure
-    returns a fresh ephemeral id rather than raising, so its only caller
-    (omm.usage) never has to handle an exception."""
+    returns a fresh ephemeral id rather than raising, so its callers
+    (omm.usage, omm.arena_upload) never have to handle an exception."""
     try:
         with locked(CLIENT_ID_PATH):
             try:

@@ -3,22 +3,24 @@
 `omm` manages models and calls local AI runners on your machine. Searching
 model providers, downloading models or runners, refreshing recommendation
 data, and checking for updates use network requests independently of the
-three data-sharing channels below. Disabling uploads does not disable those
+four data-sharing channels below. Disabling uploads does not disable those
 requests.
 
-Benchmark telemetry, usage statistics, and crash reports are each **off or
-"ask" by default**, controlled separately, and can be turned off at any time.
+Benchmark telemetry, usage statistics, crash reports, and battle votes are each
+**off or "ask" by default**, controlled separately, and can be turned off at any
+time.
 
-Turn off all three data-sharing channels:
+Turn off all four data-sharing channels:
 
 ```sh
 omm setting upload benchmark --disable
 omm setting upload usage --disable
 omm setting upload crash --disable
+omm setting upload votes --disable
 omm setting telemetry --endpoint none
 ```
 
-All three channels share one gateway (a Cloudflare Worker) that accepts writes
+All four channels share one gateway (a Cloudflare Worker) that accepts writes
 only after a small proof-of-work and forwards them to a Firebase Realtime
 Database. Uploads do not require a user account. The gateway code does not add
 client IP addresses to these records; network requests still expose an IP
@@ -114,6 +116,35 @@ are in [`docs/crash-reports.md`](docs/crash-reports.md).
 the command line, or generated model text.
 
 The `error_reports` Realtime Database node is **not** publicly readable.
+
+---
+
+## 4. Battle votes — `omm setting upload votes`
+
+**When:** `omm arena` asks once, at the end of a battle session, whether to
+upload that session's votes. Nothing is queued before you answer, and the
+upload itself happens on your next `omm` command.
+**Default:** ask.
+**Purpose:** build a shared leaderboard of which local models people actually
+prefer, alongside how fast and how large they were on real hardware.
+
+**Sent,** one record per vote: which side won (`a`, `b`, or `both_bad`); for
+each of the two models its provider, repository id, filename, GGUF SHA-256 and
+quantization bit width, as far as omm knows them; each side's elapsed time,
+token count, and — when the runner reported them — decode speed and resident
+memory; a random per-install id (the same one usage statistics use,
+`~/.omm/client-id`); the `omm` version; and the timestamp.
+
+**Never sent: the prompt you typed, and nothing derived from it** — no hash, no
+length, no category. It stays in `~/.omm/arena/votes.jsonl` on your machine and
+is not part of the payload; the gateway rejects any record that carries a
+`prompt` field at all. Also never sent: the models' responses, model file paths,
+your hardware specification, or anything about which models you have installed
+beyond the two that fought.
+
+The `votes` Realtime Database node is **not** publicly readable — unlike
+benchmark telemetry, which is. A vote record carries the per-install id, so
+letting anyone collect one machine's voting history has no upside.
 
 ---
 

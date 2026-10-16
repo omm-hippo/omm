@@ -69,9 +69,9 @@ that judgment locally in a schema that sub-project B can upload as-is.
 
 ## Product contract
 
-- Command name is a placeholder in this doc: `omm arena` (final name TBD
-  before implementation; `compare` stays reserved for the existing
-  catalog-comparison command at `cli.py:4333` and must not be reused).
+- Command name is `omm arena` (confirmed 2026-09-26). `compare` stays
+  reserved for the existing catalog-comparison command at `cli.py:4333`
+  and must not be reused.
 - Works only on models already installed and linked into a runnable engine
   (Ollama or LM Studio) via the existing hub+link registry
   (`~/.omm/models.json`). Never installs, downloads, or ranks catalog
@@ -82,16 +82,29 @@ that judgment locally in a schema that sub-project B can upload as-is.
   one blind pair, one vote. After a vote (or a failed round), the user is
   asked whether to continue; declining ends the session.
 - Positional model arguments (`omm arena MODEL1 MODEL2`) seed only the
-  first round's pair. A separate flag (name TBD, e.g. `--pin`) is what
+  first round's pair. A separate flag, `--keep` (confirmed 2026-09-26;
+  `pin` stays reserved for model-version pinning, issue #295), is what
   makes a pair (whether positional or randomly drawn) persist for every
   round of the session. Without that flag, every round — including the
   first if no models were given — draws a fresh random pair from eligible
   installed models. This rule is the same whether or not positional models
   were given; the flag is the only thing that changes persistence.
+- A session uses one engine for every round (confirmed 2026-09-26).
+  `engine_a`/`engine_b` stay separate fields in the vote schema so
+  cross-engine pairing needs no schema migration later.
+- `watt_a`/`watt_b` are written as `null` in sub-project A (confirmed
+  2026-09-26); the `nvidia-smi`/`rocm-smi` reader lands with sub-project C,
+  which is the first consumer. `memory_gb_*` is measured for Ollama via
+  `/api/ps` (`quality.loaded_model_memory_gb`, preferring `size_vram` and
+  falling back to `size` for CPU-only inference).
 - Blind by default, no opt-out in this sub-project: responses are shown as
   "Response 1" / "Response 2" only. No model name, engine name, elapsed
   time, or token count is shown before the vote — timing alone can leak
-  identity for models a user already knows well.
+  identity for models a user already knows well. Which of the pair lands in
+  slot A is redrawn every round, including round 1 and every round of a
+  `--keep` session — otherwise the post-vote reveal of round 1 tells the
+  user which slot is which for every later round, and a user who typed
+  `omm arena A B` knows the order they typed (confirmed 2026-09-26).
 - Vote options: **A wins**, **B wins**, **both bad**. No tie option.
 - Immediately after the vote, the round reveals: real model name, engine
   used, elapsed generation time, and measured tokens/sec for each side.
@@ -137,13 +150,26 @@ New pieces, all local:
   model_b       string, model registry ref
   engine_a      "ollama" | "lmstudio"
   engine_b      "ollama" | "lmstudio"
-  elapsed_a     float, seconds
-  elapsed_b     float, seconds
+  elapsed_a     float, seconds of wall clock around the whole request,
+                model load included (see tokens_per_second_a below)
+  elapsed_b     float, same as elapsed_a
   tokens_a      int
   tokens_b      int
-  memory_gb_a   float | null, measured (Ollama /api/ps size_vram) when
-                available, null for LM Studio or on read failure
+  memory_gb_a   float | null, measured GiB (Ollama /api/ps size_vram, or
+                size for CPU-only inference) when available, null for
+                LM Studio or on read failure
   memory_gb_b   float | null, same as memory_gb_a
+  tokens_per_second_a
+                float | null, decode-only speed from the engine's own
+                counters (eval_count / eval_duration). Added 2026-09-26:
+                `elapsed_*` is wall clock around the whole request and so
+                includes the model load, which dominates a cold short
+                answer — tokens ÷ elapsed is NOT the decode speed C's
+                efficiency axis needs, and adding the field after B ships
+                would be a migration. Null when the engine reported too
+                few tokens or no duration.
+  tokens_per_second_b
+                float | null, same as tokens_per_second_a
   watt_a        float | null, best-effort (nvidia-smi/rocm-smi), null on
                 Apple Silicon / Windows CPU-only / no supported reader
   watt_b        float | null, same as watt_a
