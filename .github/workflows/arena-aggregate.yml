@@ -34,13 +34,15 @@ jobs:
       - name: Preflight the protected votes export
         env:
           LOCALFIT_VOTES_EXPORT_URL: ${{ secrets.LOCALFIT_VOTES_EXPORT_URL }}
-          LOCALFIT_VOTES_ADMIN_TOKEN: ${{ secrets.LOCALFIT_VOTES_ADMIN_TOKEN }}
+          LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON: ${{ secrets.LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON }}
         run: |
           test -n "$LOCALFIT_VOTES_EXPORT_URL" || { echo "LOCALFIT_VOTES_EXPORT_URL is required"; exit 1; }
           # The votes node is `.read: false`. Without a credential the read
           # returns 401, and treating that as "no votes yet" would publish an
-          # empty leaderboard.
-          test -n "$LOCALFIT_VOTES_ADMIN_TOKEN" || { echo "LOCALFIT_VOTES_ADMIN_TOKEN is required: the votes node is private"; exit 1; }
+          # empty leaderboard. The secret is the service-account key JSON, not
+          # an access token: a token lives one hour, so the script mints a
+          # fresh one from the key on every run.
+          test -n "$LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON" || { echo "LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON is required: the votes node is private"; exit 1; }
           if [ -f published/arena-leaderboard.json ]; then
             cp published/arena-leaderboard.json "$RUNNER_TEMP/arena-incumbent.json"
           fi
@@ -49,7 +51,7 @@ jobs:
         id: aggregate
         env:
           LOCALFIT_VOTES_EXPORT_URL: ${{ secrets.LOCALFIT_VOTES_EXPORT_URL }}
-          LOCALFIT_VOTES_ADMIN_TOKEN: ${{ secrets.LOCALFIT_VOTES_ADMIN_TOKEN }}
+          LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON: ${{ secrets.LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON }}
         run: |
           incumbent=""
           if [ -f "$RUNNER_TEMP/arena-incumbent.json" ]; then

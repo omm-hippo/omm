@@ -42,10 +42,13 @@ def test_every_action_is_pinned_to_a_commit_sha(text):
 
 
 def test_the_credential_is_passed_through_the_environment(text):
-    assert "LOCALFIT_VOTES_ADMIN_TOKEN" in text
+    # The service-account key, not an access token: a token lives one hour,
+    # so a stored one is expired before the first nightly run.
+    assert "LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON" in text
+    assert "LOCALFIT_VOTES_ADMIN_TOKEN" not in text
     # Never interpolated into the URL: it would land in the run log.
-    assert "${{ secrets.LOCALFIT_VOTES_ADMIN_TOKEN }}?" not in text
     assert "access_token=" not in text
+    assert "?auth=" not in text
 
 
 def test_signing_is_gated_on_the_quality_gate_and_a_real_change(text):

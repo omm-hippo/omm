@@ -110,6 +110,179 @@ def test_the_credential_travels_in_the_header_not_the_url(monkeypatch):
     assert seen["params"]["orderBy"] == '"$key"'
 
 
+# --- service-account credential ------------------------------------------
+#
+# A Google OAuth2 access token lives one hour, so a token stored as a secret is
+# dead before the first nightly run. The workflow stores the service-account
+# key instead and mints a fresh token every run.
+
+
+def _service_account() -> tuple[str, object]:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    raw = json.dumps(
+        {
+            "type": "service_account",
+            "client_email": "votes-reader@localfit-8ab57.iam.gserviceaccount.com",
+            "private_key": pem,
+            # A tampered key file must not be able to redirect the signed
+            # assertion to a host of its choosing.
+            "token_uri": "https://evil.example/token",
+        }
+    )
+    return raw, key.public_key()
+
+
+def _b64url_decode(part: str) -> bytes:
+    import base64
+
+    return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+
+
+class _TokenResponse:
+    def __init__(self, status_code: int, payload: object):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+def test_a_service_account_mints_a_signed_jwt_bearer_exchange(monkeypatch):
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    raw, public_key = _service_account()
+    seen = {}
+
+    def _post(url, data=None, timeout=None, allow_redirects=True):
+        seen.update(url=url, data=data, allow_redirects=allow_redirects)
+        return _TokenResponse(200, {"access_token": "ya29.fresh", "expires_in": 3599})
+
+    monkeypatch.setattr(aggregate.requests, "post", _post)
+    token = aggregate.access_token_from_service_account(raw, now=1_000_000)
+
+    assert token == "ya29.fresh"
+    assert seen["url"] == "https://oauth2.googleapis.com/token"
+    assert seen["allow_redirects"] is False
+    assert seen["data"]["grant_type"] == "urn:ietf:params:oauth:grant-type:jwt-bearer"
+    header, claims, signature = seen["data"]["assertion"].split(".")
+    assert json.loads(_b64url_decode(header)) == {"alg": "RS256", "typ": "JWT"}
+    decoded = json.loads(_b64url_decode(claims))
+    assert decoded["iss"] == "votes-reader@localfit-8ab57.iam.gserviceaccount.com"
+    assert decoded["aud"] == "https://oauth2.googleapis.com/token"
+    assert "https://www.googleapis.com/auth/firebase.database" in decoded["scope"].split()
+    assert decoded["iat"] == 1_000_000
+    assert decoded["exp"] == 1_000_000 + 3600
+    public_key.verify(
+        _b64url_decode(signature),
+        f"{header}.{claims}".encode(),
+        padding.PKCS1v15(),
+        hashes.SHA256(),
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        json.dumps(["a list"]),
+        json.dumps({"client_email": "x@y"}),
+        json.dumps({"client_email": "x@y", "private_key": "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"}),
+    ],
+)
+def test_a_malformed_service_account_is_a_hard_error(raw, monkeypatch):
+    monkeypatch.setattr(
+        aggregate.requests, "post", lambda *a, **k: pytest.fail("must not reach the network")
+    )
+    with pytest.raises(aggregate.VotesFetchError, match="service account"):
+        aggregate.access_token_from_service_account(raw)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _TokenResponse(400, {"error": "invalid_grant"}),
+        _TokenResponse(302, {}),
+        _TokenResponse(200, {"expires_in": 3599}),
+        _TokenResponse(200, {"access_token": "", "expires_in": 3599}),
+    ],
+)
+def test_a_failed_token_exchange_is_a_hard_error(response, monkeypatch):
+    raw, _ = _service_account()
+    monkeypatch.setattr(aggregate.requests, "post", lambda *a, **k: response)
+    with pytest.raises(aggregate.VotesFetchError, match="token") as error:
+        aggregate.access_token_from_service_account(raw)
+    assert "PRIVATE KEY" not in str(error.value)
+
+
+def test_a_network_error_during_the_exchange_is_a_hard_error(monkeypatch):
+    raw, _ = _service_account()
+
+    def _post(*args, **kwargs):
+        raise aggregate.requests.ConnectionError("boom")
+
+    monkeypatch.setattr(aggregate.requests, "post", _post)
+    with pytest.raises(aggregate.VotesFetchError, match="token"):
+        aggregate.access_token_from_service_account(raw)
+
+
+def test_main_reads_with_a_token_minted_from_the_service_account(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON", "{sa}")
+    minted = []
+    monkeypatch.setattr(
+        aggregate,
+        "access_token_from_service_account",
+        lambda raw: minted.append(raw) or "ya29.fresh",
+    )
+    seen = {}
+
+    def _fetch(url, token):
+        seen.update(url=url, token=token)
+        return _healthy_rows()
+
+    monkeypatch.setattr(aggregate, "fetch_votes", _fetch)
+    exit_code = aggregate.main(
+        [
+            "--votes-url",
+            "https://localfit-8ab57.firebaseio.com/votes.json",
+            "--output",
+            str(tmp_path / "arena-leaderboard.json"),
+            "--resamples",
+            "20",
+            "--generated-at",
+            "2026-09-26T00:00:00+00:00",
+        ]
+    )
+    assert exit_code == 0
+    assert minted == ["{sa}"]
+    assert seen["token"] == "ya29.fresh"
+
+
+def test_main_without_a_service_account_fails_before_reading(monkeypatch):
+    monkeypatch.delenv("LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON", raising=False)
+    monkeypatch.setattr(
+        aggregate.requests, "get", lambda *a, **k: pytest.fail("must not read unauthenticated")
+    )
+    with pytest.raises(aggregate.VotesFetchError, match="LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON"):
+        aggregate.main(
+            [
+                "--votes-url",
+                "https://localfit-8ab57.firebaseio.com/votes.json",
+                "--output",
+                "unused.json",
+            ]
+        )
+
+
 def test_a_jsonl_file_is_loaded(tmp_path):
     path = tmp_path / "votes.jsonl"
     path.write_text(
