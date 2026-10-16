@@ -79,6 +79,16 @@ USAGE_GATEWAY_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/
 # prompt the user typed is never part of the payload; see omm.arena_upload,
 # arena_vote_send_policy in DEFAULT_CONFIG below, and PRIVACY.md.
 VOTES_GATEWAY_ENDPOINT = "https://omm-telemetry-gateway.seong381400.workers.dev/votes"
+# The signed arena leaderboard `omm arena --leaderboard` reads (sub-project D).
+# Published nightly by .github/workflows/arena-aggregate.yml into `main`;
+# verified against `catalog_public_key` like the recommendation catalog.
+ARENA_LEADERBOARD_URL = (
+    "https://raw.githubusercontent.com/omm-hippo/omm/main/published/arena-leaderboard.json"
+)
+ARENA_LEADERBOARD_MANIFEST_URL = (
+    "https://raw.githubusercontent.com/omm-hippo/omm/main/published/"
+    "arena-leaderboard.manifest.json"
+)
 # model_url has gone through two GitHub org renames (minigu5/Localfit ->
 # minigu5/Omm -> omm-hippo/omm) plus one artifact rename (recommend-model.json
 # -> localfit-recommend-model.json). It's never user-settable, so any config
