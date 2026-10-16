@@ -7,11 +7,13 @@ from pathlib import Path
 
 import pytest
 
-WORKFLOW = Path(".github/workflows/arena-aggregate.yml")
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "arena-aggregate.yml"
 
 
 @pytest.fixture(scope="module")
 def text() -> str:
+    if not WORKFLOW.is_file():
+        pytest.skip("GitHub workflows are excluded from the runtime Docker image")
     return WORKFLOW.read_text(encoding="utf-8")
 
 

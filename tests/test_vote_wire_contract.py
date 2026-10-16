@@ -9,6 +9,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from omm import arena_upload, memory_group
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +22,10 @@ def _vote_rules() -> dict:
 
 
 def _validate_ts() -> str:
-    return (ROOT / "cf-worker/src/validate.ts").read_text(encoding="utf-8")
+    path = ROOT / "cf-worker/src/validate.ts"
+    if not path.is_file():
+        pytest.skip("cf-worker is excluded from the runtime Docker image")
+    return path.read_text(encoding="utf-8")
 
 
 def test_rules_keys_equal_the_python_wire_fields():
