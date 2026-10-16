@@ -51,9 +51,11 @@ def test_the_credential_is_passed_through_the_environment(text):
     assert "?auth=" not in text
 
 
-def test_signing_is_gated_on_the_quality_gate_and_a_real_change(text):
-    assert "gate_status == 'passed'" in text
-    assert "artifact_changed == 'true'" in text
+def test_signing_is_gated_on_a_real_change_only(text):
+    """A collecting status file is signed and published too (sub-project D);
+    the aggregator itself refuses to let one replace a ranked board."""
+    assert "steps.aggregate.outputs.artifact_changed == 'true'" in text
+    assert "gate_status" not in text
 
 
 def test_only_the_two_artifact_paths_are_staged(text):

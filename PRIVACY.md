@@ -132,14 +132,25 @@ prefer, alongside how fast and how large they were on real hardware.
 each of the two models its provider, repository id, filename, GGUF SHA-256 and
 quantization bit width, as far as omm knows them; each side's elapsed time,
 token count, and — when the runner reported them — decode speed and resident
-memory; a random per-install id (the same one usage statistics use,
-`~/.omm/client-id`); the `omm` version; and the timestamp.
+memory; this machine's **memory group** — the unified-memory size of an Apple
+Silicon Mac, the GPU VRAM size of a PC, or the RAM size of a machine with no
+GPU, as a marketed-size bucket such as `16GB` or `20–24GB` (never the exact
+amount, the GPU or CPU model); a random per-install id (the same one usage
+statistics use, `~/.omm/client-id`); the `omm` version; and the timestamp.
+
+The memory group is what lets the leaderboard show how people with machines
+like yours rated each model. A Linux machine whose GPU omm cannot detect sends
+no group rather than a wrong one, and its votes count only toward the
+all-machines ranking. Usage statistics (§2) already send a bucketed RAM/VRAM
+size with the same per-install id, so this adds little that is new. If you
+had already chosen "always" before the group was added, you are not asked
+again; `omm setting upload votes --disable` turns the channel off.
 
 **Never sent: the prompt you typed, and nothing derived from it** — no hash, no
 length, no category. It stays in `~/.omm/arena/votes.jsonl` on your machine and
 is not part of the payload; the gateway rejects any record that carries a
 `prompt` field at all. Also never sent: the models' responses, model file paths,
-your hardware specification, or anything about which models you have installed
+the rest of your hardware specification, or anything about which models you have installed
 beyond the two that fought.
 
 The `votes` Realtime Database node is **not** publicly readable — unlike

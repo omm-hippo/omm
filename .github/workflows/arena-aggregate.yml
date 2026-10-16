@@ -65,9 +65,10 @@ jobs:
             $incumbent
 
       - name: Sign the published leaderboard
-        if: >-
-          steps.aggregate.outputs.gate_status == 'passed' &&
-          steps.aggregate.outputs.artifact_changed == 'true'
+        # A "collecting" status file is published too: before the first ranked
+        # board, readers show the real vote counts instead of nothing. The
+        # aggregator never lets a collecting file replace a ranked board.
+        if: steps.aggregate.outputs.artifact_changed == 'true'
         env:
           LOCALFIT_CATALOG_SIGNING_KEY: ${{ secrets.LOCALFIT_CATALOG_SIGNING_KEY }}
         run: |
@@ -79,9 +80,10 @@ jobs:
             --manifest published/arena-leaderboard.manifest.json
 
       - name: Open a PR with the new leaderboard and auto-merge it
-        if: >-
-          steps.aggregate.outputs.gate_status == 'passed' &&
-          steps.aggregate.outputs.artifact_changed == 'true'
+        # A "collecting" status file is published too: before the first ranked
+        # board, readers show the real vote counts instead of nothing. The
+        # aggregator never lets a collecting file replace a ranked board.
+        if: steps.aggregate.outputs.artifact_changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.LOCALFIT_RETRAIN_PAT }}
           LOCALFIT_APPROVAL_PAT: ${{ secrets.LOCALFIT_APPROVAL_PAT }}
@@ -115,9 +117,11 @@ jobs:
           ## 배경
 
           사용자가 `omm arena`로 두 모델을 블라인드 비교하고 투표한 결과가 서버에 쌓입니다.
-          이 작업은 그 투표를 모아 모델별 품질 등급과 효율 점수를 다시 계산합니다. 사람이
-          손으로 만든 변경이 아니라 자동 집계 결과이며, 데이터가 너무 적거나 한 대의 기기가
-          투표를 독차지하면 아예 갱신하지 않고 넘어갑니다.
+          이 작업은 그 투표를 모아 전체 기기와 메모리 크기가 비슷한 기기 그룹마다 모델별
+          품질 등급과 효율 점수를 다시 계산합니다. 사람이 손으로 만든 변경이 아니라 자동
+          집계 결과입니다. 데이터가 너무 적거나 한 대의 기기가 투표를 독차지하는 범위는
+          순위를 내지 않습니다. 이미 공개된 순위가 있으면 그대로 두고, 아직 순위가 한 번도
+          없으면 "투표 수집 중" 상태와 실제 투표 수만 공개합니다.
 
           ## 무엇을 바꿨나
 
@@ -126,8 +130,8 @@ jobs:
 
           ## 어떻게 확인했나
 
-          집계 스크립트의 품질 게이트를 통과한 결과만 이 PR로 올라옵니다. 자세한 수치는
-          워크플로 실행 로그에서 볼 수 있습니다.
+          집계 스크립트가 범위마다 품질 게이트를 돌린 결과입니다. 게이트를 통과한 범위만
+          순위가 바뀌고, 범위별 통과 여부와 이유는 워크플로 실행 로그에서 볼 수 있습니다.
           BODY
           )
 
@@ -143,9 +147,9 @@ jobs:
           # LOCALFIT_RETRAIN_PAT, so it triggers CI - a PR opened with the
           # default GITHUB_TOKEN would not), so minigu5 can't self-approve it and
           # auto-merge would sit blocked forever. Approve as a distinct
-          # collaborator account instead. The quality gate above is what vets the
-          # change; this only clears the review-count requirement.
+          # collaborator account instead. The per-scope gate above is what vets
+          # the change; this only clears the review-count requirement.
           GH_TOKEN="$LOCALFIT_APPROVAL_PAT" gh pr review "$pr_url" --approve \
-            --body "Automated approval: the arena leaderboard quality gate passed (see workflow run)."
+            --body "Automated approval: the arena leaderboard was gated per scope (see workflow run)."
 
           gh pr merge "$pr_url" --auto --merge

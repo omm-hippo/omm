@@ -5,9 +5,11 @@ Pure functions over vote rows: validation, abuse weighting, a weighted
 Bradley-Terry quality fit with confidence-interval tiers, and a
 machine-independent efficiency rating fitted from within-battle log-ratios.
 
-No I/O, no network, no dependency outside the standard library. The runtime
-package never imports this module - it only reads the artifact this produces,
-the same boundary that keeps scikit-learn out of omm's runtime dependencies.
+No I/O, no network, no dependency outside the standard library and omm's
+pure `memory_group` table (the one place the memory-group labels are defined).
+The runtime package never imports this module - it only reads the artifact
+this produces, the same boundary that keeps scikit-learn out of omm's runtime
+dependencies.
 
 Spec: docs/superpowers/specs/2026-09-26-arena-vote-aggregation-design.md
 """
@@ -20,6 +22,8 @@ import re
 import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+
+from omm import memory_group
 
 #: One (client_id, unordered model pair) group contributes at most this many
 #: effective votes. Rows are never discarded, only down-weighted.
@@ -483,7 +487,7 @@ def fit_efficiency(battles: list[Battle], weights: list[float]) -> dict[str, dic
     }
 
 
-ARTIFACT_SCHEMA_VERSION = 1
+ARTIFACT_SCHEMA_VERSION = 2
 
 _METADATA_FIELDS = (
     ("display_filename", "model_filename"),
@@ -525,14 +529,40 @@ def collect_metadata(rows: list[dict]) -> dict[str, dict]:
     return metadata
 
 
-def build_artifact(
+def pair_counts(battles: list[Battle], weights: list[float]) -> list[dict]:
+    """Head-to-head record per unordered model pair, for the win-rate heatmap
+    and the "most-beaten opponent" line.
+
+    `a` is always the lexicographically smaller key, so a pair has exactly one
+    entry whichever side each row put it on. Wins and both_bad are effective
+    (capped) weight, the same weight the quality fit uses; `battles` is the
+    raw row count, so a reader can say how many battles a percentage rests on.
+    """
+    totals: dict[tuple[str, str], dict] = {}
+    for battle, weight in zip(battles, weights):
+        low, high = sorted((battle.key_a, battle.key_b))
+        entry = totals.setdefault(
+            (low, high),
+            {"a": low, "b": high, "wins_a": 0.0, "wins_b": 0.0, "both_bad": 0.0, "battles": 0},
+        )
+        entry["battles"] += 1
+        if battle.winner == "both_bad":
+            entry["both_bad"] += weight
+            continue
+        winner = battle.key_a if battle.winner == "a" else battle.key_b
+        entry["wins_a" if winner == low else "wins_b"] += weight
+    return [totals[pair] for pair in sorted(totals)]
+
+
+def score_scope(
     rows: list[dict],
     *,
-    generated_at: str,
     resamples: int = BOOTSTRAP_RESAMPLES,
     seed: int = BOOTSTRAP_SEED,
 ) -> dict:
-    """The full leaderboard artifact, deterministic for a given corpus."""
+    """Everything the leaderboard says about one set of rows - the whole
+    corpus, or one memory group's share of it. Deterministic for a given
+    corpus."""
     battles, dropped = validate_rows(rows)
     weights = battle_weights(battles)
     metadata = collect_metadata(rows)
@@ -586,17 +616,26 @@ def build_artifact(
                     and counts.get(key, 0.0) >= MIN_EFFECTIVE_BATTLES
                 ),
                 "efficiency": efficiency.get(key),
+                # Ratings are centred inside their own component, so only
+                # models of the scope's main component (0) can be compared -
+                # on a board, in a column, or as a sort key.
+                "efficiency_comparable": (
+                    efficiency.get(key) is not None and efficiency[key]["component"] == 0
+                ),
             }
         )
 
     def order(entry: dict) -> tuple:
+        # Quality tier first. Inside a tier, comparable efficiency decides;
+        # a model whose rating lives in another component (or has none)
+        # follows, by quality strength - never by a rating that means
+        # nothing next to the others.
         tier = entry["quality"]["tier"]
-        measured = entry["efficiency"]
-        return (
-            tier if tier is not None else math.inf,
-            -measured["rating"] if measured else math.inf,
-            entry["key"],
-        )
+        if entry["efficiency_comparable"]:
+            within = (0, -entry["efficiency"]["rating"])
+        else:
+            within = (1, -entry["quality"]["strength"])
+        return (tier if tier is not None else math.inf, *within, entry["key"])
 
     models.sort(key=order)
 
@@ -611,8 +650,6 @@ def build_artifact(
         component_sizes[measured["component"]] += 1
 
     return {
-        "schema_version": ARTIFACT_SCHEMA_VERSION,
-        "generated_at": generated_at,
         "corpus": {
             "rows_fetched": len(rows),
             "rows_used": len(battles),
@@ -635,4 +672,53 @@ def build_artifact(
         "provisional_models": sorted(
             entry["key"] for entry in models if entry["provisional"]
         ),
+        "pairs": pair_counts(battles, weights),
+    }
+
+
+def group_key(row: dict) -> str | None:
+    """"<memory_kind>:<memory_bucket>" for a row carrying a valid memory group
+    (sub-project D), else None. A row without one still counts overall."""
+    kind = row.get("memory_kind")
+    bucket = row.get("memory_bucket")
+    if not memory_group.is_valid(kind, bucket):
+        return None
+    return f"{kind}:{bucket}"
+
+
+def build_artifact(
+    rows: list[dict],
+    *,
+    generated_at: str,
+    resamples: int = BOOTSTRAP_RESAMPLES,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict:
+    """The full leaderboard artifact, deterministic for a given corpus.
+
+    The overall board keeps the top-level fields schema 1 had; `groups` adds
+    the same scoring run once per memory group on that group's rows. Whether
+    a scope may be shown is not decided here - arena_quality_gate.publish
+    gates each scope and adds `status`/`ranked`.
+    """
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        key = group_key(row)
+        if key is not None:
+            grouped[key].append(row)
+    groups = []
+    for key in sorted(grouped):
+        kind, bucket = key.split(":", 1)
+        groups.append(
+            {
+                "key": key,
+                "memory_kind": kind,
+                "memory_bucket": bucket,
+                **score_scope(grouped[key], resamples=resamples, seed=seed),
+            }
+        )
+    return {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        **score_scope(rows, resamples=resamples, seed=seed),
+        "groups": groups,
     }

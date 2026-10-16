@@ -329,6 +329,8 @@ _JSON_CAPABLE = {
     "engine uninstall",
     "bug-report",
     "setting runtime-profile",
+    # Only `omm arena --leaderboard`; a battle refuses --json in arena_cmd.
+    "arena",
 }
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
@@ -422,11 +424,15 @@ def _requested_command_name(ctx) -> str | None:
 
 def _require_json_support(command: str) -> None:
     if _global_opts().json and command not in _JSON_CAPABLE:
-        _print_json(data={"schema_version": 1, "status": "error", "error": {
-            "code": "unsupported_json", "command": command or "omm", "exit_code": 2,
-            "message": "This command does not support JSON output; no command action was performed.",
-        }})
-        raise typer.Exit(2)
+        _refuse_json(command)
+
+
+def _refuse_json(command: str) -> None:
+    _print_json(data={"schema_version": 1, "status": "error", "error": {
+        "code": "unsupported_json", "command": command or "omm", "exit_code": 2,
+        "message": "This command does not support JSON output; no command action was performed.",
+    }})
+    raise typer.Exit(2)
 
 
 # The option names `global_flags` injects below. Kept next to the decorator
@@ -4807,7 +4813,21 @@ def _resolve_ref(arg: str, *, fatal: bool = True) -> str | None:
         err_console.print(f"[warning]{message} Skipping.[/warning]")
         return None
 
-    return results[idx - 1]
+    ref = results[idx - 1]
+    if ref.startswith(session_cache.UNSOURCED_REF_PREFIX):
+        # An `omm arena --leaderboard` row the votes named without a source
+        # repo: the number is real, but there is nothing to install or look up.
+        name = ref.removeprefix(session_cache.UNSOURCED_REF_PREFIX)
+        message = (
+            f"#{idx} ({name}) was ranked from votes with no source repo, so it "
+            "can't be installed from the leaderboard."
+        )
+        if fatal:
+            err_console.print(f"[error]{escape(message)}[/error]")
+            raise typer.Exit(1)
+        err_console.print(f"[warning]{escape(message)} Skipping.[/warning]")
+        return None
+    return ref
 
 
 def _resolve_refs_multi(arg: str) -> list[str]:
@@ -11107,9 +11127,17 @@ def _arena_consent_and_enqueue(rows: list[dict]) -> None:
         if decision == "never":
             return
         if decision == "ask":
-            answer = _ask_upload_choice(
-                f"Upload {len(rows)} battle vote(s)? Your prompt text is never sent."
-            )
+            group = arena_upload.current_memory_group()
+            if group is None:
+                question = f"Upload {len(rows)} battle vote(s)? Your prompt text is never sent."
+            else:
+                from omm import memory_group
+
+                question = (
+                    f"Upload {len(rows)} battle vote(s) and this machine's memory group "
+                    f"({memory_group.display_label(*group)})? Your prompt text is never sent."
+                )
+            answer = _ask_upload_choice(question)
             if answer == "no":
                 return
             if answer == "always":
@@ -11219,6 +11247,250 @@ def _arena_session(
     _arena_consent_and_enqueue(recorded)
 
 
+# The English page: omm.run's unprefixed default locale is Korean, and the CLI
+# speaks English.
+_LEADERBOARD_WEB_URL = "https://omm.run/en/leaderboard"
+
+
+def _arena_board_name(display: str) -> tuple[str, str]:
+    """(model name, quant label) for a board row: the filename without its
+    extension and quant suffix, so the quant gets its own column."""
+    stem = re.sub(r"\.gguf$", "", display, flags=re.IGNORECASE)
+    quant = _quant_label(display)
+    if quant != "Unknown":
+        stem = re.sub(rf"[-_.]?{re.escape(quant)}$", "", stem, flags=re.IGNORECASE) or stem
+    return stem, ("" if quant == "Unknown" else quant)
+
+
+def _arena_board_updated(value: object) -> str:
+    from datetime import datetime, timezone
+
+    if not isinstance(value, str):
+        return "unknown"
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone(timezone.utc)
+    return stamp.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _arena_board_counts(scope: dict) -> str:
+    corpus = scope.get("corpus") or {}
+    return (
+        f"{int(corpus.get('rows_used') or 0)} votes from "
+        f"{int(corpus.get('client_count') or 0)} machines"
+    )
+
+
+def _arena_leaderboard() -> None:
+    """`omm arena --leaderboard`: this machine's memory group, or the overall
+    board when the group has too few votes. Shows nothing from a board whose
+    signature did not verify."""
+    from rich.text import Text
+
+    from omm import arena_board
+
+    json_output = _global_opts().json
+    public_key = config_mod.load_config().get("catalog_public_key") or ""
+    try:
+        board = arena_board.fetch_board(public_key)
+    except arena_board.BoardTooNew as error:
+        errors.print_cli_error(
+            err_console,
+            "The arena leaderboard uses a newer format than this omm can read.",
+            fix="Run `omm update`.",
+        )
+        raise typer.Exit(1) from error
+    except arena_board.BoardVerificationError as error:
+        errors.print_cli_error(
+            err_console,
+            "The published arena leaderboard failed its signature check, so it isn't shown.",
+            fix="It may be mid-update; try again in a few minutes.",
+        )
+        raise typer.Exit(1) from error
+    except arena_board.BoardUnavailable as error:
+        errors.print_cli_error(
+            err_console,
+            "Couldn't reach the arena leaderboard, and no verified copy is cached.",
+            fix="Check your connection and try again.",
+        )
+        raise typer.Exit(1) from error
+
+    group = arena_upload.current_memory_group()
+    machine = (
+        None
+        if group is None
+        else {
+            "key": f"{group[0]}:{group[1]}",
+            "memory_kind": group[0],
+            "memory_bucket": group[1],
+            "label": arena_board.group_label(f"{group[0]}:{group[1]}"),
+        }
+    )
+
+    artifact = board.artifact if board is not None else None
+    if artifact is None:
+        if json_output:
+            _print_json(
+                data={
+                    "status": "unpublished", "machine_group": machine, "scope": None,
+                    "generated_at": None, "corpus": None, "models": [],
+                    "provisional_count": 0,
+                }
+            )
+            return
+        console.print("The arena leaderboard hasn't been published yet.")
+        console.print("[muted]Vote with: omm arena[/muted]")
+        return
+
+    selection = arena_board.select_scope(artifact, group)
+    scope = selection.scope
+    ranked = scope.get("ranked") is True
+    rows = arena_board.numbered_rows(scope, registry.load_registry()) if ranked else []
+    provisional = len(scope.get("provisional_models") or []) if ranked else 0
+    if rows:
+        session_cache.record_results([row.ref for row in rows])
+
+    if json_output:
+        _print_json(
+            data={
+                "status": artifact.get("status"),
+                "machine_group": machine,
+                "scope": {
+                    "key": selection.scope_key,
+                    "label": selection.scope_label,
+                    "ranked": ranked,
+                    "fell_back": selection.fell_back,
+                },
+                "generated_at": artifact.get("generated_at"),
+                "corpus": scope.get("corpus"),
+                "models": [
+                    {
+                        "number": row.number,
+                        "ref": row.ref,
+                        "installed": row.installed_filename is not None,
+                        **row.model,
+                    }
+                    for row in rows
+                ],
+                "provisional_count": provisional,
+            }
+        )
+        return
+
+    if not ranked:
+        console.print("[heading]Arena leaderboard · collecting votes[/heading]")
+        console.print(
+            f"{_arena_board_counts(scope)} so far — more votes are needed before "
+            "ranking starts."
+        )
+        if selection.machine_scope is not None and selection.machine_label:
+            console.print(
+                f"Your group ({selection.machine_label}): "
+                f"{_arena_board_counts(selection.machine_scope)}."
+            )
+        console.print("[muted]Vote with: omm arena[/muted]")
+        return
+
+    if selection.fell_back and selection.machine_label:
+        console.print(
+            f"[muted]Your group ({selection.machine_label}) needs more votes — "
+            "showing all machines.[/muted]"
+        )
+    this_machine = " (this machine)" if selection.scope_key != "overall" else ""
+    console.print(
+        f"[heading]Arena leaderboard · {escape(selection.scope_label)}{this_machine}[/heading]"
+    )
+    console.print(
+        f"[muted]{_arena_board_counts(scope)} · updated "
+        f"{_arena_board_updated(scope.get('updated_at'))} · signature verified"
+        f"{' · cached copy' if board.cached else ''}[/muted]"
+    )
+
+    # expand + ratio: MODEL takes whatever width the fixed columns leave, so
+    # on a narrow terminal it is the one that ellipsizes.
+    table = Table(box=None, show_header=True, header_style="muted", pad_edge=False, expand=True)
+    table.add_column("", no_wrap=True, min_width=len(f"[{len(rows)}]"))
+    table.add_column("MODEL", no_wrap=True, overflow="ellipsis", ratio=1)
+    # Only MODEL may shrink (with an ellipsis) on a narrow terminal; every
+    # number and header stays whole.
+    table.add_column("QUANT", no_wrap=True)
+    table.add_column("QUALITY", justify="right", no_wrap=True)
+    table.add_column("EFFICIENCY", justify="right", no_wrap=True, min_width=10)
+    table.add_column("BATTLES", justify="right", no_wrap=True, min_width=7)
+    table.add_column("", no_wrap=True)
+    current_tier = None
+    incomparable = False
+    notes_width = 0
+    for row in rows:
+        model = row.model
+        quality = model.get("quality") or {}
+        tier = quality.get("tier")
+        if tier != current_tier:
+            # In the MODEL column, not the number column, so the label does
+            # not widen the `[n]` column and squeeze model names.
+            table.add_row("", f"[heading]TIER {tier}[/heading]", "", "", "", "", "")
+            current_tier = tier
+        name, quant = _arena_board_name(model.get("display_filename") or str(model.get("key")))
+        half = (float(quality.get("ci_high", 0.0)) - float(quality.get("ci_low", 0.0))) / 2
+        measured = model.get("efficiency")
+        if model.get("efficiency_comparable") and measured:
+            efficiency = f"{math.exp(measured['rating']):.1f}×"
+        else:
+            efficiency = "—"
+            incomparable = incomparable or measured is not None
+        notes = []
+        if row.installed_filename is not None:
+            notes.append("[success]installed[/success]")
+        if model.get("quality_warning"):
+            notes.append("[warning]! often fails[/warning]")
+        notes_width = max(notes_width, len(Text.from_markup(" ".join(notes))))
+        table.add_row(
+            escape(f"[{row.number}]"),
+            escape(name),
+            escape(quant),
+            f"{float(quality.get('strength', 0.0)):.2f}±{half:.2f}",
+            efficiency,
+            str(model.get("battles", 0)),
+            " ".join(notes),
+        )
+    table.columns[-1].min_width = notes_width
+    console.print(table)
+
+    if incomparable:
+        console.print(
+            "[muted]— measured on a disjoint set of battles, not comparable[/muted]"
+        )
+    if provisional:
+        noun = "model needs" if provisional == 1 else "models need"
+        console.print(
+            f"[muted]{provisional} more {noun} more votes. Full board: "
+            f"{_LEADERBOARD_WEB_URL}[/muted]"
+        )
+
+    sourced = [row for row in rows if not row.ref.startswith(arena_board.UNSOURCED_REF_PREFIX)]
+    installable = [row for row in sourced if row.installed_filename is None]
+    installed = [row for row in rows if row.installed_filename is not None]
+    hints = []
+    if installable:
+        hints.append((f"omm install {installable[0].number}", "install a model by number"))
+    if len(installed) >= 2:
+        hints.append(
+            (f"omm arena {installed[0].number} {installed[1].number}",
+             "battle two installed models yourself")
+        )
+    if sourced:
+        hints.append((f"omm info {sourced[0].number}", "details before installing"))
+    if hints:
+        width = max(len(command) for command, _ in hints)
+        console.print()
+        for index, (command, text) in enumerate(hints):
+            label = "Next:" if index == 0 else "     "
+            console.print(f"[muted]{label}[/muted] {command.ljust(width)}  [muted]{text}[/muted]")
+
+
 @app.command(name="arena")
 @global_flags
 def arena_cmd(
@@ -11233,6 +11505,12 @@ def arena_cmd(
         help="Reuse the first round's pair for every round instead of "
         "drawing a fresh pair each time.",
     ),
+    leaderboard: bool = typer.Option(
+        False,
+        "--leaderboard",
+        help="Show how people with machines like yours rated models, "
+        "instead of starting a battle.",
+    ),
 ) -> None:
     """Compare two installed models blind, on your own prompt, and vote.
 
@@ -11241,8 +11519,25 @@ def arena_cmd(
     `~/.omm/arena/votes.jsonl`, and are uploaded only if you opt in when
     asked at the end of a session (`omm setting upload votes`). The prompt
     you typed is never sent, whichever you choose. See PRIVACY.md.
+
+    `--leaderboard` shows the community ranking for this machine's memory
+    group instead, numbered so `omm install 2` or `omm arena 1 3` can follow.
     """
     models = list(models or [])
+    if leaderboard:
+        if models or keep:
+            errors.print_cli_error(
+                err_console,
+                "`--leaderboard` can't be combined with models or --keep.",
+                fix="Run `omm arena --leaderboard` on its own.",
+            )
+            raise typer.Exit(1)
+        _arena_leaderboard()
+        return
+    if _global_opts().json:
+        # "arena" is JSON-capable only for --leaderboard; a blind battle is
+        # interactive, so answer exactly as an unsupported command would.
+        _refuse_json("arena")
     # Arity and duplication need no engine and no model pool, so they are
     # decided here - before a daemon is started and a manifest tree walked.
     try:

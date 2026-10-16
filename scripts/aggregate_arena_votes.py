@@ -2,8 +2,10 @@
 """Aggregate collected arena votes into the signed leaderboard artifact.
 
 Sub-project C's entry point (issue #409): fetch or load vote rows, score them
-with scripts/arena_score.py, run scripts/arena_quality_gate.py, and write
-published/arena-leaderboard.json. Signing is a separate workflow step that
+with scripts/arena_score.py, gate and merge each scope with
+scripts/arena_quality_gate.py, and write published/arena-leaderboard.json -
+a ranked board, or before the first one a "collecting" status file with the
+real counts (sub-project D, #410). Signing is a separate workflow step that
 calls scripts/sign_catalog.py, exactly as train.yml does for the
 recommendation model.
 
@@ -238,6 +240,19 @@ def _serialize(artifact: dict) -> str:
     return json.dumps(artifact, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
+def _content_changed(artifact: dict, previous: dict | None) -> bool:
+    """Whether anything but the run timestamp differs from the published file.
+
+    Every run stamps a new `generated_at`, so comparing whole files would
+    commit (and PR) a "change" every night. Each scope carries its own
+    `updated_at`, which publish() preserves while that scope is unchanged.
+    """
+    if previous is None:
+        return True
+    strip = lambda data: {k: v for k, v in data.items() if k != "generated_at"}  # noqa: E731
+    return _serialize(strip(artifact)) != _serialize(strip(previous))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
@@ -267,36 +282,50 @@ def main(argv: list[str] | None = None) -> int:
         rows = fetch_votes(args.votes_url, token)
 
     generated_at = args.generated_at or datetime.now(timezone.utc).isoformat()
-    artifact = build_artifact(rows, generated_at=generated_at, resamples=args.resamples)
+    fresh = build_artifact(rows, generated_at=generated_at, resamples=args.resamples)
 
-    incumbent = _load_json(args.incumbent) if args.incumbent else None
-    result = arena_quality_gate.evaluate(artifact, incumbent)
-    outputs = {"gate_status": result.status}
+    # The file already at --output is the last published board. It doubles as
+    # the incumbent when --incumbent is not given, so a run that forgot the
+    # flag still cannot blank a ranked scope.
+    previous = _load_json(args.output) if args.output.exists() else None
+    incumbent = _load_json(args.incumbent) if args.incumbent else previous
+    artifact, results = arena_quality_gate.publish(
+        fresh, incumbent, gated=args.quality_gate
+    )
 
-    if args.quality_gate and result.status == "blocked":
-        print(f"Arena leaderboard not published ({len(result.reasons)} reason(s)):")
+    for scope_key, result in results.items():
+        print(f"  {scope_key}: gate {result.status}")
         for reason in result.reasons:
-            print(f"  - {reason}")
-        outputs["artifact_changed"] = "false"
-        if args.github_output:
-            append_github_outputs(args.github_output, outputs)
-        return 0
+            print(f"    - {reason}")
 
-    serialized = _serialize(artifact)
-    previous = None
-    if args.output.exists():
-        try:
-            previous = args.output.read_text(encoding="utf-8")
-        except OSError:
-            previous = None
-    changed = serialized != previous
+    changed = _content_changed(artifact, previous)
+    if (
+        changed
+        and artifact["status"] == "collecting"
+        and previous is not None
+        and (previous.get("schema_version") != 2 or previous.get("status") == "ranked")
+    ):
+        # publish() already never blanks a ranked v2 scope; this is the
+        # backstop for a file it could not merge (an older schema) or an
+        # --incumbent that disagrees with what is actually published.
+        print(
+            "Arena leaderboard: refusing to replace the published board "
+            f"(schema {previous.get('schema_version')}, status "
+            f"{previous.get('status', 'ranked')}) with a collecting file."
+        )
+        changed = False
     if changed:
-        atomic_write_text(args.output, serialized)
-    outputs["artifact_changed"] = "true" if changed else "false"
+        atomic_write_text(args.output, _serialize(artifact))
+    outputs = {
+        "status": artifact["status"],
+        "artifact_changed": "true" if changed else "false",
+    }
     print(
-        f"Arena leaderboard: {len(artifact['models'])} models, "
-        f"{artifact['corpus']['effective_votes']:.1f} effective votes, "
-        f"gate {result.status}, changed {outputs['artifact_changed']}"
+        f"Arena leaderboard: status {artifact['status']}, "
+        f"{len(artifact['models'])} overall models, "
+        f"{artifact['corpus'].get('effective_votes', 0.0):.1f} effective votes, "
+        f"{sum(1 for group in artifact['groups'] if group['ranked'])}/"
+        f"{len(artifact['groups'])} groups ranked, changed {outputs['artifact_changed']}"
     )
     if args.github_output:
         append_github_outputs(args.github_output, outputs)
