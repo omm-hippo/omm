@@ -11,6 +11,7 @@ from omm.engines.base import (
     FailureReason,
     LoadOptions,
     ProbeRequest,
+    ProbeResult,
     RuntimeAdapter,
     RuntimeAdapterError,
     RuntimeModelRef,
@@ -47,6 +48,7 @@ def verify_runtime(
     keep_loaded: bool = False,
     load_options: LoadOptions | None = None,
     probe_request: ProbeRequest | None = None,
+    on_response: Callable[[ProbeResult], None] | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> CompatibilityResult:
     """Verify one model without persisting prompt or generated text."""
@@ -67,7 +69,9 @@ def verify_runtime(
     failure_reason: FailureReason | None = None
     try:
         receipt = adapter.load(model, load_options or LoadOptions())
-        adapter.generate(receipt, probe_request or ProbeRequest())
+        response = adapter.generate(receipt, probe_request or ProbeRequest())
+        if on_response is not None:
+            on_response(response)
     except RuntimeAdapterError as error:
         failure_reason = error.reason
     finally:

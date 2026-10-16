@@ -2047,3 +2047,21 @@ def test_intentional_exclusions_have_one_definition():
 
     assert train_model.INTENTIONALLY_EXCLUDED_REASONS is model_quality_gate.INTENTIONALLY_EXCLUDED_REASONS
     assert "no_hardware_identity_pre_v6_schema" in train_model.INTENTIONALLY_EXCLUDED_REASONS
+
+
+def test_artifact_support_counts_real_configurations_without_synthetic_prior(monkeypatch):
+    from omm.recommend_evidence import feature_key
+    from omm.featurize import FEATURE_ORDER
+    rows=[_v6_row(20)]
+    real_X,real_y,audit=train_model.real_rows_to_training_data_with_audit(rows)
+    synthetic=list(real_X[0]);synthetic[0]+=8
+    holdout=list(real_X[0]);holdout[0]+=16
+    monkeypatch.setattr(train_model,'load_candidates',lambda: [])
+    artifact=train_model.train_artifact([real_X[0],synthetic],[real_y[0],10],sample_weight=None,
+        training_mode='hybrid_bootstrap',bootstrap_method='test',real_rows=rows,
+        telemetry_audit=audit,input_sources=['local_file'],evaluation=None,
+        real_training_features=real_X,holdout_features=[holdout])
+    support=artifact['measurement_support']
+    assert support['real_training_configurations']==1 and support['holdout_configurations']==1
+    assert feature_key(FEATURE_ORDER,synthetic) not in support['configurations']
+    assert support['configurations'][feature_key(FEATURE_ORDER,holdout)]=={'training':0,'holdout':1}

@@ -19,6 +19,7 @@ no_upload/
 agent/
 skills-lock.json
 cf-worker/node_modules/
+web-ui/node_modules/
 cf-worker/.wrangler/
 cf-worker/dist/
 cf-worker/.dev.vars

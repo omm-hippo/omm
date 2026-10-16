@@ -31,6 +31,7 @@ class OllamaAdapter:
     def __init__(self, base_url: str = DEFAULT_OLLAMA_URL) -> None:
         self._client = LoopbackJsonClient(base_url)
         self._profile_models: set[str] = set()
+        self._resident_contexts: dict[str, int] = {}
 
     def health(self) -> RuntimeHealth:
         try:
@@ -53,6 +54,13 @@ class OllamaAdapter:
         ).data.get("models")
         if not isinstance(available, list) or not isinstance(running, list):
             raise RuntimeAdapterError("unknown", "Ollama returned an invalid model list")
+        self._resident_contexts = {
+            name.removesuffix(":latest"): row["context_length"]
+            for row in running if isinstance(row, dict)
+            if isinstance((name := row.get("name") or row.get("model")), str)
+            and type(row.get("context_length")) is int
+            and 128 <= row["context_length"] <= 131_072
+        }
         loaded_names = {
             value
             for row in running
@@ -87,7 +95,11 @@ class OllamaAdapter:
         if selected is None:
             raise RuntimeAdapterError("model_not_visible", "the model is not visible in Ollama")
         if selected.loaded:
-            return LoadReceipt(selected, selected.instance_id or selected.key, True, False)
+            context = self._resident_contexts.get(selected.key.removesuffix(":latest"))
+            if context is None:
+                raise RuntimeAdapterError("unsupported_runtime", "the preloaded model's context could not be preserved")
+            observed = LoadOptions(context_length=context)
+            return LoadReceipt(selected, selected.instance_id or selected.key, True, False, observed)
         try:
             self._client.request(
                 "POST",
@@ -156,9 +168,10 @@ class OllamaAdapter:
         if isinstance(load_options, LoadOptions):
             # Ollama treats an omitted num_ctx as its runtime default. If the
             # preceding load used a different context, omitting it here tears
-            # down that runner and initializes the model a second time. Only
-            # pin the context for a model OMM loaded itself; a preloaded user's
-            # unknown runtime settings must stay untouched.
+            # down that runner and initializes the model a second time.
+            # Pin either our own load settings or the observed context of a
+            # preloaded model. Omitting num_ctx can reset that existing runner
+            # to its manifest/default context during a short probe.
             generation_options.update(load_options.ollama_options())
         base_payload = {
             "model": receipt.model.key,

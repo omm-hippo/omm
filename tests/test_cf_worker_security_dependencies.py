@@ -25,4 +25,4 @@ def test_cf_worker_lock_drops_unused_worker_pool_and_resolves_patched_sharp():
         for path, record in lock["packages"].items()
         if path == "node_modules/sharp" or path.endswith("/node_modules/sharp")
     }
-    assert resolved == {"0.35.4"}
+    assert resolved == {"0.35.5"}
