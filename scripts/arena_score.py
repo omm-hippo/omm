@@ -525,14 +525,40 @@ def collect_metadata(rows: list[dict]) -> dict[str, dict]:
     return metadata
 
 
-def build_artifact(
+def pair_counts(battles: list[Battle], weights: list[float]) -> list[dict]:
+    """Head-to-head record per unordered model pair, for the win-rate heatmap
+    and the "most-beaten opponent" line.
+
+    `a` is always the lexicographically smaller key, so a pair has exactly one
+    entry whichever side each row put it on. Wins and both_bad are effective
+    (capped) weight, the same weight the quality fit uses; `battles` is the
+    raw row count, so a reader can say how many battles a percentage rests on.
+    """
+    totals: dict[tuple[str, str], dict] = {}
+    for battle, weight in zip(battles, weights):
+        low, high = sorted((battle.key_a, battle.key_b))
+        entry = totals.setdefault(
+            (low, high),
+            {"a": low, "b": high, "wins_a": 0.0, "wins_b": 0.0, "both_bad": 0.0, "battles": 0},
+        )
+        entry["battles"] += 1
+        if battle.winner == "both_bad":
+            entry["both_bad"] += weight
+            continue
+        winner = battle.key_a if battle.winner == "a" else battle.key_b
+        entry["wins_a" if winner == low else "wins_b"] += weight
+    return [totals[pair] for pair in sorted(totals)]
+
+
+def score_scope(
     rows: list[dict],
     *,
-    generated_at: str,
     resamples: int = BOOTSTRAP_RESAMPLES,
     seed: int = BOOTSTRAP_SEED,
 ) -> dict:
-    """The full leaderboard artifact, deterministic for a given corpus."""
+    """Everything the leaderboard says about one set of rows - the whole
+    corpus, or one memory group's share of it. Deterministic for a given
+    corpus."""
     battles, dropped = validate_rows(rows)
     weights = battle_weights(battles)
     metadata = collect_metadata(rows)
@@ -586,17 +612,26 @@ def build_artifact(
                     and counts.get(key, 0.0) >= MIN_EFFECTIVE_BATTLES
                 ),
                 "efficiency": efficiency.get(key),
+                # Ratings are centred inside their own component, so only
+                # models of the scope's main component (0) can be compared -
+                # on a board, in a column, or as a sort key.
+                "efficiency_comparable": (
+                    efficiency.get(key) is not None and efficiency[key]["component"] == 0
+                ),
             }
         )
 
     def order(entry: dict) -> tuple:
+        # Quality tier first. Inside a tier, comparable efficiency decides;
+        # a model whose rating lives in another component (or has none)
+        # follows, by quality strength - never by a rating that means
+        # nothing next to the others.
         tier = entry["quality"]["tier"]
-        measured = entry["efficiency"]
-        return (
-            tier if tier is not None else math.inf,
-            -measured["rating"] if measured else math.inf,
-            entry["key"],
-        )
+        if entry["efficiency_comparable"]:
+            within = (0, -entry["efficiency"]["rating"])
+        else:
+            within = (1, -entry["quality"]["strength"])
+        return (tier if tier is not None else math.inf, *within, entry["key"])
 
     models.sort(key=order)
 
@@ -611,8 +646,6 @@ def build_artifact(
         component_sizes[measured["component"]] += 1
 
     return {
-        "schema_version": ARTIFACT_SCHEMA_VERSION,
-        "generated_at": generated_at,
         "corpus": {
             "rows_fetched": len(rows),
             "rows_used": len(battles),
@@ -635,4 +668,20 @@ def build_artifact(
         "provisional_models": sorted(
             entry["key"] for entry in models if entry["provisional"]
         ),
+        "pairs": pair_counts(battles, weights),
+    }
+
+
+def build_artifact(
+    rows: list[dict],
+    *,
+    generated_at: str,
+    resamples: int = BOOTSTRAP_RESAMPLES,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict:
+    """The full leaderboard artifact, deterministic for a given corpus."""
+    return {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        **score_scope(rows, resamples=resamples, seed=seed),
     }
