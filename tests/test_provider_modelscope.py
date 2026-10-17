@@ -92,11 +92,27 @@ def test_fetch_repo_files_503_is_kind_unavailable(monkeypatch):
     assert exc_info.value.kind == "unavailable"
 
 
-def test_download_url_builds_expected_query_string():
+def test_download_url_uses_the_cdn_backed_resolve_path():
+    # Not `/api/v1/models/<repo>/repo?FilePath=`: that endpoint streams from
+    # the origin (~100x slower from outside China) and sends no ETag.
     url = modelscope.download_url("org/repo", "model-q4_k_m.gguf")
+    assert url == "https://modelscope.cn/models/org/repo/resolve/master/model-q4_k_m.gguf"
+
+
+def test_download_url_keeps_subfolders_and_escapes_other_characters():
+    url = modelscope.download_url("org/repo", "gguf/my model+v1 #2.gguf")
     assert url == (
-        "https://modelscope.cn/api/v1/models/org/repo/repo"
-        "?Revision=master&FilePath=model-q4_k_m.gguf"
+        "https://modelscope.cn/models/org/repo/resolve/master/gguf/my%20model%2Bv1%20%232.gguf"
+    )
+
+
+def test_download_url_round_trips_through_the_model_reference_parser():
+    from omm import hub
+
+    url = modelscope.download_url("org/repo", "gguf/my model+v1.gguf")
+    ref = hub.parse_model_ref(url)
+    assert (ref.provider, ref.repo_id, ref.filename) == (
+        "modelscope", "org/repo", "gguf/my model+v1.gguf",
     )
 
 

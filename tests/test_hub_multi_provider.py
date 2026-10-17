@@ -26,8 +26,7 @@ def test_explicit_ms_prefix_with_filename_resolves_without_network(monkeypatch):
     assert resolved.repo_id == "org/repo"
     assert resolved.filename == "model-q4_k_m.gguf"
     assert resolved.url == (
-        "https://modelscope.cn/api/v1/models/org/repo/repo"
-        "?Revision=master&FilePath=model-q4_k_m.gguf"
+        "https://modelscope.cn/models/org/repo/resolve/master/model-q4_k_m.gguf"
     )
 
 

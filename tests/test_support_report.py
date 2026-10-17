@@ -50,6 +50,24 @@ def test_default_report_is_allowlisted_and_excludes_sensitive_material(
         assert forbidden not in rendered
 
 
+def test_command_name_skips_hidden_background_commands(isolated_omm_home):
+    # Starting any command spawns `omm _bg-version-check`, whose run log is
+    # newer than the command the user actually ran.
+    logs = config.OMM_HOME / "logs"
+    logs.mkdir()
+    logs.joinpath("20261017-100000_1_doctor.jsonl").write_text(
+        json.dumps({"argv": ["doctor"]}) + "\n", encoding="utf-8"
+    )
+    logs.joinpath("20261017-100001_2_unknown.jsonl").write_text(
+        json.dumps({"argv": ["_bg-version-check"]}) + "\n", encoding="utf-8"
+    )
+    logs.joinpath("20261017-100002_3_bug-report.jsonl").write_text(
+        json.dumps({"argv": ["bug-report"]}) + "\n", encoding="utf-8"
+    )
+
+    assert support_report.latest_command_name() == "doctor"
+
+
 def test_optional_groups_are_only_added_when_selected(monkeypatch):
     monkeypatch.setattr(support_report, "latest_command_name", lambda: None)
     monkeypatch.setattr(support_report, "latest_error_type", lambda: None)
