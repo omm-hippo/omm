@@ -1,7 +1,7 @@
 build==1.5.0
 hatchling==1.32.0
 pyinstaller==6.22.2
-pyinstaller-hooks-contrib==2026.6
+pyinstaller-hooks-contrib==2026.8
 
 # Runtime graph mirrored from pyproject.toml and checked by
 # tests/test_dependency_parity.py for every npm binary target.
