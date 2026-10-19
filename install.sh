@@ -3,6 +3,12 @@
 # Usage: curl -fsSL https://omm.run/install.sh | sh
 set -eu
 
+# Under `curl ... | sh`, sh reads this script from stdin as it runs it, so
+# any command that reads stdin swallows the rest of the script: `brew install
+# python` on a fresh Mac does exactly that, and sh then hits EOF and exits 0
+# without ever installing omm. A brace group is parsed in full before any of
+# it runs, which closes that off for every command below.
+{
 REPO_URL="https://github.com/omm-hippo/omm.git"
 OMM_HOME="${OMM_HOME:-$HOME/.omm}"
 case "$OMM_HOME" in
@@ -915,3 +921,4 @@ echo
 echo "Done. Open a new shell so zsh loads the pipx PATH configured by the installer."
 echo "Try:  omm scan"
 echo "Tip: run 'omm --install-completion' once (then restart your shell) to enable Tab completion for install/uninstall."
+}
