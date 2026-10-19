@@ -144,11 +144,35 @@ run_as_root() {
     fi
 }
 
+# On a Mac without the Xcode Command Line Tools, /usr/bin/python3 and
+# /usr/bin/git are xcode-select stubs: merely running one (even for a version
+# probe) pops the "install the command line developer tools" dialog. If the
+# user accepts it, that GUI install races the headless one Homebrew's
+# installer starts a moment later, and the bootstrap fails. Treat such a stub
+# as missing without ever executing it; Homebrew's installer then installs
+# the Command Line Tools itself.
+is_macos_clt_stub() {
+    [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] || return 1
+    case "$1" in
+        /usr/bin/*) ;;
+        *) return 1 ;;
+    esac
+    developer_dir=$(xcode-select -p 2>/dev/null) || return 0
+    [ ! -x "$developer_dir/usr/bin/$(basename -- "$1")" ]
+}
+
+# Prints the path of a runnable (non-stub) $1 on PATH.
+find_real_command() {
+    command_path=$(command -v "$1" 2>/dev/null) || return 1
+    is_macos_clt_stub "$command_path" && return 1
+    printf '%s\n' "$command_path"
+}
+
 find_supported_python() {
     for candidate in python3 python; do
-        if command -v "$candidate" >/dev/null 2>&1 && \
-           "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
-            command -v "$candidate"
+        if candidate_path=$(find_real_command "$candidate") && \
+           "$candidate_path" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+            printf '%s\n' "$candidate_path"
             return 0
         fi
     done
@@ -219,7 +243,9 @@ prepare_macos_brew() {
             echo "Cannot bootstrap Homebrew: curl and /bin/bash are required." >&2
             return 1
         fi
-        echo "Homebrew not found, installing it with Homebrew's official installer..."
+        echo "omm needs Python 3.10+ and git, which this Mac does not have yet."
+        echo "Installing Homebrew with its official installer to provide them."
+        echo "It asks for your Mac login password and also installs Apple's Command Line Tools; this can take several minutes."
         if ! homebrew_script=$(curl -fsSL --connect-timeout 30 --max-time 300 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh); then
             echo "Could not download the Homebrew installer: https://brew.sh/" >&2
             return 1
@@ -257,14 +283,14 @@ if [ "$OS_NAME" = "Darwin" ]; then
     # A clean macOS installation normally has neither Python nor git. Homebrew
     # is the supported bootstrap for both; the official installer also checks
     # the macOS/Command Line Tools requirements before changing the machine.
-    if [ -z "$PY" ] || ! command -v git >/dev/null 2>&1; then
+    if [ -z "$PY" ] || ! find_real_command git >/dev/null; then
         prepare_macos_brew
     fi
     if [ -z "$PY" ]; then
         echo "Python 3.10+ not found, installing it via Homebrew..."
         "$BREW" install python
     fi
-    if ! command -v git >/dev/null 2>&1; then
+    if ! find_real_command git >/dev/null; then
         echo "git not found, installing it via Homebrew..."
         "$BREW" install git
     fi
@@ -321,7 +347,7 @@ if [ -z "$PY" ]; then
     exit 1
 fi
 
-if ! command -v git >/dev/null 2>&1; then
+if ! find_real_command git >/dev/null; then
     echo "git not found after dependency bootstrap (needed to fetch omm from GitHub)." >&2
     exit 1
 fi
