@@ -278,9 +278,23 @@ def test_document_routes_require_session_and_bounded_json(server):
     response = client.get(server.url + 'api/documents', timeout=5)
     assert response.json() == {'documents': [], 'answers': []}
     assert client.post(server.url + 'api/documents', json={}, timeout=5).status_code == 403
-    response = client.post(server.url + 'api/documents', data=b'x'*(9*1024*1024+1),
-                           headers={'Content-Type':'application/json','X-OMM-Web':'1'}, timeout=5)
-    assert response.status_code == 413
+    # The server rejects Content-Length before reading an oversized body.
+    # Sending 9 MiB concurrently with that early close can reset the client
+    # connection on Windows before requests exposes the 413 response.
+    from http.client import HTTPConnection
+    from urllib.parse import urlsplit
+    address = urlsplit(server.url)
+    connection = HTTPConnection(address.hostname, address.port, timeout=5)
+    try:
+        connection.putrequest('POST', '/api/documents')
+        connection.putheader('Cookie', '; '.join(f'{k}={v}' for k,v in client.cookies.items()))
+        connection.putheader('Content-Type', 'application/json')
+        connection.putheader('X-OMM-Web', '1')
+        connection.putheader('Content-Length', str(9*1024*1024+1))
+        connection.endheaders()
+        assert connection.getresponse().status == 413
+    finally:
+        connection.close()
 
 
 def test_real_worker_imports_large_text_and_persists_after_manager_restart(server):
