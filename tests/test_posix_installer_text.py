@@ -339,3 +339,16 @@ find_supported_python
     assert found.returncode == 0
     assert found.stdout.strip() == str(bin_dir / "python3")
     assert marker.exists()
+
+
+def test_unix_installer_is_parsed_in_full_before_it_runs():
+    """`curl | sh` feeds the script through stdin, and `brew install python`
+    on a fresh Mac reads stdin - swallowing the rest of the script so sh
+    exits 0 before omm is installed. One brace group around everything after
+    `set -eu` makes sh parse the whole file before running any of it."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    lines = script.splitlines()
+
+    assert lines[lines.index("set -eu") + 1 :].count("{") == 1
+    assert script.index("\n{\nREPO_URL=") > script.index("set -eu")
+    assert script.endswith("\n}\n")
