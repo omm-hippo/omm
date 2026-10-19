@@ -3,15 +3,20 @@ the public ModelScope Hub API (https://modelscope.cn). No auth needed for
 public repos - confirmed with live curl requests (see
 docs/superpowers/specs/2026-07-24-multi-provider-hub-design.md).
 
-ModelScope's download endpoint honors Range requests but returns HTTP 200
-instead of 206 for a partial response (confirmed live) - see
-downloader.py's _probe_range_support for the corresponding fix."""
+Downloads use the `/resolve/` URL, which redirects to ModelScope's CDN.
+The REST endpoint (`/api/v1/models/<repo>/repo?FilePath=`) serves the same
+bytes straight from the origin instead: measured from Korea on 2026-10-06
+at ~0.2 MB/s against ~20 MB/s through the CDN for the same file, and it
+sends no ETag, so an interrupted download could not be resumed safely. It
+also answers a Range request with HTTP 200 instead of 206 (confirmed live);
+downloader.py's _probe_range_support still tolerates that for anyone who
+passes such a URL directly."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from functools import lru_cache
-from urllib.parse import quote_plus
+from urllib.parse import quote
 
 from omm.httpjson import MAX_PROVIDER_RESPONSE_BYTES, read_bounded_json_response
 from omm.providers.base import (
@@ -24,7 +29,7 @@ from omm.providers.base import (
 
 MS_MODEL = "https://modelscope.cn/api/v1/models/{repo_id}"
 MS_REPO_FILES = "https://modelscope.cn/api/v1/models/{repo_id}/repo/files"
-MS_DOWNLOAD = "https://modelscope.cn/api/v1/models/{repo_id}/repo"
+MS_DOWNLOAD = "https://modelscope.cn/models/{repo_id}/resolve/master/{filename}"
 
 
 @lru_cache(maxsize=128)
@@ -156,10 +161,8 @@ def fetch_repo_metadata(repo_id: str) -> dict:
 
 
 def download_url(repo_id: str, filename: str) -> str:
-    return (
-        f"{MS_DOWNLOAD.format(repo_id=repo_id)}"
-        f"?Revision=master&FilePath={quote_plus(filename)}"
-    )
+    # `safe="/"`: a file inside a subfolder keeps its path separators.
+    return MS_DOWNLOAD.format(repo_id=repo_id, filename=quote(filename, safe="/"))
 
 
 def remote_file_size(repo_id: str, filename: str) -> int | None:

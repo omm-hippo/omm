@@ -21,6 +21,11 @@ from omm.atomic import atomic_write_text, locked
 
 _MAX_SEEN = 50
 
+#: A numbered `omm arena --leaderboard` row for a model with no source repo.
+#: It is a real result (its number must resolve, to a plain error in
+#: cli._resolve_ref), but it is not something to Tab-complete.
+UNSOURCED_REF_PREFIX = "arena-unsourced:"
+
 
 def _session_path() -> Path | None:
     # Use the OS-level stdin fd (always 0 on POSIX) rather than
@@ -131,7 +136,8 @@ def record_results(refs: list[str]) -> None:
         with locked(path):
             data = _load(path)
             data["last_results"] = list(refs)
-            merged = list(refs) + [r for r in data["seen"] if r not in refs]
+            completable = [r for r in refs if not r.startswith(UNSOURCED_REF_PREFIX)]
+            merged = completable + [r for r in data["seen"] if r not in refs]
             data["seen"] = merged[:_MAX_SEEN]
             _save(data, path)
     except (OSError, FileLockTimeout):

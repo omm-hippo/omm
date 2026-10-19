@@ -16,6 +16,27 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
+  local-web-assets:
+    name: Local web assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Rebuild bundled interface
+        working-directory: web-ui
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+      - name: Require current bundled assets
+        run: |
+          git diff --exit-code -- src/omm/web/static
+          test -z "$(git ls-files --others --exclude-standard src/omm/web/static)"
+
   windows-install-script:
     name: Windows PowerShell script syntax
     runs-on: windows-latest
@@ -288,6 +309,12 @@ jobs:
   homebrew-formula:
     name: Homebrew Formula matches the runtime dependency graph
     runs-on: ubuntu-latest
+    # The Tap is generated from the released (`main`) dependency graph, so it
+    # cannot also match `beta` while beta carries runtime dependencies that
+    # have not been released yet - every beta push and beta-targeted pull
+    # request would stay red until the next release. The drift surfaces on
+    # the beta -> main pull request instead.
+    if: github.ref != 'refs/heads/beta' && github.base_ref != 'beta'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

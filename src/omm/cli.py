@@ -135,6 +135,8 @@ from rich.progress import (
 from rich.table import Table
 
 from omm import (
+    arena,
+    arena_upload,
     benchmark,
     benchmark_history,
     calibration,
@@ -314,7 +316,6 @@ _JSON_CAPABLE = {
     "tune",
     "scan",
     "recommend",
-    "arena",
     "evaluate",
     "doctor",
     "fit",
@@ -326,11 +327,14 @@ _JSON_CAPABLE = {
     "engine uninstall",
     "bug-report",
     "setting runtime-profile",
+    # Only `omm arena --leaderboard`; a battle refuses --json in arena_cmd.
+    "arena",
 }
 
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
 _YES_CAPABLE = {
+    "arena",
     "install",
     "import",
     "uninstall",
@@ -418,11 +422,15 @@ def _requested_command_name(ctx) -> str | None:
 
 def _require_json_support(command: str) -> None:
     if _global_opts().json and command not in _JSON_CAPABLE:
-        _print_json(data={"schema_version": 1, "status": "error", "error": {
-            "code": "unsupported_json", "command": command or "omm", "exit_code": 2,
-            "message": "This command does not support JSON output; no command action was performed.",
-        }})
-        raise typer.Exit(2)
+        _refuse_json(command)
+
+
+def _refuse_json(command: str) -> None:
+    _print_json(data={"schema_version": 1, "status": "error", "error": {
+        "code": "unsupported_json", "command": command or "omm", "exit_code": 2,
+        "message": "This command does not support JSON output; no command action was performed.",
+    }})
+    raise typer.Exit(2)
 
 
 # The option names `global_flags` injects below. Kept next to the decorator
@@ -658,7 +666,7 @@ class _DocsEpilogGroup(typer.core.TyperGroup):
 def _local_read_only_args(args: list[str]) -> bool:
     before = args[:args.index("--")] if "--" in args else args
     commands = [token for token in before if not token.startswith("-")]
-    return bool(commands) and commands[0] in {"doctor", "bug-report", "arena"}
+    return bool(commands) and commands[0] in {"doctor", "bug-report"}
 
 
 class _RootHelpGroup(_DocsEpilogGroup):
@@ -934,7 +942,7 @@ def _root(
         else:
             unresolved_json_command = True
     side_effect_minimal_mode = (
-        ctx.invoked_subcommand in {"doctor", "bug-report", "help", "engine"}
+        ctx.invoked_subcommand in {"doctor", "bug-report", "help", "engine", "web", "_web-worker"}
         or bool(ctx.meta.get("omm_help_requested"))
         or bool(ctx.meta.get("omm_engine_read_only"))
         or bool(ctx.meta.get("omm_local_read_only"))
@@ -999,6 +1007,14 @@ def _root(
         # a background aggregate, not a per-session event worth a notice).
         try:
             usage.flush_pending()
+        except Exception:
+            pass
+        # Arena battle votes. Nothing reaches this queue until the user said
+        # yes at the end of a battle session, so there is no policy gate to
+        # re-check here - see arena_upload.flush_pending. Silent like usage:
+        # the user already agreed once and does not need a receipt per run.
+        try:
+            arena_upload.flush_pending()
         except Exception:
             pass
 
@@ -1401,6 +1417,36 @@ def _hub_storage_bytes(reg: dict[str, Any]) -> int:
     """Total on-disk size of every omm-hub-managed model; a missing file
     contributes 0."""
     return sum(_entry_size_bytes(filename, entry) or 0 for filename, entry in reg.items())
+
+
+@app.command(name="web")
+@global_flags
+def web_cmd(
+    port: int = typer.Option(0, "--port", min=0, max=65535, help="Local loopback port; 0 chooses an available port."),
+    open_browser: bool = typer.Option(False, "--open", help="Open a browser only when explicitly requested."),
+    create_launchers: Path = typer.Option(None, "--create-launchers", help="Write personal desktop launchers and exit without opening a browser."),
+) -> None:
+    """Start the local browser interface for model management."""
+    from omm.web.server import serve
+
+    if create_launchers is not None:
+        from omm.web.launchers import create
+        try:
+            paths = create(create_launchers)
+        except (OSError, ValueError) as error:
+            err_console.print(str(error), markup=False)
+            raise typer.Exit(1) from error
+        for path in paths:
+            typer.echo(str(path))
+        return
+    serve(port, open_browser=open_browser)
+
+
+@app.command(name="_web-worker", hidden=True)
+def _web_worker_cmd() -> None:
+    """Internal worker entry for packaged executables."""
+    from omm.web.worker import main as worker_main
+    raise typer.Exit(worker_main())
 
 
 @app.command()
@@ -1983,7 +2029,7 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
 
 
 _SKIP_ONBOARDING_SUBCOMMANDS = {
-    "setup", "doctor", "help", "update", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+    "setup", "doctor", "help", "update", "web", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
 }
 
 
@@ -2101,6 +2147,7 @@ def _maybe_start_update_check(ctx: typer.Context) -> None:
 
 
 _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
+    "web",
     "update",
     "help",
     "import",
@@ -2122,7 +2169,7 @@ _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
 # as a count of <command> <outcome> the user ran. Local runlog files are not
 # uploaded, so those stay untouched.
 _INTERNAL_SUBCOMMANDS = frozenset(
-    {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run"}
+    {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run", "_web-worker"}
 )
 
 
@@ -2275,6 +2322,8 @@ class _LegacyPipxState:
 
 
 def _run_pipx_query(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
+    # `pipx uninstall` rewrites the shared app links just like an install.
+    _release_launcher_file_handles()
     try:
         return subprocess.run(
             args,
@@ -2813,7 +2862,30 @@ def _pipx_child_env() -> dict[str, str]:
     return env
 
 
+def _release_launcher_file_handles() -> None:
+    """Let a pipx child replace the `omm.exe` this process was started from.
+
+    The Windows pipx launcher runs `python.exe <bin>\\omm.exe`, which makes
+    the launcher itself `sys.path[0]` (it is a zip holding `__main__.py`).
+    `importlib.metadata` opens every zip on `sys.path` it scans and keeps
+    that `ZipFile` alive in its `FastPath` cache, so after the first version
+    or dependency lookup this process holds `omm.exe` open without delete
+    sharing. pipx can then neither unlink the old launcher nor move it to
+    its trash, and `pipx install --force` dies with WinError 32 at the very
+    last step. Dropping the cache closes the handle; the still-running
+    launcher image itself only blocks the unlink, and pipx already falls
+    back to a rename for that."""
+    if platform.system() != "Windows":
+        return
+    import gc
+    import importlib
+
+    importlib.invalidate_caches()
+    gc.collect()
+
+
 def _run_pipx_install(args: list[str], progress: Progress, task_id) -> subprocess.CompletedProcess:
+    _release_launcher_file_handles()
     proc = subprocess.Popen(
         args,
         stdout=subprocess.PIPE,
@@ -3889,7 +3961,10 @@ def _ensure_ollama_running(action: str, *, assume_yes: bool = False):
     started = benchmark.start_ollama_daemon()
     if started is None:
         detail = benchmark.last_daemon_start_error() or "unknown startup failure"
-        err_console.print(f"[error]Could not start Ollama: {detail}[/error]")
+        # detail is the daemon's raw stderr - Ollama's own log lines carry
+        # bracketed paths like [/Applications/Ollama.app/...], which Rich
+        # would otherwise read as markup tags and raise MarkupError on.
+        err_console.print(f"[error]Could not start Ollama: {escape(detail)}[/error]")
         raise typer.Exit(1)
     return started
 
@@ -4034,6 +4109,7 @@ def _build_recommend_json_rows(
     info: object = None,
     eligible_count: int | None = None,
 ) -> list[dict]:
+    from omm import model_wiki
     rows = recommend_ui.build_rows(ranked, refs, installations)
     budget = recommend_ui._available_memory(info, profile)
     return [
@@ -4060,6 +4136,8 @@ def _build_recommend_json_rows(
             "eligible_package_count": eligible_count,
             "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
             "quantization": recommend_ui.quantization_label(row.candidate),
+            "evidence": row.candidate.get("recommendation_evidence", {"status": "insufficient", "matching_environment_samples": None, "calibrated_interval": False}),
+            "wiki": model_wiki.describe(row.candidate),
         }
         for index, row in enumerate(rows)
     ]
@@ -4244,6 +4322,7 @@ def recommend(
         if refresh_metadata:
             _refresh_recommendation_facts(artifact, info)
         artifact = recommend_facts.apply(artifact)
+        from omm import recommend_evidence
         ranked = predictor.rank_candidates(artifact, info)
         usable = [
             (c, speed) for c, speed in ranked if speed >= predictor.MIN_USABLE_TOKENS_PER_SECOND
@@ -4273,6 +4352,7 @@ def recommend(
             installations = recommend_status.detect_installation_statuses(
                 [candidate for candidate, _speed in viable]
             )
+            viable = recommend_evidence.annotate(viable, artifact, info)
             session_cache.record_seen(refs)
             _print_json(
                 data=_build_recommend_json_rows(
@@ -4295,6 +4375,7 @@ def recommend(
         installations = recommend_status.detect_installation_statuses(
             [candidate for candidate, _speed in viable]
         )
+        viable = recommend_evidence.annotate(viable, artifact, info)
         session_cache.record_seen(refs)
         _present_recommendations(
             info, viable, refs, installations, profile, json_output=json_output,
@@ -4327,7 +4408,8 @@ def recommend(
         err_console.print("[error]No model in the current rules fits this hardware.[/error]")
         raise typer.Exit(1)
 
-    ranked_rules = [(rule, None) for rule in matches]
+    from omm import recommend_evidence
+    ranked_rules = recommend_evidence.annotate([(rule, None) for rule in matches], None, info)
     refs = [rule["name"] for rule in matches]
     installations = recommend_status.detect_installation_statuses(matches)
     session_cache.record_seen(refs)
@@ -4335,54 +4417,6 @@ def recommend(
         info, ranked_rules, refs, installations, profile, json_output=json_output,
         auto_yes=auto_yes, eligible_count=len(matches),
     )
-
-
-@app.command(name="arena")
-@global_flags
-def arena_cmd(
-    leaderboard: bool = typer.Option(False, "--leaderboard", help="Show signed public quality tiers and efficiency comparison groups."),
-    offline: bool = typer.Option(False, "--offline", help="Use only the verified cached leaderboard."),
-) -> None:
-    """Read verified public arena rankings without loading models or sending votes.
-
-    Use --leaderboard to select this read-only view and --offline for its cache.
-    """
-    if not leaderboard:
-        err_console.print("Use `omm arena --leaderboard` to read the public quality tiers.")
-        raise typer.Exit(2)
-    from omm import arena_leaderboard
-
-    try:
-        document, cached = arena_leaderboard.load(
-            arena_leaderboard.read_public_key(), offline=offline
-        )
-    except (arena_leaderboard.LeaderboardError, OSError, ValueError) as error:
-        err_console.print(str(error), markup=False)
-        raise typer.Exit(1) from error
-    models = arena_leaderboard.ordered_models(document)
-    if _global_opts().json:
-        _print_json(data={**document, "models": models, "verified": True, "cached": cached, "age_days": arena_leaderboard.age_days(document)})
-        return
-    view = _table(title="Arena quality tiers")
-    for heading in ("Tier", "Model", "Effective battles", "Efficiency group / rating", "Both bad"):
-        view.add_column(heading, overflow="fold")
-    for model in models:
-        measured = model.get("efficiency")
-        view.add_row(
-            "Provisional" if model["provisional"] else str(model["quality"]["tier"]),
-            escape(model.get("display_filename") or model["key"]),
-            f"{model['effective_battles']:.1f}",
-            f"{measured['component']} / {measured['rating']:+.2f}" if measured else "Not measured",
-            f"{model['both_bad_rate']:.0%}" + (" · warning" if model["quality_warning"] else ""),
-        )
-    console.print(view)
-    console.print(f"[muted]Verified artifact · {escape(document['generated_at'])}" + (" · cached" if cached else "") + "[/muted]")
-    console.print("[muted]Efficiency is comparable only inside the same quality tier and efficiency group. Provisional models are not ranked.[/muted]")
-    if arena_leaderboard.age_days(document) > 7:
-        console.print("[warning]This leaderboard is more than seven days old.[/warning]")
-    if not models:
-        console.print("No ranked or provisional models are available.")
-    return
 
 
 def _present_recommendations(
@@ -4635,7 +4669,21 @@ def _resolve_ref(arg: str, *, fatal: bool = True) -> str | None:
         err_console.print(f"[warning]{message} Skipping.[/warning]")
         return None
 
-    return results[idx - 1]
+    ref = results[idx - 1]
+    if ref.startswith(session_cache.UNSOURCED_REF_PREFIX):
+        # An `omm arena --leaderboard` row the votes named without a source
+        # repo: the number is real, but there is nothing to install or look up.
+        name = ref.removeprefix(session_cache.UNSOURCED_REF_PREFIX)
+        message = (
+            f"#{idx} ({name}) was ranked from votes with no source repo, so it "
+            "can't be installed from the leaderboard."
+        )
+        if fatal:
+            err_console.print(f"[error]{escape(message)}[/error]")
+            raise typer.Exit(1)
+        err_console.print(f"[warning]{escape(message)} Skipping.[/warning]")
+        return None
+    return ref
 
 
 def _resolve_refs_multi(arg: str) -> list[str]:
@@ -6092,6 +6140,7 @@ def _install_impl(
     enforce_memory_guard: bool = False,
     gpu_state: dict | None = None,
     benchmark_engine: str = "ollama",
+    benchmark_after_install: bool = True,
     contribute_mode: bool = False,
     contribution_memory_estimate: contribute_memory.ContributionMemoryEstimate | None = None,
     downloaded_state: dict | None = None,
@@ -6282,7 +6331,7 @@ def _install_impl(
     guard_failure_reason = "memory_guard_blocked" if lmstudio_guard_blocked else None
     eval_error: quality_mod.QualityEvaluationError | None = None
     run_ollama_benchmark = (
-        linked["ollama"] and selected_runtime != "lmstudio" and benchmark_engine == "ollama"
+        benchmark_after_install and linked["ollama"] and selected_runtime != "lmstudio" and benchmark_engine == "ollama"
     )
     # verify_runtime_after_install (plain `omm install`'s compat check) never
     # combines with benchmark_engine != "ollama" - only `omm contribute`
@@ -6291,7 +6340,7 @@ def _install_impl(
     # this condition reduces to "the contribute loop picked LM Studio and
     # linked it."
     run_lmstudio_benchmark = (
-        linked["lmstudio"] and selected_runtime != "ollama" and benchmark_engine == "lmstudio"
+        benchmark_after_install and linked["lmstudio"] and selected_runtime != "ollama" and benchmark_engine == "lmstudio"
     )
     model_was_preloaded = False
     ollama_runtime_version = None
@@ -8895,6 +8944,7 @@ def _print_upload_policy_table() -> None:
         "usage", "enabled" if usage.policy(cfg) == "enabled" else "off (default)"
     )
     table.add_row("crash", cfg.get("error_report_send_policy") or "off (default)")
+    table.add_row("votes", cfg.get("arena_vote_send_policy", "ask"))
     console.print(table)
 
 
@@ -8908,7 +8958,7 @@ def upload_menu(ctx: typer.Context) -> None:
     if not _stdin_is_tty():
         _print_upload_policy_table()
         console.print(
-            "[muted]omm setting upload <benchmark|usage|crash> --enable / --disable[/muted]"
+            "[muted]omm setting upload <benchmark|usage|crash|votes> --enable / --disable[/muted]"
         )
         return
     _upload_channel_menu()
@@ -9072,6 +9122,56 @@ def configure_upload_usage(
             )
         console.print("\n[label]Next batch would send:[/label]")
         _print_json(data=usage.build_payload(create_client_id=opted_in))
+
+
+@upload_app.command(name="votes")
+@global_flags
+def configure_upload_votes(
+    enable: bool = typer.Option(False, "--enable", help="Always upload battle votes."),
+    disable: bool = typer.Option(False, "--disable", help="Never upload battle votes."),
+    ask: bool = typer.Option(
+        False, "--ask", help="Ask after each battle session (the default)."
+    ),
+) -> None:
+    """Arena battle vote uploads (opt-in, asked after each session).
+
+    The prompt you typed is never uploaded - only which model won, the two
+    models' identities, and their measured speed and memory. See PRIVACY.md.
+    Run with no flags to print the current policy and how many votes wait.
+    """
+    # `_upload_channel_menu` calls this as a plain function, so an omitted
+    # keyword binds to the truthy OptionInfo default. Coerce defensively,
+    # exactly as configure_upload_usage does.
+    if not isinstance(enable, bool):
+        enable = False
+    if not isinstance(disable, bool):
+        disable = False
+    if not isinstance(ask, bool):
+        ask = False
+    _reject_conflicting_policy_flags(enable, disable, ask)
+    if enable:
+        config_mod.update_config(arena_vote_send_policy="always")
+        console.print(
+            "[success]Battle vote uploads enabled.[/success] "
+            "Turn off any time: `omm setting upload votes --disable`."
+        )
+    elif disable:
+        config_mod.update_config(arena_vote_send_policy="never")
+        # Consent given earlier does not survive turning the channel off.
+        discarded = arena_upload.discard_pending()
+        console.print(
+            "[success]Battle vote uploads disabled.[/success]"
+            + (f" Discarded {discarded} queued vote(s)." if discarded else "")
+        )
+    elif ask:
+        config_mod.update_config(arena_vote_send_policy="ask")
+        console.print(
+            "[success]Battle votes will be asked about after each session.[/success]"
+        )
+    else:
+        cfg = load_config()
+        console.print(f"Policy: {cfg.get('arena_vote_send_policy', 'ask')}")
+        console.print(f"Queued: {arena_upload.pending_count()} vote(s)")
 
 
 @setting_app.command(name="memory-guard")
@@ -9477,7 +9577,7 @@ def auto_import_status() -> None:
 
 
 def _upload_channel_menu() -> None:
-    """Interactive picker for the three outbound-data channels, shared by
+    """Interactive picker for the four outbound-data channels, shared by
     bare `omm setting upload` and the `omm setting` menu's Upload entry.
     Each configure_* call is guarded: a bad value (e.g. --enable with no
     endpoint) prints its reason and returns to the picker instead of
@@ -9491,6 +9591,7 @@ def _upload_channel_menu() -> None:
         bench = cfg.get("telemetry_send_policy", "ask")
         usage_pol = "enabled" if usage.policy(cfg) == "enabled" else "off (default)"
         crash_pol = error_report.send_policy(cfg)
+        votes_pol = cfg.get("arena_vote_send_policy", "ask")
 
         channel = _ask_select(
             questionary.select(
@@ -9499,6 +9600,7 @@ def _upload_channel_menu() -> None:
                     questionary.Choice(f"Benchmark results (current: {bench})", value="benchmark"),
                     questionary.Choice(f"Usage stats (current: {usage_pol})", value="usage"),
                     questionary.Choice(f"Crash reports (current: {crash_pol})", value="crash"),
+                    questionary.Choice(f"Battle votes (current: {votes_pol})", value="votes"),
                     questionary.Choice("← Back", value="back"),
                 ],
             )
@@ -9567,6 +9669,25 @@ def _upload_channel_menu() -> None:
                 if action in (None, "back"):
                     continue
                 configure_upload_crash(
+                    enable=(action == "enable"),
+                    disable=(action == "disable"),
+                    ask=(action == "ask"),
+                )
+            elif channel == "votes":
+                action = _ask_select(
+                    questionary.select(
+                        f"Battle vote uploads (current: {votes_pol}):",
+                        choices=[
+                            questionary.Choice("Ask after each session (default)", value="ask"),
+                            questionary.Choice("Always send", value="enable"),
+                            questionary.Choice("Never send", value="disable"),
+                            questionary.Choice("← Back", value="back"),
+                        ],
+                    )
+                )
+                if action in (None, "back"):
+                    continue
+                configure_upload_votes(
                     enable=(action == "enable"),
                     disable=(action == "disable"),
                     ask=(action == "ask"),
@@ -10780,6 +10901,620 @@ def evaluate_cmd(
     )
     if output is not None:
         console.print(f"Saved structured evidence to {escape(str(output))}.")
+
+
+def _arena_eligible_models(engine: str) -> dict[str, str]:
+    """Registry-linked models that `engine` can actually serve right now,
+    as {runtime ref -> registry filename}.
+
+    Registry-linked only, per the design: arena rows identify a model by its
+    omm registry entry so sub-projects B-E can aggregate across machines. A
+    model the user pulled straight into Ollama has no such identity and is
+    left out; the caller's error text points those users at `omm import`.
+    """
+    entries = [
+        (filename, value)
+        for filename, value in registry.load_registry().items()
+        if isinstance(filename, str) and isinstance(value, dict)
+    ]
+    eligible: dict[str, str] = {}
+    if engine == "lmstudio":
+        # One `lms ls --json` for the whole registry, not one per entry:
+        # linker.resolve_lmstudio_model spawns its own subprocess on every
+        # call, which is what _lmstudio_find_model_key was factored out to
+        # avoid (linker.py's own docstring says so).
+        lms_path = linker._lms_cli_path()
+        if lms_path is None:
+            return eligible
+        listed = linker._lmstudio_list_models(lms_path) or []
+        installed = {
+            entry["modelKey"]
+            for entry in listed
+            if isinstance(entry, dict)
+            and entry.get("type") == "llm"
+            and isinstance(entry.get("modelKey"), str)
+        }
+        for filename, entry in entries:
+            try:
+                publisher, repo = linker._lmstudio_publisher_repo(entry.get("repo_id"), filename)
+            except linker.LinkError:
+                continue
+            key = linker._lmstudio_find_model_key(listed, publisher, repo, filename)
+            if isinstance(key, str) and key in installed:
+                eligible[key] = filename
+        return eligible
+    try:
+        live = set(quality_mod.list_benchmarkable_tags())
+    except quality_mod.QualityEvaluationError:
+        live = set()
+    runtime_names = linker.resolve_ollama_runtime_names_batch(entries)
+    for filename, _entry in entries:
+        tag = runtime_names.get(filename)
+        if isinstance(tag, str) and tag in live:
+            eligible[tag] = filename
+    return eligible
+
+
+def _arena_normalize_refs(models: list[str], pool: dict[str, str]) -> list[str]:
+    """Accept whatever `omm list` showed the user, not only the engine's own
+    runtime ref.
+
+    `pool` is keyed by runtime ref (Ollama tag / LM Studio modelKey), while
+    `omm list` prints the registry filename and a numbered ref - so pasting
+    either was rejected with a fix line that pointed straight back at `omm
+    list`. Same class of bug `_resolve_benchmark_tag` exists to prevent
+    (registry filename is not an Ollama tag, promo dry run 2026-08-23); done
+    against `pool` here rather than through that helper, which is Ollama-only
+    and hard-exits for a model linked solely into LM Studio.
+    """
+    by_filename = {filename: ref for ref, filename in pool.items()}
+    resolved: list[str] = []
+    for arg in models:
+        if arg in pool:
+            resolved.append(arg)
+            continue
+        candidate = arg
+        if arg.isdecimal():
+            # fatal=False: a bad index warns and is left as-is so the
+            # pool-membership error below names what the user actually typed.
+            candidate = _resolve_ref(arg, fatal=False) or arg
+        resolved.append(by_filename.get(candidate, arg))
+    return resolved
+
+
+def _arena_reveal(
+    pair: tuple[str, str], engine: str, result_a, result_b, winner: str
+) -> None:
+    """Post-vote only. Never call this before a vote is recorded."""
+    table = Table(title="Reveal", box=None)
+    table.add_column("SIDE")
+    table.add_column("MODEL")
+    table.add_column("RUNNER")
+    table.add_column("TIME", justify="right")
+    table.add_column("TOK/S", justify="right")
+    for label, ref, result in (
+        ("Response 1", pair[0], result_a),
+        ("Response 2", pair[1], result_b),
+    ):
+        speed = "-" if result.tokens_per_second is None else f"{result.tokens_per_second:.1f}"
+        table.add_row(label, ref, _engine_label(engine), f"{result.elapsed:.1f}s", speed)
+    console.print(table)
+    verdict = {
+        "a": "You picked Response 1.",
+        "b": "You picked Response 2.",
+        "both_bad": "You rated both responses bad.",
+    }[winner]
+    console.print(f"[muted]{verdict}[/muted]")
+
+
+def _arena_vote() -> str | None:
+    """The vote prompt, re-asked on a bare Enter.
+
+    `_ask_single_key` returns its `default_value` on Enter and raises
+    KeyboardInterrupt on Escape/Ctrl-C. Those two gestures must not mean the
+    same thing here: a stray Enter mid-session would throw away a round the
+    user already waited through, while Escape really does mean "stop".
+    Returns None only when the user cancelled.
+    """
+    while True:
+        try:
+            winner = _ask_single_key(
+                "Which response is better?",
+                [
+                    ("1", "Response 1", "a"),
+                    ("2", "Response 2", "b"),
+                    ("x", "Both bad", "both_bad"),
+                ],
+                default_value=None,
+                instruction="(1/2/x)",
+            )
+        except KeyboardInterrupt:
+            return None
+        if winner in arena.WINNERS:
+            return winner
+        console.print("[muted]Press 1, 2, or x.[/muted]")
+
+
+def _arena_consent_and_enqueue(rows: list[dict]) -> None:
+    """Ask once, at the end of the session, whether to upload this session's
+    votes - then queue them.
+
+    Nothing is queued before this point: the queue must never hold data the
+    user has not agreed to send, so a session killed mid-way contributes
+    nothing to it (its votes are still in the local votes.jsonl, which is the
+    user's own record). The prompt is the same y/n/a `_ask_upload_choice`
+    serves for benchmark uploads, where `a` saves the policy.
+
+    Never raises: an upload problem must not change `omm arena`'s exit code.
+    """
+    if not rows:
+        return
+    try:
+        decision = arena_upload.policy()
+        if decision == "never":
+            return
+        if decision == "ask":
+            group = arena_upload.current_memory_group()
+            if group is None:
+                question = f"Upload {len(rows)} battle vote(s)? Your prompt text is never sent."
+            else:
+                from omm import memory_group
+
+                question = (
+                    f"Upload {len(rows)} battle vote(s) and this machine's memory group "
+                    f"({memory_group.display_label(*group)})? Your prompt text is never sent."
+                )
+            answer = _ask_upload_choice(question)
+            if answer == "no":
+                return
+            if answer == "always":
+                config_mod.update_config(arena_vote_send_policy="always")
+        queued = arena_upload.enqueue(rows)
+        if queued and not _global_opts().quiet:
+            console.print(
+                f"[muted]{queued} vote(s) queued; they upload on your next "
+                "omm command.[/muted]"
+            )
+    except typer.Exit:
+        # Nothing in the block raises this today (_ask_upload_choice answers
+        # "no" without a terminal rather than exiting, and arena_upload
+        # swallows its own errors). Kept so a future addition that does mean
+        # to exit is not silently turned into "no upload, exit 0" by the
+        # catch-all below - typer.Exit subclasses Exception.
+        raise
+    except Exception:
+        # A failed config write or a disk error queueing the rows. The votes
+        # stay in votes.jsonl; nothing the user can see is lost, and an upload
+        # problem must not change this command's exit code.
+        return
+
+
+def _arena_session(
+    pairing, pool: dict[str, str], engine: str, lmstudio_port, keep: bool
+) -> None:
+    """The round loop. Split out of `arena_cmd` so the daemon-stop `finally`
+    there stays readable and covers every exit path out of the loop."""
+    rounds = 0
+    recorded: list[dict] = []
+    while True:
+        pair = pairing.next_pair()
+        prompt = _ask_text("Your prompt for both models:")
+        if not prompt or not prompt.strip():
+            break
+        prompt = prompt.strip()
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[accent]{task.description}[/accent]"),
+                console=console,
+                disable=_global_opts().quiet,
+            ) as progress:
+                # No TimeElapsedColumn here, unlike every other Progress in
+                # this file: an elapsed clock on screen before the vote is a
+                # pre-vote timing number, and timing alone can leak identity
+                # for a model the user knows well. One undifferentiated
+                # description for both sides, for the same reason - a
+                # per-model spinner label would name the model.
+                task_id = progress.add_task("Generating both responses...", total=2)
+                result_a = arena.generate_side(
+                    pair[0], prompt, engine=engine, lmstudio_port=lmstudio_port
+                )
+                progress.advance(task_id)
+                result_b = arena.generate_side(
+                    pair[1], prompt, engine=engine, lmstudio_port=lmstudio_port
+                )
+                progress.advance(task_id)
+        except quality_mod.QualityEvaluationError as error:
+            err_console.print(f"[error]This round failed: {escape(str(error))}[/error]")
+        else:
+            console.print()
+            console.print("[accent]Response 1[/accent]")
+            console.print(result_a.text or "[muted](empty response)[/muted]")
+            console.print()
+            console.print("[accent]Response 2[/accent]")
+            console.print(result_b.text or "[muted](empty response)[/muted]")
+            console.print()
+            winner = _arena_vote()
+            if winner is None:
+                break
+            _arena_reveal(pair, engine, result_a, result_b, winner)
+            row = arena.build_vote_row(
+                prompt=prompt,
+                model_a=pool[pair[0]],
+                model_b=pool[pair[1]],
+                engine=engine,
+                result_a=result_a,
+                result_b=result_b,
+                winner=winner,
+                kept=keep,
+            )
+            if arena.append_vote(row):
+                rounds += 1
+                recorded.append(row)
+            else:
+                # Not counted: the closing line names votes.jsonl, and saying
+                # "1 round(s) recorded" there right after warning that nothing
+                # reached the file contradicts itself.
+                err_console.print(
+                    "[warn]Could not write this vote to "
+                    f"{escape(str(arena.votes_path()))}; the round still counted "
+                    "on screen but was not saved.[/warn]"
+                )
+        try:
+            another = _ask_confirm("Another round?", default=True)
+        except KeyboardInterrupt:
+            # _ask_confirm wraps _ask_single_key, so Escape here raises too.
+            break
+        if not another:
+            break
+    if rounds and not _global_opts().quiet:
+        console.print(
+            f"[muted]{rounds} round(s) recorded in {escape(str(arena.votes_path()))}.[/muted]"
+        )
+    _arena_consent_and_enqueue(recorded)
+
+
+# The English page: omm.run's unprefixed default locale is Korean, and the CLI
+# speaks English.
+_LEADERBOARD_WEB_URL = "https://omm.run/en/leaderboard"
+
+
+def _arena_board_name(display: str) -> tuple[str, str]:
+    """(model name, quant label) for a board row: the filename without its
+    extension and quant suffix, so the quant gets its own column."""
+    stem = re.sub(r"\.gguf$", "", display, flags=re.IGNORECASE)
+    quant = _quant_label(display)
+    if quant != "Unknown":
+        stem = re.sub(rf"[-_.]?{re.escape(quant)}$", "", stem, flags=re.IGNORECASE) or stem
+    return stem, ("" if quant == "Unknown" else quant)
+
+
+def _arena_board_updated(value: object) -> str:
+    from datetime import datetime, timezone
+
+    if not isinstance(value, str):
+        return "unknown"
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone(timezone.utc)
+    return stamp.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _arena_board_counts(scope: dict) -> str:
+    corpus = scope.get("corpus") or {}
+    return (
+        f"{int(corpus.get('rows_used') or 0)} votes from "
+        f"{int(corpus.get('client_count') or 0)} machines"
+    )
+
+
+def _arena_leaderboard() -> None:
+    """`omm arena --leaderboard`: this machine's memory group, or the overall
+    board when the group has too few votes. Shows nothing from a board whose
+    signature did not verify."""
+    from rich.text import Text
+
+    from omm import arena_board
+
+    json_output = _global_opts().json
+    public_key = config_mod.load_config().get("catalog_public_key") or ""
+    try:
+        board = arena_board.fetch_board(public_key)
+    except arena_board.BoardTooNew as error:
+        errors.print_cli_error(
+            err_console,
+            "The arena leaderboard uses a newer format than this omm can read.",
+            fix="Run `omm update`.",
+        )
+        raise typer.Exit(1) from error
+    except arena_board.BoardVerificationError as error:
+        errors.print_cli_error(
+            err_console,
+            "The published arena leaderboard failed its signature check, so it isn't shown.",
+            fix="It may be mid-update; try again in a few minutes.",
+        )
+        raise typer.Exit(1) from error
+    except arena_board.BoardUnavailable as error:
+        errors.print_cli_error(
+            err_console,
+            "Couldn't reach the arena leaderboard, and no verified copy is cached.",
+            fix="Check your connection and try again.",
+        )
+        raise typer.Exit(1) from error
+
+    group = arena_upload.current_memory_group()
+    machine = (
+        None
+        if group is None
+        else {
+            "key": f"{group[0]}:{group[1]}",
+            "memory_kind": group[0],
+            "memory_bucket": group[1],
+            "label": arena_board.group_label(f"{group[0]}:{group[1]}"),
+        }
+    )
+
+    artifact = board.artifact if board is not None else None
+    if artifact is None:
+        if json_output:
+            _print_json(
+                data={
+                    "status": "unpublished", "machine_group": machine, "scope": None,
+                    "generated_at": None, "corpus": None, "models": [],
+                    "provisional_count": 0,
+                }
+            )
+            return
+        console.print("The arena leaderboard hasn't been published yet.")
+        console.print("[muted]Vote with: omm arena[/muted]")
+        return
+
+    selection = arena_board.select_scope(artifact, group)
+    scope = selection.scope
+    ranked = scope.get("ranked") is True
+    rows = arena_board.numbered_rows(scope, registry.load_registry()) if ranked else []
+    provisional = len(scope.get("provisional_models") or []) if ranked else 0
+    if rows:
+        session_cache.record_results([row.ref for row in rows])
+
+    if json_output:
+        _print_json(
+            data={
+                "status": artifact.get("status"),
+                "machine_group": machine,
+                "scope": {
+                    "key": selection.scope_key,
+                    "label": selection.scope_label,
+                    "ranked": ranked,
+                    "fell_back": selection.fell_back,
+                },
+                "generated_at": artifact.get("generated_at"),
+                "corpus": scope.get("corpus"),
+                "models": [
+                    {
+                        "number": row.number,
+                        "ref": row.ref,
+                        "installed": row.installed_filename is not None,
+                        **row.model,
+                    }
+                    for row in rows
+                ],
+                "provisional_count": provisional,
+            }
+        )
+        return
+
+    if not ranked:
+        console.print("[heading]Arena leaderboard · collecting votes[/heading]")
+        console.print(
+            f"{_arena_board_counts(scope)} so far — more votes are needed before "
+            "ranking starts."
+        )
+        if selection.machine_scope is not None and selection.machine_label:
+            console.print(
+                f"Your group ({selection.machine_label}): "
+                f"{_arena_board_counts(selection.machine_scope)}."
+            )
+        console.print("[muted]Vote with: omm arena[/muted]")
+        return
+
+    if selection.fell_back and selection.machine_label:
+        console.print(
+            f"[muted]Your group ({selection.machine_label}) needs more votes — "
+            "showing all machines.[/muted]"
+        )
+    this_machine = " (this machine)" if selection.scope_key != "overall" else ""
+    console.print(
+        f"[heading]Arena leaderboard · {escape(selection.scope_label)}{this_machine}[/heading]"
+    )
+    console.print(
+        f"[muted]{_arena_board_counts(scope)} · updated "
+        f"{_arena_board_updated(scope.get('updated_at'))} · signature verified"
+        f"{' · cached copy' if board.cached else ''}[/muted]"
+    )
+
+    # expand + ratio: MODEL takes whatever width the fixed columns leave, so
+    # on a narrow terminal it is the one that ellipsizes.
+    table = Table(box=None, show_header=True, header_style="muted", pad_edge=False, expand=True)
+    table.add_column("", no_wrap=True, min_width=len(f"[{len(rows)}]"))
+    table.add_column("MODEL", no_wrap=True, overflow="ellipsis", ratio=1)
+    # Only MODEL may shrink (with an ellipsis) on a narrow terminal; every
+    # number and header stays whole.
+    table.add_column("QUANT", no_wrap=True)
+    table.add_column("QUALITY", justify="right", no_wrap=True)
+    table.add_column("EFFICIENCY", justify="right", no_wrap=True, min_width=10)
+    table.add_column("BATTLES", justify="right", no_wrap=True, min_width=7)
+    table.add_column("", no_wrap=True)
+    current_tier = None
+    incomparable = False
+    notes_width = 0
+    for row in rows:
+        model = row.model
+        quality = model.get("quality") or {}
+        tier = quality.get("tier")
+        if tier != current_tier:
+            # In the MODEL column, not the number column, so the label does
+            # not widen the `[n]` column and squeeze model names.
+            table.add_row("", f"[heading]TIER {tier}[/heading]", "", "", "", "", "")
+            current_tier = tier
+        name, quant = _arena_board_name(model.get("display_filename") or str(model.get("key")))
+        half = (float(quality.get("ci_high", 0.0)) - float(quality.get("ci_low", 0.0))) / 2
+        measured = model.get("efficiency")
+        if model.get("efficiency_comparable") and measured:
+            efficiency = f"{math.exp(measured['rating']):.1f}×"
+        else:
+            efficiency = "—"
+            incomparable = incomparable or measured is not None
+        notes = []
+        if row.installed_filename is not None:
+            notes.append("[success]installed[/success]")
+        if model.get("quality_warning"):
+            notes.append("[warning]! often fails[/warning]")
+        notes_width = max(notes_width, len(Text.from_markup(" ".join(notes))))
+        table.add_row(
+            escape(f"[{row.number}]"),
+            escape(name),
+            escape(quant),
+            f"{float(quality.get('strength', 0.0)):.2f}±{half:.2f}",
+            efficiency,
+            str(model.get("battles", 0)),
+            " ".join(notes),
+        )
+    table.columns[-1].min_width = notes_width
+    console.print(table)
+
+    if incomparable:
+        console.print(
+            "[muted]— measured on a disjoint set of battles, not comparable[/muted]"
+        )
+    if provisional:
+        noun = "model needs" if provisional == 1 else "models need"
+        console.print(
+            f"[muted]{provisional} more {noun} more votes. Full board: "
+            f"{_LEADERBOARD_WEB_URL}[/muted]"
+        )
+
+    sourced = [row for row in rows if not row.ref.startswith(arena_board.UNSOURCED_REF_PREFIX)]
+    installable = [row for row in sourced if row.installed_filename is None]
+    installed = [row for row in rows if row.installed_filename is not None]
+    hints = []
+    if installable:
+        hints.append((f"omm install {installable[0].number}", "install a model by number"))
+    if len(installed) >= 2:
+        hints.append(
+            (f"omm arena {installed[0].number} {installed[1].number}",
+             "battle two installed models yourself")
+        )
+    if sourced:
+        hints.append((f"omm info {sourced[0].number}", "details before installing"))
+    if hints:
+        width = max(len(command) for command, _ in hints)
+        console.print()
+        for index, (command, text) in enumerate(hints):
+            label = "Next:" if index == 0 else "     "
+            console.print(f"[muted]{label}[/muted] {command.ljust(width)}  [muted]{text}[/muted]")
+
+
+@app.command(name="arena")
+@global_flags
+def arena_cmd(
+    models: list[str] = typer.Argument(
+        None,
+        help="Optionally seed the first round with two installed models. "
+        "Omit them to draw a random pair.",
+    ),
+    keep: bool = typer.Option(
+        False,
+        "--keep",
+        help="Reuse the first round's pair for every round instead of "
+        "drawing a fresh pair each time.",
+    ),
+    leaderboard: bool = typer.Option(
+        False,
+        "--leaderboard",
+        help="Show how people with machines like yours rated models, "
+        "instead of starting a battle.",
+    ),
+) -> None:
+    """Compare two installed models blind, on your own prompt, and vote.
+
+    Responses are shown as "Response 1"/"Response 2" with no name, runner or
+    timing until you have voted. Votes are appended to
+    `~/.omm/arena/votes.jsonl`, and are uploaded only if you opt in when
+    asked at the end of a session (`omm setting upload votes`). The prompt
+    you typed is never sent, whichever you choose. See PRIVACY.md.
+
+    `--leaderboard` shows the community ranking for this machine's memory
+    group instead, numbered so `omm install 2` or `omm arena 1 3` can follow.
+    """
+    models = list(models or [])
+    if leaderboard:
+        if models or keep:
+            errors.print_cli_error(
+                err_console,
+                "`--leaderboard` can't be combined with models or --keep.",
+                fix="Run `omm arena --leaderboard` on its own.",
+            )
+            raise typer.Exit(1)
+        _arena_leaderboard()
+        return
+    if _global_opts().json:
+        # "arena" is JSON-capable only for --leaderboard; a blind battle is
+        # interactive, so answer exactly as an unsupported command would.
+        _refuse_json("arena")
+    # Arity and duplication need no engine and no model pool, so they are
+    # decided here - before a daemon is started and a manifest tree walked.
+    try:
+        arena.validate_pair_arity(models)
+    except arena.ArenaError as error:
+        errors.print_cli_error(
+            err_console,
+            str(error),
+            fix="Run `omm list` to see the models omm manages.",
+        )
+        raise typer.Exit(1) from error
+    engine = _select_benchmark_engine_for_models(models) if models else None
+    if engine is None:
+        engine = _select_benchmark_engine()
+        if engine is None:
+            _print_no_engine_error("arena")
+            raise typer.Exit(1)
+        if not _global_opts().quiet:
+            _print_engine_selection_notice(engine)
+    engine, started_daemon = _ensure_engine_running(
+        engine, "arena", assume_yes=_global_opts().yes
+    )
+    try:
+        pool = _arena_eligible_models(engine)
+        if len(pool) < 2:
+            errors.print_cli_error(
+                err_console,
+                f"`omm arena` needs at least 2 models installed through omm and "
+                f"linked into {_engine_label(engine)}; found {len(pool)}.",
+                fix="Run `omm list` to see what omm manages, `omm install` to add "
+                "one, or `omm import` to adopt models this runner already has.",
+            )
+            raise typer.Exit(1)
+        models = _arena_normalize_refs(models, pool)
+        try:
+            seed_pair = arena.validate_seed_pair(models, sorted(pool)) if models else None
+            pairing = arena.Pairing(sorted(pool), seed_pair=seed_pair, keep=keep)
+        except arena.ArenaError as error:
+            errors.print_cli_error(
+                err_console,
+                str(error),
+                fix="Run `omm list` to see the models omm manages, or `omm import` "
+                "to adopt models this runner already has.",
+            )
+            raise typer.Exit(1) from error
+        lmstudio_port = linker.lmstudio_server_port() if engine == "lmstudio" else None
+        _arena_session(pairing, pool, engine, lmstudio_port, keep)
+    finally:
+        if started_daemon is not None:
+            _stop_engine_daemon(engine, started_daemon)
 
 
 def _telemetry_send_failure_text() -> str:

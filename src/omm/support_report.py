@@ -63,6 +63,9 @@ def latest_command_name() -> str | None:
                 if (
                     isinstance(token, str)
                     and not token.startswith("-")
+                    # `_bg-version-check` & co. run behind every command and
+                    # log after it; they are never what the user ran.
+                    and not token.startswith("_")
                     and token not in {"<arg>", "bug-report"}
                     and token in _REGISTERED_COMMAND_NAMES
                 ):

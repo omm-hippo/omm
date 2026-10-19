@@ -1,0 +1,36 @@
+<h2>터미널 A안 + 번호 라벨</h2>
+<p class="subtitle"><code>omm search</code>/<code>omm list</code>와 같은 번호 체계(같은 터미널 세션에 저장). 번호는 티어를 넘어 1부터 이어서 붙고, 표본 부족 모델에는 붙지 않습니다.</p>
+
+<style>
+  .term { background:#0a0a0a; color:#c2c2c2; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12.5px; line-height: 1.6; padding: 14px 16px; border-radius: 8px; white-space: pre; overflow-x: auto; }
+  .term .p { color:#ffb000; }
+  .term .c { color:#f4f4f4; }
+  .term .d { color:#767676; }
+  .term .a { color:#ffb000; font-weight:700; }
+  .term .b { color:#f4f4f4; font-weight:700; }
+  .term .n { color:#ffb000; }
+</style>
+
+<div class="term"><span class="p">$</span> <span class="c">omm arena --leaderboard</span>
+<span class="b">Arena leaderboard</span> <span class="d">· Mac · unified memory 16–32GB (this machine)</span>
+<span class="d">340 votes from 12 machines · updated 2026-10-16 04:00 UTC · signature verified</span>
+
+<span class="a">TIER 1</span>                                <span class="d">quality   tok/s·GB  battles</span>
+  <span class="n">[1]</span> <span class="b">Qwen2.5 7B Instruct</span>   Q4_K_M    0.42±0.31      22.4       57   <span class="d">installed</span>
+  <span class="n">[2]</span> <span class="b">Llama 3.1 8B Instruct</span> Q4_K_M    0.38±0.33      18.9       44   <span class="a">! often fails</span>
+<span class="c">TIER 2</span>
+  <span class="n">[3]</span> Gemma 2 9B            Q5_K_M    0.11±0.28      12.1       31
+  <span class="n">[4]</span> Mistral Nemo 12B      Q4_K_M    0.06±0.30       9.8       27
+<span class="c">TIER 3</span>
+  <span class="n">[5]</span> Phi-3.5 mini          Q4_K_M   -0.29±0.26      30.2       39   <span class="d">installed</span>
+
+<span class="d">6 more models need more votes. Full board: https://omm.run/leaderboard</span>
+
+<span class="c">Next:</span> <span class="c">omm install 2</span>   <span class="d">install a model by number</span>
+      <span class="c">omm arena 1 5</span>   <span class="d">battle two installed models yourself</span>
+      <span class="c">omm info 3</span>      <span class="d">details before installing</span>
+
+<span class="p">$</span> <span class="c">omm install 2</span>
+<span class="d">Installing meta-llama/Meta-Llama-3.1-8B-Instruct-GGUF · Q4_K_M ...</span></div>
+
+<p class="subtitle" style="margin-top:12px">"Next" 줄은 실제로 있는 명령만, 상황에 맞게 고름: 설치 안 된 모델이 있으면 <code>install</code>, 설치된 모델이 2개 이상이면 <code>arena</code>. (<code>omm info</code>가 번호를 받는지는 구현 때 확인 — 안 받으면 그 줄은 빠짐.)</p>

@@ -1,0 +1,25 @@
+{
+  "corpus": {
+    "client_count": 0,
+    "effective_votes": 0,
+    "largest_client_share": 0.0,
+    "rows_dropped": {},
+    "rows_fetched": 0,
+    "rows_used": 0
+  },
+  "efficiency_components": [],
+  "generated_at": "2026-10-18T08:28:56.326145+00:00",
+  "groups": [],
+  "models": [],
+  "pairs": [],
+  "provisional_models": [],
+  "ranked": false,
+  "reasons": [
+    "only 0.0 effective votes, need 200",
+    "only 0 ranked models, need 5"
+  ],
+  "schema_version": 2,
+  "status": "collecting",
+  "tiers": [],
+  "updated_at": null
+}
