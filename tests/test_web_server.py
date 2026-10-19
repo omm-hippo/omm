@@ -270,3 +270,41 @@ def test_stale_or_foreign_manager_address_is_not_opened(isolated_omm_home,monkey
     path.write_text(json.dumps({'url':'https://example.com/','instance':'stale'}),encoding='utf-8')
     monkeypatch.setattr(requests,'get',lambda *args,**kwargs:pytest.fail('foreign manager address was fetched'))
     assert module.running_url() is None
+
+
+def test_document_routes_require_session_and_bounded_json(server):
+    assert requests.get(server.url + 'api/documents', timeout=5).status_code == 401
+    client = session(server)
+    response = client.get(server.url + 'api/documents', timeout=5)
+    assert response.json() == {'documents': [], 'answers': []}
+    assert client.post(server.url + 'api/documents', json={}, timeout=5).status_code == 403
+    response = client.post(server.url + 'api/documents', data=b'x'*(9*1024*1024+1),
+                           headers={'Content-Type':'application/json','X-OMM-Web':'1'}, timeout=5)
+    assert response.status_code == 413
+
+
+def test_real_worker_imports_large_text_and_persists_after_manager_restart(server):
+    import base64
+    import time
+    client = session(server)
+    content = ('자기장 측정과 나침반 실험 안내\n'*3000).encode('utf-8')
+    request_id = str(uuid.uuid4())
+    body = {'name':'전자기학.txt','content':base64.b64encode(content).decode(),
+            'confirmed':True,'request_id':request_id}
+    headers = {'X-OMM-Web':'1'}
+    response = client.post(server.url+'api/documents',json=body,headers=headers,timeout=5)
+    assert response.status_code==202, response.text
+    for _ in range(100):
+        job = next(x for x in client.get(server.url+'api/jobs',timeout=5).json() if x['id']==request_id)
+        if job['status'] in {'completed','failed'}:break
+        time.sleep(.05)
+    assert job['status']=='completed',job
+    assert client.post(server.url+'api/documents',json=body,headers=headers,timeout=5).json()['id']==request_id
+    from omm.documents import DocumentStore
+    assert DocumentStore().list()[0]['name']=='전자기학.txt'
+    server.jobs.close()
+    restarted=JobManager()
+    try:
+        assert next(x for x in restarted.list() if x['id']==request_id)['status']=='completed'
+        assert DocumentStore().list()[0]['chunks']>1
+    finally:restarted.close()

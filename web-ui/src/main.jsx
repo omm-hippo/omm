@@ -1,3 +1,4 @@
+import DocumentPanel from './DocumentPanel';
 import React, {useEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {api, gib, bytes} from './api';
@@ -104,7 +105,7 @@ function WikiDetail({model,onClose}) {
 }
 
 function App() {
-  const readTab = ()=>['recommend','models','jobs','wiki'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'recommend';
+  const readTab = ()=>['recommend','models','jobs','wiki','documents'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'recommend';
   const [tab,setCurrentTab] = useState(readTab);
   function setTab(value) {
     setCurrentTab(value);
@@ -183,8 +184,8 @@ function App() {
     catch(e){setError(e.message);}
     finally{setUpdating(false);}
   }
-  const title = tab==='recommend'?'내 컴퓨터에 맞는 모델':tab==='models'?'내 모델':tab==='wiki'?'모델 설명':'작업';
-  const subtitle = tab==='recommend'?'모델을 선택하고 설치하면 여러 실행 앱에서 함께 사용할 수 있어요.':tab==='models'?'OMM이 관리하는 모델과 실행 앱 연결 상태를 확인해요.':tab==='wiki'?'정확한 체크포인트의 용도와 출처를 확인하고 모델을 선택해요.':'실제 진행 상황과 저장된 결과를 확인해요.';
+  const title = tab==='documents'?'내 문서':tab==='recommend'?'내 컴퓨터에 맞는 모델':tab==='models'?'내 모델':tab==='wiki'?'모델 설명':'작업';
+  const subtitle = tab==='documents'?'등록한 문서를 로컬 모델에 질문하고 원문 출처를 확인해요.':tab==='recommend'?'모델을 선택하고 설치하면 여러 실행 앱에서 함께 사용할 수 있어요.':tab==='models'?'OMM이 관리하는 모델과 실행 앱 연결 상태를 확인해요.':tab==='wiki'?'정확한 체크포인트의 용도와 출처를 확인하고 모델을 선택해요.':'실제 진행 상황과 저장된 결과를 확인해요.';
   const visible = catalog?.models || [];
   function choose(model){
     setError('');
@@ -195,7 +196,7 @@ function App() {
     }
     operationId.current=null;setSelected(model);
   }
-  return <div className="app"><aside><a className="brand" href="/">omm</a><nav aria-label="주 메뉴">{[['recommend','추천'],['models','내 모델'],['wiki','모델 설명'],['jobs','작업']].map(([key,label])=><button aria-current={tab===key?'page':undefined} className={tab===key?'selected':''} key={key} onClick={()=>setTab(key)}><Icon name={key}/>{label}</button>)}</nav><p className="local-note"><span/>이 컴퓨터에서 실행 중</p></aside><main><header><div><h1>{title}</h1><p>{subtitle}</p></div><button onClick={()=>setRefreshKey(key=>key+1)} disabled={loading}>{loading?'확인 중…':'다시 확인'}</button></header>{error && <div role="alert" className="error">{error}</div>}{notice && <div role="status" className="notice">{notice}</div>}<Hardware machine={machine} budget={catalog?.budget_gb}/>{tab==='recommend' && <>{!models.length && <FirstUse machine={machine} onModels={()=>setTab('models')}/>}<div className="toolbar"><div className="profiles" aria-label="메모리 사용 방식">{profiles.map(([key,label])=><button key={key} aria-pressed={profile===key} onClick={()=>setProfile(key)}>{label}</button>)}</div><label className="search"><Icon name="search"/><input maxLength={160} value={query} onChange={event=>setQuery(event.target.value)} placeholder="모델 이름으로 찾기" aria-label="모델 이름으로 찾기"/></label></div>{loading?<div className="empty" role="status">컴퓨터와 추천 자료를 확인하고 있어요.</div>:visible.length?<ModelTable rows={visible} onSelect={choose} onDetails={setDescription}/>:<div className="empty"><h2>{query?'검색 결과가 없어요':'현재 예산에 맞는 모델이 없어요'}</h2><p>{query?'다른 이름으로 검색해 보세요.':'사용 방식을 바꾸거나 다른 앱을 닫은 뒤 다시 확인해 주세요.'}</p></div>}<p className="footnote">예상 속도는 실제 측정과 다를 수 있어요. 메모리 수치는 파일 크기나 모델 사양으로 계산한 추정치예요.</p><Evidence catalog={catalog} onUpdate={updateCatalog} busy={updating}/><section className="before"><h2>설치 전에 확인할 것</h2><p>설치한 모델 파일은 이 컴퓨터에 저장돼요. 여러 실행 앱에서 파일을 공유할 수 있어요.</p><p>설치와 모델 실행은 별도로 확인해요. 다운로드 중에는 이 서버를 켜 두세요.</p></section></>}{tab==='wiki' && <WikiList document={wiki} onOpen={setDescription}/>} {tab==='models' && <Installed rows={models} onAction={choose}/>} {tab==='jobs' && <Jobs jobs={jobs} onCancel={cancel}/>}</main>{description && <WikiDetail model={description} onClose={()=>setDescription(null)}/>} {selected && <Confirmation model={selected} machine={machine} busy={submitting} error={error} onClose={()=>{setSelected(null);operationId.current=null;}} onSubmit={submit}/>}</div>;
+  return <div className="app"><aside><a className="brand" href="/">omm</a><nav aria-label="주 메뉴">{[['recommend','추천'],['models','내 모델'],['wiki','모델 설명'],['documents','내 문서'],['jobs','작업']].map(([key,label])=><button aria-current={tab===key?'page':undefined} className={tab===key?'selected':''} key={key} onClick={()=>setTab(key)}><Icon name={key==='documents'?'wiki':key}/>{label}</button>)}</nav><p className="local-note"><span/>이 컴퓨터에서 실행 중</p></aside><main><header><div><h1>{title}</h1><p>{subtitle}</p></div><button onClick={()=>setRefreshKey(key=>key+1)} disabled={loading}>{loading?'확인 중…':'다시 확인'}</button></header>{error && <div role="alert" className="error">{error}</div>}{notice && <div role="status" className="notice">{notice}</div>}<Hardware machine={machine} budget={catalog?.budget_gb}/>{tab==='recommend' && <>{!models.length && <FirstUse machine={machine} onModels={()=>setTab('models')}/>}<div className="toolbar"><div className="profiles" aria-label="메모리 사용 방식">{profiles.map(([key,label])=><button key={key} aria-pressed={profile===key} onClick={()=>setProfile(key)}>{label}</button>)}</div><label className="search"><Icon name="search"/><input maxLength={160} value={query} onChange={event=>setQuery(event.target.value)} placeholder="모델 이름으로 찾기" aria-label="모델 이름으로 찾기"/></label></div>{loading?<div className="empty" role="status">컴퓨터와 추천 자료를 확인하고 있어요.</div>:visible.length?<ModelTable rows={visible} onSelect={choose} onDetails={setDescription}/>:<div className="empty"><h2>{query?'검색 결과가 없어요':'현재 예산에 맞는 모델이 없어요'}</h2><p>{query?'다른 이름으로 검색해 보세요.':'사용 방식을 바꾸거나 다른 앱을 닫은 뒤 다시 확인해 주세요.'}</p></div>}<p className="footnote">예상 속도는 실제 측정과 다를 수 있어요. 메모리 수치는 파일 크기나 모델 사양으로 계산한 추정치예요.</p><Evidence catalog={catalog} onUpdate={updateCatalog} busy={updating}/><section className="before"><h2>설치 전에 확인할 것</h2><p>설치한 모델 파일은 이 컴퓨터에 저장돼요. 여러 실행 앱에서 파일을 공유할 수 있어요.</p><p>설치와 모델 실행은 별도로 확인해요. 다운로드 중에는 이 서버를 켜 두세요.</p></section></>}{tab==='documents' && <DocumentPanel models={models} onJobs={setJobs}/>} {tab==='wiki' && <WikiList document={wiki} onOpen={setDescription}/>} {tab==='models' && <Installed rows={models} onAction={choose}/>} {tab==='jobs' && <Jobs jobs={jobs} onCancel={cancel}/>}</main>{description && <WikiDetail model={description} onClose={()=>setDescription(null)}/>} {selected && <Confirmation model={selected} machine={machine} busy={submitting} error={error} onClose={()=>{setSelected(null);operationId.current=null;}} onSubmit={submit}/>}</div>;
 }
 
 createRoot(document.getElementById('root')).render(<App/>);

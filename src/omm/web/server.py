@@ -133,6 +133,9 @@ class Handler(BaseHTTPRequestHandler):
                 if set(query) - {"profile", "q"} or any(len(values) != 1 for values in query.values()):
                     raise ValueError("Unsupported query parameters")
                 return self._json(200, self.server.service.recommendations(query.get("profile", ["balanced"])[0], query.get("q", [""])[0]))
+            if parsed.path == "/api/documents":
+                from omm.documents import DocumentStore
+                return self._json(200, {"documents": DocumentStore().list(), "answers": DocumentStore().answers()})
             if parsed.path == "/api/jobs":
                 return self._json(200, self.server.jobs.list())
             if parsed.path.startswith("/api/"):
@@ -159,10 +162,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(415, {"error": "Use a bounded JSON request"})
         try:
             length = int(self.headers.get("Content-Length", "-1"))
-            if not 0 <= length <= MAX_BODY:
+            limit = 9 * 1024 * 1024 if self.path == "/api/documents" else MAX_BODY
+            if not 0 <= length <= limit:
                 return self._json(413, {"error": "Request body is too large or has no length"})
             body = json.loads(self.rfile.read(length))
             path = urlsplit(self.path).path
+            if path in {"/api/documents", "/api/documents/question", "/api/documents/delete"}:
+                from omm.web.document_requests import validate
+                request = validate(path, body, self.server.service)
+                return self._json(202, self.server.jobs.start(request, body.get("request_id")))
             if path == "/api/catalog/refresh":
                 if body != {}:
                     raise ValueError("Catalog refresh accepts no additional fields")
