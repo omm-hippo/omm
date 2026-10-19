@@ -44,7 +44,7 @@ def _replace_temporary(temporary: Path, path: Path) -> None:
 
 
 @contextmanager
-def locked(path: Path, timeout: float = 10.0) -> Iterator[None]:
+def locked(path: Path, timeout: float = 30.0) -> Iterator[None]:
     """Serialize writers without putting a lock inside the protected file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(path) + ".lock", timeout=timeout)

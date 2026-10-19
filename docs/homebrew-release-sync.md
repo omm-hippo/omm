@@ -68,6 +68,10 @@ Two CI hooks keep the Formula from drifting again:
   request to `main`, so a `requirements-npm-binary.txt` change that the Tap
   has not caught up to yet is visible immediately, without needing a release
   to notice.
+  It is skipped for pushes to `beta` and pull requests targeting `beta`:
+  the Tap follows the released graph, so it cannot match a branch that
+  carries not-yet-released runtime dependencies. That drift shows up on
+  the `beta` → `main` pull request instead.
 - `.github/workflows/release.yml`'s `render-homebrew-formula` job (tag
   releases only, after the public PyPI install path is verified) renders
   `omm.rb` for the released version and uploads it as a workflow artifact.

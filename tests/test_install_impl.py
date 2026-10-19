@@ -94,6 +94,19 @@ def test_skip_unfit_returns_outcome_without_prompting_or_downloading(isolated_om
     assert download_calls == []
 
 
+def test_file_only_install_never_benchmarks_or_prompts_for_upload(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, **kwargs: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda *args, **kwargs: pytest.fail("unexpected model load"))
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda *args, **kwargs: pytest.fail("unexpected upload prompt"))
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda *args, **kwargs: pytest.fail("unexpected upload"))
+    result = cli._install_impl(_resolved(), benchmark_after_install=False, no_upload=True,
+                               assume_yes=True, verify_runtime_after_install=False)
+    assert result.linked["ollama"] is True
+    assert result.tokens_per_sec is None
+
+
 def test_auto_upload_skips_confirm_prompt_and_sends_telemetry(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
     monkeypatch.setattr(cli, "download_file", lambda url, dest, **_kw: dest.write_bytes(b"x"))

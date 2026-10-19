@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leaderboard v4</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@87..100,400..700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a; --bg-1:#111111; --bg-2:#171717; --bg-3:#1f1f1f;
+    --ink-0:#f4f4f4; --ink-1:#c2c2c2; --ink-2:#8a8a8a; --ink-3:#767676;
+    --line-0:#212121; --line-1:#2e2e2e;
+    --accent:#ffb000; --accent-ink:#0a0a0a; --accent-wash:rgba(255,176,0,0.09); --accent-line:rgba(255,176,0,0.32);
+    --r-sm:3px; --r-md:5px; --r-lg:8px;
+    --sans: "Archivo","Noto Sans KR",system-ui,sans-serif;
+    --mono: "JetBrains Mono","Noto Sans KR",ui-monospace,monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg-0); color:var(--ink-1); font-family:var(--sans); font-size:16px; line-height:1.7; word-break:keep-all; overflow-wrap:anywhere; }
+  .note { max-width:1280px; margin:0 auto; padding:16px 32px; font-size:13px; color:var(--ink-2); border-bottom:1px solid var(--line-0); }
+  .note b { color: var(--accent); font-weight:600; }
+  .wrap { max-width:1280px; margin:0 auto; padding:0 32px; }
+  .label { font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); font-weight:500; line-height:1; }
+  .num { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+
+  /* ---------- hero (densest, biggest type) ---------- */
+  .hero { padding:64px 0 32px; display:grid; grid-template-columns: 7fr 5fr; gap:48px; align-items:end; }
+  .hero h1 { font-size:40px; line-height:1.25; color:var(--ink-0); margin:12px 0 8px; font-weight:600; }
+  .hero p { font-size:17px; line-height:1.65; margin:0; color:var(--ink-1); max-width:560px; }
+  .kpis { display:grid; grid-template-columns:repeat(3,1fr); border:1px solid var(--line-0); border-radius:var(--r-lg); background:var(--bg-1); }
+  .kpi { padding:16px; border-right:1px solid var(--line-0); }
+  .kpi:last-child { border-right:none; }
+  .kpi .v { font-family:var(--mono); font-size:28px; color:var(--ink-0); font-weight:500; line-height:1.1; margin-top:8px; }
+  .verified { margin-top:12px; font-family:var(--mono); font-size:12px; color:var(--ink-3); }
+  .verified b { color:var(--ink-1); font-weight:500; }
+
+  /* ---------- board: raised surface on page bg ---------- */
+  .rule { border-top:1px solid var(--line-0); }
+  .board { display:grid; grid-template-columns: 208px 1fr 272px; border:1px solid var(--line-1); border-radius:var(--r-lg); background:var(--bg-1); overflow:hidden; margin:24px 0 96px; }
+
+  .side { background:var(--bg-0); border-right:1px solid var(--line-0); padding:16px 0; font-size:14px; }
+  .side .label { padding:16px 16px 8px; }
+  .side .label:first-child { padding-top:0; }
+  .it { display:flex; justify-content:space-between; padding:6px 16px; color:var(--ink-1); border-left:2px solid transparent; }
+  .it .num { font-size:12px; color:var(--ink-3); }
+  .it.on { background:var(--bg-2); color:var(--ink-0); border-left-color:var(--accent); font-weight:600; }
+  .it.on .num { color:var(--accent); }
+  .it.thin { color:var(--ink-3); }
+  .it.thin::after { content:"표본 부족"; font-family:var(--mono); font-size:10px; color:var(--ink-3); border:1px solid var(--line-1); border-radius:var(--r-sm); padding:0 4px; margin-left:6px; line-height:1.6; }
+  .it.thin .num { display:none; }
+
+  .main { padding:24px; min-width:0; }
+  .scope .v { font-size:22px; line-height:1.4; color:var(--ink-0); font-weight:600; margin-top:8px; }
+  .scope .s { font-size:14px; color:var(--ink-2); line-height:1.5; }
+
+  table.lb { width:100%; border-collapse:collapse; margin-top:16px; font-family:var(--mono); font-size:13px; line-height:1.45; }
+  .lb th { text-align:left; padding:8px 12px; background:var(--bg-2); color:var(--ink-3); font-weight:500; font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
+  .lb th.r, .lb td.r { text-align:right; }
+  .lb td { padding:10px 12px; border-top:1px solid var(--line-0); color:var(--ink-1); vertical-align:middle; }
+  .lb .mname { font-family:var(--sans); font-size:15px; color:var(--ink-0); font-weight:500; line-height:1.3; }
+  .lb .msub { font-size:11.5px; color:var(--ink-3); }
+  tr.band td { padding:16px 12px 6px; border-top:none; }
+  tr.band .label { color:var(--ink-2); }
+  tr.band.t1 .label { color:var(--accent); }
+  tr.band .why { font-family:var(--sans); font-size:12px; color:var(--ink-3); margin-left:8px; text-transform:none; letter-spacing:0; }
+  tr.t1row td { background:var(--accent-wash); }
+  tr.t1row td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+  tr.t1row .mname { font-size:17px; font-weight:600; }
+  tr.sel td { background:var(--bg-3); }
+  tr.t1row.sel td { background:rgba(255,176,0,0.15); }
+  .score { color:var(--ink-0); }
+  .t1row .score { color:var(--accent); font-weight:700; }
+  .ci { color:var(--ink-3); font-size:11.5px; margin-left:6px; }
+  .flag { font-family:var(--mono); font-size:10.5px; color:var(--ink-0); border:1px solid var(--line-1); background:var(--bg-2); border-radius:var(--r-sm); padding:1px 6px; white-space:nowrap; }
+  .flag::before { content:"!"; color:var(--accent); font-weight:700; margin-right:5px; }
+  .prov { font-family:var(--mono); font-size:12px; color:var(--ink-3); padding:12px; border-top:1px dashed var(--line-1); }
+
+  .drawer { background:var(--bg-2); border-left:1px solid var(--line-1); padding:24px 16px; font-size:14px; }
+  .drawer .t { font-size:19px; line-height:1.3; color:var(--ink-0); font-weight:600; margin:8px 0 4px; }
+  .drawer .repo { font-family:var(--mono); font-size:11.5px; color:var(--ink-3); margin-bottom:16px; }
+  .kv { display:flex; justify-content:space-between; gap:8px; padding:8px 0; border-top:1px solid var(--line-1); font-size:13px; }
+  .kv span:first-child { color:var(--ink-2); }
+  .kv span:last-child { color:var(--ink-0); font-family:var(--mono); text-align:right; }
+  .cmd { margin-top:16px; font-family:var(--mono); font-size:12px; background:var(--bg-0); border:1px solid var(--line-1); border-radius:var(--r-md); padding:10px; color:var(--ink-1); display:flex; justify-content:space-between; gap:8px; }
+  .cmd .p { color:var(--accent); }
+  .btn { display:block; margin-top:8px; text-align:center; background:var(--accent); color:var(--accent-ink); font-weight:600; font-size:14px; border-radius:var(--r-md); padding:8px; }
+
+  /* ---------- analysis: full-width rows, alternating sides, big ---------- */
+  .analysis { padding:96px 0 128px; }
+  .analysis > .label { margin-bottom:12px; }
+  .analysis h2 { font-size:30px; line-height:1.25; color:var(--ink-0); font-weight:600; margin:0 0 48px; }
+  .row { display:grid; grid-template-columns: 4fr 8fr; gap:48px; align-items:start; padding:48px 0; border-top:1px solid var(--line-0); }
+  .row.flip { grid-template-columns: 8fr 4fr; }
+  .row.flip .txt { order:2; }
+  .txt h3 { font-size:22px; line-height:1.4; color:var(--ink-0); font-weight:600; margin:8px 0 8px; }
+  .txt p { font-size:15px; line-height:1.7; color:var(--ink-2); margin:0 0 24px; }
+  .take { border-left:2px solid var(--accent); padding-left:12px; }
+  .take .v { font-family:var(--mono); font-size:28px; color:var(--ink-0); line-height:1.2; }
+  .take .s { font-size:13px; color:var(--ink-2); line-height:1.5; }
+  .panel { background:var(--bg-1); border:1px solid var(--line-0); border-radius:var(--r-lg); padding:24px; }
+
+  table.ov { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:13px; }
+  .ov th { padding:8px 10px; color:var(--ink-3); font-weight:500; font-size:11px; letter-spacing:.04em; text-align:center; border-bottom:1px solid var(--line-1); }
+  .ov th:first-child, .ov td:first-child { text-align:left; }
+  .ov td { padding:12px 10px; text-align:center; border-bottom:1px solid var(--line-0); color:var(--ink-1); }
+  .ov td:first-child { font-family:var(--sans); color:var(--ink-0); font-size:14px; }
+  .ov td.top { color:var(--accent-ink); }
+  .ov td.top span { background:var(--accent); border-radius:var(--r-sm); padding:2px 8px; font-weight:700; }
+  .ov td.na { color:var(--line-1); }
+  .ov th.cur { color:var(--accent); }
+
+  .hm { display:grid; grid-template-columns: 120px repeat(5, 1fr); gap:3px; font-family:var(--mono); font-size:12.5px; }
+  .hm div { padding:14px 0; text-align:center; border-radius:var(--r-sm); }
+  .hm .h { color:var(--ink-3); font-size:11px; padding:6px 0; }
+  .hm .rh { text-align:left; padding-left:4px; color:var(--ink-1); font-family:var(--sans); font-size:13px; }
+  .w1 { background:rgba(255,176,0,0.12); color:var(--ink-0); }
+  .w2 { background:rgba(255,176,0,0.28); color:var(--ink-0); }
+  .w3 { background:rgba(255,176,0,0.55); color:var(--accent-ink); font-weight:700; }
+  .l1 { background:var(--bg-2); color:var(--ink-2); }
+  .l2 { background:var(--bg-3); color:var(--ink-2); }
+  .self { background:transparent; border:1px dashed var(--line-1); }
+
+  .sc { position:relative; height:320px; border-left:1px solid var(--line-1); border-bottom:1px solid var(--line-1); margin:8px 0 28px 28px; background:
+      linear-gradient(var(--bg-1),var(--bg-1)); }
+  .sc .gl { position:absolute; left:0; right:0; border-top:1px dashed var(--line-0); }
+  .sc .gv { position:absolute; top:0; bottom:0; border-left:1px dashed var(--line-0); }
+  .sc .pt { position:absolute; width:12px; height:12px; margin:-6px; border-radius:50%; background:var(--ink-3); }
+  .sc .pt.t1 { background:var(--accent); width:14px; height:14px; margin:-7px; }
+  .sc .pt.t2 { background:var(--ink-1); }
+  .sc .lb2 { position:absolute; font-family:var(--mono); font-size:11.5px; color:var(--ink-1); white-space:nowrap; }
+  .sc .ax { position:absolute; font-family:var(--mono); font-size:11px; color:var(--ink-3); }
+  .sc .quad { position:absolute; right:12px; top:10px; font-family:var(--mono); font-size:11px; color:var(--accent); }
+  .legend { display:flex; gap:16px; font-family:var(--mono); font-size:11.5px; color:var(--ink-2); }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:-1px; }
+</style>
+</head>
+<body>
+
+<div class="note"><b>v4</b> · omm.run 실제 토큰(다크, 무채색 4단 배경, 앰버 1색)으로 다시 그림. 위계: 히어로 → 순위판(배경보다 한 단 밝은 판) → 분석은 한 줄에 하나씩 크게, 좌우 번갈아. 숫자·모델은 예시.</div>
+
+<div class="wrap">
+  <section class="hero">
+    <div>
+      <div class="label">omm arena · leaderboard</div>
+      <h1>내 기기에서 사람들이 고른 모델</h1>
+      <p>로컬 모델 두 개를 이름을 가린 채 같은 질문에 답하게 하고, 사용자가 더 나은 답을 고른 결과입니다. 기기 메모리 구간별로 따로 집계합니다.</p>
+    </div>
+    <div>
+      <div class="kpis">
+        <div class="kpi"><div class="label">투표</div><div class="v">903</div></div>
+        <div class="kpi"><div class="label">참여 기기</div><div class="v">47</div></div>
+        <div class="kpi"><div class="label">순위 모델</div><div class="v">24</div></div>
+      </div>
+      <div class="verified">갱신 <b>2026-10-16 04:00 UTC</b> · Ed25519 서명 검증됨</div>
+    </div>
+  </section>
+</div>
+
+<div class="rule"></div>
+
+<div class="wrap">
+  <div class="board">
+    <nav class="side">
+      <div class="label">범위</div>
+      <div class="it"><span>전체</span><span class="num">903</span></div>
+      <div class="label">Mac · 통합 메모리</div>
+      <div class="it"><span>8–16GB</span><span class="num">210</span></div>
+      <div class="it on"><span>16–32GB</span><span class="num">340</span></div>
+      <div class="it thin"><span>32–64GB</span><span class="num">12</span></div>
+      <div class="it thin"><span>64GB+</span><span class="num">3</span></div>
+      <div class="label">PC · GPU VRAM</div>
+      <div class="it"><span>8–12GB</span><span class="num">150</span></div>
+      <div class="it thin"><span>12–16GB</span><span class="num">28</span></div>
+      <div class="it thin"><span>16–24GB</span><span class="num">40</span></div>
+      <div class="it thin"><span>CPU 전용</span><span class="num">9</span></div>
+    </nav>
+
+    <section class="main">
+      <div class="scope">
+        <div class="label">지금 보는 구간</div>
+        <div class="v">Mac · 통합 메모리 16–32GB</div>
+        <div class="s">이 구간 기기 12대가 남긴 투표 340건</div>
+      </div>
+      <table class="lb">
+        <tr><th>모델</th><th class="r">품질</th><th class="r">효율 tok/s·GB</th><th class="r">배틀</th><th></th></tr>
+        <tr class="band t1"><td colspan="5"><span class="label">1티어</span><span class="why">서로 통계적으로 구분되지 않는 최상위</span></td></tr>
+        <tr class="t1row"><td><div class="mname">Qwen2.5 7B Instruct</div><div class="msub">Qwen · Q4_K_M</div></td><td class="r"><span class="score">0.42</span><span class="ci">±0.31</span></td><td class="r">22.4</td><td class="r">57</td><td></td></tr>
+        <tr class="t1row sel"><td><div class="mname">Llama 3.1 8B Instruct</div><div class="msub">meta-llama · Q4_K_M</div></td><td class="r"><span class="score">0.38</span><span class="ci">±0.33</span></td><td class="r">18.9</td><td class="r">44</td><td><span class="flag">실패 잦음</span></td></tr>
+        <tr class="band"><td colspan="5"><span class="label">2티어</span></td></tr>
+        <tr><td><div class="mname">Gemma 2 9B</div><div class="msub">google · Q5_K_M</div></td><td class="r"><span class="score">0.11</span><span class="ci">±0.28</span></td><td class="r">12.1</td><td class="r">31</td><td></td></tr>
+        <tr><td><div class="mname">Mistral Nemo 12B</div><div class="msub">mistralai · Q4_K_M</div></td><td class="r"><span class="score">0.06</span><span class="ci">±0.30</span></td><td class="r">9.8</td><td class="r">27</td><td></td></tr>
+        <tr class="band"><td colspan="5"><span class="label">3티어</span></td></tr>
+        <tr><td><div class="mname">Phi-3.5 mini</div><div class="msub">microsoft · Q4_K_M</div></td><td class="r"><span class="score">-0.29</span><span class="ci">±0.26</span></td><td class="r">30.2</td><td class="r">39</td><td></td></tr>
+      </table>
+      <div class="prov">+ 표본 부족 모델 6개 (순위 미정) ▾</div>
+    </section>
+
+    <aside class="drawer">
+      <div class="label">선택한 모델</div>
+      <div class="t">Llama 3.1 8B Instruct</div>
+      <div class="repo">meta-llama/Meta-Llama-3.1-8B-Instruct-GGUF · Q4_K_M</div>
+      <div class="kv"><span>품질</span><span>1티어 · 0.38</span></div>
+      <div class="kv"><span>95% 구간</span><span>0.05 – 0.71</span></div>
+      <div class="kv"><span>"둘 다 별로" 비율</span><span>31%</span></div>
+      <div class="kv"><span>효율</span><span>18.9 tok/s·GB</span></div>
+      <div class="kv"><span>배틀 (유효)</span><span>44 (31)</span></div>
+      <div class="kv"><span>가장 많이 이긴 상대</span><span>Phi-3.5 72%</span></div>
+      <div class="cmd"><span><span class="p">$</span> omm install meta-llama/…:Q4_K_M</span><span>copy</span></div>
+      <a class="btn">omm arena 로 직접 비교</a>
+    </aside>
+  </div>
+</div>
+
+<div class="rule"></div>
+
+<div class="wrap">
+  <section class="analysis">
+    <div class="label">분석</div>
+    <h2>순위 뒤의 숫자</h2>
+
+    <div class="row">
+      <div class="txt">
+        <div class="label">01 · 기기별 순위</div>
+        <h3>같은 모델도 기기마다 순위가 다릅니다</h3>
+        <p>메모리가 넉넉한 기기에서는 큰 모델이 제 실력을 내고, 작은 기기에서는 가벼운 모델이 앞섭니다. 칸이 비어 있으면 그 구간 표가 아직 부족한 것입니다.</p>
+        <div class="take"><div class="v">3개 구간</div><div class="s">Qwen2.5 7B가 1위인 구간 수 (전체 6개 중)</div></div>
+      </div>
+      <div class="panel">
+        <table class="ov">
+          <tr><th>모델</th><th>전체</th><th>Mac 8–16</th><th class="cur">Mac 16–32</th><th>PC 8–12</th><th>PC 16–24</th></tr>
+          <tr><td>Qwen2.5 7B</td><td class="top"><span>1</span></td><td class="top"><span>1</span></td><td>2</td><td class="top"><span>1</span></td><td class="na">—</td></tr>
+          <tr><td>Llama 3.1 8B</td><td class="top"><span>1</span></td><td>3</td><td class="top"><span>1</span></td><td>2</td><td class="na">—</td></tr>
+          <tr><td>Gemma 2 9B</td><td>2</td><td class="na">—</td><td class="top"><span>1</span></td><td>3</td><td class="na">—</td></tr>
+          <tr><td>Mistral Nemo 12B</td><td>2</td><td class="na">—</td><td>3</td><td class="na">—</td><td class="na">—</td></tr>
+          <tr><td>Phi-3.5 mini</td><td>3</td><td>2</td><td>5</td><td>4</td><td class="na">—</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="row flip">
+      <div class="txt">
+        <div class="label">02 · 맞대결</div>
+        <h3>누가 누구를 이기나</h3>
+        <p>행의 모델이 열의 모델과 붙었을 때 이긴 비율입니다. 앰버가 진할수록 크게 이겼고, 회색은 졌다는 뜻입니다. 셀에 마우스를 올리면 배틀 수가 보입니다.</p>
+        <div class="take"><div class="v">79%</div><div class="s">가장 일방적인 맞대결 — Qwen2.5 7B 대 Phi-3.5 mini</div></div>
+      </div>
+      <div class="panel">
+        <div class="hm">
+          <div></div><div class="h">Qwen</div><div class="h">Llama</div><div class="h">Gemma</div><div class="h">Nemo</div><div class="h">Phi</div>
+          <div class="rh">Qwen2.5 7B</div><div class="self"></div><div class="w1">58</div><div class="w2">66</div><div class="w2">69</div><div class="w3">79</div>
+          <div class="rh">Llama 3.1 8B</div><div class="l1">42</div><div class="self"></div><div class="w1">61</div><div class="w1">63</div><div class="w3">72</div>
+          <div class="rh">Gemma 2 9B</div><div class="l2">34</div><div class="l1">39</div><div class="self"></div><div class="w1">52</div><div class="w1">57</div>
+          <div class="rh">Mistral Nemo</div><div class="l2">31</div><div class="l2">37</div><div class="l1">48</div><div class="self"></div><div class="w1">55</div>
+          <div class="rh">Phi-3.5 mini</div><div class="l2">21</div><div class="l2">28</div><div class="l1">43</div><div class="l1">45</div><div class="self"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="txt">
+        <div class="label">03 · 품질 × 효율</div>
+        <h3>좋으면서 가벼운 모델</h3>
+        <p>위로 갈수록 투표에서 이기고, 오른쪽으로 갈수록 메모리 1GB당 더 빠릅니다. 빠르기만 한 모델이 순위를 뒤집지 않도록, 순위는 품질로 먼저 나누고 효율은 같은 티어 안에서만 씁니다.</p>
+        <div class="legend"><span><i style="background:var(--accent)"></i>1티어</span><span><i style="background:var(--ink-1)"></i>2티어</span><span><i style="background:var(--ink-3)"></i>3티어</span></div>
+      </div>
+      <div class="panel">
+        <div class="sc">
+          <div class="gl" style="top:25%"></div><div class="gl" style="top:50%"></div><div class="gl" style="top:75%"></div>
+          <div class="gv" style="left:25%"></div><div class="gv" style="left:50%"></div><div class="gv" style="left:75%"></div>
+          <div class="quad">좋고 가벼움 ↗</div>
+          <div class="pt t1" style="left:56%; top:16%"></div><div class="lb2" style="left:58%; top:10%">Qwen2.5 7B</div>
+          <div class="pt t1" style="left:46%; top:22%"></div><div class="lb2" style="left:22%; top:20%">Llama 3.1 8B</div>
+          <div class="pt t2" style="left:30%; top:50%"></div><div class="lb2" style="left:32%; top:52%">Gemma 2 9B</div>
+          <div class="pt t2" style="left:24%; top:55%"></div><div class="lb2" style="left:5%; top:60%">Nemo 12B</div>
+          <div class="pt" style="left:84%; top:78%"></div><div class="lb2" style="left:70%; top:82%">Phi-3.5 mini</div>
+          <div class="ax" style="right:0; bottom:-22px">효율 tok/s·GB →</div>
+          <div class="ax" style="left:-26px; top:0; writing-mode:vertical-rl; transform:rotate(180deg)">품질 →</div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+</body>
+</html>

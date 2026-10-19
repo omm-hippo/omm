@@ -1,5 +1,10 @@
 import { isTimestampFresh, sha256Hex, verifyProofOfWork } from "./pow";
-import { validateErrorReport, validateTelemetryEvent, validateUsageEvent } from "./validate";
+import {
+  validateErrorReport,
+  validateTelemetryEvent,
+  validateUsageEvent,
+  validateVoteEvent,
+} from "./validate";
 import { writeEventOnce, type ServiceAccount } from "./rtdb";
 
 export interface Env {
@@ -118,7 +123,9 @@ export default {
         ? "error_reports"
         : url.pathname === "/usage"
           ? "usage"
-          : null;
+          : url.pathname === "/votes"
+            ? "votes"
+            : null;
     if (request.method !== "POST" || node === null) {
       return json({ error: "not found" }, 404);
     }
@@ -174,7 +181,9 @@ export default {
       ? validateTelemetryEvent(event as Record<string, unknown>)
       : node === "error_reports"
         ? validateErrorReport(event as Record<string, unknown>)
-        : validateUsageEvent(event as Record<string, unknown>);
+        : node === "votes"
+          ? validateVoteEvent(event as Record<string, unknown>)
+          : validateUsageEvent(event as Record<string, unknown>);
     if (!result.valid) {
       return json({ error: result.reason ?? "invalid event" }, 400);
     }

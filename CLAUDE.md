@@ -145,6 +145,34 @@ retrains nightly from telemetry (`scripts/train_model.py`, gated by `scripts/mod
 and commits the artifacts straight into the repo. `featurize.py` turns raw hardware into model
 features; `rules.py` holds the old heuristic thresholds used as synthetic bootstrap rows.
 
+**Arena leaderboard scoring.** `scripts/arena_score.py` turns uploaded votes into
+`published/arena-leaderboard.json`: a weighted Bradley-Terry quality fit (with a
+fixed-strength phantom opponent, so an undefeated model neither diverges nor outranks a
+well-supported one) grouped into confidence-interval tiers, plus a separate efficiency
+rating fitted from **within-battle** `tok/s ÷ GiB` log-ratios so a model is never
+credited for running on a bigger GPU. Efficiency only breaks ties inside a quality tier,
+and only among `efficiency_comparable` models (the scope's component 0 - ratings from
+different components mean nothing side by side); the two numbers are never blended. One
+`(client_id, model pair)` contributes at most `CLIENT_PAIR_VOTE_CAP` effective votes.
+Artifact schema 2 (sub-project D): the same scoring runs on the whole corpus and once per
+memory group (`memory_kind:memory_bucket`, from `memory_group.py`), each scope carrying
+pairwise `pairs` counts. `scripts/arena_quality_gate.py:publish` gates every scope on its
+own (groups have lower bars) and merges with the last published file: a ranked scope is
+never blanked by a blocked run, and before any scope ever ranked the job publishes a signed
+`status: "collecting"` file with real counts. Writes happen only when content other than
+`generated_at` changed;
+`scripts/aggregate_arena_votes.py` is the CLI and `.github/workflows/arena-aggregate.yml`
+runs it nightly (04:00 UTC, an hour after `train.yml`), signing with the same Ed25519
+catalog key as the recommendation model. The math lives in `scripts/`, never in
+`src/omm/` — the runtime only reads the artifact. Note the deliberate asymmetry with
+telemetry: the `votes` RTDB node is `.read: false`, so the aggregator sends an
+`Authorization: Bearer` access token it mints each run from the read-only service-account
+key in secret `LOCALFIT_VOTES_SERVICE_ACCOUNT_JSON` (a stored token would expire in an hour), while
+`train_model.py:fetch_real_rows` refuses to send one to the world-readable `telemetry`
+node. Artifact fields and thresholds:
+`docs/superpowers/specs/2026-09-26-arena-vote-aggregation-design.md` and
+`2026-10-16-arena-public-leaderboard-design.md`.
+
 **Signing.** The recommendation artifact is Ed25519-signed by `scripts/sign_catalog.py` in the
 nightly job and verified by `catalog.py:verify_signed_artifact` (called from `predictor.py` and
 `search.py`). Public key is baked into `config.py` `DEFAULT_CONFIG["catalog_public_key"]`; the
@@ -181,17 +209,42 @@ telemetry schema at runtime (the Worker writes with a rules-bypassing service to
 cf-worker vitest job in CI); `database.rules.json` keeps `.write` denied and is the documented
 source of truth to diff against - its emulator test only proves the direct write path is closed.
 `src/localfit_server/` (FastAPI) is an optional self-hostable collector — not the primary path.
-Three separate opt-in outbound channels share the `cf-worker/` PoW gateway, each its own
+Four separate opt-in outbound channels share the `cf-worker/` PoW gateway, each its own
 RTDB node + `database.rules.json` block + `validate.ts` validator: `telemetry` (benchmark
-rows, world-readable), `error_reports` (`error_report.py`, private), and `usage`
+rows, world-readable), `error_reports` (`error_report.py`, private), `usage`
 (`usage.py` — anonymous daily batch: random `~/.omm/client-id`, `client_version`, OS/arch,
 bucketed RAM/VRAM, GPU vendor, and a `<command> <outcome>` tally; **never** model names,
-paths, args, or IP). All three are configured under `omm setting upload {benchmark,usage,crash}`
+paths, args, or IP), and `votes` (`arena_upload.py`, private — one row per `omm arena`
+vote: winner, both models' provider/repo/filename/sha256/quant, each side's elapsed time,
+tokens, and measured speed/memory, a coarse marketed-size memory group
+(`memory_kind`/`memory_bucket` from `memory_group.py`, both or neither), plus the same
+`client-id`; **never** the prompt the
+user typed or anything derived from it — `validateVoteEvent` rejects a `prompt` key by
+name). All four are configured under `omm setting upload {benchmark,usage,crash,votes}`
 (bare `omm setting upload`, or `omm setting` → "Upload", opens an interactive picker over the
-three channels; `cli.py:_upload_channel_menu`). The `omm setup` data-sharing prompt covers
-`usage` + `crash` (`onboarding.run_data_sharing_step`); `benchmark` is not in it — its policy
-defaults to "ask" and is prompted per run. `PRIVACY.md` is the user-facing spec; keep it,
+four channels; `cli.py:_upload_channel_menu`). The `omm setup` data-sharing prompt covers
+`usage` + `crash` (`onboarding.run_data_sharing_step`); `benchmark` and `votes` are not in it —
+both default to "ask" and are prompted in context (`benchmark` per run, `votes` at the end of
+an `omm arena` session). `PRIVACY.md` is the user-facing spec; keep it,
 the `omm setup` consent text, `validate.ts`, and `database.rules.json` in sync when fields change.
+
+**Arena.** `omm arena` (`arena.py` + `cli.py:_arena_session`) compares two installed models
+blind on one prompt and records the vote to `~/.omm/arena/votes.jsonl`, local-only. Blindness
+is the feature: slot order is redrawn every round — including a `--keep` session and a pair
+given positionally — because the post-vote reveal otherwise tells the user which side is which
+for every later round. Generation reuses `quality.py`'s `_generate`/`_generate_lmstudio` with
+`generation=None` (the model's own sampling defaults) and the same load → generate → unload
+lifecycle `benchmark.py` uses. `arena_upload.py` is the separate opt-in upload channel (see
+Telemetry above); it reads `votes.jsonl` rows only after the user consents and never writes
+that file. `omm arena --leaderboard` (`arena_board.py`) reads the published artifact, verifies
+its signature before showing anything (live, else a cache that still verifies; a 404 means
+"not published yet"), shows this machine's memory group or falls back to overall, and
+records numbered refs in `session_cache` (an `arena-unsourced:` ref turns into a plain error
+in `_resolve_ref`). The web board is a separate page, `omm.run/leaderboard` (omm-site
+`src/lib/leaderboard/`); the older schema-1 `/arena` page on the site is a teammate's and is
+left alone. Specs: `docs/superpowers/specs/2026-09-25-arena-battle-cli-design.md` (local CLI),
+`2026-09-26-arena-vote-upload-channel-design.md` (upload) and
+`2026-10-16-arena-public-leaderboard-design.md` (leaderboard); roadmap issues #407-#411.
 
 **Run log.** `runlog.py` attaches a JSON-lines handler to the `omm` logger for one process;
 `cli.main()` brackets `app()` with `runlog.start()`/`finish()`. Every invocation writes

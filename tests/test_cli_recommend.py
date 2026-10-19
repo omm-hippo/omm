@@ -109,7 +109,7 @@ def test_exaone_is_visible_with_published_predictor_on_24gb_mac(
     # An old published forest whose candidate list predates EXAONE must still
     # evaluate bundled packages. Keep popularity out of this eligibility test.
     artifact_path = Path(__file__).resolve().parents[1] / "published" / "localfit-recommend-model.json"
-    artifact = json.loads(artifact_path.read_text())
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     artifact["candidates"] = artifact["candidates"][:1]
     before = deepcopy(artifact)
     hw = HardwareInfo("macOS", "", "Apple M5", 24, 18, True, "Apple M5", 24, 18)

@@ -61,7 +61,7 @@ def test_curated_exaone_keeps_exact_q4_file_when_trending_repeats_repo(monkeypat
 
     fetch_candidates.main()
 
-    matching = [c for c in json.loads(output.read_text()) if c["repo_id"] == original["repo_id"]]
+    matching = [c for c in json.loads(output.read_text(encoding="utf-8")) if c["repo_id"] == original["repo_id"]]
     assert matching == [original]
 
 

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "matches": {
+    "Qwen/Qwen3-8B-GGUF": {
+      "repository": "Qwen/Qwen3-8B",
+      "source": "https://huggingface.co/api/models/Qwen/Qwen3-8B-GGUF",
+      "revision": "7c41481f57cb95916b40956ab2f0b139b296d974",
+      "reviewedAt": "2026-10-02"
+    }
+  }
+}
