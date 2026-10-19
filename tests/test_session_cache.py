@@ -221,3 +221,13 @@ def test_lock_timeout_is_a_silent_best_effort_noop(isolated_omm_home, monkeypatc
     session_cache.record_results(["b"])
 
     assert session_cache.load_seen() == []
+
+
+def test_unsourced_refs_are_numbered_but_never_completed(isolated_omm_home, monkeypatch):
+    """`omm arena --leaderboard` numbers a model it cannot install; the number
+    must resolve (to a plain error), but Tab-completion must not offer it."""
+    _fake_tty(monkeypatch)
+    session_cache.record_results(["org/a:a.gguf", "arena-unsourced:x.gguf"])
+    assert session_cache.load_last_results() == ["org/a:a.gguf", "arena-unsourced:x.gguf"]
+    assert session_cache.load_seen() == ["org/a:a.gguf"]
+    assert session_cache.UNSOURCED_REF_PREFIX == "arena-unsourced:"

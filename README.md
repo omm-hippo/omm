@@ -28,9 +28,9 @@ on it.
   text-generation-webui, and KoboldCpp without silently duplicating large files.
 - Ranks models against live RAM, VRAM, operating-system, and runner state.
 - Verifies load and generation through local Ollama or LM Studio APIs.
-- Keeps benchmark uploads, anonymous usage stats, and crash reports opt-in,
-  with a separate setting for each. Searches, downloads, and update checks
-  also use the network; see [PRIVACY.md](PRIVACY.md).
+- Keeps benchmark uploads, anonymous usage stats, crash reports, and arena
+  battle votes opt-in, with a separate setting for each. Searches, downloads,
+  and update checks also use the network; see [PRIVACY.md](PRIVACY.md).
 
 ## Quick start
 
@@ -548,6 +548,8 @@ omm verify <name> [--engine ollama|lmstudio] [--yes] [--keep-loaded]  # Prove lo
 omm benchmark <name>... [--output PATH]  # Local quality + speed evidence for selected installed models
 omm benchmark all [--output PATH]  # Benchmark every installed model in the selected runtime
 omm evaluate <ollama-tag> [--pack PATH] [--output PATH]  # Run local Python coding tasks in Docker/Podman
+omm arena [MODEL1 MODEL2] [--keep]  # Compare two installed models blind on your own prompt and vote; votes stay in ~/.omm/arena/votes.jsonl
+omm arena --leaderboard  # Show how people with machines like yours rated models, numbered for omm install / omm arena
 omm contribute [--yes]  # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
 omm contribute --max-minutes 30 --max-download-gb 10 --max-models 3
 ```
@@ -585,10 +587,11 @@ omm update  # Update a canonical OMM Git-source install; package installs print 
 omm setting  # Interactive menu for outbound data, version, theme, calibration, and catalog trust
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
-omm setting upload  # Show all three outbound-data policies (benchmark / usage / crash); see PRIVACY.md
+omm setting upload  # Show all four outbound-data policies (benchmark / usage / crash / votes); see PRIVACY.md
 omm setting upload benchmark --enable|--disable|--ask  # Benchmark-result upload policy
 omm setting upload usage --enable|--disable  # Anonymous daily usage stats (off by default)
 omm setting upload crash --enable|--disable|--ask  # Opt-in crash-report policy
+omm setting upload votes --enable|--disable|--ask  # Arena battle vote uploads (asked after each session; the prompt you typed is never sent)
 omm setting memory-guard --policy ask|block|observe  # Protect local runtime loads from live memory pressure
 omm setting theme [--set NAME]  # Show or change omm's output color theme
 omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
