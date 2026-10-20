@@ -275,3 +275,27 @@ def test_picker_bindings_escape_and_ctrl_c_cancel():
     event = _FakeEvent()
     _handler_for(bindings, Keys.ControlC)(event)
     event.app.exit.assert_called_once_with(result=None)
+
+
+def test_apply_theme_to_console_keeps_no_color_from_environment(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    console = Console(file=io.StringIO(), force_terminal=True, no_color=False)
+
+    theme.apply_theme_to_console(console, "dark")
+
+    assert console.no_color is True
+
+
+def test_picker_back_option_returns_cancel(monkeypatch):
+    import prompt_toolkit.application
+
+    class _FakeApplication:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self):
+            return "← Back"
+
+    monkeypatch.setattr(prompt_toolkit.application, "Application", _FakeApplication)
+
+    assert theme.run_picker("dark", allow_back=True) is None

@@ -183,7 +183,14 @@ def apply_theme_to_console(console: Console, name: str) -> None:
     when colour is suppressed by the flag still registers that preset's
     styles, so the choice itself takes effect next time omm runs without
     the flag."""
-    console.no_color = name == "no-color" or _cli_no_color_flag_active()
+    console.no_color = (
+        name == "no-color"
+        # The standard NO_COLOR env var is a per-invocation override just
+        # like the flag; Rich honours it at Console creation, so re-enabling
+        # colour here would silently undo it.
+        or "NO_COLOR" in os.environ
+        or _cli_no_color_flag_active()
+    )
     console.push_theme(build_rich_theme(name))
 
 
@@ -327,4 +334,6 @@ def run_picker(current: str, *, current_label: str | None = "current", allow_bac
         ]
     )
     application = Application(layout=Layout(root), key_bindings=bindings, full_screen=False)
-    return application.run()
+    result = application.run()
+    # "← Back" is navigation, not a theme name (see the docstring).
+    return None if result == back else result

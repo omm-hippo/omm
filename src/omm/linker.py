@@ -1613,7 +1613,9 @@ def _ollama_link_already_current(manifest_path: Path, gguf_path: Path, blobs_dir
         ),
         "",
     )
-    if not digest.startswith("sha256:"):
+    # The digest becomes a path component: accept only a real SHA-256 so a
+    # non-string or path-like value can neither crash nor escape blobs_dir.
+    if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest) is None:
         return False
     model_blob = blobs_dir / f"sha256-{digest.removeprefix('sha256:')}"
     try:

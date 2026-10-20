@@ -85,6 +85,9 @@ class MemoryGuardRuntime(Protocol):
 
 
 def normalize_policy(value: object) -> GuardPolicy:
+    if isinstance(value, GuardPolicy):
+        # str(GuardPolicy.BLOCK) is "GuardPolicy.BLOCK", not "block".
+        return value
     try:
         return GuardPolicy(str(value))
     except ValueError:
