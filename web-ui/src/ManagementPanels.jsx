@@ -36,7 +36,7 @@ export function WikiExplorer({document,onOpen,onSelect,profile}) {
   });
   return <>
     <div className="explorer-toolbar"><label className="search"><input maxLength={160} value={query} onChange={e=>setQuery(e.target.value)} placeholder="모델 이름, 용도, 특징으로 검색" aria-label="모델 위키 검색"/></label><label className="field">용도<select value={task} onChange={e=>setTask(e.target.value)}><option value="">전체 용도</option>{Object.entries(tasks).map(([key,name])=><option value={key} key={key}>{name}</option>)}</select></label></div>
-    <p className="footnote">기존 모델 위키 · 검토 {document?.reviewedAt || '확인 중'} · 개발사 설명과 편집 의견을 함께 보여줘요.</p>
+    <p className="footnote">기존 모델 위키 · 검토 {document?.reviewedAt || '확인 중'} · 개발사 설명과 편집 의견을 함께 보여줘요.{document?.stale && ' 검토 후 30일이 지난 자료예요. 현재 지원 여부는 각 모델의 출처에서 다시 확인해 주세요.'}</p>
     <div className="wiki-list">{rows.map(model=><article key={model.id}><div><h2>{model.name}</h2><p>{model.summary}</p><small>{model.tasks.map(x=>tasks[x]).join(' · ')}</small><p className="choose-when">{model.chooseWhen}</p></div><div className="row-actions"><button onClick={()=>onOpen(model)}>설명 보기</button><button className="primary" onClick={()=>setSelected(model)}>설치 파일 보기</button></div></article>)}</div>
     {document && !rows.length && <div className="empty">이 조건에 맞는 위키 설명이 없어요.</div>}
     {selected && <PackageDialog model={selected} profile={profile} onClose={()=>setSelected(null)} onSelect={row=>{setSelected(null);onSelect(row);}}/>}

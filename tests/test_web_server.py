@@ -438,3 +438,10 @@ def test_files_api_reports_storage_saved_bytes(server):
     config.add_storage_saved_bytes(3*1024**3)
     value = session(server).get(server.url+'api/files',timeout=5).json()
     assert value['storage_saved_bytes'] == 3*1024**3 and 'managed_bytes' in value
+
+
+def test_wiki_route_serves_the_same_bundled_catalog_as_cli(server):
+    from omm import model_wiki
+    value = session(server).get(server.url+'api/wiki',timeout=5).json()
+    assert value == json.loads(json.dumps(model_wiki.catalog()))
+    assert value['contentVersion'] == model_wiki.load()['contentVersion']

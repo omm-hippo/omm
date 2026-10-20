@@ -71,7 +71,12 @@ class WebService:
         selected = next((x for x in model_wiki.catalog()["models"] if x["id"] == model_id), None)
         if not selected:
             raise ValueError("위키에서 모델을 선택해 주세요.")
-        candidates = discover(selected)
+        import requests
+        try:
+            candidates = discover(selected)
+        except requests.RequestException:
+            # Offline or blocked: the bundled wiki and cached packages stay usable.
+            raise ValueError("Hugging Face에 연결하지 못했어요. 지금은 이 컴퓨터에 있는 위키·추천 자료의 설치 파일만 보여줘요.") from None
         with self.lock:
             self.discovered[model_id] = candidates
         return self.wiki_packages(model_id, profile)
