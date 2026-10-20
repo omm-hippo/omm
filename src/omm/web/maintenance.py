@@ -56,6 +56,9 @@ def adopt(selected: dict) -> dict:
     from omm import registry
     if not (config.MODELS_DIR / result.filename).is_file() or result.filename not in registry.load_registry():
         raise ValueError("가져온 파일의 저장 결과를 확인하지 못했어요.")
+    if result.bytes_saved > 0:
+        # Same cumulative counter `omm import` updates, so web and CLI agree.
+        config.add_storage_saved_bytes(result.bytes_saved)
     with locked(_preview_path()):
         remaining = [x for x in read_import_preview() if x["id"] != selected["id"]]
         atomic_write_text(_preview_path(), json.dumps(remaining, ensure_ascii=False) + "\n")

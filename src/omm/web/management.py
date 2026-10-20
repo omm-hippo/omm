@@ -16,7 +16,7 @@ POLICIES = {"telemetry_send_policy": {"ask", "never", "always"},
             "memory_guard_policy": {"ask", "block", "observe"}}
 
 
-def settings() -> dict:
+def _inspect_config() -> dict:
     # Inspection does not migrate, back up or initialize the configuration.
     raw = {}
     if config.CONFIG_PATH.exists():
@@ -25,7 +25,11 @@ def settings() -> dict:
         raw = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("설정 파일 형식을 확인해 주세요. 파일은 변경하지 않았어요.")
-    values = config._merge_config(raw)
+    return config._merge_config(raw)
+
+
+def settings() -> dict:
+    values = _inspect_config()
     return {key: values.get(key) or ("never" if key != "memory_guard_policy" else "ask") for key in POLICIES}
 
 
@@ -117,7 +121,9 @@ def files() -> dict:
     return {"path": str(root), "available_bytes": capacity.free, "total_bytes": capacity.total,
             "managed_bytes": sum((root / name).stat().st_size for name in registry.load_registry()
                                  if (root / name).is_file() and (root / name).resolve().is_relative_to(root.resolve())),
-            "partials": partials}
+            "partials": partials,
+            # Same cumulative counter `omm scan` reports as "saved via omm import".
+            "storage_saved_bytes": int(_inspect_config().get("storage_saved_bytes") or 0)}
 
 
 def cleanup_selected(names: list[dict]) -> dict:

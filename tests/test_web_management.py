@@ -233,6 +233,32 @@ def test_successful_import_updates_registry_and_removes_preview(monkeypatch,isol
     assert maintenance.read_import_preview() == []
 
 
+def test_web_import_counts_saved_storage_like_cli(monkeypatch,isolated_omm_home,tmp_path):
+    source=tmp_path/'external.gguf'
+    source.write_bytes(b"GGUF-model")
+    from omm.hashutil import sha256_file
+    from omm.scan_import import AdoptResult, ExternalGguf
+    digest=sha256_file(source)
+    monkeypatch.setattr(maintenance.scan_import,"find_external_models",lambda:[ExternalGguf("import",source.name,source,source.stat().st_size,digest)])
+    real=maintenance.scan_import.adopt_group
+    def adopt(group):
+        result=real(group)
+        return AdoptResult(**{**result.__dict__,"bytes_saved":1234})
+    monkeypatch.setattr(maintenance.scan_import,"adopt_group",adopt)
+    [row]=maintenance.scan()["groups"]
+    selected=WebService().request({"operation":"import","id":row["id"],"confirmed":True})["group"]
+    maintenance.adopt(selected)
+    assert config.load_config()["storage_saved_bytes"]==1234
+    assert management.files()["storage_saved_bytes"]==1234
+
+
+def test_files_view_reports_storage_saved_without_creating_config(isolated_omm_home):
+    assert management.files()["storage_saved_bytes"]==0
+    assert not config.CONFIG_PATH.exists()
+    config.add_storage_saved_bytes(5*1024**3)
+    assert management.files()["storage_saved_bytes"]==5*1024**3
+
+
 def test_network_checks_are_fixed_and_not_retried(monkeypatch):
     import requests
     calls=[]

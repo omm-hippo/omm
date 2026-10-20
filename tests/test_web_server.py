@@ -432,3 +432,9 @@ def test_document_question_settings_are_remembered_and_explain_model_change(serv
     assert remembered['document_ids']==['doc-1']
     only_documents = client.post(url,json={'confirmed':True,'document_ids':['doc-2']},headers=headers,timeout=5).json()
     assert only_documents['settings']['selected']['filename']=='second.gguf' and only_documents['settings']['document_ids']==['doc-2']
+
+
+def test_files_api_reports_storage_saved_bytes(server):
+    config.add_storage_saved_bytes(3*1024**3)
+    value = session(server).get(server.url+'api/files',timeout=5).json()
+    assert value['storage_saved_bytes'] == 3*1024**3 and 'managed_bytes' in value
