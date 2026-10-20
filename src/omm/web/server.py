@@ -163,7 +163,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self.server.service.recommendations(query.get("profile", ["balanced"])[0], query.get("q", [""])[0]))
             if parsed.path == "/api/documents":
                 from omm.documents import DocumentStore
-                return self._json(200, {"documents": DocumentStore().list(), "answers": DocumentStore().answers()})
+                from omm.web import document_settings
+                return self._json(200, {"documents": DocumentStore().list(), "answers": DocumentStore().answers(),
+                                        "settings": document_settings.load()})
             if parsed.path == "/api/jobs":
                 return self._json(200, self.server.jobs.list())
             if parsed.path == "/api/chats":
@@ -227,6 +229,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(body, dict) or set(body) != {"id", "profile"} or not isinstance(body["id"], str) or not isinstance(body["profile"], str):
                     raise ValueError("위키에서 모델을 선택해 주세요.")
                 return self._json(200, self.server.service.discover_packages(body["id"], body["profile"]))
+            if path == "/api/documents/settings":
+                from omm.web.document_requests import settings_change
+                return self._json(200, settings_change(body, self.server.service))
             if path in {"/api/documents", "/api/documents/question", "/api/documents/delete"}:
                 from omm.web.document_requests import validate
                 request = validate(path, body, self.server.service)

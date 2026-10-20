@@ -313,7 +313,9 @@ def test_document_routes_require_session_and_bounded_json(server):
     assert requests.get(server.url + 'api/documents', timeout=5).status_code == 401
     client = session(server)
     response = client.get(server.url + 'api/documents', timeout=5)
-    assert response.json() == {'documents': [], 'answers': []}
+    value = response.json()
+    assert value['documents'] == [] and value['answers'] == []
+    assert value['settings']['selected'] is None and value['settings']['index']['retrieval'] == 'local_lexical_v1'
     assert client.post(server.url + 'api/documents', json={}, timeout=5).status_code == 403
     # The server rejects Content-Length before reading an oversized body.
     # Sending 9 MiB concurrently with that early close can reset the client
@@ -409,3 +411,24 @@ def test_real_worker_reports_korean_results_through_cp949_pipe(monkeypatch, isol
         assert job['status']=='failed' and '문서를 찾을 수 없어요' in job['message'], job
     finally:
         manager.close()
+
+
+def test_document_question_settings_are_remembered_and_explain_model_change(server):
+    for name in ('first.gguf','second.gguf'):
+        config.MODELS_DIR.mkdir(parents=True,exist_ok=True);(config.MODELS_DIR/name).write_bytes(b'GGUF')
+        registry.upsert_entry(name,linked={'ollama':True,'lmstudio':True},ollama_name=name[:-5])
+    client = session(server)
+    headers = {'X-OMM-Web':'1'}
+    url = server.url+'api/documents/settings'
+    assert client.post(url,json={'confirmed':True,'model_id':'/tmp/x.gguf','engine':'ollama'},headers=headers,timeout=5).status_code==400
+    assert client.post(url,json={'model_id':identifier('first.gguf'),'engine':'ollama'},headers=headers,timeout=5).status_code==400
+    first = client.post(url,json={'confirmed':True,'model_id':identifier('first.gguf'),'engine':'ollama','document_ids':['doc-1']},headers=headers,timeout=5).json()
+    assert first['change'] is None and first['settings']['selected']['filename']=='first.gguf'
+    second = client.post(url,json={'confirmed':True,'model_id':identifier('second.gguf'),'engine':'lmstudio','document_ids':['doc-1']},headers=headers,timeout=5).json()
+    assert 'first.gguf → second.gguf' in second['change'] and 'Ollama → LM Studio' in second['change']
+    assert '검색 색인은 그대로' in second['change']
+    remembered = client.get(server.url+'api/documents',timeout=5).json()['settings']
+    assert remembered['selected']=={'model_id':identifier('second.gguf'),'filename':'second.gguf','engine':'lmstudio'}
+    assert remembered['document_ids']==['doc-1']
+    only_documents = client.post(url,json={'confirmed':True,'document_ids':['doc-2']},headers=headers,timeout=5).json()
+    assert only_documents['settings']['selected']['filename']=='second.gguf' and only_documents['settings']['document_ids']==['doc-2']

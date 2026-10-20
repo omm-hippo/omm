@@ -200,3 +200,70 @@ def test_generic_job_result_excludes_document_question_and_quotes(monkeypatch):
     result=worker.execute({'operation':'document_question'},threading.Event())
     assert result=={'answer_id':'answer-id','status':'answered','runtime_response_saved':True}
     assert 'PRIVATE' not in json.dumps(result)
+
+
+def test_legacy_store_without_index_metadata_is_stamped_with_first_method(isolated_omm_home):
+    import sqlite3
+    root=isolated_omm_home/'documents';root.mkdir(parents=True)
+    db=sqlite3.connect(root/'library.sqlite3')
+    db.executescript("""CREATE TABLE documents (id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, sha256 TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL, pages INTEGER NOT NULL, imported_at TEXT NOT NULL);
+        CREATE TABLE chunks (document_id TEXT NOT NULL, page INTEGER NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, text TEXT NOT NULL);
+        INSERT INTO documents VALUES('old','old.txt','x',10,1,'2026-10-01');
+        INSERT INTO chunks VALUES('old',1,0,24,'zebra migration notes ok');""")
+    db.commit();db.close()
+    row=DocumentStore().list()[0]
+    assert row['retrieval']=='local_lexical_v1' and row['chunking']=='chunk900_overlap100_v1' and row['index_current']
+    assert DocumentStore().search('zebra migration',['old'])[1]
+
+
+def test_index_method_mismatch_refuses_search_until_reregistered(isolated_omm_home,monkeypatch):
+    from omm import documents
+    store=DocumentStore();content=b'zebra migration happens in the dry season'
+    saved=store.import_document('zebra.txt',content)
+    monkeypatch.setattr(documents,'CHUNKING_VERSION','chunk_test_v2')
+    assert DocumentStore().list()[0]['index_current'] is False
+    with pytest.raises(ValueError,match='다시 등록') as error:DocumentStore().search('zebra migration',[saved['id']])
+    assert 'zebra.txt' in str(error.value)
+    # Same bytes are not "unchanged" while the index is stale: they are re-chunked.
+    again=DocumentStore().import_document('zebra.txt',content,replace=True)
+    assert again.get('unchanged') is None and again['id']==saved['id']
+    row=DocumentStore().list()[0]
+    assert row['chunking']=='chunk_test_v2' and row['index_current']
+    assert DocumentStore().search('zebra migration',[saved['id']])[1][0]['text']==content.decode()
+
+
+def _select(filename,engine='ollama'):
+    from omm.web import document_settings
+    return document_settings.select('id-'+filename,filename,engine,[])
+
+
+def test_model_change_keeps_documents_and_failed_new_model_rolls_back(runtime_question):
+    from omm import registry
+    from omm.web import document_settings
+    q,adapter,request=runtime_question
+    _select('test.gguf')
+    assert q.answer(request,threading.Event())['status']=='answered'
+    assert document_settings.load()['confirmed']['filename']=='test.gguf'
+    (config.MODELS_DIR/'new.gguf').write_bytes(b'GGUF-new')
+    registry.upsert_entry('new.gguf',ollama_name='new',linked={'ollama':True})
+    change=_select('new.gguf')['change']
+    assert 'test.gguf → new.gguf' in change and '그대로' in change
+    documents_before=DocumentStore().list();answers_before=DocumentStore().answers()
+    adapter.failure=True
+    with pytest.raises(ValueError,match='되돌렸어요'):q.answer({**request,'filename':'new.gguf'},threading.Event())
+    settings=document_settings.load()
+    assert settings['selected']['filename']=='test.gguf'
+    assert DocumentStore().list()==documents_before and DocumentStore().answers()==answers_before
+    assert (config.MODELS_DIR/'new.gguf').read_bytes()==b'GGUF-new' and (config.MODELS_DIR/'test.gguf').is_file()
+    # The previous model still answers from the same stored index.
+    adapter.failure=False
+    assert q.answer(request,threading.Event())['sources'][0]['text']=='The library loan duration is seventeen days.'
+
+
+def test_failure_without_a_previous_answering_model_is_not_rolled_back(runtime_question):
+    from omm.web import document_settings
+    q,adapter,request=runtime_question
+    _select('test.gguf');adapter.failure=True
+    with pytest.raises(RuntimeError):q.answer(request,threading.Event())
+    assert document_settings.load()['selected']['filename']=='test.gguf' and document_settings.load()['confirmed'] is None
