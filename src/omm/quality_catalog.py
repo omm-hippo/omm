@@ -4,10 +4,24 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 import re
 
-from omm import catalog, compare, config
+from omm import catalog, config
+
+PURPOSES = ("General", "Coding", "Reasoning", "Writing", "Translation", "Documents")
+
+
+@dataclass(frozen=True)
+class QualityEvidence:
+    task: str
+    pack_id: str
+    pack_version: str
+    score: float
+    summary: str
+    source: str = "Signed OMM quality catalog"
+    model_digest: str | None = None
 
 
 MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
@@ -26,14 +40,14 @@ def _short_text(value: object, label: str, maximum: int = 200) -> str:
     return value.strip()
 
 
-def build_index(document: object) -> dict[tuple[str, str, str], list[compare.QualityEvidence]]:
+def build_index(document: object) -> dict[tuple[str, str, str], list[QualityEvidence]]:
     if not isinstance(document, dict) or document.get("schema_version") != 1:
         raise QualityCatalogError("unsupported quality catalog schema")
     _short_text(document.get("generated_at"), "generated_at", 50)
     evaluations = document.get("evaluations")
     if not isinstance(evaluations, list) or len(evaluations) > MAX_EVALUATIONS:
         raise QualityCatalogError("quality evaluations must be a bounded list")
-    result: dict[tuple[str, str, str], list[compare.QualityEvidence]] = {}
+    result: dict[tuple[str, str, str], list[QualityEvidence]] = {}
     seen = set()
     for item in evaluations:
         if not isinstance(item, dict):
@@ -51,7 +65,7 @@ def build_index(document: object) -> dict[tuple[str, str, str], list[compare.Qua
         if not _DIGEST_RE.fullmatch(digest):
             raise QualityCatalogError("quality model_digest must be sha256")
         task = _short_text(item.get("task"), "task", 32)
-        if task not in compare.PURPOSES:
+        if task not in PURPOSES:
             raise QualityCatalogError("unsupported measured quality task")
         pack_id = _short_text(item.get("pack_id"), "pack_id", 100)
         pack_version = _short_text(item.get("pack_version"), "pack_version", 32)
@@ -67,7 +81,7 @@ def build_index(document: object) -> dict[tuple[str, str, str], list[compare.Qua
             raise QualityCatalogError("duplicate package/task quality row")
         seen.add(duplicate)
         result.setdefault(key, []).append(
-            compare.QualityEvidence(
+            QualityEvidence(
                 task,
                 pack_id,
                 pack_version,
@@ -80,7 +94,7 @@ def build_index(document: object) -> dict[tuple[str, str, str], list[compare.Qua
     return result
 
 
-def load_signed(content: bytes, manifest: object, public_key: str) -> dict[tuple[str, str, str], list[compare.QualityEvidence]]:
+def load_signed(content: bytes, manifest: object, public_key: str) -> dict[tuple[str, str, str], list[QualityEvidence]]:
     if len(content) > MAX_ARTIFACT_BYTES:
         raise QualityCatalogError("quality catalog is too large")
     try:
@@ -96,7 +110,7 @@ def load_cached(
     *,
     artifact_path: Path | None = None,
     manifest_path: Path | None = None,
-) -> dict[tuple[str, str, str], list[compare.QualityEvidence]]:
+) -> dict[tuple[str, str, str], list[QualityEvidence]]:
     """Fail closed to no measured evidence when cache or trust is unavailable."""
 
     if not isinstance(public_key, str) or not public_key:

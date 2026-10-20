@@ -67,12 +67,12 @@ Translation, Documents와 일반 대화 품질을 비교하려면 각각 별도�
 
 ## 모델 비교와 로컬 코딩 평가
 
-`omm compare`는 서명된 추천 카탈로그 안의 정확한 모델 2~5개를 읽기 전용으로
-비교한다. 모델을 다운로드·설치·실행하지 않으며, 품질 데이터가 없으면 낮은 점수
-대신 `Not measured`라고 표시한다.
+`omm info`에 모델 참조를 여러 개 전달하면 출처·크기·버전·라이선스와 로컬 연결
+정보를 나란히 확인할 수 있다. 설치된 모델과 원격 모델을 함께 조회할 수 있으며
+추천 카탈로그에 포함될 필요는 없다. 보고되지 않은 정보는 `Unknown`으로 표시한다.
 
 ```sh
-omm compare tinyllama-1.1b-q4 llama3.1-8b-instruct-q4 --profile balanced --for coding
+omm info model-a.gguf model-b.gguf --json
 ```
 
 `omm evaluate`는 이미 설치된 Ollama 모델의 Python 코드 생성·수정 결과를 로컬
