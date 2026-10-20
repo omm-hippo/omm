@@ -22,6 +22,29 @@ def execute(request: dict, stop: threading.Event) -> dict:
     options = cli.GlobalOptions(yes=True, quiet=True, no_color=True)
     with click.Context(click.Command("web-worker"), obj=options):
         operation = request["operation"]
+        if operation in {"compare", "profile_save", "profile_restore"}:
+            from omm.web import performance
+            if operation == "compare":
+                return performance.compare(request["filenames"], request["engine"], stop,
+                    lambda done, total: emit("progress", completed_count=done, total_count=total))
+            return performance.profile_action(request["filename"], request["engine"], restore=operation == "profile_restore")
+        if operation == "engine_install":
+            from omm import onboarding
+            key = request["engine"]
+            if key not in {spec.key for spec in linker.ENGINES}:
+                raise ValueError("Unknown local runner")
+            if not linker.is_engine_installed(key) and not onboarding.install_selected_engines(cli.console, [key]):
+                raise ValueError("실행 앱을 설치하지 못했어요. 연결 상태 화면에서 다시 확인해 주세요.")
+            if not linker.is_engine_installed(key):
+                raise ValueError("실행 앱 설치 결과를 확인하지 못했어요.")
+            return {"engine": key, "installed": True}
+        if operation in {"import_scan", "import", "cleanup"}:
+            from omm.web import maintenance, management
+            if operation == "import_scan":
+                return maintenance.scan()
+            if operation == "import":
+                return maintenance.adopt(request["group"])
+            return management.cleanup_selected(request["files"])
         filename = hub.validate_model_filename(request["filename"])
         if operation == "install":
             resolved = hub.resolve_model(request["ref"])
@@ -97,7 +120,7 @@ def main():
         emit("completed", result=result)
     except BaseException as error:
         if stop.is_set() or isinstance(error, KeyboardInterrupt):
-            emit("cancelled", message="Installation stopped. Verified files may be kept for resuming.")
+            emit("cancelled", message="작업을 중단했어요. 파일과 실행 앱 상태를 확인한 뒤 다시 진행해 주세요.")
             return 2
         emit("failed", message=str(error)[:2000] or type(error).__name__)
         return 1

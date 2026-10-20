@@ -36,6 +36,43 @@ def session(server):
     return client
 
 
+def test_management_routes_keep_session_and_confirmation_boundaries(server, monkeypatch):
+    from omm.web import management
+    for route in ("connections", "diagnostics", "settings", "files", "imports", "wiki/packages?id=qwen3-8b"):
+        assert requests.get(server.url + "api/" + route, timeout=5).status_code == 401
+    client = session(server)
+    headers = {"X-OMM-Web": "1"}
+    assert client.post(server.url + "api/settings", json={"changes": {"usage_stats_policy": "enabled"}}, headers=headers, timeout=5).status_code == 400
+    result = client.post(server.url + "api/settings", json={"changes": {"usage_stats_policy": "enabled"}, "confirmed": True}, headers=headers, timeout=5)
+    assert result.status_code == 200
+    assert client.get(server.url + "api/settings", timeout=5).json()["usage_stats_policy"] == "enabled"
+    monkeypatch.setattr(management, "check_network", lambda: {"requests": 2, "targets": []})
+    assert client.post(server.url + "api/connections/check", json={"url": "https://evil.example"}, headers=headers, timeout=5).status_code == 400
+    assert client.post(server.url + "api/connections/check", json={}, headers=headers, timeout=5).json()["requests"] == 2
+    assert client.post(server.url + "api/wiki/discover", json={"id": "missing", "profile": "balanced"}, headers=headers, timeout=5).status_code == 400
+
+
+def test_chat_routes_require_authenticated_bounded_model_selection(server,monkeypatch):
+    from omm.web import chat
+    from omm.engines.base import RuntimeHealth
+    from types import SimpleNamespace
+    key=str(uuid.uuid4())
+    assert requests.get(server.url+'api/chats',timeout=5).status_code==401
+    assert requests.get(server.url+'api/chats/'+key,timeout=5).status_code==401
+    client=session(server);headers={"X-OMM-Web":"1"}
+    assert client.post(server.url+'api/chats',json={"url":"https://evil.example"},headers=headers,timeout=5).status_code==400
+    filename='chat-fixture.gguf';config.MODELS_DIR.mkdir(parents=True,exist_ok=True);(config.MODELS_DIR/filename).write_bytes(b'GGUF')
+    registry.upsert_entry(filename,linked={'ollama':True},ollama_name='chat-fixture')
+    monkeypatch.setattr(chat,'adapter_for',lambda engine:SimpleNamespace(health=lambda:RuntimeHealth(False)))
+    body={"id":identifier(filename),"engine":"ollama","confirmed":True,"request_id":key}
+    assert client.post(server.url+'api/chats',json={**body,"confirmed":False},headers=headers,timeout=5).status_code==400
+    assert client.post(server.url+'api/chats',json=body,headers={**headers,"Origin":"https://evil.example"},timeout=5).status_code==403
+    assert client.post(server.url+'api/chats',json=body,headers=headers,timeout=5).status_code==202
+    assert client.get(server.url+'api/chats/'+key,timeout=5).json()['filename']==filename
+    assert client.post(server.url+f'api/chats/{key}/messages',json={"text":{},"request_id":str(uuid.uuid4())},headers=headers,timeout=5).status_code==400
+    assert client.post(server.url+f'api/chats/{key}/end',json={},headers=headers,timeout=5).status_code==400
+
+
 def test_api_requires_a_local_browser_session(server):
     assert requests.get(server.url + "api/jobs", timeout=5).status_code == 401
     client = session(server)

@@ -12,6 +12,11 @@ def load() -> dict:
     return json.loads(Path(__file__).with_name("model-wiki.json").read_text(encoding="utf-8"))
 
 
+@lru_cache(maxsize=1)
+def repository_matches() -> dict:
+    return json.loads(Path(__file__).with_name("model-wiki-matches.json").read_text(encoding="utf-8"))["matches"]
+
+
 def localize(model: dict, locale="ko") -> dict:
     locale = locale if locale in {"ko", "en"} else "ko"
     result = dict(model)
@@ -39,7 +44,7 @@ def describe(candidate: dict, locale="ko") -> dict | None:
     repository = candidate.get("repo_id")
     if not isinstance(repository, str):
         return None
-    links = json.loads(Path(__file__).with_name("model-wiki-matches.json").read_text(encoding="utf-8"))["matches"]
+    links = repository_matches()
     base = next((value for key, value in links.items() if key.casefold() == repository.casefold()), None)
     target = base["repository"] if base else repository
     matches = [model for model in load()["models"] if model["repository"].casefold() == target.casefold()]

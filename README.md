@@ -452,7 +452,8 @@ installed is selected; if every displayed recommendation is already present,
 the command exits without downloading.
 
 `omm web` prints a loopback-only URL for the local model manager. Open it to
-review hardware, choose a memory budget, install a recommended package, and
+search the existing model wiki by purpose and description, select an exact GGUF
+package, review hardware, choose a memory budget, and
 inspect or remove OMM-managed models and runner links. Each file operation
 requires confirmation in the page. Installation verifies the downloaded file
 and registry; it does not automatically load the model, run a benchmark, or
@@ -472,6 +473,22 @@ through Ollama or LM Studio's local API, preserve a preloaded model's context,
 and release only its own test load. The response and compatibility outcome are
 shown separately from installation. See [local manager guidance](docs/local-web.md)
 for click launchers, description sources, memory checks and verification limits.
+
+Secondary screens show runner/API and explicit external connectivity checks,
+read-only diagnostics, storage and external-file previews, and sharing policies.
+The comparison screen measures selected local models with an eight-question
+arithmetic smoke check and three speed samples; evidence is saved locally and
+can be downloaded as JSON. It is not a general quality ranking. Per-model runtime
+settings support real baseline/proposed trials, saving and restoring verified
+profiles; busy runtimes are left unchanged.
+
+Use **내 모델 → 대화** or the **채팅** screen to converse with a linked local
+Ollama or LM Studio model. Replies appear incrementally, completed turns are
+sent as conversation context, and **응답 중단** interrupts the current reply.
+The GUI stores text history locally, supports reopening and deleting it, and
+releases only its own model load when the connection ends. Chat and model
+management jobs are serialized; no external AI provider or tool execution is
+enabled. See the local manager guide for runtime and persistence limits.
 
 ### Install & manage models
 
