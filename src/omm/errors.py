@@ -6,6 +6,7 @@ fix prefixed with an arrow."""
 from __future__ import annotations
 
 from rich.console import Console
+from rich.text import Text
 
 
 def print_cli_error(console: Console, cause: str, fix: str | None = None) -> None:
@@ -14,7 +15,9 @@ def print_cli_error(console: Console, cause: str, fix: str | None = None) -> Non
     step."""
     # Causes and fixes often embed dynamic text (filenames, repo ids,
     # exception messages) that may contain square brackets; print them as
-    # literal text so Rich never parses or drops them as markup.
-    console.print(cause, style="error", markup=False, highlight=False)
+    # literal text so Rich never parses or drops them as markup. Text spans
+    # resolve the style name leniently, like markup tags did, so a console
+    # without omm's theme still prints instead of raising MissingStyle.
+    console.print(Text(cause, style="error"), highlight=False)
     if fix:
-        console.print(f"→ {fix}", style="accent", markup=False, highlight=False)
+        console.print(Text(f"→ {fix}", style="accent"), highlight=False)
