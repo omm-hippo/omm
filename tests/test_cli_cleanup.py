@@ -197,3 +197,21 @@ def test_cleanup_tolerates_permission_error_removing_incomplete_file(isolated_om
 
     assert result.exit_code == 0, result.stdout
     assert orphan.exists()
+
+
+def test_cleanup_reports_stale_install_records(isolated_omm_home, monkeypatch):
+    import json
+
+    from omm import install_state
+
+    _no_engines(monkeypatch)
+    path = install_state._path("abandoned.gguf")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"schema_version": 1, "filename": "abandoned.gguf",
+                                "phase": "preparing", "status": "interrupted"}), encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["cleanup"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "1 stale install record(s)" in result.stdout
+    assert not path.exists()

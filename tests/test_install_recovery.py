@@ -169,3 +169,60 @@ assert install_state.read_record("model.gguf")["status"] == "complete"
     resume = subprocess.run([sys.executable, "-c", source, "resume"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     assert resume.returncode == 0, resume.stderr
     assert "Resuming interrupted install" in resume.stdout
+
+
+def _journal_record(filename, status):
+    path = install_state._path(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema_version": 1, "filename": filename,
+                                "phase": "preparing", "status": status}), encoding="utf-8")
+    return path
+
+
+def test_discard_stale_records_keeps_only_what_an_install_still_needs(isolated_omm_home):
+    interrupted = _journal_record("gone-interrupted.gguf", "interrupted")
+    failed = _journal_record("gone-failed.gguf", "failed")
+    dead_running = _journal_record("dead-running.gguf", "running")
+    uninstalled = _journal_record("uninstalled.gguf", "complete")
+    installed = _journal_record("installed.gguf", "complete")
+    corrupt = install_state._path("corrupt.gguf")
+    corrupt.write_text("not json", encoding="utf-8")
+    mismatched = install_state._path("mismatch.gguf")
+    mismatched.write_text(json.dumps({"schema_version": 1, "filename": "other.gguf",
+                                      "status": "complete"}), encoding="utf-8")
+    root = installed.parent
+    backup = root / f"{installed.name}.corrupt-0123456789ab"
+    backup.write_text("old", encoding="utf-8")
+    temporary = root / f".{installed.stem}.json.abc123.tmp"
+    temporary.write_text("{", encoding="utf-8")
+    lock = root / f"{interrupted.name}.lock"
+    lock.write_text("", encoding="utf-8")
+    foreign = root / "notes.txt"
+    foreign.write_text("not ours", encoding="utf-8")
+
+    removed = install_state.discard_stale_records({"installed.gguf"})
+
+    assert removed == 8
+    assert installed.exists()
+    for path in (interrupted, failed, dead_running, uninstalled, corrupt, mismatched, backup, temporary):
+        assert not path.exists(), path
+    assert lock.exists() and foreign.exists()
+    assert install_state.pending_records() == []
+
+
+def test_discard_stale_records_skips_an_install_holding_its_lock(isolated_omm_home):
+    path = _journal_record("busy.gguf", "running")
+    with install_state.cleanup_guard("busy.gguf"):
+        done = []
+        thread = threading.Thread(target=lambda: done.append(install_state.discard_stale_records(set())))
+        thread.start()
+        thread.join(timeout=5)
+    assert done == [0]
+    assert path.exists()
+
+
+def test_discard_stale_records_without_journal_creates_nothing(tmp_path, monkeypatch):
+    root = tmp_path / "absent"
+    monkeypatch.setattr(config, "OMM_HOME", root)
+    assert install_state.discard_stale_records(set()) == 0
+    assert not root.exists()
