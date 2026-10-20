@@ -1595,3 +1595,23 @@ def test_link_ollama_refused_at_manifest_writes_no_blobs(isolated_omm_home, tmp_
 
     assert not (models_dir / "blobs").exists()
     assert manifest.read_text(encoding="utf-8") == "stale manifest, no ownership record"
+
+
+@pytest.mark.parametrize(
+    "digest", [123, None, "sha256:../../escape", "sha256:" + "z" * 64]
+)
+def test_link_already_current_rejects_malformed_model_digest(tmp_path, monkeypatch, digest):
+    """A tampered owned manifest must not crash the relink fast-path or turn
+    the digest into a path outside blobs_dir."""
+    source = tmp_path / "m.gguf"
+    source.write_bytes(b"weights")
+    manifest = tmp_path / "latest"
+    manifest.write_text(
+        json.dumps(
+            {"layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": digest}]}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(linker, "_owned_manifest", lambda *a, **k: True)
+
+    assert linker._ollama_link_already_current(manifest, source, tmp_path / "blobs") is False

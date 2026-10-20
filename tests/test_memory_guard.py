@@ -680,3 +680,10 @@ def test_blended_requirement_on_discrete_gpu_reclaims_biggest_resident_first():
 
     assert result.allowed is True
     assert [resident.model_id for resident in result.unloaded] == ["large"]
+
+
+def test_normalize_policy_preserves_enum_values():
+    assert guard.normalize_policy(guard.GuardPolicy.BLOCK) is guard.GuardPolicy.BLOCK
+    assert guard.normalize_policy(guard.GuardPolicy.OBSERVE) is guard.GuardPolicy.OBSERVE
+    assert guard.normalize_policy("observe") is guard.GuardPolicy.OBSERVE
+    assert guard.normalize_policy("bogus") is guard.GuardPolicy.ASK

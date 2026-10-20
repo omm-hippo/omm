@@ -345,3 +345,10 @@ def test_fetch_repo_files_rejects_response_over_the_size_limit(monkeypatch):
 
     with pytest.raises(ModelResolutionError):
         modelscope.fetch_repo_files("org/repo")
+
+
+def test_remote_file_size_returns_none_for_overflowing_size(monkeypatch):
+    payload = {"Data": {"Files": [{"Path": "model.gguf", "Size": float("inf")}]}}
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(200, payload))
+
+    assert modelscope.remote_file_size("org/repo", "model.gguf") is None

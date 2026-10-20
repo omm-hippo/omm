@@ -181,7 +181,7 @@ def remote_file_size(repo_id: str, filename: str) -> int | None:
             size = f.get("Size")
             try:
                 parsed_size = int(size)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return None
             return parsed_size if parsed_size > 0 else None
     return None

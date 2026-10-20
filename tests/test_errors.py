@@ -31,3 +31,17 @@ def test_print_cli_error_omits_fix_line_when_none():
     output = console.file.getvalue()
     lines = [line for line in output.splitlines() if line.strip()]
     assert len(lines) == 1
+
+
+def test_print_cli_error_treats_dynamic_messages_as_literal_text():
+    console = _console()
+
+    errors.print_cli_error(
+        console,
+        "bad [not-a-style]filename[/not-a-style]",
+        fix="retry [not-a-style]now[/not-a-style]",
+    )
+
+    output = console.file.getvalue()
+    assert "[not-a-style]filename[/not-a-style]" in output
+    assert "[not-a-style]now[/not-a-style]" in output
