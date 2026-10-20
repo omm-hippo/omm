@@ -210,6 +210,7 @@ def _publish_fakes(monkeypatch, tmp_path, visible_after_seconds: float):
             return None
         return npm_release._integrity(package.path)
 
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
     monkeypatch.setattr(npm_release, "_run", fake_run)
     monkeypatch.setattr(npm_release, "_registry_integrity", fake_integrity)
     monkeypatch.setattr(npm_release.time, "monotonic", clock.monotonic)
