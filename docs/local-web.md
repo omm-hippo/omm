@@ -36,6 +36,7 @@ the per-user Run key on Windows). It starts `omm web` without opening a browser;
 keeping models and settings. Real Finder double-click, sign-in auto-start and
 Windows installation are separate acceptance checks from wrapper tests.
 First-time install help in Korean: [beginner-install.md](beginner-install.md).
+Korean demo checklist and feature status: [mentoring-demo.md](mentoring-demo.md).
 
 ## Recommendation provenance and descriptions
 
