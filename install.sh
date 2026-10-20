@@ -888,4 +888,6 @@ rm -rf "$OMM_HOME/src" 2>/dev/null || true
 echo
 echo "Done. Open a new shell so zsh loads the pipx PATH configured by the installer."
 echo "Try:  omm scan"
+echo "Local web manager:  omm web --open   (opens the model manager in your browser; Ctrl+C stops it)"
+echo "Click launchers:     omm web --create-launchers \"$HOME/Desktop\"   (then double-click Open-OMM.command)"
 echo "Tip: run 'omm --install-completion' once (then restart your shell) to enable Tab completion for install/uninstall."

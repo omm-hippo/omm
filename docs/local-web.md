@@ -29,8 +29,14 @@ launcher checks common installed CLI locations and explains missing installs.
 current executable. Existing unrelated files are not overwritten.
 
 These launchers start the local manager; they do not install Python or OMM on a
-clean Mac. Login auto-start is not registered. Real Finder double-click and
+clean Mac. Login auto-start is off by default and is registered only by
+`omm setting web-autostart enable` (launchd on macOS, systemd --user on Linux,
+the per-user Run key on Windows). It starts `omm web` without opening a browser;
+`omm setting web-autostart disable` unregisters it and stops the copy it started,
+keeping models and settings. Real Finder double-click, sign-in auto-start and
 Windows installation are separate acceptance checks from wrapper tests.
+First-time install help in Korean: [beginner-install.md](beginner-install.md).
+Korean demo checklist and feature status: [mentoring-demo.md](mentoring-demo.md).
 
 ## Recommendation provenance and descriptions
 

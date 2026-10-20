@@ -434,6 +434,7 @@ omm doctor [--json]  # Read-only diagnostics plus safe next steps for installati
 omm bug-report [--include os|policies|checks|stages] [--save PATH]  # Preview and save local diagnostics and optional stage counts
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm web [--port PORT] [--open] [--create-launchers DIRECTORY]  # Start the local interface or create personal click launchers
+omm setting web-autostart enable|disable|status  # Optionally start the local manager (no browser) at sign-in; off by default
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
 omm search <query> [--json] [--skip-unfit] [--skip-ms] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated, Hugging Face, and ModelScope sources
