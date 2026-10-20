@@ -260,3 +260,22 @@ for i in $(seq 1 {runs}); do ensure_pipx_bin_path; done
     home3 = tmp_path / "home-backslash"
     home3.mkdir()
     run(home3, home3 / "x\\y" / "bin", "Linux", ".bashrc")
+
+
+def test_installers_final_message_points_to_local_web_manager_and_launchers():
+    """#423: after install, the closing guidance names the browser manager
+    and the click-launcher command, not only CLI next steps."""
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+    ps1 = (ROOT / "install.ps1").read_text(encoding="utf-8")
+
+    sh_tail = sh[sh.rindex('echo "Done.'):]
+    assert "omm web --open" in sh_tail
+    assert 'omm web --create-launchers \\"$HOME/Desktop\\"' in sh_tail
+    assert "Open-OMM.command" in sh_tail
+
+    ps1_tail = ps1[ps1.rindex('Write-Host "Done.'):]
+    assert "omm web --open" in ps1_tail
+    # Single-quoted so PowerShell prints $HOME literally for the user to paste.
+    assert r"""omm web --create-launchers "$HOME\Desktop"   (then""" in ps1_tail
+    assert "Write-Host 'Click launchers:" in ps1_tail
+    assert "Open-OMM.cmd" in ps1_tail
