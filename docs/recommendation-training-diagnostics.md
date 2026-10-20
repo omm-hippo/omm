@@ -124,3 +124,41 @@ omm benchmark MODEL --speed-runs 3 --output local-benchmark-evidence.json
 
 공개 보고서에는 사용자 이름, 개인 경로, 인증 정보와 원본 장비 식별 정보를 넣지
 않는다. 여러 기록이 같은 인코딩된 구성인지와 독립 장비인지도 구별한다.
+
+### 집계 정책 전후 비교 (`scripts/measurement_policy_compare.py`)
+
+같은 오프라인 스냅샷 하나로 기존 단순 중앙값 집계(`old_median`)와 현재 반복 관측
+균형 집계(`repetition_balance`)를 비교한다. 두 정책 모두 같은 학습 자료 파이프라인
+(행 검증, 물리 상한, 구성별 묶기, 통계 이상치 처리)을 그대로 거치고, 구성별 목표값을
+만드는 함수만 바뀐다. `old_median`은 받아들인 모든 속도의 중앙값이며, 아주 예전의
+"처음 50개만 사용" 상한은 재현하지 않는다.
+
+```sh
+python scripts/measurement_policy_compare.py \
+  --telemetry-file /path/to/local-telemetry-snapshot.json \
+  [--candidates /path/to/candidates.json] \
+  --output /tmp/measurement-policy-compare.json
+```
+
+보고서(JSON, 키 정렬·소수 6자리 반올림·시각 없음, 같은 입력이면 같은 바이트)에는
+다음이 들어간다.
+
+- `retention`: 정책별 원시 행 수, 남은 행 수와 잔존율, 구성 수, 이상치로 빠진 행·구성,
+  거부 사유별 행 수.
+- `targets`: 두 정책에 모두 있는 구성의 목표값 변화(이전·이후·차이·상대 변화)와
+  한쪽에만 남은 구성.
+- `predictions`: scikit-learn이 있으면 같은 하이퍼파라미터(`train_artifact`와 동일,
+  `n_jobs=1`)로 두 숲을 학습해 고정 후보 집합의 예측값과 그룹 안 순위 변화를 비교한다.
+  합성 사전 자료 없이 실측 구성만 쓰므로 게시 모델의 예측값이 아니라 정책 차이의
+  비교다. scikit-learn이 없으면 `skipped`로 남긴다.
+
+`--candidates`는 `{"id": ..., "group": ..., "features": [...]}` 목록이며 `features`는
+`FEATURE_ORDER` 순서다. 순위는 `group` 안에서 매긴다. 생략하면 스냅샷의 모든 구성이
+한 그룹의 후보가 된다. 구성은 반올림한 특성 벡터의 짧은 해시로만 표시하고 원본 행,
+모델 이름, 저장소 이름은 보고서에 넣지 않는다. 이 스크립트는 네트워크 요청을 하지
+않으며 실제 서버에 아무것도 보내지 않는다.
+
+회귀 시험(`tests/test_measurement_policy_compare.py`)은 작은 고정 입력(정상 구성,
+드문 장비의 단일 측정, 느린 측정, 한 구성에 그럴듯한 값을 반복 제출한 경우)으로
+정상·드문·느린 행이 두 정책에서 모두 남고 조작된 구성의 목표값만 바뀌는지 확인한다.
+실제 텔레메트리 스냅샷에 대한 비교 결과는 아직 이 문서에 기록하지 않았다(미검증).
