@@ -6,6 +6,7 @@ from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+from html.parser import HTMLParser
 import io
 import json
 import math
@@ -14,6 +15,8 @@ import re
 import sqlite3
 import unicodedata
 import uuid
+from xml.etree import ElementTree
+import zipfile
 
 from omm import config
 
@@ -44,8 +47,8 @@ def extract(name: str, content: bytes) -> list[tuple[int, str]]:
     suffix = Path(name).suffix.lower()
     if not content or len(content) > MAX_UPLOAD:
         raise ValueError("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.")
-    if suffix not in {".pdf", ".txt", ".md", ".markdown"}:
-        raise ValueError("텍스트 PDF, TXT, Markdown만 지원해요. 스캔 PDF와 HWP는 아직 지원하지 않아요.")
+    if suffix not in SUPPORTED_SUFFIXES:
+        raise ValueError("텍스트 PDF, TXT, Markdown, HTML, HWPX만 지원해요. 스캔 PDF와 HWP(한글 97 형식)는 아직 지원하지 않아요.")
     if suffix == ".pdf":
         try:
             from pypdf import PdfReader
@@ -75,6 +78,10 @@ def extract(name: str, content: bytes) -> list[tuple[int, str]]:
             raise
         except Exception:
             raise ValueError("PDF를 읽지 못했어요. 손상되지 않은 텍스트 PDF인지 확인해 주세요.") from None
+    elif suffix in {".html", ".htm"}:
+        pages = [(1, _checked(html_text(content), "HTML"))]
+    elif suffix == ".hwpx":
+        pages = [(1, _checked(hwpx_text(content), "HWPX"))]
     else:
         try:
             text = content.decode("utf-8-sig")
@@ -88,6 +95,115 @@ def extract(name: str, content: bytes) -> list[tuple[int, str]]:
 
 def index_current(row) -> bool:
     return row["retrieval"] == RETRIEVAL_METHOD and row["chunking"] == CHUNKING_VERSION
+
+
+SUPPORTED_SUFFIXES = {".pdf", ".txt", ".md", ".markdown", ".html", ".htm", ".hwpx"}
+_BLOCK_TAGS = {"p", "div", "br", "li", "ul", "ol", "tr", "table", "section", "article", "header", "footer",
+               "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote", "dt", "dd", "hr", "main", "nav", "aside"}
+_SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "iframe", "object"}
+
+
+def _checked(text: str, kind: str) -> str:
+    text = text.strip("\n")
+    if "\x00" in text or not text.strip():
+        raise ValueError(f"{kind} 문서에서 읽을 수 있는 본문 텍스트를 찾지 못했어요.")
+    if len(text) > MAX_TEXT:
+        raise ValueError("문서는 추출된 텍스트 50만 자까지 지원해요.")
+    return text
+
+
+class _HTMLText(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.skip = 0
+        self.size = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _SKIP_TAGS:
+            self.skip += 1
+        elif tag in _BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_startendtag(self, tag, attrs):
+        if tag in _BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in _SKIP_TAGS:
+            self.skip = max(0, self.skip - 1)
+        elif tag in _BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.size += len(data)
+            if self.size > MAX_TEXT * 4:
+                raise ValueError("문서는 추출된 텍스트 50만 자까지 지원해요.")
+            self.parts.append(data)
+
+
+def _decode_html(content: bytes) -> str:
+    try:
+        return content.decode("utf-8-sig")
+    except UnicodeError:
+        pass
+    declared = re.search(rb"""<meta[^>]+charset\s*=\s*["']?([A-Za-z0-9_-]{2,20})""", content[:4096], re.I)
+    if declared:
+        try:
+            return content.decode(declared.group(1).decode("ascii"))
+        except (LookupError, UnicodeError):
+            pass
+    raise ValueError("HTML 문서의 글자 인코딩을 확인하지 못했어요. UTF-8로 저장해 주세요.")
+
+
+def html_text(content: bytes) -> str:
+    parser = _HTMLText()
+    parser.feed(_decode_html(content))
+    parser.close()
+    lines = (" ".join(line.split()) for line in "".join(parser.parts).splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+def _local(tag) -> str:
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def hwpx_text(content: bytes) -> str:
+    """Body text of an HWPX (OWPML zip) document: Contents/section*.xml paragraphs."""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        raise ValueError("HWPX 파일을 열지 못했어요. 한글에서 HWPX로 다시 저장해 주세요.") from None
+    with archive:
+        sections = sorted((info for info in archive.infolist() if re.fullmatch(r"Contents/section(\d+)\.xml", info.filename)),
+                          key=lambda info: int(re.search(r"\d+", info.filename).group()))
+        if not sections:
+            raise ValueError("HWPX 본문(Contents/section*.xml)을 찾지 못했어요. HWP(한글 97) 파일은 아직 지원하지 않아요.")
+        if len(sections) > 200 or sum(info.file_size for info in sections) > 40 * 1024 * 1024:
+            raise ValueError("HWPX 본문이 처리 크기 제한을 넘었어요.")
+        paragraphs = []
+        for info in sections:
+            with archive.open(info) as stream:
+                data = stream.read(40 * 1024 * 1024 + 1)
+            if len(data) > 40 * 1024 * 1024:
+                raise ValueError("HWPX 본문이 처리 크기 제한을 넘었어요.")
+            # OWPML never needs a DTD; refusing one rules out entity expansion.
+            if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+                raise ValueError("HWPX 본문 형식을 확인하지 못했어요.")
+            try:
+                root = ElementTree.fromstring(data)
+            except ElementTree.ParseError:
+                raise ValueError("HWPX 본문을 읽지 못했어요. 손상되지 않은 파일인지 확인해 주세요.") from None
+            for paragraph in root.iter():
+                if _local(paragraph.tag) != "p":
+                    continue
+                # Only this paragraph's own runs: table cells hold nested paragraphs.
+                text = "".join("".join(t.itertext()) for run in paragraph if _local(run.tag) == "run"
+                               for t in run if _local(t.tag) == "t")
+                if text.strip():
+                    paragraphs.append(text)
+    return "\n".join(paragraphs)
 
 
 def chunks(pages):

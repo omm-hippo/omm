@@ -106,9 +106,9 @@ export default function DocumentPanel({models, onJobs}) {
     await run('/api/documents/delete',{document_id:document.id});
   }
   return <div className="documents-panel">
-    <section className="document-intro"><h2>내 자료에서 답을 찾아요</h2><p>문서와 질문은 이 컴퓨터에 저장되고 선택한 로컬 실행 앱에서 처리돼요.</p><p>텍스트 PDF · TXT · Markdown, 파일당 6 MiB / PDF 100쪽. 스캔 PDF와 OCR은 아직 지원하지 않아요.</p></section>
+    <section className="document-intro"><h2>내 자료에서 답을 찾아요</h2><p>문서와 질문은 이 컴퓨터에 저장되고 선택한 로컬 실행 앱에서 처리돼요.</p><p>텍스트 PDF · TXT · Markdown · HTML · HWPX, 파일당 6 MiB / PDF 100쪽. 스캔 PDF(OCR)와 HWP(한글 97 형식)는 아직 지원하지 않아요.</p></section>
     {error && <div className="error" role="alert">{error}</div>}{notice && <p className="notice" role="status">{notice}</p>}
-    <form className="document-upload" onSubmit={upload}><label>문서 선택<input type="file" accept=".pdf,.txt,.md,.markdown" disabled={busy} onChange={e=>setFile(e.target.files?.[0] || null)}/></label><label className="document-check"><input type="checkbox" checked={replace} disabled={busy} onChange={e=>setReplace(e.target.checked)}/>같은 이름의 문서 교체</label><button className="primary" disabled={!file || busy}>{busy?'처리 중…':'문서 등록'}</button></form>
+    <form className="document-upload" onSubmit={upload}><label>문서 선택<input type="file" accept=".pdf,.txt,.md,.markdown,.html,.htm,.hwpx" disabled={busy} onChange={e=>setFile(e.target.files?.[0] || null)}/></label><label className="document-check"><input type="checkbox" checked={replace} disabled={busy} onChange={e=>setReplace(e.target.checked)}/>같은 이름의 문서 교체</label><button className="primary" disabled={!file || busy}>{busy?'처리 중…':'문서 등록'}</button></form>
     <p className="footnote">교체·삭제하면 이전 문서 답변 기록을 지워요. 등록 실패 시 기존 문서는 보존돼요.</p>
     <section className="document-library"><h2>등록된 문서 <small>{library.documents.length}개 · 질문할 문서를 선택하세요</small></h2>
       {!library.documents.length && <p className="empty">아직 등록한 문서가 없어요. 위에서 파일을 선택해 주세요.</p>}

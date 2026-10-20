@@ -59,7 +59,7 @@ def test_changed_corpus_refuses_late_answer(isolated_omm_home):
         store.save_answer({'id':'answer','created_at':'2026-10-19'},revision)
 
 
-@pytest.mark.parametrize('name,content',[('../escape.txt',b'ok'),('foo.html',b'ok'),('binary.txt',b'\x00hello'),('empty.md',b'  '),('invalid.txt',b'\xff'),('bad.pdf',b'not PDF')])
+@pytest.mark.parametrize('name,content',[('../escape.txt',b'ok'),('foo.html',b'<script>alert(1)</script><style>p{}</style>'),('legacy.hwp',b'HWP Document File'),('broken.hwpx',b'PK not a zip'),('photo.png',b'png'),('binary.txt',b'\x00hello'),('empty.md',b'  '),('invalid.txt',b'\xff'),('bad.pdf',b'not PDF')])
 def test_invalid_document_is_not_added(isolated_omm_home,name,content):
     with pytest.raises(ValueError):DocumentStore().import_document(name,content)
     assert DocumentStore().list()==[]
@@ -267,3 +267,60 @@ def test_failure_without_a_previous_answering_model_is_not_rolled_back(runtime_q
     _select('test.gguf');adapter.failure=True
     with pytest.raises(RuntimeError):q.answer(request,threading.Event())
     assert document_settings.load()['selected']['filename']=='test.gguf' and document_settings.load()['confirmed'] is None
+
+
+HTML_SAMPLE = """<!doctype html><html><head><meta charset="utf-8"><title>실험 안내</title>
+<style>.secret{color:red}</style><script>var hidden = "스크립트 비밀";</script></head>
+<body><h1>자기장 측정</h1><p>나침반과   구리 코일을 준비합니다.</p>
+<ul><li>전류는 &lt;2A&gt;로 제한합니다.</li><li>측정값은 표에 적습니다.</li></ul><noscript>자바스크립트 필요</noscript></body></html>"""
+
+
+def test_html_text_skips_script_and_style_and_quotes_match(isolated_omm_home):
+    pages=extract('guide.html',HTML_SAMPLE.encode('utf-8'))
+    text=pages[0][1]
+    assert '나침반과 구리 코일을 준비합니다.' in text and '전류는 <2A>로 제한합니다.' in text
+    assert '스크립트 비밀' not in text and 'color:red' not in text and '자바스크립트 필요' not in text
+    saved=DocumentStore().import_document('guide.html',HTML_SAMPLE.encode('utf-8'))
+    _,sources=DocumentStore().search('구리 코일 준비',[saved['id']])
+    assert sources and sources[0]['text']==text[sources[0]['start']:sources[0]['end']]
+
+
+def test_html_declared_legacy_korean_encoding_is_decoded(isolated_omm_home):
+    content='<html><head><meta charset="euc-kr"></head><body><p>도서관 대출 기간은 십칠 일입니다.</p></body></html>'.encode('euc-kr')
+    assert extract('old.htm',content)==[(1,'도서관 대출 기간은 십칠 일입니다.')]
+
+
+def _hwpx(sections):
+    import zipfile
+    stream=io.BytesIO()
+    with zipfile.ZipFile(stream,'w') as archive:
+        archive.writestr('mimetype','application/hwp+zip')
+        for number,body in enumerate(sections):
+            archive.writestr(f'Contents/section{number}.xml',
+                '<?xml version="1.0" encoding="UTF-8"?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" '
+                'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">'+body+'</hs:sec>')
+    return stream.getvalue()
+
+
+def _p(*runs):
+    return '<hp:p>'+''.join(f'<hp:run><hp:t>{text}</hp:t></hp:run>' for text in runs)+'</hp:p>'
+
+
+def test_hwpx_paragraphs_and_table_cells_are_extracted_in_order(isolated_omm_home):
+    table='<hp:p><hp:run><hp:tbl><hp:tr><hp:tc><hp:subList>'+_p('표 안의 준비물: 자석')+'</hp:subList></hp:tc></hp:tr></hp:tbl></hp:run></hp:p>'
+    content=_hwpx([_p('첫 구역 ','실험 목표는 자기장 측정입니다.')+table, _p('둘째 구역 결과 정리 방법')])
+    text=extract('report.hwpx',content)[0][1]
+    assert text.split('\n')==['첫 구역 실험 목표는 자기장 측정입니다.','표 안의 준비물: 자석','둘째 구역 결과 정리 방법']
+    saved=DocumentStore().import_document('report.hwpx',content)
+    _,sources=DocumentStore().search('자기장 측정 목표',[saved['id']])
+    assert sources and sources[0]['text']==text[sources[0]['start']:sources[0]['end']]
+
+
+@pytest.mark.parametrize('content',[
+    lambda: _hwpx([_p('   ')]),
+    lambda: _hwpx([]),
+    lambda: _hwpx(['<!DOCTYPE x [<!ENTITY a "aaaa">]><hp:p>&a;</hp:p>']),
+])
+def test_hwpx_without_body_text_is_not_success(isolated_omm_home,content):
+    with pytest.raises(ValueError):DocumentStore().import_document('empty.hwpx',content())
+    assert DocumentStore().list()==[]
