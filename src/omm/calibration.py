@@ -57,6 +57,8 @@ def calibration_factor(
     engine: str = "ollama",
 ) -> float:
     profile = load_profiles(path)["profiles"].get(_profile_key(hardware, engine), {})
+    if not isinstance(profile, dict):
+        return 1.0
     factor = profile.get("factor", 1.0)
     if (
         isinstance(factor, bool)
@@ -91,6 +93,8 @@ def record_calibration(
     with locked(target):
         payload = load_profiles(target)
         previous = payload["profiles"].get(key, {})
+        if not isinstance(previous, dict):
+            previous = {}
         new_ratio = max(
             MIN_FACTOR,
             min(MAX_FACTOR, measured_tokens_per_sec / predicted_tokens_per_sec),
