@@ -206,7 +206,11 @@ def test_discard_stale_records_keeps_only_what_an_install_still_needs(isolated_o
     assert installed.exists()
     for path in (interrupted, failed, dead_running, uninstalled, corrupt, mismatched, backup, temporary):
         assert not path.exists(), path
-    assert lock.exists() and foreign.exists()
+    assert foreign.exists()
+    # filelock's Windows backend unlinks its own lock file on release, so
+    # only POSIX keeps the lock file around after discard_stale_records.
+    if sys.platform != "win32":
+        assert lock.exists()
     assert install_state.pending_records() == []
 
 
