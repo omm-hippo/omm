@@ -260,3 +260,95 @@ for i in $(seq 1 {runs}); do ensure_pipx_bin_path; done
     home3 = tmp_path / "home-backslash"
     home3.mkdir()
     run(home3, home3 / "x\\y" / "bin", "Linux", ".bashrc")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh function under test")
+def test_macos_clt_stub_detection(tmp_path):
+    """On a Mac without the Command Line Tools, /usr/bin/python3 and
+    /usr/bin/git are xcode-select stubs that pop an install dialog when run.
+    is_macos_clt_stub must flag them from xcode-select alone, without
+    executing them, and must never flag anything off macOS or outside
+    /usr/bin."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    script_path = tmp_path / "stub.sh"
+    script_path.write_text(_extract_function(script, "is_macos_clt_stub() {") + "\n", encoding="utf-8")
+    developer_dir = tmp_path / "CommandLineTools"
+    (developer_dir / "usr" / "bin").mkdir(parents=True)
+    real_git = developer_dir / "usr" / "bin" / "git"
+    real_git.write_text("#!/bin/sh\n", encoding="utf-8")
+    real_git.chmod(0o755)
+
+    # POSIX sh rejects a function named xcode-select, so stub it on PATH.
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_xcode_select = fake_bin / "xcode-select"
+
+    def is_stub(os_name: str, xcode_select: str, path: str) -> bool:
+        fake_xcode_select.write_text(f"#!/bin/sh\n{xcode_select}\n", encoding="utf-8")
+        fake_xcode_select.chmod(0o755)
+        harness = f"""
+PATH={shlex.quote(str(fake_bin))}:$PATH
+uname() {{ echo {shlex.quote(os_name)}; }}
+. {shlex.quote(str(script_path))}
+is_macos_clt_stub {shlex.quote(path)}
+"""
+        result = subprocess.run(["sh", "-c", harness], capture_output=True, text=True, timeout=10)
+        return result.returncode == 0
+
+    no_clt = "exit 2"
+    with_clt = f"echo {shlex.quote(str(developer_dir))}"
+    assert is_stub("Darwin", no_clt, "/usr/bin/git")
+    assert is_stub("Darwin", no_clt, "/usr/bin/python3")
+    assert not is_stub("Darwin", with_clt, "/usr/bin/git")
+    assert is_stub("Darwin", with_clt, "/usr/bin/python3")
+    assert not is_stub("Darwin", no_clt, "/opt/homebrew/bin/git")
+    assert not is_stub("Linux", no_clt, "/usr/bin/git")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh function under test")
+def test_find_supported_python_never_runs_a_clt_stub(tmp_path):
+    """The Python version probe is what used to pop the developer-tools
+    dialog on a fresh Mac. A stubbed python3 must be skipped unexecuted."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    script_path = tmp_path / "find.sh"
+    script_path.write_text(
+        _extract_function(script, "find_real_command() {")
+        + _extract_function(script, "find_supported_python() {"),
+        encoding="utf-8",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    marker = tmp_path / "ran"
+    for name in ("python3", "python"):
+        fake = bin_dir / name
+        fake.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+
+    def run(stub_rc: int) -> subprocess.CompletedProcess:
+        harness = f"""
+PATH={shlex.quote(str(bin_dir))}:/usr/bin:/bin
+is_macos_clt_stub() {{ return {stub_rc}; }}
+. {shlex.quote(str(script_path))}
+find_supported_python
+"""
+        return subprocess.run(["sh", "-c", harness], capture_output=True, text=True, timeout=10)
+
+    assert run(0).returncode != 0
+    assert not marker.exists()
+    found = run(1)
+    assert found.returncode == 0
+    assert found.stdout.strip() == str(bin_dir / "python3")
+    assert marker.exists()
+
+
+def test_unix_installer_is_parsed_in_full_before_it_runs():
+    """`curl | sh` feeds the script through stdin, and `brew install python`
+    on a fresh Mac reads stdin - swallowing the rest of the script so sh
+    exits 0 before omm is installed. One brace group around everything after
+    `set -eu` makes sh parse the whole file before running any of it."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    lines = script.splitlines()
+
+    assert lines[lines.index("set -eu") + 1 :].count("{") == 1
+    assert script.index("\n{\nREPO_URL=") > script.index("set -eu")
+    assert script.endswith("\n}\n")
