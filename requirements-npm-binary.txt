@@ -1,6 +1,6 @@
 build==1.5.0
 hatchling==1.32.0
-pyinstaller==6.22.2
+pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.6
 
 # Runtime graph mirrored from pyproject.toml and checked by
