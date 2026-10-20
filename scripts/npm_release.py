@@ -1066,20 +1066,36 @@ def publish_bundle(pack_dir: Path, registry: str = REGISTRY) -> None:
             raise NpmReleaseError(
                 f"npm publish failed for {package.name}@{package.version}: {result.stderr}"
             )
-        for attempt in range(8):
-            published_integrity = _registry_integrity(package, registry)
-            if published_integrity == expected_integrity:
-                break
-            if published_integrity is not None:
-                raise NpmReleaseError(
-                    f"published {package.name}@{package.version} has different bytes"
-                )
-            if attempt < 7:
-                time.sleep(5)
-        else:
+        _wait_until_visible(package, expected_integrity, registry)
+
+
+# `npm publish` returns before the new version is readable through `npm view`.
+# The v0.3.181 release saw ~3 minutes between a successful publish and the
+# first 200 for `@omm-hippo/omm-darwin-arm64@0.3.181`; the old 40-second wait
+# failed the job while the package was already accepted. Poll for up to ten
+# minutes. A rerun is still safe: already-visible packages are skipped above.
+PUBLISH_VISIBILITY_TIMEOUT_SECONDS = 600
+PUBLISH_VISIBILITY_POLL_SECONDS = 15
+
+
+def _wait_until_visible(package: PackageInfo, expected_integrity: str, registry: str) -> None:
+    deadline = time.monotonic() + PUBLISH_VISIBILITY_TIMEOUT_SECONDS
+    while True:
+        published_integrity = _registry_integrity(package, registry)
+        if published_integrity == expected_integrity:
+            print(f"Published: {package.name}@{package.version}")
+            return
+        if published_integrity is not None:
             raise NpmReleaseError(
-                f"published {package.name}@{package.version} did not appear in the registry"
+                f"published {package.name}@{package.version} has different bytes"
             )
+        if time.monotonic() >= deadline:
+            raise NpmReleaseError(
+                f"published {package.name}@{package.version} did not appear in the registry "
+                f"within {PUBLISH_VISIBILITY_TIMEOUT_SECONDS} seconds; rerunning the job "
+                "skips packages that are already visible"
+            )
+        time.sleep(PUBLISH_VISIBILITY_POLL_SECONDS)
 
 
 def _parser() -> argparse.ArgumentParser:

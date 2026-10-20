@@ -118,3 +118,20 @@ def test_record_calibration_concurrent_writers_do_not_lose_updates(tmp_path):
     raw = path.read_text(encoding="utf-8")
     payload = json.loads(raw)
     assert payload["profiles"]["macos-ram-16-unified-16"]["sample_count"] == 10
+
+
+def test_non_object_profile_is_ignored_and_replaced(tmp_path):
+    path = tmp_path / "calibration.json"
+    key = calibration.hardware_bucket(_hardware())
+    path.write_text(json.dumps({"schema_version": 1, "profiles": {key: "not-an-object"}}), encoding="utf-8")
+
+    assert calibration.calibration_factor(_hardware(), path) == 1.0
+    factor = calibration.record_calibration(
+        _hardware(),
+        measured_tokens_per_sec=30,
+        predicted_tokens_per_sec=20,
+        path=path,
+    )
+
+    assert factor == 1.5
+    assert json.loads(path.read_text(encoding="utf-8"))["profiles"][key]["sample_count"] == 1

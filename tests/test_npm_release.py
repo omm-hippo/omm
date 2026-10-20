@@ -177,6 +177,68 @@ def test_existing_registry_package_must_have_identical_bytes(tmp_path, monkeypat
         npm_release.publish_bundle(pack)
 
 
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _publish_fakes(monkeypatch, tmp_path, visible_after_seconds: float):
+    """Fake `npm publish` plus a registry that shows each package late."""
+
+    pack = _bundle(tmp_path)
+    npm_release.verify_bundle(pack, write_checksums=True)
+    clock = _FakeClock()
+    published_at: dict[str, float] = {}
+    published: list[str] = []
+
+    def fake_run(executable, *arguments, check=True, env=None, cwd=None):
+        assert arguments[0] == "publish"
+        path = Path(arguments[1])
+        published.append(path.name)
+        published_at[path.name] = clock.now
+        return npm_release.subprocess.CompletedProcess(arguments, 0, "", "")
+
+    def fake_integrity(package, registry):
+        start = published_at.get(package.path.name)
+        if start is None or clock.now - start < visible_after_seconds:
+            return None
+        return npm_release._integrity(package.path)
+
+    monkeypatch.setattr(npm_release, "_npm", lambda: "npm")
+    monkeypatch.setattr(npm_release, "_run", fake_run)
+    monkeypatch.setattr(npm_release, "_registry_integrity", fake_integrity)
+    monkeypatch.setattr(npm_release.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(npm_release.time, "sleep", clock.sleep)
+    return pack, published
+
+
+def test_publish_waits_for_slow_registry_propagation(tmp_path, monkeypatch):
+    # v0.3.181: the first platform package took ~3 minutes to become visible.
+    pack, published = _publish_fakes(monkeypatch, tmp_path, visible_after_seconds=180)
+
+    npm_release.publish_bundle(pack)
+
+    assert len(published) == len(npm_release.verify_bundle(pack))
+
+
+def test_publish_fails_when_package_never_appears(tmp_path, monkeypatch):
+    pack, published = _publish_fakes(
+        monkeypatch,
+        tmp_path,
+        visible_after_seconds=npm_release.PUBLISH_VISIBILITY_TIMEOUT_SECONDS + 60,
+    )
+
+    with pytest.raises(npm_release.NpmReleaseError, match="did not appear in the registry"):
+        npm_release.publish_bundle(pack)
+    assert len(published) == 1
+
+
 def _reuse_fixture(tmp_path, monkeypatch, published_suffix: bytes, built_suffix: bytes = b""):
     """Stage a built bundle plus a registry copy of one platform package."""
 
