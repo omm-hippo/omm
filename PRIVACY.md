@@ -203,3 +203,18 @@ history is stored under `OMM_HOME/web-chats`. Interrupted and failed partial
 answers stay visible locally but are not used in later inference context.
 The GUI provides JSON export and confirmed deletion of closed conversations.
 Explicit data removal also removes `web-chats`; ordinary updates retain it.
+
+### Local document questions
+
+The loopback web manager stores imported document text, content hashes, a lexical
+search index, questions, answers and quotations only in `OMM_HOME/documents`.
+Only browser-selected PDF/TXT/Markdown bytes are read; a request cannot name an
+arbitrary server filesystem path. Extraction and search make no network calls.
+Questions send the selected quotations to the explicitly selected loopback local
+runner, never to OMM telemetry, usage or crash senders. No cloud embedding API is
+used. The local runner is a separate program: use a local model, not a runner
+configured to forward requests to a cloud service.
+
+Replacing or deleting a document clears saved document answers so old source
+quotations do not remain in the answer cache. Original uploaded files are not
+changed. Explicit OMM data removal includes the owned `documents` directory.

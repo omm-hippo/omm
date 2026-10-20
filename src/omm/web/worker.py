@@ -45,6 +45,18 @@ def execute(request: dict, stop: threading.Event) -> dict:
             if operation == "import":
                 return maintenance.adopt(request["group"])
             return management.cleanup_selected(request["files"])
+        if operation == "document_import":
+            from omm.documents import import_request
+            return import_request(request)
+        if operation == "document_delete":
+            from omm.documents import DocumentStore
+            return DocumentStore().delete(request["document_id"])
+        if operation == "document_question":
+            from omm.web.document_questions import answer
+            result = answer(request, stop)
+            # Model/source text belongs only to the removable document store,
+            # never the longer-lived generic job history.
+            return {"answer_id": result["id"], "status": result["status"], "runtime_response_saved": True}
         filename = hub.validate_model_filename(request["filename"])
         if operation == "install":
             resolved = hub.resolve_model(request["ref"])
@@ -108,8 +120,8 @@ def main():
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, lambda *_: stop.set())
     try:
-        raw = sys.stdin.buffer.read(65537)
-        if len(raw) > 65536:
+        raw = sys.stdin.buffer.read(9 * 1024 * 1024 + 1)
+        if len(raw) > 9 * 1024 * 1024:
             raise ValueError("Operation input is too large")
         request = json.loads(raw)
         emit("started")

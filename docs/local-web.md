@@ -148,3 +148,11 @@ is retained. Failed release remains visible and blocks further management until
 the user retries or checks the runtime. Management jobs are blocked while a
 conversation owns the runtime. The API obeys the manager's session, Origin and
 bounded-input checks. There is no automatic startup/reload of saved chats.
+
+## 로컬 문서에 질문하기
+
+‘내 문서’에서 텍스트 PDF(100쪽 이하), UTF-8 TXT/Markdown을 파일당 6 MiB까지 등록합니다. 선택한 문서에서 단어가 일치하는 구간을 로컬 검색한 뒤, 연결된 Ollama/LM Studio 모델에 질문과 원문 구간을 보냅니다. 파일명·페이지·추출 텍스트 위치와 원문을 함께 확인하세요. 검색 점수와 출처 번호는 답변 정확도를 보장하지 않습니다. 의미 검색/임베딩·OCR·HWP·HTML·fine-tuning은 지원하지 않습니다.
+
+문서와 검색 색인, 최근 30개 답변은 `OMM_HOME/documents/library.sqlite3`에 저장합니다. 원본 파일은 이동하거나 삭제하지 않습니다. 같은 이름은 명시적으로 교체해야 하며 등록 실패 시 기존 자료를 유지합니다. 교체·삭제하면 이전 답변 기록 전체를 지워 삭제한 원문 인용이 남지 않게 합니다. 최대 100개 문서·200만 자 검색 텍스트를 보관하고, 한 질문에 최대 20개 문서를 선택할 수 있습니다.
+
+모델은 질문 때마다 명시적으로 선택하며 생성 모델을 바꿔도 문서 색인을 다시 만들지 않습니다. 기존 로딩이 있으면 그 작업을 보존하고 질문을 거절합니다. 메모리 여유를 확인한 뒤 이 질문이 로딩한 모델만 해제합니다. 근거가 없으면 모델에 질문을 보내지 않습니다. 문서의 명령문은 지시가 아닌 인용 자료로 취급합니다. 모델이 올바른 출처 번호를 반환하지 않으면 답변 대신 원문을 확인하라는 안내를 표시합니다.

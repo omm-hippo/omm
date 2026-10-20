@@ -90,6 +90,7 @@ class JobManager:
             return dict(job)
 
     def _run(self, jid, request):
+        timer = None
         try:
             kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
             with self.lock:
@@ -98,10 +99,15 @@ class JobManager:
                     return
                 proc = subprocess.Popen(worker_argv(),
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                        env={**os.environ, "OMM_HOME": str(config.OMM_HOME)},
                                         **kwargs)
                 self.processes[jid] = proc
                 job["status"] = "running"
                 self._save(job)
+            if request["operation"] == "document_import":
+                timer = threading.Timer(60, proc.kill)
+                timer.daemon = True
+                timer.start()
             proc.stdin.write(json.dumps(request).encode())
             proc.stdin.close()
             last_saved = 0.0
@@ -141,6 +147,8 @@ class JobManager:
                 self.jobs[jid].update(status="failed", message=str(error)[:2000])
                 self._save(self.jobs[jid])
         finally:
+            if timer is not None:
+                timer.cancel()
             with self.lock:
                 self.processes.pop(jid, None)
 
@@ -185,7 +193,7 @@ class JobManager:
                 proc = self.processes.get(jid)
             if proc:
                 try:
-                    proc.wait(timeout=240 if self.jobs[jid]["operation"] in {"verify", "compare", "profile_save"} else 5)
+                    proc.wait(timeout=240 if self.jobs[jid]["operation"] in {"verify", "compare", "profile_save", "document_question"} else 5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=5)
