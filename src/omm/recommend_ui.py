@@ -293,7 +293,26 @@ def print_screen(
     console.print(choice_header(console.size.width))
 
 
-def _choice_widths(width: int) -> tuple[int, int, int, int, int, int]:
+# Short list-row marker for the evidence level `recommend_evidence.describe`
+# already computed. It names the kind of basis only; it is not a confidence
+# or accuracy figure (none is calibrated - see the selected-model detail).
+_EVIDENCE_MARKERS = {
+    "local_calibrated": "measured",
+    "feature_support": "measured",
+    "insufficient": "unverified",
+    "static_rules": "rules",
+    "synthetic_prior": "synthetic",
+}
+
+
+def evidence_marker(candidate: dict) -> str:
+    evidence = candidate.get("recommendation_evidence")
+    if not isinstance(evidence, dict):
+        return ""
+    return _EVIDENCE_MARKERS.get(str(evidence.get("status")), "unverified")
+
+
+def _choice_widths(width: int) -> tuple[int, int, int, int, int, int, int]:
     # questionary adds four cells of picker chrome before every choice. Keep
     # the choice itself within the remaining width so the final column is not
     # clipped by prompt_toolkit. Hide memory, then purpose, then type as
@@ -301,12 +320,13 @@ def _choice_widths(width: int) -> tuple[int, int, int, int, int, int]:
     badge, type_width = 11, 10 if width >= 48 else 0
     memory, use = (13 if width >= 88 else 0), (12 if width >= 68 else 0)
     quant = 11 if width >= 106 else 0
-    model = max(1, min(40, width - 4 - badge - 13 - type_width - memory - use - quant))
-    return model, badge, type_width, memory, use, quant
+    basis = 11 if width >= 120 else 0
+    model = max(1, min(40, width - 4 - badge - 13 - type_width - memory - use - quant - basis))
+    return model, badge, type_width, memory, use, quant, basis
 
 
 def choice_header(width: int) -> Text:
-    model_width, badge_width, type_width, memory_width, use_width, quant_width = _choice_widths(width)
+    model_width, badge_width, type_width, memory_width, use_width, quant_width, basis_width = _choice_widths(width)
     header = Text("   ")
     header.append("MODEL".ljust(model_width), style=f"bold {MUTED}")
     if type_width:
@@ -315,6 +335,8 @@ def choice_header(width: int) -> Text:
     if quant_width:
         header.append("QUANT".ljust(quant_width), style=f"bold {MUTED}")
     header.append("SPEED".ljust(13), style=f"bold {MUTED}")
+    if basis_width:
+        header.append("BASIS".ljust(basis_width), style=f"bold {MUTED}")
     if memory_width:
         header.append("MEMORY".ljust(memory_width), style=f"bold {MUTED}")
     if use_width:
@@ -323,7 +345,7 @@ def choice_header(width: int) -> Text:
 
 
 def choice_title(row: RecommendationRow, width: int) -> list[tuple[str, str]]:
-    model_width, badge_width, type_width, memory_width, use_width, quant_width = _choice_widths(width)
+    model_width, badge_width, type_width, memory_width, use_width, quant_width, basis_width = _choice_widths(width)
     speed = f"~{row.speed:.0f} tok/s" if row.speed is not None else "Rules match"
     memory = f"~{row.memory_gb:.1f} GB" if row.memory_gb is not None else "Unknown"
     parts = [
@@ -338,6 +360,8 @@ def choice_title(row: RecommendationRow, width: int) -> list[tuple[str, str]]:
     if quant_width:
         parts.append(("", _clip(quantization_label(row.candidate), quant_width - 1).ljust(quant_width)))
     parts.append((_prompt_style(f"fg:{_ROW_METRIC}"), speed.ljust(13)))
+    if basis_width:
+        parts.append((_prompt_style(f"fg:{_ROW_MUTED}"), evidence_marker(row.candidate).ljust(basis_width)))
     if memory_width:
         parts.append((_prompt_style(f"fg:{_ROW_SIZE}"), memory.ljust(memory_width)))
     if use_width:
