@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact": "arena-leaderboard.json",
-  "artifact_sha256": "e2cb9501668149eddc1f93944f76f7782070ab737367dd052351302411150b1e",
-  "signature": "tUMax3irUJXVZCohLiBbilwIlIn8C8JRSq8fmFUzyBj7inKinhexhuEOl1lXD00wsBoqxNc/QNYhfUTjnDo9AA==",
-  "signed_at": "2026-10-18T08:28:56.429440+00:00"
+  "artifact_sha256": "55a0453f50812f087f6fc8a7fffaa6fd22e4869c67fc55221f658d1bdbfa2329",
+  "signature": "KmKsrGUwCx1FAdl4MvTpprLCNRQE6SaFFCbcFLVeUIDN6XRWwe2Fmvh6KnwhIGXfT4PRCYokum22ua4KP3eHAA==",
+  "signed_at": "2026-10-20T09:03:32.707414+00:00"
 }
