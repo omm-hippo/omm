@@ -29,7 +29,7 @@ questionary==2.1.1
 requests==2.34.2
 rich==15.0.0
 shellingham==1.5.4
-typer==0.27.1
+typer==0.27.3
 typing-extensions==4.16.0
 urllib3==2.8.0
 wcwidth==0.8.2
