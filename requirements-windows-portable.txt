@@ -18,7 +18,7 @@ markdown-it-py==4.2.0
 mdurl==0.1.2
 prompt-toolkit==3.0.53
 psutil==7.2.2
-pycparser==3.0
+pycparser==3.11
 pygments==2.21.0
 questionary==2.1.1
 requests==2.34.2
