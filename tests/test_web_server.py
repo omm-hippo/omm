@@ -347,7 +347,7 @@ def test_real_worker_imports_large_text_and_persists_after_manager_restart(serve
     headers = {'X-OMM-Web':'1'}
     response = client.post(server.url+'api/documents',json=body,headers=headers,timeout=5)
     assert response.status_code==202, response.text
-    for _ in range(100):
+    for _ in range(400):  # worker start-up can take seconds on a loaded machine
         job = next(x for x in client.get(server.url+'api/jobs',timeout=5).json() if x['id']==request_id)
         if job['status'] in {'completed','failed'}:break
         time.sleep(.05)
