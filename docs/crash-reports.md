@@ -147,3 +147,45 @@ opt-out is not something a runtime flag gets to override.
 Every decision this makes - queued, skipped, sent, failed - is appended to
 `~/.omm/error_reports.log` on your machine, so "did omm send something?" is
 always answerable locally.
+
+## Should omm use Sentry instead? (comparison, #428)
+
+This section is a comparison for the team, not a decision. Whether to adopt
+Sentry (or any hosted error tracker) is the team's call. Nothing here was
+measured against a live Sentry project; statements about Sentry describe its
+public documentation and SDK defaults and must be re-checked on
+docs.sentry.io and sentry.io/pricing on the day the decision is made. No
+prices are quoted here on purpose - plans and quotas change.
+
+| Question | Existing opt-in channels (`error_reports`, `usage`) | Sentry (hosted SaaS) | Sentry self-hosted |
+| --- | --- | --- | --- |
+| What is collected | Fixed allow-list above; exception class + scrubbed message; usage is counts only | By default the SDK sends a stack trace with file paths, module/function names, breadcrumbs (recent log lines, HTTP calls), OS/runtime context; local variables and request data depending on SDK options | Same SDK, same payload |
+| Who controls the schema | omm: the gateway (`cf-worker/src/validate.ts`) rejects unknown fields | Client-side `before_send` hook + server-side scrubbing rules; the event format itself is Sentry's | Same as hosted |
+| Where data goes | Project's own Cloudflare gateway -> private RTDB node | A third party (Sentry) - an additional external processor that PRIVACY.md would have to name | Project-run servers |
+| Consent fit | Off by default; `ask` previews the exact JSON; stored `never` cannot be overridden | Possible only if the SDK is initialised *after* consent and every event goes through the same preview - the SDK's automatic capture works against a preview-first flow | Same as hosted |
+| Cost | Existing gateway + RTDB, already paid for | Per-event plans with a free tier; check the vendor pricing page as of the decision date | No licence fee for internal use (check the current licence), but a multi-service deployment to host, patch and back up |
+| What it adds | Little triage tooling: raw rows, no grouping UI | Issue grouping, release tracking, alerting, stack-trace symbolication, dashboards | Same features, own operations |
+
+### What the comparison suggests
+
+- The main gap today is **triage tooling** (grouping, trends, alerts), not
+  data. Sentry's value is mostly that UI.
+- Sentry's value grows with **richer data** - tracebacks, breadcrumbs,
+  paths - which is exactly what this channel deliberately does not collect.
+  Adopting it with the current allow-list would pay for a tool whose best
+  features have nothing to work on; widening the payload instead would need
+  a new consent text, a new PRIVACY.md section, and a new review of what
+  scrubbing can and cannot guarantee.
+- A lower-risk next step, if triage is the pain: a small script or
+  dashboard that groups the existing `error_reports` rows by
+  `error_type` + `subcommand` + `client_version`. It needs no new data flow.
+- If the team does choose Sentry, the minimum bar this document would ask
+  for: SDK not loaded until consent; `send_default_pii` off; local
+  variables, breadcrumbs and request bodies disabled; every event passed
+  through `error_report.scrub()` in `before_send`; and the same
+  preview-before-send behavior as today. That is a separate design and
+  consent change, not a drop-in.
+
+Recommendation (non-binding): keep the existing channel, add grouping on top
+of it first, and revisit Sentry only if the team decides tracebacks are
+worth collecting. The final decision belongs to the team.
