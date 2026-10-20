@@ -735,6 +735,13 @@ watch_app = typer.Typer(
     cls=_DocsEpilogGroup,
 )
 setting_app.add_typer(watch_app)
+web_autostart_app = typer.Typer(
+    name="web-autostart",
+    help="Start the local web manager (omm web, no browser) when you sign in. Off by default; nothing is sent anywhere.",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+setting_app.add_typer(web_autostart_app)
 engine_app = typer.Typer(
     name="engine",
     help="Inspect, install, update, and remove local AI runner programs.",
@@ -9574,6 +9581,66 @@ def auto_import_status() -> None:
     table.add_column("Value")
     table.add_row("Setting", "enabled" if enabled else "disabled (default)")
     table.add_row("OS service registered", "yes" if installed else "no")
+    console.print(table)
+
+
+@web_autostart_app.command(name="enable")
+@global_flags
+def web_autostart_enable() -> None:
+    """Start the local web manager at sign-in (and now), without opening a browser."""
+    from omm import web_autostart
+
+    if web_autostart.is_installed():
+        console.print("[muted]Web manager auto-start is already enabled.[/muted]")
+        return
+    try:
+        web_autostart.install()
+    except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
+        err_console.print(
+            f"[error]Could not enable web manager auto-start: {escape(str(error))}[/error]"
+        )
+        raise typer.Exit(1) from error
+    console.print(
+        "[success]Web manager auto-start enabled.[/success] It starts at sign-in without "
+        "opening a browser; open it with `omm web --open`. Turn off: "
+        "`omm setting web-autostart disable`."
+    )
+
+
+@web_autostart_app.command(name="disable")
+@global_flags
+def web_autostart_disable() -> None:
+    """Stop starting the local web manager at sign-in. Models and settings are kept."""
+    from omm import web_autostart
+
+    if not web_autostart.is_installed():
+        console.print("[muted]Web manager auto-start is already disabled.[/muted]")
+        return
+    try:
+        web_autostart.uninstall()
+    except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
+        err_console.print(
+            f"[error]Could not disable web manager auto-start cleanly: {escape(str(error))}[/error]"
+        )
+        raise typer.Exit(1) from error
+    console.print("[success]Web manager auto-start disabled.[/success]")
+
+
+@web_autostart_app.command(name="status")
+@global_flags
+def web_autostart_status() -> None:
+    """Show whether the local web manager is registered to start at sign-in."""
+    from omm import web_autostart
+
+    installed = web_autostart.is_installed()
+    location = web_autostart.registration_path()
+    table = _table(title="Web manager auto-start", show_header=False)
+    table.add_column("Field", style="label")
+    table.add_column("Value")
+    table.add_row("Start at sign-in", "enabled" if installed else "disabled (default)")
+    if installed and location:
+        table.add_row("Registered at", escape(location))
+    table.add_row("Open the manager", "omm web --open")
     console.print(table)
 
 

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.181",
+  "omm_version": "0.3.188",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -2389,6 +2389,20 @@
         }
       ],
       "docs_url": "https://omm.run/commands/setting#version"
+    },
+    {
+      "path": [
+        "setting",
+        "web-autostart"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Start the local web manager (omm web, no browser) when you sign in. Off by default; nothing is sent anywhere.",
+      "description": "",
+      "usage": "omm setting web-autostart [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/setting#web-autostart"
     },
     {
       "path": [
