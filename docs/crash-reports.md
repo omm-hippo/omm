@@ -79,10 +79,26 @@ attaching something new fails at the server instead of quietly collecting it.
   uploaded. Any other absolute or UNC path is masked down to `<path>` for
   its directories, keeping only the final filename. Model references are
   catalog coordinates, never the file on your disk.
+  Folders *below* your home directory stay visible after the `~`.
+- **Credentials that libraries echo into messages.** `error_report.scrub_secrets()`
+  runs before the path scrub and replaces with `<redacted>`: URL userinfo
+  (`https://user:pass@host`), `Authorization:` header values (`Bearer`,
+  `Basic`, `token`), bare `Bearer <token>`, the value of fields named
+  `token`, `access_token`, `refresh_token`, `id_token`, `auth_token`,
+  `api_key`/`apikey`, `client_secret`, `secret`, `password`/`passwd`/`pwd`,
+  `sig`/`signature`, `x-amz-signature`, `x-amz-credential` (as `name=value`
+  or `name: value`), and tokens with well-known shapes - Hugging Face `hf_...`,
+  GitHub `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_`, `sk-...`, AWS
+  `AKIA...`/`ASIA...` key ids, and three-part `eyJ...` JWTs. The same scrub
+  is applied to the local `error_reports.log`.
 - **Tracebacks.** The traceback of a crash stays in your terminal, where
   you need it. It is the single richest source of local paths and library
   internals, and it is not worth the exposure; the exception type, message,
   and which subcommand crashed are what triage actually starts from.
+- **Anything you typed.** Prompts, search text, chat or document content are
+  never a field. The only free text is the exception message, which some
+  library wrote; if it quotes something you typed, it is shown to you in the
+  `ask` preview before sending.
 - **Your command line.** Not the arguments, not the flags - only the
   subcommand name, and only when it matches a command omm registers, so a
   search query or a URL can never be echoed back as a "subcommand".

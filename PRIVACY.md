@@ -107,13 +107,25 @@ The `usage` Realtime Database node is **not** publicly readable.
 **Default:** off.
 **Purpose:** surface crashes that happen on machines the maintainers cannot see.
 
-**Sent:** the exception type, a path-scrubbed exception message, which
+**Sent:** the exception type, a scrubbed exception message, which
 subcommand was running, the `omm` version, OS name/version, CPU architecture,
 and coarse CPU/GPU benchmark tiers. The full allow-list and the scrubbing rules
 are in [`docs/crash-reports.md`](docs/crash-reports.md).
 
-**Never sent:** tracebacks, absolute paths, usernames, environment variables,
-the command line, or generated model text.
+**Removed from the message before it is queued, previewed, or sent:**
+your home directory (`/Users/<name>`, `/home/<name>`, `C:\Users\<name>` become
+`~`; folders below it stay visible), the directories of any other absolute
+path (only the file name is kept), and credential-shaped text: URL
+user/password (`https://user:pass@`), `Authorization:` header values,
+`Bearer ...` tokens, values of `token=`, `access_token=`, `api_key=`,
+`password=`, `secret=`, `signature=` and similar fields, and Hugging Face
+(`hf_...`), GitHub (`ghp_...`, `github_pat_...`), `sk-...`, AWS access key and
+JWT-shaped tokens. These are pattern matches, not a guarantee: an exception
+message is text from some library, and a secret in an unusual shape could
+survive. That is why `ask` shows you the exact JSON before anything is sent.
+
+**Never sent:** tracebacks, environment variables, the command line and its
+arguments, anything you typed, or generated model text.
 
 The `error_reports` Realtime Database node is **not** publicly readable.
 
