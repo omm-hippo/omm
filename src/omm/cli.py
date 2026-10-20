@@ -1014,8 +1014,8 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "upgrade", "pin", "unpin", "rollback"]),
-    ("Tuning & quality", ["tune", "benchmark", "contribute"]),
+    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "compare", "upgrade", "pin", "unpin", "rollback", "web"]),
+    ("Tuning & quality", ["tune", "benchmark", "evaluate", "arena", "contribute"]),
     (
         "Maintenance",
         [
@@ -1030,6 +1030,7 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "export",
             "update",
             "log",
+            "bug-report",
             "help",
         ],
     ),

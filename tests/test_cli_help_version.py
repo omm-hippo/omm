@@ -82,6 +82,15 @@ def test_help_all_lists_pin_unpin_rollback():
         assert name in result.stdout, f"missing command: {name}"
 
 
+def test_help_all_slots_every_command_into_a_named_group():
+    # The "Other" section is only a safety net for a newly added command;
+    # every shipped top-level command belongs in a named group.
+    result = runner.invoke(cli.app, ["help", "--all"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Other:" not in result.stdout
+
+
 def test_help_all_expands_nested_setting_subcommands():
     result = runner.invoke(cli.app, ["help", "--all"])
 
