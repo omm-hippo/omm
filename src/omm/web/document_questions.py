@@ -7,7 +7,8 @@ import re
 import uuid
 
 from omm import cli, hardware, install_state, memory_guard, registry
-from omm.documents import DocumentStore, NO_EVIDENCE
+from omm.documents import DocumentStore, NO_EVIDENCE, RETRIEVAL_METHOD
+from omm.web import document_settings
 from omm.engines.base import LoadOptions
 from omm.web.probe import adapter_for
 
@@ -25,10 +26,24 @@ def answer(request, stop):
     revision, sources = store.search(request["question"], request["document_ids"])
     result = {"id": str(uuid.uuid4()), "created_at": datetime.now(timezone.utc).isoformat(),
               "question": request["question"], "sources": sources, "engine": request["engine"],
-              "filename": request["filename"], "retrieval": "local_lexical_v1",
+              "filename": request["filename"], "retrieval": RETRIEVAL_METHOD,
               "status": "no_evidence", "answer": NO_EVIDENCE}
     if not sources:
         return store.save_answer(result, revision)
+    try:
+        _generate(request, stop, sources, result)
+    except Exception as error:
+        # A newly chosen model that fails falls back to the last model that
+        # answered. Only the remembered choice changes, never files or documents.
+        note = None if stop.is_set() else document_settings.rollback_after_failure(request["filename"], request["engine"])
+        if note:
+            raise ValueError(f"{error} {note}") from None
+        raise
+    document_settings.confirm(request["filename"], request["engine"])
+    return store.save_answer(result, revision)
+
+
+def _generate(request, stop, sources, result):
     adapter = receipt = None
     filename, engine = request["filename"], request["engine"]
     with install_state.cleanup_guard(filename):
@@ -72,4 +87,3 @@ def answer(request, stop):
         finally:
             if receipt is not None and not adapter.unload(receipt).unloaded:
                 raise ValueError("답변용 모델의 메모리 해제를 확인하지 못했어요. 실행 앱에서 확인해 주세요.")
-    return store.save_answer(result, revision)

@@ -99,7 +99,7 @@ class JobManager:
                     return
                 proc = subprocess.Popen(worker_argv(),
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                        env={**os.environ, "OMM_HOME": str(config.OMM_HOME)},
+                                        env={**os.environ, "OMM_HOME": str(config.OMM_HOME), "PYTHONIOENCODING": "utf-8"},
                                         **kwargs)
                 self.processes[jid] = proc
                 job["status"] = "running"

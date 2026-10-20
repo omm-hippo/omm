@@ -106,7 +106,10 @@ saved; the previous revision is preserved on failure. Restoring uses the model's
 current digest. Saving, restoration and comparison run as serialized durable
 jobs. Existing loaded models are never unloaded to make room for these trials.
 
-**파일·설정** shows storage capacity and managed file size. External-file search
+**파일·설정** shows storage capacity, managed file size and the cumulative space
+saved by adopting external files (`storage_saved_bytes`, the same counter
+`omm scan` reports as "saved via omm import"; web adoption adds to it like
+`omm import`). External-file search
 only creates a preview; adoption requires confirmation of a selected preview
 and revalidation of its size/hash. Original runner files may become links during
 adoption. Cleanup accepts only previewed incomplete downloads; changed bytes,
@@ -157,8 +160,12 @@ bounded-input checks. There is no automatic startup/reload of saved chats.
 
 ## 로컬 문서에 질문하기
 
-‘내 문서’에서 텍스트 PDF(100쪽 이하), UTF-8 TXT/Markdown을 파일당 6 MiB까지 등록합니다. 선택한 문서에서 단어가 일치하는 구간을 로컬 검색한 뒤, 연결된 Ollama/LM Studio 모델에 질문과 원문 구간을 보냅니다. 파일명·페이지·추출 텍스트 위치와 원문을 함께 확인하세요. 검색 점수와 출처 번호는 답변 정확도를 보장하지 않습니다. 의미 검색/임베딩·OCR·HWP·HTML·fine-tuning은 지원하지 않습니다.
+‘내 문서’에서 텍스트 PDF(100쪽 이하), UTF-8 TXT/Markdown, HTML(UTF-8 또는 meta charset 선언), HWPX를 파일당 6 MiB까지 등록합니다. HTML은 script/style 내용을 빼고 본문 텍스트만, HWPX는 본문 문단(표 칸 포함)만 추출하며 본문 텍스트가 없으면 등록 실패로 표시합니다. PDF 지원은 `pypdf` 의존성을 쓰며, 없으면 다시 설치하라는 안내를 표시합니다. 선택한 문서에서 단어가 일치하는 구간을 로컬 검색한 뒤, 연결된 Ollama/LM Studio 모델에 질문과 원문 구간을 보냅니다. 파일명·페이지·추출 텍스트 위치와 원문을 함께 확인하세요. 검색 점수와 출처 번호는 답변 정확도를 보장하지 않습니다. 의미 검색/임베딩·OCR·HWP(한글 97 형식)·fine-tuning은 지원하지 않습니다. 실제 한글 프로그램이 만든 HWPX 파일로는 아직 확인하지 않았습니다(미검증, 손으로 만든 샘플로만 시험).
 
 문서와 검색 색인, 최근 30개 답변은 `OMM_HOME/documents/library.sqlite3`에 저장합니다. 원본 파일은 이동하거나 삭제하지 않습니다. 같은 이름은 명시적으로 교체해야 하며 등록 실패 시 기존 자료를 유지합니다. 교체·삭제하면 이전 답변 기록 전체를 지워 삭제한 원문 인용이 남지 않게 합니다. 최대 100개 문서·200만 자 검색 텍스트를 보관하고, 한 질문에 최대 20개 문서를 선택할 수 있습니다.
+
+각 문서에는 색인을 만든 검색 방식(`local_lexical_v1`)과 분할 설정 버전을 함께 저장합니다. 이후 버전에서 방식이 바뀌면 그 문서는 검색을 거절하고 ‘같은 이름의 문서 교체’로 다시 등록하라고 안내합니다(같은 파일이어도 다시 색인합니다).
+
+답변 모델·실행 앱·선택한 문서는 문서와 별도의 작은 설정(`OMM_HOME/documents/question-settings.json`)으로 기억해 다음에 열 때 복원합니다. 생성 모델을 바꾸면 무엇이 바뀌는지(모델, 실행 앱)와 문서·색인은 그대로라는 설명을 표시합니다. 새 모델이 첫 질문에서 실패하면 마지막으로 답변했던 모델로 선택만 되돌리며 문서·색인·모델 파일은 건드리지 않습니다. 새 모델이 더 좋은 답변을 낸다고 보장하지 않습니다.
 
 모델은 질문 때마다 명시적으로 선택하며 생성 모델을 바꿔도 문서 색인을 다시 만들지 않습니다. 기존 로딩이 있으면 그 작업을 보존하고 질문을 거절합니다. 메모리 여유를 확인한 뒤 이 질문이 로딩한 모델만 해제합니다. 근거가 없으면 모델에 질문을 보내지 않습니다. 문서의 명령문은 지시가 아닌 인용 자료로 취급합니다. 모델이 올바른 출처 번호를 반환하지 않으면 답변 대신 원문을 확인하라는 안내를 표시합니다.

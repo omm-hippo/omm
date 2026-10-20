@@ -11,8 +11,19 @@ _OUTPUT_LOCK = threading.Lock()
 
 
 def emit(event: str, **fields):
+    # The parent decodes each line as UTF-8. A piped stdout on Korean Windows
+    # defaults to cp949, so never let the console encoding shape the protocol:
+    # ASCII-only JSON is valid UTF-8 and survives any code page.
+    line = (json.dumps({"event": event, **fields}, ensure_ascii=True) + "\n").encode("ascii")
     with _OUTPUT_LOCK:
-        print(json.dumps({"event": event, **fields}, ensure_ascii=False), flush=True)
+        stream = getattr(sys.stdout, "buffer", None)
+        if stream is None:
+            sys.stdout.write(line.decode("ascii"))
+            sys.stdout.flush()
+            return
+        sys.stdout.flush()
+        stream.write(line)
+        stream.flush()
 
 
 def execute(request: dict, stop: threading.Event) -> dict:

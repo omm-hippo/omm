@@ -313,7 +313,9 @@ def test_document_routes_require_session_and_bounded_json(server):
     assert requests.get(server.url + 'api/documents', timeout=5).status_code == 401
     client = session(server)
     response = client.get(server.url + 'api/documents', timeout=5)
-    assert response.json() == {'documents': [], 'answers': []}
+    value = response.json()
+    assert value['documents'] == [] and value['answers'] == []
+    assert value['settings']['selected'] is None and value['settings']['index']['retrieval'] == 'local_lexical_v1'
     assert client.post(server.url + 'api/documents', json={}, timeout=5).status_code == 403
     # The server rejects Content-Length before reading an oversized body.
     # Sending 9 MiB concurrently with that early close can reset the client
@@ -345,7 +347,7 @@ def test_real_worker_imports_large_text_and_persists_after_manager_restart(serve
     headers = {'X-OMM-Web':'1'}
     response = client.post(server.url+'api/documents',json=body,headers=headers,timeout=5)
     assert response.status_code==202, response.text
-    for _ in range(100):
+    for _ in range(400):  # worker start-up can take seconds on a loaded machine
         job = next(x for x in client.get(server.url+'api/jobs',timeout=5).json() if x['id']==request_id)
         if job['status'] in {'completed','failed'}:break
         time.sleep(.05)
@@ -359,3 +361,87 @@ def test_real_worker_imports_large_text_and_persists_after_manager_restart(serve
         assert next(x for x in restarted.list() if x['id']==request_id)['status']=='completed'
         assert DocumentStore().list()[0]['chunks']>1
     finally:restarted.close()
+
+
+def _wait_job(manager, request_id):
+    import time
+    for _ in range(400):
+        job = next(x for x in manager.list() if x['id']==request_id)
+        if job['status'] in {'completed','failed','cancelled'}:
+            return job
+        time.sleep(.05)
+    raise AssertionError(job)
+
+
+def test_worker_protocol_survives_cp949_stdout(monkeypatch):
+    # Korean Windows pipes stdout as cp949: the protocol must not depend on it.
+    import os
+    import subprocess
+    import sys
+    env = {**os.environ, 'PYTHONIOENCODING': 'cp949'}
+    code = "from omm.web.worker import emit; emit('failed', message='모델 실패 \U0001F600 ✓'); emit('completed', result={'name': '문서\U0001F4C4.txt'})"
+    out = subprocess.run([sys.executable, '-c', code], env=env, capture_output=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    events = [json.loads(line) for line in out.stdout.splitlines()]
+    assert events[0] == {'event': 'failed', 'message': '모델 실패 \U0001F600 ✓'}
+    assert events[1]['result']['name'] == '문서\U0001F4C4.txt'
+    assert all(byte < 128 for byte in out.stdout)
+
+
+def test_real_worker_reports_korean_results_through_cp949_pipe(monkeypatch, isolated_omm_home):
+    import base64
+    import sys
+    from omm.web import jobs
+    # Force the worker's text stdout to cp949 even though the parent passes
+    # PYTHONIOENCODING=utf-8, mirroring the packaged `_web-worker` entry.
+    monkeypatch.setattr(jobs, 'worker_argv', lambda: [sys.executable, '-c',
+        "import sys; sys.stdout.reconfigure(encoding='cp949'); from omm.web.worker import main; raise SystemExit(main())"])
+    manager = JobManager()
+    try:
+        done_id = str(uuid.uuid4())
+        name = '자료\U0001F4C4.txt'
+        manager.start({'operation':'document_import','filename':name,
+                       'content':base64.b64encode('자기장 측정 안내 \U0001F600\n'.encode()).decode()}, done_id)
+        job = _wait_job(manager, done_id)
+        assert job['status']=='completed', job
+        assert job['result']['name']==name
+        failed_id = str(uuid.uuid4())
+        manager.start({'operation':'document_delete','filename':'없음','document_id':'missing'}, failed_id)
+        job = _wait_job(manager, failed_id)
+        assert job['status']=='failed' and '문서를 찾을 수 없어요' in job['message'], job
+    finally:
+        manager.close()
+
+
+def test_document_question_settings_are_remembered_and_explain_model_change(server):
+    for name in ('first.gguf','second.gguf'):
+        config.MODELS_DIR.mkdir(parents=True,exist_ok=True);(config.MODELS_DIR/name).write_bytes(b'GGUF')
+        registry.upsert_entry(name,linked={'ollama':True,'lmstudio':True},ollama_name=name[:-5])
+    client = session(server)
+    headers = {'X-OMM-Web':'1'}
+    url = server.url+'api/documents/settings'
+    assert client.post(url,json={'confirmed':True,'model_id':'/tmp/x.gguf','engine':'ollama'},headers=headers,timeout=5).status_code==400
+    assert client.post(url,json={'model_id':identifier('first.gguf'),'engine':'ollama'},headers=headers,timeout=5).status_code==400
+    first = client.post(url,json={'confirmed':True,'model_id':identifier('first.gguf'),'engine':'ollama','document_ids':['doc-1']},headers=headers,timeout=5).json()
+    assert first['change'] is None and first['settings']['selected']['filename']=='first.gguf'
+    second = client.post(url,json={'confirmed':True,'model_id':identifier('second.gguf'),'engine':'lmstudio','document_ids':['doc-1']},headers=headers,timeout=5).json()
+    assert 'first.gguf → second.gguf' in second['change'] and 'Ollama → LM Studio' in second['change']
+    assert '검색 색인은 그대로' in second['change']
+    remembered = client.get(server.url+'api/documents',timeout=5).json()['settings']
+    assert remembered['selected']=={'model_id':identifier('second.gguf'),'filename':'second.gguf','engine':'lmstudio'}
+    assert remembered['document_ids']==['doc-1']
+    only_documents = client.post(url,json={'confirmed':True,'document_ids':['doc-2']},headers=headers,timeout=5).json()
+    assert only_documents['settings']['selected']['filename']=='second.gguf' and only_documents['settings']['document_ids']==['doc-2']
+
+
+def test_files_api_reports_storage_saved_bytes(server):
+    config.add_storage_saved_bytes(3*1024**3)
+    value = session(server).get(server.url+'api/files',timeout=5).json()
+    assert value['storage_saved_bytes'] == 3*1024**3 and 'managed_bytes' in value
+
+
+def test_wiki_route_serves_the_same_bundled_catalog_as_cli(server):
+    from omm import model_wiki
+    value = session(server).get(server.url+'api/wiki',timeout=5).json()
+    assert value == json.loads(json.dumps(model_wiki.catalog()))
+    assert value['contentVersion'] == model_wiki.load()['contentVersion']

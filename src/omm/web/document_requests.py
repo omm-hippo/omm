@@ -37,3 +37,21 @@ def validate(path, body, service):
         raise ValueError("내 모델에서 실행 앱 연결을 확인해 주세요.")
     return {"operation": "document_question", "filename": selected["filename"], "engine": body["engine"],
             "question": question.strip(), "document_ids": ids}
+
+
+def settings_change(body, service):
+    """Remember the document-question choice; the model must be a linked managed model."""
+    from omm.web import document_settings
+    if not isinstance(body, dict) or body.get("confirmed") is not True or set(body) - {"confirmed", "model_id", "engine", "document_ids"}:
+        raise ValueError("문서 질문 설정 변경을 확인해 주세요.")
+    ids = body.get("document_ids", [])
+    if not isinstance(ids, list) or len(ids) > 20 or any(not isinstance(x, str) or len(x) > 40 for x in ids):
+        raise ValueError("질문할 문서는 20개까지 선택할 수 있어요.")
+    if "model_id" not in body:
+        return document_settings.select_documents(ids)
+    if body.get("engine") not in {"ollama", "lmstudio"} or not isinstance(body["model_id"], str):
+        raise ValueError("연결된 Ollama 또는 LM Studio 모델을 선택해 주세요.")
+    selected = next((row for row in service.models() if row["id"] == body["model_id"]), None)
+    if not selected or not selected["exists"] or body["engine"] not in selected["engines"]:
+        raise ValueError("내 모델에서 실행 앱 연결을 확인해 주세요.")
+    return document_settings.select(selected["id"], selected["filename"], body["engine"], ids)
