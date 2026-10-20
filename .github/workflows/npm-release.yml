@@ -302,7 +302,8 @@ jobs:
       vars.NPM_TRUSTED_PUBLISHING == 'enabled'
     needs: [identity, smoke]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Six packages; each may take minutes to become visible after publish.
+    timeout-minutes: 60
     environment:
       name: npm
       url: https://www.npmjs.com/package/@omm-hippo/omm
