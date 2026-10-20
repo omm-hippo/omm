@@ -73,6 +73,26 @@ def test_blank_and_encrypted_pdf_are_not_success(isolated_omm_home):
     with pytest.raises(ValueError,match='암호'):extract('locked.pdf',stream.getvalue())
 
 
+def test_pdf_without_pypdf_explains_reinstall(isolated_omm_home,monkeypatch):
+    import builtins
+    real_import=builtins.__import__
+    def blocked(name,*args,**kwargs):
+        if name=='pypdf' or name.startswith('pypdf.'):raise ImportError('blocked')
+        return real_import(name,*args,**kwargs)
+    monkeypatch.setattr(builtins,'__import__',blocked)
+    with pytest.raises(ValueError,match='pypdf') as error:extract('doc.pdf',b'%PDF-1.4 data')
+    assert '다시 설치' in str(error.value)
+    assert DocumentStore().list()==[]
+
+
+def test_pypdf_is_a_runtime_dependency():
+    import re
+    from pathlib import Path
+    text=(Path(__file__).resolve().parents[1]/'pyproject.toml').read_text(encoding='utf-8')
+    block=re.search(r'^dependencies = \[(.*?)^\]',text,re.M|re.S).group(1)
+    assert '"pypdf>=' in block
+
+
 def test_text_pdf_keeps_page_numbers(isolated_omm_home):
     # Minimal real PDF text objects; extraction is not mocked.
     from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject

@@ -43,7 +43,10 @@ def extract(name: str, content: bytes) -> list[tuple[int, str]]:
     if suffix not in {".pdf", ".txt", ".md", ".markdown"}:
         raise ValueError("텍스트 PDF, TXT, Markdown만 지원해요. 스캔 PDF와 HWP는 아직 지원하지 않아요.")
     if suffix == ".pdf":
-        from pypdf import PdfReader
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            raise ValueError("PDF를 읽으려면 pypdf 패키지가 필요해요. omm을 다시 설치하거나 업데이트한 뒤 시도해 주세요.") from None
         try:
             reader = PdfReader(io.BytesIO(content), strict=True)
             if reader.is_encrypted:
