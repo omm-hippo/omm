@@ -106,9 +106,23 @@ def _owned_ollama_process(pid: int) -> psutil.Process | None:
         return None
 
 
+def _lmstudio_port() -> tuple[int | None, str | None]:
+    """(live port, None) while LM Studio's server runs, (None, None) when
+    `lms` positively reports it stopped, else (None, why it is unknown)."""
+    lms_path = linker._lms_cli_path()
+    if lms_path is None:
+        return None, "LM Studio's lms command was not found, so its server state could not be read"
+    status = linker._lmstudio_server_status(lms_path)
+    if status is None:
+        return None, "LM Studio did not report its server state"
+    if not status.get("running"):
+        return None, None
+    return status.get("port"), None
+
+
 def _port(engine: str) -> int | None:
     if engine == "lmstudio":
-        return linker.lmstudio_server_port()
+        return _lmstudio_port()[0]
     try:
         parsed = urlsplit(__import__("omm.benchmark", fromlist=["OLLAMA_HOST"]).OLLAMA_HOST)
         return parsed.port or 11434
@@ -149,12 +163,24 @@ def inspect(engine: str) -> dict[str, object]:
     engine = engine.strip().casefold()
     if engine not in {"ollama", "lmstudio"}:
         raise EngineSecurityError("engine security supports only ollama and lmstudio")
-    port = _port(engine)
+    if engine == "lmstudio":
+        port, unknown_reason = _lmstudio_port()
+    else:
+        port, unknown_reason = _port(engine), None
     if port is None:
+        if unknown_reason is None:
+            return {
+                "engine": engine,
+                "status": "not_running",
+                "reason": "the server is stopped, so no device can connect to it",
+                "port": None,
+                "listeners": [],
+                "owned_by_omm": False,
+            }
         return {
             "engine": engine,
             "status": "unknown",
-            "reason": "server is not running or its listening port could not be read",
+            "reason": unknown_reason,
             "port": None,
             "listeners": [],
             "owned_by_omm": False,
@@ -170,10 +196,12 @@ def inspect(engine: str) -> dict[str, object]:
             "owned_by_omm": False,
         }
     if not listeners:
+        # The listener table was read successfully and nothing listens on
+        # this port: that is a definite "nothing can connect", not a guess.
         return {
             "engine": engine,
-            "status": "unknown",
-            "reason": "no matching listening socket was visible",
+            "status": "not_running",
+            "reason": f"nothing is listening on port {port}, so no device can connect to it",
             "port": port,
             "listeners": [],
             "owned_by_omm": False,
@@ -207,7 +235,7 @@ def inspect(engine: str) -> dict[str, object]:
 
 def fix_local_only(engine: str) -> dict[str, object]:
     status = inspect(engine)
-    if status["status"] == "local_only":
+    if status["status"] in {"local_only", "not_running"}:
         return {**status, "changed": False}
     if engine != "ollama" or status["status"] != "external_allowed":
         raise EngineSecurityError(

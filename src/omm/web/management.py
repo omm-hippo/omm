@@ -122,7 +122,8 @@ def files() -> dict:
             "managed_bytes": sum((root / name).stat().st_size for name in registry.load_registry()
                                  if (root / name).is_file() and (root / name).resolve().is_relative_to(root.resolve())),
             "partials": partials,
-            # Same cumulative counter `omm scan` reports as "saved via omm import".
+            # Cumulative bytes `omm import` freed. `omm scan` instead reports
+            # live link sharing (`linker.shared_link_bytes`), which includes these.
             "storage_saved_bytes": int(_inspect_config().get("storage_saved_bytes") or 0)}
 
 
