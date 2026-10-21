@@ -25,6 +25,80 @@ class WebService:
     def __init__(self):
         self.candidates: dict[str, dict] = {}
         self.lock = threading.RLock()
+        self.partial_files: dict[str, dict] = {}
+        self.discovered: dict[str, list[dict]] = {}
+
+    def wiki_packages(self, model_id: str, profile: str = "balanced") -> dict:
+        if profile not in predictor.RECOMMEND_PROFILES:
+            raise ValueError("Unknown memory profile")
+        selected = next((x for x in model_wiki.catalog()["models"] if x["id"] == model_id), None)
+        if not selected:
+            raise ValueError("위키에서 모델을 선택해 주세요.")
+        artifact = predictor.load_cached_model()
+        candidates = list(artifact["candidates"]) if artifact else []
+        if not artifact:
+            for rule in rules.load_rules():
+                coordinates = hub.CURATED_INDEX.get(rule.get("name"))
+                if coordinates:
+                    repo, filename = coordinates
+                    candidates.append({**rule, "repo_id": repo, "filename": filename, "provider": "huggingface"})
+        with self.lock:
+            candidates.extend(self.discovered.get(model_id, []))
+        matches = {}
+        for candidate in candidates:
+            description = candidate.get("wiki") or model_wiki.describe(candidate)
+            if description and description["id"] == model_id:
+                matches[search.exact_install_ref(candidate)] = (candidate, description)
+        info = hardware.scan_hardware()
+        rows = []
+        budget = min(predictor.profile_memory_cap_gb(info, profile), hardware.calculate_memory_budget(info).install_budget_gb)
+        for ref, (candidate, description) in list(matches.items())[:100]:
+            memory = predictor.estimate_required_memory_gb(candidate)
+            fit = predictor.candidate_fits_memory(info, candidate)
+            fits = None if fit is None or memory is None else fit is True and memory <= budget
+            cid = identifier(ref)
+            with self.lock:
+                self.candidates[cid] = {"ref": ref, "filename": candidate["filename"]}
+            rows.append({"id": cid, "ref": ref, "filename": candidate["filename"], "name": selected["name"],
+                         "quantization": recommend_selection.quantization_label(candidate), "fits": fits,
+                         "memory_required_gb": memory, "size_bytes": candidate.get("size_bytes"),
+                         "wiki": description})
+        rows.sort(key=lambda x: (x["fits"] is not True, x["memory_required_gb"] or float("inf")))
+        return {"model": selected, "packages": rows, "budget_gb": budget}
+
+    def discover_packages(self, model_id: str, profile: str = "balanced") -> dict:
+        from omm.web.discovery import discover
+        selected = next((x for x in model_wiki.catalog()["models"] if x["id"] == model_id), None)
+        if not selected:
+            raise ValueError("위키에서 모델을 선택해 주세요.")
+        import requests
+        try:
+            candidates = discover(selected)
+        except requests.RequestException:
+            # Offline or blocked: the bundled wiki and cached packages stay usable.
+            raise ValueError("Hugging Face에 연결하지 못했어요. 지금은 이 컴퓨터에 있는 위키·추천 자료의 설치 파일만 보여줘요.") from None
+        with self.lock:
+            self.discovered[model_id] = candidates
+        return self.wiki_packages(model_id, profile)
+
+    def files(self) -> dict:
+        from omm.web import management
+        value = management.files()
+        with self.lock:
+            self.partial_files = {x["id"]: x for x in value["partials"]}
+        return value
+
+    def model_settings(self, key: str) -> dict:
+        from omm.web import management
+        selected = next((x for x in self.models() if x["id"] == key and x["exists"]), None)
+        if not selected:
+            raise ValueError("설치된 모델을 선택해 주세요.")
+        return management.model_settings(selected["filename"], registry.load_registry()[selected["filename"]])
+
+    def chat_request(self, body: dict) -> dict:
+        if not isinstance(body, dict) or set(body) - {"id", "engine", "confirmed", "request_id", "chat_id"}:
+            raise ValueError("지원하지 않는 채팅 입력이에요.")
+        return self.request({k: v for k, v in {**body, "operation": "verify"}.items() if k != "chat_id"})
 
     def machine(self) -> dict:
         info = hardware.scan_hardware()
@@ -123,19 +197,55 @@ class WebService:
                                             if artifact and isinstance(artifact.get("evaluation"), dict) else None}}
 
     def request(self, body: dict) -> dict:
-        if not isinstance(body, dict) or set(body) - {"operation", "id", "engine", "confirmed", "request_id"}:
+        if not isinstance(body, dict) or set(body) - {"operation", "id", "ids", "engine", "confirmed", "request_id"}:
             raise ValueError("Unsupported operation fields")
         operation = body.get("operation")
-        if operation not in {"install", "link", "uninstall", "verify"}:
+        if operation not in {"install", "link", "uninstall", "verify", "compare", "profile_save", "profile_restore", "engine_install", "import_scan", "import", "cleanup"}:
             raise ValueError("Unsupported operation")
-        key = body.get("id")
-        if not isinstance(key, str) or len(key) != 64:
-            raise ValueError("Select a model from this session")
+        if body.get("confirmed") is not True:
+            raise ValueError("The operation must be explicitly confirmed")
         engine = body.get("engine") or None
         if engine is not None and engine not in {s.key for s in linker.ENGINES}:
             raise ValueError("Unknown local runner")
-        if body.get("confirmed") is not True:
-            raise ValueError("The operation must be explicitly confirmed")
+        if operation in {"import_scan", "cleanup", "engine_install", "compare"}:
+            if body.get("id") is not None:
+                raise ValueError("이 작업에는 단일 모델 ID를 사용하지 않아요.")
+            if operation == "engine_install":
+                if engine is None or body.get("ids") is not None:
+                    raise ValueError("설치할 실행 앱을 선택해 주세요.")
+                return {"operation": operation, "filename": engine, "engine": engine}
+            if operation == "import_scan":
+                if engine is not None or body.get("ids") is not None:
+                    raise ValueError("파일 검색에는 추가 입력을 사용하지 않아요.")
+                return {"operation": operation, "filename": "외부 모델 검색"}
+            ids = body.get("ids")
+            maximum = 4 if operation == "compare" else 50
+            if not isinstance(ids, list) or not 1 <= len(ids) <= maximum or any(not isinstance(x, str) for x in ids) or len(set(ids)) != len(ids):
+                raise ValueError(f"1–{maximum}개의 서로 다른 대상을 선택해 주세요.")
+            if operation == "cleanup":
+                with self.lock:
+                    rows = [self.partial_files.get(key) for key in ids]
+                if engine is not None or any(x is None for x in rows):
+                    raise ValueError("파일 목록을 다시 확인해 주세요.")
+                return {"operation": operation, "filename": "불완전 다운로드 정리", "files": rows}
+            if engine not in {"ollama", "lmstudio"}:
+                raise ValueError("비교할 실행 앱을 선택해 주세요.")
+            managed = {x["id"]: x for x in self.models()}
+            rows = [managed.get(key) for key in ids]
+            if any(x is None or not x["exists"] or engine not in x["engines"] for x in rows):
+                raise ValueError("선택한 실행 앱에 연결된 모델을 선택해 주세요.")
+            return {"operation": operation, "filename": "모델 성능 비교", "filenames": [x["filename"] for x in rows], "engine": engine}
+        key = body.get("id")
+        if not isinstance(key, str) or len(key) != 64:
+            raise ValueError("Select a model from this session")
+        if body.get("ids") is not None:
+            raise ValueError("이 작업에는 단일 대상을 선택해 주세요.")
+        if operation == "import":
+            from omm.web.maintenance import read_import_preview
+            selected = next((x for x in read_import_preview() if x["id"] == key), None)
+            if not selected or engine is not None:
+                raise ValueError("외부 모델 검색 결과에서 다시 선택해 주세요.")
+            return {"operation": operation, "filename": selected["name"], "group": selected}
         if operation == "install":
             with self.lock:
                 selected = self.candidates.get(key)
@@ -145,8 +255,8 @@ class WebService:
         selected = next((x for x in self.models() if x["id"] == key), None)
         if not selected:
             raise ValueError("This model is not managed by OMM")
-        if operation in {"link", "verify"} and not selected["exists"]:
+        if operation in {"link", "verify", "profile_save", "profile_restore"} and not selected["exists"]:
             raise ValueError("The managed model file is missing")
-        if operation == "verify" and (engine not in {"ollama", "lmstudio"} or engine not in selected["engines"]):
+        if operation in {"verify", "profile_save", "profile_restore"} and (engine not in {"ollama", "lmstudio"} or engine not in selected["engines"]):
             raise ValueError("Select a linked Ollama or LM Studio runtime")
         return {"operation": operation, "filename": selected["filename"], "engine": engine}

@@ -34,6 +34,7 @@ class JobManager:
         self.jobs = {}
         self.processes = {}
         self.closed = False
+        self.operation_guard = None
         if self.root.is_symlink():
             raise ValueError("Refusing a symlinked job directory")
         self.root.mkdir(parents=True, exist_ok=True)
@@ -72,6 +73,8 @@ class JobManager:
                 if existing.get("request_digest") != digest:
                     raise JobConflict("This request ID already belongs to another operation")
                 return dict(existing)
+            if self.operation_guard is not None:
+                self.operation_guard()
             if any(j["status"] in {"queued", "running", "cancelling"} for j in self.jobs.values()):
                 raise JobConflict("Another model operation is still running")
             if len(self.jobs) >= 100:
@@ -87,6 +90,7 @@ class JobManager:
             return dict(job)
 
     def _run(self, jid, request):
+        timer = None
         try:
             kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
             with self.lock:
@@ -95,10 +99,15 @@ class JobManager:
                     return
                 proc = subprocess.Popen(worker_argv(),
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                        env={**os.environ, "OMM_HOME": str(config.OMM_HOME), "PYTHONIOENCODING": "utf-8"},
                                         **kwargs)
                 self.processes[jid] = proc
                 job["status"] = "running"
                 self._save(job)
+            if request["operation"] == "document_import":
+                timer = threading.Timer(60, proc.kill)
+                timer.daemon = True
+                timer.start()
             proc.stdin.write(json.dumps(request).encode())
             proc.stdin.close()
             last_saved = 0.0
@@ -115,7 +124,7 @@ class JobManager:
                     job = self.jobs[jid]
                     kind = event.get("event")
                     if kind == "progress":
-                        for field in ("bytes_received", "total_bytes"):
+                        for field in ("bytes_received", "total_bytes", "completed_count", "total_count"):
                             value = event.get(field)
                             if value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
                                 job[field] = value
@@ -138,6 +147,8 @@ class JobManager:
                 self.jobs[jid].update(status="failed", message=str(error)[:2000])
                 self._save(self.jobs[jid])
         finally:
+            if timer is not None:
+                timer.cancel()
             with self.lock:
                 self.processes.pop(jid, None)
 
@@ -150,8 +161,8 @@ class JobManager:
             job = self.jobs.get(jid)
             if not job:
                 raise ValueError("Unknown job")
-            if job["operation"] != "install" or job["status"] not in {"queued", "running", "cancelling"}:
-                raise JobConflict("Only a running installation can be cancelled")
+            if job["operation"] not in {"install", "compare"} or job["status"] not in {"queued", "running", "cancelling"}:
+                raise JobConflict("Only a running installation or comparison can be cancelled")
             proc = self.processes.get(jid)
             if proc:
                 job["status"] = "cancelling"
@@ -173,7 +184,7 @@ class JobManager:
             ids = list(self.processes)
         for jid in ids:
             try:
-                if self.jobs[jid]["operation"] == "install":
+                if self.jobs[jid]["operation"] in {"install", "compare"}:
                     self.cancel(jid)
             except (ValueError, OSError):
                 pass
@@ -182,7 +193,7 @@ class JobManager:
                 proc = self.processes.get(jid)
             if proc:
                 try:
-                    proc.wait(timeout=240 if self.jobs[jid]["operation"] == "verify" else 5)
+                    proc.wait(timeout=240 if self.jobs[jid]["operation"] in {"verify", "compare", "profile_save", "document_question"} else 5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=5)

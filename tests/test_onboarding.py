@@ -387,6 +387,22 @@ def test_run_wizard_completes_with_no_engines_selected(monkeypatch):
     assert "Setup complete" in console.file.getvalue()
 
 
+def test_run_wizard_end_points_to_local_web_manager_and_launchers(monkeypatch):
+    """#423: first-time users who never touch the CLI again need the click
+    path (browser manager + double-click launchers) at the end of setup."""
+    console = _console(width=400)
+    monkeypatch.setattr(onboarding, "run_theme_step", lambda c: "dark")
+    monkeypatch.setattr(onboarding, "print_hardware_summary", lambda c: None)
+    monkeypatch.setattr(onboarding, "run_engine_checklist", lambda c: [])
+
+    onboarding.run_wizard(console)
+
+    output = console.file.getvalue()
+    assert "omm web --open" in output
+    assert "omm web --create-launchers DIRECTORY" in output
+    assert output.index("Setup complete") < output.index("omm web --open")
+
+
 def test_run_wizard_aborts_when_engine_checklist_is_cancelled(monkeypatch):
     """A Ctrl+C/Escape abort during the checklist must surface as
     `None`, not `[]` - `run_wizard` must not print "Setup complete" or let

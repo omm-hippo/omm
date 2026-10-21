@@ -29,6 +29,7 @@ FAMILY_KEYWORDS: list[str] = [
     "StableLM",
     "Falcon",
     "Yi",
+    "EXAONE",
 ]
 
 # HF is full of spam repos claiming to be "distilled" or "fine-tuned" from
@@ -188,6 +189,7 @@ def _curated_as_candidates() -> list[dict]:
             "repo_id": repo_id,
             "filename": filename,
             "description": "Curated default",
+            **hub.CURATED_METADATA.get(name, {}),
         }
         for name, (repo_id, filename) in hub.CURATED_INDEX.items()
     ]
@@ -212,6 +214,28 @@ def local_candidate_pool(
         seen.add(key)
         deduped.append(candidate)
     return deduped
+
+
+def with_curated_candidates(artifact: dict) -> dict:
+    """Supplement a verified predictor with trusted bundled coordinates.
+
+    A rejected retrain can leave its signed candidate list behind the bundled
+    index. Add missing exact packages in memory, retaining signed rows and
+    leaving the artifact and its cache bytes unchanged. No provider request.
+    """
+    def key(candidate: dict) -> tuple[str, str | None, str | None]:
+        return (
+            candidate.get("provider") or "huggingface",
+            candidate.get("repo_id"), candidate.get("filename"),
+        )
+
+    candidates = list(artifact.get("candidates", []))
+    seen = {key(c) for c in candidates}
+    for candidate in _curated_as_candidates():
+        if key(candidate) not in seen:
+            candidates.append(candidate)
+            seen.add(key(candidate))
+    return {**artifact, "candidates": candidates}
 
 
 def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> list[dict]:

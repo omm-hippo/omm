@@ -900,3 +900,5 @@ if (Test-Path -LiteralPath $LegacySrcDir) {
 Write-Host ""
 Write-Host "Done. If 'omm' isn't found, open a new PowerShell window (pipx just updated your PATH)."
 Write-Host "Try:  omm scan"
+Write-Host 'Local web manager:  omm web --open   (opens the model manager in your browser; Ctrl+C stops it)'
+Write-Host 'Click launchers:     omm web --create-launchers "$HOME\Desktop"   (then double-click Open-OMM.cmd)'

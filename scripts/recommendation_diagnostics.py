@@ -34,6 +34,8 @@ def _size_band(features: dict) -> str:
 
 def build_report(candidate: dict, baseline: dict, training_X, training_y, holdout_X, holdout_y,
                  *, telemetry_audit: dict, fit_audit: dict | None = None) -> dict:
+    from scripts.benchmark_coverage import _dimensions, build_coverage
+
     order = candidate["feature_order"]
     provenance = training_provenance(order, training_X, holdout_X)
     old = baseline.get("training_provenance")
@@ -52,6 +54,9 @@ def build_report(candidate: dict, baseline: dict, training_X, training_y, holdou
             ("memory", f"ram_{features.get('ram_gb'):g}_vram_{features.get('vram_gb'):g}"),
         ):
             groups[(dimension, label)].append(index)
+        for dimension, label in _dimensions(features).items():
+            if dimension in {"cpu_profile", "gpu_profile", "memory_type", "context_length"}:
+                groups[(dimension, label)].append(index)
         contexts[context_hash(order, row)].append(index)
 
     def compare(indices):
@@ -84,6 +89,10 @@ def build_report(candidate: dict, baseline: dict, training_X, training_y, holdou
             "candidate": evaluate_artifact(candidate, training_X, training_y),
         },
         "training_by_engine": dict(sorted(engines.items())),
+        "observed_coverage": build_coverage(
+            order, training_X, holdout_X, audit=telemetry_audit,
+            synthetic_rows=candidate.get("synthetic_row_count"),
+        ),
         "coverage_gaps": {
             "engines_without_training_rows": [name for name in ("ollama", "lmstudio") if not engines[name]],
             "known_unfit_examples": (fit_audit or {}).get("negative_examples", 0),
