@@ -1948,6 +1948,7 @@ def _remote_head_commit(ref: str = "main") -> str | None:
 
 _SKIP_UPDATE_CHECK_SUBCOMMANDS = {
     "update", "doctor", "help", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+    "_cluster-gateway-run",
 }
 
 
@@ -1967,6 +1968,16 @@ def _bg_version_check_cmd() -> None:
     version_check.cached_remote_head(
         _remote_head_commit, _channel_branch(), ttl_seconds=0, installed=_installed_commit()
     )
+
+
+@app.command(name="_cluster-gateway-run", hidden=True)
+def _cluster_gateway_run_cmd() -> None:
+    """Internal. Started by the LaunchAgent `omm cluster init` registers
+    (cluster/service.py); serves the token-checked gateway in front of exo
+    until the service is stopped."""
+    from omm.cluster import gateway
+
+    raise typer.Exit(gateway.run_gateway())
 
 
 @app.command(name="_auto-import-run", hidden=True)
@@ -2038,6 +2049,7 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
 
 _SKIP_ONBOARDING_SUBCOMMANDS = {
     "setup", "doctor", "help", "update", "web", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+    "_cluster-gateway-run",
 }
 
 
@@ -2164,12 +2176,14 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "_bg-version-check",
     "_auto-import-run",
     "_provider-facts-refresh-run",
+    "_cluster-gateway-run",
 }
 
 # Hidden background children/services are not a user-issued command, so they
 # must not flush the queued-upload channels (telemetry/error_report/usage).
 _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
     "setting", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+    "_cluster-gateway-run",
 }
 
 # omm's own hidden background commands. Not something a user typed, so they
@@ -2177,7 +2191,8 @@ _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
 # as a count of <command> <outcome> the user ran. Local runlog files are not
 # uploaded, so those stay untouched.
 _INTERNAL_SUBCOMMANDS = frozenset(
-    {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run", "_web-worker"}
+    {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run", "_web-worker",
+     "_cluster-gateway-run"}
 )
 
 
