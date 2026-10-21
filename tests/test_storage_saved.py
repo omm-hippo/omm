@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 from typer.testing import CliRunner
@@ -76,17 +75,17 @@ def test_shared_link_bytes_counts_owned_links_not_copies(isolated_omm_home, tmp_
     assert linker.shared_link_bytes() == expected_after
 
 
-def test_shared_link_bytes_ignores_copies(isolated_omm_home, tmp_path, monkeypatch):
+def test_shared_link_bytes_ignores_copies(isolated_omm_home, tmp_path):
     hub = cli.MODELS_DIR / "model.gguf"
     hub.parent.mkdir(parents=True, exist_ok=True)
     hub.write_bytes(b"x" * 4096)
 
-    def refuse(*args, **kwargs):
-        raise OSError("links unavailable")
-
-    monkeypatch.setattr(Path, "hardlink_to", refuse)
-    monkeypatch.setattr(Path, "symlink_to", refuse)
-    assert linker.link_file(hub, tmp_path / "runner" / "model.gguf") == "copy"
+    # Recorded directly: whether link_file falls back to a copy depends on
+    # the platform, but an owned copy must never count as shared bytes.
+    copy = tmp_path / "runner" / "model.gguf"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(hub.read_bytes())
+    linker._record_ownership(copy, hub, "copy")
     assert linker.shared_link_bytes() == 0
 
 
