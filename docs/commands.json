@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.188",
+  "omm_version": "0.4.0",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -281,7 +281,7 @@
       "kind": "command",
       "aliases": [],
       "summary": "Clean up leftover partial downloads and broken runner symlinks.",
-      "description": "Removes orphaned partial or unregistered .gguf downloads left behind by interrupted installs, plus symlinks in AI runner model directories whose source .gguf was deleted without going through `omm uninstall`. Also reclaims orphaned `omm pin` archives (see MODEL_ARCHIVE_DIR) - an archived version whose model is still registered, pinned or not, is never touched here.",
+      "description": "Removes orphaned partial or unregistered .gguf downloads left behind by interrupted installs, plus symlinks in AI runner model directories whose source .gguf was deleted without going through `omm uninstall`. Also reclaims orphaned `omm pin` archives (see MODEL_ARCHIVE_DIR) - an archived version whose model is still registered, pinned or not, is never touched here. Finally discards install records that no running install needs: interrupted or failed installs (which can no longer resume once their partial file is gone), finished installs of models that were since removed, and unreadable record files.",
       "usage": "omm cleanup [OPTIONS]",
       "arguments": [],
       "options": [
