@@ -107,13 +107,25 @@ The `usage` Realtime Database node is **not** publicly readable.
 **Default:** off.
 **Purpose:** surface crashes that happen on machines the maintainers cannot see.
 
-**Sent:** the exception type, a path-scrubbed exception message, which
+**Sent:** the exception type, a scrubbed exception message, which
 subcommand was running, the `omm` version, OS name/version, CPU architecture,
 and coarse CPU/GPU benchmark tiers. The full allow-list and the scrubbing rules
 are in [`docs/crash-reports.md`](docs/crash-reports.md).
 
-**Never sent:** tracebacks, absolute paths, usernames, environment variables,
-the command line, or generated model text.
+**Removed from the message before it is queued, previewed, or sent:**
+your home directory (`/Users/<name>`, `/home/<name>`, `C:\Users\<name>` become
+`~`; folders below it stay visible), the directories of any other absolute
+path (only the file name is kept), and credential-shaped text: URL
+user/password (`https://user:pass@`), `Authorization:` header values,
+`Bearer ...` tokens, values of `token=`, `access_token=`, `api_key=`,
+`password=`, `secret=`, `signature=` and similar fields, and Hugging Face
+(`hf_...`), GitHub (`ghp_...`, `github_pat_...`), `sk-...`, AWS access key and
+JWT-shaped tokens. These are pattern matches, not a guarantee: an exception
+message is text from some library, and a secret in an unusual shape could
+survive. That is why `ask` shows you the exact JSON before anything is sent.
+
+**Never sent:** tracebacks, environment variables, the command line and its
+arguments, anything you typed, or generated model text.
 
 The `error_reports` Realtime Database node is **not** publicly readable.
 
@@ -180,7 +192,41 @@ or sent anywhere.
 default it includes OMM version, install source, a command name, exception
 class, and diagnostic status/counts. It excludes usernames, home/personal
 paths, tokens, environment variables, search text, command arguments,
-generated text, and model names. Optional OS, upload-policy, and check-name
+generated text, and model names. Optional OS, upload-policy, check-name, and stage-count
 groups are included only when selected with `--include`. The full JSON is
 printed before `--save`; the command never uploads it, opens a GitHub issue,
 or sends a message.
+
+`--include stages` counts setup, recommendation, installation, download and link
+outcomes in at most 50 recent local logs. Only fixed stage names, numeric counts
+and fixed recovery instructions enter the report. A later success is labelled
+as a later success, not proof that the same failed request recovered. These
+local summaries are never read by the usage, crash or benchmark senders.
+Usage tallies accept only registered command names and known outcomes; malformed
+pending records become `unknown`. Only known exception identifiers appear;
+other values are grouped as `OtherError`, and exception messages are excluded.
+
+## Local GUI chat history
+
+The local manager's chat screen sends questions and completed conversation turns
+only to the selected loopback Ollama or LM Studio API. It does not use a cloud AI
+fallback and does not upload prompts or responses through telemetry. UTF-8 text
+history is stored under `OMM_HOME/web-chats`. Interrupted and failed partial
+answers stay visible locally but are not used in later inference context.
+The GUI provides JSON export and confirmed deletion of closed conversations.
+Explicit data removal also removes `web-chats`; ordinary updates retain it.
+
+### Local document questions
+
+The loopback web manager stores imported document text, content hashes, a lexical
+search index, questions, answers and quotations only in `OMM_HOME/documents`.
+Only browser-selected PDF/TXT/Markdown bytes are read; a request cannot name an
+arbitrary server filesystem path. Extraction and search make no network calls.
+Questions send the selected quotations to the explicitly selected loopback local
+runner, never to OMM telemetry, usage or crash senders. No cloud embedding API is
+used. The local runner is a separate program: use a local model, not a runner
+configured to forward requests to a cloud service.
+
+Replacing or deleting a document clears saved document answers so old source
+quotations do not remain in the answer cache. Original uploaded files are not
+changed. Explicit OMM data removal includes the owned `documents` directory.

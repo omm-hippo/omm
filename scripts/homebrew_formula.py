@@ -426,7 +426,7 @@ def check_formula(
     fetch: Fetcher = default_fetch_json,
     homebrew_python: tuple[int, ...] = HOMEBREW_PYTHON_VERSION,
     allow_version_lag: bool = False,
-) -> None:
+) -> list[str]:
     text = formula_path.read_text(encoding="utf-8")
     actual_version, actual_url, actual_sha256, actual_resources = _parse_existing_formula(text)
     expected_python = _python_formula(homebrew_python)
@@ -465,6 +465,16 @@ def check_formula(
         if expected_resources[name] != actual_resources[name]
     )
 
+    pending: list[str] = []
+    if missing and allow_version_lag and actual_version != version:
+        # The Tap is regenerated from the *released* package after each
+        # release, so a dependency main added after the Formula's version
+        # cannot be in the Formula yet. Only a dependency the released version
+        # already declares is real drift.
+        released = _released_requirement_names(actual_version, fetch)
+        pending = [name for name in missing if name not in released]
+        missing = [name for name in missing if name in released]
+
     if missing:
         problems.append("missing from formula: " + ", ".join(missing))
     if extra:
@@ -479,6 +489,28 @@ def check_formula(
     if problems:
         header = f"Homebrew formula drift detected in {formula_path}:"
         raise HomebrewFormulaError(header + "\n  - " + "\n  - ".join(problems))
+    return pending
+
+
+def _released_requirement_names(version: str, fetch: Fetcher) -> set[str]:
+    """Runtime (non-extra) dependency names omm-model==version declares on PyPI."""
+    info = fetch(pypi_release_url(PYPI_PACKAGE_NAME, version)).get("info")
+    requires = info.get("requires_dist") if isinstance(info, dict) else None
+    if not isinstance(requires, list):
+        raise HomebrewFormulaError(
+            f"PyPI metadata for {PYPI_PACKAGE_NAME} {version} has no requires_dist"
+        )
+    names: set[str] = set()
+    for entry in requires:
+        if not isinstance(entry, str):
+            continue
+        requirement, _, marker = entry.partition(";")
+        if "extra" in marker:
+            continue
+        match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", requirement)
+        if match:
+            names.add(normalize_resource_name(match.group(1)))
+    return names
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -518,13 +550,18 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 sys.stdout.write(text)
         elif args.command == "check":
-            check_formula(
+            pending = check_formula(
                 args.formula,
                 args.version,
                 requirements=args.requirements,
                 allow_version_lag=args.allow_version_lag,
             )
             print(f"{args.formula} matches {args.requirements}")
+            if pending:
+                print(
+                    "note: not in the Formula until the next release is bumped "
+                    "(the released version does not declare them): " + ", ".join(pending)
+                )
         elif args.command == "pypi-latest":
             print(latest_pypi_version())
         else:  # pragma: no cover - argparse constrains the command

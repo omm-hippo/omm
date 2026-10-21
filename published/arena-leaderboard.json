@@ -1,21 +1,48 @@
 {
   "corpus": {
-    "client_count": 0,
-    "effective_votes": 0,
-    "largest_client_share": 0.0,
+    "client_count": 1,
+    "effective_votes": 2.0,
+    "largest_client_share": 1.0,
     "rows_dropped": {},
-    "rows_fetched": 0,
-    "rows_used": 0
+    "rows_fetched": 2,
+    "rows_used": 2
   },
   "efficiency_components": [],
-  "generated_at": "2026-10-18T08:28:56.326145+00:00",
-  "groups": [],
+  "generated_at": "2026-10-20T09:03:32.592723+00:00",
+  "groups": [
+    {
+      "corpus": {
+        "client_count": 1,
+        "effective_votes": 2.0,
+        "largest_client_share": 1.0,
+        "rows_dropped": {},
+        "rows_fetched": 2,
+        "rows_used": 2
+      },
+      "efficiency_components": [],
+      "key": "unified:8",
+      "memory_bucket": "8",
+      "memory_kind": "unified",
+      "models": [],
+      "pairs": [],
+      "provisional_models": [],
+      "ranked": false,
+      "reasons": [
+        "only 2.0 effective votes, need 100",
+        "one client holds 100% of the effective weight, limit 50%",
+        "only 0 ranked models, need 3"
+      ],
+      "tiers": [],
+      "updated_at": null
+    }
+  ],
   "models": [],
   "pairs": [],
   "provisional_models": [],
   "ranked": false,
   "reasons": [
-    "only 0.0 effective votes, need 200",
+    "only 2.0 effective votes, need 200",
+    "one client holds 100% of the effective weight, limit 50%",
     "only 0 ranked models, need 5"
   ],
   "schema_version": 2,

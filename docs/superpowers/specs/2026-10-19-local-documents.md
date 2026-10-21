@@ -1,0 +1,11 @@
+# Local documents and grounded questions (#429, stage 1)
+
+The existing loopback web manager gains one Documents tab. Compare with linking an external document tool: that would require another installation and a separate source/persistence contract. This bounded first implementation reuses OMM's local runtime adapters and serialized workers instead.
+
+Accept UTF-8 TXT/Markdown and text PDF (pypdf, BSD-3-Clause). No OCR, HWP, HTML, fine-tuning, remote document tools or vector/embedding model. A local SQLite store keeps extracted text, content hashes, page/character offsets and deterministic lexical search. Korean bigrams and Latin tokens rank at most three quotations. Search scores are not semantic confidence or answer accuracy.
+
+Every model question explicitly selects documents, a managed model and a loopback runner. Existing loaded models are preserved; the request is refused while one is in use. Keep document text out of telemetry/crash/run logs, submit only to the loopback adapter, and unload only this request's load. Model output is untrusted plain text; only existing citation numbers are accepted. Absence of lexical evidence returns a clear message without model generation. A citation does not prove entailment: show exact source text for inspection.
+
+6 MiB/file, 100 pages/PDF, 500k extracted characters/document, 100 documents, at most 20 documents/question. PDF parsing happens in an owned worker with a 60-second timeout. One transaction replaces a document and its index; invalid replacement preserves the old document. Corpus mutation clears saved answers so deleted source text cannot remain in cached quotations. Restart must preserve documents/answers. Stage 2 model/embedding migrations remain outside this PR; the current lexical index is independent of the generation model.
+
+Test: real TXT/Markdown/PDF, blank/encrypted/invalid PDF, UTF-8, source offsets, no evidence, replacement rollback, delete/restart, symlinks, HTTP auth/origin/size, loopback-only model calls, preloaded-model refusal, owned-load release. Headless browser upload -> question -> citations -> reload -> replacement/deletion. Real local inference must be reported separately from contract tests.

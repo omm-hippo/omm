@@ -56,6 +56,35 @@ CURATED_INDEX: dict[str, tuple[str, str]] = {
         "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
         "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
     ),
+    # Official LG packages stay eligible even when absent from download charts.
+    "exaone4.0-1.2b-q4": (
+        "LGAI-EXAONE/EXAONE-4.0-1.2B-GGUF",
+        "EXAONE-4.0-1.2B-Q4_K_M.gguf",
+    ),
+    "exaone3.5-2.4b-instruct-q4": (
+        "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct-GGUF",
+        "EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf",
+    ),
+    "exaone3.5-7.8b-instruct-q4": (
+        "LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct-GGUF",
+        "EXAONE-3.5-7.8B-Instruct-Q4_K_M.gguf",
+    ),
+    "exaone4.0-32b-q4": (
+        "LGAI-EXAONE/EXAONE-4.0-32B-GGUF",
+        "EXAONE-4.0-32B-Q4_K_M.gguf",
+    ),
+}
+
+# Provider-declared task metadata checked against the official model cards:
+# https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-1.2B-GGUF
+# https://huggingface.co/LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct-GGUF
+# https://huggingface.co/LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct-GGUF
+# https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-32B-GGUF
+CURATED_METADATA: dict[str, dict[str, str]] = {
+    "exaone4.0-1.2b-q4": {"pipeline_tag": "text-generation"},
+    "exaone3.5-2.4b-instruct-q4": {"pipeline_tag": "text-generation"},
+    "exaone3.5-7.8b-instruct-q4": {"pipeline_tag": "text-generation"},
+    "exaone4.0-32b-q4": {"pipeline_tag": "text-generation"},
 }
 
 from omm.providers import huggingface, modelscope

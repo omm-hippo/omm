@@ -49,3 +49,43 @@ def test_mac_source_launcher_dispatches_only_to_the_selected_stub(tmp_path):
     root=Path(__file__).resolve().parents[1]
     subprocess.run(['sh',str(root/'packaging/web-launchers/Open-OMM.command')],env=env,check=True,timeout=5)
     assert output.read_text(encoding="utf-8").splitlines()==['web','--open']
+
+
+def _source_cmd_launcher() -> bytes:
+    return (Path(__file__).resolve().parents[1] / 'packaging/web-launchers/Open-OMM.cmd').read_bytes()
+
+
+def test_windows_source_launcher_switches_to_utf8_before_korean_guidance():
+    """#423: the missing-install guidance is Korean. cmd parses a whole
+    parenthesized block before running it, so chcp 65001 must run on its own
+    top-level line before any Korean line, never inside an if (...) block."""
+    text = _source_cmd_launcher().decode('utf-8').replace('\r\n', '\n')
+    lines = text.splitlines()
+    chcp = lines.index('chcp 65001 >nul')
+    korean = [i for i, line in enumerate(lines) if any('\uac00' <= ch <= '\ud7a3' for ch in line)]
+    assert korean and min(korean) > chcp
+    assert all(line.startswith('echo ') for line in (lines[i] for i in korean))
+    assert lines.index('if not errorlevel 1 exit /b 0') < chcp
+    assert 'docs/beginner-install.md' in text
+    assert lines[-1] == 'exit /b 1'
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='cmd.exe launcher contract')
+def test_windows_source_launcher_prints_korean_guidance_only_on_failure(tmp_path):
+    source = _source_cmd_launcher().decode('utf-8').replace('\r\n', '\n').replace('\n', '\r\n')
+    # Stand in for omm so the real installed omm (if any) is never started.
+    for result_code, name in ((9009, 'missing.cmd'), (0, 'ok.cmd')):
+        script = source.replace('"%~dp0omm.exe" web --open', f'cmd /c exit {result_code}')
+        script = script.replace('  omm web --open\r\n', f'  cmd /c exit {result_code}\r\n')
+        path = tmp_path / name
+        path.write_bytes(script.encode('utf-8'))
+        completed = subprocess.run(
+            ['cmd', '/c', str(path)], input=b'\r\n', capture_output=True, timeout=30
+        )
+        output = completed.stdout.decode('utf-8', errors='replace')
+        if result_code:
+            assert completed.returncode == 1
+            assert 'OMM 관리 화면을 시작하지 못했습니다' in output
+        else:
+            assert completed.returncode == 0
+            assert output.strip() == ''

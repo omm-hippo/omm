@@ -511,3 +511,8 @@ def run_wizard(console: Console) -> None:
         "[accent]Next:[/accent] `omm recommend` picks a model that fits this PC and installs it, "
         "then `omm run` starts chatting with it.\n"
     )
+    console.print(
+        "[accent]Prefer clicking?[/accent] `omm web --open` opens the local model manager "
+        "in your browser (Ctrl+C stops it). `omm web --create-launchers DIRECTORY` "
+        "writes double-click Open-OMM launchers there, e.g. on your Desktop.\n"
+    )

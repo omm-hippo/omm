@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from omm.web.jobs import JobConflict, JobManager
 from omm.web.service import WebService
+from omm.web.chat import ChatManager
 from omm import config
 from omm.atomic import atomic_write_text
 
@@ -30,7 +31,10 @@ class WebServer(ThreadingHTTPServer):
         self.static_root = Path(static_root).resolve()
         self.session = secrets.token_urlsafe(32)
         self.instance = secrets.token_urlsafe(16)
+        self.chats = None
         try:
+            self.chats = ChatManager(self.jobs)
+            self.jobs.operation_guard = self.chats.guard_jobs
             super().__init__(("127.0.0.1", port), Handler)
         except BaseException:
             self.jobs.close()
@@ -49,6 +53,8 @@ class WebServer(ThreadingHTTPServer):
         return f"http://127.0.0.1:{self.server_port}/"
 
     def server_close(self):
+        if self.chats is not None:
+            self.chats.close()
         if hasattr(self, "info_path") and self.info_path.exists() and not self.info_path.is_symlink():
             try:
                 if json.loads(self.info_path.read_text(encoding="utf-8")).get("instance") == self.instance:
@@ -123,6 +129,28 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"kind": "omm-local-manager", "instance": self.server.instance})
             if parsed.path == "/api/hardware":
                 return self._json(200, self.server.service.machine())
+            if parsed.path == "/api/connections":
+                from omm.web import management
+                return self._json(200, management.connections())
+            if parsed.path == "/api/diagnostics":
+                from omm.web import management
+                return self._json(200, management.diagnostics())
+            if parsed.path == "/api/settings":
+                from omm.web import management
+                return self._json(200, management.settings())
+            if parsed.path == "/api/files":
+                return self._json(200, self.server.service.files())
+            if parsed.path == "/api/imports":
+                from omm.web.maintenance import read_import_preview
+                return self._json(200, [{k: v for k, v in x.items() if k != "locations"} for x in read_import_preview()])
+            if parsed.path == "/api/wiki/packages":
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                if set(query) - {"id", "profile"} or any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Unsupported query parameters")
+                return self._json(200, self.server.service.wiki_packages(query.get("id", [""])[0], query.get("profile", ["balanced"])[0]))
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "models"] and parts[3] == "settings":
+                return self._json(200, self.server.service.model_settings(parts[2]))
             if parsed.path == "/api/wiki":
                 from omm import model_wiki
                 return self._json(200, model_wiki.catalog())
@@ -133,8 +161,17 @@ class Handler(BaseHTTPRequestHandler):
                 if set(query) - {"profile", "q"} or any(len(values) != 1 for values in query.values()):
                     raise ValueError("Unsupported query parameters")
                 return self._json(200, self.server.service.recommendations(query.get("profile", ["balanced"])[0], query.get("q", [""])[0]))
+            if parsed.path == "/api/documents":
+                from omm.documents import DocumentStore
+                from omm.web import document_settings
+                return self._json(200, {"documents": DocumentStore().list(), "answers": DocumentStore().answers(),
+                                        "settings": document_settings.load()})
             if parsed.path == "/api/jobs":
                 return self._json(200, self.server.jobs.list())
+            if parsed.path == "/api/chats":
+                return self._json(200, self.server.chats.list())
+            if len(parts) == 3 and parts[:2] == ["api", "chats"]:
+                return self._json(200, self.server.chats.get(parts[2]))
             if parsed.path.startswith("/api/"):
                 return self._json(404, {"error": "Unknown API route"})
             if parsed.path != "/" and not parsed.path.startswith("/assets/"):
@@ -159,10 +196,46 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(415, {"error": "Use a bounded JSON request"})
         try:
             length = int(self.headers.get("Content-Length", "-1"))
-            if not 0 <= length <= MAX_BODY:
+            limit = 9 * 1024 * 1024 if self.path == "/api/documents" else MAX_BODY
+            if not 0 <= length <= limit:
                 return self._json(413, {"error": "Request body is too large or has no length"})
             body = json.loads(self.rfile.read(length))
             path = urlsplit(self.path).path
+            if path == "/api/chats":
+                request = self.server.service.chat_request(body)
+                return self._json(202, self.server.chats.start(request, body.get("request_id"), body.get("chat_id")))
+            parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "chats"]:
+                action, key = parts[3], parts[2]
+                if action == "messages":
+                    if not isinstance(body, dict) or set(body) != {"text", "request_id"}:
+                        raise ValueError("메시지와 요청 ID만 전송할 수 있어요.")
+                    return self._json(202, self.server.chats.send(key, body["text"], body["request_id"]))
+                if action in {"cancel", "end", "delete"}:
+                    if body != {"confirmed": True}:
+                        raise ValueError("대화 작업을 확인해 주세요.")
+                    return self._json(200, getattr(self.server.chats, {"cancel": "cancel", "end": "end", "delete": "delete"}[action])(key))
+            if path == "/api/connections/check":
+                if body != {}:
+                    raise ValueError("연결 확인에는 추가 입력을 사용하지 않아요.")
+                from omm.web import management
+                return self._json(200, management.check_network())
+            if path == "/api/settings":
+                if not isinstance(body, dict) or set(body) != {"changes", "confirmed"} or body["confirmed"] is not True:
+                    raise ValueError("설정 변경을 확인해 주세요.")
+                from omm.web import management
+                return self._json(200, management.save_settings(body["changes"]))
+            if path == "/api/wiki/discover":
+                if not isinstance(body, dict) or set(body) != {"id", "profile"} or not isinstance(body["id"], str) or not isinstance(body["profile"], str):
+                    raise ValueError("위키에서 모델을 선택해 주세요.")
+                return self._json(200, self.server.service.discover_packages(body["id"], body["profile"]))
+            if path == "/api/documents/settings":
+                from omm.web.document_requests import settings_change
+                return self._json(200, settings_change(body, self.server.service))
+            if path in {"/api/documents", "/api/documents/question", "/api/documents/delete"}:
+                from omm.web.document_requests import validate
+                request = validate(path, body, self.server.service)
+                return self._json(202, self.server.jobs.start(request, body.get("request_id")))
             if path == "/api/catalog/refresh":
                 if body != {}:
                     raise ValueError("Catalog refresh accepts no additional fields")
