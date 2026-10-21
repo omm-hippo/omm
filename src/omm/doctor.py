@@ -728,7 +728,9 @@ def collect_report(
             "re-run the original install command to recheck and resume.",
             DoctorRemediation(
                 "Re-run the original omm install command. OMM will recheck the saved "
-                "checkpoint before resuming; then run omm doctor again."
+                "checkpoint before resuming. To give up on it instead, run omm cleanup; "
+                "then run omm doctor again.",
+                ("omm", "cleanup"),
             ),
         ))
     from omm.runtime_profiles import interrupted_runs

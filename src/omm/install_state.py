@@ -135,6 +135,72 @@ def pending_records() -> list[dict]:
     return pending
 
 
+def _is_stale(path: Path, registered: set[str]) -> bool:
+    """Whether an unlocked journal file is safe to discard.
+
+    Unreadable or mismatched JSON, an unfinished install no process is
+    working on, and a finished install whose model is gone are all stale.
+    """
+    try:
+        if path.stat().st_size > 64 * 1024:
+            return True
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return True
+    except OSError:
+        return False
+    if not (isinstance(data, dict) and data.get("schema_version") == 1
+            and isinstance(data.get("filename"), str)
+            and _path(data["filename"]) == path):
+        return True
+    if data.get("status") in {"complete", "skipped"}:
+        return data["filename"] not in registered
+    return True
+
+
+def discard_stale_records(registered: set[str]) -> int:
+    """Delete journal files no live install still needs; return how many.
+
+    A record whose install lock is held belongs to a running install and is
+    left alone. Lock files are never deleted: removing one while another
+    process holds it would let a second process lock a new inode.
+    """
+    root = config.OMM_HOME / "install-journal"
+    if root.is_symlink() or not root.is_dir():
+        return 0
+    removed = 0
+    for path in sorted(root.iterdir())[:4096]:
+        name = path.name
+        if path.is_symlink() or not path.is_file() or name.endswith(".lock"):
+            continue
+        if name.startswith(".") and name.endswith(".tmp"):
+            # atomic_write_text leftover: `.<key>.json.<random>.tmp`.
+            stem = name[1:].partition(".json.")[0]
+            if not _DIGEST.fullmatch(stem):
+                continue
+            target = root / f"{stem}.json"
+        elif _DIGEST.fullmatch(name.partition(".json.corrupt-")[0]) and ".json.corrupt-" in name:
+            # backup_corrupt_file copy; the install already replaced it.
+            target = None
+        elif name.endswith(".json") and _DIGEST.fullmatch(name[:-len(".json")]):
+            target = path
+        else:
+            continue
+        try:
+            if target is None:
+                path.unlink()
+                removed += 1
+                continue
+            with locked(target, timeout=0):
+                if target is path and not _is_stale(path, registered):
+                    continue
+                path.unlink()
+                removed += 1
+        except (OSError, Timeout):
+            continue
+    return removed
+
+
 def tracked_install(func):
     @wraps(func)
     def wrapper(resolved, **kwargs):

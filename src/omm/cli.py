@@ -10488,9 +10488,13 @@ def cleanup() -> None:
     source .gguf was deleted without going through `omm uninstall`. Also
     reclaims orphaned `omm pin` archives (see MODEL_ARCHIVE_DIR) - an
     archived version whose model is still registered, pinned or not, is
-    never touched here."""
+    never touched here. Finally discards install records that no running
+    install needs: interrupted or failed installs (which can no longer
+    resume once their partial file is gone), finished installs of models
+    that were since removed, and unreadable record files."""
     incomplete_removed = _cleanup_incomplete_installs()
     archives_removed = _cleanup_orphan_archives()
+    records_removed = install_state.discard_stale_records(set(registry.load_registry()))
 
     removed_by_engine: dict[str, int] = {}
     for spec in linker.ENGINES:
@@ -10507,7 +10511,7 @@ def cleanup() -> None:
         removed_by_engine["custom"] = custom_removed
     links_removed = sum(removed_by_engine.values())
 
-    if not incomplete_removed and not archives_removed and not links_removed:
+    if not incomplete_removed and not archives_removed and not links_removed and not records_removed:
         console.print("[success]Nothing to clean up.[/success]")
         return
 
@@ -10520,6 +10524,8 @@ def cleanup() -> None:
         parts.append(
             ", ".join(f"{count} broken {label} link(s)" for label, count in removed_by_engine.items())
         )
+    if records_removed:
+        parts.append(f"{records_removed} stale install record(s)")
     console.print(f"[success]Cleaned up {', '.join(parts)}.[/success]")
 
 
