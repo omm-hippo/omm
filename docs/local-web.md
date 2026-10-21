@@ -107,9 +107,9 @@ current digest. Saving, restoration and comparison run as serialized durable
 jobs. Existing loaded models are never unloaded to make room for these trials.
 
 **파일·설정** shows storage capacity, managed file size and the cumulative space
-saved by adopting external files (`storage_saved_bytes`, the same counter
-`omm scan` reports as "saved via omm import"; web adoption adds to it like
-`omm import`). External-file search
+saved by adopting external files (`storage_saved_bytes`; web adoption adds to
+it like `omm import`). `omm scan` instead reports the space saved right now by
+every hard link or symlink omm owns, installs included. External-file search
 only creates a preview; adoption requires confirmation of a selected preview
 and revalidation of its size/hash. Original runner files may become links during
 adoption. Cleanup accepts only previewed incomplete downloads; changed bytes,

@@ -38,6 +38,67 @@ def test_unidentified_listener_is_unknown_not_safe(monkeypatch):
     assert engine_security.inspect("ollama")["status"] == "unknown"
 
 
+def test_nothing_listening_is_not_running_not_unknown(monkeypatch):
+    monkeypatch.setattr(engine_security, "_port", lambda engine: 11434)
+    monkeypatch.setattr(engine_security.psutil, "net_connections", lambda kind: [])
+    result = engine_security.inspect("ollama")
+    assert result["status"] == "not_running"
+    assert "11434" in result["reason"]
+
+
+def test_unreadable_listener_table_stays_unknown(monkeypatch):
+    monkeypatch.setattr(engine_security, "_port", lambda engine: 11434)
+
+    def unreadable(kind):
+        raise OSError("socket table unavailable")
+
+    monkeypatch.setattr(engine_security.psutil, "net_connections", unreadable)
+    assert engine_security.inspect("ollama")["status"] == "unknown"
+
+
+def test_lmstudio_reported_stopped_is_not_running(monkeypatch):
+    monkeypatch.setattr(engine_security.linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(
+        engine_security.linker, "_lmstudio_server_status", lambda path: {"running": False}
+    )
+    assert engine_security.inspect("lmstudio")["status"] == "not_running"
+
+
+def test_lmstudio_without_lms_or_status_is_unknown(monkeypatch):
+    monkeypatch.setattr(engine_security.linker, "_lms_cli_path", lambda: None)
+    assert engine_security.inspect("lmstudio")["status"] == "unknown"
+    monkeypatch.setattr(engine_security.linker, "_lms_cli_path", lambda: "lms")
+    monkeypatch.setattr(engine_security.linker, "_lmstudio_server_status", lambda path: None)
+    assert engine_security.inspect("lmstudio")["status"] == "unknown"
+
+
+def test_fix_on_stopped_server_changes_nothing(monkeypatch):
+    monkeypatch.setattr(
+        engine_security,
+        "inspect",
+        lambda engine: {"engine": engine, "status": "not_running", "owned_by_omm": False},
+    )
+    assert engine_security.fix_local_only("ollama")["changed"] is False
+
+
+def test_cli_labels_stopped_server_plainly(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        engine_security,
+        "inspect",
+        lambda engine: {
+            "engine": engine,
+            "status": "not_running",
+            "reason": "nothing is listening on port 11434, so no device can connect to it",
+            "listeners": [],
+            "owned_by_omm": False,
+        },
+    )
+    result = CliRunner().invoke(cli.app, ["engine", "security", "ollama"])
+    assert result.exit_code == 0, result.output
+    assert "Not running" in result.output
+    assert "Could not determine" not in result.output
+
+
 def test_fix_never_restarts_external_or_lmstudio_owned_server(monkeypatch):
     monkeypatch.setattr(
         engine_security,
@@ -124,7 +185,7 @@ def test_stopped_server_reports_not_running_instead_of_access_denied(monkeypatch
 
     result = engine_security.inspect("ollama")
 
-    assert result["status"] == "unknown"
+    assert result["status"] == "not_running"
     assert "not running" in result["reason"]
     assert "AccessDenied" not in result["reason"]
 

@@ -1157,11 +1157,10 @@ def _download_file_impl(
 
     If `stop_check` is given, it's polled regularly during the transfer and
     during backoff waits; a truthy result raises `DownloadCancelled`. This layer
-    leaves the `.part` and its range sidecar on disk, but that only feeds the
-    crash/network-failure resume path: `omm install` and `omm contribute`
-    deliberately delete the trio when the user cancels (see cli.py
-    `_cleanup_interrupted_install`), so a cancelled first-time install restarts
-    from byte 0.
+    leaves the `.part` and its range sidecar on disk. `omm install` keeps them
+    when the user cancels too (see cli.py `_cleanup_interrupted_install`), so
+    re-running the same install resumes; `omm contribute` deletes the trio for
+    the models it fetched itself.
 
     `quiet` disables the progress bar (the retry warning below still prints -
     it's a warning, not decorative). `no_color` disables ANSI styling on both
