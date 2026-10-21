@@ -544,3 +544,35 @@ def test_scrub_paths_keeps_engine_api_routes_but_masks_real_directories():
         error_report.scrub_paths("open /srv/acme-corp/models/x.gguf failed")
         == "open <path>/x.gguf failed"
     )
+
+
+@pytest.mark.parametrize(
+    ("raw", "secret"),
+    [
+        ("401 for https://bob:hunter2@example.com/x", "hunter2"),
+        ("401 for https://hf_AbCdEfGhIjKl1234@example.com/x", "hf_AbCdEfGhIjKl1234"),
+        ("GET /api/x?token=abc123&page=2", "abc123"),
+        ("GET /api/x?access_token=ya29.zzz", "ya29.zzz"),
+        ("{'Authorization': 'Bearer eyabcdefghijk'}", "eyabcdefghijk"),
+        ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ("bad credential hf_AbCdEfGhIjKlMnOp", "hf_AbCdEfGhIjKlMnOp"),
+        ("api_key=sk-proj-abcdefghijklmnopqrstuv", "sk-proj-abcdefghijklmnopqrstuv"),
+        ("ghp_abcdefghijklmnopqrstuvwxyz0123", "ghp_abcdefghijklmnopqrstuvwxyz0123"),
+        ('password="hunter2"', "hunter2"),
+    ],
+)
+def test_build_report_redacts_credentials(raw, secret):
+    report = error_report.build_report(trigger="crash", message=raw)
+    assert secret not in report["error_message"]
+    assert "<redacted>" in report["error_message"]
+
+
+def test_secret_scrub_leaves_ordinary_messages_alone():
+    for text in ("Ollama /api/generate request failed", "max_tokens=512 exceeded", "30 tokens/sec"):
+        assert error_report.scrub_secrets(text) == text
+
+
+def test_local_attempt_log_redacts_credentials():
+    error_report.log_attempt("send_failed_network", "https://u:pw@example.com?token=abc123")
+    logged = error_report._log_path().read_text(encoding="utf-8")
+    assert "pw@" not in logged and "abc123" not in logged

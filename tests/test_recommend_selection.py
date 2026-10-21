@@ -80,6 +80,18 @@ def test_family_overflow_fills_empty_slots_without_duplicates():
     assert shortlist(ranked) == ranked
 
 
+def test_exaone_sizes_share_a_family_without_hiding_other_families():
+    models = [candidate(model, uploader="LGAI-EXAONE") for model in (
+        "EXAONE-4.0-32B", "EXAONE-3.5-7.8B-Instruct",
+        "EXAONE-3.5-2.4B-Instruct", "EXAONE-4.0-1.2B",
+    )]
+    qwen = candidate("Qwen3-8B")
+    ranked = [(c, 20.0) for c in [*models, qwen]]
+
+    assert shortlist(ranked, limit=3) == [*ranked[:2], ranked[-1]]
+    assert len(shortlist(ranked)) == len(ranked)
+
+
 def test_no_specialized_false_positive_from_substrings():
     assert variant_warning(candidate("Shadow-7B", uploader="adapted-models")) is None
     assert variant_warning(candidate("Qwen3-8B", uploader="ad")) is None

@@ -24,6 +24,7 @@ dependencies = [
     "questionary>=2.0",
     "cryptography>=43",
     "filelock>=3.16",
+    "pypdf>=6.21.1,<7",
     "tomli>=2.0; python_version < '3.11'",
 ]
 

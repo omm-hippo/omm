@@ -189,6 +189,60 @@ def test_check_allow_version_lag_ignores_omm_version_drift(tmp_path):
     )
 
 
+def _lagging_formula_with_new_dependency(tmp_path, released_requires):
+    """Formula rendered for released 9.9.8; main then adds `pypdf`."""
+    requirements = write_fixture(tmp_path)
+    formula = tmp_path / "omm.rb"
+    formula.write_text(
+        homebrew_formula.render_formula("9.9.8", requirements=requirements, fetch=fake_fetch),
+        encoding="utf-8",
+    )
+    requirements.write_text(FIXTURE_REQUIREMENTS + "pypdf==6.21.1\n", encoding="utf-8")
+
+    def fetch(url: str) -> dict:
+        release = fake_fetch(url)
+        if url == homebrew_formula.pypi_release_url("omm-model", "9.9.8"):
+            release["info"]["requires_dist"] = released_requires
+        return release
+
+    return formula, requirements, fetch
+
+
+def test_check_allow_version_lag_defers_dependencies_newer_than_the_release(tmp_path):
+    formula, requirements, fetch = _lagging_formula_with_new_dependency(
+        tmp_path, ["click>=8.1", "idna", "pytest>=8; extra == \"dev\""]
+    )
+
+    # The Tap is regenerated from the released package, so a dependency the
+    # released 9.9.8 never declared cannot be in its Formula yet.
+    pending = homebrew_formula.check_formula(
+        formula, "9.9.9", requirements=requirements, fetch=fetch, allow_version_lag=True
+    )
+
+    assert pending == ["pypdf"]
+
+
+def test_check_allow_version_lag_still_flags_a_released_dependency(tmp_path):
+    formula, requirements, fetch = _lagging_formula_with_new_dependency(
+        tmp_path, ["click>=8.1", "idna", "pypdf>=6.21.1,<7"]
+    )
+
+    with pytest.raises(homebrew_formula.HomebrewFormulaError, match="missing from formula: pypdf"):
+        homebrew_formula.check_formula(
+            formula, "9.9.9", requirements=requirements, fetch=fetch, allow_version_lag=True
+        )
+
+
+def test_check_without_version_lag_reports_every_missing_dependency(tmp_path):
+    formula, requirements, fetch = _lagging_formula_with_new_dependency(tmp_path, ["click"])
+    formula.write_text(
+        formula.read_text(encoding="utf-8").replace("9.9.8", "9.9.9"), encoding="utf-8"
+    )
+
+    with pytest.raises(homebrew_formula.HomebrewFormulaError, match="missing from formula: pypdf"):
+        homebrew_formula.check_formula(formula, "9.9.9", requirements=requirements, fetch=fetch)
+
+
 def test_check_detects_a_drifted_sha256(tmp_path):
     requirements = write_fixture(tmp_path)
     formula = tmp_path / "omm.rb"

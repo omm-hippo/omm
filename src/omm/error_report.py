@@ -244,6 +244,49 @@ def scrub_paths(text: str) -> str:
     return scrubbed
 
 
+# Credentials that third-party libraries are known to echo into exception
+# text (an HTTP error quoting the request URL or headers, a config dump).
+# Like `scrub_paths`, this is a targeted regex pass for these shapes only -
+# not a guarantee that no secret of any form can survive (see
+# `docs/crash-reports.md`). The consent preview is the real safeguard.
+_REDACTED = "<redacted>"
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], Any], ...] = (
+    # URL userinfo: `https://user:pass@host` or `https://token@host`.
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@'\"<>]+@"), r"\1" + _REDACTED + "@"),
+    # `Authorization: Bearer x`, `Authorization: Basic x`, `Authorization: token x`.
+    (re.compile(r"(?i)\b(authorization['\"]?\s*[:=]\s*['\"]?)(?:(bearer|basic|token)\s+)?[^\s'\",;]+"),
+     lambda m: m.group(1) + (m.group(2) + " " if m.group(2) else "") + _REDACTED),
+    (re.compile(r"(?i)\b(bearer)\s+(?!<redacted>)[A-Za-z0-9._~+/=-]{8,}"), r"\1 " + _REDACTED),
+    # Query or key=value / key: value pairs whose name marks a secret.
+    (re.compile(
+        r"(?i)(?<![A-Za-z0-9])((?:access_?|refresh_?|id_?|auth_?|hf_?|api_?)?token|api[_-]?key|apikey|"
+        r"client_secret|secret|password|passwd|pwd|sig|signature|x-amz-signature|x-amz-credential)"
+        r"(['\"]?\s*[:=]\s*['\"]?)(?!<redacted>)[^\s&'\",;)}\]]+"
+    ), r"\1\2" + _REDACTED),
+    # Well-known token prefixes, wherever they appear.
+    (re.compile(r"\bhf_[A-Za-z0-9]{8,}"), _REDACTED),
+    (re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}"), _REDACTED),
+    (re.compile(r"\bsk-(?:[A-Za-z0-9_-]{2,}-)?[A-Za-z0-9_-]{20,}"), _REDACTED),
+    (re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"), _REDACTED),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), _REDACTED),
+)
+
+
+def scrub_secrets(text: str) -> str:
+    """Mask credential-shaped substrings (see `_SECRET_PATTERNS`)."""
+    if not isinstance(text, str) or not text:
+        return ""
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def scrub(text: str) -> str:
+    """Secrets first (so a token inside a URL path is gone before path
+    masking reshapes it), then home directories and absolute paths."""
+    return scrub_paths(scrub_secrets(text))
+
+
 def _log_path():
     return config.OMM_HOME / "error_reports.log"
 
@@ -304,7 +347,7 @@ def log_attempt(outcome: str, detail: str = "") -> None:
             lines.append(json.dumps({
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "outcome": outcome,
-                "detail": scrub_paths(detail),
+                "detail": scrub(detail),
             }))
             atomic_write_text(path, "\n".join(lines[-_MAX_LOG_LINES:]) + "\n")
     except (OSError, FileLockTimeout):
@@ -478,15 +521,15 @@ def build_report(
 ) -> dict[str, Any]:
     """Assemble the exact dict that would be uploaded.
 
-    Every string that could contain a home directory goes through
-    `scrub_paths` here, once, so no caller can forget to do it.
+    Every string that could contain a home directory or a credential goes
+    through `scrub` here, once, so no caller can forget to do it.
     """
     resolved_type = error_type or (type(error).__name__ if error is not None else "UnknownError")
     resolved_message = message if message is not None else (str(error) if error else "")
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "error_type": scrub_paths(resolved_type)[:_MAX_TYPE_LENGTH] or "UnknownError",
-        "error_message": scrub_paths(resolved_message)[:_MAX_MESSAGE_LENGTH],
+        "error_type": scrub(resolved_type)[:_MAX_TYPE_LENGTH] or "UnknownError",
+        "error_message": scrub(resolved_message)[:_MAX_MESSAGE_LENGTH],
         "trigger": trigger,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "os_name": (platform.system() or "unknown")[:128],
@@ -496,11 +539,11 @@ def build_report(
     if version:
         report["client_version"] = version[:100]
     if subcommand:
-        report["subcommand"] = subcommand[:64]
+        report["subcommand"] = scrub(subcommand)[:64]
     if catalog_ref:
-        report["catalog_ref"] = scrub_paths(catalog_ref)[:_MAX_CATALOG_REF_LENGTH]
+        report["catalog_ref"] = scrub(catalog_ref)[:_MAX_CATALOG_REF_LENGTH]
     if engine:
-        report["engine"] = engine[:32]
+        report["engine"] = scrub(engine)[:32]
     report.update(_hardware_scores())
     return report
 
