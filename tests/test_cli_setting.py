@@ -601,20 +601,6 @@ def test_setting_menu_escape_in_endpoint_prompt_returns_to_menu(isolated_omm_hom
     assert called == []
 
 
-def test_setting_menu_escape_in_calibrate_prompt_returns_to_menu(isolated_omm_home, monkeypatch):
-    answers = iter(["calibrate", "back"])
-    monkeypatch.setattr(questionary, "select", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_ask_select", lambda question: next(answers))
-    monkeypatch.setattr(cli, "_ask_text", lambda *a, **k: None)
-    called = []
-    monkeypatch.setattr(cli, "calibrate", lambda *a, **k: called.append((a, k)))
-
-    result = runner.invoke(cli.app, ["setting"])
-
-    assert result.exit_code == 0, result.stdout
-    assert called == []
-
-
 def test_setting_menu_escape_in_catalog_trust_prompt_returns_to_menu(isolated_omm_home, monkeypatch):
     answers = iter(["catalog-trust", "back"])
     monkeypatch.setattr(questionary, "select", lambda *a, **k: None)

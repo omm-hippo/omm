@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.188",
+  "omm_version": "0.4.3",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -93,7 +93,7 @@
       "kind": "command",
       "aliases": [],
       "summary": "Measure a small reproducible quality pack and decode speed.",
-      "description": "",
+      "description": "On Ollama, each measured speed also updates this machine's local speed correction for `omm recommend`. It stays in ~/.omm and is never uploaded.",
       "usage": "omm benchmark [OPTIONS] {models}...",
       "arguments": [
         {
@@ -1845,7 +1845,7 @@
       ],
       "kind": "group",
       "aliases": [],
-      "summary": "View or change omm settings (telemetry, upload policy, version, calibration, catalog trust).",
+      "summary": "View or change omm settings (telemetry, upload policy, version, catalog trust).",
       "description": "",
       "usage": "omm setting [OPTIONS] COMMAND [ARGS]...",
       "arguments": [],
@@ -1865,48 +1865,6 @@
       "arguments": [],
       "options": [],
       "docs_url": "https://omm.run/commands/setting#auto-import"
-    },
-    {
-      "path": [
-        "setting",
-        "calibrate"
-      ],
-      "kind": "command",
-      "aliases": [],
-      "summary": "Correct this machine's local speed estimate without uploading data.",
-      "description": "",
-      "usage": "omm setting calibrate [OPTIONS] [model_name]",
-      "arguments": [
-        {
-          "name": "model_name",
-          "help": "Installed Ollama-linked model; defaults to the smallest available model.",
-          "required": false
-        }
-      ],
-      "options": [
-        {
-          "flags": [
-            "--quiet",
-            "-q"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--no-color"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Disable colored output.",
-          "default": null,
-          "global": true
-        }
-      ],
-      "docs_url": "https://omm.run/commands/setting#calibrate"
     },
     {
       "path": [
