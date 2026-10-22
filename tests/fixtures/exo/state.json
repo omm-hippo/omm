@@ -1,0 +1,831 @@
+{
+ "instances": {},
+ "runners": {},
+ "downloads": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": [
+   {
+    "DownloadPending": {
+     "nodeId": "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "shardMetadata": {
+      "PipelineShardMetadata": {
+       "modelCard": {
+        "modelId": "mlx-community/gemma-4-26b-a4b-it-6bit",
+        "storageSize": {
+         "inBytes": 21781015708
+        },
+        "nLayers": 30,
+        "hiddenSize": 2816,
+        "supportsTensor": false,
+        "numKeyValueHeads": 8,
+        "tasks": [
+         "TextGeneration"
+        ],
+        "components": null,
+        "family": "gemma",
+        "quantization": "6bit",
+        "baseModel": "Gemma 4 26B A4B",
+        "capabilities": [
+         "text",
+         "vision"
+        ],
+        "contextLength": 262144,
+        "usesCfg": false,
+        "trustRemoteCode": true,
+        "isCustom": false,
+        "vision": null,
+        "samplingDefaults": {
+         "temperature": 1.0,
+         "topP": 0.95,
+         "topK": 64,
+         "minP": null,
+         "repetitionPenalty": null,
+         "presencePenalty": null,
+         "frequencyPenalty": null,
+         "thinking": null,
+         "nonThinking": null
+        }
+       },
+       "deviceRank": 0,
+       "worldSize": 1,
+       "immediateException": false,
+       "shouldTimeout": null,
+       "startLayer": 0,
+       "endLayer": 30,
+       "nLayers": 30
+      }
+     },
+     "modelDirectory": "/Users/shinmingyu/.exo/models/mlx-community--gemma-4-26b-a4b-it-6bit",
+     "downloaded": {
+      "inBytes": 0
+     },
+     "total": {
+      "inBytes": 21679806248
+     }
+    }
+   },
+   {
+    "DownloadPending": {
+     "nodeId": "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "shardMetadata": {
+      "PipelineShardMetadata": {
+       "modelCard": {
+        "modelId": "mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit",
+        "storageSize": {
+         "inBytes": 289910292480
+        },
+        "nLayers": 62,
+        "hiddenSize": 6144,
+        "supportsTensor": true,
+        "numKeyValueHeads": 8,
+        "tasks": [
+         "TextGeneration"
+        ],
+        "components": null,
+        "family": "qwen",
+        "quantization": "4bit",
+        "baseModel": "Qwen3 Coder 480B",
+        "capabilities": [
+         "text",
+         "code"
+        ],
+        "contextLength": 262144,
+        "usesCfg": false,
+        "trustRemoteCode": true,
+        "isCustom": false,
+        "vision": null,
+        "samplingDefaults": {
+         "temperature": 0.7,
+         "topP": 0.8,
+         "topK": 20,
+         "minP": null,
+         "repetitionPenalty": 1.05,
+         "presencePenalty": null,
+         "frequencyPenalty": null,
+         "thinking": null,
+         "nonThinking": null
+        }
+       },
+       "deviceRank": 0,
+       "worldSize": 1,
+       "immediateException": false,
+       "shouldTimeout": null,
+       "startLayer": 0,
+       "endLayer": 62,
+       "nLayers": 62
+      }
+     },
+     "modelDirectory": "/Users/shinmingyu/.exo/models/mlx-community--Qwen3-Coder-480B-A35B-Instruct-4bit",
+     "downloaded": {
+      "inBytes": 0
+     },
+     "total": {
+      "inBytes": 270104520199
+     }
+    }
+   }
+  ]
+ },
+ "tasks": {},
+ "lastSeen": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": "2026-10-22T00:52:08.039234Z",
+  "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": "2026-10-22T00:52:08.039234Z",
+  "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": "2026-10-22T00:52:08.039234Z",
+  "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": "2026-10-22T00:52:08.039234Z"
+ },
+ "topology": {
+  "nodes": [
+   "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+   "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+  ],
+  "connections": {
+   "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+    "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ],
+    "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ],
+    "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ]
+   },
+   "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": {
+    "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ],
+    "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ],
+    "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ]
+   },
+   "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": {
+    "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ],
+    "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ],
+    "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ]
+   },
+   "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": {
+    "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ],
+    "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ],
+    "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": [
+     {
+      "sourceRdmaIface": "rdma_en2",
+      "sinkRdmaIface": "rdma_en3"
+     }
+    ]
+   }
+  }
+ },
+ "lastEventAppliedIdx": 13229,
+ "nodeIdentities": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "modelId": "Mac mini",
+   "chipId": "Apple M4 Pro",
+   "friendlyName": "mac-a",
+   "osVersion": "26.5",
+   "osBuildVersion": "25F71"
+  },
+  "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": {
+   "modelId": "Mac mini",
+   "chipId": "Apple M4 Pro",
+   "friendlyName": "mac-b",
+   "osVersion": "26.5",
+   "osBuildVersion": "25F71"
+  },
+  "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": {
+   "modelId": "Mac mini",
+   "chipId": "Apple M4 Pro",
+   "friendlyName": "mac-c",
+   "osVersion": "26.5",
+   "osBuildVersion": "25F71"
+  },
+  "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": {
+   "modelId": "Mac mini",
+   "chipId": "Apple M4 Pro",
+   "friendlyName": "mac-d",
+   "osVersion": "26.5",
+   "osBuildVersion": "25F71"
+  }
+ },
+ "nodeMemory": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "ramTotal": {
+    "inBytes": 68719476736
+   },
+   "ramAvailable": {
+    "inBytes": 44346032128
+   },
+   "swapTotal": {
+    "inBytes": 0
+   },
+   "swapAvailable": {
+    "inBytes": 0
+   }
+  },
+  "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": {
+   "ramTotal": {
+    "inBytes": 68719476736
+   },
+   "ramAvailable": {
+    "inBytes": 44346032128
+   },
+   "swapTotal": {
+    "inBytes": 0
+   },
+   "swapAvailable": {
+    "inBytes": 0
+   }
+  },
+  "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": {
+   "ramTotal": {
+    "inBytes": 68719476736
+   },
+   "ramAvailable": {
+    "inBytes": 44346032128
+   },
+   "swapTotal": {
+    "inBytes": 0
+   },
+   "swapAvailable": {
+    "inBytes": 0
+   }
+  },
+  "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": {
+   "ramTotal": {
+    "inBytes": 68719476736
+   },
+   "ramAvailable": {
+    "inBytes": 44346032128
+   },
+   "swapTotal": {
+    "inBytes": 0
+   },
+   "swapAvailable": {
+    "inBytes": 0
+   }
+  }
+ },
+ "nodeDisk": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "total": {
+    "inBytes": 994662584320
+   },
+   "available": {
+    "inBytes": 796649758720
+   }
+  },
+  "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": {
+   "total": {
+    "inBytes": 994662584320
+   },
+   "available": {
+    "inBytes": 796649758720
+   }
+  },
+  "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": {
+   "total": {
+    "inBytes": 994662584320
+   },
+   "available": {
+    "inBytes": 796649758720
+   }
+  },
+  "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": {
+   "total": {
+    "inBytes": 994662584320
+   },
+   "available": {
+    "inBytes": 796649758720
+   }
+  }
+ },
+ "nodeSystem": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "gpuUsage": 0.007097653113305569,
+   "temp": 50.07704162597656,
+   "sysPower": 7.004817485809326,
+   "pcpuUsage": 0.0005553687224164605,
+   "ecpuUsage": 0.04429478570818901
+  },
+  "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": {
+   "gpuUsage": 0.007097653113305569,
+   "temp": 50.07704162597656,
+   "sysPower": 7.004817485809326,
+   "pcpuUsage": 0.0005553687224164605,
+   "ecpuUsage": 0.04429478570818901
+  },
+  "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": {
+   "gpuUsage": 0.007097653113305569,
+   "temp": 50.07704162597656,
+   "sysPower": 7.004817485809326,
+   "pcpuUsage": 0.0005553687224164605,
+   "ecpuUsage": 0.04429478570818901
+  },
+  "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": {
+   "gpuUsage": 0.007097653113305569,
+   "temp": 50.07704162597656,
+   "sysPower": 7.004817485809326,
+   "pcpuUsage": 0.0005553687224164605,
+   "ecpuUsage": 0.04429478570818901
+  }
+ },
+ "nodeNetwork": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "interfaces": [
+    {
+     "name": "lo0",
+     "ipAddress": "127.0.0.1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "lo0",
+     "ipAddress": "::1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "lo0",
+     "ipAddress": "fe80::1%lo0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "en1",
+     "ipAddress": "192.0.2.10",
+     "interfaceType": "wifi"
+    },
+    {
+     "name": "en1",
+     "ipAddress": "fe80::1%en1",
+     "interfaceType": "wifi"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "198.51.100.10",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "fe80::1%utun7",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "fd00::10",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "awdl0",
+     "ipAddress": "fe80::1%awdl0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "llw0",
+     "ipAddress": "fe80::1%llw0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun0",
+     "ipAddress": "fe80::1%utun0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun1",
+     "ipAddress": "fe80::1%utun1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun2",
+     "ipAddress": "fe80::1%utun2",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun3",
+     "ipAddress": "fe80::1%utun3",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun5",
+     "ipAddress": "fe80::1%utun5",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun6",
+     "ipAddress": "fe80::1%utun6",
+     "interfaceType": "unknown"
+    }
+   ]
+  },
+  "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": {
+   "interfaces": [
+    {
+     "name": "lo0",
+     "ipAddress": "127.0.0.1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "lo0",
+     "ipAddress": "::1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "lo0",
+     "ipAddress": "fe80::1%lo0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "en1",
+     "ipAddress": "192.0.2.10",
+     "interfaceType": "wifi"
+    },
+    {
+     "name": "en1",
+     "ipAddress": "fe80::1%en1",
+     "interfaceType": "wifi"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "198.51.100.10",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "fe80::1%utun7",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "fd00::10",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "awdl0",
+     "ipAddress": "fe80::1%awdl0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "llw0",
+     "ipAddress": "fe80::1%llw0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun0",
+     "ipAddress": "fe80::1%utun0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun1",
+     "ipAddress": "fe80::1%utun1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun2",
+     "ipAddress": "fe80::1%utun2",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun3",
+     "ipAddress": "fe80::1%utun3",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun5",
+     "ipAddress": "fe80::1%utun5",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun6",
+     "ipAddress": "fe80::1%utun6",
+     "interfaceType": "unknown"
+    }
+   ]
+  },
+  "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": {
+   "interfaces": [
+    {
+     "name": "lo0",
+     "ipAddress": "127.0.0.1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "lo0",
+     "ipAddress": "::1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "lo0",
+     "ipAddress": "fe80::1%lo0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "en1",
+     "ipAddress": "192.0.2.10",
+     "interfaceType": "wifi"
+    },
+    {
+     "name": "en1",
+     "ipAddress": "fe80::1%en1",
+     "interfaceType": "wifi"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "198.51.100.10",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "fe80::1%utun7",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "fd00::10",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "awdl0",
+     "ipAddress": "fe80::1%awdl0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "llw0",
+     "ipAddress": "fe80::1%llw0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun0",
+     "ipAddress": "fe80::1%utun0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun1",
+     "ipAddress": "fe80::1%utun1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun2",
+     "ipAddress": "fe80::1%utun2",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun3",
+     "ipAddress": "fe80::1%utun3",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun5",
+     "ipAddress": "fe80::1%utun5",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun6",
+     "ipAddress": "fe80::1%utun6",
+     "interfaceType": "unknown"
+    }
+   ]
+  },
+  "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": {
+   "interfaces": [
+    {
+     "name": "lo0",
+     "ipAddress": "127.0.0.1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "lo0",
+     "ipAddress": "::1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "lo0",
+     "ipAddress": "fe80::1%lo0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "en1",
+     "ipAddress": "192.0.2.10",
+     "interfaceType": "wifi"
+    },
+    {
+     "name": "en1",
+     "ipAddress": "fe80::1%en1",
+     "interfaceType": "wifi"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "198.51.100.10",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "fe80::1%utun7",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "fd00::10",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "awdl0",
+     "ipAddress": "fe80::1%awdl0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "llw0",
+     "ipAddress": "fe80::1%llw0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun0",
+     "ipAddress": "fe80::1%utun0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun1",
+     "ipAddress": "fe80::1%utun1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun2",
+     "ipAddress": "fe80::1%utun2",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun3",
+     "ipAddress": "fe80::1%utun3",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun5",
+     "ipAddress": "fe80::1%utun5",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun6",
+     "ipAddress": "fe80::1%utun6",
+     "interfaceType": "unknown"
+    }
+   ]
+  }
+ },
+ "nodeThunderbolt": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "interfaces": [
+    {
+     "rdmaInterface": "rdma_en4",
+     "domainUuid": "00000000-0000-4000-8000-000000000002",
+     "linkSpeed": "Up to 120 Gb/s"
+    },
+    {
+     "rdmaInterface": "rdma_en3",
+     "domainUuid": "00000000-0000-4000-8000-000000000000",
+     "linkSpeed": "Up to 120 Gb/s"
+    },
+    {
+     "rdmaInterface": "rdma_en2",
+     "domainUuid": "00000000-0000-4000-8000-000000000001",
+     "linkSpeed": "Up to 120 Gb/s"
+    }
+   ]
+  },
+  "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": {
+   "interfaces": [
+    {
+     "rdmaInterface": "rdma_en4",
+     "domainUuid": "00000000-0000-4000-8000-000000000002",
+     "linkSpeed": "Up to 120 Gb/s"
+    },
+    {
+     "rdmaInterface": "rdma_en3",
+     "domainUuid": "00000000-0000-4000-8000-000000000000",
+     "linkSpeed": "Up to 120 Gb/s"
+    },
+    {
+     "rdmaInterface": "rdma_en2",
+     "domainUuid": "00000000-0000-4000-8000-000000000001",
+     "linkSpeed": "Up to 120 Gb/s"
+    }
+   ]
+  },
+  "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": {
+   "interfaces": [
+    {
+     "rdmaInterface": "rdma_en4",
+     "domainUuid": "00000000-0000-4000-8000-000000000002",
+     "linkSpeed": "Up to 120 Gb/s"
+    },
+    {
+     "rdmaInterface": "rdma_en3",
+     "domainUuid": "00000000-0000-4000-8000-000000000000",
+     "linkSpeed": "Up to 120 Gb/s"
+    },
+    {
+     "rdmaInterface": "rdma_en2",
+     "domainUuid": "00000000-0000-4000-8000-000000000001",
+     "linkSpeed": "Up to 120 Gb/s"
+    }
+   ]
+  },
+  "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": {
+   "interfaces": [
+    {
+     "rdmaInterface": "rdma_en4",
+     "domainUuid": "00000000-0000-4000-8000-000000000002",
+     "linkSpeed": "Up to 120 Gb/s"
+    },
+    {
+     "rdmaInterface": "rdma_en3",
+     "domainUuid": "00000000-0000-4000-8000-000000000000",
+     "linkSpeed": "Up to 120 Gb/s"
+    },
+    {
+     "rdmaInterface": "rdma_en2",
+     "domainUuid": "00000000-0000-4000-8000-000000000001",
+     "linkSpeed": "Up to 120 Gb/s"
+    }
+   ]
+  }
+ },
+ "nodeThunderboltBridge": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "enabled": true,
+   "exists": true,
+   "serviceName": "Thunderbolt Bridge"
+  },
+  "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": {
+   "enabled": true,
+   "exists": true,
+   "serviceName": "Thunderbolt Bridge"
+  },
+  "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": {
+   "enabled": true,
+   "exists": true,
+   "serviceName": "Thunderbolt Bridge"
+  },
+  "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": {
+   "enabled": true,
+   "exists": true,
+   "serviceName": "Thunderbolt Bridge"
+  }
+ },
+ "nodeRdmaCtl": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "enabled": true
+  },
+  "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": {
+   "enabled": true
+  },
+  "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": {
+   "enabled": true
+  },
+  "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": {
+   "enabled": true
+  }
+ },
+ "thunderboltBridgeCycles": []
+}
