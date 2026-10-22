@@ -44,6 +44,9 @@ def install(*, run=subprocess.run) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     launchd.install_agent(LAUNCHD_LABEL, {
         "ProgramArguments": [str(wrapper), _SUBCOMMAND],
+        # launchd starts jobs with a bare environment; without this a custom
+        # OMM_HOME would make the gateway read another tokens.json.
+        "EnvironmentVariables": {"OMM_HOME": str(config.OMM_HOME)},
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": 10,

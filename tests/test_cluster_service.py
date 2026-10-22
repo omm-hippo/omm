@@ -70,3 +70,11 @@ def test_hidden_command_is_in_all_five_skip_sets():
 def test_hidden_command_is_registered_and_hidden():
     command = next(c for c in cli.app.registered_commands if c.name == "_cluster-gateway-run")
     assert command.hidden is True
+
+
+def test_gateway_agent_pins_omm_home_so_it_reads_the_same_tokens(tmp_path, monkeypatch, isolated_omm_home):
+    from omm import config
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    service.install(run=_ok)
+    assert _plist(tmp_path)["EnvironmentVariables"]["OMM_HOME"] == str(config.OMM_HOME)
