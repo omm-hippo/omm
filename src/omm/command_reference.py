@@ -31,7 +31,7 @@ DOCS_BASE_URL = "https://omm.run/commands"
 # Top-level groups whose subcommands are part of the documented surface.
 # Deeper groups (`setting upload`, `setting auto-import`) are listed as
 # groups but their own children live under the parent group's page.
-NESTED_GROUPS = ("engine", "setting")
+NESTED_GROUPS = ("cluster", "engine", "setting")
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # `Alias: ls` trailer inside a command docstring. The authoritative alias

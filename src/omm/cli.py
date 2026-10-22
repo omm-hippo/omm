@@ -309,6 +309,7 @@ class GlobalOptions:
 # Commands whose output --json actually restructures. Other combinations fail
 # before execution, rather than running mutations with misleading plain output.
 _JSON_CAPABLE = {
+    "cluster status",
     "search",
     "list",
     "info",
@@ -334,6 +335,7 @@ _JSON_CAPABLE = {
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
 _YES_CAPABLE = {
+    "cluster leave",
     "arena",
     "install",
     "import",
@@ -749,6 +751,20 @@ engine_app = typer.Typer(
     cls=_DocsEpilogGroup,
 )
 app.add_typer(engine_app)
+cluster_app = typer.Typer(
+    name="cluster",
+    help="Join Thunderbolt-linked Macs into one exo cluster that employees reach through a token-checked gateway (macOS 26.2+).",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+app.add_typer(cluster_app)
+cluster_token_app = typer.Typer(
+    name="token",
+    help="Create, list, and revoke employee access tokens for the cluster gateway (head Mac only).",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+cluster_app.add_typer(cluster_token_app)
 if platform.system() == "Windows":
     # Legacy cp949/cp1252 consoles cannot encode every model name or symbol.
     # Preserve their configured encoding but replace unsupported glyphs rather
@@ -1036,6 +1052,7 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "doctor",
             "setup",
             "engine",
+            "cluster",
             "import",
             "cleanup",
             "link",
@@ -1968,6 +1985,160 @@ def _bg_version_check_cmd() -> None:
     version_check.cached_remote_head(
         _remote_head_commit, _channel_branch(), ttl_seconds=0, installed=_installed_commit()
     )
+
+
+def _cluster_call(func, *args):
+    """Run one cluster step, mapping its errors to exit codes (2 = usage)."""
+    from omm.cluster import commands as cluster_commands
+
+    try:
+        return func(*args)
+    except cluster_commands.UsageProblem as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(2) from error
+    except cluster_commands.ClusterError as error:
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(1) from error
+
+
+def _cluster_out(line: str) -> None:
+    console.print(line, markup=False)
+
+
+@cluster_app.command(name="init")
+@global_flags
+def cluster_init_cmd() -> None:
+    """Make this Mac the cluster head: exo, firewall, and the employee gateway."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.init, _cluster_out)
+
+
+@cluster_app.command(name="join")
+@global_flags
+def cluster_join_cmd(
+    namespace: str = typer.Argument(..., help="Cluster name printed by omm cluster init on the head Mac"),
+) -> None:
+    """Add this Mac to the cluster the head Mac created."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.join, namespace, _cluster_out)
+
+
+@cluster_app.command(name="status")
+@global_flags
+def cluster_status_cmd() -> None:
+    """Show nodes, memory, RDMA, firewall and gateway, and list any problems."""
+    from omm.cluster import commands as cluster_commands
+
+    report = _cluster_call(cluster_commands.status)
+    if _global_opts().json:
+        _print_json(data=report)
+        return
+    console.print(f"Role: {report['role'] or 'not in a cluster'}"
+                  + (f"  (cluster {report['namespace']})" if report["namespace"] else ""), markup=False)
+    exo = report["exo"]
+    if exo["reachable"]:
+        for node in exo["nodes"]:
+            total = node["memory_total_bytes"] / 1024 ** 3
+            free = node["memory_available_bytes"] / 1024 ** 3
+            console.print(f"  {node['name']}: {free:.0f}/{total:.0f} GiB free, RDMA {node['rdma']}, "
+                          f"macOS {node['os_version'] or '?'}", markup=False)
+        for instance in exo["instances"]:
+            console.print(f"  Serving {instance['model_id']} ({instance['sharding']}, "
+                          f"{instance['node_count']} Mac(s))", markup=False)
+    console.print(f"Firewall: {report['firewall']}   Gateway: {report['gateway']}", markup=False)
+    if report["problems"]:
+        console.print("Problems:", markup=False)
+        for problem in report["problems"]:
+            console.print(f"  - {problem}", markup=False)
+    else:
+        console.print("No problems found.", markup=False)
+
+
+@cluster_app.command(name="model")
+@global_flags
+def cluster_model_cmd(
+    model: str | None = typer.Argument(None, help="exo model id to load; omit to see what fits"),
+    unload: bool = typer.Option(False, "--unload", help="Stop serving this model instead of loading it."),
+) -> None:
+    """Recommend models that fit the cluster, or load or unload one."""
+    from omm.cluster import commands as cluster_commands
+
+    if model is None:
+        if unload:
+            err_console.print("Name the model to unload.", markup=False)
+            raise typer.Exit(2)
+        ranked = _cluster_call(cluster_commands.candidates)
+        if not ranked:
+            console.print("No exo model fits this cluster's free memory right now.", markup=False)
+            return
+        for index, item in enumerate(ranked, 1):
+            console.print(f"{index}. {item.model_id}  {item.size_bytes / 1024 ** 3:.1f} GiB  "
+                          f"uses {item.memory_used_fraction:.0%} of free memory", markup=False)
+        console.print("Load one with: omm cluster model <model>", markup=False)
+        return
+    if unload:
+        count = _cluster_call(cluster_commands.unload_model, model)
+        console.print(f"Stopped {count} running copy(ies) of {model}.", markup=False)
+        return
+    console.print(_cluster_call(cluster_commands.load_model, model, _cluster_out), markup=False)
+
+
+@cluster_token_app.command(name="add")
+@global_flags
+def cluster_token_add_cmd(name: str = typer.Argument(..., help="Who the token is for, e.g. kim")) -> None:
+    """Create a token for one employee and show it once."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.require_head)
+    token = _cluster_call(cluster_commands.tokens.add_token, name)
+    console.print(f"Token for {name}: {token}", markup=False)
+    console.print("Store it now - omm cannot show it again.", markup=False)
+
+
+@cluster_token_app.command(name="list")
+@global_flags
+def cluster_token_list_cmd() -> None:
+    """List employee tokens by name and creation time."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.require_head)
+    records = _cluster_call(cluster_commands.tokens.list_tokens)
+    if not records:
+        console.print("No tokens yet. Create one with: omm cluster token add <name>", markup=False)
+    for record in records:
+        console.print(f"{record.name}  created {record.created_at}", markup=False)
+
+
+@cluster_token_app.command(name="revoke")
+@global_flags
+def cluster_token_revoke_cmd(name: str = typer.Argument(..., help="Token name to revoke")) -> None:
+    """Revoke one employee token; the gateway rejects it at once."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.require_head)
+    if not _cluster_call(cluster_commands.tokens.revoke_token, name):
+        err_console.print(f"No token named {name}.", markup=False)
+        raise typer.Exit(1)
+    console.print(f"Revoked the token for {name}.", markup=False)
+
+
+@cluster_app.command(name="leave")
+@global_flags
+def cluster_leave_cmd() -> None:
+    """Remove this Mac's cluster firewall, services and settings."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.require_macos)
+    if not _global_opts().yes:
+        if not _stdin_is_tty():
+            err_console.print("Pass --yes to remove this Mac's cluster setup.", markup=False)
+            raise typer.Exit(1)
+        if not _ask_confirm("Remove this Mac's cluster firewall, exo service and settings?"):
+            err_console.print("Cancelled.", markup=False)
+            raise typer.Exit(0)
+    _cluster_call(cluster_commands.leave, _cluster_out)
 
 
 @app.command(name="_cluster-gateway-run", hidden=True)

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.3.188",
+  "omm_version": "0.4.14",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -308,6 +308,256 @@
         }
       ],
       "docs_url": "https://omm.run/commands/cleanup"
+    },
+    {
+      "path": [
+        "cluster"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Join Thunderbolt-linked Macs into one exo cluster that employees reach through a token-checked gateway (macOS 26.2+).",
+      "description": "",
+      "usage": "omm cluster [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/cluster"
+    },
+    {
+      "path": [
+        "cluster",
+        "init"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Make this Mac the cluster head: exo, firewall, and the employee gateway.",
+      "description": "",
+      "usage": "omm cluster init [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#init"
+    },
+    {
+      "path": [
+        "cluster",
+        "join"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Add this Mac to the cluster the head Mac created.",
+      "description": "",
+      "usage": "omm cluster join [OPTIONS] {namespace}",
+      "arguments": [
+        {
+          "name": "namespace",
+          "help": "Cluster name printed by omm cluster init on the head Mac",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#join"
+    },
+    {
+      "path": [
+        "cluster",
+        "leave"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Remove this Mac's cluster firewall, services and settings.",
+      "description": "",
+      "usage": "omm cluster leave [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#leave"
+    },
+    {
+      "path": [
+        "cluster",
+        "model"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Recommend models that fit the cluster, or load or unload one.",
+      "description": "",
+      "usage": "omm cluster model [OPTIONS] [model]",
+      "arguments": [
+        {
+          "name": "model",
+          "help": "exo model id to load; omit to see what fits",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--unload"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Stop serving this model instead of loading it.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#model"
+    },
+    {
+      "path": [
+        "cluster",
+        "status"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show nodes, memory, RDMA, firewall and gateway, and list any problems.",
+      "description": "",
+      "usage": "omm cluster status [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#status"
+    },
+    {
+      "path": [
+        "cluster",
+        "token"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Create, list, and revoke employee access tokens for the cluster gateway (head Mac only).",
+      "description": "",
+      "usage": "omm cluster token [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/cluster#token"
     },
     {
       "path": [

@@ -230,3 +230,26 @@ configured to forward requests to a cloud service.
 Replacing or deleting a document clears saved document answers so old source
 quotations do not remain in the answer cache. Original uploaded files are not
 changed. Explicit OMM data removal includes the owned `documents` directory.
+
+## Office cluster (`omm cluster`)
+
+`omm cluster` joins your own Macs into one exo cluster inside your office. It adds no
+upload channel: prompts, responses, and model output stay on the cluster Macs and the
+employee PCs that send them.
+
+- **The gateway** (`omm cluster init`, head Mac, port 52440) checks a per-employee token,
+  then forwards only the inference routes to exo on loopback. It logs only the method,
+  path, status, token name, and duration of each request. It never logs a request or
+  response body or the token itself. The connection is plain HTTP inside the office
+  network. Anyone who can capture that network's traffic can read the requests and the
+  token.
+- **Tokens** (`omm cluster token add`) are shown once. Only their SHA-256 digests are
+  stored, in `OMM_HOME/cluster/tokens.json` (mode 0600). Revoking a token takes effect on
+  the gateway's next request.
+- **Firewall.** Each cluster Mac gets a pf anchor (`com.apple/omm-cluster`) and a boot-time
+  loader (`/Library/LaunchDaemons/com.omm.cluster-pf.plist`). Together they keep exo's
+  unauthenticated ports, and every TCP port from 49153 to 65535, unreachable except over
+  loopback and Thunderbolt. `omm cluster leave` removes both.
+- **exo** downloads models from Hugging Face by itself. omm stages a copy of exo's runtime
+  in `OMM_HOME/cluster/exo-runtime` and runs it as a LaunchAgent. omm does not read or
+  send exo's model files.

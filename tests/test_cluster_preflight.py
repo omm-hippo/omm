@@ -60,7 +60,7 @@ def test_install_exo_runs_exact_brew_cask_command(monkeypatch):
 
 def test_brew_found_outside_path(monkeypatch, tmp_path):
     fake = tmp_path / "brew"
-    fake.write_text("#!/bin/sh\n")
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setattr(shutil, "which", lambda name: None)
     monkeypatch.setattr(preflight, "_BREW_CANDIDATES", (str(tmp_path / "missing"), str(fake)))
