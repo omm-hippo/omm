@@ -109,3 +109,43 @@
 
 - 유지한 것: `/Applications/EXO.app`(1.0.71, 격리 속성 제거됨), `~/omm-spike/`(복사한 런타임, 로그, 원본 응답), `~/Library/LaunchAgents/omm.spike.exo.plist`(실행 중), `~/.exo/`, 다운로드한 `mlx-community/Llama-3.2-1B-Instruct-4bit`
 - 되돌린 것: pf 규칙(anchor 비움, `pfctl -X`로 Disabled 복귀), 멈춰 있던 `EXO --install` 프로세스와 GUI 앱
+
+## 실기기 수용 검증 (계획 Task 9, 1대)
+
+- 측정일: 2026-10-22 ~ 2026-10-23
+- 장비: `node3-macmini` 1대. Wi-Fi(en1)로 연결, FileVault 켜짐, 애플리케이션 방화벽(ALF) 켜짐
+- 설치: 이 브랜치를 `~/omm-verify` venv에 editable로 설치하고 `OMM_HOME=~/omm-verify/home`으로 실행. 사용자의 평소 omm은 건드리지 않았다.
+- 클라이언트: 클러스터 밖 맥북. 같은 학교 LAN(10.80.x)과 Tailscale 두 경로로 접속
+
+### 결과
+
+| 계획 단계 | 결과 |
+| --- | --- |
+| Step 1 `init` / `status` | 통과(1대). `exo is running`, RDMA `enabled`, firewall `active`, gateway `running`, 문제 없음. `join`은 Mac이 더 있어야 해서 미검증 |
+| Step 2 `model` | `Llama-3.2-1B-Instruct-4bit`는 16초, `Qwen3.5-9B-4bit`(5.5 GiB, 처음 다운로드 포함)는 2분 19초 걸려 `Serving … at http://10.80.118.65:52440` 출력. 한 대 메모리를 넘는 모델은 미검증 |
+| Step 3 토큰 | 토큰 없음 401, 폐기한 토큰 401, 유효한 토큰은 SSE 스트리밍 200("안녕하세요…"). Claude Code(`ANTHROPIC_BASE_URL`=gateway, 모델 Qwen3.5-9B)가 Read 도구로 파일을 읽고 정확한 내용을 답함(2턴, 53초). 1B 모델은 도구를 부르지 못하고 스키마를 그대로 출력했다. 모델 능력 문제이고, gateway나 exo 문제는 아니다 |
+| Step 4 포트 | nmap이 없어서 node3에서 LISTEN 중인 포트를 모두 열어 봤다. LAN과 Tailscale 모두 22와 52440만 열렸고, 52415, 52416, 62841(rapportd)은 닫혔다 |
+| Step 5 RDMA 성능 비교 | 미검증(여러 대와 Recovery 모드가 필요) |
+| Step 6 노드 분리 | 미검증(여러 대가 필요) |
+| `leave` 정리 | LaunchAgent와 LaunchDaemon 제거, pf anchor 비움, 잠자기 값 복원(1), omm이 추가한 ALF 항목 제거, 토큰 보존을 확인 |
+
+### 검증하다 찾아서 고친 문제
+
+1. **잠자기 때문에 노드가 몇 분마다 끊김.** `pmset -g log`를 보면 원래 설정(`sleep 1`)대로 11:10에 `Idle Sleep`에 들어간 뒤 한 번도 완전히 깨지 않았다. 네트워크 패킷이 올 때마다 약 45초만 `DarkWake`로 깼다가 다시 `Maintenance Sleep`에 들어갔다(321회). 깨어 있는 짧은 동안 `sleep 0`으로 바꿔도 이 반복은 끝나지 않았고, 전원 버튼으로 완전히 깨운 뒤에야 계속 켜져 있었다.
+   - 수정: `init`/`join`이 `pmset -a sleep 0`을 적용하고 원래 값을 `OMM_HOME/cluster/sleep-before.txt`에 저장한다. `leave`가 그 값을 복원하고, `status`는 잠자기가 켜져 있으면 문제로 보고한다.
+   - 실측: 저장된 값 1, 적용 후 0, `leave` 후 1로 돌아옴.
+2. **ALF가 gateway 연결을 붙잡아 둠.** TCP 연결은 되는데 HTTP 응답이 오지 않았다(curl `000`). 127.0.0.1로 접속하면 401이 정상으로 왔다. `socketfilterfw` 로그에는 `Enqueuing new inbound flow for Python.app` / `Not prompting user until existing response received`가 찍혀 있었다. 화면의 허용 창을 아무도 누르지 않아서 연결이 계속 대기한 것이다.
+   - 수정: `init`이 gateway를 시작하기 전에 gateway가 실제로 실행되는 Python 바이너리(Homebrew framework의 `Resources/Python.app/Contents/MacOS/Python`)와 exo를 `socketfilterfw --add` / `--unblockapp`로 등록한다. `join`은 exo만 등록한다.
+   - ALF는 서명된 바이너리를 코드 서명 기준으로 묶는다. 그래서 omm이 옮겨 둔 exo 복사본은 기존 exo 항목에 합쳐지고, 자기 경로로는 목록에 나타나지 않는다. 그래서 등록 뒤 **추가한 경로 그대로** 목록에 나타난 항목만 기록하고, `leave`도 그 항목만 지운다. `--getappblocked`는 등록되지 않은 `/bin/ls`도 "permitted"라고 답해서 판단에 쓸 수 없다.
+   - 실측: 등록 뒤 첫 응답까지 약 37~38초가 걸렸다(이틀 모두). node3에 오래 남아 있던 응답 대기 중인 허용 창 때문인지, ALF 정책 반영이 원래 이만큼 늦는지는 Mac 한 대로는 구분하지 못했다. 새 Mac에서 다시 확인이 필요하다.
+
+### 고치지 않고 남긴 것
+
+- 깨끗한 `OMM_HOME`에서 처음 `omm cluster init`을 실행하면 첫 실행 설정 마법사 질문("Run the first-time setup wizard now?")이 먼저 뜬다. 화면 없이 SSH로 실행하면 여기서 멈춘다.
+- FileVault가 켜진 Mac은 정전 뒤 자동 재부팅(`autorestart 1`)이 되어도 잠금 해제 화면에서 멈춘다. 그래서 SSH, exo, gateway가 모두 올라오지 않는다. omm이 바꿀 설정은 아니고 운영 안내가 필요하다.
+- 디스크 잠자기가 0인 Mac에서 `leave`가 잠자기 값을 1로 복원하면 pmset이 경고를 출력한다(`Disk sleep should be non-zero whenever system sleep is non-zero`). 동작에는 영향이 없다.
+
+### node3 현재 상태 (2026-10-23)
+
+- 클러스터 구성은 `leave`로 정리했다. 사용자 요청에 따라 잠자기는 끈 채로 두었다(`sleep 0`, `autorestart 1`, `disksleep 0`, `displaysleep 0`).
+- 남긴 것: `~/omm-verify/`(검증용 venv, `OMM_HOME`, 토큰 파일), exo가 받은 모델(`Llama-3.2-1B-Instruct-4bit`, `Qwen3.5-9B-4bit`), spike 때 생긴 ALF의 exo 허용 항목, `/Applications/EXO.app`
