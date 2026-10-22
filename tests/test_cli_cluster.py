@@ -27,6 +27,9 @@ class _Fakes:
         self.exo_service_installs = []
         self.exo_service_uninstalls = 0
         self.exo_installs = 0
+        self.keep_awake_calls = 0
+        self.power_restores = 0
+        self.idle_sleep = 0
         self.firewall_state = "active"
         self.gateway_running = True
         self.exo_up = True
@@ -94,7 +97,7 @@ class _FakeExoClient:
 
 @pytest.fixture
 def cluster_fakes(monkeypatch, isolated_omm_home):
-    from omm.cluster import commands, exo_service, firewall, preflight, service
+    from omm.cluster import commands, exo_service, firewall, power, preflight, service
 
     fakes = _Fakes()
     _FakeExoClient.fakes = fakes
@@ -109,6 +112,9 @@ def cluster_fakes(monkeypatch, isolated_omm_home):
     monkeypatch.setattr(firewall, "apply", lambda *, gateway_port, **k: fakes.firewall_apply_calls.append(gateway_port))
     monkeypatch.setattr(firewall, "remove", lambda **k: setattr(fakes, "firewall_removed", fakes.firewall_removed + 1))
     monkeypatch.setattr(firewall, "status", lambda *, gateway_port, **k: fakes.firewall_state)
+    monkeypatch.setattr(power, "keep_awake", lambda **k: setattr(fakes, "keep_awake_calls", fakes.keep_awake_calls + 1))
+    monkeypatch.setattr(power, "restore", lambda **k: setattr(fakes, "power_restores", fakes.power_restores + 1))
+    monkeypatch.setattr(power, "current_idle_sleep_minutes", lambda **k: fakes.idle_sleep)
     monkeypatch.setattr(service, "install", lambda **k: setattr(fakes, "service_install_calls", fakes.service_install_calls + 1))
     monkeypatch.setattr(service, "uninstall", lambda **k: setattr(fakes, "service_uninstall_calls", fakes.service_uninstall_calls + 1))
     monkeypatch.setattr(service, "is_running", lambda **k: fakes.gateway_running)
@@ -360,3 +366,24 @@ def test_status_flags_thunderbolt_bridge_enabled(cluster_fakes):
     node = next(iter(cluster_fakes.state["nodeThunderboltBridge"]))
     cluster_fakes.state["nodeThunderboltBridge"][node] = {"enabled": True, "exists": True, "serviceName": "Thunderbolt Bridge"}
     assert "Thunderbolt Bridge is on for mac-a; turn it off for an RDMA cluster" in _status()["problems"]
+
+
+def test_init_and_join_turn_idle_sleep_off(cluster_fakes):
+    assert runner.invoke(cli.app, ["cluster", "init"]).exit_code == 0
+    assert cluster_fakes.keep_awake_calls == 1
+    runner.invoke(cli.app, ["cluster", "leave", "--yes"])
+    assert runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"]).exit_code == 0
+    assert cluster_fakes.keep_awake_calls == 2
+
+
+def test_leave_restores_idle_sleep(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
+    assert cluster_fakes.power_restores == 1
+
+
+def test_status_flags_idle_sleep(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.idle_sleep = 1
+    data = _status()
+    assert "this Mac sleeps after 1 min idle; run omm cluster init again" in data["problems"]

@@ -11,7 +11,7 @@ import platform
 import socket
 from typing import Callable
 
-from omm.cluster import exo_service, firewall, preflight, recommend, service, settings, tokens
+from omm.cluster import exo_service, firewall, power, preflight, recommend, service, settings, tokens
 from omm.cluster.errors import ClusterError
 from omm.cluster.exo_client import ExoClient
 from omm.cluster.gateway import GATEWAY_PORT
@@ -71,8 +71,9 @@ def init(out: Out) -> settings.ClusterSettings:
     saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, current.known_nodes if current else ())
     settings.save(saved)
     _prepare_this_mac(namespace, out)
-    out("omm will ask for this Mac's password to install the cluster firewall.")
+    out("omm will ask for this Mac's password to install the cluster firewall and turn off idle sleep.")
     firewall.apply(gateway_port=GATEWAY_PORT)
+    power.keep_awake()
     service.install()
     out(f"Run this on every other Mac: omm cluster join {namespace}")
     out("Then give each employee a token: omm cluster token add <name>")
@@ -89,8 +90,9 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     saved = settings.ClusterSettings("member", namespace, GATEWAY_PORT, current.known_nodes if current else ())
     settings.save(saved)
     _prepare_this_mac(namespace, out)
-    out("omm will ask for this Mac's password to install the cluster firewall.")
+    out("omm will ask for this Mac's password to install the cluster firewall and turn off idle sleep.")
     firewall.apply(gateway_port=None)
+    power.keep_awake()
     out("This Mac joined the cluster. Check it from the head Mac with: omm cluster status")
     return saved
 
@@ -146,6 +148,10 @@ def status() -> dict:
         fw = firewall.status(gateway_port=current.gateway_port if current.role == "head" else None)
         if fw != "active":
             problems.append(f"firewall rules are {fw}; run omm cluster {'init' if current.role == 'head' else 'join'} again")
+        idle = power.current_idle_sleep_minutes()
+        if idle:
+            problems.append(f"this Mac sleeps after {idle} min idle; run omm cluster "
+                            f"{'init' if current.role == 'head' else 'join'} again")
         if current.role == "head":
             gateway = "running" if service.is_running() else "stopped"
             if gateway == "stopped":
@@ -198,6 +204,7 @@ def leave(out: Out) -> None:
     require_macos()
     current = settings.load()
     firewall.remove()
+    power.restore()
     if current is None or current.role == "head":
         service.uninstall()
     exo_service.uninstall()
