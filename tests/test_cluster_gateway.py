@@ -213,3 +213,41 @@ def test_gateway_rewrites_system_role_only_for_messages_route(gateway_server, up
     assert int(upstream.last_headers["Content-Length"]) == len(upstream.last_body)
     post(gateway_server, "/v1/chat/completions", headers={"Authorization": f"Bearer {token}"}, body=body).read()
     assert upstream.last_body == body
+
+
+def test_lone_surrogate_in_body_is_still_forwarded(gateway_server, upstream, token):
+    body = b'{"messages":[{"role":"system","content":"\\ud83d"},{"role":"user","content":"u"}]}'
+    resp = post(gateway_server, "/v1/messages", headers={"Authorization": f"Bearer {token}"}, body=body)
+    assert resp.status == 200
+    resp.read()
+    assert json.loads(upstream.last_body)["system"] == [{"type": "text", "text": "\ud83d"}]
+
+
+def test_unexpected_failure_answers_500_not_a_dropped_connection(gateway_server, upstream, token, monkeypatch):
+    monkeypatch.setattr(gateway, "normalize_claude_messages", lambda body: (_ for _ in ()).throw(RuntimeError("boom")))
+    resp = post(gateway_server, "/v1/messages", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status == 500
+    assert json.loads(resp.read())["error"]["type"] == "api_error"
+
+
+def test_upstream_timeout_has_its_own_message(token, monkeypatch):
+    class _Silent(ThreadingHTTPServer):
+        pass
+
+    class _Hang(BaseHTTPRequestHandler):
+        def do_POST(self):
+            import time
+            time.sleep(1)
+
+        def log_message(self, *a):
+            pass
+
+    slow = _start(_Silent(("127.0.0.1", 0), _Hang))
+    monkeypatch.setattr(gateway, "UPSTREAM_TIMEOUT", 0.2)
+    server = _start(gateway.GatewayServer("127.0.0.1", 0, upstream=f"http://127.0.0.1:{slow.server_address[1]}"))
+    try:
+        resp = post(server, "/v1/messages", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status == 504
+        assert json.loads(resp.read())["error"]["message"] == "omm cluster: exo did not answer in time"
+    finally:
+        server.shutdown(); server.server_close(); slow.shutdown(); slow.server_close()

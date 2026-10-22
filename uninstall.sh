@@ -67,6 +67,15 @@ if [ "$PURGE" = "1" ] && [ -f "$RESOLVED_HOME/link-ownership.json" ]; then
     fi
 fi
 
+# `omm cluster` installs per-user LaunchAgents and a root pf LaunchDaemon that
+# --purge cannot remove (it only deletes files under OMM_HOME). Purging
+# underneath them would leave KeepAlive jobs restarting forever and the
+# boot-time firewall still blocking high TCP ports.
+if [ "$PURGE" = "1" ] && { [ -f "$RESOLVED_HOME/cluster/cluster.json" ] || [ -f /Library/LaunchDaemons/com.omm.cluster-pf.plist ]; }; then
+    echo "This Mac is still set up as part of an omm cluster. Run 'omm cluster leave' first, then re-run with --purge." >&2
+    exit 1
+fi
+
 PIPX_AVAILABLE=0
 if command -v python3 >/dev/null 2>&1 && python3 -m pipx --version >/dev/null 2>&1; then
     run_pipx() { python3 -m pipx "$@"; }

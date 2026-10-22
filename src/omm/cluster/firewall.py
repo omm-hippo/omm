@@ -46,20 +46,37 @@ rm -f "{DAEMON_PLIST}" "{RULES_PATH}"
 """
 
 
-def thunderbolt_interfaces(text: str | None = None, *, run=subprocess.run) -> list[str]:
-    if text is None:
-        result = run(["/usr/sbin/networksetup", "-listallhardwareports"], capture_output=True, text=True, check=False)
-        text = result.stdout or ""
+def _hardware_ports(run) -> str:
+    result = run(["/usr/sbin/networksetup", "-listallhardwareports"], capture_output=True, text=True, check=False)
+    return result.stdout or ""
+
+
+def _devices(text: str, wanted) -> list[str]:
     devices, port = [], None
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("Hardware Port:"):
             port = line.split(":", 1)[1].strip()
         elif line.startswith("Device:") and port:
-            if port.startswith("Thunderbolt ") and port != "Thunderbolt Bridge":
+            if wanted(port):
                 devices.append(line.split(":", 1)[1].strip())
             port = None
-    return sorted(devices)
+    return devices
+
+
+def thunderbolt_interfaces(text: str | None = None, *, run=subprocess.run) -> list[str]:
+    if text is None:
+        text = _hardware_ports(run)
+    return sorted(_devices(text, lambda port: port.startswith("Thunderbolt ") and port != "Thunderbolt Bridge"))
+
+
+def trusted_interfaces(text: str | None = None, *, run=subprocess.run) -> list[str]:
+    """Thunderbolt ports plus the Thunderbolt Bridge: while the bridge is on,
+    the ports are its members and pf sees their traffic arrive on bridge0."""
+    if text is None:
+        text = _hardware_ports(run)
+    bridge = _devices(text, lambda port: port == "Thunderbolt Bridge")
+    return sorted(set(thunderbolt_interfaces(text)) | set(bridge))
 
 
 def render_rules(exo_ports: Sequence[int], tb_ifaces: Sequence[str], *, gateway_port: int | None) -> str:
@@ -90,7 +107,7 @@ def _daemon_plist() -> bytes:
 
 def apply(*, gateway_port: int | None, run=subprocess.run) -> None:
     """Install the rules and the boot-time loader with one sudo prompt."""
-    rules = render_rules(EXO_PORTS, thunderbolt_interfaces(run=run), gateway_port=gateway_port)
+    rules = render_rules(EXO_PORTS, trusted_interfaces(run=run), gateway_port=gateway_port)
     workdir = Path(tempfile.mkdtemp(prefix="omm-cluster-pf-"))
     try:
         rules_tmp, plist_tmp = workdir / "cluster-pf.conf", workdir / "cluster-pf.plist"
@@ -104,7 +121,9 @@ def apply(*, gateway_port: int | None, run=subprocess.run) -> None:
 
 
 def remove(*, run=subprocess.run) -> None:
-    run(["sudo", "/bin/sh", "-c", REMOVE_SCRIPT], check=False)
+    result = run(["sudo", "/bin/sh", "-c", REMOVE_SCRIPT], check=False)
+    if result.returncode != 0:
+        raise ClusterError("could not remove the cluster firewall rules (sudo failed); nothing else was changed")
 
 
 def status(*, gateway_port: int | None, run=subprocess.run) -> Literal["active", "missing", "drift"]:
@@ -115,5 +134,5 @@ def status(*, gateway_port: int | None, run=subprocess.run) -> Literal["active",
     loaded = run(["sudo", "-n", "/sbin/pfctl", "-a", PF_ANCHOR, "-sr"], capture_output=True, text=True, check=False)
     if loaded.returncode == 0 and "block drop" not in (loaded.stdout or ""):
         return "missing"
-    expected = render_rules(EXO_PORTS, thunderbolt_interfaces(run=run), gateway_port=gateway_port)
+    expected = render_rules(EXO_PORTS, trusted_interfaces(run=run), gateway_port=gateway_port)
     return "active" if on_disk == expected else "drift"

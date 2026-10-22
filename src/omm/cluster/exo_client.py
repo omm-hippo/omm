@@ -20,6 +20,7 @@ class ClusterNode:
     memory_available_bytes: int
     rdma: Literal["enabled", "disabled", "unknown"]
     os_version: str | None
+    thunderbolt_bridge: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ def parse_state(data: dict) -> ClusterState:
     memory = _dict(data.get("nodeMemory"))
     identities = _dict(data.get("nodeIdentities"))
     rdma = _dict(data.get("nodeRdmaCtl"))
+    bridges = _dict(data.get("nodeThunderboltBridge"))
     topology = _dict(data.get("topology"))
     node_ids = [n for n in topology.get("nodes", []) if isinstance(n, str)] if isinstance(topology.get("nodes"), list) else []
     for node_id in memory:
@@ -117,6 +119,7 @@ def parse_state(data: dict) -> ClusterState:
             memory_available_bytes=_bytes(mem.get("ramAvailable")),
             rdma="enabled" if enabled is True else "disabled" if enabled is False else "unknown",
             os_version=os_version if isinstance(os_version, str) else None,
+            thunderbolt_bridge=bridge if isinstance(bridge := _dict(bridges.get(node_id)).get("enabled"), bool) else None,
         ))
     links = []
     for source, sinks in _dict(topology.get("connections")).items():

@@ -20,6 +20,7 @@ from omm.cluster.tokens import TokenStore
 GATEWAY_PORT = 52440
 UPSTREAM = "http://127.0.0.1:52415"
 MAX_BODY_BYTES = 16 * 1024 * 1024
+UPSTREAM_TIMEOUT = 600
 # Paths every supported harness was seen calling on a real exo 1.0.71 node
 # (spike findings §6). Instance, model-management and state routes stay closed.
 ALLOWED_ROUTES = frozenset({
@@ -70,7 +71,7 @@ def normalize_claude_messages(body: bytes) -> bytes:
             kept.append(message)
     data["system"] = system
     data["messages"] = kept
-    return json.dumps(data, ensure_ascii=False).encode("utf-8")
+    return json.dumps(data).encode("ascii")
 
 
 class GatewayServer(ThreadingHTTPServer):
@@ -100,6 +101,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _reply_error(self, status: int, kind: str, message: str) -> None:
         body = _error_body(kind, message)
+        self._replied = True
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -111,7 +113,14 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle(self) -> None:
         started = time.monotonic()
         path = urlsplit(self.path).path
-        status, name = self._dispatch(path)
+        self._replied = False
+        try:
+            status, name = self._dispatch(path)
+        except Exception:
+            status, name = 500, None
+            if not self._replied:
+                self._reply_error(500, "api_error", "omm cluster: the gateway hit an internal error")
+            self.close_connection = True
         log.info(
             "%s %s -> %s", self.command, path, status,
             extra={"event": "cluster_gateway", "method": self.command, "path": path, "status": status,
@@ -139,14 +148,19 @@ class _Handler(BaseHTTPRequestHandler):
         headers = {k: v for k, v in self.headers.items() if k.casefold() not in _HOP_BY_HOP}
         if body is not None:
             headers["Content-Length"] = str(len(body))
-        upstream = http.client.HTTPConnection(self.server.upstream_host, self.server.upstream_port, timeout=600)
+        upstream = http.client.HTTPConnection(self.server.upstream_host, self.server.upstream_port,
+                                              timeout=UPSTREAM_TIMEOUT)
         try:
             try:
                 upstream.request(self.command, self.path, body=body, headers=headers)
                 response = upstream.getresponse()
+            except TimeoutError:
+                self._reply_error(504, "api_error", "omm cluster: exo did not answer in time")
+                return 504, name
             except OSError:
                 self._reply_error(502, "api_error", "omm cluster: exo is not running on this Mac")
                 return 502, name
+            self._replied = True
             self.send_response(response.status)
             for key, value in response.getheaders():
                 if key.casefold() not in _HOP_BY_HOP:

@@ -112,3 +112,32 @@ def test_remove_uses_one_sudo_call():
     calls = []
     firewall.remove(run=lambda argv, **k: calls.append(argv) or _ok(argv))
     assert [c[:4] for c in calls] == [["sudo", "/bin/sh", "-c", firewall.REMOVE_SCRIPT]]
+
+
+def test_thunderbolt_bridge_is_trusted_with_the_ports():
+    # With Thunderbolt Bridge on, en2-en4 are bridge0 members and pf sees
+    # traffic arrive on bridge0 (review Critical 1).
+    ifaces = firewall.trusted_interfaces((FIX / "listallhardwareports.txt").read_text(encoding="utf-8"))
+    assert ifaces == ["bridge0", "en2", "en3", "en4"]
+
+
+def test_apply_trusts_bridge_and_ports(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(firewall, "_hardware_ports", lambda run: (FIX / "listallhardwareports.txt").read_text(encoding="utf-8"))
+
+    def run(argv, **k):
+        if argv[0] == "sudo":
+            seen["rules"] = Path(argv[5]).read_text(encoding="utf-8")
+        return _ok(argv)
+
+    firewall.apply(gateway_port=None, run=run)
+    assert "pass in quick on { bridge0 en2 en3 en4 } all\n" in seen["rules"]
+
+
+def test_remove_failure_raises_cluster_error():
+    import pytest
+
+    from omm.cluster.errors import ClusterError
+
+    with pytest.raises(ClusterError, match="firewall"):
+        firewall.remove(run=lambda argv, **k: subprocess.CompletedProcess(argv, 1, "", "Sorry, try again."))

@@ -64,3 +64,16 @@ def test_corrupt_file_fails_closed_and_is_not_overwritten(isolated_omm_home):
 
 def test_store_with_no_file_authenticates_nobody(isolated_omm_home):
     assert tokens.TokenStore().verify("omm_anything") is None
+
+
+def test_non_hex_digest_in_hand_edited_file_fails_closed(isolated_omm_home):
+    token = tokens.add_token("kim")
+    import json as _json
+
+    data = _json.loads(tokens.tokens_path().read_text(encoding="utf-8"))
+    data["tokens"][0]["sha256"] = "é" * 64
+    tokens.tokens_path().write_text(_json.dumps(data), encoding="utf-8")
+    assert tokens.verify(token) is None
+    assert tokens.TokenStore().verify(token) is None
+    with pytest.raises(tokens.TokenError, match="tokens.json"):
+        tokens.list_tokens()

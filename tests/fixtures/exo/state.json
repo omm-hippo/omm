@@ -793,22 +793,22 @@
  },
  "nodeThunderboltBridge": {
   "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
-   "enabled": true,
+   "enabled": false,
    "exists": true,
    "serviceName": "Thunderbolt Bridge"
   },
   "12D3KooWNodeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": {
-   "enabled": true,
+   "enabled": false,
    "exists": true,
    "serviceName": "Thunderbolt Bridge"
   },
   "12D3KooWNodeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC": {
-   "enabled": true,
+   "enabled": false,
    "exists": true,
    "serviceName": "Thunderbolt Bridge"
   },
   "12D3KooWNodeDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": {
-   "enabled": true,
+   "enabled": false,
    "exists": true,
    "serviceName": "Thunderbolt Bridge"
   }

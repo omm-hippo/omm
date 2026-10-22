@@ -202,7 +202,7 @@ def test_status_when_exo_is_down_has_same_shape(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     cluster_fakes.exo_down()
     data = _status()
-    assert data["exo"] == {"reachable": False, "nodes": [], "instances": []}
+    assert data["exo"] == {"reachable": False, "nodes": [], "instances": [], "links": []}
     assert "exo is not running on this Mac" in data["problems"]
 
 
@@ -303,3 +303,60 @@ def test_non_macos_exits_2(monkeypatch, isolated_omm_home):
     result = runner.invoke(cli.app, ["cluster", "status"])
     assert result.exit_code == 2
     assert "omm cluster runs on the Macs that form the cluster" in result.output
+
+
+def test_interrupted_first_init_keeps_the_namespace(cluster_fakes, monkeypatch):
+    from omm.cluster import firewall
+
+    def interrupted(**k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(firewall, "apply", interrupted)
+    runner.invoke(cli.app, ["cluster", "init"])
+    first = settings.load().namespace
+    monkeypatch.setattr(firewall, "apply", lambda *, gateway_port, **k: None)
+    result = runner.invoke(cli.app, ["cluster", "init"])
+    assert result.exit_code == 0
+    assert settings.load().namespace == first
+    assert cluster_fakes.exo_service_installs == [first, first]
+
+
+def test_leave_stops_when_firewall_removal_fails(cluster_fakes, monkeypatch):
+    from omm.cluster import firewall
+    from omm.cluster.errors import ClusterError
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    monkeypatch.setattr(firewall, "remove", lambda **k: (_ for _ in ()).throw(ClusterError("could not remove the cluster firewall rules")))
+    result = runner.invoke(cli.app, ["cluster", "leave", "--yes"])
+    assert result.exit_code == 1
+    assert settings.load() is not None and "left the cluster" not in result.output
+
+
+def test_status_reports_other_exo_errors_as_problems(cluster_fakes, monkeypatch):
+    from omm.cluster.errors import ClusterError
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    monkeypatch.setattr(_FakeExoClient, "state", lambda self: (_ for _ in ()).throw(ClusterError("exo request GET /state failed: HTTP 500")))
+    data = _status()
+    assert data["exo"]["reachable"] is False
+    assert "exo request GET /state failed: HTTP 500" in data["problems"]
+    assert data["firewall"] == "active"
+
+
+def test_status_lists_links_and_flags_missing_thunderbolt_link(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    data = _status()
+    assert len(data["exo"]["links"]) == 12
+    assert set(data["exo"]["links"][0]) == {"from", "to", "kind"}
+    ids = {v["friendlyName"]: k for k, v in cluster_fakes.state["nodeIdentities"].items()}
+    conns = cluster_fakes.state["topology"]["connections"]
+    conns[ids["mac-a"]].pop(ids["mac-b"])
+    conns[ids["mac-b"]].pop(ids["mac-a"])
+    assert "no Thunderbolt link between mac-a and mac-b" in _status()["problems"]
+
+
+def test_status_flags_thunderbolt_bridge_enabled(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    node = next(iter(cluster_fakes.state["nodeThunderboltBridge"]))
+    cluster_fakes.state["nodeThunderboltBridge"][node] = {"enabled": True, "exists": True, "serviceName": "Thunderbolt Bridge"}
+    assert "Thunderbolt Bridge is on for mac-a; turn it off for an RDMA cluster" in _status()["problems"]

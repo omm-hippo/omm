@@ -13,7 +13,7 @@ from typing import Callable
 
 from omm.cluster import exo_service, firewall, preflight, recommend, service, settings, tokens
 from omm.cluster.errors import ClusterError
-from omm.cluster.exo_client import ExoClient, ExoUnavailable
+from omm.cluster.exo_client import ExoClient
 from omm.cluster.gateway import GATEWAY_PORT
 
 Out = Callable[[str], None]
@@ -66,12 +66,14 @@ def init(out: Out) -> settings.ClusterSettings:
     if current is not None and current.role == "member":
         raise UsageProblem("this Mac already joined a cluster as a member; run omm cluster leave first")
     namespace = current.namespace if current else settings.new_namespace()
+    # Saved before anything can be interrupted: the name is printed below and
+    # may already be typed into `join` on other Macs, so a re-run must reuse it.
+    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, current.known_nodes if current else ())
+    settings.save(saved)
     _prepare_this_mac(namespace, out)
     out("omm will ask for this Mac's password to install the cluster firewall.")
     firewall.apply(gateway_port=GATEWAY_PORT)
     service.install()
-    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, current.known_nodes if current else ())
-    settings.save(saved)
     out(f"Run this on every other Mac: omm cluster join {namespace}")
     out("Then give each employee a token: omm cluster token add <name>")
     return saved
@@ -84,11 +86,11 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     current = settings.load()
     if current is not None and current.role == "head":
         raise UsageProblem("this Mac is the cluster head; run omm cluster leave first")
+    saved = settings.ClusterSettings("member", namespace, GATEWAY_PORT, current.known_nodes if current else ())
+    settings.save(saved)
     _prepare_this_mac(namespace, out)
     out("omm will ask for this Mac's password to install the cluster firewall.")
     firewall.apply(gateway_port=None)
-    saved = settings.ClusterSettings("member", namespace, GATEWAY_PORT, current.known_nodes if current else ())
-    settings.save(saved)
     out("This Mac joined the cluster. Check it from the head Mac with: omm cluster status")
     return saved
 
@@ -97,10 +99,10 @@ def status() -> dict:
     require_macos()
     current = settings.load()
     problems: list[str] = []
-    exo = {"reachable": False, "nodes": [], "instances": []}
+    exo = {"reachable": False, "nodes": [], "instances": [], "links": []}
     try:
         state = ExoClient().state()
-    except ExoUnavailable as error:
+    except ClusterError as error:
         problems.append(str(error))
         state = None
     if state is not None:
@@ -111,7 +113,20 @@ def status() -> dict:
                        "os_version": n.os_version} for n in state.nodes],
             "instances": [{"model_id": i.model_id, "sharding": i.sharding, "node_count": len(i.node_ids)}
                           for i in state.instances],
+            "links": [],
         }
+        names = {n.node_id: n.name for n in state.nodes}
+        exo["links"] = [{"from": names.get(l.source_id, l.source_id), "to": names.get(l.sink_id, l.sink_id),
+                         "kind": l.kind} for l in state.links]
+        linked = {frozenset((l.source_id, l.sink_id)) for l in state.links}
+        ordered = sorted(state.nodes, key=lambda n: n.name)
+        for index, first in enumerate(ordered):
+            for second in ordered[index + 1:]:
+                if frozenset((first.node_id, second.node_id)) not in linked:
+                    problems.append(f"no Thunderbolt link between {first.name} and {second.name}")
+        if len(state.nodes) > 1:
+            problems += [f"Thunderbolt Bridge is on for {n.name}; turn it off for an RDMA cluster"
+                         for n in state.nodes if n.thunderbolt_bridge]
         seen = [n.name for n in state.nodes]
         if current is not None:
             for name in current.known_nodes:

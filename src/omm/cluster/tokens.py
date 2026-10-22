@@ -22,6 +22,7 @@ from omm.cluster.errors import ClusterError
 
 TOKEN_PREFIX = "omm_"
 _NAME_RE = re.compile(r"^[\w.-]{1,40}$")
+_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 
 
 class TokenError(ClusterError):
@@ -49,7 +50,8 @@ def _parse(text: str) -> list[dict]:
     rows = data["tokens"]
     for row in rows:
         if not (isinstance(row, dict) and isinstance(row.get("name"), str)
-                and isinstance(row.get("sha256"), str) and isinstance(row.get("created_at"), str)):
+                and isinstance(row.get("sha256"), str) and _DIGEST_RE.fullmatch(row["sha256"])
+                and isinstance(row.get("created_at"), str)):
             raise ValueError("unexpected token row")
     return rows
 
