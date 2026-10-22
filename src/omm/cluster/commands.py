@@ -11,7 +11,7 @@ import platform
 import socket
 from typing import Callable
 
-from omm.cluster import exo_service, firewall, power, preflight, recommend, service, settings, tokens
+from omm.cluster import appfw, exo_service, firewall, power, preflight, recommend, service, settings, tokens
 from omm.cluster.errors import ClusterError
 from omm.cluster.exo_client import ExoClient
 from omm.cluster.gateway import GATEWAY_PORT
@@ -74,6 +74,8 @@ def init(out: Out) -> settings.ClusterSettings:
     out("omm will ask for this Mac's password to install the cluster firewall and turn off idle sleep.")
     firewall.apply(gateway_port=GATEWAY_PORT)
     power.keep_awake()
+    # Before the gateway (re)starts, so its first connection is not held.
+    appfw.allow([appfw.exo_binary(), appfw.gateway_binary()])
     service.install()
     out(f"Run this on every other Mac: omm cluster join {namespace}")
     out("Then give each employee a token: omm cluster token add <name>")
@@ -93,6 +95,7 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     out("omm will ask for this Mac's password to install the cluster firewall and turn off idle sleep.")
     firewall.apply(gateway_port=None)
     power.keep_awake()
+    appfw.allow([appfw.exo_binary()])
     out("This Mac joined the cluster. Check it from the head Mac with: omm cluster status")
     return saved
 
@@ -153,6 +156,8 @@ def status() -> dict:
             problems.append(f"this Mac sleeps after {idle} min idle; run omm cluster "
                             f"{'init' if current.role == 'head' else 'join'} again")
         if current.role == "head":
+            problems += [f"the macOS firewall holds incoming connections to {path}; run omm cluster init again"
+                         for path in appfw.not_allowed([appfw.gateway_binary()])]
             gateway = "running" if service.is_running() else "stopped"
             if gateway == "stopped":
                 problems.append("gateway is not running")
@@ -205,6 +210,7 @@ def leave(out: Out) -> None:
     current = settings.load()
     firewall.remove()
     power.restore()
+    appfw.remove()
     if current is None or current.role == "head":
         service.uninstall()
     exo_service.uninstall()

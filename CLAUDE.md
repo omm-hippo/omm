@@ -278,7 +278,9 @@ inside `EXO.app`, so `preflight.stage_runtime` copies `Contents/Resources/exo` t
 `com.omm.cluster-pf`. The anchor trusts lo0 and Thunderbolt and blocks exo's ports plus
 every TCP port in 49153-65535 from elsewhere, because the MLX ring binds a random high port
 on 0.0.0.0. `power.py` sets `pmset -a sleep 0` in init/join (original value saved for
-`leave`): an idle-slept Mac only DarkWakes ~45 s per packet and keeps dropping out. The
+`leave`): an idle-slept Mac only DarkWakes ~45 s per packet and keeps dropping out. `appfw.py`
+adds exo (and the gateway's real Python binary on the head) to the macOS Application Firewall:
+with ALF on, an unknown binary's inbound connections wait forever for an on-screen Allow click. The
 head Mac's `gateway.py` (LaunchAgent `com.omm.cluster-gateway`, hidden
 `_cluster-gateway-run`, port 52440) is the only LAN-reachable entry. It verifies hashed
 tokens from `tokens.py` (fail closed) and forwards four inference routes. It also folds

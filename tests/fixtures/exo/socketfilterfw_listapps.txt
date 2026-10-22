@@ -1,0 +1,7 @@
+Total number of apps = 19 
+1 : /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app 
+             (Allow incoming connections)
+2 : /Users/shinmingyu/omm-spike/exo-runtime/exo 
+             (Allow incoming connections)
+7 : /opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/Resources/Python.app/Contents/MacOS/Python 
+             (Block incoming connections)
