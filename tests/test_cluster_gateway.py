@@ -184,3 +184,32 @@ def test_log_records_contain_no_body_or_token(gateway_server, token, caplog):
         time.sleep(0.02)
     record = records[0]
     assert record.token_name == "kim" and record.status == 200 and record.path == "/v1/messages"
+
+
+def test_claude_system_role_messages_move_to_top_level_system():
+    body = json.dumps({"model": "m", "system": "base", "messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "system", "content": "reminder A"},
+        {"role": "system", "content": [{"type": "text", "text": "reminder B"}]},
+        {"role": "assistant", "content": "ok"}]}).encode()
+    fixed = json.loads(gateway.normalize_claude_messages(body))
+    assert [m["role"] for m in fixed["messages"]] == ["user", "assistant"]
+    assert fixed["system"] == [{"type": "text", "text": "base"}, {"type": "text", "text": "reminder A"},
+                               {"type": "text", "text": "reminder B"}]
+
+
+def test_normalize_leaves_clean_or_invalid_bodies_byte_identical():
+    clean = b'{"model":"m","messages":[{"role":"user","content":"hi"}]}'
+    assert gateway.normalize_claude_messages(clean) is clean
+    assert gateway.normalize_claude_messages(b"not json") == b"not json"
+    assert gateway.normalize_claude_messages(b"") == b""
+
+
+def test_gateway_rewrites_system_role_only_for_messages_route(gateway_server, upstream, token):
+    body = json.dumps({"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]}).encode()
+    post(gateway_server, "/v1/messages?beta=true", headers={"Authorization": f"Bearer {token}"}, body=body).read()
+    sent = json.loads(upstream.last_body)
+    assert sent["system"] == [{"type": "text", "text": "s"}] and [m["role"] for m in sent["messages"]] == ["user"]
+    assert int(upstream.last_headers["Content-Length"]) == len(upstream.last_body)
+    post(gateway_server, "/v1/chat/completions", headers={"Authorization": f"Bearer {token}"}, body=body).read()
+    assert upstream.last_body == body

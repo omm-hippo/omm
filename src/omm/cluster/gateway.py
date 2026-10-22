@@ -40,6 +40,39 @@ def _error_body(kind: str, message: str) -> bytes:
     return json.dumps({"type": "error", "error": {"type": kind, "message": message}}).encode()
 
 
+def _text_blocks(content) -> list:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    return [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
+
+
+def normalize_claude_messages(body: bytes) -> bytes:
+    """Fold role "system" messages into the top-level `system` field.
+
+    Claude Code sends some reminders as system-role entries inside `messages`;
+    exo's Messages API accepts only user/assistant there and answers 422
+    (spike findings §6). Anything that is not such a request passes through
+    unchanged, byte for byte.
+    """
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return body
+    messages = data.get("messages") if isinstance(data, dict) else None
+    if not isinstance(messages, list) or not any(isinstance(m, dict) and m.get("role") == "system" for m in messages):
+        return body
+    system = _text_blocks(data.get("system"))
+    kept = []
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") == "system":
+            system.extend(_text_blocks(message.get("content")))
+        else:
+            kept.append(message)
+    data["system"] = system
+    data["messages"] = kept
+    return json.dumps(data, ensure_ascii=False).encode("utf-8")
+
+
 class GatewayServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -101,7 +134,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply_error(413, "invalid_request_error", "omm cluster: request body is larger than 16 MiB")
             return 413, name
         body = self.rfile.read(length) if length else None
+        if body and path == "/v1/messages":
+            body = normalize_claude_messages(body)
         headers = {k: v for k, v in self.headers.items() if k.casefold() not in _HOP_BY_HOP}
+        if body is not None:
+            headers["Content-Length"] = str(len(body))
         upstream = http.client.HTTPConnection(self.server.upstream_host, self.server.upstream_port, timeout=600)
         try:
             try:
