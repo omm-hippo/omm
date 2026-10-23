@@ -94,6 +94,7 @@ jobs:
             app_path="$(flatpak info --show-location ai.jan.Jan)"
             realpath "$app_path"
             clamscan --recursive=yes --official-db-only=yes --fail-if-cvd-older-than=7 \
+              --max-filesize=1024M --max-scansize=2048M \
               --alert-exceeds-max=yes --alert-encrypted=yes --follow-dir-symlinks=0 \
               --follow-file-symlinks=0 -- "$(realpath "$app_path")"
           fi

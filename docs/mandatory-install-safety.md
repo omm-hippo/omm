@@ -28,6 +28,10 @@ metadata is not an independently maintained vulnerability feed.
 
 ## After installation/update, before reporting success
 
+Linux scans use bounded limits of 1024 MiB per file, 2048 MiB scanned data per
+input, and 300 seconds for the command, to cover large bundled GPU libraries.
+Exceeding a limit remains a failure; no large file is silently accepted.
+
 | Platform | Actual installed artifact check |
 | --- | --- |
 | macOS | Strict deep code-signature verification and Gatekeeper assessment of the app bundle |

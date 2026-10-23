@@ -20,6 +20,8 @@ from omm.engine_packages import PACKAGES
 
 POLICY_VERSION = 1
 MAX_SCAN_SECONDS = 300
+MAX_SCAN_FILE_MIB = 1024
+MAX_SCAN_DATA_MIB = 2048
 
 
 class SafetyError(RuntimeError):
@@ -206,6 +208,7 @@ def verify_installed(key):
         # location above, then scan that directory without following links inside.
         target = target.resolve()
         output = _run(["clamscan", "--recursive=yes", "--official-db-only=yes", "--fail-if-cvd-older-than=7",
+                       f"--max-filesize={MAX_SCAN_FILE_MIB}M", f"--max-scansize={MAX_SCAN_DATA_MIB}M",
                        "--alert-exceeds-max=yes", "--alert-encrypted=yes", "--follow-dir-symlinks=0",
                        "--follow-file-symlinks=0", "--", str(target)], timeout=MAX_SCAN_SECONDS)
         scanned = re.search(r"Scanned files:\s*(\d+)", output)

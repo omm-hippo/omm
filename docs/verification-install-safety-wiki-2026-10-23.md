@@ -133,3 +133,17 @@ The Linux scanner now receives the resolved, scope-checked deployment directory
 when Flatpak reports an active symlink; it still refuses links inside the app.
 The Linux-path fixture uses Path.home explicitly on Windows too. Focused safety,
 workflow and verifier checks after these changes: 46 passed, exit 0.
+
+## Further native CI findings
+
+The real Jan scan reached its GPU libraries and failed with
+Heuristics.Limits.Exceeded.MaxFileSize (0 infected files, 2 errors). The scanner
+now permits up to 1024 MiB per file and 2048 MiB per input with the existing
+300-second command limit. Exceeded limits still fail closed. Native CI must
+confirm these explicit limits cover the actual package.
+
+A Windows restart test also exposed shutdown releasing the job-directory lock
+before its worker reader finished a final JSON replacement. Shutdown now joins
+those readers before releasing ownership. A deterministic regression test keeps
+exclusive ownership through the final save and reloads the persisted result.
+Focused safety/verifier/workflow and real local HTTP/worker tests: 81 passed.

@@ -224,6 +224,9 @@ def test_linux_scans_resolved_deployment_without_following_internal_links(monkey
     safety.verify_installed("jan")
     assert calls[-1][-1] == str(target.resolve())
     assert "--follow-dir-symlinks=0" in calls[-1]
+    assert "--max-filesize=1024M" in calls[-1]
+    assert "--max-scansize=2048M" in calls[-1]
+    assert "--alert-exceeds-max=yes" in calls[-1]
 
 
 def test_linux_missing_scanner_prevents_deployment(monkeypatch):
