@@ -171,9 +171,17 @@ def _decode(raw):
     return base64.b64decode(raw, validate=True) if raw is not None else None
 
 
-def _store(path, data):
+def _private_journal_directory(path):
     _safe(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The lock helper also creates parents. Tighten an existing directory before
+    # locking or writing so the caller's umask cannot expose connection backups.
+    if os.name != "nt":
+        path.parent.chmod(0o700)
+
+
+def _store(path, data):
+    _private_journal_directory(path)
     atomic.atomic_write_text(path, json.dumps(data, ensure_ascii=False))
     path.chmod(0o600)
 
@@ -191,7 +199,7 @@ def connect(harness, model, *, base_url="http://127.0.0.1:11434"):
     if shutil.which(harness) is None:
         raise ConnectionError(f"{harness} is not installed or is not on PATH. Install the harness first.")
     journal = _journal(harness)
-    _safe(journal)
+    _private_journal_directory(journal)
     with atomic.locked(journal):
         if journal.exists():
             raise ConnectionError("An OMM connection backup already exists. Restore with agent cloud before switching again.")
@@ -258,7 +266,7 @@ def _load(journal, harness):
 def restore(harness):
     _check_harness(harness)
     journal = _journal(harness)
-    _safe(journal)
+    _private_journal_directory(journal)
     with atomic.locked(journal):
         if not journal.exists():
             return False

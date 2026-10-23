@@ -133,3 +133,14 @@ copy is stale and needs a reviewed site sync; no site deployment was performed.
 
 Intentional OMM production HTTP/browser requests: **0**. No live telemetry
 uploads or production training publications were performed.
+
+## PR #507 CI repair
+
+CI used umask 022 and exposed that the lock helper created the backup directory
+before the private-directory setup. Connection and restoration now tighten that
+directory to 0700 before locking, including a preexisting 0755 directory. Backup
+files remain 0600. POSIX permissions are not a Windows ACL verification.
+
+With umask explicitly set to 022 in an isolated HOME/OMM_HOME, the focused agent
+suite passed 41 tests; the full Python suite passed 4258 tests with 37 skipped
+and one existing Starlette warning (exit 0). Current main was merged locally.

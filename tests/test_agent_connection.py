@@ -301,6 +301,24 @@ def test_private_backup_permissions(home, available):
         assert agent._journal("claude").parent.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX directory permissions")
+def test_existing_backup_directory_is_private_before_lock(home, available, monkeypatch):
+    directory = agent._journal("claude").parent
+    directory.mkdir(parents=True)
+    directory.chmod(0o755)
+    original_locked = agent.atomic.locked
+
+    def locked(path):
+        assert directory.stat().st_mode & 0o777 == 0o700
+        return original_locked(path)
+
+    monkeypatch.setattr(agent.atomic, "locked", locked)
+    agent.connect("claude", "model")
+    directory.chmod(0o755)
+    assert agent.restore("claude")
+    assert directory.stat().st_mode & 0o777 == 0o700
+
+
 def test_original_file_permissions_restored(home, available):
     [path] = seed("claude")
     path.chmod(0o640)
