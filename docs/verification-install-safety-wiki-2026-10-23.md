@@ -112,3 +112,12 @@ flows against the merged interface, including mobile sidebar navigation: no
 page errors, non-loopback request attempts or horizontal overflow. The earlier
 full-suite and 0.4.2 wheel results above remain scoped to their recorded tree;
 they are not presented as a second full-suite run of the merge.
+
+## CI installation environment repair
+
+The hosted macOS runner inherited HOMEBREW_CASK_OPTS=--no-quarantine, which
+correctly failed the new mandatory preflight. The real-install workflows now
+remove that runner default instead of bypassing the gate. The Linux Jan workflow
+installs ClamAV and updates official signatures before exercising installation.
+Focused workflow/engine verification tests: 10 passed, exit 0. Remote real-install
+results remain separate from this local contract-test result.

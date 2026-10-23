@@ -41,7 +41,7 @@ jobs:
   verify:
     name: Real Jan (flatpak) install + omm link/import + model.yml recognition (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,7 +59,10 @@ jobs:
         # assumes flatpak is already configured).
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y flatpak
+          sudo apt-get install -y flatpak clamav
+          sudo systemctl stop clamav-freshclam.service
+          sudo freshclam
+          clamscan --official-db-only=yes --fail-if-cvd-older-than=7 --version
           sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
       - name: Allow unattended flatpak system installs
         # A regular user's `flatpak install` needs polkit to grant the

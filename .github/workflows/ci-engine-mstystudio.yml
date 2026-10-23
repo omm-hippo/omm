@@ -57,4 +57,5 @@ jobs:
       - name: Install omm
         run: python -m pip install -e .
       - name: Install, link, import, and verify Msty's models dir in both directions
-        run: python scripts/verify_engine_link.py mstystudio
+        # Keep quarantine enabled despite the hosted runner's default opts.
+        run: env -u HOMEBREW_CASK_OPTS python scripts/verify_engine_link.py mstystudio

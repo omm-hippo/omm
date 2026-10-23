@@ -68,4 +68,6 @@ jobs:
         # Ollama-format store directly rather than driving the Electron
         # app itself - see verify_engine_link.py's
         # _verify_ollama_format_manifest.
-        run: python scripts/verify_engine_link.py anythingllm
+        # Hosted macOS images set --no-quarantine by default. Remove that
+        # runner default so OMM exercises the required quarantine protection.
+        run: env -u HOMEBREW_CASK_OPTS python scripts/verify_engine_link.py anythingllm
