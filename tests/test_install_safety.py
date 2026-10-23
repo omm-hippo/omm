@@ -196,7 +196,7 @@ def test_windows_checks_authenticode_then_scans_directory_without_remediation(mo
 
 def test_linux_checks_real_app_location_and_refuses_empty_scan(monkeypatch, isolated_omm_home, tmp_path):
     monkeypatch.setattr(safety, "platform", SimpleNamespace(system=lambda: "Linux"))
-    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(safety.Path, "home", classmethod(lambda cls: tmp_path))
     target = tmp_path / ".local/share/flatpak/app/ai.jan.Jan/x86_64/stable/commit"
     target.mkdir(parents=True)
     monkeypatch.setattr(safety, "_run", lambda args, **kwargs: str(target) if args[0] == "flatpak" else "Scanned files: 10\nInfected files: 0")
@@ -204,6 +204,26 @@ def test_linux_checks_real_app_location_and_refuses_empty_scan(monkeypatch, isol
     monkeypatch.setattr(safety, "_run", lambda args, **kwargs: str(target) if args[0] == "flatpak" else "Scanned files: 0")
     with pytest.raises(safety.SafetyError, match="any files"):
         safety.verify_installed("jan")
+
+
+def test_linux_scans_resolved_deployment_without_following_internal_links(monkeypatch, isolated_omm_home, tmp_path):
+    monkeypatch.setattr(safety, "platform", SimpleNamespace(system=lambda: "Linux"))
+    monkeypatch.setattr(safety.Path, "home", classmethod(lambda cls: tmp_path))
+    target = tmp_path / ".local/share/flatpak/app/ai.jan.Jan/x86_64/stable/commit"
+    target.mkdir(parents=True)
+    active = target.with_name("active")
+    try:
+        active.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable")
+    calls = []
+    def run(args, **kwargs):
+        calls.append(args)
+        return str(active) if args[0] == "flatpak" else "Scanned files: 10\nInfected files: 0"
+    monkeypatch.setattr(safety, "_run", run)
+    safety.verify_installed("jan")
+    assert calls[-1][-1] == str(target.resolve())
+    assert "--follow-dir-symlinks=0" in calls[-1]
 
 
 def test_linux_missing_scanner_prevents_deployment(monkeypatch):

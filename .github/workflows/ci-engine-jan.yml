@@ -15,6 +15,7 @@ name: "Engine link/import check: Jan"
       - "src/omm/registry.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
+      - "src/omm/install_safety.py"
       - ".github/workflows/ci-engine-jan.yml"
   pull_request:
     paths:
@@ -27,6 +28,7 @@ name: "Engine link/import check: Jan"
       - "src/omm/registry.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
+      - "src/omm/install_safety.py"
       - ".github/workflows/ci-engine-jan.yml"
   workflow_dispatch: {}
 
@@ -85,3 +87,13 @@ jobs:
         # Jan never needs to actually launch - scan_jan() just reads the
         # model.yml manifest omm writes, so no daemon/GUI step here.
         run: python scripts/verify_engine_link.py jan
+      - name: Diagnose failed native scan on this disposable runner
+        if: failure()
+        run: |
+          if flatpak info ai.jan.Jan; then
+            app_path="$(flatpak info --show-location ai.jan.Jan)"
+            realpath "$app_path"
+            clamscan --recursive=yes --official-db-only=yes --fail-if-cvd-older-than=7 \
+              --alert-exceeds-max=yes --alert-encrypted=yes --follow-dir-symlinks=0 \
+              --follow-file-symlinks=0 -- "$(realpath "$app_path")"
+          fi

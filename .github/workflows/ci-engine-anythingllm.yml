@@ -16,6 +16,8 @@ name: "Engine link/import check: AnythingLLM"
       - "src/omm/gguf.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
+      - "scripts/verify_managed_cask.py"
+      - "src/omm/install_safety.py"
       - ".github/workflows/ci-engine-anythingllm.yml"
   pull_request:
     paths:
@@ -29,6 +31,8 @@ name: "Engine link/import check: AnythingLLM"
       - "src/omm/gguf.py"
       - "src/omm/hashutil.py"
       - "scripts/verify_engine_link.py"
+      - "scripts/verify_managed_cask.py"
+      - "src/omm/install_safety.py"
       - ".github/workflows/ci-engine-anythingllm.yml"
   workflow_dispatch: {}
 
@@ -41,7 +45,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Real AnythingLLM (brew) install + omm link/import + manifest recognition (macos-latest)
+    name: AnythingLLM mandatory install policy; real link/import when permitted (macos-latest)
     # No Linux automated installer exists for AnythingLLM at all (its
     # Linux installer.sh is interactive, sudo AppArmor prompt, no silent
     # flag - deliberately excluded, see _install_anythingllm and issue
@@ -70,4 +74,4 @@ jobs:
         # _verify_ollama_format_manifest.
         # Hosted macOS images set --no-quarantine by default. Remove that
         # runner default so OMM exercises the required quarantine protection.
-        run: env -u HOMEBREW_CASK_OPTS python scripts/verify_engine_link.py anythingllm
+        run: env -u HOMEBREW_CASK_OPTS python scripts/verify_managed_cask.py anythingllm

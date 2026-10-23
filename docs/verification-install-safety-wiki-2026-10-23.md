@@ -121,3 +121,15 @@ remove that runner default instead of bypassing the gate. The Linux Jan workflow
 installs ClamAV and updates official signatures before exercising installation.
 Focused workflow/engine verification tests: 10 passed, exit 0. Remote real-install
 results remain separate from this local contract-test result.
+
+The official Msty Studio 2.9.12 and AnythingLLM 1.18.0 casks currently use
+sha256=no_check with mutable latest URLs. Managed installation is intentionally
+blocked. CI exercises the real mandatory refusal for that exact metadata and
+prints installation/link/import NOT VERIFIED. If upstream supplies a pinned
+hash, CI instead exercises the full real install/link/import path. Other errors
+remain failures. This is safety refusal evidence, not native installation proof.
+
+The Linux scanner now receives the resolved, scope-checked deployment directory
+when Flatpak reports an active symlink; it still refuses links inside the app.
+The Linux-path fixture uses Path.home explicitly on Windows too. Focused safety,
+workflow and verifier checks after these changes: 46 passed, exit 0.

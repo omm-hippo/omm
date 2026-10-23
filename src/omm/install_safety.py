@@ -202,6 +202,9 @@ def verify_installed(key):
                  Path.home() / ".local/share/flatpak/app" / package.flatpak_id]
         if not target.is_absolute() or not target.is_dir() or not any(target.resolve().is_relative_to(r.resolve()) for r in roots):
             raise SafetyError("Flatpak returned an unrecognized application location; no arbitrary directory was scanned.")
+        # Flatpak can report an `active` deployment symlink. Validate its real
+        # location above, then scan that directory without following links inside.
+        target = target.resolve()
         output = _run(["clamscan", "--recursive=yes", "--official-db-only=yes", "--fail-if-cvd-older-than=7",
                        "--alert-exceeds-max=yes", "--alert-encrypted=yes", "--follow-dir-symlinks=0",
                        "--follow-file-symlinks=0", "--", str(target)], timeout=MAX_SCAN_SECONDS)
