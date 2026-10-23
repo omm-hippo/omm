@@ -1,5 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {api, bytes} from './api';
+import RichText from './RichText';
 
 export default function DocumentPanel({models, onJobs}) {
   const [library,setLibrary]=useState({documents:[],answers:[],settings:null});
@@ -123,7 +124,7 @@ export default function DocumentPanel({models, onJobs}) {
       <button className="primary" disabled={busy || !model || !selected.length || question.trim().length<2}>{busy?'처리 중…':'근거를 찾아 질문하기'}</button>
     </form>
     <section className="document-answers" aria-live="polite"><h2>문서 답변 기록</h2><p className="footnote">검색 구간과 모델 답변을 함께 확인하세요. 출처 번호가 있어도 답변의 정확도를 보장하지 않아요.</p>
-    {library.answers.map(a=><article key={a.id}><h3>{a.question}</h3><p className="document-answer">{a.answer}</p><small>{a.status==='answered'?'로컬 모델 답변':a.status==='no_evidence'?'근거 없음':'출처 검증 필요'} · {a.filename} · {new Date(a.created_at).toLocaleString('ko-KR')}</small>{a.sources.map(s=><details key={s.citation} open><summary>[{s.citation}] {s.name} · {s.page}쪽 · {s.start}–{s.end}자</summary><blockquote>{s.text}</blockquote></details>)}</article>)}
+    {library.answers.map(a=><article key={a.id}><h3>{a.question}</h3><div className="document-answer"><RichText text={a.answer}/></div><small>{a.status==='answered'?'로컬 모델 답변':a.status==='no_evidence'?'근거 없음':'출처 검증 필요'} · {a.filename} · {new Date(a.created_at).toLocaleString('ko-KR')}</small>{a.sources.map(s=><details key={s.citation} open><summary>[{s.citation}] {s.name} · {s.page}쪽 · {s.start}–{s.end}자</summary><blockquote>{s.text}</blockquote></details>)}</article>)}
     </section>
   </div>;
 }
