@@ -68,8 +68,26 @@ def test_build_environment_is_reproducible(monkeypatch):
 def test_checked_in_entry_script_is_stable():
     assert npm_binary.ENTRY_SCRIPT == ROOT / "scripts" / "npm_entry.py"
     assert npm_binary.ENTRY_SCRIPT.read_text(encoding="utf-8").endswith(
-        'if __name__ == "__main__":\n    main()\n'
+        "    multiprocessing.freeze_support()\n    main()\n"
     )
+
+
+def test_entry_script_lets_a_frozen_build_start_its_benchmark_worker():
+    # The PyInstaller builds (npm, winget, Windows portable) start
+    # quality.evaluate_model_isolated's spawned worker by re-running the
+    # executable with `--multiprocessing-fork ...`. Unless freeze_support()
+    # runs first, that relaunch is just the omm CLI rejecting an unknown
+    # option, and every `omm contribute` benchmark fails.
+    import ast
+
+    tree = ast.parse(npm_binary.ENTRY_SCRIPT.read_text(encoding="utf-8"))
+    (guard,) = [node for node in tree.body if isinstance(node, ast.If)]
+    calls = [
+        ast.unparse(statement.value)
+        for statement in guard.body
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+    ]
+    assert calls == ["multiprocessing.freeze_support()", "main()"]
 
 
 def test_build_uses_stable_entry_and_reproducible_environment(tmp_path, monkeypatch):
