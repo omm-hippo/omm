@@ -7,6 +7,14 @@ blocks those ports and every high TCP port arriving from anywhere else, and
 lets outbound traffic keep state so replies still get back in. Verified on a
 real Mac mini 2026-10-22 (spike findings §2-3). The anchor lives under
 com.apple/*, which /etc/pf.conf already evaluates, so pf.conf is never edited.
+
+The blocks answer with a reset (`block return`), never a silent drop. exo
+advertises every address of a Mac (Wi-Fi, Tailscale, link-local) and its
+libp2p dialer waits out each one; a dropped SYN on a blocked address made two
+Thunderbolt peers take 40 s or more to find each other, or never. A reset
+fails that dial at once and the port stays closed to the network. Real Mac
+minis 2026-10-23: 5 of 5 discoveries in about 10 s with `return`, 2 of 3 with
+`drop` (one never within 40 s).
 """
 
 from __future__ import annotations
@@ -91,8 +99,8 @@ def render_rules(exo_ports: Sequence[int], tb_ifaces: Sequence[str], *, gateway_
     if gateway_port is not None:
         lines.append(f"pass in quick proto tcp to port {gateway_port}")
     lines += [
-        "block drop in quick proto { tcp udp } to port $exo_ports",
-        f"block drop in quick proto tcp to port {_HIGH_PORTS}",
+        "block return in quick proto { tcp udp } to port $exo_ports",
+        f"block return in quick proto tcp to port {_HIGH_PORTS}",
     ]
     return "\n".join(lines) + "\n"
 
@@ -132,7 +140,7 @@ def status(*, gateway_port: int | None, run=subprocess.run) -> Literal["active",
     except OSError:
         return "missing"
     loaded = run(["sudo", "-n", "/sbin/pfctl", "-a", PF_ANCHOR, "-sr"], capture_output=True, text=True, check=False)
-    if loaded.returncode == 0 and "block drop" not in (loaded.stdout or ""):
+    if loaded.returncode == 0 and "block " not in (loaded.stdout or ""):
         return "missing"
     expected = render_rules(EXO_PORTS, trusted_interfaces(run=run), gateway_port=gateway_port)
     return "active" if on_disk == expected else "drift"

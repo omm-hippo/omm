@@ -60,6 +60,14 @@ def _prepare_this_mac(namespace: str, out: Out) -> None:
             out(f"  {line}")
 
 
+# exo's binary is fresh from the internet; macOS can hold its first start on a
+# prompt that only shows on the Mac's own screen (real Mac mini, 2026-10-23).
+SCREEN_APPROVAL_HINT = (
+    "The first time exo starts, macOS may show an Allow prompt on this Mac's screen. "
+    "If omm cluster status says exo is not running, click Allow there."
+)
+
+
 def init(out: Out) -> settings.ClusterSettings:
     require_macos()
     current = settings.load()
@@ -77,6 +85,7 @@ def init(out: Out) -> settings.ClusterSettings:
     # Before the gateway (re)starts, so its first connection is not held.
     appfw.allow([appfw.exo_binary(), appfw.gateway_binary()])
     service.install()
+    out(SCREEN_APPROVAL_HINT)
     out(f"Run this on every other Mac: omm cluster join {namespace}")
     out("Then give each employee a token: omm cluster token add <name>")
     return saved
@@ -96,6 +105,7 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     firewall.apply(gateway_port=None)
     power.keep_awake()
     appfw.allow([appfw.exo_binary()])
+    out(SCREEN_APPROVAL_HINT)
     out("This Mac joined the cluster. Check it from the head Mac with: omm cluster status")
     return saved
 

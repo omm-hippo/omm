@@ -172,6 +172,17 @@ def test_join_sets_member_without_gateway(cluster_fakes):
     assert cluster_fakes.exo_service_installs == ["omm-0a1b2c3d"]
 
 
+def test_init_and_join_tell_the_user_about_the_on_screen_allow_prompt(cluster_fakes):
+    head = runner.invoke(cli.app, ["cluster", "init"])
+    assert head.exit_code == 0, head.output
+    assert "click Allow" in head.output
+    left = runner.invoke(cli.app, ["cluster", "leave", "--yes"])
+    assert left.exit_code == 0, left.output
+    member = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    assert member.exit_code == 0, member.output
+    assert "click Allow" in member.output
+
+
 def test_init_on_member_is_refused(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
     result = runner.invoke(cli.app, ["cluster", "init"])

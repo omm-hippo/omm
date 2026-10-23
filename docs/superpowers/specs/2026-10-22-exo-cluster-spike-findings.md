@@ -149,3 +149,25 @@
 
 - 클러스터 구성은 `leave`로 정리했다. 사용자 요청에 따라 잠자기는 끈 채로 두었다(`sleep 0`, `autorestart 1`, `disksleep 0`, `displaysleep 0`).
 - 남긴 것: `~/omm-verify/`(검증용 venv, `OMM_HOME`, 토큰 파일), exo가 받은 모델(`Llama-3.2-1B-Instruct-4bit`, `Qwen3.5-9B-4bit`), spike 때 생긴 ALF의 exo 허용 항목, `/Applications/EXO.app`
+
+## 2대 클러스터 실측 (node4 head + node3 member, Thunderbolt 케이블 1개, 2026-10-23)
+
+`init`(node4)과 `join`(node3)로 두 Mac이 한 클러스터가 됐고, head의 `status`에 두 노드와 RDMA 링크(`rdma_en3` ↔ `rdma_en3`)가 보였다. Step 1은 통과했다. Step 2~6은 모델 다운로드(83GB)와 3대 구성이 필요해 미검증이다.
+
+### 찾아서 고친 문제
+
+1. **서로 발견하는 데 40초 이상 걸리거나 아예 못 찾음.** exo(libp2p)는 Mac의 모든 주소(Wi-Fi, Tailscale, 링크로컬, Thunderbolt)를 광고하고 상대의 모든 주소로 연결을 시도한다. 우리 pf 규칙이 Thunderbolt가 아닌 경로의 SYN을 조용히 버려서(`block drop`), 그 시도들이 타임아웃까지 기다리며 Thunderbolt 시도를 늦췄다. exo 프로세스를 동시에 재시작한 뒤 "노드 2개가 보일 때까지"를 쟀다.
+   - pf 규칙 없음: 3/3, 약 10초.
+   - 기존 `block drop`: 3번 중 2번 성공(40초 걸린 것 포함), 1번은 40초 안에 실패. 별도 시도에서는 못 찾는 경우가 더 많았다.
+   - `block return`(RST로 즉시 거절): 5/5, 약 10초. 코드로 설치한 뒤 다시 5/5(그중 한 번은 30초).
+   - 수정: `firewall.render_rules`의 두 `block` 규칙을 `block return`으로 바꿨다. 포트는 여전히 닫혀 있다. 노트북에서 head의 Wi-Fi 주소로 확인하니 52415, 52416, 임의의 높은 포트(60000)는 `closed`, 52440만 `open`이었다.
+   - 확인 못 한 것: 정확히 어떤 주소·어떤 시점의 시도가 막혔는지는 패킷으로 직접 보지 못했다. 위 비교 결과가 근거의 전부다. `no state`로 상태 추적만 끄는 변형은 효과가 뚜렷하지 않았다.
+2. **exo 바이너리가 `_dyld_start`에서 멈춤.** 새로 설치된 Mac(brew cask가 quarantine을 붙인 `EXO.app`)에서 처음 실행하면, 화면에 뜨는 macOS 허용 창을 누를 때까지 `omm`이 옮겨 둔 복사본도, SSH로 직접 실행한 `exo --help`도 멈춘다(RSS 32KB, CPU 0%). 화면 앞에서 허용을 누르자 곧바로 시작됐다.
+   - 수정: `init`/`join`이 "첫 실행에는 이 Mac 화면에 허용 창이 뜰 수 있다"는 안내를 출력한다. 원격에서 대신 해결하는 방법은 찾지 못했다(`xattr -d com.apple.quarantine`은 효과가 없었다).
+
+### 고치지 않고 남긴 것
+
+- `status`가 "Thunderbolt Bridge is on... turn it off for an RDMA cluster"라고 경고한다. 그런데 이 Mac들은 Thunderbolt Bridge에 `10.0.0.3`/`10.0.0.4`를 수동으로 설정해 두었고, 서비스를 끄면(`networksetup -setnetworkserviceenabled "Thunderbolt Bridge" off`) 그 주소가 사라져 두 Mac이 서로를 찾지 못했다. 다시 켰다. 경고와 실제 동작이 어긋난다.
+- 3대를 삼각형으로 연결하면 Thunderbolt Bridge가 루프를 이뤄 패킷 폭주가 날 수 있다는 가설(node3 과열)은 아직 검증하지 못했다.
+- 첫 `init`이 `exit_code 1`로 20초 만에 끝난 적이 있다. 에러 본문은 로그에 남지 않아 원인을 모른다. 같은 명령을 다시 실행하자 성공했다.
+- 방금 재시작한 exo는 `status`에서 메모리가 `0/0 GiB free`로 잠깐 보인다.

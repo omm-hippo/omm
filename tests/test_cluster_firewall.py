@@ -39,8 +39,8 @@ def test_render_rules_exact_text_for_head_mac():
         "pass in quick on lo0 all\n"
         "pass in quick on { en5 en6 } all\n"
         "pass in quick proto tcp to port 52440\n"
-        "block drop in quick proto { tcp udp } to port $exo_ports\n"
-        "block drop in quick proto tcp to port 49153:65535\n"
+        "block return in quick proto { tcp udp } to port $exo_ports\n"
+        "block return in quick proto tcp to port 49153:65535\n"
     )
 
 
@@ -48,7 +48,7 @@ def test_render_rules_member_without_thunderbolt_has_no_gateway_or_tb_line():
     text = firewall.render_rules((52415,), (), gateway_port=None)
     assert "{ }" not in text and "52440" not in text
     assert "pass in quick on lo0 all\n" in text
-    assert text.endswith("block drop in quick proto tcp to port 49153:65535\n")
+    assert text.endswith("block return in quick proto tcp to port 49153:65535\n")
 
 
 def test_apply_uses_one_sudo_call_with_paths_as_arguments(monkeypatch):
