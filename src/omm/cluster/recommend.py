@@ -24,7 +24,7 @@ class Candidate:
 
 
 def _available(state: ClusterState) -> int:
-    return sum(max(node.memory_available_bytes, 0) for node in state.nodes)
+    return sum(max(node.memory_available_bytes or 0, 0) for node in state.nodes)
 
 
 def choose_placement(placements: Sequence[Placement]) -> Placement | None:

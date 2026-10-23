@@ -107,3 +107,24 @@ def test_await_instance_times_out(monkeypatch):
     monkeypatch.setattr(client, "_get", lambda path, **k: {})
     clock = iter(range(0, 1000, 5))
     assert client.await_instance("m", 12, sleep=lambda s: None, clock=lambda: next(clock)) is False
+
+
+def test_parse_state_reads_thunderbolt_bridge_cycles():
+    data = _load("state.json")
+    ids = list(data["nodeIdentities"])
+    data["thunderboltBridgeCycles"] = [ids[:2], ids[:3], "junk", [ids[0], 7]]
+    state = exo_client.parse_state(data)
+    # Rows that are not lists of ids are skipped; the rest keep exo's order.
+    assert state.bridge_cycles == (tuple(ids[:2]), tuple(ids[:3]))
+
+
+def test_parse_state_without_cycles_key_has_none():
+    assert exo_client.parse_state(_load("state.json")).bridge_cycles == ()
+
+
+def test_node_in_topology_but_not_yet_in_node_memory_has_unknown_memory():
+    # Right after a restart exo lists a node before its first memory report.
+    data = {"topology": {"nodes": ["n1"], "connections": {}}}
+    (node,) = exo_client.parse_state(data).nodes
+    assert node.memory_total_bytes is None
+    assert node.memory_available_bytes is None

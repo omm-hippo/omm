@@ -1991,12 +1991,20 @@ def _cluster_call(func, *args):
     """Run one cluster step, mapping its errors to exit codes (2 = usage)."""
     from omm.cluster import commands as cluster_commands
 
+    import logging
+
+    # The run log only sees the `omm` logger, so an error printed to stderr
+    # alone leaves `exit_code 1` with no cause behind (a real first `init`
+    # failed that way, 2026-10-23).
+    log = logging.getLogger("omm.cluster")
     try:
         return func(*args)
     except cluster_commands.UsageProblem as error:
+        log.error(str(error), extra={"event": "usage_error", "step": getattr(func, "__name__", "?")})
         err_console.print(str(error), markup=False)
         raise typer.Exit(2) from error
     except cluster_commands.ClusterError as error:
+        log.error(str(error), extra={"event": "cluster_error", "step": getattr(func, "__name__", "?")})
         err_console.print(str(error), markup=False)
         raise typer.Exit(1) from error
 
@@ -2040,9 +2048,12 @@ def cluster_status_cmd() -> None:
     exo = report["exo"]
     if exo["reachable"]:
         for node in exo["nodes"]:
-            total = node["memory_total_bytes"] / 1024 ** 3
-            free = node["memory_available_bytes"] / 1024 ** 3
-            console.print(f"  {node['name']}: {free:.0f}/{total:.0f} GiB free, RDMA {node['rdma']}, "
+            if node["memory_total_bytes"] is None or node["memory_available_bytes"] is None:
+                memory = "memory not reported yet"
+            else:
+                memory = (f"{node['memory_available_bytes'] / 1024 ** 3:.0f}/"
+                          f"{node['memory_total_bytes'] / 1024 ** 3:.0f} GiB free")
+            console.print(f"  {node['name']}: {memory}, RDMA {node['rdma']}, "
                           f"macOS {node['os_version'] or '?'}", markup=False)
         for instance in exo["instances"]:
             console.print(f"  Serving {instance['model_id']} ({instance['sharding']}, "

@@ -16,8 +16,10 @@ from omm.cluster.errors import ClusterError
 class ClusterNode:
     node_id: str
     name: str
-    memory_total_bytes: int
-    memory_available_bytes: int
+    # None until exo's first memory report for the node (right after a restart
+    # a node is listed in the topology before its memory arrives).
+    memory_total_bytes: int | None
+    memory_available_bytes: int | None
     rdma: Literal["enabled", "disabled", "unknown"]
     os_version: str | None
     thunderbolt_bridge: bool | None = None
@@ -44,6 +46,10 @@ class ClusterState:
     nodes: tuple[ClusterNode, ...]
     links: tuple[ClusterLink, ...]
     instances: tuple[ClusterInstance, ...]
+    # exo's own loop detection (`thunderboltBridgeCycles`): node ids whose
+    # Thunderbolt Bridges form a cycle. exo lists every bidirectional link as
+    # a 2-node cycle too; only 3 or more nodes mean a real loop.
+    bridge_cycles: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -77,8 +83,9 @@ def _int(value) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _bytes(value) -> int:
-    return _int(_dict(value).get("inBytes"))
+def _bytes(value) -> int | None:
+    value = _dict(value).get("inBytes")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _instance_body(wrapper) -> dict:
@@ -128,6 +135,10 @@ def parse_state(data: dict) -> ClusterState:
                 edge = _dict(edge)
                 # RDMA edges name their rdma_enX ifaces; socket edges only carry a multiaddr.
                 links.append(ClusterLink(source, sink, "rdma" if "sourceRdmaIface" in edge else "other"))
+    cycles = []
+    for row in data.get("thunderboltBridgeCycles") or []:
+        if isinstance(row, list) and row and all(isinstance(n, str) for n in row):
+            cycles.append(tuple(row))
     instances = []
     for instance_id, wrapper in _dict(data.get("instances")).items():
         body = _instance_body(wrapper)
@@ -145,6 +156,7 @@ def parse_state(data: dict) -> ClusterState:
         nodes=tuple(nodes),
         links=tuple(links),
         instances=tuple(instances),
+        bridge_cycles=tuple(cycles),
     )
 
 

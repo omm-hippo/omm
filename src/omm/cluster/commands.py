@@ -142,6 +142,13 @@ def status() -> dict:
         if len(state.nodes) > 1:
             problems += [f"Thunderbolt Bridge is on for {n.name}; turn it off for an RDMA cluster"
                          for n in state.nodes if n.thunderbolt_bridge]
+        # exo computes these from Bridge-enabled nodes and their Thunderbolt
+        # links; a 2-node "cycle" is just one cable seen from both ends.
+        for cycle in state.bridge_cycles:
+            if len(cycle) > 2:
+                members = ", ".join(sorted(names.get(node_id, node_id) for node_id in cycle))
+                problems.append(f"Thunderbolt Bridge loop between {members} (packet storm); unplug one of "
+                                "those cables or run omm cluster init/join again on each of them")
         seen = [n.name for n in state.nodes]
         if current is not None:
             for name in current.known_nodes:

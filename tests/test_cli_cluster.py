@@ -420,3 +420,50 @@ def test_status_flags_binaries_the_macos_firewall_holds(cluster_fakes):
     cluster_fakes.appfw_missing = ["/fw/Python"]
     data = _status()
     assert "the macOS firewall holds incoming connections to /fw/Python; run omm cluster init again" in data["problems"]
+
+
+def _ids(fakes, *names):
+    return [fakes._node_id(n) for n in names]
+
+
+def test_status_reports_a_thunderbolt_bridge_loop_of_three_or_more_macs(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.state["thunderboltBridgeCycles"] = [_ids(cluster_fakes, "mac-a", "mac-b", "mac-c")]
+    problems = _status()["problems"]
+    assert ("Thunderbolt Bridge loop between mac-a, mac-b, mac-c (packet storm); "
+            "unplug one of those cables or run omm cluster init/join again on each of them" in problems)
+
+
+def test_status_ignores_two_node_bridge_cycles(cluster_fakes):
+    # exo lists every bidirectional link as a 2-node cycle; only 3+ nodes loop.
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.state["thunderboltBridgeCycles"] = [_ids(cluster_fakes, "mac-a", "mac-b")]
+    assert not any("loop" in p for p in _status()["problems"])
+
+
+def test_status_shows_unknown_memory_for_a_node_without_a_memory_report(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.state["nodeMemory"].pop(cluster_fakes._node_id("mac-a"))
+    node = next(n for n in _status()["exo"]["nodes"] if n["name"] == "mac-a")
+    assert node["memory_total_bytes"] is None and node["memory_available_bytes"] is None
+    plain = runner.invoke(cli.app, ["cluster", "status"]).output
+    assert "mac-a: memory not reported yet" in plain
+    assert "0/0 GiB" not in plain
+
+
+def test_model_recommendation_skips_nodes_without_a_memory_report(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.state["nodeMemory"].pop(cluster_fakes._node_id("mac-a"))
+    assert runner.invoke(cli.app, ["cluster", "model"]).exit_code == 0
+
+
+def test_cluster_errors_are_written_to_the_omm_log(cluster_fakes, caplog):
+    cluster_fakes.exo_down()
+    with caplog.at_level("ERROR", logger="omm.cluster"):
+        result = runner.invoke(cli.app, ["cluster", "model", "some/model"])
+    assert result.exit_code == 1
+    assert "exo is not running on this Mac" in caplog.text
+    with caplog.at_level("ERROR", logger="omm.cluster"):
+        result = runner.invoke(cli.app, ["cluster", "join", "not-a-namespace"])
+    assert result.exit_code == 2
+    assert "the cluster name looks like" in caplog.text
