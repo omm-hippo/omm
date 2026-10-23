@@ -4942,23 +4942,55 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
         variants, error.repo_id, info, error.param_count_b
     )
 
-    choices = []
-    for v in variants:
-        if v.fits is True:
-            note = f"✓ fits, ~{v.required_gb:.1f}GB needed"
-        elif v.fits is False:
-            note = f"may not fit, ~{v.required_gb:.1f}GB needed"
-        else:
-            note = "fit unknown"
+    header, rows = _quant_picker_rows(variants, fastest_filenames)
+    choices = [questionary.Separator(header)]
+    for v, row in zip(variants, rows):
         if v.filename in fastest_filenames:
-            title = [("fg:green bold", f"{v.filename}  ({note}, predicted fastest)")]
+            title = [("fg:green bold", row)]
         else:
-            title = f"{v.filename}  ({note})"
+            title = row
         choices.append(questionary.Choice(title=title, value=v.filename))
 
     return _ask_select(
         questionary.select(f"Select a quantization variant for '{error.repo_id}':", choices=choices)
     )
+
+
+def _quant_picker_rows(variants, fastest_filenames: set[str]) -> tuple[str, list[str]]:
+    """Lay the quant picker out as a small table - quant, fit, memory needed
+    - instead of one sentence per file that repeats the model name the
+    prompt already shows. Returns the header line and one row per variant,
+    in `variants` order.
+
+    A file is named by its quant label alone unless that label can't tell
+    it apart from its siblings ("Unknown", or two files sharing one quant),
+    in which case the full filename stays so every row is still distinct."""
+    from collections import Counter
+
+    labels = [_quant_label(v.filename) for v in variants]
+    label_counts = Counter(labels)
+    names = [
+        v.filename if label == "Unknown" or label_counts[label] > 1 else label
+        for v, label in zip(variants, labels)
+    ]
+    fits = [
+        "✓ fits" if v.fits is True else "may not fit" if v.fits is False else "fit unknown"
+        for v in variants
+    ]
+    needed = [f"~{v.required_gb:.1f}GB" if v.required_gb is not None else "?" for v in variants]
+
+    headings = ("Quant", "Fit", "Memory needed")
+    name_width = max(len(headings[0]), *(len(n) for n in names))
+    fit_width = max(len(headings[1]), *(len(f) for f in fits))
+    mem_width = max(len(headings[2]), *(len(m) for m in needed))
+    header = f"{headings[0]:<{name_width}}  {headings[1]:<{fit_width}}  {headings[2]}"
+    rows = []
+    for v, name, fit, mem in zip(variants, names, fits, needed):
+        row = f"{name:<{name_width}}  {fit:<{fit_width}}  {mem:<{mem_width}}"
+        if v.filename in fastest_filenames:
+            row += "  predicted fastest"
+        rows.append(row.rstrip())
+    return header, rows
 
 
 def _link_model(
@@ -9994,6 +10026,7 @@ def search(
     refs: list[str] = []
     seen_refs: set[str] = set()
     rows: list[dict] = []
+    unfit_shown = False
     for family in sorted(groups):
         header_printed = False
         for c in groups[family]:
@@ -10043,7 +10076,11 @@ def search(
                 if fits_hardware:
                     console.print(f"  [muted][{len(refs)}][/muted] [accent]{ref}[/accent]  [muted]{desc}[/muted]")
                 else:
-                    console.print(f"  [muted][{len(refs)}][/muted] {ref}  [error](predicted not to run on this hardware)[/error]")
+                    # A short muted tag per row plus one legend line below,
+                    # instead of a full red sentence repeated on every row
+                    # (#364): the warning stays, it just stops shouting.
+                    unfit_shown = True
+                    console.print(f"  [muted][{len(refs)}][/muted] {ref}  [muted](won't fit)[/muted]")
         if not json_output and header_printed:
             console.print()
         if limit is not None and len(refs) >= limit:
@@ -10053,6 +10090,11 @@ def search(
     if json_output:
         _print_json(data=rows)
     elif refs:
+        if unfit_shown:
+            console.print(
+                "[muted](won't fit) = predicted not to run on this hardware; "
+                "--skip-unfit hides these.[/muted]"
+            )
         console.print(
             "[muted]Install with: omm install <number>  (e.g. omm install 1)[/muted]"
         )

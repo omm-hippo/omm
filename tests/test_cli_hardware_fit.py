@@ -6,7 +6,7 @@ from omm.hub import ResolvedModel
 runner = CliRunner()
 
 
-def test_search_marks_hardware_unfit_candidates_in_red(monkeypatch):
+def test_search_marks_hardware_unfit_candidates(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
     monkeypatch.setattr(
         cli.search_mod,
@@ -33,6 +33,97 @@ def test_search_marks_hardware_unfit_candidates_in_red(monkeypatch):
     assert result.stdout.count("predicted not to run on this hardware") == 1
     assert "org/big" in result.stdout
     assert "org/fits" in result.stdout
+
+
+def test_search_unfit_marker_is_short_per_row_with_one_legend_line(monkeypatch):
+    # #364: the full "predicted not to run" sentence used to be repeated, in
+    # red, on every non-fitting row. Each row now carries a short tag and the
+    # explanation appears once, below the list.
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {"name": "fits-model", "repo_id": "org/fits", "description": "d"},
+            {"name": "too-big-model", "repo_id": "org/big", "description": "d"},
+            {"name": "huge-model", "repo_id": "org/huge", "description": "d"},
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli, "fetch_repo_param_count_b", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli.predictor,
+        "predict_speed",
+        lambda trees, hw, candidate: 20.0 if candidate["name"] == "fits-model" else 0.0,
+    )
+
+    result = runner.invoke(cli.app, ["search", "model"])
+
+    assert result.exit_code == 0, result.stdout
+    lines = result.stdout.splitlines()
+    big_line = next(line for line in lines if "org/big" in line)
+    huge_line = next(line for line in lines if "org/huge" in line)
+    fits_line = next(line for line in lines if "org/fits" in line)
+    assert big_line.rstrip().endswith("(won't fit)")
+    assert huge_line.rstrip().endswith("(won't fit)")
+    assert "(won't fit)" not in fits_line
+    assert result.stdout.count("predicted not to run on this hardware") == 1
+    assert "--skip-unfit" in result.stdout
+
+
+def test_search_omits_unfit_legend_when_every_row_fits(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [{"name": "fits-model", "repo_id": "org/fits", "description": "d"}],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli, "fetch_repo_param_count_b", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.predictor, "predict_speed", lambda trees, hw, candidate: 20.0)
+
+    result = runner.invoke(cli.app, ["search", "model"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "won't fit" not in result.stdout
+    assert "predicted not to run" not in result.stdout
+
+
+def test_search_json_unfit_rows_unchanged(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", lambda: {"model_url": None})
+    monkeypatch.setattr(
+        cli.search_mod,
+        "local_candidate_pool",
+        lambda model_url, **kwargs: [
+            {"name": "fits-model", "repo_id": "org/fits", "description": "d"},
+            {"name": "too-big-model", "repo_id": "org/big", "description": "d"},
+        ],
+    )
+    monkeypatch.setattr(cli.search_mod, "search_huggingface", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.search_mod, "search_modelscope", lambda query, **kwargs: [])
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": [{}]})
+    monkeypatch.setattr(cli, "scan_hardware", lambda: object())
+    monkeypatch.setattr(cli, "fetch_repo_param_count_b", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli.predictor,
+        "predict_speed",
+        lambda trees, hw, candidate: 20.0 if candidate["name"] == "fits-model" else 0.0,
+    )
+
+    result = runner.invoke(cli.app, ["search", "model", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    import json
+
+    rows = json.loads(result.stdout)
+    assert {row["fits_hardware"] for row in rows} == {True, False}
+    assert set(rows[0]) == {"index", "family", "ref", "description", "fits_hardware"}
 
 
 def test_search_skip_unfit_hides_unfit_candidates(monkeypatch):
