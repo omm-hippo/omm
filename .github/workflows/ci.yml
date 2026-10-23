@@ -31,6 +31,7 @@ jobs:
         working-directory: web-ui
         run: |
           npm ci --no-fund --no-audit
+          npm test
           npm run build
       - name: Require current bundled assets
         run: |

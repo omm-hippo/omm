@@ -167,12 +167,12 @@ def test_install_keyboard_interrupt_cleans_up_partial_download(isolated_omm_home
     assert cleaned == [(filename, False)]
 
 
-def test_install_esc_deletes_the_resumable_partial(isolated_omm_home, monkeypatch):
+def test_install_esc_keeps_the_resumable_partial(isolated_omm_home, monkeypatch):
     """Pins the policy documented on `downloader._download_file_impl`: a
-    cancelled *first-time* install deletes the `.part` trio rather than
-    leaving it for a later resume. Runs the real
+    cancelled *first-time* install keeps the `.part` trio so re-running the
+    same command resumes instead of starting from byte 0. Runs the real
     `_cleanup_interrupted_install` (not a stub, unlike the tests above) so
-    the actual deletion is what's under test."""
+    what actually stays on disk is what's under test."""
     filename = "m.gguf"
     monkeypatch.setattr(
         cli,
@@ -197,9 +197,10 @@ def test_install_esc_deletes_the_resumable_partial(isolated_omm_home, monkeypatc
     result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
 
     assert result.exit_code == 0
-    assert not part.exists()
-    assert not ranges.exists()
-    assert not meta.exists()
+    assert part.read_bytes() == b"partial-bytes"
+    assert ranges.exists()
+    assert meta.exists()
+    assert "Re-run the same install command to resume" in result.output
 
 
 def _seed_existing_model(filename: str) -> None:

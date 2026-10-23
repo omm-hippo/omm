@@ -20,6 +20,41 @@ pressure are shown as failures; a downloaded file alone is not a successful
 response check. Finishing an in-flight response check can delay server shutdown
 while its owned load is released.
 
+## Workspace and reading controls
+
+The local manager provides a collapsible sidebar, a breadcrumb, and a
+searchable menu for model management. Click
+**메뉴 검색** or press Cmd/Ctrl+K within the page, enter a task such as `근거 질문`
+or `서버`, and open a matching destination. Enter opens the first result; Tab
+moves through results; Escape closes the search. The shortcut does not interrupt
+an already open confirmation dialog. On narrow screens the sidebar is a drawer;
+changing to a narrow viewport closes it and the main area is inert while it is open.
+
+**화면 모드** offers system, light, and dark appearances. Only this display
+preference is saved in the browser (`omm.web.appearance.v1`). Blocking browser
+storage does not prevent the manager from opening. This preference is separate
+from server-side model, telemetry, and runtime settings.
+
+Chat answers and document answers render Markdown headings, lists, tables and
+code. **코드 복사** copies the code without formatting; **답변 복사** copies the
+original Markdown. Copying requires a user click and browser clipboard access.
+Raw HTML is not executed and image references from model output do not fetch
+remote images. Existing document source excerpts remain plain text and separate
+from generated answers.
+
+You can prepare a question before connecting a model. Starter prompts fill the
+composer but never send or connect automatically. Choose Enter or Cmd/Ctrl+Enter
+in **전송 키**; Shift+Enter always inserts a newline. Composition Enter is ignored
+while entering Korean/Japanese text. Drafts, selected documents, and active chat
+polling survive menu navigation within the page. Unsent drafts are held in memory,
+not saved to browser storage, and are lost on a full page reload. Completed
+conversation history continues to use the existing local JSON store.
+
+Frontend checks: `npm --prefix web-ui test` and `npm --prefix web-ui run build`.
+The build includes runtime license texts in `static/third-party-licenses.txt`.
+Browser rendering and fixture-model tests do not prove actual Ollama/LM Studio
+generation or an installed package upgrade; verify those paths separately.
+
 ## Click launchers
 
 After OMM is installed, `packaging/web-launchers/Open-OMM.command` on macOS or
@@ -107,9 +142,9 @@ current digest. Saving, restoration and comparison run as serialized durable
 jobs. Existing loaded models are never unloaded to make room for these trials.
 
 **파일·설정** shows storage capacity, managed file size and the cumulative space
-saved by adopting external files (`storage_saved_bytes`, the same counter
-`omm scan` reports as "saved via omm import"; web adoption adds to it like
-`omm import`). External-file search
+saved by adopting external files (`storage_saved_bytes`; web adoption adds to
+it like `omm import`). `omm scan` instead reports the space saved right now by
+every hard link or symlink omm owns, installs included. External-file search
 only creates a preview; adoption requires confirmation of a selected preview
 and revalidation of its size/hash. Original runner files may become links during
 adoption. Cleanup accepts only previewed incomplete downloads; changed bytes,

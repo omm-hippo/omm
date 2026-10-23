@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -106,9 +107,23 @@ def _owned_ollama_process(pid: int) -> psutil.Process | None:
         return None
 
 
+def _lmstudio_port() -> tuple[int | None, str | None]:
+    """(live port, None) while LM Studio's server runs, (None, None) when
+    `lms` positively reports it stopped, else (None, why it is unknown)."""
+    lms_path = linker._lms_cli_path()
+    if lms_path is None:
+        return None, "LM Studio's lms command was not found, so its server state could not be read"
+    status = linker._lmstudio_server_status(lms_path)
+    if status is None:
+        return None, "LM Studio did not report its server state"
+    if not status.get("running"):
+        return None, None
+    return status.get("port"), None
+
+
 def _port(engine: str) -> int | None:
     if engine == "lmstudio":
-        return linker.lmstudio_server_port()
+        return _lmstudio_port()[0]
     try:
         parsed = urlsplit(__import__("omm.benchmark", fromlist=["OLLAMA_HOST"]).OLLAMA_HOST)
         return parsed.port or 11434
@@ -116,13 +131,40 @@ def _port(engine: str) -> int | None:
         return 11434
 
 
-def _listener_rows(port: int) -> tuple[list[dict], str | None]:
+def _per_process_connections() -> tuple[list[tuple[object, int]], bool]:
+    connections: list[tuple[object, int]] = []
+    denied = False
+    for process in psutil.process_iter():
+        read = getattr(process, "net_connections", None) or process.connections
+        try:
+            connections.extend((connection, process.pid) for connection in read(kind="tcp"))
+        except psutil.AccessDenied:
+            denied = True
+        except (psutil.Error, OSError):
+            continue
+    return connections, denied
+
+
+def _port_accepts_connections(port: int) -> bool:
     try:
-        connections = psutil.net_connections(kind="tcp")
-    except (psutil.AccessDenied, psutil.Error, OSError) as error:
+        with socket.create_connection(("localhost", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _listener_rows(port: int) -> tuple[list[dict], str | None]:
+    denied = False
+    try:
+        connections = [(connection, connection.pid) for connection in psutil.net_connections(kind="tcp")]
+    except psutil.AccessDenied:
+        # macOS refuses the system-wide socket table without root, even for the
+        # user's own engine; same-user processes can still be read one by one.
+        connections, denied = _per_process_connections()
+    except (psutil.Error, OSError) as error:
         return [], type(error).__name__
     rows = []
-    for connection in connections:
+    for connection, pid in connections:
         if connection.status != psutil.CONN_LISTEN or not connection.laddr:
             continue
         address = getattr(connection.laddr, "ip", None)
@@ -130,7 +172,9 @@ def _listener_rows(port: int) -> tuple[list[dict], str | None]:
         if address is None and isinstance(connection.laddr, tuple):
             address, listener_port = connection.laddr[:2]
         if listener_port == port:
-            rows.append({"address": str(address), "port": port, "pid": connection.pid})
+            rows.append({"address": str(address), "port": port, "pid": pid})
+    if not rows and denied and _port_accepts_connections(port):
+        return [], "AccessDenied"
     return rows, None
 
 
@@ -149,12 +193,24 @@ def inspect(engine: str) -> dict[str, object]:
     engine = engine.strip().casefold()
     if engine not in {"ollama", "lmstudio"}:
         raise EngineSecurityError("engine security supports only ollama and lmstudio")
-    port = _port(engine)
+    if engine == "lmstudio":
+        port, unknown_reason = _lmstudio_port()
+    else:
+        port, unknown_reason = _port(engine), None
     if port is None:
+        if unknown_reason is None:
+            return {
+                "engine": engine,
+                "status": "not_running",
+                "reason": "the server is stopped, so no device can connect to it",
+                "port": None,
+                "listeners": [],
+                "owned_by_omm": False,
+            }
         return {
             "engine": engine,
             "status": "unknown",
-            "reason": "server is not running or its listening port could not be read",
+            "reason": unknown_reason,
             "port": None,
             "listeners": [],
             "owned_by_omm": False,
@@ -164,16 +220,22 @@ def inspect(engine: str) -> dict[str, object]:
         return {
             "engine": engine,
             "status": "unknown",
-            "reason": f"listener information is unavailable ({read_error})",
+            "reason": (
+                f"the listener on port {port} belongs to a process OMM cannot inspect (AccessDenied)"
+                if read_error == "AccessDenied"
+                else f"listener information is unavailable ({read_error})"
+            ),
             "port": port,
             "listeners": [],
             "owned_by_omm": False,
         }
     if not listeners:
+        # The listener table was read successfully and nothing listens on
+        # this port: that is a definite "nothing can connect", not a guess.
         return {
             "engine": engine,
-            "status": "unknown",
-            "reason": "no matching listening socket was visible",
+            "status": "not_running",
+            "reason": f"server is not running (nothing is listening on port {port}), so no device can connect to it",
             "port": port,
             "listeners": [],
             "owned_by_omm": False,
@@ -207,7 +269,7 @@ def inspect(engine: str) -> dict[str, object]:
 
 def fix_local_only(engine: str) -> dict[str, object]:
     status = inspect(engine)
-    if status["status"] == "local_only":
+    if status["status"] in {"local_only", "not_running"}:
         return {**status, "changed": False}
     if engine != "ollama" or status["status"] != "external_allowed":
         raise EngineSecurityError(

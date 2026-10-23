@@ -1468,7 +1468,7 @@ def scan() -> None:
     cleaned = _reconcile_stale_link_records(reg, installed)
     external = scan_import.find_external_model_identities()
     hub_storage_gb = _hub_storage_bytes(reg) / (1024**3)
-    storage_saved_gb = load_config().get("storage_saved_bytes", 0) / (1024**3)
+    storage_saved_gb = linker.shared_link_bytes() / (1024**3)
 
     if opts.json:
         _print_json(
@@ -1694,6 +1694,7 @@ def engine_security_cmd(
     labels = {
         "local_only": "This computer only",
         "external_allowed": "External connections allowed",
+        "not_running": "Not running (no connections possible)",
         "unknown": "Could not determine",
     }
     table = _table(title="Engine server security")
@@ -7150,6 +7151,7 @@ def install(
             err_console.print("Verified model file kept. Re-run the same install command to resume.")
         else:
             _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
+            _report_kept_partial_download(e.filename)
         err_console.print("[warning]Cancelled.[/warning]")
         raise typer.Exit(0) from e
     except KeyboardInterrupt:
@@ -7161,6 +7163,7 @@ def install(
             _cleanup_interrupted_install(
                 resolved.filename, downloaded_now=download_state["downloaded_now"]
             )
+            _report_kept_partial_download(resolved.filename)
         raise
     finally:
         listener.stop()
@@ -7194,6 +7197,19 @@ def install(
         # up (common on Linux without the systemd service).
         console.print(f"  Run it now: [accent]omm run {outcome.filename}[/accent]")
     _report_lmstudio_load_verification(outcome)
+
+
+def _report_kept_partial_download(filename: str) -> None:
+    try:
+        part = _download_part_paths(_managed_model_path(filename))[0]
+    except ModelResolutionError:
+        return
+    if part.exists():
+        err_console.print(
+            "Partial download kept. Re-run the same install command to resume, "
+            "or run `omm cleanup` to delete it.",
+            markup=False,
+        )
 
 
 def _download_part_paths(destination: Path) -> tuple[Path, Path, Path, Path]:
@@ -8696,6 +8712,7 @@ def upgrade(
             continue
         except InstallInterrupted as e:
             _cleanup_interrupted_install(e.filename, downloaded_now=e.downloaded_now)
+            _report_kept_partial_download(e.filename)
             err_console.print("[warning]Cancelled.[/warning]")
             raise typer.Exit(0) from e
         console.print(f"[success]Ω Installed {suggestion.filename}[/success]")
@@ -10518,9 +10535,13 @@ def cleanup() -> None:
     source .gguf was deleted without going through `omm uninstall`. Also
     reclaims orphaned `omm pin` archives (see MODEL_ARCHIVE_DIR) - an
     archived version whose model is still registered, pinned or not, is
-    never touched here."""
+    never touched here. Finally discards install records that no running
+    install needs: interrupted or failed installs (which can no longer
+    resume once their partial file is gone), finished installs of models
+    that were since removed, and unreadable record files."""
     incomplete_removed = _cleanup_incomplete_installs()
     archives_removed = _cleanup_orphan_archives()
+    records_removed = install_state.discard_stale_records(set(registry.load_registry()))
 
     removed_by_engine: dict[str, int] = {}
     for spec in linker.ENGINES:
@@ -10537,7 +10558,7 @@ def cleanup() -> None:
         removed_by_engine["custom"] = custom_removed
     links_removed = sum(removed_by_engine.values())
 
-    if not incomplete_removed and not archives_removed and not links_removed:
+    if not incomplete_removed and not archives_removed and not links_removed and not records_removed:
         console.print("[success]Nothing to clean up.[/success]")
         return
 
@@ -10550,6 +10571,8 @@ def cleanup() -> None:
         parts.append(
             ", ".join(f"{count} broken {label} link(s)" for label, count in removed_by_engine.items())
         )
+    if records_removed:
+        parts.append(f"{records_removed} stale install record(s)")
     console.print(f"[success]Cleaned up {', '.join(parts)}.[/success]")
 
 
@@ -12269,21 +12292,19 @@ def _cleanup_interrupted_install(filename: str, *, downloaded_now: bool = False)
     """Unload first, then unlink/delete; required for Windows file handles.
 
     `downloaded_now=False` (the safe default) means this cancelled attempt
-    never fetched new bytes - most commonly, re-running `omm install` on a
-    model that was already fully installed. In that case there is nothing
-    of *this run's own* to roll back: deleting the registry entry would
-    destroy a pre-existing model the user never asked to remove. Only clean
-    up this attempt's own partial-download leftovers. Full teardown
-    (unlink the central file, drop every engine link, remove the registry
-    entry) is reserved for the run that actually downloaded the model
-    itself before being cancelled.
+    never finished a download - it was cancelled mid-transfer, or it was a
+    re-run of `omm install` on a model that was already fully installed.
+    Either way there is nothing of *this run's own* to roll back: deleting
+    the registry entry would destroy a pre-existing model the user never
+    asked to remove, and deleting the `.part` trio would make the next
+    `omm install` start again from byte 0. So nothing is deleted; the
+    downloader revalidates the partial against the server (URL, strong
+    ETag, size) before reusing it, and `omm cleanup` removes it on request.
+    Full teardown (unlink the central file, drop every engine link, remove
+    the registry entry) is reserved for the run that actually downloaded the
+    model itself before being cancelled.
     """
     if not downloaded_now:
-        try:
-            dest = _managed_model_path(filename)
-        except ModelResolutionError:
-            return
-        _cleanup_download_parts(dest)
         return
     reg = registry.load_registry()
     found_name, entry = _lookup_entry(filename, reg)

@@ -35,7 +35,7 @@ def print_scan(console: Console, *, info, budget, hub_storage_gb: float,
     resources.add_row("Safe model budget",
                       f"{budget.model_budget_gb:.1f} GB now ({budget.ram_safety_reserve_gb:.1f} GB+ kept for apps/OS)")
     resources.add_row("omm hub storage",
-                      f"{hub_storage_gb:.1f} GB ({storage_saved_gb:.1f} GB saved via omm import)")
+                      f"{hub_storage_gb:.1f} GB ({storage_saved_gb:.1f} GB saved by linking instead of copying)")
     console.print(resources)
     console.print()
     console.print(Text("Local AI runners", style="heading"))
