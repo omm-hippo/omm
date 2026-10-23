@@ -11,6 +11,14 @@ import pytest
 from typer.testing import CliRunner
 
 from omm import cli, config, engine_manager as manager
+
+
+@pytest.fixture(autouse=True)
+def _fixture_native_security(monkeypatch):
+    """Isolate package fixtures; test_install_safety tests the real gate calls."""
+    from omm import install_safety
+    monkeypatch.setattr(install_safety, "prepare", lambda key, args: args)
+    monkeypatch.setattr(install_safety, "verify_installed", lambda key: {"status": "fixture"})
 from omm.engines import RuntimeHealth
 from omm.engine_packages import operation_lock
 
@@ -181,7 +189,7 @@ def test_failure_to_query_after_uninstall_does_not_claim_success(monkeypatch):
 def test_installer_failure_reports_detected_application_honestly(monkeypatch):
     monkeypatch.setattr(manager.linker, "platform", SimpleNamespace(system=lambda: "Darwin"))
     monkeypatch.setattr(manager.linker.shutil, "which", lambda name: "/brew")
-    monkeypatch.setattr(manager.linker, "_stream_subprocess", lambda *a: 1)
+    monkeypatch.setattr(manager.linker, "_stream_subprocess", lambda *a, **kwargs: 1)
     monkeypatch.setattr(manager.linker, "is_ollama_installed", lambda: True)
     result = manager.linker.install_engine("ollama")
     assert result.status == "failed"

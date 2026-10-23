@@ -12,6 +12,14 @@ from pathlib import Path
 from omm import linker
 
 
+@pytest.fixture(autouse=True)
+def _fixture_native_security(monkeypatch):
+    """Isolate package fixtures; test_install_safety tests the real gate calls."""
+    from omm import install_safety
+    monkeypatch.setattr(install_safety, "prepare", lambda key, args: args)
+    monkeypatch.setattr(install_safety, "verify_installed", lambda key: {"status": "fixture"})
+
+
 class _FakeProc:
     def __init__(self, lines, returncode=0):
         self.stdout = iter(lines)
@@ -375,10 +383,10 @@ def test_install_via_package_manager_mac_retries_with_reinstall_when_brew_no_ops
 
     original_stream_subprocess = linker._stream_subprocess
 
-    def fake_stream_subprocess(args, on_output):
+    def fake_stream_subprocess(args, on_output, **kwargs):
         if "reinstall" in args:
             installed_after_reinstall["value"] = True
-        return original_stream_subprocess(args, on_output)
+        return original_stream_subprocess(args, on_output, **kwargs)
 
     monkeypatch.setattr(linker, "_stream_subprocess", fake_stream_subprocess)
 

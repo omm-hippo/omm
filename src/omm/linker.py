@@ -3441,10 +3441,14 @@ def _install_via_package_manager(
         )
 
     try:
+        from omm import install_safety
+        args = install_safety.prepare(key, args)
         stream_output = (
             _InstallPhaseTracker(args[0], on_output).feed if on_output is not None else None
         )
-        returncode = _stream_subprocess(args, stream_output)
+        returncode = _stream_subprocess(args, stream_output, env=install_safety.environment())
+    except install_safety.SafetyError as error:
+        return EngineInstallResult(key, "failed", f"Mandatory installation safety check blocked installation: {error}")
     except OSError as e:
         return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
 
@@ -3452,6 +3456,11 @@ def _install_via_package_manager(
         on_output(INSTALL_PHASE_VERIFYING)
     detected = is_installed()
     if returncode == 0 and detected:
+        try:
+            install_safety.verify_installed(key)
+        except (install_safety.SafetyError, OSError) as error:
+            install_safety.record_failure(key)
+            return EngineInstallResult(key, "failed", f"Installed files may remain, but mandatory security verification failed: {error}. Do not launch the app before resolving this.")
         return EngineInstallResult(key, "installed", f"{label} installed successfully.")
 
     # brew refuses to touch a cask it already has a receipt for ("already
@@ -3478,15 +3487,23 @@ def _install_via_package_manager(
             on_output(INSTALL_PHASE_REPAIRING)
         try:
             returncode = _stream_subprocess(
-                ["brew", "reinstall", "--cask", brew_cask],
+                install_safety.prepare(key, ["brew", "reinstall", "--cask", brew_cask]),
                 _InstallPhaseTracker("brew", on_output).feed if on_output is not None else None,
+                env=install_safety.environment(),
             )
+        except install_safety.SafetyError as error:
+            return EngineInstallResult(key, "failed", f"Mandatory installation safety check blocked repair: {error}")
         except OSError as e:
             return EngineInstallResult(key, "failed", f"Could not start installer: {e}")
         if on_output is not None:
             on_output("OMM: verifying installation")
         detected = is_installed()
         if returncode == 0 and detected:
+            try:
+                install_safety.verify_installed(key)
+            except (install_safety.SafetyError, OSError) as error:
+                install_safety.record_failure(key)
+                return EngineInstallResult(key, "failed", f"Installed files may remain, but mandatory security verification failed: {error}. Do not launch the app before resolving this.")
             return EngineInstallResult(key, "installed", f"{label} installed successfully.")
 
     detail = f" (installer exited with code {returncode})" if returncode else ""

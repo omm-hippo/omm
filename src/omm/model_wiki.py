@@ -20,6 +20,7 @@ def repository_matches() -> dict:
 def localize(model: dict, locale="ko") -> dict:
     locale = locale if locale in {"ko", "en"} else "ko"
     result = dict(model)
+    result["stale"] = is_stale(model["reviewedAt"])
     for field in ("summary", "chooseWhen", "runtimeNote"):
         result[field] = model[field][locale]
     for field in ("strengths", "cautions"):
