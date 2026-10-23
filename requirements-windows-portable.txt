@@ -13,6 +13,7 @@ click==8.5.0
 colorama==0.4.6
 cryptography==50.0.1
 filelock==3.32.4
+tomlkit==0.15.2
 pypdf==6.21.1
 idna==3.19
 markdown-it-py==4.2.0

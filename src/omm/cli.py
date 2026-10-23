@@ -742,6 +742,60 @@ web_autostart_app = typer.Typer(
     cls=_DocsEpilogGroup,
 )
 setting_app.add_typer(web_autostart_app)
+agent_app = typer.Typer(
+    name="agent",
+    help="Connect Claude Code, Codex or pi to local Ollama and restore original settings.",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+setting_app.add_typer(agent_app)
+
+
+@agent_app.command(name="local")
+def agent_local(
+    harness: str = typer.Argument(..., help="claude, codex or pi."),
+    model: str = typer.Option(..., "--model", help="Installed tool-capable Ollama model tag (32K+ context)."),
+    base_url: str = typer.Option("http://127.0.0.1:11434", "--base-url", help="Local Ollama HTTP(S) loopback origin."),
+) -> None:
+    """Back up settings and connect a harness to a downloaded local Ollama model."""
+    from omm import agent_connection
+    try:
+        agent_connection.connect(harness, model, base_url=base_url)
+    except (agent_connection.ConnectionError, OSError) as error:
+        message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access configuration files. Check permissions."
+        err_console.print(f"[error]{escape(message)}[/error]")
+        raise typer.Exit(1)
+    console.print(f"Saved local routing settings for {escape(harness)}. Start a new harness session.")
+    console.print("Tool calling and context were checked from model metadata; the actual agent workflow is not verified.")
+    console.print("Project, managed or shell settings may override this user configuration. 64K+ runtime context is recommended.")
+
+
+@agent_app.command(name="cloud")
+def agent_cloud(harness: str = typer.Argument(..., help="claude, codex or pi.")) -> None:
+    """Restore original routing while preserving unrelated settings edits."""
+    from omm import agent_connection
+    try:
+        restored = agent_connection.restore(harness)
+    except (agent_connection.ConnectionError, OSError) as error:
+        message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access configuration files. Backup retained."
+        err_console.print(f"[error]{escape(message)}[/error]")
+        raise typer.Exit(1)
+    console.print("Original routing restored. Start a new harness session." if restored else "No OMM connection backup exists; settings were left unchanged.")
+
+
+@agent_app.command(name="status")
+def agent_status(harness: str = typer.Argument(..., help="claude, codex or pi.")) -> None:
+    """Show saved connection state without loading a model or exposing credentials."""
+    from omm import agent_connection
+    try:
+        result = agent_connection.status(harness)
+    except (agent_connection.ConnectionError, OSError) as error:
+        message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access connection state."
+        err_console.print(f"[error]{escape(message)}[/error]")
+        raise typer.Exit(1)
+    console.print(f"{escape(harness)}: {result['state']}; installed: {result['installed']}")
+
+
 engine_app = typer.Typer(
     name="engine",
     help="Inspect, install, update, and remove local AI runner programs.",
