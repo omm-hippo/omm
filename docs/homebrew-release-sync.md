@@ -31,49 +31,28 @@ after PyPI's public installation checks and means the package is published but
 the Tap was not notified. After restoring the secret, rerun only the failed
 `Request asynchronous Homebrew Formula synchronization` job.
 
-## The Formula is a generated artifact of `requirements-npm-binary.txt`
+## Who decides the Formula's resources: Homebrew, not this repository
 
-Issue [#238](https://github.com/omm-hippo/omm/issues/238): `brew install
-omm-hippo/omm/omm` repeatedly drifted from the dependency set OMM actually
-ships — the Tap's `resource` stanzas were a second, hand-maintained copy of the
-closure that a plain `brew bump` never touched. `scripts/homebrew_formula.py`
-removes that second copy. It reads the exactly-`==`-pinned runtime graph from
-`requirements-npm-binary.txt` (the same file the standalone npm binary embeds,
-kept in lockstep with `pyproject.toml`'s floating floors by
-`scripts/dependency_parity.py`), resolves each pin's sdist URL and SHA-256 from
-PyPI, and can render or verify `omm.rb`:
+Issue [#238](https://github.com/omm-hippo/omm/issues/238) tried to make the
+Tap's `resource` stanzas a generated copy of `requirements-npm-binary.txt`, with
+a `homebrew-formula` CI job in this repository failing whenever the two
+differed. That could not stay green. The Tap's own `test-bot` job
+(`.github/scripts/verify_python_resources.py`) requires the stanzas to equal
+what `brew update-python-resources` resolves from the *published* `omm-model`
+metadata, whose runtime dependencies are `>=` floors; this repository's
+pins come from an unreleased `main`. Two independent resolvers can only agree by
+luck, and every dependency release or `main` commit ahead of the last release
+turned one side red (the Tap's open `omm 0.3.105` bump PR stalled for a month
+that way).
 
-- `render --version X [--output PATH]` — build `omm.rb` text for OMM version
-  `X` from the current `requirements-npm-binary.txt`.
-- `check --formula PATH --version X [--allow-version-lag]` — compare an
-  existing Formula against what `render` would produce; exits non-zero with a
-  readable diff of any drifted pin or hash. `--allow-version-lag` compares
-  only the dependency pin set and hashes, not the OMM version/main sdist —
-  the Tap's own release cadence (see above) is allowed to lag `main`.
-- `pypi-latest` — print the latest published, non-yanked `omm-model` version.
+So Homebrew is the single source of truth. The Tap's `autobump` workflow and
+`brew test-bot` decide the `resource` stanzas; this repository no longer
+compares the Formula against anything and has no CI job for it. A release only
+sends the dispatch described above.
 
-The generator needs `packaging` installed (the CI jobs `pip install` it) to
-evaluate environment markers. Homebrew compiles every `resource` from source,
-so where `requirements-npm-binary.txt` splits a pin by platform for wheel
-reasons — `cryptography==48.0.0` on Intel macOS, `50.0.1` everywhere else —
-the generator evaluates markers against a concrete non-Intel-macOS
-interpreter and takes the mainline pin. Build-time-only entries (`build`,
-`hatchling`, `pyinstaller`, …) and any pin excluded by a marker are listed in
-a Formula comment, never silently dropped.
-
-Two CI hooks keep the Formula from drifting again:
-
-- `.github/workflows/ci.yml`'s `homebrew-formula` job checks out the Tap
-  read-only and runs `check --allow-version-lag` on every push and pull
-  request to `main`, so a `requirements-npm-binary.txt` change that the Tap
-  has not caught up to yet is visible immediately, without needing a release
-  to notice.
-  It is skipped for pushes to `beta` and pull requests targeting `beta`:
-  the Tap follows the released graph, so it cannot match a branch that
-  carries not-yet-released runtime dependencies. That drift shows up on
-  the `beta` → `main` pull request instead.
-- `.github/workflows/release.yml`'s `render-homebrew-formula` job (tag
-  releases only, after the public PyPI install path is verified) renders
-  `omm.rb` for the released version and uploads it as a workflow artifact.
-  It never pushes to the Tap directly — a maintainer opens the Tap PR from
-  that artifact when the dispatch-driven flow above needs a manual assist.
+`scripts/homebrew_formula.py` stays as a manual recovery aid: the
+`.github/workflows/release.yml` `render-homebrew-formula` job (tag releases
+only) uploads an `omm.rb` rendered from the pins in
+`requirements-npm-binary.txt`. It never pushes to the Tap. Its stanzas can
+differ from what the Tap's `test-bot` resolves, so treat it as a starting point
+and fix the Tap PR until `test-bot` is green, not the other way round.

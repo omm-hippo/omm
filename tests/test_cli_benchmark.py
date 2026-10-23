@@ -1545,3 +1545,99 @@ def test_ollama_start_failure_keeps_bracketed_stderr_out_of_rich_markup(
 
     assert exit_info.value.exit_code == 1
     assert "boom [/Applications/Ollama.app]" in capsys.readouterr().err
+
+
+def _register_small_model():
+    registry.save_registry(
+        {
+            "small-1B-Q4.gguf": {
+                "repo_id": "org/small",
+                "size_bytes": 900_000_000,
+                "ollama_name": "small",
+                "ollama_runtime_name": "small:latest",
+                "linked": {"ollama": True},
+            }
+        }
+    )
+
+
+def _stub_calibration_inputs(monkeypatch, *, cpu_percent):
+    monkeypatch.setattr(cli.benchmark, "ollama_daemon_reachable", lambda: True)
+    monkeypatch.setattr(cli, "scan_hardware", _hardware)
+    monkeypatch.setattr(cli.quality_mod, "collect_evidence", lambda *a, **k: _full_report())
+    monkeypatch.setattr(cli, "_ask_upload_choice", lambda prompt: "no")
+    monkeypatch.setattr(cli, "sample_cpu_utilization_percent", lambda: cpu_percent)
+    monkeypatch.setattr(
+        cli.predictor, "load_cached_model", lambda: {"trees": [{"leaf": True, "value": 20.0}]}
+    )
+    monkeypatch.setattr(
+        cli.predictor, "predict_speed_interval", lambda *a, **k: (25.0, 25.0, 25.0)
+    )
+
+
+def test_benchmark_records_local_calibration_from_the_measured_speed(
+    isolated_omm_home, monkeypatch
+):
+    _register_small_model()
+    _stub_calibration_inputs(monkeypatch, cpu_percent=3.0)
+    recorded = {}
+    monkeypatch.setattr(
+        cli.calibration,
+        "record_calibration",
+        lambda hardware, **kwargs: recorded.update(kwargs) or 1.7,
+    )
+
+    result = runner.invoke(cli.app, ["benchmark", "small:latest"])
+
+    assert result.exit_code == 0, result.stdout
+    assert recorded["measured_tokens_per_sec"] == 42.5
+    assert recorded["predicted_tokens_per_sec"] == 25.0
+    assert recorded["engine"] == "ollama"
+    assert "correction ×1.70" in result.stdout
+
+
+def test_benchmark_skips_calibration_when_the_host_cpu_was_busy(
+    isolated_omm_home, monkeypatch
+):
+    _register_small_model()
+    _stub_calibration_inputs(monkeypatch, cpu_percent=80.0)
+    monkeypatch.setattr(
+        cli.calibration,
+        "record_calibration",
+        lambda hardware, **kwargs: (_ for _ in ()).throw(
+            AssertionError("calibration must not absorb a load-depressed benchmark")
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["benchmark", "small:latest"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "calibration not updated" in " ".join(result.stdout.split())
+
+
+def test_benchmark_calibration_failure_does_not_fail_the_benchmark(
+    isolated_omm_home, monkeypatch
+):
+    _register_small_model()
+    _stub_calibration_inputs(monkeypatch, cpu_percent=3.0)
+    monkeypatch.setattr(
+        cli.calibration,
+        "record_calibration",
+        lambda hardware, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    result = runner.invoke(cli.app, ["benchmark", "small:latest"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "correction" not in result.stdout
+
+
+def test_benchmark_json_output_stays_clean_while_calibrating(isolated_omm_home, monkeypatch):
+    _register_small_model()
+    _stub_calibration_inputs(monkeypatch, cpu_percent=3.0)
+    monkeypatch.setattr(cli.calibration, "record_calibration", lambda hardware, **kw: 1.7)
+
+    result = runner.invoke(cli.app, ["--json", "benchmark", "small:latest"])
+
+    assert result.exit_code == 0, result.stdout
+    assert json.loads(result.stdout)

@@ -714,7 +714,7 @@ app = typer.Typer(
 )
 setting_app = typer.Typer(
     name="setting",
-    help="View or change omm settings (telemetry, upload policy, version, calibration, catalog trust).",
+    help="View or change omm settings (telemetry, upload policy, version, catalog trust).",
     invoke_without_command=True,
     rich_markup_mode=None,
     cls=_DocsEpilogGroup,
@@ -1027,8 +1027,8 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "upgrade", "pin", "unpin", "rollback"]),
-    ("Tuning & quality", ["tune", "benchmark", "contribute"]),
+    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "compare", "upgrade", "pin", "unpin", "rollback", "web"]),
+    ("Tuning & quality", ["tune", "benchmark", "evaluate", "arena", "contribute"]),
     (
         "Maintenance",
         [
@@ -1043,6 +1043,7 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "export",
             "update",
             "log",
+            "bug-report",
             "help",
         ],
     ),
@@ -4942,23 +4943,55 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
         variants, error.repo_id, info, error.param_count_b
     )
 
-    choices = []
-    for v in variants:
-        if v.fits is True:
-            note = f"✓ fits, ~{v.required_gb:.1f}GB needed"
-        elif v.fits is False:
-            note = f"may not fit, ~{v.required_gb:.1f}GB needed"
-        else:
-            note = "fit unknown"
+    header, rows = _quant_picker_rows(variants, fastest_filenames)
+    choices = [questionary.Separator(header)]
+    for v, row in zip(variants, rows):
         if v.filename in fastest_filenames:
-            title = [("fg:green bold", f"{v.filename}  ({note}, predicted fastest)")]
+            title = [("fg:green bold", row)]
         else:
-            title = f"{v.filename}  ({note})"
+            title = row
         choices.append(questionary.Choice(title=title, value=v.filename))
 
     return _ask_select(
         questionary.select(f"Select a quantization variant for '{error.repo_id}':", choices=choices)
     )
+
+
+def _quant_picker_rows(variants, fastest_filenames: set[str]) -> tuple[str, list[str]]:
+    """Lay the quant picker out as a small table - quant, fit, memory needed
+    - instead of one sentence per file that repeats the model name the
+    prompt already shows. Returns the header line and one row per variant,
+    in `variants` order.
+
+    A file is named by its quant label alone unless that label can't tell
+    it apart from its siblings ("Unknown", or two files sharing one quant),
+    in which case the full filename stays so every row is still distinct."""
+    from collections import Counter
+
+    labels = [_quant_label(v.filename) for v in variants]
+    label_counts = Counter(labels)
+    names = [
+        v.filename if label == "Unknown" or label_counts[label] > 1 else label
+        for v, label in zip(variants, labels)
+    ]
+    fits = [
+        "✓ fits" if v.fits is True else "may not fit" if v.fits is False else "fit unknown"
+        for v in variants
+    ]
+    needed = [f"~{v.required_gb:.1f}GB" if v.required_gb is not None else "?" for v in variants]
+
+    headings = ("Quant", "Fit", "Memory needed")
+    name_width = max(len(headings[0]), *(len(n) for n in names))
+    fit_width = max(len(headings[1]), *(len(f) for f in fits))
+    mem_width = max(len(headings[2]), *(len(m) for m in needed))
+    header = f"{headings[0]:<{name_width}}  {headings[1]:<{fit_width}}  {headings[2]}"
+    rows = []
+    for v, name, fit, mem in zip(variants, names, fits, needed):
+        row = f"{name:<{name_width}}  {fit:<{fit_width}}  {mem:<{mem_width}}"
+        if v.filename in fastest_filenames:
+            row += "  predicted fastest"
+        rows.append(row.rstrip())
+    return header, rows
 
 
 def _link_model(
@@ -5139,21 +5172,22 @@ def _background_cpu_load_is_high() -> bool:
     return _cpu_load_is_high(_sample_background_cpu_load())
 
 
-def _maybe_auto_calibrate(
-    filename: str, repo_id: str | None, dest: Path, tokens_per_sec: float,
+def _record_local_calibration(
+    filename: str, repo_id: str | None, size_bytes: int | None, tokens_per_sec: float,
     *, engine: str = "ollama",
-) -> None:
-    """Best-effort local calibration right after a successful benchmark.
-    Silent no-op if there's no cached model to compare against - this must
-    never block or fail the install."""
+) -> float | None:
+    """Fold one measured speed into this machine's correction factor.
+    Returns the new factor, or None when there is nothing to compare against
+    (no cached recommendation model, no usable prediction) or the write
+    failed - callers are best-effort and must never fail on this."""
     artifact = predictor.load_cached_model()
     if not artifact or not artifact.get("trees"):
-        return
+        return None
     hardware = scan_hardware()
     candidate = {
         "repo_id": repo_id,
         "filename": filename,
-        "size_bytes": dest.stat().st_size if dest.exists() else None,
+        "size_bytes": size_bytes,
     }
     try:
         predicted, _, _ = predictor.predict_speed_interval(
@@ -5164,22 +5198,88 @@ def _maybe_auto_calibrate(
             apply_calibration=False,
         )
     except (ValueError, KeyError, TypeError, IndexError):
-        return
+        return None
     if predicted <= 0:
-        return
+        return None
     try:
-        factor = calibration.record_calibration(
+        return calibration.record_calibration(
             hardware,
             measured_tokens_per_sec=tokens_per_sec,
             predicted_tokens_per_sec=predicted,
             engine=engine,
         )
     except OSError:
+        return None
+
+
+def _maybe_auto_calibrate(
+    filename: str, repo_id: str | None, dest: Path, tokens_per_sec: float,
+    *, engine: str = "ollama",
+) -> None:
+    """Best-effort local calibration right after a successful benchmark.
+    Silent no-op if there's no cached model to compare against - this must
+    never block or fail the install."""
+    factor = _record_local_calibration(
+        filename, repo_id, dest.stat().st_size if dest.exists() else None,
+        tokens_per_sec, engine=engine,
+    )
+    if factor is None:
         return
     console.print(
         f"[muted]Local calibration updated: correction ×{factor:.2f} "
         "(the calibration stays in ~/.omm and is never uploaded).[/muted]"
     )
+
+
+def _registry_entry_for_tag(tag: str, registry_entries: dict) -> tuple[str, dict] | None:
+    """The registry (filename, entry) whose Ollama runtime name is `tag`."""
+    for filename, entry in registry_entries.items():
+        if (
+            isinstance(filename, str)
+            and isinstance(entry, dict)
+            and memory_guard_mod._same_ollama_id(
+                linker.resolve_ollama_runtime_name(filename, entry), tag
+            )
+        ):
+            return filename, entry
+    return None
+
+
+def _calibrate_from_benchmark(
+    successes: list[dict], *, engine: str, host_cpu_busy: bool, announce: bool
+) -> None:
+    """Fold each successful `omm benchmark` speed into the local correction
+    factor. Only Ollama-linked models omm itself installed qualify - the
+    prediction needs the registry's repo/filename/size. Skipped while the
+    host was busy, for the same reason `omm install` skips it: a
+    load-depressed number is a transient error the factor must not absorb."""
+    if engine != "ollama" or not successes:
+        return
+    if host_cpu_busy:
+        if announce:
+            console.print(
+                "[muted]Local calibration not updated because this measurement "
+                "was taken while other programs were using the CPU.[/muted]"
+            )
+        return
+    registry_entries = registry.load_registry()
+    factor = None
+    for model in successes:
+        found = _registry_entry_for_tag(model["tag"], registry_entries)
+        if found is None:
+            continue
+        filename, entry = found
+        updated = _record_local_calibration(
+            filename, entry.get("repo_id"), entry.get("size_bytes"),
+            model["speed"]["median_tokens_per_sec"], engine=engine,
+        )
+        if updated is not None:
+            factor = updated
+    if factor is not None and announce:
+        console.print(
+            f"[muted]Local calibration updated: correction ×{factor:.2f} "
+            "(the calibration stays in ~/.omm and is never uploaded).[/muted]"
+        )
 
 
 def _fetch_sibling_candidates(boundary: dict) -> list[dict]:
@@ -9351,80 +9451,6 @@ def configure_theme(
     console.print(table)
 
 
-@setting_app.command(name="calibrate")
-@global_flags
-def calibrate(
-    model_name: str = typer.Argument(
-        None,
-        help="Installed Ollama-linked model; defaults to the smallest available model.",
-    ),
-) -> None:
-    """Correct this machine's local speed estimate without uploading data."""
-    reg = registry.load_registry()
-    eligible = [
-        (filename, entry)
-        for filename, entry in reg.items()
-        if (entry.get("linked") or {}).get("ollama")
-    ]
-    if not eligible:
-        err_console.print("[error]No Ollama-linked omm models are installed.[/error]")
-        raise typer.Exit(1)
-    if model_name is None:
-        filename, entry = min(eligible, key=lambda item: item[1].get("size_bytes") or 2**63)
-    else:
-        resolved = _resolve_ref(model_name)
-        filename, entry = _lookup_entry(resolved, reg)
-        if entry is None or not (entry.get("linked") or {}).get("ollama"):
-            err_console.print(f"[error]{resolved} is not linked to Ollama.[/error]")
-            raise typer.Exit(1)
-
-    artifact = predictor.load_cached_model()
-    if not artifact or not artifact.get("trees"):
-        err_console.print("[error]No cached recommendation model is available.[/error]")
-        raise typer.Exit(1)
-    hardware = scan_hardware()
-    candidate = {
-        "repo_id": entry.get("repo_id"),
-        "filename": filename,
-        "size_bytes": entry.get("size_bytes"),
-    }
-    predicted, _, _ = predictor.predict_speed_interval(
-        artifact["trees"],
-        hardware,
-        candidate,
-        engine="ollama",
-        apply_calibration=False,
-    )
-    if predicted <= 0:
-        err_console.print("[error]This model has no usable baseline speed prediction.[/error]")
-        raise typer.Exit(1)
-    tag = linker.resolve_ollama_runtime_name(filename, entry)
-    # Warn but do not refuse: this measurement was asked for explicitly, and
-    # the caller is the one who can decide whether to close things and retry.
-    # The automatic post-install calibration, which nobody asked for, does
-    # skip itself instead.
-    _background_cpu_load_is_high()
-    measured = benchmark.benchmark_ollama(tag)
-    if measured is None or measured <= 0:
-        err_console.print("[error]Calibration requires a running Ollama model server.[/error]")
-        raise typer.Exit(1)
-    try:
-        factor = calibration.record_calibration(
-            hardware,
-            measured_tokens_per_sec=measured,
-            predicted_tokens_per_sec=predicted,
-            engine="ollama",
-        )
-    except OSError as e:
-        err_console.print(f"[error]Could not save calibration: {e}[/error]")
-        raise typer.Exit(1) from e
-    console.print(
-        f"[success]Local calibration saved: {measured:.1f} tok/s measured, "
-        f"{predicted:.1f} predicted, correction ×{factor:.2f}.[/success]"
-    )
-    console.print("[muted]The calibration stays in ~/.omm and was not uploaded.[/muted]")
-
-
 @setting_app.command(name="catalog-trust")
 @global_flags
 def catalog_trust(
@@ -9813,7 +9839,6 @@ def setting_menu(ctx: typer.Context) -> None:
                     questionary.Choice(
                         f"Theme (current: {current.get('theme', 'dark')})", value="theme"
                     ),
-                    questionary.Choice("Calibrate", value="calibrate"),
                     questionary.Choice(
                         f"Catalog trust (current: {catalog_manifest})", value="catalog-trust"
                     ),
@@ -9879,11 +9904,6 @@ def setting_menu(ctx: typer.Context) -> None:
                 )
                 if action is not None:
                     configure_theme(set_name=action)
-            elif choice == "calibrate":
-                model_name = _ask_text("Model to calibrate (blank for smallest installed):")
-                if model_name is None:
-                    continue
-                calibrate(model_name or None)
             elif choice == "catalog-trust":
                 manifest_url = _ask_text("Signed manifest URL (https://...):")
                 if manifest_url is None:
@@ -10023,6 +10043,7 @@ def search(
     refs: list[str] = []
     seen_refs: set[str] = set()
     rows: list[dict] = []
+    unfit_shown = False
     for family in sorted(groups):
         header_printed = False
         for c in groups[family]:
@@ -10072,7 +10093,11 @@ def search(
                 if fits_hardware:
                     console.print(f"  [muted][{len(refs)}][/muted] [accent]{ref}[/accent]  [muted]{desc}[/muted]")
                 else:
-                    console.print(f"  [muted][{len(refs)}][/muted] {ref}  [error](predicted not to run on this hardware)[/error]")
+                    # A short muted tag per row plus one legend line below,
+                    # instead of a full red sentence repeated on every row
+                    # (#364): the warning stays, it just stops shouting.
+                    unfit_shown = True
+                    console.print(f"  [muted][{len(refs)}][/muted] {ref}  [muted](won't fit)[/muted]")
         if not json_output and header_printed:
             console.print()
         if limit is not None and len(refs) >= limit:
@@ -10082,6 +10107,11 @@ def search(
     if json_output:
         _print_json(data=rows)
     elif refs:
+        if unfit_shown:
+            console.print(
+                "[muted](won't fit) = predicted not to run on this hardware; "
+                "--skip-unfit hides these.[/muted]"
+            )
         console.print(
             "[muted]Install with: omm install <number>  (e.g. omm install 1)[/muted]"
         )
@@ -10649,7 +10679,11 @@ def benchmark_cmd(
         ),
     ),
 ) -> None:
-    """Measure a small reproducible quality pack and decode speed."""
+    """Measure a small reproducible quality pack and decode speed.
+
+    On Ollama, each measured speed also updates this machine's local speed
+    correction for `omm recommend`. It stays in ~/.omm and is never uploaded.
+    """
     json_output = _global_opts().json
     # Numeric-ref resolution runs first, exactly as it always has - it only
     # ever transforms digit-only args (a numbered ref from the last
@@ -10731,8 +10765,11 @@ def benchmark_cmd(
     # Advisory only: `omm benchmark` records evidence the caller reads and may
     # upload, so a busy machine is worth saying out loud before the run rather
     # than leaving it invisible in a number that looks tight.
-    if not json_output:
+    host_cpu_busy = (
         _background_cpu_load_is_high()
+        if not json_output
+        else _cpu_load_is_high(sample_cpu_utilization_percent())
+    )
     try:
         try:
             with Progress(
@@ -10829,6 +10866,9 @@ def benchmark_cmd(
                 "core counts. aggregate numbers may be shared below. Not a "
                 "leaderboard.[/muted]"
             )
+        _calibrate_from_benchmark(
+            successes, engine=engine, host_cpu_busy=host_cpu_busy, announce=not json_output
+        )
         should_upload = (
             load_config().get("telemetry_send_policy") == "always"
             if json_output
@@ -10839,18 +10879,8 @@ def benchmark_cmd(
         if should_upload:
             registry_entries = registry.load_registry()
             for model in successes:
-                entry = next(
-                    (
-                        e
-                        for filename, e in registry_entries.items()
-                        if isinstance(filename, str)
-                        and isinstance(e, dict)
-                        and memory_guard_mod._same_ollama_id(
-                            linker.resolve_ollama_runtime_name(filename, e), model["tag"]
-                        )
-                    ),
-                    None,
-                )
+                found = _registry_entry_for_tag(model["tag"], registry_entries)
+                entry = found[1] if found else None
                 samples = model["speed"]["samples_tokens_per_sec"]
                 _report_telemetry(
                     model["tag"],

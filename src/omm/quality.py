@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import math
+import os
 import multiprocessing
 import platform
 import re
@@ -33,6 +35,8 @@ from omm.hardware import HardwareInfo
 from omm import benchmark, linker, tuning
 from omm.engines.base import LoopbackJsonClient, RuntimeAdapterError
 from omm.engines.lmstudio import LMStudioAdapter
+
+log = logging.getLogger(__name__)
 
 OLLAMA_HOST = "http://localhost:11434"
 MAX_PACK_BYTES = 1_000_000
@@ -828,14 +832,80 @@ def _generate_with_runtime(
     *, engine: str = "ollama", lmstudio_port: int | None = None,
 ) -> dict:
     """Avoid changing the call shape used by older test/integration fakes."""
-    if engine == "lmstudio":
-        return _generate_lmstudio(tag, prompt, generation, num_predict, lmstudio_port)
-    kwargs = {}
-    if runtime_options is not None:
-        kwargs["runtime_options"] = runtime_options
-    if not supports_thinking:
-        kwargs["supports_thinking"] = False
-    return _generate(tag, prompt, generation, num_predict=num_predict, **kwargs)
+    started = time.perf_counter()
+    try:
+        if engine == "lmstudio":
+            response = _generate_lmstudio(tag, prompt, generation, num_predict, lmstudio_port)
+        else:
+            kwargs = {}
+            if runtime_options is not None:
+                kwargs["runtime_options"] = runtime_options
+            if not supports_thinking:
+                kwargs["supports_thinking"] = False
+            response = _generate(tag, prompt, generation, num_predict=num_predict, **kwargs)
+    except QualityEvaluationError as error:
+        _log_generate_request(
+            tag, engine, started, generation, num_predict, runtime_options, None,
+            failure_reason=error.failure_reason,
+        )
+        raise
+    _log_generate_request(tag, engine, started, generation, num_predict, runtime_options, response)
+    return response
+
+
+# Ollama reports these in nanoseconds on a non-streaming /api/generate reply.
+_OLLAMA_DURATION_FIELDS = ("load_duration", "prompt_eval_duration", "eval_duration", "total_duration")
+_LOGGED_RUNTIME_OPTIONS = ("num_ctx", "num_gpu", "num_thread", "num_batch")
+
+
+def _log_generate_request(
+    tag: str,
+    engine: str,
+    started: float,
+    generation: dict | None,
+    num_predict: int | None,
+    runtime_options: dict | None,
+    response: dict | None,
+    *,
+    failure_reason: str | None = None,
+) -> None:
+    """One local run-log line per generation request: wall time, the
+    runtime's own load/prompt/decode split, and the placement options it
+    ran with. This is what tells "Ollama stalled" apart from "every request
+    finished, just slowly" when a benchmark hits its session deadline
+    (#390) - the console only ever showed a 30s elapsed clock. Never the
+    prompt or the response text. Best-effort: never raises."""
+    try:
+        fields: dict = {
+            "wall_seconds": round(time.perf_counter() - started, 3),
+            "num_predict": num_predict
+            or (generation.get("num_predict") if isinstance(generation, dict) else None),
+        }
+        for key in _LOGGED_RUNTIME_OPTIONS:
+            if isinstance(runtime_options, dict) and key in runtime_options:
+                fields[key] = runtime_options[key]
+        if isinstance(response, dict):
+            for key in ("eval_count", "prompt_eval_count", "done_reason"):
+                if key in response:
+                    fields[key] = response[key]
+            for key in _OLLAMA_DURATION_FIELDS:
+                value = response.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    fields[f"{key}_seconds"] = round(value / 1_000_000_000, 3)
+            speed = _tokens_per_second(response)
+            if speed is not None:
+                fields["tokens_per_sec"] = round(speed, 2)
+        extra: dict = {"event": "generate", "model": tag, "engine": engine, "fields": fields}
+        if failure_reason is not None:
+            extra["reason"] = failure_reason
+            log.warning(
+                "generate %s failed (%s) after %.1fs", tag, failure_reason, fields["wall_seconds"],
+                extra=extra,
+            )
+        else:
+            log.info("generate %s took %.1fs", tag, fields["wall_seconds"], extra=extra)
+    except Exception:
+        pass
 
 
 def _lmstudio_request_json(
@@ -1087,6 +1157,11 @@ def _evaluate_model_worker(
     lmstudio_model: dict | None = None,
 ) -> None:
     """Spawn-safe worker for one killable Ollama or LM Studio evaluation."""
+    _forward_worker_logs(send_conn)
+    log.info(
+        "benchmark worker started for %s", tag,
+        extra={"event": "benchmark_worker_started", "model": tag, "engine": engine},
+    )
     try:
         result = evaluate_model(
             tag,
@@ -1105,6 +1180,60 @@ def _evaluate_model_worker(
         send_conn.send(("unexpected_error", type(error).__name__))
     finally:
         send_conn.close()
+
+
+# LogRecord attributes every record has; anything else on a record came in
+# through `extra=` and is what the run log's structured fields are made of.
+_STANDARD_LOG_RECORD_KEYS = frozenset(vars(logging.makeLogRecord({}))) | {"message", "asctime"}
+
+
+class _PipeLogHandler(logging.Handler):
+    """Ship the worker's `omm.*` log records to the parent over the result
+    pipe. A spawned worker starts with no handlers, so without this every
+    event it logs (each generation request, the HTTP debug lines) vanished
+    instead of reaching the parent's local run log."""
+
+    def __init__(self, send_conn) -> None:
+        super().__init__()
+        self._send_conn = send_conn
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            payload = {
+                key: value
+                for key, value in vars(record).items()
+                if key not in _STANDARD_LOG_RECORD_KEYS
+            }
+            payload.update(
+                name=record.name,
+                levelno=record.levelno,
+                levelname=record.levelname,
+                msg=record.getMessage(),
+                created=record.created,
+            )
+            self._send_conn.send(("log", payload))
+        except Exception:
+            pass
+
+
+def _forward_worker_logs(send_conn) -> None:
+    logger = logging.getLogger("omm")
+    logger.addHandler(_PipeLogHandler(send_conn))
+    debug = os.environ.get("OMM_DEBUG", "").strip().lower() not in ("", "0", "false", "no")
+    logger.setLevel(logging.DEBUG if debug else logging.INFO)
+
+
+def _reemit_worker_log(payload: object) -> dict | None:
+    """Hand a forwarded worker record to the parent's own `omm.*` handlers
+    (the run log). Returns the payload when it was usable."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("name"), str):
+        return None
+    try:
+        record = logging.makeLogRecord(payload)
+        logging.getLogger(record.name).handle(record)
+    except Exception:
+        return None
+    return payload
 
 
 _DEFAULT_EVALUATE_MODEL = evaluate_model
@@ -1166,7 +1295,12 @@ def evaluate_model_isolated(
         process_started = True
         send_conn.close()
         deadline = started + timeout_seconds
+        worker_started = False
+        requests_finished = 0
+        requests_failed = 0
+        last_request_at: float | None = None
         while True:
+            message = None
             if receive_conn.poll(0.2):
                 try:
                     message = receive_conn.recv()
@@ -1175,6 +1309,18 @@ def evaluate_model_isolated(
                         "Isolated benchmark worker closed without a result",
                         failure_reason=FAILURE_REASON_UNKNOWN,
                     ) from error
+            if message is not None and message[0] == "log":
+                payload = _reemit_worker_log(message[1] if len(message) > 1 else None)
+                event = payload.get("event") if payload else None
+                if event == "benchmark_worker_started":
+                    worker_started = True
+                elif event == "generate":
+                    if payload.get("reason") is None:
+                        requests_finished += 1
+                    else:
+                        requests_failed += 1
+                    last_request_at = time.monotonic()
+            elif message is not None:
                 process.join(timeout=5)
                 kind = message[0]
                 if kind == "ok":
@@ -1194,11 +1340,44 @@ def evaluate_model_isolated(
                 raise QualityEvaluationCancelled(tag)
             if now >= deadline:
                 terminate()
+                # The console only says the deadline passed. The run log
+                # records how far the worker got, which separates a worker
+                # that never started, one stuck before its first reply, and
+                # one whose requests all finished but too slowly (#390).
+                log.warning(
+                    "benchmark of %s hit the %gs session deadline", tag, timeout_seconds,
+                    extra={
+                        "event": "benchmark_deadline",
+                        "model": tag,
+                        "engine": engine,
+                        "fields": {
+                            "timeout_seconds": timeout_seconds,
+                            "worker_started": worker_started,
+                            "requests_finished": requests_finished,
+                            "requests_failed": requests_failed,
+                            "seconds_since_last_request": (
+                                round(now - last_request_at, 1)
+                                if last_request_at is not None
+                                else None
+                            ),
+                            "runtime_options": {
+                                key: runtime_options[key]
+                                for key in _LOGGED_RUNTIME_OPTIONS
+                                if isinstance(runtime_options, dict) and key in runtime_options
+                            },
+                        },
+                    },
+                )
                 raise QualityEvaluationError(
                     f"Benchmarking {tag} exceeded the {timeout_seconds:g}s session deadline",
                     failure_reason=FAILURE_REASON_GENERATION_TIMEOUT,
                 )
             if not process.is_alive():
+                if receive_conn.poll(0):
+                    # Forwarded log lines can still be queued ahead of the
+                    # worker's final result; read them all before deciding
+                    # it exited without one.
+                    continue
                 process.join(timeout=1)
                 raise QualityEvaluationError(
                     f"Isolated benchmark worker exited with code {process.exitcode}",

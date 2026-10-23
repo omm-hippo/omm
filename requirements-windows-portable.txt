@@ -1,7 +1,7 @@
-build==1.5.0
+build==1.6.1
 hatchling==1.32.0
 pyinstaller==6.22.2
-pyinstaller-hooks-contrib==2026.6
+pyinstaller-hooks-contrib==2026.8
 
 # Runtime graph mirrored from pyproject.toml and checked by
 # tests/test_dependency_parity.py for the Windows x64 command.
@@ -14,7 +14,7 @@ colorama==0.4.6
 cryptography==50.0.1
 filelock==3.32.4
 pypdf==6.21.1
-idna==3.19
+idna==3.20
 markdown-it-py==4.2.0
 mdurl==0.1.2
 prompt-toolkit==3.0.53
@@ -33,11 +33,11 @@ wcwidth==0.8.2
 # Runtime dependencies for the beta daemon GUI, including its templates and forms.
 annotated-types==0.8.0
 anyio==4.15.1
-fastapi==0.142.2
+fastapi==0.143.0
 h11==0.16.0
 jinja2==3.1.6
 markupsafe==3.0.3
-opentelemetry-api==1.45.0
+opentelemetry-api==1.45.1
 pydantic==2.13.5
 pydantic-core==2.46.5
 python-multipart==0.0.32

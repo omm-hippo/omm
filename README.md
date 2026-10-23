@@ -594,7 +594,6 @@ omm setting upload crash --enable|--disable|--ask  # Opt-in crash-report policy
 omm setting upload votes --enable|--disable|--ask  # Arena battle vote uploads (asked after each session; the prompt you typed is never sent)
 omm setting memory-guard --policy ask|block|observe  # Protect local runtime loads from live memory pressure
 omm setting theme [--set NAME]  # Show or change omm's output color theme
-omm setting calibrate <name>  # Locally correct predicted speed with an installed Ollama model
 omm setting runtime-profile <name> [--engine ollama|lmstudio] [--restore] [--json]  # Inspect or undo saved settings
 omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require signed recommendation downloads
 omm setting catalog-status [--json]  # Show trust, rollback snapshots, and per-check evaluation evidence
@@ -703,7 +702,9 @@ computed CPU chip score (and GPU chip score, when a GPU is present) plus
 architecture and core counts — never the raw CPU/GPU model name — so speed
 predictions can distinguish otherwise identical Linux `x86_64` machines.
 Results are uploaded only after explicit opt-in. The pack is intentionally
-small and is not a leaderboard.
+small and is not a leaderboard. With Ollama, each measured speed also updates
+a per-machine speed correction used by `omm recommend` (kept in `~/.omm`, never
+uploaded; skipped when other programs were already using the CPU).
 
 On Windows, Ollama is detected by its HTTP API first, so a freshly installed
 tray app works even before the current terminal receives the new `PATH`.
