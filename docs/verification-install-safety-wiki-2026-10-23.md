@@ -97,3 +97,18 @@ snapshots were independently verified and pinned. No weights or remote Python
 code were downloaded/executed for this research.
 
 Intentional requests to OMM production hosts: **0**.
+
+## Integration with current main before PR
+
+Merged `origin/main` at `2306137` (the #506 workspace/chat UI) locally, preserving
+the sidebar, Markdown rendering, appearance controls and runtime license bundle.
+Resolved package metadata/generated-asset conflicts and rebuilt using Vite 8.3.5.
+The integrated branch version is 0.4.3.
+
+Post-merge validation: **347 passed, 14 skipped** in the affected Python suite;
+**4 passed** frontend tests; web build, dependency audit (0 reported issues),
+command-doc synchronization and diff checks passed. Repeated the six browser
+flows against the merged interface, including mobile sidebar navigation: no
+page errors, non-loopback request attempts or horizontal overflow. The earlier
+full-suite and 0.4.2 wheel results above remain scoped to their recorded tree;
+they are not presented as a second full-suite run of the merge.

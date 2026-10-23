@@ -4,12 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
-    "dev": "vite build --watch"
+    "build": "vite build && node scripts/licenses.mjs",
+    "dev": "vite build --watch",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "6.1.1",

@@ -3,6 +3,9 @@ import React, {useEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {api, gib, bytes} from './api';
 import './style.css';
+import './workspace.css';
+import {Sidebar,CommandPalette,WorkspaceIcon} from './Workspace.jsx';
+import {destinations,readAppearance} from './workspace-state.js';
 import ChatPanel from './ChatPanel';
 import {WikiExplorer,Connections,Diagnostics,Comparison,RuntimeSettings,FilesSettings} from './ManagementPanels';
 
@@ -100,10 +103,38 @@ function WikiDetail({model,onClose}) {
 }
 
 function App() {
-  const readTab = ()=>['recommend','models','chat','jobs','wiki','connections','diagnostics','comparison','settings','documents'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'wiki';
+  const readTab = ()=>destinations.some(item=>item.id===location.hash.slice(1)) ? location.hash.slice(1) : 'wiki';
   const [tab,setCurrentTab] = useState(readTab);
+  const [sidebar,setSidebar]=useState(()=>!window.matchMedia('(max-width: 760px)').matches);
+  const [mobile,setMobile]=useState(()=>window.matchMedia('(max-width: 760px)').matches);
+  const [palette,setPalette]=useState(false);
+  useEffect(()=>{
+    const media=window.matchMedia('(max-width: 760px)');
+    const changed=event=>{setMobile(event.matches);setSidebar(!event.matches);};
+    media.addEventListener('change',changed);
+    return ()=>media.removeEventListener('change',changed);
+  },[]);
+  const [appearance,setAppearance]=useState(readAppearance);
+  const [visited,setVisited]=useState(()=>new Set([readTab()]));
+  useEffect(()=>{setVisited(old=>old.has(tab)?old:new Set([...old,tab]));},[tab]);
+  useEffect(()=>{
+    document.documentElement.dataset.appearance=appearance;
+    try {localStorage.setItem('omm.web.appearance.v1',appearance);}catch {}
+  },[appearance]);
+  useEffect(()=>{
+    function key(event){
+      if((event.metaKey || event.ctrlKey) && event.key.toLowerCase()==='k' && !event.isComposing){
+        // Never compete with an installation/approval dialog.
+        if(document.querySelector('dialog[open]:not(.command-palette)'))return;
+        event.preventDefault();setPalette(value=>!value);
+      }
+      if(event.key==='Escape' && window.matchMedia('(max-width: 760px)').matches)setSidebar(false);
+    }
+    window.addEventListener('keydown',key);return ()=>window.removeEventListener('keydown',key);
+  },[]);
   function setTab(value) {
     setCurrentTab(value);
+    if(window.matchMedia('(max-width: 760px)').matches)setSidebar(false);
     if(location.hash!==`#${value}`)history.pushState(null,'',`#${value}`);
   }
   useEffect(()=>{
@@ -198,18 +229,22 @@ function App() {
     }
     operationId.current=null;setSelected(model);
   }
-  return <div className="app"><aside><a className="brand" href="/">omm</a><nav aria-label="주 메뉴">{[['wiki','모델 찾기'],['recommend','추천'],['models','내 모델'],['chat','채팅'],['documents','내 문서'],['comparison','성능 비교'],['jobs','작업']].map(([key,label])=><button aria-current={tab===key?'page':undefined} className={tab===key?'selected':''} key={key} onClick={()=>setTab(key)}>{label}</button>)}</nav><nav className="secondary-nav" aria-label="관리 메뉴">{[['connections','연결 상태'],['diagnostics','진단'],['settings','파일·설정']].map(([key,label])=><button aria-current={tab===key?'page':undefined} className={tab===key?'selected':''} key={key} onClick={()=>setTab(key)}>{label}</button>)}</nav><p className="local-note"><span/>이 컴퓨터에서 실행 중</p></aside><main><header><div><h1>{title}</h1><p>{subtitle}</p></div><button onClick={()=>setRefreshKey(key=>key+1)} disabled={loading}>{loading?'확인 중…':'다시 확인'}</button></header>{error && <div role="alert" className="error">{error}</div>}{notice && <div role="status" className="notice">{notice}</div>}{['wiki','recommend','models'].includes(tab) && <Hardware machine={machine} budget={catalog?.budget_gb}/>}
+  return <div className={`app workspace ${sidebar?'sidebar-open':'sidebar-closed'} ${tab==='chat'?'chat-workspace':''}`}>
+    {sidebar && <button className="sidebar-backdrop" aria-label="메뉴 닫기" onClick={()=>setSidebar(false)}/>}
+    <aside id="workspace-sidebar" aria-label="OMM 작업 공간" hidden={!sidebar}>{mobile && <button className="icon-button sidebar-dismiss" aria-label="사이드바 닫기" onClick={()=>setSidebar(false)}><WorkspaceIcon name="close"/></button>}<Sidebar tab={tab} onNavigate={setTab} onSearch={()=>setPalette(true)} appearance={appearance} onAppearance={setAppearance} activeJobs={jobs.filter(j=>['queued','running','cancelling'].includes(j.status)).length}/></aside>
+    <main id="workspace-main" inert={mobile && sidebar?true:undefined}><div className="workspace-topbar"><div className="workspace-location"><button className="icon-button" aria-label={sidebar?'사이드바 접기':'사이드바 펼치기'} aria-expanded={sidebar} aria-controls="workspace-sidebar" onClick={()=>setSidebar(value=>!value)}><WorkspaceIcon name="menu"/></button><span>내 작업 공간</span><span className="breadcrumb-separator">/</span><strong>{destinations.find(x=>x.id===tab)?.label}</strong></div><button className="icon-button" aria-label="메뉴 검색 열기" title="메뉴 검색 (⌘/Ctrl K)" onClick={()=>setPalette(true)}><WorkspaceIcon name="search"/></button></div>
+    <div className="workspace-content"><header><div><h1>{title}</h1><p>{subtitle}</p></div><button className="refresh-button" onClick={()=>setRefreshKey(key=>key+1)} disabled={loading}><WorkspaceIcon name="refresh" size={16}/>{loading?'확인 중…':'다시 확인'}</button></header>{error && <div role="alert" className="error">{error}</div>}{notice && <div role="status" className="notice">{notice}</div>}{['wiki','recommend','models'].includes(tab) && <Hardware machine={machine} budget={catalog?.budget_gb}/>}
     {tab==='wiki' && <WikiExplorer document={wiki} profile={profile} onOpen={setDescription} onSelect={choose}/>}
     {tab==='recommend' && <>{!models.length && <FirstUse machine={machine} onModels={()=>setTab('models')}/>}<div className="toolbar"><div className="profiles" aria-label="메모리 사용 방식">{profiles.map(([key,label])=><button key={key} aria-pressed={profile===key} onClick={()=>setProfile(key)}>{label}</button>)}</div><label className="search"><Icon name="search"/><input maxLength={160} value={query} onChange={event=>setQuery(event.target.value)} placeholder="모델 이름으로 찾기" aria-label="모델 이름으로 찾기"/></label></div>{loading?<div className="empty" role="status">컴퓨터와 추천 자료를 확인하고 있어요.</div>:visible.length?<ModelTable rows={visible} onSelect={choose} onDetails={setDescription}/>:<div className="empty"><h2>{query?'검색 결과가 없어요':'현재 예산에 맞는 모델이 없어요'}</h2><p>{query?'다른 이름으로 검색해 보세요.':'사용 방식을 바꾸거나 다른 앱을 닫은 뒤 다시 확인해 주세요.'}</p></div>}<p className="footnote">예상 속도는 실제 측정과 다를 수 있어요.</p><Evidence catalog={catalog} onUpdate={updateCatalog} busy={updating}/></>}
     {tab==='models' && <Installed rows={models} onAction={choose} onSettings={setSettingsModel} onChat={model=>{setChatModel(model);setTab('chat');}}/>}
-    {tab==='chat' && <ChatPanel models={models} initialModel={chatModel} onModelStatusChange={()=>setRefreshKey(key=>key+1)}/>}
-    {tab==='documents' && <DocumentPanel models={models} onJobs={setJobs}/>}
+    {(visited.has('chat') || tab==='chat') && <div hidden={tab!=='chat'}><ChatPanel models={models} initialModel={chatModel} onModelStatusChange={()=>setRefreshKey(key=>key+1)} onModels={()=>setTab('models')}/></div>}
+    {(visited.has('documents') || tab==='documents') && <div hidden={tab!=='documents'}><DocumentPanel models={models} onJobs={setJobs}/></div>}
     {tab==='jobs' && <Jobs jobs={jobs} onCancel={cancel}/>}
     {tab==='connections' && <Connections refreshKey={refreshKey} onAction={choose}/>}
     {tab==='diagnostics' && <Diagnostics refreshKey={refreshKey}/>}
     {tab==='comparison' && <Comparison models={models} jobs={jobs} onAction={choose}/>}
     {tab==='settings' && <FilesSettings refreshKey={refreshKey} onAction={choose}/>}
-    </main>{description && <WikiDetail model={description} onClose={()=>setDescription(null)}/>} {settingsModel && <RuntimeSettings model={settingsModel} refreshKey={refreshKey} onClose={()=>setSettingsModel(null)} onAction={choose}/>} {selected && <Confirmation model={selected} machine={machine} busy={submitting} error={error} onClose={()=>{setSelected(null);operationId.current=null;}} onSubmit={submit}/>}</div>;
+    </div></main>{palette && <CommandPalette onClose={()=>setPalette(false)} onNavigate={setTab}/>} {description && <WikiDetail model={description} onClose={()=>setDescription(null)}/>} {settingsModel && <RuntimeSettings model={settingsModel} refreshKey={refreshKey} onClose={()=>setSettingsModel(null)} onAction={choose}/>} {selected && <Confirmation model={selected} machine={machine} busy={submitting} error={error} onClose={()=>{setSelected(null);operationId.current=null;}} onSubmit={submit}/>}</div>;
 
 }
 
