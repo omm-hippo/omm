@@ -46,8 +46,9 @@ def test_render_rules_exact_text_for_head_mac():
         "pass in quick on lo0 all\n"
         "pass in quick on { en5 en6 } all\n"
         "pass in quick proto tcp to port 52440\n"
-        "block return in quick proto { tcp udp } to port $exo_ports\n"
-        "block return in quick proto tcp to port 49153:65535\n"
+        "block return in quick proto tcp to port $exo_ports flags S/SA\n"
+        "block return in quick proto udp to port $exo_ports\n"
+        "block return in quick proto tcp to port 49153:65535 flags S/SA\n"
     )
 
 
@@ -55,7 +56,7 @@ def test_render_rules_member_without_thunderbolt_has_no_gateway_or_tb_line():
     text = firewall.render_rules((52415,), (), gateway_port=None)
     assert "{ }" not in text and "52440" not in text
     assert "pass in quick on lo0 all\n" in text
-    assert text.endswith("block return in quick proto tcp to port 49153:65535\n")
+    assert text.endswith("block return in quick proto tcp to port 49153:65535 flags S/SA\n")
 
 
 def test_apply_uses_one_sudo_call_with_paths_as_arguments(monkeypatch):
@@ -81,8 +82,8 @@ def test_apply_writes_daemon_that_loads_the_anchor(monkeypatch, tmp_path):
 
     firewall.apply(gateway_port=None, run=run)
     assert seen["plist"]["Label"] == "com.omm.cluster-pf"
-    assert seen["plist"]["ProgramArguments"] == ["/sbin/pfctl", "-E", "-a", "com.apple/omm-cluster", "-f",
-                                                 "/Library/Application Support/omm/cluster-pf.conf"]
+    assert seen["plist"]["ProgramArguments"] == ["/bin/sh", "-c", firewall.LOAD_SCRIPT]
+    assert '/sbin/pfctl -E -a com.apple/omm-cluster -f "/Library/Application Support/omm/cluster-pf.conf"' in firewall.LOAD_SCRIPT
     assert seen["plist"]["RunAtLoad"] is True
     assert seen["rules"] == firewall.render_rules(firewall.EXO_PORTS, ["en2"], gateway_port=None)
 
@@ -152,3 +153,47 @@ def test_remove_failure_raises_cluster_error():
 
     with pytest.raises(ClusterError, match="firewall"):
         firewall.remove(run=lambda argv, **k: subprocess.CompletedProcess(argv, 1, "", "Sorry, try again."))
+
+
+def _fake_pfctl(tmp_path):
+    """A pfctl that keeps enable references like the real one (`-E` adds one
+    and prints its token, `-X <token>` releases it or fails)."""
+    refs = tmp_path / "refs"
+    refs.write_text("", encoding="utf-8")
+    fake = tmp_path / "pfctl"
+    fake.write_text(f"""#!/bin/sh
+case "$1" in
+  -E) n=$(( $(wc -l < "{refs}") + 100 )); echo "$n" >> "{refs}"; echo "Token : $n" >&2 ;;
+  -X) grep -qx "$2" "{refs}" || exit 1; grep -vx "$2" "{refs}" > "{refs}.new"; mv "{refs}.new" "{refs}" ;;
+esac
+exit 0
+""", encoding="utf-8")
+    fake.chmod(0o755)
+    return fake, refs
+
+
+def _local(script, fake, token):
+    return script.replace("/sbin/pfctl", str(fake)).replace(str(firewall.TOKEN_PATH), str(token))
+
+
+def test_loading_again_gives_back_the_previous_pf_enable_reference(tmp_path):
+    # Real Mac mini 2026-10-24: three init/leave rounds left three pfctl
+    # references, so pf stayed enabled for a day after leave.
+    fake, refs = _fake_pfctl(tmp_path)
+    token = tmp_path / "cluster-pf.token"
+    for _ in range(3):  # boot, init, init again
+        subprocess.run(["sh", "-c", _local(firewall.LOAD_SCRIPT, fake, token)], check=True)
+    assert len(refs.read_text(encoding="utf-8").split()) == 1
+    assert token.read_text(encoding="utf-8").strip() == refs.read_text(encoding="utf-8").strip()
+
+
+def test_removing_gives_back_the_last_pf_enable_reference(tmp_path):
+    fake, refs = _fake_pfctl(tmp_path)
+    token = tmp_path / "cluster-pf.token"
+    subprocess.run(["sh", "-c", _local(firewall.LOAD_SCRIPT, fake, token)], check=True)
+    subprocess.run(["sh", "-c", _local(firewall.RELEASE_TOKEN, fake, token)], check=True)
+    assert refs.read_text(encoding="utf-8").split() == [] and not token.exists()
+    assert firewall.RELEASE_TOKEN in firewall.REMOVE_SCRIPT
+    # After a reboot the saved token is stale; releasing it must not fail the script.
+    token.write_text("999\n", encoding="utf-8")
+    subprocess.run(["sh", "-c", _local(firewall.RELEASE_TOKEN, fake, token)], check=True)

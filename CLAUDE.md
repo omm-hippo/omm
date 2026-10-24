@@ -279,7 +279,10 @@ inside `EXO.app`, so `preflight.stage_runtime` copies `Contents/Resources/exo` t
 every TCP port in 49153-65535 from elsewhere, because the MLX ring binds a random high port
 on 0.0.0.0. The blocks are `block return` (RST), never `block drop`: exo's libp2p dials
 every address a peer advertises, and a silently dropped SYN on a blocked address stalled
-Thunderbolt peer discovery for 40 s or forever. `netconfig.py` replaces macOS's Thunderbolt
+Thunderbolt peer discovery for 40 s or forever. TCP blocks match only a SYN (`flags S/SA`) so
+connections the Mac opened before the rules loaded keep working, and the loader saves its
+`pfctl -E` token so a re-run and `leave` give the pf enable reference back (`pfctl -X`);
+otherwise pf stayed enabled after leave. `netconfig.py` replaces macOS's Thunderbolt
 Bridge (no spanning tree: a 3-Mac triangle floods it with 38k+ packets per 5 s) with one DHCP
 service per Thunderbolt port (`omm Thunderbolt N`, link-local 169.254.x.x addresses), and
 init/join run it before exo starts and before the pf rules are written; `leave` restores the
