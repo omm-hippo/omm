@@ -27,3 +27,16 @@ export function shouldSend(event) {
   return event.key==='Enter' && !event.shiftKey && !event.altKey &&
     !event.nativeEvent?.isComposing && event.keyCode!==229;
 }
+
+// Recommendation evidence and wiki summaries. Counts stay separate and no
+// accuracy figure is shown because none is calibrated.
+const wikiTasks = {general:'일반 텍스트',agents:'에이전트',coding:'코딩',reasoning:'추론',vision:'이미지 입력',multilingual:'다국어',compact:'경량'};
+const count = (value, unit) => Number.isInteger(value) ? `${value.toLocaleString()}${unit}` : '확인 불가';
+export function measurementSummary(m) {
+  return `원시 측정 ${count(m.raw_rows,'행')}(유효 ${count(m.valid_rows,'행')}) · 반복 측정 병합 ${count(m.repeat_samples_collapsed,'회')} · 서로 다른 구성 ${count(m.distinct_configurations,'개')} · 독립 장비 수 확인 불가 · 보정된 신뢰구간 없음`;
+}
+export function wikiSummary(wiki) {
+  if (!wiki) return '위키 정보 없음';
+  const tasks = (wiki.tasks || []).map(x=>wikiTasks[x] || x).join(' · ') || '정보 없음';
+  return `용도: ${tasks} · 검토 ${wiki.reviewedAt || '정보 없음'}`;
+}

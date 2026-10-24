@@ -88,3 +88,70 @@ def test_evidence_annotation_keeps_ranking_and_install_targets():
         assert [r.speed for r in marked]==[r.speed for r in plain]
         assert [r.badge for r in marked]==[r.badge for r in plain]
         assert all('recommendation_evidence' not in c for c,_ in ranked)
+
+
+def test_basis_classes_and_counts_stay_separate_without_accuracy_claims():
+    hw,candidate,row=inputs()
+    support=evidence.build_support(predictor.FEATURE_ORDER,[row,row,row],[])
+    artifact={'feature_order':predictor.FEATURE_ORDER,'measurement_support':support,
+              'raw_real_row_count':30,'real_row_count':12,
+              'telemetry_audit':{'repetition_balance':{'repeat_samples_collapsed':18,'independent_device_count':None}}}
+    other={**candidate,'filename':'model-8B-Q4_K_M.gguf'}
+    measured=evidence.describe(artifact,hw,candidate)
+    assert measured['basis']=='similar_measured'
+    assert measured['matching_feature_configurations']=={'training':1,'holdout':0}  # 3 repeats, 1 configuration
+    assert measured['catalog_measurements']=={'raw_rows':30,'valid_rows':None,'repeat_samples_collapsed':18,
+                                              'distinct_configurations':12,'independent_devices':None}
+    assert evidence.describe(artifact,hw,other)['basis']=='insufficient_evidence'
+    assert evidence.describe(artifact,hw,candidate,engine='lmstudio')['basis']=='insufficient_evidence'
+    assert evidence.describe(None,hw,candidate)['basis']=='rules_or_synthetic'
+    assert evidence.describe(None,hw,candidate)['catalog_measurements'] is None
+    assert evidence.describe({**artifact,'real_row_count':0},hw,candidate)['basis']=='rules_or_synthetic'
+    for result in (measured,evidence.describe(None,hw,candidate)):
+        assert result['calibrated_interval'] is False and result['independent_device_count'] is None
+
+
+def test_old_catalog_without_evidence_fields_loads_with_unknown_counts():
+    hw,candidate,_=inputs()
+    result=evidence.describe({'feature_order':predictor.FEATURE_ORDER,'real_row_count':'bad','telemetry_audit':[]},hw,candidate)
+    assert result['basis']=='insufficient_evidence'
+    assert result['catalog_measurements']=={'raw_rows':None,'valid_rows':None,'repeat_samples_collapsed':None,
+                                            'distinct_configurations':None,'independent_devices':None}
+
+
+def test_local_calibration_counts_runs_on_one_device(monkeypatch):
+    from omm import calibration
+    hw,candidate,_=inputs()
+    key=calibration.hardware_bucket(hw)
+    monkeypatch.setattr(calibration,'load_profiles',lambda: {'profiles':{key:{'factor':0.9,'sample_count':5}}})
+    result=evidence.describe({'feature_order':predictor.FEATURE_ORDER},hw,candidate)
+    assert result['basis']=='measurement_estimate'
+    assert result['local_calibration_samples']==5 and result['local_calibration_devices']==1
+
+
+def test_detail_lines_separate_counts_and_never_show_accuracy():
+    from omm import recommend_ui
+    hw,candidate,row=inputs()
+    artifact={'feature_order':predictor.FEATURE_ORDER,'raw_real_row_count':30,'real_row_count':12,
+              'measurement_support':evidence.build_support(predictor.FEATURE_ORDER,[row],[row])}
+    lines=recommend_ui.evidence_detail_lines(evidence.describe(artifact,hw,candidate))
+    text='\n'.join(lines)
+    assert 'similar hardware' in text
+    assert 'training 1, holdout 1' in text
+    assert '30 raw rows (unknown valid), unknown repeated runs merged, 12 distinct configurations' in text
+    assert 'No calibrated accuracy' in text and '%' not in text
+    old=recommend_ui.evidence_detail_lines({'status':'insufficient'})
+    assert old[0].startswith('Prediction evidence: insufficient evidence')
+
+
+def test_published_catalog_reports_raw_valid_repeat_and_configuration_counts():
+    import json
+    from pathlib import Path
+    hw,candidate,_=inputs()
+    artifact=json.loads((Path(__file__).resolve().parents[1]/'published'/'localfit-recommend-model.json').read_text(encoding='utf-8'))
+    audit=artifact['telemetry_audit']
+    counts=evidence.describe(artifact,hw,candidate)['catalog_measurements']
+    assert counts['raw_rows']==artifact['raw_real_row_count']
+    assert counts['valid_rows']==audit['valid_rows']
+    assert counts['distinct_configurations']==artifact['real_row_count']
+    assert counts['repeat_samples_collapsed'] is not None and counts['independent_devices'] is None

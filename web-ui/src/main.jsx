@@ -6,7 +6,7 @@ import {api, gib, bytes} from './api';
 import './style.css';
 import './workspace.css';
 import {Sidebar,CommandPalette,WorkspaceIcon} from './Workspace.jsx';
-import {destinations,readAppearance} from './workspace-state.js';
+import {destinations,readAppearance,measurementSummary,wikiSummary} from './workspace-state.js';
 import ChatPanel from './ChatPanel';
 import {WikiExplorer,Connections,Diagnostics,Comparison,RuntimeSettings,FilesSettings} from './ManagementPanels';
 
@@ -16,10 +16,12 @@ const operationLabels={start_chat:'대화 준비하고 시작',install:'모델 �
 const statuses = {queued:'대기 중',running:'진행 중',cancelling:'중단 요청됨',completed:'완료',failed:'실패',cancelled:'중단됨',interrupted:'결과 확인 필요'};
 const evidenceLabels = {static_rules:'메모리 규칙',insufficient:'실측 근거 부족',local_calibrated:'로컬 속도 보정',feature_support:'유사 특성 실측 있음',synthetic_prior:'합성 데이터 예측'};
 
+const evidenceBasis = {similar_measured:'유사 구성 실측',measurement_estimate:'실측 기반 추정',rules_or_synthetic:'규칙·합성 기반',insufficient_evidence:'근거 부족'};
+
 function Evidence({catalog,onUpdate,busy}) {
   const source = {bundled_rules:'기본 메모리 규칙',signed_cache:'서명을 확인한 추천 자료',local_cache:'로컬 추천 자료'}[catalog?.catalog_source];
   const details = catalog?.catalog;
-  return <section className="evidence"><div className="evidence-heading"><h2>추천 근거</h2><button onClick={onUpdate} disabled={busy}>{busy?'자료 받는 중…':'추천 자료 업데이트'}</button></div><p>{source || '자료 확인 중'}</p>{details?.trained_at && <p>학습 시점 {details.trained_at.slice(0,10)}{Number.isInteger(details.real_configuration_count) && ` · 전체 실측 구성 ${details.real_configuration_count}개`}</p>}<p>{catalog?.evidence?.reason}</p>{catalog?.evidence?.local_calibration_samples>0 && <p>로컬 보정 측정 {catalog.evidence.local_calibration_samples}회 · 예상 속도는 Ollama 기준이에요.</p>}<p>전체 자료의 실측 수는 내 컴퓨터에서의 정확도를 뜻하지 않아요.</p></section>;
+  return <section className="evidence"><div className="evidence-heading"><h2>추천 근거</h2><button onClick={onUpdate} disabled={busy}>{busy?'자료 받는 중…':'추천 자료 업데이트'}</button></div><p>{source || '자료 확인 중'}</p>{details?.trained_at && <p>학습 시점 {details.trained_at.slice(0,10)}{Number.isInteger(details.real_configuration_count) && ` · 전체 실측 구성 ${details.real_configuration_count}개`}</p>}{details?.measurements && <p>{measurementSummary(details.measurements)}</p>}<p>{catalog?.evidence?.reason}</p>{catalog?.evidence?.local_calibration_samples>0 && <p>로컬 보정 측정 {catalog.evidence.local_calibration_samples}회 · 예상 속도는 Ollama 기준이에요.</p>}<p>전체 자료의 실측 수는 내 컴퓨터에서의 정확도를 뜻하지 않아요.</p></section>;
 }
 
 function Icon({name}) {
@@ -33,7 +35,7 @@ function Hardware({machine, budget}) {
 }
 
 function ModelTable({rows, onSelect, onDetails}) {
-  return <div className="table-wrap"><table><thead><tr><th>모델</th><th>용도</th><th>예상 메모리</th><th>예측 근거</th><th><span className="sr-only">작업</span></th></tr></thead><tbody>{rows.map((model,index)=><tr key={model.id}><td><strong>{model.name}</strong><small>{model.quantization}</small><button className="text-button" onClick={()=>onDetails(model.wiki || {missing:true,name:model.name,ref:model.ref})}>모델 설명</button>{model.variant_warning && <small>{model.variant_warning}</small>}</td><td>{purposes[model.use_case] || model.use_case}</td><td>{gib(model.memory_required_gb)}</td><td><span>{evidenceLabels[model.evidence.status]}</span>{model.evidence.matching_feature_configurations && <small>같은 특성의 학습 구성 {model.evidence.matching_feature_configurations.training} · 검증 구성 {model.evidence.matching_feature_configurations.holdout}</small>}{typeof model.predicted_tokens_per_second==='number' && <small>약 {model.predicted_tokens_per_second.toFixed(1)} tok/s 예상 · Ollama</small>}</td><td>{!model.installed && <button className="primary" onClick={()=>onSelect({...model,operation:'start_chat'})}>이 모델로 대화 시작</button>}<button onClick={()=>onSelect(model)}>{model.installed?'설치 정보':'설치'}</button></td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>모델</th><th>용도</th><th>예상 메모리</th><th>예측 근거</th><th><span className="sr-only">작업</span></th></tr></thead><tbody>{rows.map((model,index)=><tr key={model.id}><td><strong>{model.name}</strong><small>{model.quantization}</small><button className="text-button" onClick={()=>onDetails(model.wiki || {missing:true,name:model.name,ref:model.ref})}>모델 설명</button><small>{wikiSummary(model.wiki)}</small>{model.variant_warning && <small>{model.variant_warning}</small>}</td><td>{purposes[model.use_case] || model.use_case}</td><td>{gib(model.memory_required_gb)}</td><td><span>{evidenceLabels[model.evidence.status] || '실측 근거 부족'}</span><small>{evidenceBasis[model.evidence.basis] || '근거 부족'} · 보정된 정확도 없음</small>{model.evidence.matching_feature_configurations && <small>같은 특성의 학습 구성 {model.evidence.matching_feature_configurations.training} · 검증 구성 {model.evidence.matching_feature_configurations.holdout}</small>}{typeof model.predicted_tokens_per_second==='number' && <small>약 {model.predicted_tokens_per_second.toFixed(1)} tok/s 예상 · Ollama</small>}</td><td>{!model.installed && <button className="primary" onClick={()=>onSelect({...model,operation:'start_chat'})}>이 모델로 대화 시작</button>}<button onClick={()=>onSelect(model)}>{model.installed?'설치 정보':'설치'}</button></td></tr>)}</tbody></table></div>;
 }
 
 function Installed({rows,onAction,onSettings,onChat}) {
