@@ -796,6 +796,18 @@ def agent_status(harness: str = typer.Argument(..., help="claude, codex or pi.")
     console.print(f"{escape(harness)}: {result['state']}; installed: {result['installed']}")
 
 
+rag_app = typer.Typer(
+    name="rag",
+    help="Search documents registered in OMM from coding agents through a local MCP server.",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+app.add_typer(rag_app)
+from omm import rag_cli as _rag_cli  # noqa: E402  (agent bridge commands live in their own module)
+
+_rag_cli.register(rag_app)
+
+
 engine_app = typer.Typer(
     name="engine",
     help="Inspect, install, update, and remove local AI runner programs.",
@@ -1081,7 +1093,7 @@ def _root(
 
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
-    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "compare", "upgrade", "pin", "unpin", "rollback", "web"]),
+    ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "compare", "upgrade", "pin", "unpin", "rollback", "web", "rag"]),
     ("Tuning & quality", ["tune", "benchmark", "evaluate", "arena", "contribute"]),
     (
         "Maintenance",

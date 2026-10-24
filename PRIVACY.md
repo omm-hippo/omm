@@ -231,6 +231,19 @@ Replacing or deleting a document clears saved document answers so old source
 quotations do not remain in the answer cache. Original uploaded files are not
 changed. Explicit OMM data removal includes the owned `documents` directory.
 
+### Document search for coding agents (MCP)
+
+`omm rag mcp` answers a coding agent's search requests over stdin/stdout only;
+it opens no network port and makes no network calls. Questions and returned
+quotations are not written to run logs, telemetry, usage counts or crash
+reports; its stderr diagnostics are fixed status lines. The quotations it
+returns go to the coding agent, which sends them to whatever model that agent
+is configured to use: a cloud model receives them unless the agent is routed to
+a local model. `omm rag connect` keeps a private copy of the agent's original
+configuration file under `OMM_HOME/rag-connections`; that copy may contain the
+agent's own settings and is not read by any upload channel. See
+[document search for coding agents](docs/rag-mcp.md).
+
 ## Local agent connection backups
 
 `omm setting agent local` saves a private local backup of the selected

@@ -1525,6 +1525,73 @@
     },
     {
       "path": [
+        "rag"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Search documents registered in OMM from coding agents through a local MCP server.",
+      "description": "",
+      "usage": "omm rag [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag"
+    },
+    {
+      "path": [
+        "rag",
+        "connect"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Register OMM document search as an MCP server in a coding agent, backing up its settings.",
+      "description": "",
+      "usage": "omm rag connect [OPTIONS] {harness}",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude-code, codex, pi or cursor.",
+          "required": true
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#connect"
+    },
+    {
+      "path": [
+        "rag",
+        "disconnect"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Remove only the OMM MCP entry from a coding agent and keep other settings.",
+      "description": "",
+      "usage": "omm rag disconnect [OPTIONS] {harness}",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude-code, codex, pi or cursor.",
+          "required": true
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#disconnect"
+    },
+    {
+      "path": [
+        "rag",
+        "mcp"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Run the local document search MCP server on stdin/stdout (started by a coding agent).",
+      "description": "",
+      "usage": "omm rag mcp [OPTIONS]",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#mcp"
+    },
+    {
+      "path": [
         "recommend"
       ],
       "kind": "command",
