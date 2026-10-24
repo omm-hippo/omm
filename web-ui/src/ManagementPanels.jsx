@@ -1,7 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {api, bytes} from './api';
 
-const tasks = {agents:'에이전트',coding:'코딩',reasoning:'추론',vision:'이미지',multilingual:'다국어',compact:'경량'};
+const tasks = {general:'일반 텍스트',agents:'에이전트',coding:'코딩',reasoning:'추론',vision:'이미지',multilingual:'다국어',compact:'경량'};
 const runtimeNames = {ollama:'Ollama',lmstudio:'LM Studio'};
 
 function useResource(path, refreshKey = 0) {
@@ -28,16 +28,23 @@ function LoadState({resource}) {
 export function WikiExplorer({document,onOpen,onSelect,profile}) {
   const [query,setQuery] = useState('');
   const [task,setTask] = useState('');
+  const [publisher,setPublisher] = useState('');
+  const [page,setPage] = useState(0);
   const [selected,setSelected] = useState(null);
+  const publishers=[...new Set((document?.models || []).map(model=>model.publisher))].sort();
   const terms=query.toLocaleLowerCase('ko').trim().split(/\s+/).filter(Boolean);
   const rows=(document?.models || []).filter(model=>{
-    const text=[model.name,model.repository,model.summary,model.chooseWhen,...model.strengths.map(x=>x.text),...model.tasks.map(x=>tasks[x])].join(' ').toLocaleLowerCase('ko');
-    return (!task || model.tasks.includes(task)) && terms.every(x=>text.includes(x));
+    const text=[model.name,model.repository,model.publisher,model.sizeLabel,model.license?.label,...(model.aliases || []),...(model.languages || []),model.summary,model.chooseWhen,...model.strengths.map(x=>x.text),...model.tasks.map(x=>tasks[x])].join(' ').toLocaleLowerCase('ko');
+    return (!task || model.tasks.includes(task)) && (!publisher || model.publisher===publisher) && terms.every(x=>text.includes(x));
   });
+  const pages=Math.max(1,Math.ceil(rows.length/20));
+  const currentPage=Math.min(page,pages-1);
+  const visible=rows.slice(currentPage*20,currentPage*20+20);
   return <>
-    <div className="explorer-toolbar"><label className="search"><input maxLength={160} value={query} onChange={e=>setQuery(e.target.value)} placeholder="모델 이름, 용도, 특징으로 검색" aria-label="모델 위키 검색"/></label><label className="field">용도<select value={task} onChange={e=>setTask(e.target.value)}><option value="">전체 용도</option>{Object.entries(tasks).map(([key,name])=><option value={key} key={key}>{name}</option>)}</select></label></div>
-    <p className="footnote">기존 모델 위키 · 검토 {document?.reviewedAt || '확인 중'} · 개발사 설명과 편집 의견을 함께 보여줘요.{document?.stale && ' 검토 후 30일이 지난 자료예요. 현재 지원 여부는 각 모델의 출처에서 다시 확인해 주세요.'}</p>
-    <div className="wiki-list">{rows.map(model=><article key={model.id}><div><h2>{model.name}</h2><p>{model.summary}</p><small>{model.tasks.map(x=>tasks[x]).join(' · ')}</small><p className="choose-when">{model.chooseWhen}</p></div><div className="row-actions"><button onClick={()=>onOpen(model)}>설명 보기</button><button className="primary" onClick={()=>setSelected(model)}>설치 파일 보기</button></div></article>)}</div>
+    <div className="explorer-toolbar"><label className="search"><input maxLength={160} value={query} onChange={e=>{setQuery(e.target.value);setPage(0);}} placeholder="모델 이름, 용도, 특징으로 검색" aria-label="모델 위키 검색"/></label><label className="field">용도<select aria-label="용도" value={task} onChange={e=>{setTask(e.target.value);setPage(0);}}><option value="">전체 용도</option>{Object.entries(tasks).map(([key,name])=><option value={key} key={key}>{name}</option>)}</select></label><label className="field">개발사<select aria-label="개발사" value={publisher} onChange={e=>{setPublisher(e.target.value);setPage(0);}}><option value="">전체 개발사</option>{publishers.map(name=><option key={name}>{name}</option>)}</select></label></div>
+    <p className="footnote">모델 위키 {document?.models?.length || 0}종 · 검색 결과 {rows.length}종 · 목록 갱신 {document?.reviewedAt || '확인 중'} · 모델별 검토일과 출처는 상세에서 확인하세요.{document?.stale && ' 갱신 후 30일이 지난 자료예요.'}</p>
+    <div className="wiki-list">{visible.map(model=><article key={model.id}><div><h2>{model.name}</h2><p>{model.summary}</p><small>{model.publisher} · {model.tasks.map(x=>tasks[x]).join(' · ')}</small><p className="choose-when">{model.chooseWhen}</p></div><div className="row-actions"><button onClick={()=>onOpen(model)}>설명 보기</button><button className="primary" onClick={()=>setSelected(model)}>설치 파일 보기</button></div></article>)}</div>
+    {rows.length>20 && <nav className="row-actions" aria-label="모델 위키 페이지"><button disabled={currentPage===0} onClick={()=>setPage(currentPage-1)}>이전</button><span role="status">{currentPage+1} / {pages} 페이지</span><button disabled={currentPage===pages-1} onClick={()=>setPage(currentPage+1)}>다음</button></nav>}
     {document && !rows.length && <div className="empty">이 조건에 맞는 위키 설명이 없어요.</div>}
     {selected && <PackageDialog model={selected} profile={profile} onClose={()=>setSelected(null)} onSelect={row=>{setSelected(null);onSelect(row);}}/>}
   </>;
@@ -57,7 +64,7 @@ function PackageDialog({model,profile,onClose,onSelect}) {
   }
   const value=remote || resource.data;
   return <dialog className="wide-dialog" ref={dialog} onCancel={onClose}><h2>{model.name} 설치 파일</h2><p>{model.summary}</p><p className="footnote">정확한 원본 모델 관계가 확인된 GGUF 파일만 보여줘요. 용량과 설치 예산을 확인한 뒤 선택하세요. 실제 실행에는 실행 시점의 메모리 여유가 필요해요.</p><LoadState resource={resource}/>{error && <p role="alert" className="error">{error}</p>}
-    <div className="package-list">{value?.packages.map(row=><article key={row.id}><div><strong>{row.filename}</strong><small>{row.wiki.packageRepository || row.wiki.repository}</small><small>{bytes(row.size_bytes)} · 예상 메모리 {row.memory_required_gb?.toFixed(1) || '확인 필요'} GB · {row.fits===true?'선택한 설치 예산에 맞음':row.fits===false?'선택한 설치 예산 초과':'메모리 판단 근거 부족'}</small><small>{row.wiki.match==='publisher_declared_base'?'업로더가 명시한 원본 모델 관계':'기존 위키의 저장소 연결 근거'}</small></div><button onClick={()=>onSelect(row)} disabled={row.fits!==true}>설치</button></article>)}</div>
+    <div className="package-list">{value?.packages.map(row=><article key={row.id}><div><strong>{row.filename}</strong><small>{row.wiki.packageRepository || row.wiki.repository}</small><small>{bytes(row.size_bytes)} · 예상 메모리 {row.memory_required_gb?.toFixed(1) || '확인 필요'} GB · {row.fits===true?'선택한 설치 예산에 맞음':row.fits===false?'선택한 설치 예산 초과':'메모리 판단 근거 부족'}</small><small>{row.wiki.match==='publisher_declared_base'?'업로더가 명시한 원본 모델 관계':'기존 위키의 저장소 연결 근거'}</small></div><div className="row-actions"><button className="primary" onClick={()=>onSelect({...row,operation:'start_chat'})} disabled={row.fits!==true}>이 모델로 대화 시작</button><button onClick={()=>onSelect(row)} disabled={row.fits!==true}>설치</button></div></article>)}</div>
     {!resource.loading && !value?.packages.length && <div className="empty">로컬 자료에 연결된 설치 파일이 없어요. 온라인에서 파일을 찾아볼 수 있어요.</div>}
     <p className="footnote">온라인 검색은 Hugging Face에 접속해 파일 목록을 확인해요. 모델 파일은 설치를 선택할 때 내려받아요.</p><div className="dialog-actions"><button onClick={onClose}>닫기</button><button onClick={discover} disabled={busy}>{busy?'설치 파일 찾는 중…':'온라인에서 설치 파일 찾기'}</button></div>
   </dialog>;
@@ -73,7 +80,7 @@ export function Connections({refreshKey,onAction}) {
     try {setNetwork(await api('/api/connections/check',{}));}
     catch(e){setError(e.message);}finally{setBusy(false);}
   }
-  return <><LoadState resource={resource}/><section className="manager-section"><h2>실행 앱과 로컬 연결</h2><p>앱 설치와 로컬 서버 응답은 따로 확인해요. 서버 응답만으로 모델 실행 성공을 판단하지 않아요.</p><div className="connection-list">{resource.data?.engines.map(row=><article key={row.key}><div><h3>{row.name}</h3><p>{row.installed?'설치됨':'미설치'} · {row.api_status==='ready'?'로컬 서버 연결됨':row.api_status==='unreachable'?'로컬 서버에 연결할 수 없음':'로컬 응답 확인 API 미지원'}</p>{row.version && <small>서버 버전 {row.version}</small>}{row.api_status==='unreachable' && <small>실행 앱에서 로컬 서버를 켜고 다시 확인하세요.</small>}</div>{!row.installed && <button onClick={()=>onAction({operation:'engine_install',engine:row.key,filename:row.name})}>설치</button>}</article>)}</div></section>
+  return <><LoadState resource={resource}/><section className="manager-section"><h2>실행 앱과 로컬 연결</h2><p>앱 설치와 로컬 서버 응답은 따로 확인해요. 서버 응답만으로 모델 실행 성공을 판단하지 않아요.</p><div className="connection-list">{resource.data?.engines.map(row=><article key={row.key}><div><h3>{row.name}</h3><p>{row.installed?'설치됨':'미설치'} · {row.api_status==='ready'?'로컬 서버 연결됨':row.api_status==='unreachable'?'로컬 서버에 연결할 수 없음':'로컬 응답 확인 API 미지원'}</p>{row.version && <small>서버 버전 {row.version}</small>}<small>{row.installer_check?`최근 설치 검사: ${row.installer_check.status==='named_checks_passed'?'필수 항목 통과':'검사 실패 · 실행 전 확인 필요'} · ${new Date(row.installer_check.checked_at).toLocaleString('ko-KR')}`:'OMM 설치 검사 기록 없음'}</small>{row.installer_check && <small>검사 시점의 기록이며, 모든 취약점이나 현재 안전을 보증하지 않아요.</small>}{row.api_status==='unreachable' && <small>실행 앱에서 로컬 서버를 켜고 다시 확인하세요.</small>}</div>{!row.installed && <button onClick={()=>onAction({operation:'engine_install',engine:row.key,filename:row.name})}>설치</button>}</article>)}</div></section>
     <section className="manager-section"><h2>다운로드·추천 자료 연결</h2><p>필요할 때 외부 서버 연결을 확인해요. 자동으로 반복 검사하지 않아요.</p><button onClick={check} disabled={busy}>{busy?'연결 확인 중…':'네트워크 연결 확인'}</button>{error && <p className="error" role="alert">{error}</p>}{network?.targets.map(row=><p key={row.name}>{row.name} · <strong>{row.status==='ready'?'응답 확인':'연결 확인 실패'}</strong>{row.http_status && ` (HTTP ${row.http_status})`}</p>)}{network && <small>확인 {new Date(network.checked_at).toLocaleTimeString('ko-KR')} · 인터넷 전체 상태나 모델 다운로드 성공을 뜻하지 않아요.</small>}</section>
   </>;
 }

@@ -49,11 +49,13 @@ def save_settings(changes: dict) -> dict:
 
 
 def connections() -> dict:
+    from omm import install_safety
     from omm.web.probe import adapter_for
     rows = []
     for spec in linker.ENGINES:
         row = {"key": spec.key, "name": spec.label, "installed": linker.is_engine_installed(spec.key),
-               "api_status": "unsupported", "version": None}
+               "api_status": "unsupported", "version": None,
+               "installer_check": install_safety.last_result(spec.key)}
         if spec.key in {"ollama", "lmstudio"}:
             try:
                 health = adapter_for(spec.key).health()

@@ -356,6 +356,7 @@ def _missing_manager_fix(key: str) -> dict | None:
 
 
 def inspect_engine(key: str, *, check_api: bool = True) -> dict:
+    from omm import install_safety
     package = PACKAGES[key]
     installed = linker.is_engine_installed(key)
     package_error = None
@@ -375,6 +376,7 @@ def inspect_engine(key: str, *, check_api: bool = True) -> dict:
         "detected_version": _detected_version(key) if receipt is None else None,
         "api_status": "not_checked", "runtime_version": None,
         "manual_url": package.manual_url,
+        "installer_check": install_safety.last_result(key),
     }
     if package_fix is None and installed and receipt is None and result["package_manageable"]:
         package_fix = _missing_manager_fix(key)
@@ -423,7 +425,7 @@ def plan_action(key: str, action: str) -> dict:
 
 def _run_action(command: list[str], on_output: Callable[[str], None]) -> int:
     proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, encoding="utf-8", errors="replace", env=_environment(read_only=False))
+                            text=True, encoding="utf-8", errors="replace", env=_environment())
     try:
         for line in proc.stdout:
             on_output(line.rstrip("\r\n"))
@@ -449,8 +451,15 @@ def execute_action(plan: dict, *, on_output: Callable[[str], None]) -> dict:
         if fresh != plan:
             raise EngineManagementError("The installed package changed; inspect it again before retrying.")
         started = time.monotonic()
+        from omm import install_safety
+        command = fresh["command"]
+        if action == "update":
+            try:
+                command = install_safety.prepare(key, command)
+            except install_safety.SafetyError as error:
+                raise EngineManagementError(f"Mandatory update safety check blocked execution: {error}") from error
         on_output(f"Running {action} through {plan['package']['manager']}...")
-        code = _run_action(fresh["command"], on_output)
+        code = _run_action(command, on_output)
         on_output("Checking the installed package after the operation...")
         receipt = package_receipt(key)
         installed = linker.is_engine_installed(key)
@@ -465,10 +474,18 @@ def execute_action(plan: dict, *, on_output: Callable[[str], None]) -> dict:
             raise EngineManagementError("Package manager returned success but the package is still installed.")
         if action == "update" and (receipt is None or not installed):
             raise EngineManagementError("Package manager returned success but the updated engine could not be verified.")
+        safety = None
+        if action == "update":
+            try:
+                safety = install_safety.verify_installed(key)
+            except (install_safety.SafetyError, OSError) as error:
+                install_safety.record_failure(key)
+                raise EngineManagementError(f"Updated files may remain, but mandatory security verification failed: {error}. Do not launch before resolving it.") from error
         return {
             "engine": key, "action": action,
             "status": "unchanged" if action == "update" and asdict(receipt) == plan["package"] else "completed",
             "installed": installed, "package": asdict(receipt) if receipt else None,
             "elapsed_seconds": round(time.monotonic() - started, 2),
             "omm_models_preserved": True,
+            "installation_safety": safety,
         }

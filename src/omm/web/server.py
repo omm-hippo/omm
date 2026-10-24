@@ -243,6 +243,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/jobs":
                 request = self.server.service.request(body)
                 return self._json(202, self.server.jobs.start(request, body.get("request_id")))
+            if path.startswith("/api/jobs/") and path.endswith("/retry"):
+                if not isinstance(body, dict) or set(body) != {"confirmed", "request_id"} or body["confirmed"] is not True:
+                    raise ValueError("다시 시작할 작업을 확인해 주세요.")
+                key = path[len("/api/jobs/"):-len("/retry")]
+                return self._json(202, self.server.jobs.retry_task(key, body["request_id"]))
             parts = path.strip("/").split("/")
             if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "cancel":
                 if body != {}:

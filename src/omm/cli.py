@@ -328,6 +328,9 @@ _JSON_CAPABLE = {
     "engine uninstall",
     "bug-report",
     "setting runtime-profile",
+    "rag status",
+    "rag collection list",
+    "rag search",
     # Only `omm arena --leaderboard`; a battle refuses --json in arena_cmd.
     "arena",
 }
@@ -352,6 +355,8 @@ _YES_CAPABLE = {
     "engine security",
     "bug-report",
     "tune",
+    "rag collection delete",
+    "rag remove",
 }
 
 
@@ -744,6 +749,320 @@ web_autostart_app = typer.Typer(
     cls=_DocsEpilogGroup,
 )
 setting_app.add_typer(web_autostart_app)
+agent_app = typer.Typer(
+    name="agent",
+    help="Connect Claude Code, Codex or pi to local Ollama and restore original settings.",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+setting_app.add_typer(agent_app)
+
+
+@agent_app.command(name="local")
+def agent_local(
+    harness: str = typer.Argument(..., help="claude, codex or pi."),
+    model: str = typer.Option(..., "--model", help="Installed tool-capable Ollama model tag (32K+ context)."),
+    base_url: str = typer.Option("http://127.0.0.1:11434", "--base-url", help="Local Ollama HTTP(S) loopback origin."),
+) -> None:
+    """Back up settings and connect a harness to a downloaded local Ollama model."""
+    from omm import agent_connection
+    try:
+        agent_connection.connect(harness, model, base_url=base_url)
+    except (agent_connection.ConnectionError, OSError) as error:
+        message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access configuration files. Check permissions."
+        err_console.print(f"[error]{escape(message)}[/error]")
+        raise typer.Exit(1)
+    console.print(f"Saved local routing settings for {escape(harness)}. Start a new harness session.")
+    console.print("Tool calling and context were checked from model metadata; the actual agent workflow is not verified.")
+    console.print("Project, managed or shell settings may override this user configuration. 64K+ runtime context is recommended.")
+
+
+@agent_app.command(name="cloud")
+def agent_cloud(harness: str = typer.Argument(..., help="claude, codex or pi.")) -> None:
+    """Restore original routing while preserving unrelated settings edits."""
+    from omm import agent_connection
+    try:
+        restored = agent_connection.restore(harness)
+    except (agent_connection.ConnectionError, OSError) as error:
+        message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access configuration files. Backup retained."
+        err_console.print(f"[error]{escape(message)}[/error]")
+        raise typer.Exit(1)
+    console.print("Original routing restored. Start a new harness session." if restored else "No OMM connection backup exists; settings were left unchanged.")
+
+
+@agent_app.command(name="status")
+def agent_status(harness: str = typer.Argument(..., help="claude, codex or pi.")) -> None:
+    """Show saved connection state without loading a model or exposing credentials."""
+    from omm import agent_connection
+    try:
+        result = agent_connection.status(harness)
+    except (agent_connection.ConnectionError, OSError) as error:
+        message = str(error) if isinstance(error, agent_connection.ConnectionError) else "Could not access connection state."
+        err_console.print(f"[error]{escape(message)}[/error]")
+        raise typer.Exit(1)
+    console.print(f"{escape(harness)}: {result['state']}; installed: {result['installed']}")
+
+
+rag_app = typer.Typer(
+    name="rag",
+    help="Search local documents by meaning and words (hybrid), and serve them to coding agents over a local MCP server. Text and questions stay on this computer; embeddings use local Ollama only.",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+app.add_typer(rag_app)
+rag_collection_app = typer.Typer(
+    name="collection",
+    help="Create, list, or delete named document collections.",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+rag_app.add_typer(rag_collection_app)
+rag_embedding_app = typer.Typer(
+    name="embedding-model",
+    help="Show or change the local Ollama embedding model used for semantic search.",
+    invoke_without_command=True,
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+rag_app.add_typer(rag_embedding_app)
+
+_RAG_METHOD_LABEL = {"hybrid": "의미+단어", "lexical": "단어만"}
+_RAG_SEMANTIC_LABEL = {"ready": "의미 색인 있음", "missing": "의미 색인 없음 (재색인 필요)",
+                       "stale": "임베딩 모델 바뀜 (재색인 필요)", "reregister": "원본 다시 등록 필요"}
+
+
+def _rag_fail(error: Exception) -> None:
+    err_console.print(f"[error]{escape(str(error))}[/error]")
+    raise typer.Exit(1)
+
+
+def _rag_confirm(message: str) -> None:
+    if _global_opts().yes:
+        return
+    if not _stdin_is_tty():
+        err_console.print("확인이 필요해요. 다시 실행할 때 --yes를 붙여 주세요.")
+        raise typer.Exit(1)
+    if not _ask_confirm(message):
+        err_console.print("취소했어요.")
+        raise typer.Exit(0)
+
+
+@rag_app.command(name="status")
+@global_flags
+def rag_status_cmd() -> None:
+    """Show collections, the embedding model, and which documents need reindexing."""
+    from omm.documents import DocumentStore
+    try:
+        store = DocumentStore()
+        result = store.status(check_embedding=True)
+        documents = store.list()
+    except ValueError as error:
+        _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data={**result, "documents_detail": [
+            {k: d[k] for k in ("name", "collection", "pages", "chunks", "semantic", "reindex_needed", "embedding_model", "embedding_dim")}
+            for d in documents]})
+        return
+    embedding = result["embedding"]
+    state = "사용 가능" if embedding["available"] else "사용 불가"
+    console.print(f"임베딩 모델: {escape(embedding['model'])} ({escape(embedding['base_url'])}) - {state}")
+    if embedding["notice"]:
+        console.print(f"  {escape(embedding['notice'])}")
+    console.print(f"문서 {result['documents']}개 · 의미 색인 완료 {result['semantic_ready']}개 · "
+                  f"재색인 필요 {result['reindex_needed']}개 · 원본 다시 등록 필요 {result['reregister_needed']}개")
+    for collection in result["collections"]:
+        console.print(f"\n[{escape(collection['name'])}] 문서 {collection['documents']}개")
+        for document in (d for d in documents if d["collection_id"] == collection["id"]):
+            console.print(f"  - {escape(document['name'])} · {document['pages']}쪽 · 구간 {document['chunks']}개 · "
+                          f"{_RAG_SEMANTIC_LABEL[document['semantic']]}")
+    if result["reindex_needed"]:
+        console.print("\n`omm rag reindex`로 의미 색인을 다시 만들 수 있어요.")
+
+
+@rag_collection_app.command(name="create")
+def rag_collection_create_cmd(name: str = typer.Argument(..., help="Collection name, e.g. 인사규정.")) -> None:
+    """Create an empty named collection."""
+    from omm.documents import DocumentStore
+    try:
+        DocumentStore().create_collection(name)
+    except ValueError as error:
+        _rag_fail(error)
+    console.print(f"'{escape(name)}' 컬렉션을 만들었어요. `omm rag add {escape(name)} <파일 또는 폴더>`로 문서를 넣어 주세요.")
+
+
+@rag_collection_app.command(name="list")
+@global_flags
+def rag_collection_list_cmd() -> None:
+    """List collections and their document counts."""
+    from omm.documents import DocumentStore
+    try:
+        rows = DocumentStore().collections()
+    except ValueError as error:
+        _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data={"collections": [{k: row[k] for k in ("name", "documents", "created_at")} for row in rows]})
+        return
+    for row in rows:
+        console.print(f"{escape(row['name'])}  문서 {row['documents']}개")
+
+
+@rag_collection_app.command(name="delete")
+@global_flags
+def rag_collection_delete_cmd(name: str = typer.Argument(..., help="Collection to delete.")) -> None:
+    """Delete a collection with its stored text and index. Original files are kept."""
+    from omm.documents import DocumentStore
+    store = DocumentStore()
+    try:
+        count = next((row["documents"] for row in store.collections() if row["name"] == name), None)
+        if count is None:
+            store.delete_collection(name)  # raises the not-found message
+        _rag_confirm(f"'{name}' 컬렉션과 문서 {count}개의 저장된 텍스트·색인을 지울까요? 원본 파일은 그대로예요.")
+        result = store.delete_collection(name)
+    except ValueError as error:
+        _rag_fail(error)
+    console.print(f"'{escape(name)}' 컬렉션을 지웠어요 (문서 {result['documents']}개). 이전 문서 답변 기록도 지웠어요.")
+
+
+@rag_app.command(name="add")
+def rag_add_cmd(
+    collection: str = typer.Argument(..., help="Existing collection name."),
+    paths: list[Path] = typer.Argument(..., help="Files or directories (searched recursively)."),
+    replace: bool = typer.Option(False, "--replace", help="Replace a document that has the same file name."),
+) -> None:
+    """Add text PDF, TXT, Markdown, HTML, or HWPX files to a collection."""
+    from omm.documents import import_paths
+    try:
+        report = import_paths(collection, paths, replace=replace)
+    except ValueError as error:
+        _rag_fail(error)
+    failed = 0
+    notices = set()
+    for row in report["results"]:
+        if "error" in row:
+            failed += 1
+            err_console.print(f"실패: {escape(row['path'])} - {escape(row['error'])}")
+            continue
+        label = "변경 없음" if row.get("unchanged") else f"구간 {row['chunks']}개"
+        mode = "의미+단어 색인" if row["semantic"] else "단어 색인만"
+        console.print(f"등록: {escape(row['name'])} ({label}, {mode})")
+        if row.get("semantic_notice"):
+            notices.add(row["semantic_notice"])
+    for notice in notices:
+        console.print(escape(notice))
+    if report["skipped"]:
+        console.print(f"지원하지 않는 형식 {report['skipped']}개는 건너뛰었어요.")
+    if failed:
+        raise typer.Exit(1)
+
+
+@rag_app.command(name="remove")
+@global_flags
+def rag_remove_cmd(
+    collection: str = typer.Argument(..., help="Collection name."),
+    name: str = typer.Argument(..., help="Document file name inside the collection."),
+) -> None:
+    """Remove one document's stored text and index. The original file is kept."""
+    from omm.documents import DocumentStore
+    _rag_confirm(f"'{collection}' 컬렉션의 '{name}' 문서와 색인을 지울까요? 원본 파일은 그대로예요.")
+    try:
+        DocumentStore().remove_document(collection, name)
+    except ValueError as error:
+        _rag_fail(error)
+    console.print(f"'{escape(name)}' 문서를 지웠어요. 이전 문서 답변 기록도 지웠어요.")
+
+
+@rag_app.command(name="search")
+@global_flags
+def rag_search_cmd(
+    question: str = typer.Argument(..., help="Question or keywords."),
+    collection: str | None = typer.Option(None, "--collection", help="Search only this collection."),
+    limit: int = typer.Option(3, "--limit", min=1, max=10, help="Maximum passages to show (1-10)."),
+) -> None:
+    """Find source passages with hybrid search; falls back to words only and says why."""
+    from omm.documents import DocumentStore, NO_EVIDENCE
+    try:
+        result = DocumentStore().search_detailed(question, None, collection=collection, limit=limit)
+    except ValueError as error:
+        _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data=result)
+        return
+    console.print(f"검색 방식: {_RAG_METHOD_LABEL[result['method']]}")
+    if result["notice"]:
+        console.print(escape(result["notice"]))
+    if not result["sources"]:
+        console.print(NO_EVIDENCE)
+        return
+    for source in result["sources"]:
+        console.print(f"\n[{source['citation']}] {escape(source['name'])} ({escape(source['collection'])}) · "
+                      f"{source['page']}쪽 · {source['start']}-{source['end']}자", markup=False)
+        console.print(source["text"].strip(), markup=False, highlight=False)
+
+
+@rag_app.command(name="reindex")
+def rag_reindex_cmd(
+    collection: str | None = typer.Option(None, "--collection", help="Reindex only this collection."),
+    everything: bool = typer.Option(False, "--all", help="Rebuild vectors even for documents that are current."),
+) -> None:
+    """Rebuild semantic vectors with the current embedding model from stored text."""
+    from omm.documents import DocumentStore
+    try:
+        result = DocumentStore().reindex(collection, everything=everything)
+    except ValueError as error:
+        _rag_fail(error)
+    for name in result["reindexed"]:
+        console.print(f"재색인: {escape(name)}")
+    console.print(f"{escape(result['model'])}로 {len(result['reindexed'])}개 문서를 색인했어요. 이미 최신 {result['already_current']}개.")
+    if result["reregister"]:
+        console.print("단어 색인 방식이 바뀌어 원본을 다시 등록해야 하는 문서: " + escape(", ".join(result["reregister"])))
+    if result["failed"]:
+        err_console.print(f"[error]{escape(result['failed']['name'])}: {escape(result['failed']['notice'])}[/error]")
+        raise typer.Exit(1)
+
+
+def _rag_model_hint(store) -> None:
+    status = store.status(check_embedding=True)["embedding"]
+    if status["notice"]:
+        console.print(escape(status["notice"]))
+
+
+@rag_embedding_app.callback()
+def rag_embedding_show(ctx: typer.Context) -> None:
+    """Show the embedding model and whether local Ollama has it."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from omm.documents import DocumentStore
+    store = DocumentStore()
+    try:
+        settings = store.embedding_settings()
+        console.print(f"임베딩 모델: {escape(settings['model'])} ({escape(settings['base_url'])})")
+        _rag_model_hint(store)
+    except ValueError as error:
+        _rag_fail(error)
+
+
+@rag_embedding_app.command(name="set")
+def rag_embedding_set_cmd(
+    model: str = typer.Argument(..., help="Ollama embedding model tag, e.g. bge-m3."),
+    base_url: str | None = typer.Option(None, "--base-url", help="Local Ollama loopback origin (default http://127.0.0.1:11434)."),
+) -> None:
+    """Change the embedding model; documents then need `omm rag reindex`."""
+    from omm.documents import DocumentStore
+    store = DocumentStore()
+    try:
+        settings = store.set_embedding_model(model, base_url)
+        status = store.status()
+    except ValueError as error:
+        _rag_fail(error)
+    console.print(f"임베딩 모델을 {escape(settings['model'])}로 정했어요. 등록한 문서와 단어 색인은 그대로예요.")
+    _rag_model_hint(store)
+    if status["reindex_needed"]:
+        console.print(f"문서 {status['reindex_needed']}개는 재색인이 필요해요. `omm rag reindex`를 실행해 주세요.")
+from omm import rag_cli as _rag_cli  # noqa: E402  (agent bridge commands live in their own module)
+
+_rag_cli.register(rag_app)
+
+
 engine_app = typer.Typer(
     name="engine",
     help="Inspect, install, update, and remove local AI runner programs.",
@@ -1044,6 +1363,7 @@ def _root(
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
     ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "compare", "upgrade", "pin", "unpin", "rollback", "web"]),
+    ("Documents", ["rag"]),
     ("Tuning & quality", ["tune", "benchmark", "evaluate", "arena", "contribute"]),
     (
         "Maintenance",
@@ -13763,6 +14083,10 @@ def _queue_crash_report(error: BaseException) -> None:
     an `always` policy, at the next `omm contribute` for `ask`).
     """
     try:
+        # An exception raised while extracting or searching documents may
+        # quote document text in its message; `omm rag` never queues one.
+        if _crash_subcommand() == "rag":
+            return
         error_report.queue_report(error, trigger="crash", subcommand=_crash_subcommand())
     except Exception:
         pass

@@ -29,9 +29,8 @@ GENERATED_BY = "scripts/export_command_reference.py"
 DOCS_BASE_URL = "https://omm.run/commands"
 
 # Top-level groups whose subcommands are part of the documented surface.
-# Deeper groups (`setting upload`, `setting auto-import`) are listed as
-# groups but their own children live under the parent group's page.
-NESTED_GROUPS = ("cluster", "engine", "setting")
+# Include descendants too, so nested commands retain arguments and flags.
+NESTED_GROUPS = ("cluster", "engine", "rag", "setting")
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # `Alias: ls` trailer inside a command docstring. The authoritative alias
@@ -188,11 +187,16 @@ def build_reference(app: typer.Typer) -> dict[str, Any]:
         commands.append(entry)
         if name not in NESTED_GROUPS:
             continue
-        for sub_name in sorted(getattr(command, "commands", {})):
-            sub = command.commands[sub_name]
-            if sub.hidden:
-                continue
-            commands.append(_entry(sub, [name, sub_name], ctx, [], GLOBAL_FLAG_OPTS)[0])
+        def descendants(parent, path, parent_ctx):
+            for sub_name in sorted(getattr(parent, "commands", {})):
+                sub = parent.commands[sub_name]
+                if sub.hidden:
+                    continue
+                sub_path = [*path, sub_name]
+                sub_entry, sub_ctx = _entry(sub, sub_path, parent_ctx, [], GLOBAL_FLAG_OPTS)
+                commands.append(sub_entry)
+                descendants(sub, sub_path, sub_ctx)
+        descendants(command, [name], ctx)
 
     commands.sort(key=lambda entry: entry["path"])
     return {

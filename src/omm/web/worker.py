@@ -33,6 +33,9 @@ def execute(request: dict, stop: threading.Event) -> dict:
     options = cli.GlobalOptions(yes=True, quiet=True, no_color=True)
     with click.Context(click.Command("web-worker"), obj=options):
         operation = request["operation"]
+        if operation == "start_chat":
+            from omm.web.task_flow import prepare
+            return prepare(request, stop, lambda stage, status: emit("progress", stage=stage, step_status=status))
         if operation in {"compare", "profile_save", "profile_restore"}:
             from omm.web import performance
             if operation == "compare":
@@ -118,8 +121,13 @@ def execute(request: dict, stop: threading.Event) -> dict:
             if not dest.is_file():
                 raise ValueError("The managed model file is missing")
             linked = cli._link_model(dest, entry.get("repo_id"), entry.get("ollama_name") or linker.sanitize_ollama_tag(filename), only_engine=request.get("engine"))
+            engine = request.get("engine")
+            target_linked = linked.get(engine) if engine else any(linked.values())
+            if engine:
+                previous = entry.get("linked")
+                linked = {**(previous if isinstance(previous, dict) else {}), engine: linked.get(engine, False)}
             registry.upsert_entry(filename, linked=linked)
-            if not any(linked.values()):
+            if not target_linked:
                 raise ValueError("No runner link was created. Check whether the selected runner is installed and its model directory is writable.")
             return {"filename": filename, "linked": linked}
         raise ValueError("Unsupported operation")
