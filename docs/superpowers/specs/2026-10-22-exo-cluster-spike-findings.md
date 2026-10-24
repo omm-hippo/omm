@@ -203,3 +203,24 @@
 - **순서가 중요하다:** 서비스를 먼저 만들고 bridge0와 preferences.plist 항목을 지우면 서비스가 사라졌다. bridge0 삭제 → plist 항목 삭제 → Bridge 서비스 끄기 → 포트 서비스 생성 순서로 해야 한다. `networksetup`을 `while read` 안에서 부르면 루프의 stdin을 먹어 버리므로 `</dev/null`이 필요하다.
 - **되돌리기(`leave`):** `networksetup -removenetworkservice`는 "그 포트에 다른 서비스가 없다"며 거부한다. 그래서 preferences.plist에서 `omm Thunderbolt N` 서비스를 직접 지우고, bridge0 항목을 뺀 상태를 한 번 적용한 뒤 항목을 다시 넣어 적용해야 configd가 멤버(en2~en4)가 있는 bridge0를 다시 만든다. node1에서 `init/join` → `leave`를 두 번 왕복해 원래 서비스 목록, bridge0 멤버 3개, IP 10.0.0.1, plist 내용이 그대로 돌아오는 것을 확인했다. 재부팅이 필요 없고 Wi-Fi/Tailscale은 건드리지 않는다.
 - **확인 못 한 것:** 이 방식에서 RDMA 켬/끔 속도 차이, 케이블 분리 시 `status` 표시, Bridge가 꺼진 삼각형에서 모델을 올렸을 때의 속도는 아직 측정하지 못했다. `leave`를 세 Mac 모두에서 해 본 것은 아니고 node1에서만 확인했다.
+
+## 삼각형 메시 실측 결과 (Bridge 교체 후, 2026-10-24)
+
+| plan 단계 | 결과 |
+|---|---|
+| Step 1 | 통과. 세 Mac, 케이블 3개 삼각형, `status` "No problems found" (방화벽 `active`, 게이트웨이 `running`) |
+| Step 2 | 통과. 122B 모델을 삼각형 구성에 다시 올림(`Serving ... (Pipeline, 3 Mac(s))`). 가중치가 디스크에 있어서 몇 분 만에 준비됨 |
+| Step 3 | 통과. 토큰 없음 401, 올바른 토큰은 스트리밍 200(첫 글자 1.5초, 약 초당 20토큰), 노트북 Claude Code 파일 읽기 작업 성공, 토큰 폐기. 속도는 일렬 연결 때와 같다(Pipeline 방식이라 연결 형태와 무관) |
+| Step 4 | 일렬 연결에서 통과(위 절). 삼각형에서 다시 스캔하지는 않았다. 방화벽 규칙은 같다 |
+| Step 5 RDMA 켬/끔 | 미검증(복구 모드 필요) |
+| Step 6 케이블 분리 | 통과(아래 참고) |
+
+### Step 6에서 본 것
+
+1. **케이블 하나(node1 ↔ node4) 분리:** 1~2분 뒤 `status`가 "no Thunderbolt link between Node1 and Node4"를 표시했다. 그러나 뽑은 직후에는 node4의 exo가 나머지 두 노드를 모두 놓쳐 "node Node3 missing, node Node1 missing"으로 보였다. node3와의 케이블과 ping은 정상이었고 2분이 지나도 스스로 복구하지 못했다. node4의 exo만 재시작하자 세 노드가 다시 보였고 모델 인스턴스도 유지됐다. 또 뽑힌 링크가 1~2분간 연결된 것으로 남아 있었다.
+2. **node1을 완전히 분리(케이블 2개 모두 제거):** 20초 안에 `status`가 "node Node1의 Mac mini (3) missing (seen before)"를 표시했고, 모델 인스턴스는 사라졌다(노드 하나가 빠졌으니 당연).
+
+### 고치지 않고 남긴 것
+
+- 케이블이 빠지면 남은 노드가 서로를 놓칠 수 있고(exo 재시작 필요), 링크 정보가 1~2분 늦게 갱신된다. exo의 동작이고 omm이 막을 수 있는지는 확인하지 못했다.
+- `leave`는 node1에서만 확인했다(원래 서비스 목록, 브리지 멤버, IP, 설정 파일이 그대로 돌아옴).
