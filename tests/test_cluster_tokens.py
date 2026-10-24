@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import stat
+import sys
 
 import pytest
 
 from omm.cluster import tokens
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="omm cluster is macOS-only (launchd, pf, POSIX paths and modes)"
+)
 
 
 def test_add_then_verify_returns_name_and_never_stores_plaintext(isolated_omm_home):

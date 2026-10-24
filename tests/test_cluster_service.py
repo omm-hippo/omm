@@ -5,9 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
+
+import pytest
 
 from omm import cli
 from omm.cluster import service
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="omm cluster is macOS-only (launchd, pf, POSIX paths and modes)"
+)
 
 
 def _ok(argv, **_kwargs):

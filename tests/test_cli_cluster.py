@@ -404,7 +404,8 @@ def test_token_list_with_corrupt_file_exits_1(cluster_fakes):
     tokens.tokens_path().parent.mkdir(parents=True, exist_ok=True)
     tokens.tokens_path().write_text("{broken", encoding="utf-8")
     result = runner.invoke(cli.app, ["cluster", "token", "list"])
-    assert result.exit_code == 1 and "tokens.json" in result.output
+    # rich wraps the long temp path at the terminal width, even inside a word
+    assert result.exit_code == 1 and "tokens.json" in "".join(result.output.split())
 
 
 def test_leave_on_head_removes_everything_but_tokens(cluster_fakes):

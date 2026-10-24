@@ -10,11 +10,16 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
 from omm.cluster import appfw
 from omm.cluster.errors import ClusterError
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="omm cluster is macOS-only (launchd, pf, POSIX paths and modes)"
+)
 
 FIX = Path(__file__).parent / "fixtures" / "exo"
 LISTAPPS = (FIX / "socketfilterfw_listapps.txt").read_text(encoding="utf-8")
