@@ -67,6 +67,7 @@ verification checks the selected model on your machine.
   - [Install & manage models](#install--manage-models)
   - [Verify & benchmark](#verify--benchmark)
   - [Update & configuration](#update--configuration)
+  - [Documents for coding agents](#documents-for-coding-agents)
   - [Local logs and automatic import](#local-logs-and-automatic-import)
   - [Scripting](#scripting)
 - [Self-hosted benchmark data](#self-hosted-benchmark-data)
@@ -613,6 +614,18 @@ See [local agent connections](docs/agent-connections.md) for backup, restoration
 configuration precedence and verification limits. For reviewed Python runtime
 extensions, see the [runtime plugin contract](docs/runtime-plugins.md).
 
+### Documents for coding agents
+
+```sh
+omm rag mcp  # Run the local document search MCP server on stdin/stdout (started by a coding agent)
+omm rag connect <claude-code|codex|pi|cursor>  # Register OMM document search as an MCP server in a coding agent
+omm rag disconnect <claude-code|codex|pi|cursor>  # Remove only the OMM MCP entry and keep other settings
+```
+
+Coding agents search documents registered in OMM through a local stdio MCP
+server; documents and questions never leave this computer. See
+[document search for coding agents](docs/rag-mcp.md).
+
 ### Local logs and automatic import
 
 ```sh
@@ -638,6 +651,27 @@ Saved runtime profiles are tied to the exact model file and engine. `omm verify`
 and supported `omm run` paths use them on the next owned load; running models
 keep their current settings. See [runtime profiles](docs/runtime-profiles.md)
 for engine capabilities, memory checks, cleanup, and verification limits.
+
+### Local document search (RAG)
+
+```sh
+omm rag status [--json]  # Collections, embedding model, and documents that need reindexing
+omm rag collection create <name>  # Create a named collection, e.g. 인사규정
+omm rag collection list [--json]  # List collections and document counts
+omm rag collection delete <name> [--yes]  # Delete a collection's stored text and index (original files stay)
+omm rag add <collection> <paths...> [--replace]  # Add files or folders (recursive) to a collection
+omm rag remove <collection> <name> [--yes]  # Remove one document's stored text and index
+omm rag search <question> [--collection NAME] [--limit N] [--json]  # Hybrid (meaning + words) search with source passages
+omm rag reindex [--collection NAME] [--all]  # Rebuild semantic vectors after an embedding-model change
+omm rag embedding-model  # Show the embedding model and whether local Ollama has it
+omm rag embedding-model set <model> [--base-url URL]  # Change the local Ollama embedding model (default bge-m3)
+```
+
+Semantic search uses a local Ollama embedding model (default `bge-m3`, MIT
+license; get it with `ollama pull bge-m3`). Results say which method answered:
+`hybrid` (meaning + words, fused by reciprocal rank) or `lexical` (words only,
+with the reason, for example Ollama is off or documents need `omm rag reindex`).
+Only loopback Ollama is contacted; see [PRIVACY.md](PRIVACY.md).
 
 ### Scripting
 

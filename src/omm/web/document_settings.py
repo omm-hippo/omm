@@ -1,7 +1,7 @@
 """Remembered document-question choices, kept apart from documents and index.
 
 The generation model is a replaceable resource: changing it never touches the
-registered documents or their lexical index, and a model that fails on its
+registered documents or their search index (lexical and semantic), and a model that fails on its
 first question is rolled back to the last model that produced an answer.
 """
 from __future__ import annotations
@@ -13,10 +13,10 @@ from filelock import FileLock
 
 from omm import config
 from omm.atomic import atomic_write_text
-from omm.documents import CHUNKING_VERSION, RETRIEVAL_METHOD
+from omm.documents import CHUNKING_VERSION, RETRIEVAL_METHOD, DocumentStore
 
 ENGINE_NAMES = {"ollama": "Ollama", "lmstudio": "LM Studio"}
-KEPT = ("등록한 문서와 검색 색인은 그대로 사용해요. 색인은 단어 검색 방식이라 답변 모델과 무관해서 다시 만들 필요가 없어요.")
+KEPT = ("등록한 문서와 검색 색인은 그대로 사용해요. 단어 색인과 의미 색인(임베딩 모델)은 답변 모델과 별개라 다시 만들 필요가 없어요.")
 
 
 def _path():
@@ -69,7 +69,8 @@ def load() -> dict:
         value = _read(path)
     return {"selected": value.get("selected"), "confirmed": value.get("confirmed"),
             "document_ids": value.get("document_ids", []), "updated_at": value.get("updated_at"),
-            "index": {"retrieval": RETRIEVAL_METHOD, "chunking": CHUNKING_VERSION}}
+            "index": {"retrieval": RETRIEVAL_METHOD, "chunking": CHUNKING_VERSION,
+                      "embedding_model": DocumentStore().embedding_settings()["model"]}}
 
 
 def describe_change(old, new) -> str | None:
