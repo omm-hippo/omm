@@ -1,0 +1,377 @@
+{
+ "instances": {
+  "00000000-0000-4000-8000-000000000001": {
+   "MlxRingInstance": {
+    "instanceId": "00000000-0000-4000-8000-000000000001",
+    "shardAssignments": {
+     "modelId": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+     "runnerToShard": {
+      "00000000-0000-4000-8000-000000000003": {
+       "PipelineShardMetadata": {
+        "modelCard": {
+         "modelId": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+         "storageSize": {
+          "inBytes": 729808896
+         },
+         "nLayers": 16,
+         "hiddenSize": 2048,
+         "supportsTensor": true,
+         "numKeyValueHeads": 8,
+         "tasks": [
+          "TextGeneration"
+         ],
+         "components": null,
+         "family": "llama",
+         "quantization": "4bit",
+         "baseModel": "Llama 3.2 1B",
+         "capabilities": [
+          "text"
+         ],
+         "contextLength": 131072,
+         "usesCfg": false,
+         "trustRemoteCode": true,
+         "isCustom": false,
+         "vision": null,
+         "samplingDefaults": {
+          "temperature": 0.6,
+          "topP": 0.9,
+          "topK": null,
+          "minP": null,
+          "repetitionPenalty": null,
+          "presencePenalty": null,
+          "frequencyPenalty": null,
+          "thinking": null,
+          "nonThinking": null
+         }
+        },
+        "deviceRank": 0,
+        "worldSize": 1,
+        "immediateException": false,
+        "shouldTimeout": null,
+        "startLayer": 0,
+        "endLayer": 16,
+        "nLayers": 16
+       }
+      }
+     },
+     "nodeToRunner": {
+      "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": "00000000-0000-4000-8000-000000000003"
+     }
+    },
+    "hostsByNode": {
+     "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": [
+      {
+       "ip": "0.0.0.0",
+       "port": 63050
+      }
+     ]
+    },
+    "ephemeralPort": 63050
+   }
+  }
+ },
+ "runners": {
+  "00000000-0000-4000-8000-000000000003": {
+   "RunnerReady": {}
+  }
+ },
+ "downloads": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": [
+   {
+    "DownloadPending": {
+     "nodeId": "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "shardMetadata": {
+      "PipelineShardMetadata": {
+       "modelCard": {
+        "modelId": "mlx-community/gemma-4-26b-a4b-it-6bit",
+        "storageSize": {
+         "inBytes": 21781015708
+        },
+        "nLayers": 30,
+        "hiddenSize": 2816,
+        "supportsTensor": false,
+        "numKeyValueHeads": 8,
+        "tasks": [
+         "TextGeneration"
+        ],
+        "components": null,
+        "family": "gemma",
+        "quantization": "6bit",
+        "baseModel": "Gemma 4 26B A4B",
+        "capabilities": [
+         "text",
+         "vision"
+        ],
+        "contextLength": 262144,
+        "usesCfg": false,
+        "trustRemoteCode": true,
+        "isCustom": false,
+        "vision": null,
+        "samplingDefaults": {
+         "temperature": 1.0,
+         "topP": 0.95,
+         "topK": 64,
+         "minP": null,
+         "repetitionPenalty": null,
+         "presencePenalty": null,
+         "frequencyPenalty": null,
+         "thinking": null,
+         "nonThinking": null
+        }
+       },
+       "deviceRank": 0,
+       "worldSize": 1,
+       "immediateException": false,
+       "shouldTimeout": null,
+       "startLayer": 0,
+       "endLayer": 30,
+       "nLayers": 30
+      }
+     },
+     "modelDirectory": "/Users/shinmingyu/.exo/models/mlx-community--gemma-4-26b-a4b-it-6bit",
+     "downloaded": {
+      "inBytes": 0
+     },
+     "total": {
+      "inBytes": 21679806248
+     }
+    }
+   },
+   {
+    "DownloadPending": {
+     "nodeId": "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "shardMetadata": {
+      "PipelineShardMetadata": {
+       "modelCard": {
+        "modelId": "mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit",
+        "storageSize": {
+         "inBytes": 289910292480
+        },
+        "nLayers": 62,
+        "hiddenSize": 6144,
+        "supportsTensor": true,
+        "numKeyValueHeads": 8,
+        "tasks": [
+         "TextGeneration"
+        ],
+        "components": null,
+        "family": "qwen",
+        "quantization": "4bit",
+        "baseModel": "Qwen3 Coder 480B",
+        "capabilities": [
+         "text",
+         "code"
+        ],
+        "contextLength": 262144,
+        "usesCfg": false,
+        "trustRemoteCode": true,
+        "isCustom": false,
+        "vision": null,
+        "samplingDefaults": {
+         "temperature": 0.7,
+         "topP": 0.8,
+         "topK": 20,
+         "minP": null,
+         "repetitionPenalty": 1.05,
+         "presencePenalty": null,
+         "frequencyPenalty": null,
+         "thinking": null,
+         "nonThinking": null
+        }
+       },
+       "deviceRank": 0,
+       "worldSize": 1,
+       "immediateException": false,
+       "shouldTimeout": null,
+       "startLayer": 0,
+       "endLayer": 62,
+       "nLayers": 62
+      }
+     },
+     "modelDirectory": "/Users/shinmingyu/.exo/models/mlx-community--Qwen3-Coder-480B-A35B-Instruct-4bit",
+     "downloaded": {
+      "inBytes": 0
+     },
+     "total": {
+      "inBytes": 270104520199
+     }
+    }
+   }
+  ]
+ },
+ "tasks": {},
+ "lastSeen": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": "2026-10-22T00:52:08.039234Z"
+ },
+ "topology": {
+  "nodes": [
+   "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  ],
+  "connections": {}
+ },
+ "lastEventAppliedIdx": 13229,
+ "nodeIdentities": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "modelId": "Mac mini",
+   "chipId": "Apple M4 Pro",
+   "friendlyName": "mac-a",
+   "osVersion": "26.5",
+   "osBuildVersion": "25F71"
+  }
+ },
+ "nodeMemory": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "ramTotal": {
+    "inBytes": 68719476736
+   },
+   "ramAvailable": {
+    "inBytes": 44346032128
+   },
+   "swapTotal": {
+    "inBytes": 0
+   },
+   "swapAvailable": {
+    "inBytes": 0
+   }
+  }
+ },
+ "nodeDisk": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "total": {
+    "inBytes": 994662584320
+   },
+   "available": {
+    "inBytes": 796649758720
+   }
+  }
+ },
+ "nodeSystem": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "gpuUsage": 0.007097653113305569,
+   "temp": 50.07704162597656,
+   "sysPower": 7.004817485809326,
+   "pcpuUsage": 0.0005553687224164605,
+   "ecpuUsage": 0.04429478570818901
+  }
+ },
+ "nodeNetwork": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "interfaces": [
+    {
+     "name": "lo0",
+     "ipAddress": "127.0.0.1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "lo0",
+     "ipAddress": "::1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "lo0",
+     "ipAddress": "fe80::1%lo0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "en1",
+     "ipAddress": "192.0.2.10",
+     "interfaceType": "wifi"
+    },
+    {
+     "name": "en1",
+     "ipAddress": "fe80::1%en1",
+     "interfaceType": "wifi"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "198.51.100.10",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "fe80::1%utun7",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun7",
+     "ipAddress": "fd00::10",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "awdl0",
+     "ipAddress": "fe80::1%awdl0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "llw0",
+     "ipAddress": "fe80::1%llw0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun0",
+     "ipAddress": "fe80::1%utun0",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun1",
+     "ipAddress": "fe80::1%utun1",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun2",
+     "ipAddress": "fe80::1%utun2",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun3",
+     "ipAddress": "fe80::1%utun3",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun5",
+     "ipAddress": "fe80::1%utun5",
+     "interfaceType": "unknown"
+    },
+    {
+     "name": "utun6",
+     "ipAddress": "fe80::1%utun6",
+     "interfaceType": "unknown"
+    }
+   ]
+  }
+ },
+ "nodeThunderbolt": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "interfaces": [
+    {
+     "rdmaInterface": "rdma_en4",
+     "domainUuid": "00000000-0000-4000-8000-000000000004",
+     "linkSpeed": "Up to 120 Gb/s"
+    },
+    {
+     "rdmaInterface": "rdma_en3",
+     "domainUuid": "00000000-0000-4000-8000-000000000000",
+     "linkSpeed": "Up to 120 Gb/s"
+    },
+    {
+     "rdmaInterface": "rdma_en2",
+     "domainUuid": "00000000-0000-4000-8000-000000000002",
+     "linkSpeed": "Up to 120 Gb/s"
+    }
+   ]
+  }
+ },
+ "nodeThunderboltBridge": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "enabled": true,
+   "exists": true,
+   "serviceName": "Thunderbolt Bridge"
+  }
+ },
+ "nodeRdmaCtl": {
+  "12D3KooWNodeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": {
+   "enabled": true
+  }
+ },
+ "thunderboltBridgeCycles": []
+}
