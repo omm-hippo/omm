@@ -192,3 +192,14 @@
 2. **`omm cluster model`의 60분 제한이 첫 로드에는 짧다.** 시간 초과 후에도 exo는 계속 진행하므로 `status`로 상태를 확인할 수 있지만, 명령은 실패로 보인다. 큰 모델의 첫 로드에서는 대기 시간을 늘리거나 "다운로드 중"임을 알려야 한다.
 3. **삼각형 연결은 패킷 폭주를 일으킨다**(#508 코멘트 참고). 일렬에서는 정상(`bridge0` 수신 5초에 약 150~250패킷)이었고, 케이블 3개로 삼각형을 닫자 약 90초 뒤 폭주가 시작되어 케이블을 뽑았다.
 4. **일렬에서 새 `status`(4ee6838)는 루프 경고를 내지 않았다.** `thunderboltBridgeCycles`가 비어 있어서 정상이다. 삼각형에서 경고가 나오는지는 폭주 때문에 시험하지 못했다.
+
+## Thunderbolt Bridge를 omm이 교체 (3대 삼각형 실측, 2026-10-24)
+
+위 "찾아서 고친 문제 3"의 해결이다. 코드는 `src/omm/cluster/netconfig.py`이고 `init`/`join`이 exo 시작 전에 실행한다.
+
+- **원인:** macOS의 Thunderbolt Bridge(`bridge0`)는 루프를 막지 못한다. 세 Mac을 케이블 3개로 삼각형으로 이으면 약 90초 뒤 `bridge0` 수신이 5초에 38,715패킷 이상으로 폭주했다(정상은 약 200).
+- **해결:** bridge0를 없애고, Thunderbolt 포트마다 DHCP 서비스(`omm Thunderbolt N`)를 만든다. DHCP 서버가 없으니 포트마다 169.254.x.x 링크로컬 주소가 붙고(약 1분 뒤), exo가 그 주소로 서로를 찾는다. exo 앱이 RDMA 클러스터에 쓰는 구성과 같다.
+- **실측(Mac 3대, 케이블 3개 삼각형, Bridge 꺼짐):** 15분 넘게 패킷은 5초에 최대 약 2,500개(대부분 200~300), 열 이상 없음. exo가 세 노드를 모두 직접 연결된 구성으로 인식했고 `thunderboltBridgeCycles`는 `[]`였다. 일렬 연결에서도 10초 안에 서로를 찾았다.
+- **순서가 중요하다:** 서비스를 먼저 만들고 bridge0와 preferences.plist 항목을 지우면 서비스가 사라졌다. bridge0 삭제 → plist 항목 삭제 → Bridge 서비스 끄기 → 포트 서비스 생성 순서로 해야 한다. `networksetup`을 `while read` 안에서 부르면 루프의 stdin을 먹어 버리므로 `</dev/null`이 필요하다.
+- **되돌리기(`leave`):** `networksetup -removenetworkservice`는 "그 포트에 다른 서비스가 없다"며 거부한다. 그래서 preferences.plist에서 `omm Thunderbolt N` 서비스를 직접 지우고, bridge0 항목을 뺀 상태를 한 번 적용한 뒤 항목을 다시 넣어 적용해야 configd가 멤버(en2~en4)가 있는 bridge0를 다시 만든다. node1에서 `init/join` → `leave`를 두 번 왕복해 원래 서비스 목록, bridge0 멤버 3개, IP 10.0.0.1, plist 내용이 그대로 돌아오는 것을 확인했다. 재부팅이 필요 없고 Wi-Fi/Tailscale은 건드리지 않는다.
+- **확인 못 한 것:** 이 방식에서 RDMA 켬/끔 속도 차이, 케이블 분리 시 `status` 표시, Bridge가 꺼진 삼각형에서 모델을 올렸을 때의 속도는 아직 측정하지 못했다. `leave`를 세 Mac 모두에서 해 본 것은 아니고 node1에서만 확인했다.

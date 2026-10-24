@@ -279,7 +279,11 @@ inside `EXO.app`, so `preflight.stage_runtime` copies `Contents/Resources/exo` t
 every TCP port in 49153-65535 from elsewhere, because the MLX ring binds a random high port
 on 0.0.0.0. The blocks are `block return` (RST), never `block drop`: exo's libp2p dials
 every address a peer advertises, and a silently dropped SYN on a blocked address stalled
-Thunderbolt peer discovery for 40 s or forever. `power.py` sets `pmset -a sleep 0` in init/join (original value saved for
+Thunderbolt peer discovery for 40 s or forever. `netconfig.py` replaces macOS's Thunderbolt
+Bridge (no spanning tree: a 3-Mac triangle floods it with 38k+ packets per 5 s) with one DHCP
+service per Thunderbolt port (`omm Thunderbolt N`, link-local 169.254.x.x addresses), and
+init/join run it before exo starts and before the pf rules are written; `leave` restores the
+bridge by editing preferences.plist (order matters, see its docstring). `power.py` sets `pmset -a sleep 0` in init/join (original value saved for
 `leave`): an idle-slept Mac only DarkWakes ~45 s per packet and keeps dropping out. `appfw.py`
 adds exo (and the gateway's real Python binary on the head) to the macOS Application Firewall:
 with ALF on, an unknown binary's inbound connections wait forever for an on-screen Allow click. The

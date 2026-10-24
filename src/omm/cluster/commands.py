@@ -11,7 +11,7 @@ import platform
 import socket
 from typing import Callable
 
-from omm.cluster import appfw, exo_service, firewall, power, preflight, recommend, service, settings, tokens
+from omm.cluster import appfw, exo_service, firewall, netconfig, power, preflight, recommend, service, settings, tokens
 from omm.cluster.errors import ClusterError
 from omm.cluster.exo_client import ExoClient
 from omm.cluster.gateway import GATEWAY_PORT
@@ -49,6 +49,11 @@ def _prepare_this_mac(namespace: str, out: Out) -> None:
     if not preflight.exo_installed():
         preflight.install_exo(out)
     preflight.stage_runtime()
+    out("omm will ask for this Mac's password to set up the Thunderbolt network, install the cluster "
+        "firewall and turn off idle sleep.")
+    # exo only looks for peers on addresses that exist when it starts.
+    netconfig.apply()
+    netconfig.wait_for_addresses(out)
     exo_service.install(namespace)
     out(f"exo is running on this Mac (cluster {namespace}).")
     rdma = preflight.rdma_status()
@@ -79,7 +84,6 @@ def init(out: Out) -> settings.ClusterSettings:
     saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, current.known_nodes if current else ())
     settings.save(saved)
     _prepare_this_mac(namespace, out)
-    out("omm will ask for this Mac's password to install the cluster firewall and turn off idle sleep.")
     firewall.apply(gateway_port=GATEWAY_PORT)
     power.keep_awake()
     # Before the gateway (re)starts, so its first connection is not held.
@@ -101,7 +105,6 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     saved = settings.ClusterSettings("member", namespace, GATEWAY_PORT, current.known_nodes if current else ())
     settings.save(saved)
     _prepare_this_mac(namespace, out)
-    out("omm will ask for this Mac's password to install the cluster firewall and turn off idle sleep.")
     firewall.apply(gateway_port=None)
     power.keep_awake()
     appfw.allow([appfw.exo_binary()])
@@ -140,7 +143,7 @@ def status() -> dict:
                 if frozenset((first.node_id, second.node_id)) not in linked:
                     problems.append(f"no Thunderbolt link between {first.name} and {second.name}")
         if len(state.nodes) > 1:
-            problems += [f"Thunderbolt Bridge is on for {n.name}; turn it off for an RDMA cluster"
+            problems += [f"Thunderbolt Bridge is on for {n.name}; run omm cluster init (head) or join on it again"
                          for n in state.nodes if n.thunderbolt_bridge]
         # exo computes these from Bridge-enabled nodes and their Thunderbolt
         # links; a 2-node "cycle" is just one cable seen from both ends.
@@ -226,6 +229,7 @@ def leave(out: Out) -> None:
     require_macos()
     current = settings.load()
     firewall.remove()
+    netconfig.restore()
     power.restore()
     appfw.remove()
     if current is None or current.role == "head":

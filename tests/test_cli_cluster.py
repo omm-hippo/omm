@@ -28,6 +28,7 @@ class _Fakes:
         self.exo_service_uninstalls = 0
         self.exo_installs = 0
         self.keep_awake_calls = 0
+        self.netconfig_calls = []
         self.power_restores = 0
         self.idle_sleep = 0
         self.appfw_allowed = []
@@ -100,7 +101,7 @@ class _FakeExoClient:
 
 @pytest.fixture
 def cluster_fakes(monkeypatch, isolated_omm_home):
-    from omm.cluster import appfw, commands, exo_service, firewall, power, preflight, service
+    from omm.cluster import appfw, commands, exo_service, firewall, netconfig, power, preflight, service
 
     fakes = _Fakes()
     _FakeExoClient.fakes = fakes
@@ -119,6 +120,9 @@ def cluster_fakes(monkeypatch, isolated_omm_home):
     monkeypatch.setattr(appfw, "remove", lambda **k: setattr(fakes, "appfw_removes", fakes.appfw_removes + 1))
     monkeypatch.setattr(appfw, "not_allowed", lambda binaries, **k: list(fakes.appfw_missing))
     monkeypatch.setattr(appfw, "gateway_binary", lambda: Path("/fw/Python"))
+    monkeypatch.setattr(netconfig, "apply", lambda **k: fakes.netconfig_calls.append("apply"))
+    monkeypatch.setattr(netconfig, "wait_for_addresses", lambda out, **k: fakes.netconfig_calls.append("wait"))
+    monkeypatch.setattr(netconfig, "restore", lambda **k: fakes.netconfig_calls.append("restore"))
     monkeypatch.setattr(power, "keep_awake", lambda **k: setattr(fakes, "keep_awake_calls", fakes.keep_awake_calls + 1))
     monkeypatch.setattr(power, "restore", lambda **k: setattr(fakes, "power_restores", fakes.power_restores + 1))
     monkeypatch.setattr(power, "current_idle_sleep_minutes", lambda **k: fakes.idle_sleep)
@@ -181,6 +185,36 @@ def test_init_and_join_tell_the_user_about_the_on_screen_allow_prompt(cluster_fa
     member = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
     assert member.exit_code == 0, member.output
     assert "click Allow" in member.output
+
+
+def test_init_and_join_set_up_the_thunderbolt_network_before_exo_and_the_firewall(cluster_fakes, monkeypatch):
+    from omm.cluster import exo_service, firewall
+    from omm.cluster import netconfig as netconfig_module
+
+    order = []
+    monkeypatch.setattr(netconfig_module, "apply", lambda **k: order.append("netconfig.apply"))
+    monkeypatch.setattr(exo_service, "install", lambda namespace, **k: order.append("exo"))
+    monkeypatch.setattr(firewall, "apply", lambda *, gateway_port, **k: order.append("firewall"))
+    result = runner.invoke(cli.app, ["cluster", "init"])
+    assert result.exit_code == 0, result.output
+    # exo needs the link-local addresses, and the pf rules list the Thunderbolt ports that exist afterwards.
+    assert order == ["netconfig.apply", "exo", "firewall"]
+    assert cluster_fakes.netconfig_calls == ["wait"]
+    assert "set up the Thunderbolt network" in result.output
+
+
+def test_join_sets_up_the_thunderbolt_network_too(cluster_fakes):
+    result = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    assert result.exit_code == 0, result.output
+    assert cluster_fakes.netconfig_calls == ["apply", "wait"]
+
+
+def test_leave_puts_the_thunderbolt_bridge_back(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.netconfig_calls.clear()
+    result = runner.invoke(cli.app, ["cluster", "leave", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert cluster_fakes.netconfig_calls == ["restore"]
 
 
 def test_init_on_member_is_refused(cluster_fakes):
@@ -383,7 +417,7 @@ def test_status_flags_thunderbolt_bridge_enabled(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     node = next(iter(cluster_fakes.state["nodeThunderboltBridge"]))
     cluster_fakes.state["nodeThunderboltBridge"][node] = {"enabled": True, "exists": True, "serviceName": "Thunderbolt Bridge"}
-    assert "Thunderbolt Bridge is on for mac-a; turn it off for an RDMA cluster" in _status()["problems"]
+    assert "Thunderbolt Bridge is on for mac-a; run omm cluster init (head) or join on it again" in _status()["problems"]
 
 
 def test_init_and_join_turn_idle_sleep_off(cluster_fakes):
