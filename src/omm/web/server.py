@@ -32,6 +32,9 @@ class WebServer(ThreadingHTTPServer):
         self.session = secrets.token_urlsafe(32)
         self.instance = secrets.token_urlsafe(16)
         self.chats = None
+        from omm.web.runtime import RuntimeManager
+        self.runtimes = RuntimeManager()
+        self.jobs.runtime_manager = self.runtimes
         try:
             self.chats = ChatManager(self.jobs)
             self.jobs.operation_guard = self.chats.guard_jobs
@@ -62,6 +65,7 @@ class WebServer(ThreadingHTTPServer):
             except (OSError, ValueError):
                 pass
         self.jobs.close()
+        self.runtimes.close()
         super().server_close()
 
 
@@ -161,6 +165,11 @@ class Handler(BaseHTTPRequestHandler):
                 if set(query) - {"profile", "q"} or any(len(values) != 1 for values in query.values()):
                     raise ValueError("Unsupported query parameters")
                 return self._json(200, self.server.service.recommendations(query.get("profile", ["balanced"])[0], query.get("q", [""])[0]))
+            if parsed.path == "/api/guide":
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                if set(query) - {"purpose", "profile"} or any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Unsupported query parameters")
+                return self._json(200, self.server.service.guide(query.get("purpose", [""])[0], query.get("profile", ["balanced"])[0]))
             if parsed.path == "/api/documents":
                 from omm.documents import DocumentStore
                 from omm.web import document_settings
