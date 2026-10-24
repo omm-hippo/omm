@@ -363,6 +363,40 @@ def test_real_worker_imports_large_text_and_persists_after_manager_restart(serve
     finally:restarted.close()
 
 
+def test_shutdown_keeps_ownership_until_final_worker_record_is_durable(isolated_omm_home, monkeypatch):
+    manager = JobManager()
+    jid = str(uuid.uuid4())
+    finish = threading.Event()
+    written = threading.Event()
+    def final_write():
+        assert finish.wait(5)
+        with pytest.raises(JobConflict):
+            JobManager()
+        manager._save({"id": jid, "status": "completed", "created_at": 1})
+        written.set()
+    worker = threading.Thread(target=final_write)
+    manager.workers[jid] = worker
+    original_join = worker.join
+    def join(timeout=None):
+        finish.set()
+        original_join(timeout)
+    monkeypatch.setattr(worker, "join", join)
+    worker.start()
+    try:
+        manager.close()
+        assert written.is_set()
+        restarted = JobManager()
+        try:
+            assert restarted.list()[0]["id"] == jid
+            assert restarted.list()[0]["status"] == "completed"
+        finally:
+            restarted.close()
+    finally:
+        finish.set()
+        original_join(5)
+        manager.close()
+
+
 def _wait_job(manager, request_id):
     import time
     for _ in range(400):

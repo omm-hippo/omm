@@ -83,7 +83,14 @@ function WikiDetail({model,onClose}) {
   const dialog=useRef(null);useEffect(()=>{dialog.current?.showModal();},[]);
   return <dialog className="wiki-dialog" ref={dialog} onCancel={onClose}><h2>{model.name}</h2>
     {model.missing ? <><p>이 설치 대상에 정확하게 연결된 위키 설명이 아직 없어요.</p><p className="filename">{model.ref}</p></> : <>
-      <p>{model.summary}</p><h3>선택할 때</h3><p>{model.chooseWhen}</p>
+      <p>{model.summary}</p>
+      <dl><dt>개발사 · 규모 표기</dt><dd>{model.publisher} · {model.sizeLabel || '미확인'}</dd>
+      <dt>구조</dt><dd>{model.architecture==='moe'?'MoE':model.architecture==='dense'?'Dense':'미확인'}</dd>
+      <dt>공개 문서·설정의 문맥 길이</dt><dd>{Number.isInteger(model.context?.tokens)?`${model.context.tokens.toLocaleString()} 토큰`:'미확인'}</dd>
+      <dt>확인된 입력</dt><dd>{(model.inputs || []).join(', ') || '미확인'}</dd>
+      <dt>도구 호출</dt><dd>{model.toolCalling===true?'개발사 지원 표기 · 실행 미검증':model.toolCalling===false?'개발사 미지원 표기':model.toolFormatDeclared?'공식 템플릿에 호출 형식 포함 · 작업 성공 미검증':'미확인'}</dd>
+      <dt>라이선스 표기</dt><dd><a href={model.license?.url} target="_blank" rel="noreferrer">{model.license?.label || '미확인'}</a></dd></dl>
+      <h3>선택할 때</h3><p>{model.chooseWhen}</p>
       <h3>특징과 주의점</h3>{[...model.strengths,...model.cautions].map((claim,index)=><p key={index}><small>{claim.basis==='publisher'?'개발사 설명':'편집 의견'}</small>{claim.text}</p>)}
       <h3>실행 조건</h3><p>{model.runtimeNote}</p>
       {['declared_base_repository','publisher_declared_base'].includes(model.match) && <p>원본 체크포인트 설명을 연결했어요. 변환본의 양자화·실행 앱 호환성은 따로 확인해야 해요.</p>}

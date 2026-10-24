@@ -476,6 +476,10 @@ and release only its own test load. The response and compatibility outcome are
 shown separately from installation. See [local manager guidance](docs/local-web.md)
 for click launchers, description sources, memory checks and verification limits.
 
+The bundled [model wiki](docs/model-wiki-expansion.md) covers 114 exact
+checkpoints with publisher filtering and explicit unknown values. Descriptions
+do not imply a compatible GGUF or a verified runtime/quality result.
+
 Secondary screens show runner/API and explicit external connectivity checks,
 read-only diagnostics, storage and external-file previews, and sharing policies.
 The comparison screen measures selected local models with an eight-question
@@ -831,6 +835,11 @@ community expectations. Report security issues per [SECURITY.md](SECURITY.md)
 rather than as a public issue.
 
 ## Security
+
+OMM-managed runner install/update uses [mandatory source, integrity and native
+security checks](docs/mandatory-install-safety.md). Failed or unavailable checks
+do not count as successful installation. These named checks are not a guarantee
+that software has no vulnerabilities.
 
 Do not open a public issue for a suspected vulnerability. Follow the private
 reporting instructions and supported-version policy in

@@ -33,6 +33,7 @@ class JobManager:
         self.lock = threading.RLock()
         self.jobs = {}
         self.processes = {}
+        self.workers = {}
         self.closed = False
         self.operation_guard = None
         if self.root.is_symlink():
@@ -86,7 +87,9 @@ class JobManager:
                    "bytes_received": 0, "total_bytes": None, "message": "", "result": None}
             self.jobs[request_id] = job
             self._save(job)
-            threading.Thread(target=self._run, args=(request_id, request), daemon=True).start()
+            worker = threading.Thread(target=self._run, args=(request_id, request), daemon=True)
+            self.workers[request_id] = worker
+            worker.start()
             return dict(job)
 
     def _run(self, jid, request):
@@ -151,6 +154,7 @@ class JobManager:
                 timer.cancel()
             with self.lock:
                 self.processes.pop(jid, None)
+                self.workers.pop(jid, None)
 
     def list(self):
         with self.lock:
@@ -174,7 +178,7 @@ class JobManager:
 
     def close(self):
         with self.lock:
-            if self.closed:
+            if self.closed and not self.owner.is_locked:
                 return
             self.closed = True
             for job in self.jobs.values():
@@ -182,6 +186,7 @@ class JobManager:
                     job.update(status="interrupted", message="Server stopped before the operation started.")
                     self._save(job)
             ids = list(self.processes)
+            workers = list(self.workers.values())
         for jid in ids:
             try:
                 if self.jobs[jid]["operation"] in {"install", "compare"}:
@@ -197,4 +202,11 @@ class JobManager:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=5)
+        # Process exit can precede the reader's final durable JSON replacement.
+        # Keep exclusive ownership until those writes finish, particularly on
+        # Windows where a simultaneous replacement can make a read fail.
+        for worker in workers:
+            worker.join(timeout=5)
+            if worker.is_alive():
+                raise JobConflict("Worker output is still being saved; retry shutdown.")
         self.owner.release()

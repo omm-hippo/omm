@@ -242,3 +242,15 @@ endpoint and do not generate a prompt. A harness's own telemetry, tool network
 access and project/organization overrides remain that harness's settings.
 `omm setting agent cloud` removes the connection backup after restoring all
 files successfully. See [agent connections](docs/agent-connections.md).
+
+## Managed installation security checks
+
+Runner install/update uses mandatory source/integrity/native checks. Their
+timestamped outcomes are stored locally under `OMM_HOME/security-checks` and
+shown in the connections view and engine status JSON. These records contain
+engine/platform identifiers and named-check outcomes, not native error bodies,
+document contents or file paths. OMM upload channels do not read them.
+Native Gatekeeper/Defender/ClamAV checks remain subject to their own operating
+system/vendor policies; OMM does not change those settings. See
+[mandatory installation checks](docs/mandatory-install-safety.md) for scope and
+failure behavior. A successful check is not a universal vulnerability guarantee.
