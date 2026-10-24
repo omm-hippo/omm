@@ -26,6 +26,7 @@ class _Fakes:
         self.service_uninstall_calls = 0
         self.exo_service_installs = []
         self.exo_service_uninstalls = 0
+        self.exo_restarts = 0
         self.exo_installs = 0
         self.keep_awake_calls = 0
         self.netconfig_calls = []
@@ -117,6 +118,7 @@ def cluster_fakes(monkeypatch, isolated_omm_home):
     monkeypatch.setattr(preflight, "rdma_status", lambda **k: fakes.rdma)
     monkeypatch.setattr(exo_service, "install", lambda namespace, **k: fakes.exo_service_installs.append(namespace))
     monkeypatch.setattr(exo_service, "uninstall", lambda **k: setattr(fakes, "exo_service_uninstalls", fakes.exo_service_uninstalls + 1))
+    monkeypatch.setattr(exo_service, "restart", lambda **k: setattr(fakes, "exo_restarts", fakes.exo_restarts + 1))
     monkeypatch.setattr(firewall, "apply", lambda *, gateway_port, **k: fakes.firewall_apply_calls.append(gateway_port))
     monkeypatch.setattr(firewall, "remove", lambda **k: setattr(fakes, "firewall_removed", fakes.firewall_removed + 1))
     monkeypatch.setattr(firewall, "status", lambda *, gateway_port, **k: fakes.firewall_state)
@@ -245,6 +247,29 @@ def test_status_json_lists_missing_node_and_os_mismatch(cluster_fakes):
     data = _status()
     assert "node mac-d missing (seen before)" in data["problems"]
     assert any(p.startswith("macOS versions differ:") for p in data["problems"])
+
+
+def test_status_tells_what_to_do_when_known_nodes_are_missing(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    assert not any("omm cluster restart" in p for p in _status()["problems"])
+    cluster_fakes.drop_node("mac-d")
+    problems = _status()["problems"]
+    assert sum("omm cluster restart" in p for p in problems) == 1
+
+
+def test_restart_restarts_exo_on_this_mac(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    result = runner.invoke(cli.app, ["cluster", "restart"])
+    assert result.exit_code == 0, result.output
+    assert cluster_fakes.exo_restarts == 1
+    assert "omm cluster status" in result.output
+
+
+def test_restart_outside_a_cluster_exits_2(cluster_fakes):
+    result = runner.invoke(cli.app, ["cluster", "restart"])
+    assert result.exit_code == 2
+    assert cluster_fakes.exo_restarts == 0
+    assert "omm cluster init or join" in " ".join(result.output.split())
 
 
 def test_status_flags_rdma_firewall_and_gateway(cluster_fakes):

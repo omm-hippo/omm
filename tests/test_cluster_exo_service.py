@@ -63,3 +63,21 @@ def test_bootstrap_is_retried_after_the_bootout_race(isolated_omm_home, tmp_path
     always = lambda argv, **k: subprocess.CompletedProcess(argv, 5 if argv[1] == "bootstrap" else 0, "", "Input/output error")
     with pytest.raises(ClusterError, match="Input/output error"):
         launchd.install_agent("com.omm.test", {"ProgramArguments": ["/bin/true"]}, run=always, sleep=lambda s: None)
+
+
+def test_exo_agent_restart_kickstarts_only_the_exo_job():
+    import os
+
+    calls = []
+    exo_service.restart(run=lambda argv, **k: calls.append(argv) or _ok(argv))
+    assert calls == [["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.omm.cluster-exo"]]
+
+
+def test_exo_agent_restart_fails_when_the_job_is_not_installed():
+    import pytest
+
+    from omm.cluster.errors import ClusterError
+
+    run = lambda argv, **k: subprocess.CompletedProcess(argv, 113, "", "Could not find service")
+    with pytest.raises(ClusterError, match="Could not find service"):
+        exo_service.restart(run=run)

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.25",
+  "omm_version": "0.4.27",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -498,6 +498,42 @@
         }
       ],
       "docs_url": "https://omm.run/commands/cluster#model"
+    },
+    {
+      "path": [
+        "cluster",
+        "restart"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Restart exo on this Mac when status lists Macs that are on but missing.",
+      "description": "",
+      "usage": "omm cluster restart [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#restart"
     },
     {
       "path": [

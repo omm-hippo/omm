@@ -432,6 +432,7 @@ omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, ke
 omm cluster init  # Make this Mac the head of a Thunderbolt-linked exo cluster (macOS 26.2+)
 omm cluster join <namespace>  # Add this Mac to the cluster the head Mac created
 omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, and any problems
+omm cluster restart  # Restart exo on this Mac when status lists Macs that are on but missing
 omm cluster model [MODEL] [--unload]  # Recommend exo models that fit, or load/unload one
 omm cluster token add|list|revoke  # Employee access tokens for the cluster gateway (head Mac)
 omm cluster leave [--yes]  # Remove this Mac's cluster firewall, services, and settings

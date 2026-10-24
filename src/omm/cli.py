@@ -2068,6 +2068,15 @@ def cluster_status_cmd() -> None:
         console.print("No problems found.", markup=False)
 
 
+@cluster_app.command(name="restart")
+@global_flags
+def cluster_restart_cmd() -> None:
+    """Restart exo on this Mac when status lists Macs that are on but missing."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.restart, _cluster_out)
+
+
 @cluster_app.command(name="model")
 @global_flags
 def cluster_model_cmd(

@@ -46,3 +46,10 @@ def uninstall_agent(label: str, *, run=subprocess.run) -> None:
 def agent_running(label: str, *, run=subprocess.run) -> bool:
     result = run(["launchctl", "print", f"{domain()}/{label}"], capture_output=True, text=True, check=False)
     return result.returncode == 0 and "state = running" in (result.stdout or "")
+
+
+def restart_agent(label: str, *, run=subprocess.run) -> None:
+    """Kill and relaunch an installed job in place (`kickstart -k`), keeping its plist."""
+    result = run(["launchctl", "kickstart", "-k", f"{domain()}/{label}"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise ClusterError(f"launchctl could not restart {label}: {(result.stderr or '').strip()}")

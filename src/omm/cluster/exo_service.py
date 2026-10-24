@@ -47,5 +47,9 @@ def uninstall(*, run=subprocess.run) -> None:
     launchd.uninstall_agent(LAUNCHD_LABEL, run=run)
 
 
+def restart(*, run=subprocess.run) -> None:
+    launchd.restart_agent(LAUNCHD_LABEL, run=run)
+
+
 def is_running(*, run=subprocess.run) -> bool:
     return launchd.agent_running(LAUNCHD_LABEL, run=run)

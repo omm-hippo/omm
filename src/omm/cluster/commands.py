@@ -158,9 +158,12 @@ def status() -> dict:
                                 "those cables or run omm cluster init/join again on each of them")
         seen = [n.name for n in state.nodes]
         if current is not None:
-            for name in current.known_nodes:
-                if name not in seen:
-                    problems.append(f"node {name} missing (seen before)")
+            missing = [name for name in current.known_nodes if name not in seen]
+            problems += [f"node {name} missing (seen before)" for name in missing]
+            if missing:
+                # After a cable is pulled, exo can stop seeing Macs that are still
+                # connected until it is restarted (seen once on 3 Mac minis, 2026-10-24).
+                problems.append("if those Macs are on, run omm cluster restart on each of them and on this Mac")
         versions = {n.name: n.os_version for n in state.nodes if n.os_version}
         if len(set(versions.values())) > 1:
             problems.append("macOS versions differ: " + ", ".join(f"{k}={v}" for k, v in sorted(versions.items())))
@@ -187,6 +190,15 @@ def status() -> dict:
                 problems.append("gateway is not running")
     return {"role": current.role if current else None, "namespace": current.namespace if current else None,
             "exo": exo, "firewall": fw, "gateway": gateway, "problems": problems}
+
+
+def restart(out: Out) -> None:
+    require_macos()
+    if settings.load() is None:
+        raise UsageProblem("this Mac is not in a cluster; run omm cluster init or join first")
+    exo_service.restart()
+    out("exo restarted on this Mac; it finds the other Macs again in about 15 seconds")
+    out("Check with: omm cluster status")
 
 
 def candidates(client: ExoClient | None = None) -> list[recommend.Candidate]:
@@ -263,5 +275,5 @@ def leave(out: Out) -> None:
     out("exo itself stays installed; remove it from its menu bar icon -> Advanced -> Uninstall")
 
 
-__all__ = ["UsageProblem", "ClusterError", "tokens", "init", "join", "status", "candidates", "load_model",
-           "unload_model", "require_head", "leave", "lan_ipv4", "ExoClient"]
+__all__ = ["UsageProblem", "ClusterError", "tokens", "init", "join", "status", "restart", "candidates",
+           "load_model", "unload_model", "require_head", "leave", "lan_ipv4", "ExoClient"]
