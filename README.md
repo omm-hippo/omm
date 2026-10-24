@@ -639,6 +639,27 @@ and supported `omm run` paths use them on the next owned load; running models
 keep their current settings. See [runtime profiles](docs/runtime-profiles.md)
 for engine capabilities, memory checks, cleanup, and verification limits.
 
+### Local document search (RAG)
+
+```sh
+omm rag status [--json]  # Collections, embedding model, and documents that need reindexing
+omm rag collection create <name>  # Create a named collection, e.g. 인사규정
+omm rag collection list [--json]  # List collections and document counts
+omm rag collection delete <name> [--yes]  # Delete a collection's stored text and index (original files stay)
+omm rag add <collection> <paths...> [--replace]  # Add files or folders (recursive) to a collection
+omm rag remove <collection> <name> [--yes]  # Remove one document's stored text and index
+omm rag search <question> [--collection NAME] [--limit N] [--json]  # Hybrid (meaning + words) search with source passages
+omm rag reindex [--collection NAME] [--all]  # Rebuild semantic vectors after an embedding-model change
+omm rag embedding-model  # Show the embedding model and whether local Ollama has it
+omm rag embedding-model set <model> [--base-url URL]  # Change the local Ollama embedding model (default bge-m3)
+```
+
+Semantic search uses a local Ollama embedding model (default `bge-m3`, MIT
+license; get it with `ollama pull bge-m3`). Results say which method answered:
+`hybrid` (meaning + words, fused by reciprocal rank) or `lexical` (words only,
+with the reason, for example Ollama is off or documents need `omm rag reindex`).
+Only loopback Ollama is contacted; see [PRIVACY.md](PRIVACY.md).
+
 ### Scripting
 
 All errors, warnings, and confirmation prompts print to stderr. For `search`,
