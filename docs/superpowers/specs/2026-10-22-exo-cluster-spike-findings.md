@@ -236,3 +236,19 @@
 ## `omm cluster restart` (미검증)
 
 케이블이 빠진 뒤 exo가 이웃을 놓치는 문제(위 Step 6의 1번)에 대한 대응으로 `omm cluster restart`(exo LaunchAgent만 `launchctl kickstart -k`)와 `status`의 안내 한 줄을 추가했다. 실기기에서 케이블을 뽑고 이 명령으로 복구되는지는 아직 확인하지 못했다. 근거는 2026-10-24에 한 번 관찰한 "exo만 재시작하니 복구됨"뿐이고, 원인은 모른다.
+
+## 원격 후속 확인 (node4 한 대, 2026-10-24 저녁)
+
+사람이 Mac 앞에 없어도 되는 항목만 SSH로 확인했다. node3–node4 케이블 1개가 꽂혀 있었고, node4 혼자 `init`한 1대 클러스터로 시험한 뒤 `leave`했다.
+
+| 항목 | 결과 |
+|---|---|
+| pf 활성화 참조 | 이전 코드는 `pfctl -E`를 부를 때마다 참조가 하나씩 쌓이고 `leave`가 돌려주지 않아, `leave` 뒤에도 pf가 켜져 있었다(node4 3개, node1 4개, node3 3개 남아 있었음). 새 코드는 토큰을 저장해 두고 다시 적용할 때와 `leave`할 때 돌려준다. node4 실측: 적용 두 번에 참조 3→4→4, 제거 뒤 3으로 원래대로. node4에 남아 있던 이전 참조 3개는 손으로 풀었다(pf Disabled). node1과 node3은 그대로다 |
+| 규칙을 올릴 때 기존 연결 | 이전 규칙은 규칙을 올리는 순간 이미 열려 있던 다운로드를 멈추게 했다(1.18MB에서 정지). TCP 차단을 `flags S/SA`(새 연결의 SYN만)로 바꾸자 끝까지 받았고(3.83MB, 제한 속도 그대로), 노트북에서 높은 포트로 새로 접속하는 것은 여전히 막혔다(규칙 없을 때 open, 있을 때 closed) |
+| `status`의 방화벽 표시 | sudo 없이는 pf를 읽을 수 없어서 이제 `unchecked`로 표시된다(전에는 파일만 보고 `active`) |
+| 다운로드 실패 | 모델 폴더를 쓰기 금지(`chmod 555`)로 만들자 exo가 `DownloadFailed`(`[Errno 13] Permission denied`)를 냈다. exo는 실패한 다운로드를 재시작 전까지 다시 시도하지 않는데(1.0.71 소스), 이전 omm은 15분 정체 제한까지 기다렸다. 이제 바로 멈추고 실패 인스턴스를 지운 뒤 "원인을 고치고 그 Mac에서 `omm cluster restart`, 그다음 다시 `model`"을 안내한다. 실측: 0초 만에 exit 1, 인스턴스 0개. 폴더 권한을 되돌리고 `restart` 후 다시 실행하니 27초 만에 `Serving` |
+| Codex / pi 하네스 | 노트북 scratch 폴더에 Codex 0.164.0과 pi 0.73.1을 설치하고 별도 설정 폴더(`CODEX_HOME`, `PI_CODING_AGENT_DIR`)로 게이트웨이에 연결했다. 모델은 `Qwen3.5-9B-4bit`. 두 하네스 모두 도구로 파일을 읽어 정답을 냈다. 게이트웨이 접근 로그에는 `/v1/responses` 200(Codex)과 `/v1/chat/completions` 200(pi)이 남았다. omm의 `omm setting agent`는 아직 로컬 Ollama만 지원해서, 클러스터 연결은 손으로 설정했다 |
+| 게이트웨이 접근 로그 | 요청 줄은 `logs/cluster-gateway-access.jsonl`(회전)에만 쌓이고, 실행 로그 파일에는 0줄이었다. 토큰과 본문은 남지 않는다 |
+| `leave` | pf 참조 0, pf Disabled, `exo-runtime` 삭제, Thunderbolt Bridge 10.0.0.4 복구, omm 서비스 0개 |
+
+미검증: 여러 대에서 `flags S/SA` 규칙으로 노드 발견과 MLX ring 연결(규칙 형태만 바뀌었고 Thunderbolt는 그대로 신뢰한다), 재부팅 뒤 LaunchDaemon이 토큰을 새로 잡는지(FileVault 때문에 원격 재부팅을 하지 않았다).
