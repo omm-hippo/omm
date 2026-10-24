@@ -1,0 +1,219 @@
+{
+  "_comment": "License policy for scripts/check_licenses.py. Every exception needs a reason; see docs/license-verification.md.",
+  "classes": {
+    "permissive": [
+      "0BSD",
+      "Apache-2.0",
+      "BlueOak-1.0.0",
+      "BSD",
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "CC-BY-4.0",
+      "CC0-1.0",
+      "ISC",
+      "MIT",
+      "MIT-0",
+      "PSF-2.0",
+      "Python-2.0",
+      "Unlicense",
+      "Zlib"
+    ],
+    "weak-copyleft": [
+      "CDDL-1.0",
+      "EPL-1.0",
+      "EPL-2.0",
+      "LGPL-2.0-only",
+      "LGPL-2.0-or-later",
+      "LGPL-2.1",
+      "LGPL-2.1-only",
+      "LGPL-2.1-or-later",
+      "LGPL-3.0",
+      "LGPL-3.0-only",
+      "LGPL-3.0-or-later",
+      "MPL-1.1",
+      "MPL-2.0"
+    ],
+    "strong-copyleft": [
+      "AGPL-3.0",
+      "AGPL-3.0-only",
+      "AGPL-3.0-or-later",
+      "GPL-2.0",
+      "GPL-2.0-only",
+      "GPL-2.0-or-later",
+      "GPL-3.0",
+      "GPL-3.0-only",
+      "GPL-3.0-or-later",
+      "SSPL-1.0"
+    ]
+  },
+  "aliases": {
+    "Apache 2.0": "Apache-2.0",
+    "Apache License 2.0": "Apache-2.0",
+    "Apache Software License": "Apache-2.0",
+    "BSD License": "BSD",
+    "GNU Affero General Public License v3": "AGPL-3.0-only",
+    "GNU Affero General Public License v3 or later (AGPLv3+)": "AGPL-3.0-or-later",
+    "GNU General Public License v2 (GPLv2)": "GPL-2.0-only",
+    "GNU General Public License v2 or later (GPLv2+)": "GPL-2.0-or-later",
+    "GNU General Public License v3 (GPLv3)": "GPL-3.0-only",
+    "GNU General Public License v3 or later (GPLv3+)": "GPL-3.0-or-later",
+    "GNU Lesser General Public License v2 or later (LGPLv2+)": "LGPL-2.0-or-later",
+    "GNU Lesser General Public License v3 (LGPLv3)": "LGPL-3.0-only",
+    "GNU Lesser General Public License v3 or later (LGPLv3+)": "LGPL-3.0-or-later",
+    "ISC License": "ISC",
+    "ISC License (ISCL)": "ISC",
+    "MIT License": "MIT",
+    "MIT No Attribution License (MIT-0)": "MIT-0",
+    "Mozilla Public License 2.0 (MPL 2.0)": "MPL-2.0",
+    "Python Software Foundation License": "PSF-2.0",
+    "The Unlicense (Unlicense)": "Unlicense",
+    "zlib/libpng License": "Zlib"
+  },
+  "python": {
+    "embedded_build_tools": {
+      "pyinstaller": "Its bootloader is linked into the standalone npm and Windows portable binaries.",
+      "pyinstaller-hooks-contrib": "Its runtime hooks are copied into the standalone npm and Windows portable binaries."
+    },
+    "overrides": {
+      "colorama": {
+        "license": "BSD-3-Clause",
+        "reason": "Metadata only has the generic 'BSD License' classifier; the bundled LICENSE file is the 3-clause BSD text."
+      },
+      "exceptiongroup": {
+        "license": "MIT",
+        "reason": "Installed only on Python < 3.11; upstream LICENSE is MIT."
+      },
+      "jinja2": {
+        "license": "BSD-3-Clause",
+        "reason": "Metadata only has the generic 'BSD License' classifier; the bundled LICENSE file is the 3-clause BSD text."
+      },
+      "macholib": {
+        "license": "MIT",
+        "reason": "PyInstaller build dependency on macOS only; upstream LICENSE is MIT."
+      },
+      "nvidia-ml-py": {
+        "license": "BSD-3-Clause",
+        "reason": "Metadata says only 'BSD' and the wheel ships no license file; the pynvml source header is the 3-clause BSD text."
+      },
+      "pefile": {
+        "license": "MIT",
+        "reason": "PyInstaller build dependency on Windows only; metadata License is MIT."
+      },
+      "prompt-toolkit": {
+        "license": "BSD-3-Clause",
+        "reason": "Metadata only has the generic 'BSD License' classifier; the bundled LICENSE file is the 3-clause BSD text."
+      },
+      "pyinstaller": {
+        "license": "GPL-2.0-or-later WITH Bootloader-exception",
+        "reason": "Metadata is free text; COPYING.txt is GPL-2.0-or-later plus the PyInstaller bootloader exception."
+      },
+      "pyinstaller-hooks-contrib": {
+        "license": "GPL-2.0-or-later AND Apache-2.0",
+        "reason": "LICENSE: standard (build-time) hooks are GPL-2.0-or-later, runtime hooks bundled into executables are Apache-2.0."
+      },
+      "pywin32-ctypes": {
+        "license": "BSD-3-Clause",
+        "reason": "PyInstaller build dependency on Windows only; metadata License is BSD-3-Clause."
+      },
+      "scipy": {
+        "license": "BSD-3-Clause",
+        "reason": "Metadata License field holds the whole license text: SciPy itself is BSD-3-Clause, followed by the licenses of libraries its wheels bundle. Development/training-only, never shipped."
+      },
+      "tomli": {
+        "license": "MIT",
+        "reason": "Installed only on Python < 3.11; upstream LICENSE is MIT."
+      }
+    },
+    "allow": {
+      "certifi": {
+        "license": "MPL-2.0",
+        "reason": "File-level copyleft. omm uses the CA bundle unmodified, so only certifi's own files stay under MPL-2.0; the notice and license text travel with the package."
+      },
+      "pyinstaller": {
+        "license": "GPL-2.0-or-later WITH Bootloader-exception",
+        "reason": "The bootloader exception grants unlimited permission to embed the compiled bootloader and distribute the result under any terms. PyInstaller itself is not shipped or modified."
+      },
+      "pyinstaller-hooks-contrib": {
+        "license": "GPL-2.0-or-later AND Apache-2.0",
+        "reason": "Only the Apache-2.0 runtime hooks end up inside the binaries; the GPL hooks run on the build machine and are not distributed."
+      }
+    },
+    "notes": {
+      "certifi": "file-level copyleft; does not affect this project's license",
+      "httpcore2": "republished `httpcore`",
+      "httpx2": "republished `httpx`",
+      "pyinstaller": "bootloader exception; only the bootloader is embedded",
+      "pyinstaller-hooks-contrib": "only Apache-2.0 runtime hooks are embedded"
+    }
+  },
+  "npm": {
+    "first_party_scopes": [
+      "@omm-hippo/"
+    ],
+    "overrides": {},
+    "allow": {},
+    "notes": {}
+  },
+  "bundled_runtime_components": [
+    {
+      "name": "CPython interpreter and standard library",
+      "license": "PSF-2.0",
+      "where": "standalone npm and Windows portable binaries (PyInstaller)"
+    },
+    {
+      "name": "OpenSSL (inside the cryptography wheel)",
+      "license": "Apache-2.0",
+      "where": "standalone npm and Windows portable binaries"
+    }
+  ],
+  "external_tools": [
+    {
+      "name": "Ollama",
+      "license": "MIT",
+      "source": "https://github.com/ollama/ollama/blob/main/LICENSE",
+      "relationship": "installed through Homebrew/winget/official installer; driven over its local HTTP API and CLI"
+    },
+    {
+      "name": "llama.cpp",
+      "license": "MIT",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/master/LICENSE",
+      "relationship": "inference engine inside Ollama and other runners; omm only reads the GGUF format"
+    },
+    {
+      "name": "LM Studio",
+      "license": "Proprietary (Element Labs terms)",
+      "source": "https://lmstudio.ai/app-terms",
+      "relationship": "installed through Homebrew/winget; driven through its `lms` CLI (MIT, https://github.com/lmstudio-ai/lms) and local API"
+    },
+    {
+      "name": "Jan",
+      "license": "Apache-2.0",
+      "source": "https://github.com/janhq/jan/blob/main/LICENSE",
+      "relationship": "installed through Homebrew/winget/Flatpak; omm writes its model-folder setting"
+    },
+    {
+      "name": "AnythingLLM",
+      "license": "MIT",
+      "source": "https://github.com/Mintplex-Labs/anything-llm/blob/master/LICENSE",
+      "relationship": "installed through Homebrew; omm links model files into its storage folder"
+    },
+    {
+      "name": "Msty Studio",
+      "license": "Proprietary (Msty terms)",
+      "source": "https://msty.ai/terms",
+      "relationship": "installed through Homebrew; omm links model files into its storage folder"
+    },
+    {
+      "name": "KoboldCpp",
+      "license": "AGPL-3.0",
+      "source": "https://github.com/LostRuins/koboldcpp/blob/concedo/LICENSE.md",
+      "relationship": "user installs it manually; omm finds it under OMM_HOME/apps and starts it as a separate process"
+    },
+    {
+      "name": "text-generation-webui",
+      "license": "AGPL-3.0",
+      "source": "https://github.com/oobabooga/text-generation-webui/blob/main/LICENSE",
+      "relationship": "user installs it manually; omm links model files into its models folder and starts its own start script as a separate process"
+    }
+  ]
+}
