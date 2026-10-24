@@ -197,6 +197,28 @@ def _default_remote_provider_probes_to_offline(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_document_embeddings(monkeypatch):
+    """A developer's running Ollama must not change document-search results.
+
+    Tests that exercise semantic search install their own fake embedder
+    (or a fake loopback Ollama server) afterward.
+    """
+    from omm import document_embeddings, documents
+
+    class _Offline:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def embed(self, *args, **kwargs):
+            raise document_embeddings.EmbeddingUnavailable("server_unavailable", "테스트에서는 Ollama를 쓰지 않아요.")
+
+        def available(self):
+            raise document_embeddings.EmbeddingUnavailable("server_unavailable", "테스트에서는 Ollama를 쓰지 않아요.")
+
+    monkeypatch.setattr(documents, "_embedder", _Offline)
+
+
+@pytest.fixture(autouse=True)
 def _deterministic_terminal_capabilities(monkeypatch):
     """Keep ANSI/width tests independent of the shell that launched pytest."""
     monkeypatch.setenv("TERM", "xterm-256color")
