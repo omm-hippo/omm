@@ -36,6 +36,39 @@ def _count(value):
     return value if type(value) is int and 0 <= value <= 100_000_000 else None
 
 
+# Coarse evidence class shown to users. It names what the speed estimate
+# rests on; it is never an accuracy or calibrated-interval claim.
+BASIS = {
+    'feature_support': 'similar_measured',
+    'local_calibrated': 'measurement_estimate',
+    'static_rules': 'rules_or_synthetic',
+    'synthetic_prior': 'rules_or_synthetic',
+    'insufficient': 'insufficient_evidence',
+}
+
+
+def catalog_measurements(artifact) -> dict | None:
+    """Catalog-wide counts that keep raw rows, repeats and configurations apart.
+
+    Old catalogs without these fields yield ``None`` values, never guesses.
+    """
+    if not isinstance(artifact, dict):
+        return None
+    audit = artifact.get('telemetry_audit')
+    audit = audit if isinstance(audit, dict) else {}
+    balance = audit.get('repetition_balance')
+    balance = balance if isinstance(balance, dict) else {}
+    repeats = _count(balance.get('repeat_samples_collapsed'))
+    if repeats is None:
+        # Older audits: accepted samples merged into an existing configuration.
+        repeats = _count(audit.get('duplicates_collapsed'))
+    return {'raw_rows': _count(artifact.get('raw_real_row_count')),
+            'valid_rows': _count(audit.get('valid_rows')),
+            'repeat_samples_collapsed': repeats,
+            'distinct_configurations': _count(artifact.get('real_row_count')),
+            'independent_devices': None}
+
+
 def describe(artifact, hardware, candidate=None, *, engine='ollama') -> dict:
     profile = {}
     if hardware is not None:
@@ -67,8 +100,10 @@ def describe(artifact, hardware, candidate=None, *, engine='ollama') -> dict:
     if support is not None and not samples and status != 'synthetic_prior':
         status = 'feature_support' if sum(support.values()) else 'insufficient'
         reason = '같은 예측 특성의 실측 구성 수예요. 정확한 체크포인트 일치나 독립 장비 수를 뜻하지 않아요.'
-    return {'status': status, 'reason': reason, 'engine': engine,
-            'local_calibration_samples': samples, 'matching_environment_samples': None,
+    return {'status': status, 'basis': BASIS[status], 'reason': reason, 'engine': engine,
+            'local_calibration_samples': samples,
+            'local_calibration_devices': 1 if samples else 0,
+            'catalog_measurements': catalog_measurements(artifact), 'matching_environment_samples': None,
             'matching_feature_configurations': support, 'exact_checkpoint_samples': None,
             'independent_device_count': None, 'calibrated_interval': False}
 

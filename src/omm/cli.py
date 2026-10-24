@@ -4199,10 +4199,11 @@ def _build_recommend_json_rows(
             "eligible_package_count": eligible_count,
             "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
             "quantization": recommend_ui.quantization_label(row.candidate),
-            "evidence": row.candidate.get("recommendation_evidence", {"status": "insufficient", "matching_environment_samples": None, "calibrated_interval": False}),
-            "wiki": model_wiki.describe(row.candidate),
+            "evidence": row.candidate.get("recommendation_evidence", {"status": "insufficient", "basis": "insufficient_evidence", "matching_environment_samples": None, "calibrated_interval": False}),
+            "wiki": wiki,
+            "wiki_status": "matched" if wiki else "missing",
         }
-        for index, row in enumerate(rows)
+        for index, row, wiki in ((i, r, model_wiki.describe(r.candidate)) for i, r in enumerate(rows))
     ]
 
 
