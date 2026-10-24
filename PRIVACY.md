@@ -216,20 +216,47 @@ answers stay visible locally but are not used in later inference context.
 The GUI provides JSON export and confirmed deletion of closed conversations.
 Explicit data removal also removes `web-chats`; ordinary updates retain it.
 
-### Local document questions
+### Local document questions and `omm rag`
 
-The loopback web manager stores imported document text, content hashes, a lexical
-search index, questions, answers and quotations only in `OMM_HOME/documents`.
-Only browser-selected PDF/TXT/Markdown bytes are read; a request cannot name an
-arbitrary server filesystem path. Extraction and search make no network calls.
-Questions send the selected quotations to the explicitly selected loopback local
-runner, never to OMM telemetry, usage or crash senders. No cloud embedding API is
-used. The local runner is a separate program: use a local model, not a runner
-configured to forward requests to a cloud service.
+The loopback web manager and `omm rag` store imported document text, content
+hashes, collection names, a lexical search index, semantic vectors (embeddings),
+questions, answers and quotations only in `OMM_HOME/documents`.
+The web page reads only browser-selected files; a web request cannot name an
+arbitrary server filesystem path. `omm rag add` reads only the files and folders
+you name on the command line.
 
-Replacing or deleting a document clears saved document answers so old source
-quotations do not remain in the answer cache. Original uploaded files are not
-changed. Explicit OMM data removal includes the owned `documents` directory.
+Extraction and lexical search make no network calls. Semantic search sends
+document chunks (when indexing) and your question (when searching) only to the
+loopback Ollama origin configured with `omm rag embedding-model set`
+(default `http://127.0.0.1:11434`; non-loopback addresses are refused), and asks
+Ollama to unload the embedding model afterwards. If Ollama or the embedding
+model is unavailable, search falls back to lexical matching and says so; nothing
+is sent elsewhere instead. Questions for an answer send the selected quotations
+to the explicitly selected loopback local runner. Document text, questions,
+quotations and answers are never sent to OMM telemetry, usage, crash or vote
+uploads (an unexpected error inside `omm rag` is never queued as a crash
+report), and are not written to run logs (`OMM_HOME/logs` records only the
+local Ollama URL path and HTTP status). No cloud embedding API is used. Ollama
+is a separate program: use a local model, not a runner configured to forward
+requests to a cloud service.
+
+Replacing or deleting a document (or a collection) removes its text, vectors and
+saved document answers so old source quotations do not remain in the answer
+cache. Original files are not changed. Explicit OMM data removal includes the
+owned `documents` directory.
+
+### Document search for coding agents (MCP)
+
+`omm rag mcp` answers a coding agent's search requests over stdin/stdout only;
+it opens no network port and makes no network calls. Questions and returned
+quotations are not written to run logs, telemetry, usage counts or crash
+reports; its stderr diagnostics are fixed status lines. The quotations it
+returns go to the coding agent, which sends them to whatever model that agent
+is configured to use: a cloud model receives them unless the agent is routed to
+a local model. `omm rag connect` keeps a private copy of the agent's original
+configuration file under `OMM_HOME/rag-connections`; that copy may contain the
+agent's own settings and is not read by any upload channel. See
+[document search for coding agents](docs/rag-mcp.md).
 
 ## Local agent connection backups
 
