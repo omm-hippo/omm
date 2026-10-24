@@ -172,6 +172,27 @@ def test_load_progress_ignores_other_models_and_keeps_failure_message():
     assert exo_client.load_progress(data, "other/model").failed is None
 
 
+def test_load_progress_names_the_mac_whose_download_failed():
+    failed = _download("DownloadFailed", "a", errorMessage="[Errno 13] Permission denied")
+    data = {"downloads": {"a": [failed]}, "nodeIdentities": {"a": {"friendlyName": "Node4 Mac mini"}}}
+    progress = exo_client.load_progress(data, MODEL)
+    assert (progress.failed, progress.failed_on) == ("[Errno 13] Permission denied", "Node4 Mac mini")
+    assert exo_client.load_progress({"downloads": {"a": [failed]}}, MODEL).failed_on == "a"
+
+
+def test_await_instance_stops_at_a_failed_download(monkeypatch):
+    # exo never retries a failed download until it restarts (exo 1.0.71
+    # DownloadCoordinator._start_download skips models whose status is Failed).
+    client = exo_client.ExoClient()
+    failed = {"downloads": {"a": [_download("DownloadFailed", "a", errorMessage="disk full")]}}
+    monkeypatch.setattr(client, "_get", lambda path, **k: failed)
+    seen = []
+    clock = iter(range(0, 10_000, 1))
+    assert client.await_instance(MODEL, 900, on_progress=seen.append, sleep=lambda s: None,
+                                 clock=lambda: next(clock)) is False
+    assert len(seen) == 1 and seen[0].failed == "disk full"
+
+
 def test_load_progress_survives_junk_download_entries():
     data = {"downloads": {"a": "junk", "b": [None, {}, {"x": 1, "y": 2}, {"DownloadOngoing": "junk"}]}}
     assert exo_client.load_progress(data, MODEL).phase == "loading"

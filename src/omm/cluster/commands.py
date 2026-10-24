@@ -229,9 +229,10 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
             raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
         client.create_instance(placement)
         out(f"Loading {model_id} ({placement.sharding}); the first load downloads the model...")
-    last: dict = {"key": None, "line": ""}
+    last: dict = {"key": None, "line": "", "progress": None}
 
     def report(progress: exo_client.LoadProgress) -> None:
+        last["progress"] = progress
         if progress.phase == "loading":
             line, key = f"Every Mac has {model_id}; loading it into memory...", ("loading",)
         elif progress.total_bytes:
@@ -242,12 +243,20 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
         else:
             line, key = f"Waiting for exo to start downloading {model_id}...", ("downloading", None)
         if progress.failed:
-            line, key = f"A Mac could not download {model_id}: {progress.failed}", (*key, progress.failed)
+            line = f"{progress.failed_on or 'A Mac'} could not download {model_id}: {progress.failed}"
+            key = (*key, progress.failed)
         if key != last["key"]:
             last["key"], last["line"] = key, line
             out(line)
 
     if not client.await_instance(model_id, MODEL_STALL_TIMEOUT, on_progress=report):
+        failed = last["progress"].failed_on if last["progress"] and last["progress"].failed else None
+        if failed:
+            # Left in place, the broken instance would make the next run wait on it.
+            unload_model(model_id, client)
+            raise ClusterError(
+                f"exo does not try a failed download again until it restarts. Fix the cause, run omm cluster "
+                f"restart on {failed}, then run omm cluster model {model_id} again.")
         detail = f" Last status: {last['line']}" if last["line"] else ""
         raise ClusterError(f"{model_id} made no progress for {MODEL_STALL_TIMEOUT // 60} minutes.{detail}")
     current = settings.load()

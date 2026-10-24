@@ -340,12 +340,22 @@ def test_model_reports_download_progress_in_five_percent_steps(cluster_fakes):
     assert text.count("into memory") == 1
 
 
-def test_model_says_when_a_mac_failed_to_download(cluster_fakes):
-    cluster_fakes.load_progress = [exo_client.LoadProgress("downloading", 0, 0, 0, failed="disk full")]
+def test_model_stops_at_a_failed_download_and_removes_the_broken_instance(cluster_fakes):
+    # Real Mac mini 2026-10-24: a failed download is never retried by exo, and
+    # omm used to wait out the whole 15-minute stall window on it.
+    cluster_fakes.model_ready = False
+    cluster_fakes.load_progress = [exo_client.LoadProgress("downloading", 0, 0, 0, failed="disk full",
+                                                           failed_on="mac-b")]
     runner.invoke(cli.app, ["cluster", "init"])
+    one = json.loads((FIX / "state-1node.json").read_text(encoding="utf-8"))
+    cluster_fakes.state["instances"] = one["instances"]
     result = runner.invoke(cli.app, ["cluster", "model", "mlx-community/Llama-3.2-1B-Instruct-4bit"])
-    assert result.exit_code == 0, result.output
-    assert "disk full" in " ".join(result.output.split())
+    assert result.exit_code == 1
+    text = " ".join(result.output.split())
+    assert "mac-b could not download mlx-community/Llama-3.2-1B-Instruct-4bit: disk full" in text
+    assert "run omm cluster restart on mac-b" in text
+    assert "no progress" not in text
+    assert cluster_fakes.deleted == list(one["instances"])
 
 
 def test_model_exits_1_when_loading_stalls(cluster_fakes):
