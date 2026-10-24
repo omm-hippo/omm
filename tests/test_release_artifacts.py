@@ -384,4 +384,4 @@ def test_release_build_dependencies_are_pinned():
     build_system = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert requirements == ["build==1.6.1", "twine==7.0.0"]
-    assert 'requires = ["hatchling==1.32.0"]' in build_system
+    assert 'requires = ["hatchling==1.32.4"]' in build_system

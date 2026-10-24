@@ -7,7 +7,7 @@ import re
 import uuid
 
 from omm import cli, hardware, install_state, memory_guard, registry
-from omm.documents import DocumentStore, NO_EVIDENCE, RETRIEVAL_METHOD
+from omm.documents import DocumentStore, NO_EVIDENCE
 from omm.web import document_settings
 from omm.engines.base import LoadOptions
 from omm.web.probe import adapter_for
@@ -23,10 +23,13 @@ class GroundedRequest:
 
 def answer(request, stop):
     store = DocumentStore()
-    revision, sources = store.search(request["question"], request["document_ids"])
+    found = store.search_detailed(request["question"], request["document_ids"])
+    revision, sources = found["revision"], found["sources"]
+    # Which method actually answered (hybrid or lexical fallback) and why.
     result = {"id": str(uuid.uuid4()), "created_at": datetime.now(timezone.utc).isoformat(),
               "question": request["question"], "sources": sources, "engine": request["engine"],
-              "filename": request["filename"], "retrieval": RETRIEVAL_METHOD,
+              "filename": request["filename"], "retrieval": found["method"],
+              "retrieval_notice": found["notice"], "embedding_model": found["embedding_model"],
               "status": "no_evidence", "answer": NO_EVIDENCE}
     if not sources:
         return store.save_answer(result, revision)
@@ -43,6 +46,10 @@ def answer(request, stop):
     return store.save_answer(result, revision)
 
 
+def store_embedding_model() -> str:
+    return DocumentStore().embedding_settings()["model"].removesuffix(":latest")
+
+
 def _generate(request, stop, sources, result):
     adapter = receipt = None
     filename, engine = request["filename"], request["engine"]
@@ -57,7 +64,9 @@ def _generate(request, stop, sources, result):
         if not adapter.health().reachable:
             raise ValueError("선택한 실행 앱의 로컬 서버를 켜 주세요.")
         # Do not submit document text to a model already in use by another task.
-        if any(model.loaded for model in adapter.list_models()):
+        # The embedding model that just encoded this question is not such a task.
+        embedding = store_embedding_model() if engine == "ollama" else None
+        if any(model.loaded and str(getattr(model, "key", "")).removesuffix(":latest") != embedding for model in adapter.list_models()):
             raise ValueError("이미 메모리에 로딩된 모델이 있어요. 기존 작업을 마친 뒤 다시 질문해 주세요.")
         required = path.stat().st_size / 1024**3 * 1.3 + .5
         plan = memory_guard.plan_memory_guard(required, hardware.scan_hardware())

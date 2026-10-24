@@ -67,6 +67,7 @@ verification checks the selected model on your machine.
   - [Install & manage models](#install--manage-models)
   - [Verify & benchmark](#verify--benchmark)
   - [Update & configuration](#update--configuration)
+  - [Documents for coding agents](#documents-for-coding-agents)
   - [Local logs and automatic import](#local-logs-and-automatic-import)
   - [Scripting](#scripting)
 - [Self-hosted benchmark data](#self-hosted-benchmark-data)
@@ -434,7 +435,9 @@ omm doctor [--json]  # Read-only diagnostics plus safe next steps for installati
 omm bug-report [--include os|policies|checks|stages] [--save PATH]  # Preview and save local diagnostics and optional stage counts
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm web [--port PORT] [--open] [--create-launchers DIRECTORY]  # Start the local interface or create personal click launchers
-omm setting web-autostart enable|disable|status  # Optionally start the local manager (no browser) at sign-in; off by default
+omm setting web-autostart enable  # Optionally start the local manager (no browser) at sign-in; off by default
+omm setting web-autostart disable  # Remove optional sign-in startup
+omm setting web-autostart status  # Inspect optional sign-in startup
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
 omm search <query> [--json] [--skip-unfit] [--skip-ms] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated, Hugging Face, and ModelScope sources
@@ -473,6 +476,10 @@ through Ollama or LM Studio's local API, preserve a preloaded model's context,
 and release only its own test load. The response and compatibility outcome are
 shown separately from installation. See [local manager guidance](docs/local-web.md)
 for click launchers, description sources, memory checks and verification limits.
+
+The bundled [model wiki](docs/model-wiki-expansion.md) covers 114 exact
+checkpoints with publisher filtering and explicit unknown values. Descriptions
+do not imply a compatible GGUF or a verified runtime/quality result.
 
 Secondary screens show runner/API and explicit external connectivity checks,
 read-only diagnostics, storage and external-file previews, and sharing policies.
@@ -585,6 +592,9 @@ digest-pinned `docker pull`/`podman pull` command for the user to run explicitly
 ```sh
 omm update  # Update a canonical OMM Git-source install; package installs print their manager command
 omm setting  # Interactive menu for outbound data, version, theme, calibration, and catalog trust
+omm setting agent local <claude|codex|pi> --model <tag> [--base-url <origin>]  # Back up harness settings and route to local Ollama
+omm setting agent cloud <claude|codex|pi>  # Restore original routing and preserve unrelated settings edits
+omm setting agent status <claude|codex|pi>  # Inspect saved routing state without loading a model
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
 omm setting upload  # Show all four outbound-data policies (benchmark / usage / crash / votes); see PRIVACY.md
@@ -599,6 +609,22 @@ omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require sig
 omm setting catalog-status [--json]  # Show trust, rollback snapshots, and per-check evaluation evidence
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
 ```
+
+See [local agent connections](docs/agent-connections.md) for backup, restoration,
+configuration precedence and verification limits. For reviewed Python runtime
+extensions, see the [runtime plugin contract](docs/runtime-plugins.md).
+
+### Documents for coding agents
+
+```sh
+omm rag mcp  # Run the local document search MCP server on stdin/stdout (started by a coding agent)
+omm rag connect <claude-code|codex|pi|cursor>  # Register OMM document search as an MCP server in a coding agent
+omm rag disconnect <claude-code|codex|pi|cursor>  # Remove only the OMM MCP entry and keep other settings
+```
+
+Coding agents search documents registered in OMM through a local stdio MCP
+server; documents and questions never leave this computer. See
+[document search for coding agents](docs/rag-mcp.md).
 
 ### Local logs and automatic import
 
@@ -625,6 +651,27 @@ Saved runtime profiles are tied to the exact model file and engine. `omm verify`
 and supported `omm run` paths use them on the next owned load; running models
 keep their current settings. See [runtime profiles](docs/runtime-profiles.md)
 for engine capabilities, memory checks, cleanup, and verification limits.
+
+### Local document search (RAG)
+
+```sh
+omm rag status [--json]  # Collections, embedding model, and documents that need reindexing
+omm rag collection create <name>  # Create a named collection, e.g. 인사규정
+omm rag collection list [--json]  # List collections and document counts
+omm rag collection delete <name> [--yes]  # Delete a collection's stored text and index (original files stay)
+omm rag add <collection> <paths...> [--replace]  # Add files or folders (recursive) to a collection
+omm rag remove <collection> <name> [--yes]  # Remove one document's stored text and index
+omm rag search <question> [--collection NAME] [--limit N] [--json]  # Hybrid (meaning + words) search with source passages
+omm rag reindex [--collection NAME] [--all]  # Rebuild semantic vectors after an embedding-model change
+omm rag embedding-model  # Show the embedding model and whether local Ollama has it
+omm rag embedding-model set <model> [--base-url URL]  # Change the local Ollama embedding model (default bge-m3)
+```
+
+Semantic search uses a local Ollama embedding model (default `bge-m3`, MIT
+license; get it with `ollama pull bge-m3`). Results say which method answered:
+`hybrid` (meaning + words, fused by reciprocal rank) or `lexical` (words only,
+with the reason, for example Ollama is off or documents need `omm rag reindex`).
+Only loopback Ollama is contacted; see [PRIVACY.md](PRIVACY.md).
 
 ### Scripting
 
@@ -822,6 +869,11 @@ community expectations. Report security issues per [SECURITY.md](SECURITY.md)
 rather than as a public issue.
 
 ## Security
+
+OMM-managed runner install/update uses [mandatory source, integrity and native
+security checks](docs/mandatory-install-safety.md). Failed or unavailable checks
+do not count as successful installation. These named checks are not a guarantee
+that software has no vulnerabilities.
 
 Do not open a public issue for a suspected vulnerability. Follow the private
 reporting instructions and supported-version policy in

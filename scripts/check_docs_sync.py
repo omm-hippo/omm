@@ -163,7 +163,7 @@ def check_readme(reference: dict[str, Any], problems: list[str]) -> None:
     # (a) every documented command is mentioned somewhere in ## Usage.
     for entry in reference["commands"]:
         path = entry["path"]
-        if len(path) == 2 and path[0] not in ("engine", "setting"):
+        if len(path) == 2 and path[0] not in ("engine", "rag", "setting"):
             continue
         mention = "omm " + " ".join(path)
         if mention not in section:

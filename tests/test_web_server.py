@@ -363,6 +363,64 @@ def test_real_worker_imports_large_text_and_persists_after_manager_restart(serve
     finally:restarted.close()
 
 
+def test_shutdown_keeps_ownership_until_final_worker_record_is_durable(isolated_omm_home, monkeypatch):
+    manager = JobManager()
+    jid = str(uuid.uuid4())
+    finish = threading.Event()
+    written = threading.Event()
+    def final_write():
+        assert finish.wait(5)
+        with pytest.raises(JobConflict):
+            JobManager()
+        manager._save({"id": jid, "status": "completed", "created_at": 1})
+        written.set()
+    worker = threading.Thread(target=final_write)
+    manager.workers[jid] = worker
+    original_join = worker.join
+    def join(timeout=None):
+        finish.set()
+        original_join(timeout)
+    monkeypatch.setattr(worker, "join", join)
+    worker.start()
+    try:
+        manager.close()
+
+        assert written.is_set()
+        restarted = JobManager()
+        try:
+            assert restarted.list()[0]["id"] == jid
+            assert restarted.list()[0]["status"] == "completed"
+        finally:
+            restarted.close()
+    finally:
+        finish.set()
+        original_join(5)
+        manager.close()
+
+
+def test_retry_endpoint_requires_confirmation_and_uses_saved_task(server, monkeypatch):
+    import hashlib
+    jid = str(uuid.uuid4())
+    request = {"operation": "start_chat", "filename": "tiny.gguf", "engine": "ollama"}
+    server.jobs.jobs[jid] = {"id": jid, "operation": "start_chat", "status": "failed", "created_at": 1,
+        "task_request": request, "request_digest": hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()}
+    calls = []
+    def start(value, request_id):
+        calls.append(value)
+        return {"id": request_id, "operation": "start_chat", "status": "queued"}
+    monkeypatch.setattr(server.jobs, "start", start)
+    client = session(server)
+    url = server.url + f"api/jobs/{jid}/retry"
+    headers = {"X-OMM-Web": "1"}
+    rid = str(uuid.uuid4())
+    assert client.post(url, json={"confirmed": False, "request_id": rid}, headers=headers, timeout=5).status_code == 400
+    assert calls == []
+    assert client.post(url, json={"confirmed": True, "request_id": rid, "ref": "untrusted"}, headers=headers, timeout=5).status_code == 400
+    response = client.post(url, json={"confirmed": True, "request_id": rid}, headers=headers, timeout=5)
+    assert response.status_code == 202 and response.json()["id"] == rid
+    assert calls == [request]
+
+
 def _wait_job(manager, request_id):
     import time
     for _ in range(400):

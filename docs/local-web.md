@@ -5,6 +5,29 @@ same loopback origin. Starting without `--open` prints the URL and preserves
 the current browser focus. Choose a model, confirm installation and a runner,
 then inspect the installed file and link result under **My models**.
 
+## Prepare a model and start a conversation
+
+Choose **이 모델로 대화 시작** in recommendations or a wiki package, or
+**대화 준비하고 시작** for an existing managed model. One confirmation covers
+the selected runner's installation when needed, native application safety checks,
+the model download/link, a short real response check, and opening chat. A new
+load is refused while another model is already loaded; OMM never unloads that
+other model to make room. The
+runner's local API server must be enabled; OMM stops before downloading when it
+cannot reach that server and does not foreground an application to start it.
+
+The work view shows six durable stages. Success requires an actual response;
+downloaded files alone cannot open chat as verified. Once preparation succeeds,
+the browser opens the existing consented chat connection automatically. After
+reloading the page, use **대화 열기** from that completed job.
+
+**중단** requests cancellation. Native installation or safety checks already in
+progress finish before the next stage is skipped. **다시 시작** asks for consent
+again and uses the recorded package and runner, even after a server restart.
+Existing verified files are reused by the normal installer; failed steps do not
+delete the file or relax safety, hash, memory or runtime checks. The user can
+always inspect the recorded failed stage and error first.
+
 Select **실행 확인** after enabling the runner's local server. The manager asks
 before loading a model and sends a fixed, short English response probe. This
 proves local text generation, not instruction-following accuracy or task

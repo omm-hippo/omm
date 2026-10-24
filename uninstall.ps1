@@ -38,6 +38,20 @@ if ((Test-Path -LiteralPath $resolvedHome -PathType Container) -and $resolvedHom
     throw "Refusing unrecognized custom OMM_HOME (missing .omm-managed): $resolvedHome"
 }
 
+# Do not destroy the only restoration copy before restoring harness routing.
+$agentBackupRoot = Join-Path $resolvedHome "agent-connections"
+if ($Purge -and (Test-Path -LiteralPath $agentBackupRoot -PathType Container)) {
+    if (Get-ChildItem -LiteralPath $agentBackupRoot -Filter "*.json" -Force -ErrorAction Stop | Select-Object -First 1) {
+        throw "Agent connection backups remain. Run 'omm setting agent cloud HARNESS' for each connection before -Purge."
+    }
+}
+$ragBackupRoot = Join-Path $resolvedHome "rag-connections"
+if ($Purge -and (Test-Path -LiteralPath $ragBackupRoot -PathType Container)) {
+    if (Get-ChildItem -LiteralPath $ragBackupRoot -Filter "*.json" -Force -ErrorAction Stop | Select-Object -First 1) {
+        throw "Document search connections remain. Run 'omm rag disconnect HARNESS' for each connection before -Purge."
+    }
+}
+
 # -Purge deletes the models/ hub directly; it never runs linker.py's unlink
 # logic, so a non-empty link-ownership.json means omm still has models
 # linked into local engines (Ollama manifests, KoboldCpp/text-generation-
@@ -109,7 +123,7 @@ function Stop-UninstallPreservingSources {
 function Remove-OmmOwnedData {
     # Delete only paths the application owns. A custom OMM_HOME may contain
     # unrelated files, so never recursively delete the container itself.
-    foreach ($name in @("models", "evaluations", "runtime-sessions", "install-journal", "catalog-history", "model-archive", "session", "logs", "locks", "bin", "web-jobs", "web-chats", "documents", "arena")) {
+    foreach ($name in @("models", "evaluations", "runtime-sessions", "install-journal", "catalog-history", "model-archive", "session", "logs", "locks", "bin", "web-jobs", "web-chats", "documents", "arena", "agent-connections", "rag-connections", "security-checks")) {
         $target = Join-Path $resolvedHome $name
         if (Test-Path -LiteralPath $target) {
             Remove-Item -LiteralPath $target -Recurse -Force
