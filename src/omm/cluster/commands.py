@@ -11,7 +11,7 @@ import platform
 import socket
 from typing import Callable
 
-from omm.cluster import appfw, exo_service, firewall, netconfig, power, preflight, recommend, service, settings, tokens
+from omm.cluster import appfw, exo_client, exo_service, firewall, netconfig, power, preflight, recommend, service, settings, tokens
 from omm.cluster.errors import ClusterError
 from omm.cluster.exo_client import ExoClient
 from omm.cluster.gateway import GATEWAY_PORT
@@ -20,7 +20,11 @@ Out = Callable[[str], None]
 
 NOT_MACOS = ("omm cluster runs on the Macs that form the cluster (macOS 26.2 or later). "
              "Employees connect from any OS through the gateway (#502).")
-MODEL_READY_TIMEOUT = 3600
+# A first load downloads the whole model on every Mac (about 85 minutes for a
+# 130 GB model on a 25 MB/s link), so loading is judged by progress, not by a
+# deadline: give up only when nothing has moved for this long.
+MODEL_STALL_TIMEOUT = 900
+_GIB = 1024**3
 
 
 class UsageProblem(ClusterError):
@@ -202,8 +206,27 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
         raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
     client.create_instance(placement)
     out(f"Loading {model_id} ({placement.sharding}); the first load downloads the model...")
-    if not client.await_instance(model_id, MODEL_READY_TIMEOUT):
-        raise ClusterError(f"{model_id} did not become ready within {MODEL_READY_TIMEOUT // 60} minutes")
+    last: dict = {"key": None, "line": ""}
+
+    def report(progress: exo_client.LoadProgress) -> None:
+        if progress.phase == "loading":
+            line, key = f"Every Mac has {model_id}; loading it into memory...", ("loading",)
+        elif progress.total_bytes:
+            percent = progress.downloaded_bytes * 100 // progress.total_bytes
+            line = (f"Downloading {model_id}: {percent}% ({progress.downloaded_bytes / _GIB:.1f} of "
+                    f"{progress.total_bytes / _GIB:.1f} GiB on the slowest Mac)")
+            key = ("downloading", percent // 5)
+        else:
+            line, key = f"Waiting for exo to start downloading {model_id}...", ("downloading", None)
+        if progress.failed:
+            line, key = f"A Mac could not download {model_id}: {progress.failed}", (*key, progress.failed)
+        if key != last["key"]:
+            last["key"], last["line"] = key, line
+            out(line)
+
+    if not client.await_instance(model_id, MODEL_STALL_TIMEOUT, on_progress=report):
+        detail = f" Last status: {last['line']}" if last["line"] else ""
+        raise ClusterError(f"{model_id} made no progress for {MODEL_STALL_TIMEOUT // 60} minutes.{detail}")
     current = settings.load()
     port = current.gateway_port if current else GATEWAY_PORT
     return f"Serving {model_id} at http://{lan_ipv4()}:{port}"

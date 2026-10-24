@@ -102,11 +102,97 @@ def test_await_instance_polls_state_until_ready(monkeypatch):
     assert len(sleeps) == 2
 
 
-def test_await_instance_times_out(monkeypatch):
+def test_await_instance_gives_up_when_nothing_changes_for_the_stall_window(monkeypatch):
     client = exo_client.ExoClient()
     monkeypatch.setattr(client, "_get", lambda path, **k: {})
     clock = iter(range(0, 1000, 5))
     assert client.await_instance("m", 12, sleep=lambda s: None, clock=lambda: next(clock)) is False
+
+
+# The download entries below follow exo 1.0.71's DownloadProgress classes
+# (src/exo/shared/types/worker/downloads.py) over the wire format the
+# captured state.json fixture already shows (camelCase, Memory -> {"inBytes"}).
+# DownloadOngoing was not captured from a live node.
+MODEL = "mlx-community/Qwen3.5-122B-A10B-8bit"
+GIB = 1024**3
+
+
+def _download(kind, node, model_id=MODEL, **body):
+    shard = {"PipelineShardMetadata": {"modelCard": {"modelId": model_id}}}
+    return {kind: {"nodeId": node, "shardMetadata": shard, **body}}
+
+
+def _memory(n):
+    return {"inBytes": n}
+
+
+def _ongoing(node, done, total, model_id=MODEL):
+    progress = {"downloaded": _memory(done), "total": _memory(total), "completedFiles": 1, "totalFiles": 9}
+    return _download("DownloadOngoing", node, model_id, downloadProgress=progress)
+
+
+def test_load_progress_reports_the_mac_furthest_behind():
+    data = {"downloads": {"a": [_ongoing("a", 90 * GIB, 130 * GIB)], "b": [_ongoing("b", 40 * GIB, 130 * GIB)]}}
+    progress = exo_client.load_progress(data, MODEL)
+    assert (progress.phase, progress.downloaded_bytes, progress.total_bytes) == ("downloading", 40 * GIB, 130 * GIB)
+    assert progress.transferred_bytes == 130 * GIB
+    assert progress.failed is None
+
+
+def test_load_progress_is_loading_once_every_download_completed_or_none_listed():
+    done = {"downloads": {"a": [_download("DownloadCompleted", "a", total=_memory(130 * GIB))]}}
+    assert exo_client.load_progress(done, MODEL).phase == "loading"
+    assert exo_client.load_progress({}, MODEL).phase == "loading"
+
+
+def test_load_progress_pending_download_has_unknown_total():
+    data = {"downloads": {"a": [_download("DownloadPending", "a", downloaded=_memory(0), total=_memory(0))]}}
+    progress = exo_client.load_progress(data, MODEL)
+    assert (progress.phase, progress.downloaded_bytes, progress.total_bytes) == ("downloading", 0, 0)
+
+
+def test_load_progress_ignores_other_models_and_keeps_failure_message():
+    failed = _download("DownloadFailed", "a", errorMessage="disk full")
+    data = {"downloads": {"a": [_ongoing("a", 1, 2, "other/model"), failed]}}
+    progress = exo_client.load_progress(data, MODEL)
+    assert progress.phase == "downloading" and progress.failed == "disk full"
+    assert exo_client.load_progress(data, "other/model").failed is None
+
+
+def test_load_progress_survives_junk_download_entries():
+    data = {"downloads": {"a": "junk", "b": [None, {}, {"x": 1, "y": 2}, {"DownloadOngoing": "junk"}]}}
+    assert exo_client.load_progress(data, MODEL).phase == "loading"
+
+
+def test_await_instance_keeps_waiting_while_the_download_advances(monkeypatch):
+    client = exo_client.ExoClient()
+    ready = _load("state-1node.json")
+    llama = "mlx-community/Llama-3.2-1B-Instruct-4bit"
+    steps = [{"downloads": {"a": [_ongoing("a", n * GIB, 100 * GIB, llama)]}} for n in range(1, 11)]
+    states = iter([*steps, ready])
+    monkeypatch.setattr(client, "_get", lambda path, **k: next(states))
+    clock = iter(range(0, 10_000, 20))  # 11 polls, 20 s apart: far beyond a 30 s stall window
+    seen = []
+    assert client.await_instance(
+        llama, 30, on_progress=seen.append, sleep=lambda s: None, clock=lambda: next(clock)) is True
+    assert [p.downloaded_bytes for p in seen] == [n * GIB for n in range(1, 11)]
+
+
+def test_await_instance_gives_up_when_the_download_stalls(monkeypatch):
+    client = exo_client.ExoClient()
+    stuck = {"downloads": {"a": [_ongoing("a", 5 * GIB, 100 * GIB)]}}
+    monkeypatch.setattr(client, "_get", lambda path, **k: stuck)
+    clock = iter(range(0, 10_000, 20))
+    assert client.await_instance(MODEL, 30, sleep=lambda s: None, clock=lambda: next(clock)) is False
+
+
+def test_await_instance_counts_a_runner_changing_state_as_progress(monkeypatch):
+    client = exo_client.ExoClient()
+    states = iter([{"runners": {"r": {kind: {}}}} for kind in ("RunnerConnected", "RunnerLoading", "RunnerLoading")] + [_load("state-1node.json")])
+    monkeypatch.setattr(client, "_get", lambda path, **k: next(states))
+    clock = iter(range(0, 10_000, 20))
+    assert client.await_instance(
+        "mlx-community/Llama-3.2-1B-Instruct-4bit", 30, sleep=lambda s: None, clock=lambda: next(clock)) is True
 
 
 def test_parse_state_reads_thunderbolt_bridge_cycles():

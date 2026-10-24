@@ -67,6 +67,20 @@ class Placement:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class LoadProgress:
+    """Where a model that is being loaded stands, read from exo's `/state`."""
+
+    phase: Literal["downloading", "loading"]
+    # The Mac furthest behind, because every Mac must finish before the model
+    # can serve. total_bytes is 0 until exo has sized the download.
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    # Summed over all Macs; only used to tell whether anything moved.
+    transferred_bytes: int = 0
+    failed: str | None = None
+
+
 class ExoUnavailable(ClusterError):
     def __init__(self) -> None:
         super().__init__("exo is not running on this Mac")
@@ -203,6 +217,56 @@ def instance_ready(data: dict, model_id: str) -> bool:
     return False
 
 
+def _download_entry(wrapper, model_id: str) -> tuple[str, dict] | None:
+    # Downloads are tagged unions like instances: {"DownloadOngoing": {...}}.
+    wrapper = _dict(wrapper)
+    if len(wrapper) != 1:
+        return None
+    kind, body = next(iter(wrapper.items()))
+    body = _dict(body)
+    shard = _dict(next(iter(_dict(body.get("shardMetadata")).values()), {}))
+    if _dict(shard.get("modelCard")).get("modelId") != model_id:
+        return None
+    return kind, body
+
+
+def load_progress(data: dict, model_id: str) -> LoadProgress:
+    """Download and load progress of `model_id` across every Mac in `/state`.
+
+    exo keeps one download entry per node and model. Pending, Ongoing and
+    Failed entries mean a Mac still has files to fetch; once every entry is
+    Completed (or exo lists none) the Macs are loading weights into memory.
+    """
+    unfinished: list[tuple[int, int]] = []
+    transferred = 0
+    failure: str | None = None
+    for items in _dict(_dict(data).get("downloads")).values():
+        for wrapper in items if isinstance(items, list) else []:
+            entry = _download_entry(wrapper, model_id)
+            if entry is None:
+                continue
+            kind, body = entry
+            if kind == "DownloadCompleted":
+                transferred += _bytes(body.get("total")) or 0
+                continue
+            if kind == "DownloadFailed":
+                failure = failure or str(body.get("errorMessage") or "download failed")
+                unfinished.append((0, 0))
+                continue
+            if kind == "DownloadOngoing":
+                body = _dict(body.get("downloadProgress"))
+            elif kind != "DownloadPending":
+                continue
+            done, total = _bytes(body.get("downloaded")) or 0, _bytes(body.get("total")) or 0
+            transferred += done
+            unfinished.append((done, total))
+    if not unfinished:
+        return LoadProgress("loading", transferred_bytes=transferred)
+    sized = [(done, total) for done, total in unfinished if total > 0]
+    done, total = min(sized, key=lambda pair: pair[0] / pair[1]) if sized else (0, 0)
+    return LoadProgress("downloading", done, total, transferred, failure)
+
+
 class ExoClient:
     def __init__(self, base_url: str = "http://127.0.0.1:52415") -> None:
         from omm.engines.base import LoopbackJsonClient
@@ -237,16 +301,32 @@ class ExoClient:
         data = self._call("POST", "/instance", payload={"instance": placement.instance}, timeout=60)
         return str(data.get("command_id") or "")
 
-    def await_instance(self, model_id: str, timeout_seconds: float, *, sleep=None, clock=None) -> bool:
+    def await_instance(self, model_id: str, stall_seconds: float, *, on_progress=None, sleep=None, clock=None) -> bool:
+        """Wait until the model serves; False once nothing has moved for `stall_seconds`.
+
+        A first load downloads the whole model on every Mac (hours for a big
+        one), so a fixed deadline cannot fit it. Progress is any change in the
+        bytes fetched or in a runner's state.
+        """
         import time
 
         sleep = sleep or time.sleep
         clock = clock or time.monotonic
-        deadline = clock() + timeout_seconds
+        last_change = clock()
+        signature = None
         while True:
-            if instance_ready(self._get("/state"), model_id):
+            data = self._get("/state")
+            if instance_ready(data, model_id):
                 return True
-            if clock() >= deadline:
+            progress = load_progress(data, model_id)
+            if on_progress is not None:
+                on_progress(progress)
+            runners = tuple(sorted((str(k), tuple(_dict(v))) for k, v in _dict(_dict(data).get("runners")).items()))
+            now = clock()
+            if (progress.transferred_bytes, runners) != signature:
+                signature = (progress.transferred_bytes, runners)
+                last_change = now
+            elif now - last_change >= stall_seconds:
                 return False
             sleep(2)
 

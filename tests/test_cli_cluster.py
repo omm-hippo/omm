@@ -43,6 +43,8 @@ class _Fakes:
         self.models = json.loads((FIX / "models.json").read_text(encoding="utf-8"))
         self.created = []
         self.deleted = []
+        self.load_progress = []
+        self.model_ready = True
 
     def _node_id(self, name):
         return next(k for k, v in self.state["nodeIdentities"].items() if v["friendlyName"] == name)
@@ -92,8 +94,10 @@ class _FakeExoClient:
         self.fakes.created.append(placement)
         return "cmd-1"
 
-    def await_instance(self, model_id, timeout_seconds, **_k):
-        return True
+    def await_instance(self, model_id, stall_seconds, on_progress=None, **_k):
+        for progress in self.fakes.load_progress:
+            on_progress(progress)
+        return self.fakes.model_ready
 
     def delete_instance(self, instance_id):
         self.fakes.deleted.append(instance_id)
@@ -288,6 +292,45 @@ def test_model_loads_and_prints_gateway_url(cluster_fakes):
     assert result.exit_code == 0, result.output
     assert cluster_fakes.created and cluster_fakes.created[0].sharding == "Pipeline"
     assert "Serving mlx-community/Llama-3.2-1B-Instruct-4bit at http://192.0.2.10:52440" in result.output
+
+
+def test_model_reports_download_progress_in_five_percent_steps(cluster_fakes):
+    gib = 1024**3
+    cluster_fakes.load_progress = [
+        exo_client.LoadProgress("downloading", 1 * gib, 100 * gib, 3 * gib),
+        exo_client.LoadProgress("downloading", 2 * gib, 100 * gib, 6 * gib),
+        exo_client.LoadProgress("downloading", 30 * gib, 100 * gib, 90 * gib),
+        exo_client.LoadProgress("loading"),
+        exo_client.LoadProgress("loading"),
+    ]
+    runner.invoke(cli.app, ["cluster", "init"])
+    result = runner.invoke(cli.app, ["cluster", "model", "mlx-community/Llama-3.2-1B-Instruct-4bit"])
+    assert result.exit_code == 0, result.output
+    text = " ".join(result.output.split())
+    assert "1% (1.0 of 100.0 GiB" in text
+    assert "2% (2.0 of" not in text
+    assert "30% (30.0 of 100.0 GiB" in text
+    assert text.count("into memory") == 1
+
+
+def test_model_says_when_a_mac_failed_to_download(cluster_fakes):
+    cluster_fakes.load_progress = [exo_client.LoadProgress("downloading", 0, 0, 0, failed="disk full")]
+    runner.invoke(cli.app, ["cluster", "init"])
+    result = runner.invoke(cli.app, ["cluster", "model", "mlx-community/Llama-3.2-1B-Instruct-4bit"])
+    assert result.exit_code == 0, result.output
+    assert "disk full" in " ".join(result.output.split())
+
+
+def test_model_exits_1_when_loading_stalls(cluster_fakes):
+    gib = 1024**3
+    cluster_fakes.model_ready = False
+    cluster_fakes.load_progress = [exo_client.LoadProgress("downloading", 5 * gib, 100 * gib, 15 * gib)]
+    runner.invoke(cli.app, ["cluster", "init"])
+    result = runner.invoke(cli.app, ["cluster", "model", "mlx-community/Llama-3.2-1B-Instruct-4bit"])
+    assert result.exit_code == 1
+    text = " ".join(result.output.split())
+    assert "no progress for 15 minutes" in text
+    assert "Downloading mlx-community/Llama-3.2-1B-Instruct-4bit: 5%" in text
 
 
 def test_model_without_fit_exits_1(cluster_fakes):
