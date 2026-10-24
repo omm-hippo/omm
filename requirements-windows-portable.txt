@@ -14,7 +14,7 @@ colorama==0.4.6
 cryptography==50.0.1
 filelock==4.1.0
 tomlkit==0.15.2
-pypdf==6.21.1
+pypdf==6.21.2
 idna==3.20
 markdown-it-py==4.2.0
 mdurl==0.1.2
