@@ -102,9 +102,13 @@ def test_status_missing_active_and_drift(tmp_path, monkeypatch):
     monkeypatch.setattr(firewall, "thunderbolt_interfaces", lambda *a, **k: ["en5"])
     assert firewall.status(gateway_port=None, run=_needs_password) == "missing"
     firewall.RULES_PATH.write_text(firewall.render_rules(firewall.EXO_PORTS, ("en5",), gateway_port=None), encoding="utf-8")
-    assert firewall.status(gateway_port=None, run=_needs_password) == "active"
+    loaded = lambda argv, **k: subprocess.CompletedProcess(argv, 0, "block return in quick proto tcp\n", "")
+    assert firewall.status(gateway_port=None, run=loaded) == "active"
+    # Without a cached sudo ticket pf cannot be read: the file alone proves nothing is loaded.
+    assert firewall.status(gateway_port=None, run=_needs_password) == "unchecked"
     monkeypatch.setattr(firewall, "thunderbolt_interfaces", lambda *a, **k: ["en5", "en6"])
     assert firewall.status(gateway_port=None, run=_needs_password) == "drift"
+    assert firewall.status(gateway_port=None, run=loaded) == "drift"
 
 
 def test_status_reports_missing_when_loaded_anchor_is_empty(tmp_path, monkeypatch):

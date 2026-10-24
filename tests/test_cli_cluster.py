@@ -235,7 +235,9 @@ def test_status_json_healthy_shape(cluster_fakes):
     assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "problems"}
     assert data["role"] == "head" and data["firewall"] == "active" and data["gateway"] == "running"
     assert data["exo"]["reachable"] is True and len(data["exo"]["nodes"]) == 4
-    assert set(data["exo"]["nodes"][0]) == {"name", "memory_total_bytes", "memory_available_bytes", "rdma", "os_version"}
+    assert set(data["exo"]["nodes"][0]) == {"name", "memory_total_bytes", "memory_available_bytes", "rdma", "os_version",
+                                            "os_build"}
+    assert data["exo"]["nodes"][0]["os_build"] == "25F71"
     assert data["problems"] == []
 
 
@@ -570,3 +572,53 @@ def test_cluster_errors_are_written_to_the_omm_log(cluster_fakes, caplog):
         result = runner.invoke(cli.app, ["cluster", "join", "not-a-namespace"])
     assert result.exit_code == 2
     assert "the cluster name looks like" in caplog.text
+
+
+def test_status_flags_macs_on_the_same_version_but_different_builds(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.state["nodeIdentities"][cluster_fakes._node_id("mac-b")]["osBuildVersion"] = "25F80"
+    problems = [p for p in _status()["problems"] if p.startswith("macOS versions differ:")]
+    assert problems and "mac-b=26.5 (25F80)" in problems[0] and "mac-a=26.5 (25F71)" in problems[0]
+
+
+def test_status_says_when_the_loaded_firewall_could_not_be_checked(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.firewall_state = "unchecked"
+    data = _status()
+    assert data["firewall"] == "unchecked"
+    assert not any("firewall" in p for p in data["problems"])
+    plain = runner.invoke(cli.app, ["cluster", "status"])
+    assert "Firewall: unchecked (rules file matches; checking what pf loaded needs sudo)" in plain.output
+
+
+def test_model_already_served_waits_for_it_instead_of_starting_a_second_copy(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    one = json.loads((FIX / "state-1node.json").read_text(encoding="utf-8"))
+    cluster_fakes.state["instances"] = one["instances"]
+    result = runner.invoke(cli.app, ["cluster", "model", "mlx-community/Llama-3.2-1B-Instruct-4bit"])
+    assert result.exit_code == 0, result.output
+    assert cluster_fakes.created == []
+    assert "already loaded or loading" in result.output
+    assert "Serving mlx-community/Llama-3.2-1B-Instruct-4bit at http://192.0.2.10:52440" in result.output
+
+
+def test_leave_deletes_the_staged_exo_runtime(cluster_fakes):
+    from omm.cluster import preflight
+
+    runner.invoke(cli.app, ["cluster", "init"])
+    preflight.runtime_dir().mkdir(parents=True)
+    (preflight.runtime_dir() / "exo").write_text("binary", encoding="utf-8")
+    preflight.runtime_stamp_path().write_text("1.0.71\n", encoding="utf-8")
+    assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
+    assert not preflight.runtime_dir().exists() and not preflight.runtime_stamp_path().exists()
+
+
+def test_cluster_commands_never_open_the_first_run_setup_wizard(cluster_fakes, monkeypatch):
+    from omm import config as config_mod
+
+    config_mod.update_config(onboarding_completed=False)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_stdout_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_ask_setup_choice", lambda: pytest.fail("setup wizard opened"))
+    result = runner.invoke(cli.app, ["cluster", "init"])
+    assert result.exit_code == 0, result.output

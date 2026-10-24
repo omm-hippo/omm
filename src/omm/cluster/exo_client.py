@@ -23,6 +23,7 @@ class ClusterNode:
     rdma: Literal["enabled", "disabled", "unknown"]
     os_version: str | None
     thunderbolt_bridge: bool | None = None
+    os_build: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,7 @@ def parse_state(data: dict) -> ClusterState:
         enabled = _dict(rdma.get(node_id)).get("enabled")
         name = identity.get("friendlyName")
         os_version = identity.get("osVersion")
+        os_build = identity.get("osBuildVersion")
         nodes.append(ClusterNode(
             node_id=node_id,
             name=name.replace(" ", " ") if isinstance(name, str) and name else node_id,
@@ -141,6 +143,7 @@ def parse_state(data: dict) -> ClusterState:
             rdma="enabled" if enabled is True else "disabled" if enabled is False else "unknown",
             os_version=os_version if isinstance(os_version, str) else None,
             thunderbolt_bridge=bridge if isinstance(bridge := _dict(bridges.get(node_id)).get("enabled"), bool) else None,
+            os_build=os_build if isinstance(os_build, str) and os_build else None,
         ))
     links = []
     for source, sinks in _dict(topology.get("connections")).items():

@@ -132,7 +132,7 @@ def status() -> dict:
             "reachable": True,
             "nodes": [{"name": n.name, "memory_total_bytes": n.memory_total_bytes,
                        "memory_available_bytes": n.memory_available_bytes, "rdma": n.rdma,
-                       "os_version": n.os_version} for n in state.nodes],
+                       "os_version": n.os_version, "os_build": n.os_build} for n in state.nodes],
             "instances": [{"model_id": i.model_id, "sharding": i.sharding, "node_count": len(i.node_ids)}
                           for i in state.instances],
             "links": [],
@@ -164,7 +164,10 @@ def status() -> dict:
                 # After a cable is pulled, exo can stop seeing Macs that are still
                 # connected until it is restarted (seen once on 3 Mac minis, 2026-10-24).
                 problems.append("if those Macs are on, run omm cluster restart on each of them and on this Mac")
-        versions = {n.name: n.os_version for n in state.nodes if n.os_version}
+        # RDMA needs the exact same build, not just the same version number
+        # (a 26.5 beta and 26.5 share "26.5").
+        versions = {n.name: f"{n.os_version} ({n.os_build})" if n.os_build else n.os_version
+                    for n in state.nodes if n.os_version}
         if len(set(versions.values())) > 1:
             problems.append("macOS versions differ: " + ", ".join(f"{k}={v}" for k, v in sorted(versions.items())))
         problems += [f"RDMA disabled on {n.name}" for n in state.nodes if n.rdma == "disabled"]
@@ -176,7 +179,7 @@ def status() -> dict:
     gateway = "not_head"
     if current is not None:
         fw = firewall.status(gateway_port=current.gateway_port if current.role == "head" else None)
-        if fw != "active":
+        if fw not in ("active", "unchecked"):
             problems.append(f"firewall rules are {fw}; run omm cluster {'init' if current.role == 'head' else 'join'} again")
         idle = power.current_idle_sleep_minutes()
         if idle:
@@ -213,11 +216,15 @@ def candidates(client: ExoClient | None = None) -> list[recommend.Candidate]:
 def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
     require_macos()
     client = client or ExoClient()
-    placement = recommend.choose_placement(client.previews(model_id))
-    if placement is None:
-        raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
-    client.create_instance(placement)
-    out(f"Loading {model_id} ({placement.sharding}); the first load downloads the model...")
+    if any(i.model_id == model_id for i in client.state().instances):
+        # exo would place a second full copy next to the first one.
+        out(f"{model_id} is already loaded or loading on this cluster; waiting for it instead of starting another copy...")
+    else:
+        placement = recommend.choose_placement(client.previews(model_id))
+        if placement is None:
+            raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
+        client.create_instance(placement)
+        out(f"Loading {model_id} ({placement.sharding}); the first load downloads the model...")
     last: dict = {"key": None, "line": ""}
 
     def report(progress: exo_client.LoadProgress) -> None:
@@ -270,6 +277,7 @@ def leave(out: Out) -> None:
     if current is None or current.role == "head":
         service.uninstall()
     exo_service.uninstall()
+    preflight.remove_runtime()
     settings.clear()
     out("This Mac left the cluster. Employee tokens were kept.")
     out("exo itself stays installed; remove it from its menu bar icon -> Advanced -> Uninstall")

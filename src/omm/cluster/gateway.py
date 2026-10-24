@@ -13,14 +13,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
+from omm import config
 from omm.cluster.tokens import TokenStore
 
 GATEWAY_PORT = 52440
 UPSTREAM = "http://127.0.0.1:52415"
 MAX_BODY_BYTES = 16 * 1024 * 1024
 UPSTREAM_TIMEOUT = 600
+# Per socket operation, not per request: a streamed answer can run for many
+# minutes, but a client that sends nothing for this long is gone (or slow-
+# loris) and must not hold a thread.
+CLIENT_TIMEOUT = 60
+# The gateway runs for weeks and logs one line per request, so it keeps its
+# own bounded access log instead of growing one run-log file forever.
+ACCESS_LOG_MAX_BYTES = 5 * 1024 * 1024
+ACCESS_LOG_BACKUPS = 3
 # Paths every supported harness was seen calling on a real exo 1.0.71 node
 # (spike findings §6). Instance, model-management and state routes stay closed.
 ALLOWED_ROUTES = frozenset({
@@ -33,6 +42,9 @@ _HOP_BY_HOP = frozenset({
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
     "transfer-encoding", "upgrade", "host", "authorization", "x-api-key", "content-length",
 })
+# send_response() writes these itself; copying exo's as well sent them twice.
+_SET_BY_GATEWAY = frozenset({"date", "server"})
+_ACCESS_FIELDS = ("method", "path", "status", "token_name", "duration_ms")
 
 log = logging.getLogger("omm.cluster.gateway")
 
@@ -74,6 +86,34 @@ def normalize_claude_messages(body: bytes) -> bytes:
     return json.dumps(data).encode("ascii")
 
 
+class _AccessFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created)), "level": record.levelname}
+        payload.update({key: record.__dict__[key] for key in _ACCESS_FIELDS if key in record.__dict__})
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def attach_access_log() -> logging.Handler:
+    """Send request lines to OMM_HOME/logs/cluster-gateway-access.jsonl (rotated), not the run log."""
+    from logging.handlers import RotatingFileHandler
+
+    path = config.OMM_HOME / "logs" / "cluster-gateway-access.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(path, maxBytes=ACCESS_LOG_MAX_BYTES, backupCount=ACCESS_LOG_BACKUPS,
+                                  encoding="utf-8")
+    handler.setFormatter(_AccessFormatter())
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    return handler
+
+
+def detach_access_log(handler: logging.Handler) -> None:
+    log.removeHandler(handler)
+    handler.close()
+    log.propagate = True
+
+
 class GatewayServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -88,6 +128,7 @@ class GatewayServer(ThreadingHTTPServer):
 
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    timeout = CLIENT_TIMEOUT
     server: GatewayServer
 
     def log_message(self, *_args) -> None:
@@ -135,6 +176,11 @@ class _Handler(BaseHTTPRequestHandler):
         if (self.command, path) not in ALLOWED_ROUTES:
             self._reply_error(404, "not_found_error", "omm cluster: this path is not served by the gateway")
             return 404, name
+        if self.headers.get("Transfer-Encoding"):
+            # Only a Content-Length body is read; the chunks of any other
+            # would be parsed as the next request on this connection.
+            self._reply_error(411, "invalid_request_error", "omm cluster: send the request body with a Content-Length")
+            return 411, name
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -152,7 +198,10 @@ class _Handler(BaseHTTPRequestHandler):
                                               timeout=UPSTREAM_TIMEOUT)
         try:
             try:
-                upstream.request(self.command, self.path, body=body, headers=headers)
+                # The checked path, not the raw target: an absolute-form
+                # "http://host/v1/messages" would otherwise reach exo as typed.
+                target = urlunsplit(("", "", path, urlsplit(self.path).query, ""))
+                upstream.request(self.command, target, body=body, headers=headers)
                 response = upstream.getresponse()
             except TimeoutError:
                 self._reply_error(504, "api_error", "omm cluster: exo did not answer in time")
@@ -163,7 +212,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._replied = True
             self.send_response(response.status)
             for key, value in response.getheaders():
-                if key.casefold() not in _HOP_BY_HOP:
+                if key.casefold() not in _HOP_BY_HOP and key.casefold() not in _SET_BY_GATEWAY:
                     self.send_header(key, value)
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
@@ -179,6 +228,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def run_gateway() -> int:
+    handler = attach_access_log()
     server = GatewayServer()
     try:
         server.serve_forever()
@@ -186,4 +236,5 @@ def run_gateway() -> int:
         pass
     finally:
         server.server_close()
+        detach_access_log(handler)
     return 0

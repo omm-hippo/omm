@@ -134,7 +134,9 @@ def remove(*, run=subprocess.run) -> None:
         raise ClusterError("could not remove the cluster firewall rules (sudo failed); nothing else was changed")
 
 
-def status(*, gateway_port: int | None, run=subprocess.run) -> Literal["active", "missing", "drift"]:
+def status(*, gateway_port: int | None, run=subprocess.run) -> Literal["active", "unchecked", "missing", "drift"]:
+    """"unchecked": the rules file is right but pf could not be read (no cached
+    sudo ticket), so whether the rules are really loaded is unknown."""
     try:
         on_disk = RULES_PATH.read_text(encoding="utf-8")
     except OSError:
@@ -143,4 +145,6 @@ def status(*, gateway_port: int | None, run=subprocess.run) -> Literal["active",
     if loaded.returncode == 0 and "block " not in (loaded.stdout or ""):
         return "missing"
     expected = render_rules(EXO_PORTS, trusted_interfaces(run=run), gateway_port=gateway_port)
-    return "active" if on_disk == expected else "drift"
+    if on_disk != expected:
+        return "drift"
+    return "active" if loaded.returncode == 0 else "unchecked"
