@@ -149,17 +149,105 @@ def test_quant_picker_marks_predicted_fastest_variant_green(isolated_omm_home, m
     result = runner.invoke(cli.app, ["install", repo_id])
 
     assert result.exit_code == 0
-    titles_by_filename = {c.value: c.title for c in captured_choices["choices"]}
+    titles_by_filename = {
+        c.value: c.title
+        for c in captured_choices["choices"]
+        if not isinstance(c, questionary.Separator)
+    }
     fast_title = titles_by_filename["openllama-3b.Q4_K_M.gguf"]
     slow_title = titles_by_filename["openllama-3b.Q4_K_S.gguf"]
     assert fast_title == [
-        (
-            "fg:green bold",
-            "openllama-3b.Q4_K_M.gguf  (✓ fits, ~1.8GB needed, predicted fastest)",
-        )
+        # "~1.8GB" padded to the "Memory needed" header's width, then the tag.
+        ("fg:green bold", "Q4_K_M  ✓ fits  " + "~1.8GB".ljust(len("Memory needed")) + "  predicted fastest")
     ]
     assert isinstance(slow_title, str)
     assert "predicted fastest" not in slow_title
+
+
+def test_quant_picker_shows_quant_label_columns_under_a_header(isolated_omm_home, monkeypatch):
+    # #364: the picker used to repeat the full model filename on every row
+    # followed by a prose note. Rows are now just the quant label and
+    # aligned fit / memory columns, under one non-selectable header row.
+    repo_id = "TheBloke/Llama-2-7B-GGUF"
+    candidates = ["llama-2-7b.Q2_K.gguf", "llama-2-7b.Q4_K_M.gguf", "llama-2-7b.Q8_0.gguf"]
+
+    monkeypatch.setattr(
+        cli, "resolve_model", lambda name: (_ for _ in ()).throw(AmbiguousModelError(repo_id, candidates))
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _HARDWARE)
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    captured = {}
+
+    def fake_select(message, choices):
+        captured["message"] = message
+        captured["choices"] = choices
+        return None
+
+    monkeypatch.setattr(questionary, "select", fake_select)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: None)
+
+    result = runner.invoke(cli.app, ["install", repo_id])
+
+    assert result.exit_code == 0
+    header, *choices = captured["choices"]
+    assert isinstance(header, questionary.Separator)
+    assert header.line.split() == ["Quant", "Fit", "Memory", "needed"]
+    assert repo_id in captured["message"]
+    titles = [c.title for c in choices]
+    # Best-fitting, highest-quality first (the default cursor position);
+    # the 7B Q8_0 needs ~8.4GB of a 4GB budget so it sorts last.
+    assert [c.value for c in choices] == [
+        "llama-2-7b.Q4_K_M.gguf",
+        "llama-2-7b.Q2_K.gguf",
+        "llama-2-7b.Q8_0.gguf",
+    ]
+    assert [t.split()[0] for t in titles] == ["Q4_K_M", "Q2_K", "Q8_0"]
+    assert all("llama-2-7b" not in t for t in titles)
+    # Columns line up: every fit cell and memory cell starts at the same
+    # offset as its header.
+    fit_col = header.line.index("Fit")
+    mem_col = header.line.index("Memory")
+    for title in titles:
+        assert title[fit_col - 2 : fit_col] == "  "
+        assert title[fit_col] != " "
+        assert title[mem_col] == "~"
+
+
+def test_quant_picker_keeps_filename_when_label_is_ambiguous(isolated_omm_home, monkeypatch):
+    # Two files sharing one quant, or a file with no recognizable quant,
+    # would be indistinguishable by label alone - those keep the filename.
+    repo_id = "org/repo"
+    candidates = ["base.Q4_K_M.gguf", "instruct.Q4_K_M.gguf", "mystery.gguf", "base.Q8_0.gguf"]
+
+    monkeypatch.setattr(
+        cli, "resolve_model", lambda name: (_ for _ in ()).throw(AmbiguousModelError(repo_id, candidates))
+    )
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _HARDWARE)
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "remote_file_size", lambda *a, **k: None)
+    captured = {}
+
+    def fake_select(message, choices):
+        captured["choices"] = choices
+        return None
+
+    monkeypatch.setattr(questionary, "select", fake_select)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: None)
+
+    result = runner.invoke(cli.app, ["install", repo_id])
+
+    assert result.exit_code == 0
+    first_cell = {
+        c.value: c.title.split()[0]
+        for c in captured["choices"]
+        if not isinstance(c, questionary.Separator)
+    }
+    assert first_cell == {
+        "base.Q4_K_M.gguf": "base.Q4_K_M.gguf",
+        "instruct.Q4_K_M.gguf": "instruct.Q4_K_M.gguf",
+        "mystery.gguf": "mystery.gguf",
+        "base.Q8_0.gguf": "Q8_0",
+    }
 
 
 def test_quant_picker_passes_repo_parameter_count_to_predictor(isolated_omm_home, monkeypatch):
@@ -211,6 +299,7 @@ def test_quant_picker_no_green_marks_when_predictor_model_uncached(isolated_omm_
     result = runner.invoke(cli.app, ["install", repo_id])
 
     assert result.exit_code == 0
-    (choice,) = captured_choices["choices"]
+    header, choice = captured_choices["choices"]
+    assert isinstance(header, questionary.Separator)
     assert isinstance(choice.title, str)
     assert "predicted fastest" not in choice.title

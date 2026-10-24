@@ -95,7 +95,7 @@ def test_help_all_expands_nested_setting_subcommands():
     result = runner.invoke(cli.app, ["help", "--all"])
 
     assert result.exit_code == 0, result.stdout
-    for name in ("telemetry", "upload", "version", "calibrate", "catalog-trust", "catalog-status", "catalog-rollback"):
+    for name in ("telemetry", "upload", "version", "catalog-trust", "catalog-status", "catalog-rollback"):
         assert f"setting {name}" in result.stdout, f"missing setting subcommand: {name}"
 
 
@@ -186,14 +186,14 @@ def test_help_all_excludes_hidden_commands():
 def test_help_all_setting_subcommand_usage_line_is_not_double_prefixed():
     # Regression guard: the nested-group renderer once built each setting
     # subcommand's context with the already-prefixed name (e.g.
-    # "setting calibrate") as a child of a context whose own info_name was
+    # "setting catalog-trust") as a child of a context whose own info_name was
     # "setting", so Click's usage-line builder walked the parent chain and
-    # duplicated the prefix into "setting setting calibrate".
+    # duplicated the prefix into "setting setting catalog-trust".
     result = runner.invoke(cli.app, ["help", "--all"])
 
     assert result.exit_code == 0, result.stdout
     assert "setting setting" not in result.stdout
-    assert "setting calibrate" in result.stdout
+    assert "setting catalog-trust" in result.stdout
 
 
 def test_help_with_command_name_shows_that_commands_help():

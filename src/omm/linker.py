@@ -652,6 +652,31 @@ def _owned_copy(path: Path, record: dict[str, object] | None = None) -> bool:
     )
 
 
+def shared_link_bytes() -> int:
+    """Bytes omm is not storing twice right now: the source file's size once
+    for every hard link or symlink omm created and still owns. Owned copies
+    save nothing, and a link that was replaced or whose source is gone
+    counts 0, so the figure tracks what is on disk, not a history."""
+    total = 0
+    for key, record in _load_link_ownership().items():
+        kind = record.get("kind")
+        path = Path(key)
+        if kind == "hardlink":
+            owned = _owned_hardlink(path, record)
+        elif kind == "symlink":
+            owned = _owned_symlink(path, record)
+        else:
+            continue
+        source = record.get("source")
+        if not owned or not isinstance(source, str):
+            continue
+        try:
+            total += Path(source).stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def _copy_source_identity(path: Path) -> list[int]:
     """Detect a replaced or edited source without hashing multi-GB models."""
     stat = path.stat()

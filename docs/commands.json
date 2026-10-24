@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.14",
+  "omm_version": "0.4.25",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -93,7 +93,7 @@
       "kind": "command",
       "aliases": [],
       "summary": "Measure a small reproducible quality pack and decode speed.",
-      "description": "",
+      "description": "On Ollama, each measured speed also updates this machine's local speed correction for `omm recommend`. It stays in ~/.omm and is never uploaded.",
       "usage": "omm benchmark [OPTIONS] {models}...",
       "arguments": [
         {
@@ -281,7 +281,7 @@
       "kind": "command",
       "aliases": [],
       "summary": "Clean up leftover partial downloads and broken runner symlinks.",
-      "description": "Removes orphaned partial or unregistered .gguf downloads left behind by interrupted installs, plus symlinks in AI runner model directories whose source .gguf was deleted without going through `omm uninstall`. Also reclaims orphaned `omm pin` archives (see MODEL_ARCHIVE_DIR) - an archived version whose model is still registered, pinned or not, is never touched here.",
+      "description": "Removes orphaned partial or unregistered .gguf downloads left behind by interrupted installs, plus symlinks in AI runner model directories whose source .gguf was deleted without going through `omm uninstall`. Also reclaims orphaned `omm pin` archives (see MODEL_ARCHIVE_DIR) - an archived version whose model is still registered, pinned or not, is never touched here. Finally discards install records that no running install needs: interrupted or failed installs (which can no longer resume once their partial file is gone), finished installs of models that were since removed, and unreadable record files.",
       "usage": "omm cleanup [OPTIONS]",
       "arguments": [],
       "options": [
@@ -2095,7 +2095,7 @@
       ],
       "kind": "group",
       "aliases": [],
-      "summary": "View or change omm settings (telemetry, upload policy, version, calibration, catalog trust).",
+      "summary": "View or change omm settings (telemetry, upload policy, version, catalog trust).",
       "description": "",
       "usage": "omm setting [OPTIONS] COMMAND [ARGS]...",
       "arguments": [],
@@ -2115,48 +2115,6 @@
       "arguments": [],
       "options": [],
       "docs_url": "https://omm.run/commands/setting#auto-import"
-    },
-    {
-      "path": [
-        "setting",
-        "calibrate"
-      ],
-      "kind": "command",
-      "aliases": [],
-      "summary": "Correct this machine's local speed estimate without uploading data.",
-      "description": "",
-      "usage": "omm setting calibrate [OPTIONS] [model_name]",
-      "arguments": [
-        {
-          "name": "model_name",
-          "help": "Installed Ollama-linked model; defaults to the smallest available model.",
-          "required": false
-        }
-      ],
-      "options": [
-        {
-          "flags": [
-            "--quiet",
-            "-q"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
-          "default": null,
-          "global": true
-        },
-        {
-          "flags": [
-            "--no-color"
-          ],
-          "metavar": null,
-          "is_flag": true,
-          "help": "Disable colored output.",
-          "default": null,
-          "global": true
-        }
-      ],
-      "docs_url": "https://omm.run/commands/setting#calibrate"
     },
     {
       "path": [
