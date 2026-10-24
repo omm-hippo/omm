@@ -39,5 +39,10 @@ def test_beginner_install_doc_covers_required_topics():
         "omm engine install",
         "새 창",
         "미검증",
+        "Install-OMM.cmd",
+        "Install-OMM.command",
+        "Gatekeeper",
+        "추가 정보",
+        "이 창을 닫지 마세요",
     ):
         assert needle in text
