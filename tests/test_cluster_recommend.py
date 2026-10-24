@@ -1,0 +1,76 @@
+"""Cluster model recommendation and placement choice (#503)."""
+
+from __future__ import annotations
+
+from omm.cluster.exo_client import ClusterNode, ClusterState, ExoModel, Placement
+from omm.cluster.recommend import HEADROOM, Candidate, choose_placement, prefilter, rank
+
+GiB = 1024 ** 3
+
+
+def pl(sharding, deltas, error=None, model_id="m"):
+    return Placement(model_id=model_id, sharding=sharding, instance={"s": sharding}, memory_delta_by_node=deltas, error=error)
+
+
+def m(model_id, size):
+    return ExoModel(model_id=model_id, size_bytes=size)
+
+
+def st(available):
+    nodes = tuple(
+        ClusterNode(node_id=f"n{i}", name=f"mac-{i}", memory_total_bytes=a, memory_available_bytes=a, rdma="enabled", os_version="26.2")
+        for i, a in enumerate(available)
+    )
+    return ClusterState(master_id="n0", nodes=nodes, links=(), instances=())
+
+
+def test_headroom_constant():
+    assert HEADROOM == 0.85
+
+
+def test_choose_placement_prefers_pipeline_then_smallest_peak():
+    p = [pl("Tensor", {"a": 10, "b": 10}), pl("Pipeline", {"a": 30, "b": 5}), pl("Pipeline", {"a": 15, "b": 15}),
+         pl("Pipeline", {"a": 1}, error="no fit")]
+    assert choose_placement(p) == p[2]
+
+
+def test_choose_placement_falls_back_to_other_sharding():
+    p = [pl("Tensor", {"a": 10}), pl("Pipeline", {"a": 1}, error="no fit")]
+    assert choose_placement(p) == p[0]
+
+
+def test_choose_placement_none_when_every_row_errors():
+    assert choose_placement([pl("Pipeline", {"a": 1}, error="no fit")]) is None
+    assert choose_placement([]) is None
+
+
+def test_rank_drops_models_above_headroom_and_sorts_biggest_first():
+    state = st(available=[64 * GiB] * 4)
+    models = [m("small", 20 * GiB), m("big", 200 * GiB), m("huge", 230 * GiB)]
+    previews = {
+        "small": [pl("Pipeline", {"a": 20 * GiB})],
+        "big": [pl("Pipeline", {"a": 50 * GiB, "b": 50 * GiB, "c": 50 * GiB, "d": 50 * GiB})],
+        "huge": [pl("Pipeline", {"a": 58 * GiB, "b": 58 * GiB, "c": 58 * GiB, "d": 58 * GiB})],
+    }
+    ranked = rank(models, previews, state)
+    assert [c.model_id for c in ranked] == ["big", "small"]
+    assert isinstance(ranked[0], Candidate)
+    assert abs(ranked[0].memory_used_fraction - 200 / 256) < 1e-9
+
+
+def test_rank_skips_models_without_previews_and_respects_limit():
+    state = st(available=[64 * GiB] * 4)
+    models = [m(f"x{i}", (i + 1) * GiB) for i in range(8)] + [m("nopreview", 5 * GiB)]
+    previews = {f"x{i}": [pl("Pipeline", {"a": (i + 1) * GiB})] for i in range(8)}
+    ranked = rank(models, previews, state, limit=3)
+    assert [c.model_id for c in ranked] == ["x7", "x6", "x5"]
+
+
+def test_prefilter_skips_unknown_and_oversized_sizes():
+    state = st(available=[64 * GiB])
+    assert prefilter([m("x", None)], state) == []
+    assert prefilter([m("fits", 50 * GiB), m("too-big", 60 * GiB)], state) == [m("fits", 50 * GiB)]
+
+
+def test_empty_cluster_recommends_nothing():
+    assert rank([m("a", 1)], {"a": [pl("Pipeline", {"a": 1})]}, st(available=[])) == []

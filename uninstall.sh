@@ -84,6 +84,15 @@ if [ "$PURGE" = "1" ] && [ -f "$RESOLVED_HOME/link-ownership.json" ]; then
     fi
 fi
 
+# `omm cluster` installs per-user LaunchAgents and a root pf LaunchDaemon that
+# --purge cannot remove (it only deletes files under OMM_HOME). Purging
+# underneath them would leave KeepAlive jobs restarting forever and the
+# boot-time firewall still blocking high TCP ports.
+if [ "$PURGE" = "1" ] && { [ -f "$RESOLVED_HOME/cluster/cluster.json" ] || [ -f /Library/LaunchDaemons/com.omm.cluster-pf.plist ]; }; then
+    echo "This Mac is still set up as part of an omm cluster. Run 'omm cluster leave' first, then re-run with --purge." >&2
+    exit 1
+fi
+
 PIPX_AVAILABLE=0
 if command -v python3 >/dev/null 2>&1 && python3 -m pipx --version >/dev/null 2>&1; then
     run_pipx() { python3 -m pipx "$@"; }
@@ -113,7 +122,7 @@ uninstall_failed() {
 purge_owned_data() {
     # Delete only paths the application owns. Never recursively remove the
     # OMM_HOME container itself: a custom home may contain unrelated files.
-    for owned_dir in models evaluations runtime-sessions install-journal catalog-history model-archive session logs locks bin web-jobs web-chats documents arena agent-connections rag-connections security-checks; do
+    for owned_dir in models evaluations runtime-sessions install-journal catalog-history model-archive session logs locks bin web-jobs web-chats documents arena agent-connections rag-connections security-checks cluster; do
         rm -rf "${RESOLVED_HOME:?}/$owned_dir"
     done
     for owned_file in \

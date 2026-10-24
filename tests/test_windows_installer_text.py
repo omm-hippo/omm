@@ -795,3 +795,13 @@ def test_install_and_uninstall_ps1_do_not_close_the_iex_session_on_failure():
         )
         # every remaining failure exit routes through the helper
         assert script.count("Exit-OmmFailure") >= 2
+
+
+def test_purge_refuses_while_this_mac_is_in_an_omm_cluster():
+    """--purge would delete the cluster's runtime and tokens but leave its
+    LaunchAgents and the root pf LaunchDaemon running (review Important 1)."""
+    sh = (ROOT / "uninstall.sh").read_text(encoding="utf-8")
+    guard = sh.split("PIPX_AVAILABLE=0", 1)[0]
+    assert '"$RESOLVED_HOME/cluster/cluster.json"' in guard
+    assert "/Library/LaunchDaemons/com.omm.cluster-pf.plist" in guard
+    assert "Run 'omm cluster leave' first" in guard
