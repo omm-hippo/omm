@@ -923,4 +923,18 @@ echo "Try:  omm scan"
 echo "Local web manager:  omm web --open   (opens the model manager in your browser; Ctrl+C stops it)"
 echo "Click launchers:     omm web --create-launchers \"$HOME/Desktop\"   (then double-click Open-OMM.command)"
 echo "Tip: run 'omm --install-completion' once (then restart your shell) to enable Tab completion for install/uninstall."
+
+# Opt-in only: the double-click entry (packaging/web-launchers/Install-OMM.command)
+# sets OMM_INSTALL_OPEN_WEB=1 so a beginner lands in the browser manager right
+# after installing. `curl | sh`, CI and every other caller leave it unset and
+# keep the old "print next steps and stop" behavior. This never enables login
+# autostart; that stays an explicit `omm setting web-autostart enable`.
+if [ "${OMM_INSTALL_OPEN_WEB:-}" = "1" ]; then
+    echo
+    echo "Opening the local web manager in your browser. Keep this window open while you use it; Ctrl+C stops it."
+    if ! "$PIPX_BIN_DIR/omm" web --open; then
+        # omm itself is installed and verified above; only the web step failed.
+        echo "omm is installed, but the local web manager did not start. Open a new terminal window and run: omm web --open" >&2
+    fi
+fi
 }
