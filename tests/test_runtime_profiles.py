@@ -217,3 +217,24 @@ def test_native_launch_failure_still_releases_the_profile_alias(model):
         profiles.launch_with_profile(path, adapter, RuntimeModelRef("model"), LoadOptions(512), hardware, fail)
     assert adapter.loaded is False
     assert list((config.OMM_HOME / "runtime-sessions").glob("*.json")) == []
+
+
+@pytest.mark.parametrize("busy, blocked", [("bge-m3:latest", False), ("other-chat", True)])
+def test_saved_profile_launch_ignores_only_the_warm_document_embedding_model(model, busy, blocked):
+    path, _ = model
+    class ProfileAdapter(Adapter):
+        def list_models(self):
+            return [RuntimeModel("model", "model", self.loaded), RuntimeModel(busy, busy, True)]
+        def create_profile_model(self, model, options, *, on_prepare=None):
+            alias = RuntimeModelRef("omm-profile-" + "c" * 32)
+            on_prepare(alias)
+            return alias
+        def remove_profile_model(self, alias):
+            self.loaded = False
+    launch = lambda tag: SimpleNamespace(ok=True)
+    if blocked:
+        with pytest.raises(profiles.ProfileError, match="Other models"):
+            profiles.launch_with_profile(path, ProfileAdapter(), RuntimeModelRef("model"), LoadOptions(512), hardware, launch)
+    else:
+        result, applied = profiles.launch_with_profile(path, ProfileAdapter(), RuntimeModelRef("model"), LoadOptions(512), hardware, launch)
+        assert result.ok and applied

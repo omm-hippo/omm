@@ -8,11 +8,17 @@ from __future__ import annotations
 
 from array import array
 import math
+import re
 import sys
 
 DEFAULT_MODEL = "bge-m3"
 DEFAULT_URL = "http://127.0.0.1:11434"
 BATCH = 16
+# How long Ollama keeps the embedding model in memory after a request. A warm
+# model answers a question in well under a second; a cold one first spends
+# seconds loading. "0" unloads right after every request.
+DEFAULT_KEEP_ALIVE = "5m"
+_KEEP_ALIVE = re.compile(r"0|[1-9][0-9]{0,3}[smh]")
 # The bytes stored in SQLite are little-endian float32, independent of the host.
 _SWAP = sys.byteorder != "little"
 
@@ -23,6 +29,14 @@ class EmbeddingUnavailable(Exception):
     def __init__(self, reason: str, message: str):
         super().__init__(message)
         self.reason = reason
+
+
+def keep_alive_value(text: str) -> str | int:
+    """Validated keep-alive for Ollama: 0 (unload at once) or e.g. "30s", "5m", "1h"."""
+    if not isinstance(text, str) or not _KEEP_ALIVE.fullmatch(text.strip()):
+        raise ValueError("유지 시간은 0(바로 내리기) 또는 30s, 5m, 1h처럼 숫자와 s/m/h로 적어 주세요.")
+    text = text.strip()
+    return 0 if text == "0" else text
 
 
 def pull_hint(model: str) -> str:
@@ -57,16 +71,19 @@ class OllamaEmbedder:
     def _server_message(self) -> str:
         return f"Ollama({self.base_url})에 연결하지 못했어요. Ollama를 켠 뒤 다시 시도해 주세요."
 
-    def embed(self, texts: list[str], *, keep_alive: str | int = 0) -> list[list[float]]:
+    def embed(self, texts: list[str], *, keep_alive: str | int = DEFAULT_KEEP_ALIVE, progress=None) -> list[list[float]]:
+        """Normalized vectors for ``texts``; ``progress(done, total)`` runs once before the first batch and after each one."""
         from omm.engines.base import RuntimeAdapterError
         vectors: list[list[float]] = []
+        if progress is not None:
+            progress(0, len(texts))
         for offset in range(0, len(texts), BATCH):
             batch = texts[offset:offset + BATCH]
             last = offset + BATCH >= len(texts)
             payload = {"model": self.model, "input": batch, "truncate": True,
-                       # Unload right after the final batch so a later answer
-                       # does not find an unexpected model resident in memory.
-                       "keep_alive": keep_alive if last else "1m"}
+                       # With keep_alive 0 the model still stays between the
+                       # batches of one request, then unloads after the last.
+                       "keep_alive": keep_alive if last or keep_alive != 0 else "1m"}
             try:
                 data = self._client.request("POST", "/api/embed", payload=payload, timeout=300,
                                             default_failure="unknown").data
@@ -83,6 +100,8 @@ class OllamaEmbedder:
                 if not isinstance(row, list) or not row or not all(isinstance(x, (int, float)) and math.isfinite(x) for x in row):
                     raise EmbeddingUnavailable("failed", "Ollama가 올바른 임베딩을 돌려주지 않았어요.")
                 vectors.append(normalize(row))
+            if progress is not None:
+                progress(len(vectors), len(texts))
         if vectors and len({len(v) for v in vectors}) != 1:
             raise EmbeddingUnavailable("failed", "임베딩 차원이 일정하지 않아요.")
         return vectors
@@ -111,4 +130,11 @@ def unpack(blob: bytes) -> array:
 
 
 def dot(a, b) -> float:
+    # Vectors are unit length, so plain float accumulation is precise enough;
+    # math.sumprod (3.12+) runs in C, about four times faster per chunk.
+    if _SUMPROD is not None:
+        return _SUMPROD(a, b)
     return math.fsum(x * y for x, y in zip(a, b))
+
+
+_SUMPROD = getattr(math, "sumprod", None)
