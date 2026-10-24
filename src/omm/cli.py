@@ -803,7 +803,7 @@ def agent_status(harness: str = typer.Argument(..., help="claude, codex or pi.")
 
 rag_app = typer.Typer(
     name="rag",
-    help="Search local documents by meaning and words (hybrid). Text and questions stay on this computer; embeddings use local Ollama only.",
+    help="Search local documents by meaning and words (hybrid), and serve them to coding agents over a local MCP server. Text and questions stay on this computer; embeddings use local Ollama only.",
     rich_markup_mode=None,
     cls=_DocsEpilogGroup,
 )
@@ -1056,6 +1056,9 @@ def rag_embedding_set_cmd(
     _rag_model_hint(store)
     if status["reindex_needed"]:
         console.print(f"문서 {status['reindex_needed']}개는 재색인이 필요해요. `omm rag reindex`를 실행해 주세요.")
+from omm import rag_cli as _rag_cli  # noqa: E402  (agent bridge commands live in their own module)
+
+_rag_cli.register(rag_app)
 
 
 engine_app = typer.Typer(

@@ -67,6 +67,7 @@ verification checks the selected model on your machine.
   - [Install & manage models](#install--manage-models)
   - [Verify & benchmark](#verify--benchmark)
   - [Update & configuration](#update--configuration)
+  - [Documents for coding agents](#documents-for-coding-agents)
   - [Local logs and automatic import](#local-logs-and-automatic-import)
   - [Scripting](#scripting)
 - [Self-hosted benchmark data](#self-hosted-benchmark-data)
@@ -612,6 +613,18 @@ omm setting catalog-rollback  # Restore the most recent different recommendation
 See [local agent connections](docs/agent-connections.md) for backup, restoration,
 configuration precedence and verification limits. For reviewed Python runtime
 extensions, see the [runtime plugin contract](docs/runtime-plugins.md).
+
+### Documents for coding agents
+
+```sh
+omm rag mcp  # Run the local document search MCP server on stdin/stdout (started by a coding agent)
+omm rag connect <claude-code|codex|pi|cursor>  # Register OMM document search as an MCP server in a coding agent
+omm rag disconnect <claude-code|codex|pi|cursor>  # Remove only the OMM MCP entry and keep other settings
+```
+
+Coding agents search documents registered in OMM through a local stdio MCP
+server; documents and questions never leave this computer. See
+[document search for coding agents](docs/rag-mcp.md).
 
 ### Local logs and automatic import
 
