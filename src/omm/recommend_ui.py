@@ -297,12 +297,79 @@ def print_screen(
 # already computed. It names the kind of basis only; it is not a confidence
 # or accuracy figure (none is calibrated - see the selected-model detail).
 _EVIDENCE_MARKERS = {
-    "local_calibrated": "measured",
+    "local_calibrated": "calibrated",
     "feature_support": "measured",
     "insufficient": "unverified",
     "static_rules": "rules",
     "synthetic_prior": "synthetic",
 }
+
+
+_EVIDENCE_DETAIL = {
+    "local_calibrated": "estimate from measurements (corrected with speed runs on this computer)",
+    "feature_support": "measured on a similar hardware/model/runtime configuration",
+    "insufficient": "insufficient evidence (no matching measurement confirmed for this configuration)",
+    "static_rules": "memory rules only (no speed measurements)",
+    "synthetic_prior": "synthetic data only (no real-device measurements)",
+}
+
+
+def _known(value) -> str:
+    return f"{value:,}" if type(value) is int else "unknown"
+
+
+def evidence_detail_lines(evidence: dict) -> list[str]:
+    """Plain-language evidence lines for the selected-model detail.
+
+    Counts stay separate (raw rows vs repeated runs vs configurations) and
+    no accuracy figure is shown because none is calibrated.
+    """
+    status = str(evidence.get("status"))
+    lines = ["Prediction evidence: " + _EVIDENCE_DETAIL.get(status, _EVIDENCE_DETAIL["insufficient"])]
+    support = evidence.get("matching_feature_configurations")
+    if isinstance(support, dict):
+        lines.append(
+            f"Matching configurations: training {_known(support.get('training'))}, "
+            f"holdout {_known(support.get('holdout'))} (distinct feature configurations, "
+            "not exact-checkpoint or device counts)."
+        )
+    samples = evidence.get("local_calibration_samples")
+    if type(samples) is int and samples > 0:
+        lines.append(f"Local calibration: {samples:,} speed runs on this computer (1 device).")
+    counts = evidence.get("catalog_measurements")
+    if isinstance(counts, dict):
+        lines.append(
+            f"Catalog measurements: {_known(counts.get('raw_rows'))} raw rows "
+            f"({_known(counts.get('valid_rows'))} valid), "
+            f"{_known(counts.get('repeat_samples_collapsed'))} repeated runs merged, "
+            f"{_known(counts.get('distinct_configurations'))} distinct configurations; "
+            "independent devices unknown."
+        )
+    lines.append("No calibrated accuracy or confidence interval is available for this estimate.")
+    return lines
+
+
+def wiki_detail_lines(wiki: dict | None) -> list[tuple[str, str]]:
+    """Model wiki lines for an exact checkpoint match, or an explicit absence."""
+    if not wiki:
+        return [("Model wiki: 정보 없음 (no entry for this exact checkpoint).", MUTED)]
+    lines = [(wiki["summary"], "value")]
+    tasks = ", ".join(str(task) for task in wiki.get("tasks") or []) or "정보 없음"
+    lines.append((f"Use cases: {tasks}", MUTED))
+    cautions = [claim["text"] for claim in wiki.get("cautions") or []]
+    lines.append(("Limits: " + (" / ".join(cautions) if cautions else "정보 없음"), MUTED))
+    lines.append((
+        f"Model wiki {wiki['contentVersion']} / reviewed {wiki['reviewedAt']}; "
+        "descriptions are publisher/editorial claims, not OMM quality measurements.", MUTED,
+    ))
+    if wiki.get("match") == "declared_base_repository":
+        lines.append((f"Describes the base checkpoint {wiki['repository']}; this package's quantization "
+                      "and runtime compatibility are checked separately.", MUTED))
+    if wiki.get("stale"):
+        lines.append(("Wiki review is older than 30 days; recheck the source.", WARNING))
+    for source in wiki.get("sources") or []:
+        lines.append((source["url"], MUTED))
+    return lines
 
 
 def evidence_marker(candidate: dict) -> str:
@@ -481,17 +548,11 @@ def print_detail(console: Console, info: object, row: RecommendationRow) -> None
     )
     evidence = row.candidate.get("recommendation_evidence")
     if isinstance(evidence, dict):
-        console.print(Text("Prediction evidence: " + str(evidence.get("reason", "Unknown")), style=MUTED))
-        support = evidence.get("matching_feature_configurations")
-        if support is not None:
-            console.print(Text(f"Matching feature configurations: training {support['training']}, holdout {support['holdout']}. Exact checkpoint/device counts are unknown.", style=MUTED))
+        for line in evidence_detail_lines(evidence):
+            console.print(Text(line, style=MUTED))
     from omm import model_wiki
-    wiki = model_wiki.describe(row.candidate, "en")
-    if wiki:
-        console.print(Text(wiki["summary"], style="value"))
-        console.print(Text(f"Model wiki {wiki['contentVersion']} / reviewed {wiki['reviewedAt']}; descriptions are publisher/editorial claims.", style=MUTED))
-        for source in wiki["sources"]:
-            console.print(Text(source["url"], style=MUTED))
+    for line, style in wiki_detail_lines(model_wiki.describe(row.candidate, "en")):
+        console.print(Text(line, style=style))
     basis = predictor.memory_estimate_basis(row.candidate)
     if basis == "model_name":
         console.print(Text(

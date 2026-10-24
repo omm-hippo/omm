@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {createServer} from 'vite';
-import {searchDestinations,readAppearance,shouldSend} from '../src/workspace-state.js';
+import {searchDestinations,readAppearance,shouldSend,measurementSummary,wikiSummary} from '../src/workspace-state.js';
 
 // Composition Enter commits Korean/Japanese input; it must never submit a chat.
 test('composition and multiline shortcuts never submit a message',()=>{
@@ -46,4 +46,20 @@ test('answers render GFM tables and code without remote images or executable mar
     assert.match(output,/print\(7\)/);
     assert.doesNotMatch(output,/<img|<script|javascript:|onerror|track\.png/);
   } finally {await server.close();}
+});
+
+test('recommendation evidence keeps counts separate and never invents accuracy',()=>{
+  const text=measurementSummary({raw_rows:488,valid_rows:331,repeat_samples_collapsed:98,distinct_configurations:233,independent_devices:null});
+  assert.match(text,/원시 측정 488행\(유효 331행\)/);
+  assert.match(text,/반복 측정 병합 98회/);
+  assert.match(text,/서로 다른 구성 233개/);
+  assert.match(text,/독립 장비 수 확인 불가/);
+  assert.doesNotMatch(text,/%/);
+  assert.match(measurementSummary({}),/원시 측정 확인 불가\(유효 확인 불가\)/);
+});
+
+test('recommendation rows show exact wiki use cases or an explicit absence',()=>{
+  assert.equal(wikiSummary(null),'위키 정보 없음');
+  assert.equal(wikiSummary({tasks:['coding','agents'],reviewedAt:'2026-10-02'}),'용도: 코딩 · 에이전트 · 검토 2026-10-02');
+  assert.equal(wikiSummary({tasks:[]}),'용도: 정보 없음 · 검토 정보 없음');
 });
