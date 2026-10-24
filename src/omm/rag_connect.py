@@ -91,11 +91,9 @@ def server_entry(harness) -> dict:
     entry = {"command": command, "args": args}
     if harness in ("claude-code", "cursor"):
         entry = {"type": "stdio", **entry}
-    if os.environ.get("OMM_HOME"):
-        # The harness starts the server without this shell's environment.
-        entry["env"] = {"OMM_HOME": str(config.OMM_HOME)}
-    elif harness == "claude-code":
-        entry["env"] = {}
+    # The harness starts the server without this shell's environment, so pin
+    # the document store this omm uses even when OMM_HOME is the default.
+    entry["env"] = {"OMM_HOME": str(config.OMM_HOME)}
     if harness == "codex":
         entry["startup_timeout_sec"] = 30
     if harness == "pi":
