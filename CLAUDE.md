@@ -266,6 +266,34 @@ waits for each candidate file's size to stop changing, then runs the same
 `notify.py`. `watchdog`/`plyer` are the `watch` optional extra - never a runtime
 dependency of a plain `omm` install.
 
+**Cluster.** `omm cluster` (`src/omm/cluster/`, #503) turns Thunderbolt-5-linked Macs into
+one exo cluster. omm never manages MLX files; exo owns its models and omm only drives its
+loopback API (`exo_client.py`, field mapping verified against exo 1.0.71 fixtures in
+`tests/fixtures/exo/`). The bundled backend stalls `launched-suspended` when exec'd from
+inside `EXO.app`, so `preflight.stage_runtime` copies `Contents/Resources/exo` to
+`OMM_HOME/cluster/exo-runtime`, and `exo_service.py` runs that copy as LaunchAgent
+`com.omm.cluster-exo`. The agent sets both `EXO_LIBP2P_NAMESPACE` and
+`EXO_ZENOH_NAMESPACE`, passes `--libp2p-port 52416`, and puts `/usr/sbin` in PATH.
+`firewall.py` loads pf sub-anchor `com.apple/omm-cluster` through root LaunchDaemon
+`com.omm.cluster-pf`. The anchor trusts lo0 and Thunderbolt and blocks exo's ports plus
+every TCP port in 49153-65535 from elsewhere, because the MLX ring binds a random high port
+on 0.0.0.0. The blocks are `block return` (RST), never `block drop`: exo's libp2p dials
+every address a peer advertises, and a silently dropped SYN on a blocked address stalled
+Thunderbolt peer discovery for 40 s or forever. `netconfig.py` replaces macOS's Thunderbolt
+Bridge (no spanning tree: a 3-Mac triangle floods it with 38k+ packets per 5 s) with one DHCP
+service per Thunderbolt port (`omm Thunderbolt N`, link-local 169.254.x.x addresses), and
+init/join run it before exo starts and before the pf rules are written; `leave` restores the
+bridge by editing preferences.plist (order matters, see its docstring). `power.py` sets `pmset -a sleep 0` in init/join (original value saved for
+`leave`): an idle-slept Mac only DarkWakes ~45 s per packet and keeps dropping out. `appfw.py`
+adds exo (and the gateway's real Python binary on the head) to the macOS Application Firewall:
+with ALF on, an unknown binary's inbound connections wait forever for an on-screen Allow click. The
+head Mac's `gateway.py` (LaunchAgent `com.omm.cluster-gateway`, hidden
+`_cluster-gateway-run`, port 52440) is the only LAN-reachable entry. It verifies hashed
+tokens from `tokens.py` (fail closed) and forwards four inference routes. It also folds
+Claude Code's `role: "system"` messages into the top-level `system` field, because exo
+answers those with 422. Specs: `docs/superpowers/specs/2026-10-22-exo-cluster-design.md`
+and `2026-10-22-exo-cluster-spike-findings.md`.
+
 **CLI shape.** `cli.py` is a ~9,300-line Typer monolith (entry `omm.cli:main`). Startup speed
 matters: `questionary`, `requests`, `prompt_toolkit`, and `importlib.metadata` are lazy-imported
 inside functions to keep `omm help` near ~140ms — do not hoist them back to module scope. Tests

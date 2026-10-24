@@ -430,6 +430,15 @@ omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
 omm engine security [ENGINE] [--fix-local-only] [--json] [--yes]  # Show whether Ollama/LM Studio accept connections from other devices
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
+omm cluster init  # Make this Mac the head of a Thunderbolt-linked exo cluster (macOS 26.2+)
+omm cluster join <namespace>  # Add this Mac to the cluster the head Mac created
+omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, and any problems
+omm cluster restart  # Restart exo on this Mac when status lists Macs that are on but missing
+omm cluster model [MODEL] [--unload]  # Recommend exo models that fit, or load/unload one
+omm cluster token add <name>  # Create an employee access token for the cluster gateway (head Mac; shown once)
+omm cluster token list  # List employee tokens by name (head Mac)
+omm cluster token revoke <name>  # Revoke an employee token (head Mac)
+omm cluster leave [--yes]  # Remove this Mac's cluster firewall, services, and settings
 omm scan [--json]  # Memory, storage, installed runners, and models
 omm doctor [--json]  # Read-only diagnostics plus safe next steps for installation and Ollama findings
 omm bug-report [--include os|policies|checks|stages] [--save PATH]  # Preview and save local diagnostics and optional stage counts
