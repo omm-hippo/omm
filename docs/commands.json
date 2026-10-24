@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.16",
+  "omm_version": "0.4.18",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -1568,6 +1568,37 @@
           "help": "Replace a document that has the same file name.",
           "default": null,
           "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
         }
       ],
       "docs_url": "https://omm.run/commands/rag#add"
@@ -1790,6 +1821,16 @@
           "help": "Local Ollama loopback origin (default http://127.0.0.1:11434).",
           "default": null,
           "global": false
+        },
+        {
+          "flags": [
+            "--keep-alive"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "How long Ollama keeps the embedding model in memory after a search or import, e.g. 30s, 5m (default), 1h; 0 unloads at once.",
+          "default": null,
+          "global": false
         }
       ],
       "docs_url": "https://omm.run/commands/rag#embedding-model"
@@ -1839,6 +1880,37 @@
           "help": "Rebuild vectors even for documents that are current.",
           "default": null,
           "global": false
+        },
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
         }
       ],
       "docs_url": "https://omm.run/commands/rag#reindex"

@@ -47,7 +47,8 @@ def answer(request, stop):
 
 
 def store_embedding_model() -> str:
-    return DocumentStore().embedding_settings()["model"].removesuffix(":latest")
+    from omm.documents import configured_embedding_model
+    return configured_embedding_model()
 
 
 def _generate(request, stop, sources, result):

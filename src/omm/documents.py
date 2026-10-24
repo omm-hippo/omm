@@ -352,15 +352,18 @@ class DocumentStore:
     def _settings(db) -> dict:
         values = {row["key"]: row["value"] for row in db.execute("SELECT key, value FROM meta")}
         return {"model": values.get("embedding_model", document_embeddings.DEFAULT_MODEL),
-                "base_url": values.get("embedding_url", document_embeddings.DEFAULT_URL)}
+                "base_url": values.get("embedding_url", document_embeddings.DEFAULT_URL),
+                "keep_alive": values.get("embedding_keep_alive", document_embeddings.DEFAULT_KEEP_ALIVE)}
 
     def embedding_settings(self) -> dict:
         with self.connection() as db:
             return self._settings(db)
 
-    def set_embedding_model(self, model: str, base_url: str | None = None) -> dict:
+    def set_embedding_model(self, model: str, base_url: str | None = None, keep_alive: str | None = None) -> dict:
         if not isinstance(model, str) or not _MODEL_NAME.fullmatch(model):
             raise ValueError("임베딩 모델 이름을 확인해 주세요. 예: bge-m3")
+        if keep_alive is not None:
+            keep_alive = str(document_embeddings.keep_alive_value(keep_alive))
         if base_url is not None:
             from omm.engines.base import require_loopback_base_url
             try:
@@ -372,15 +375,21 @@ class DocumentStore:
             db.execute("INSERT OR REPLACE INTO meta VALUES('embedding_model', ?)", (model,))
             if base_url is not None:
                 db.execute("INSERT OR REPLACE INTO meta VALUES('embedding_url', ?)", (base_url,))
+            if keep_alive is not None:
+                db.execute("INSERT OR REPLACE INTO meta VALUES('embedding_keep_alive', ?)", (keep_alive,))
             settings = self._settings(db)
         return settings
 
-    def _embed(self, texts, settings):
-        """(vectors, None) or (None, reason message); never raises for an unavailable server."""
+    def _embed(self, texts, settings, progress=None):
+        """(vectors, None) or (None, reason message); never raises for an unavailable server.
+
+        ``progress(done, total)`` runs after each embedding batch.
+        """
         if not texts:
             return [], None
         try:
-            return _embedder(settings["model"], settings["base_url"]).embed(texts), None
+            return _embedder(settings["model"], settings["base_url"]).embed(
+                texts, keep_alive=_keep_alive(settings), progress=progress), None
         except document_embeddings.EmbeddingUnavailable as error:
             return None, str(error)
 
@@ -475,9 +484,17 @@ class DocumentStore:
             raise ValueError("전체 문서의 검색 텍스트는 200만 자까지 지원해요. 기존 문서를 정리해 주세요.")
         return old, False
 
-    def import_document(self, name: str, content: bytes, *, replace=False, collection=None):
+    def import_document(self, name: str, content: bytes, *, replace=False, collection=None, progress=None):
+        """Store and index one document.
+
+        ``progress(stage, done, total)`` reports ``("extract", 0, 0)`` before
+        text extraction and ``("embed", done, total)`` after each embedding
+        batch, so a caller can show that a long CPU embedding is moving.
+        """
         if not isinstance(name, str) or not 1 <= len(name) <= 180 or Path(name).name != name or any(ord(c) < 32 for c in name) or "\\" in name:
             raise ValueError("문서 파일 이름을 확인해 주세요.")
+        if progress is not None:
+            progress("extract", 0, 0)
         pages = extract(name, content)
         pieces = list(chunks(pages))
         digest = hashlib.sha256(content).hexdigest()
@@ -489,12 +506,12 @@ class DocumentStore:
         if unchanged:
             result = {"id": old["id"], **base, "unchanged": True}
             if semantic_state(old, settings["model"]) != "ready":
-                outcome = self._reindex_one(old["id"], settings)
+                outcome = self._reindex_one(old["id"], settings, progress)
                 return {**result, "semantic": outcome is None, "semantic_notice": outcome}
             return {**result, "semantic": True, "semantic_notice": None}
         # Embedding can take a while on CPU; it runs before the write lock so
         # other readers are not blocked, and a failure keeps the lexical index.
-        vectors, notice = self._embed([row[3] for row in pieces], settings)
+        vectors, notice = self._embed([row[3] for row in pieces], settings, _stage(progress, "embed"))
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             old, unchanged = self._admit(db, target["id"], name, digest, pieces, replace)
@@ -517,14 +534,14 @@ class DocumentStore:
             notice = f"단어 검색 색인만 만들었어요. {notice} 그 뒤 `omm rag reindex`로 의미 색인을 만들 수 있어요."
         return {"id": key, **base, "chunks": len(pieces), "sha256": digest, "semantic": bool(vectors), "semantic_notice": notice}
 
-    def _reindex_one(self, key, settings):
+    def _reindex_one(self, key, settings, progress=None):
         """Re-embed one document's stored chunks. None on success, else the reason."""
         with self.connection() as db:
             row = db.execute("SELECT sha256, chunking FROM documents WHERE id=?", (key,)).fetchone()
             if row is None:
                 return "문서가 바뀌었어요. 목록을 새로고침해 주세요."
             pieces = [dict(r) for r in db.execute("SELECT page, start, text FROM chunks WHERE document_id=? ORDER BY page, start", (key,))]
-        vectors, notice = self._embed([p["text"] for p in pieces], settings)
+        vectors, notice = self._embed([p["text"] for p in pieces], settings, _stage(progress, "embed"))
         if vectors is None:
             return notice
         with self.connection() as db:
@@ -539,8 +556,11 @@ class DocumentStore:
                        (settings["model"] if vectors else None, len(vectors[0]) if vectors else None, key))
         return None
 
-    def reindex(self, collection=None, *, everything=False) -> dict:
-        """Build semantic vectors for documents without current ones (all with everything=True)."""
+    def reindex(self, collection=None, *, everything=False, progress=None) -> dict:
+        """Build semantic vectors for documents without current ones (all with everything=True).
+
+        ``progress(name, stage, done, total)`` reports each embedding batch.
+        """
         settings = self.embedding_settings()
         documents = self.list(collection)
         result = {"model": settings["model"], "reindexed": [], "already_current": 0, "failed": None,
@@ -551,7 +571,7 @@ class DocumentStore:
             if document["semantic"] == "ready" and not everything:
                 result["already_current"] += 1
                 continue
-            notice = self._reindex_one(document["id"], settings)
+            notice = self._reindex_one(document["id"], settings, _named(progress, document["name"]))
             if notice:
                 result["failed"] = {"name": document["name"], "notice": notice}
                 break
@@ -642,7 +662,8 @@ class DocumentStore:
             notice = "의미 검색 색인이 없어서 단어 검색만 했어요. `omm rag reindex`로 의미 색인을 만들 수 있어요." if rows else None
         else:
             try:
-                question_vector = _embedder(settings["model"], settings["base_url"]).embed([question])[0]
+                question_vector = _embedder(settings["model"], settings["base_url"]).embed(
+                    [question], keep_alive=_keep_alive(settings))[0]
             except document_embeddings.EmbeddingUnavailable as error:
                 notice = f"{error} 그래서 단어 검색만 했어요."
             else:
@@ -675,6 +696,44 @@ class DocumentStore:
     def answers(self):
         with self.connection() as db:
             return [json.loads(row[0]) for row in db.execute("SELECT payload FROM answers ORDER BY created_at DESC LIMIT 30")]
+
+
+def configured_embedding_model() -> str:
+    """The document-search embedding model (without ``:latest``); never creates the store."""
+    if not (config.OMM_HOME / "documents" / "library.sqlite3").is_file():
+        return document_embeddings.DEFAULT_MODEL
+    return DocumentStore().embedding_settings()["model"].removesuffix(":latest")
+
+
+def without_embedding_model(models, engine: str) -> list:
+    """Runtime models minus the warm document-search embedding model.
+
+    Searches keep that model loaded for a few minutes (``keep_alive``). It is
+    not another chat or answer task, so checks for "another model is busy"
+    skip it; memory checks still see the RAM it uses.
+    """
+    models = list(models)
+    if engine != "ollama":
+        return models
+    embedding = configured_embedding_model()
+    return [m for m in models if str(getattr(m, "key", "")).removesuffix(":latest") != embedding]
+
+
+def _keep_alive(settings):
+    try:
+        return document_embeddings.keep_alive_value(settings.get("keep_alive", document_embeddings.DEFAULT_KEEP_ALIVE))
+    except ValueError:
+        return document_embeddings.DEFAULT_KEEP_ALIVE
+
+
+def _stage(progress, stage):
+    """Adapt ``progress(stage, done, total)`` to the embedder's ``(done, total)``."""
+    return None if progress is None else (lambda done, total: progress(stage, done, total))
+
+
+def _named(progress, name):
+    """Adapt ``progress(name, stage, done, total)`` to one document's ``(stage, done, total)``."""
+    return None if progress is None else (lambda stage, done, total: progress(name, stage, done, total))
 
 
 def _order(row):
@@ -735,11 +794,12 @@ def import_request(request):
     return DocumentStore().import_document(request["filename"], content, replace=request.get("replace") is True)
 
 
-def import_paths(collection, paths, *, replace=False):
+def import_paths(collection, paths, *, replace=False, progress=None):
     """Import files and directories (recursively) from disk into a collection.
 
     Unsupported suffixes inside a directory are skipped and counted; an
     explicitly named unsupported file is reported as a failure.
+    ``progress(name, stage, done, total)`` reports each file's steps.
     """
     store = DocumentStore()
     with store.connection() as db:
@@ -767,7 +827,8 @@ def import_paths(collection, paths, *, replace=False):
             try:
                 if path.stat().st_size > MAX_UPLOAD:
                     raise ValueError("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.")
-                results.append({"path": str(path), **store.import_document(path.name, path.read_bytes(), replace=replace, collection=collection)})
+                results.append({"path": str(path), **store.import_document(path.name, path.read_bytes(), replace=replace, collection=collection,
+                                                                          progress=_named(progress, path.name))})
                 continue
             except (ValueError, OSError) as error:
                 problem = str(error) if isinstance(error, ValueError) else "파일을 읽지 못했어요. 권한을 확인해 주세요."

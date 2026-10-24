@@ -15,6 +15,8 @@ CONCEPTS = [("연차", "휴가", "쉬는", "휴일"), ("출장", "숙박", "호�
 
 LEAVE = '연차 휴가는 입사 1년 후 15일이 주어집니다.'.encode()
 TRAVEL = '출장 숙박비는 1박 10만원 한도입니다.'.encode()
+# Long enough for more than one embedding batch.
+LONG = "\n\n".join(f'연차 휴가 조항 {i}. ' + '가나다라마바사 ' * 120 for i in range(40))
 
 
 def fake_vector(text, dims):
@@ -114,8 +116,8 @@ def test_paraphrase_found_by_hybrid_but_not_by_words(ollama):
     source = result['sources'][0]
     assert source['match'] == 'semantic' and source['method'] == 'hybrid' and source['similarity'] > 0.9
     assert source['text'] == LEAVE.decode()[source['start']:source['end']]
-    # Questions are embedded with keep_alive 0 so no model stays resident.
-    assert ollama.requests[-1] == {'model': 'bge-m3', 'input': [question], 'truncate': True, 'keep_alive': 0}
+    # The model stays warm for the default window so the next question is fast.
+    assert ollama.requests[-1] == {'model': 'bge-m3', 'input': [question], 'truncate': True, 'keep_alive': '5m'}
 
 
 def test_fusion_ranks_chunks_found_by_both_methods_first(ollama):
@@ -346,3 +348,96 @@ def test_rag_crash_is_never_queued_as_crash_report(monkeypatch):
     monkeypatch.setattr(cli.sys, 'argv', ['omm', 'rag', 'search', 'PRIVATE_QUESTION'])
     monkeypatch.setattr(cli.error_report, 'queue_report', lambda *a, **k: pytest.fail('rag crash must not be queued'))
     cli._queue_crash_report(RuntimeError('PRIVATE_DOCUMENT_TEXT'))
+
+
+def test_keep_alive_is_configurable_and_zero_unloads_after_last_batch(ollama):
+    store = DocumentStore()
+    store.set_embedding_model('bge-m3', keep_alive='0')
+    assert store.embedding_settings()['keep_alive'] == '0'
+    text = LONG
+    saved = store.import_document('긴규정.txt', text.encode())
+    embeds = [r for r in ollama.requests if 'input' in r]
+    assert len(embeds) >= 2 and saved['chunks'] > document_embeddings.BATCH
+    # Between the batches of one request the model stays; it unloads after the last.
+    assert [r['keep_alive'] for r in embeds[:-1]] == ['1m'] * (len(embeds) - 1) and embeds[-1]['keep_alive'] == 0
+    store.search_detailed('쉬는 날 며칠?', [saved['id']])
+    assert ollama.requests[-1]['keep_alive'] == 0
+    store.set_embedding_model('bge-m3', keep_alive='1h')
+    store.search_detailed('쉬는 날 며칠?', [saved['id']])
+    assert ollama.requests[-1]['keep_alive'] == '1h'
+    # Changing only the model keeps the chosen window.
+    store.set_embedding_model('bge-m3')
+    assert store.embedding_settings()['keep_alive'] == '1h'
+    for bad in ('5', '-1', '5 minutes', '99999m', ''):
+        with pytest.raises(ValueError, match='유지 시간'):
+            store.set_embedding_model('bge-m3', keep_alive=bad)
+
+
+def test_import_and_reindex_report_progress_per_batch(ollama, tmp_path):
+    text = LONG
+    (tmp_path / '긴규정.txt').write_text(text, encoding='utf-8')
+    events = []
+    report = documents.import_paths('기본', [tmp_path], progress=lambda *event: events.append(event))
+    chunks = report['results'][0]['chunks']
+    batches = -(-chunks // document_embeddings.BATCH)
+    assert events[0] == ('긴규정.txt', 'extract', 0, 0)
+    embed = [e for e in events if e[1] == 'embed']
+    # One 0/N line before the first (slow) batch, then one per batch.
+    assert batches >= 2 and len(embed) == batches + 1 and batches == len([r for r in ollama.requests if 'input' in r])
+    assert [e[2] for e in embed] == [0] + [min(chunks, (i + 1) * document_embeddings.BATCH) for i in range(batches)]
+    assert all(e[0] == '긴규정.txt' and e[3] == chunks for e in embed)
+    events.clear()
+    result = DocumentStore().reindex(everything=True, progress=lambda *event: events.append(event))
+    assert result['reindexed'] == ['긴규정.txt'] and len(events) == batches + 1 and events[-1] == ('긴규정.txt', 'embed', chunks, chunks)
+
+
+def test_cli_add_and_reindex_json_has_no_progress_output(ollama, tmp_path):
+    (tmp_path / '휴가.txt').write_bytes(LEAVE)
+    added = _cli('add', '기본', str(tmp_path / '휴가.txt'), '--json')
+    assert added.exit_code == 0, added.output
+    value = json.loads(added.output)  # nothing but the JSON document
+    assert value['results'][0]['name'] == '휴가.txt' and value['results'][0]['semantic'] is True
+    reindexed = _cli('reindex', '--all', '--json')
+    assert reindexed.exit_code == 0 and json.loads(reindexed.output)['reindexed'] == ['휴가.txt']
+    # Off a terminal the live line is never drawn, so plain output stays clean too.
+    plain = _cli('reindex', '--all')
+    assert '의미 색인 만드는 중' not in plain.output and '재색인: 휴가.txt' in plain.output
+
+
+def test_cli_progress_line_names_document_and_batches(ollama, tmp_path, monkeypatch):
+    from omm import cli
+    seen = []
+
+    class Recorder:
+        def __init__(self, *args, **kwargs):
+            seen.append(('disable', kwargs.get('disable')))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def add_task(self, *args, **kwargs):
+            return 1
+
+        def update(self, task_id, description=None, **kwargs):
+            seen.append(description)
+
+    monkeypatch.setattr(cli, 'Progress', Recorder)
+    (tmp_path / '휴가.txt').write_bytes(LEAVE)
+    assert _cli('add', '기본', str(tmp_path / '휴가.txt')).exit_code == 0
+    assert seen == [('disable', False), '휴가.txt: 텍스트 추출 중',
+                    '휴가.txt: 의미 색인 만드는 중 0/1 조각', '휴가.txt: 의미 색인 만드는 중 1/1 조각']
+    seen.clear()
+    assert _cli('reindex', '--all', '--quiet').exit_code == 0
+    assert seen[0] == ('disable', True)
+
+
+def test_cli_embedding_model_keep_alive_option(ollama):
+    result = _cli('embedding-model', 'set', 'bge-m3', '--keep-alive', '0')
+    assert result.exit_code == 0 and '바로 내림' in result.output
+    assert DocumentStore().embedding_settings()['keep_alive'] == '0'
+    assert json.loads(_cli('status', '--json').output)['embedding']['keep_alive'] == '0'
+    bad = _cli('embedding-model', 'set', 'bge-m3', '--keep-alive', 'forever')
+    assert bad.exit_code == 1 and DocumentStore().embedding_settings()['keep_alive'] == '0'

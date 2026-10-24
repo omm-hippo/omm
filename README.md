@@ -659,12 +659,12 @@ omm rag status [--json]  # Collections, embedding model, and documents that need
 omm rag collection create <name>  # Create a named collection, e.g. 인사규정
 omm rag collection list [--json]  # List collections and document counts
 omm rag collection delete <name> [--yes]  # Delete a collection's stored text and index (original files stay)
-omm rag add <collection> <paths...> [--replace]  # Add files or folders (recursive) to a collection
+omm rag add <collection> <paths...> [--replace] [--json]  # Add files or folders (recursive) to a collection, showing extraction and embedding progress
 omm rag remove <collection> <name> [--yes]  # Remove one document's stored text and index
 omm rag search <question> [--collection NAME] [--limit N] [--json]  # Hybrid (meaning + words) search with source passages
-omm rag reindex [--collection NAME] [--all]  # Rebuild semantic vectors after an embedding-model change
+omm rag reindex [--collection NAME] [--all] [--json]  # Rebuild semantic vectors after an embedding-model change
 omm rag embedding-model  # Show the embedding model and whether local Ollama has it
-omm rag embedding-model set <model> [--base-url URL]  # Change the local Ollama embedding model (default bge-m3)
+omm rag embedding-model set <model> [--base-url URL] [--keep-alive 5m]  # Change the local Ollama embedding model (default bge-m3) and how long it stays in memory (0 unloads at once)
 ```
 
 Semantic search uses a local Ollama embedding model (default `bge-m3`, MIT
