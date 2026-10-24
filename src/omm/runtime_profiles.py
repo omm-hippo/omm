@@ -23,6 +23,10 @@ class ProfileError(RuntimeError):
     pass
 
 
+class ProfileMemoryError(ProfileError):
+    reason = "out_of_memory"
+
+
 def _path() -> Path:
     return config.OMM_HOME / "runtime-profiles.json"
 
@@ -148,14 +152,16 @@ def ensure_memory(path: Path, options: LoadOptions, hardware: HardwareInfo) -> N
         gpu_offload_percent=percent, metadata=metadata,
     )
     budget = calculate_memory_budget(hardware)
-    if estimate is None or estimate.resident_ram_gb > budget.ram_budget_gb:
-        raise ProfileError("Not enough free RAM for this settings trial; other models and applications were left alone.")
+    if estimate is None:
+        raise ProfileError("Could not estimate memory for this settings trial.")
+    if estimate.resident_ram_gb > budget.ram_budget_gb:
+        raise ProfileMemoryError("Not enough free RAM for this settings trial; other models and applications were left alone.")
     if estimate.required_vram_gb > (budget.vram_budget_gb or 0):
-        raise ProfileError("Not enough free VRAM for this settings trial.")
+        raise ProfileMemoryError("Not enough free VRAM for this settings trial.")
     if options.gpu_layers is None and not hardware.unified_memory and hardware.vram_total_gb:
         total = path.stat().st_size / 1024**3 + estimate.kv_cache_gb + estimate.compute_buffer_gb + estimate.runtime_overhead_gb
         if total > (budget.vram_budget_gb or 0):
-            raise ProfileError("LM Studio chooses GPU placement; this trial requires sufficient GPU headroom.")
+            raise ProfileMemoryError("LM Studio chooses GPU placement; this trial requires sufficient GPU headroom.")
 
 
 def trial(path: Path, adapter, model: RuntimeModelRef, options: LoadOptions,

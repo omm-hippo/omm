@@ -37,6 +37,7 @@ class JobManager:
         self.workers = {}
         self.closed = False
         self.operation_guard = None
+        self.runtime_manager = None
         if self.root.is_symlink():
             raise ValueError("Refusing a symlinked job directory")
         self.root.mkdir(parents=True, exist_ok=True)
@@ -75,7 +76,9 @@ class JobManager:
                 if existing.get("request_digest") != digest:
                     raise JobConflict("This request ID already belongs to another operation")
                 return dict(existing)
-            if self.operation_guard is not None:
+            # Starting/checking a listener neither loads nor unloads a model;
+            # it must remain available to recover a disconnected chat.
+            if self.operation_guard is not None and request["operation"] != "engine_start":
                 self.operation_guard()
             if any(j["status"] in {"queued", "running", "cancelling"} for j in self.jobs.values()):
                 raise JobConflict("Another model operation is still running")
@@ -84,6 +87,7 @@ class JobManager:
                 del self.jobs[oldest["id"]]
                 (self.root / (oldest["id"] + ".json")).unlink(missing_ok=True)
             job = {"id": request_id, "request_digest": digest, "operation": request["operation"],
+                   "engine": request.get("engine"),
                    "filename": request["filename"], "status": "queued", "created_at": time.time(),
                    "bytes_received": 0, "total_bytes": None, "message": "", "result": None}
             if request["operation"] == "start_chat":
@@ -98,6 +102,19 @@ class JobManager:
     def _run(self, jid, request):
         timer = None
         try:
+            if request["operation"] == "engine_start":
+                with self.lock:
+                    if self.closed or self.jobs[jid]["status"] != "queued":
+                        return
+                    self.jobs[jid]["status"] = "running"
+                    self._save(self.jobs[jid])
+                if self.runtime_manager is None:
+                    raise ValueError("서버 시작 도우미를 사용할 수 없어요.")
+                result = self.runtime_manager.start()
+                with self.lock:
+                    self.jobs[jid].update(status="completed", result=result)
+                    self._save(self.jobs[jid])
+                return
             kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
             with self.lock:
                 job = self.jobs[jid]
@@ -142,6 +159,10 @@ class JobManager:
                                 job[field] = value
                     elif kind in {"completed", "failed", "cancelled"}:
                         job.update(status=kind, result=event.get("result"), message=str(event.get("message", ""))[:2000])
+                        from omm.web.recovery import ActionError, failure
+                        hint = event.get("failure")
+                        if kind == "failed" and isinstance(hint, dict):
+                            job["failure"] = failure(ActionError(hint.get("reason"), ""))
                     now = time.monotonic()
                     if kind != "progress" or "stage" in event or now - last_saved >= 0.5:
                         self._save(job)
@@ -155,8 +176,9 @@ class JobManager:
                     job.update(status="failed", message="Worker exited unsuccessfully after reporting a result; check the stored model.")
                 self._save(job)
         except Exception as error:
+            from omm.web.recovery import failure
             with self.lock:
-                self.jobs[jid].update(status="failed", message=str(error)[:2000])
+                self.jobs[jid].update(status="failed", message=str(error)[:2000], failure=failure(error))
                 self._save(self.jobs[jid])
         finally:
             if timer is not None:
@@ -212,7 +234,7 @@ class JobManager:
                     job.update(status="interrupted", message="Server stopped before the operation started.")
                     self._save(job)
             ids = list(self.processes)
-            workers = list(self.workers.values())
+            workers = [(worker, self.jobs.get(jid, {}).get("operation")) for jid, worker in self.workers.items()]
         for jid in ids:
             try:
                 if self.jobs[jid]["operation"] in {"install", "compare", "start_chat"}:
@@ -231,8 +253,8 @@ class JobManager:
         # Process exit can precede the reader's final durable JSON replacement.
         # Keep exclusive ownership until those writes finish, particularly on
         # Windows where a simultaneous replacement can make a read fail.
-        for worker in workers:
-            worker.join(timeout=5)
+        for worker, operation in workers:
+            worker.join(timeout=180 if operation == "engine_start" else 5)
             if worker.is_alive():
                 raise JobConflict("Worker output is still being saved; retry shutdown.")
         self.owner.release()
