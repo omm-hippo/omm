@@ -224,3 +224,15 @@
 
 - 케이블이 빠지면 남은 노드가 서로를 놓칠 수 있고(exo 재시작 필요), 링크 정보가 1~2분 늦게 갱신된다. exo의 동작이고 omm이 막을 수 있는지는 확인하지 못했다.
 - `leave`는 node1에서만 확인했다(원래 서비스 목록, 브리지 멤버, IP, 설정 파일이 그대로 돌아옴).
+
+## 모델 로드 대기를 진행률 기준으로 바꾼 뒤 실측 (node4 한 대, 2026-10-24)
+
+`omm cluster model`이 60분 고정 제한 대신 "15분 동안 아무것도 안 변하면 포기"로 바뀌었다(`MODEL_STALL_TIMEOUT`). 다운로드 진행률은 exo `/state`의 `downloads`에서 읽는다.
+
+- **방법:** node4에서 exo를 단독으로(namespace `omm-verify-solo`, omm 서비스·방화벽 없이) 약 1분 띄우고, 노트북에서 SSH 터널로 새 `load_model`을 돌렸다. 모델은 `mlx-community/Llama-3.2-1B-Instruct-4bit`(0.7 GiB). 끝나자 exo를 종료하고 받은 모델과 임시 디렉터리를 지웠다. 이 동안 node4는 애플리케이션 방화벽이 꺼져 있어 exo API(0.0.0.0:52415)가 사내망에 열려 있었다.
+- **결과:** 23초 만에 `Downloading ...: 6% → 17% → … → 89%`가 진행되고 `loading it into memory...`를 거쳐 `Serving`이 출력됐다. `/state`에는 `DownloadPending`, `DownloadOngoing`, `DownloadCompleted`가 모두 나타났고 `DownloadOngoing`은 `downloadProgress.downloaded/total.inBytes`를 가진다(exo 1.0.71 소스에서 추정한 모양과 일치). 실제 항목은 `tests/fixtures/exo/downloads-live.json`에 저장했다.
+- **한계:** 한 대의 작은 모델만 시험했다. 다운로드가 수십 분 걸리는 3대 큰 모델에서의 대기·15분 포기 동작은 단위 테스트로만 확인했다. `DownloadFailed`는 실제로 만들어 보지 못했다.
+
+## `omm cluster restart` (미검증)
+
+케이블이 빠진 뒤 exo가 이웃을 놓치는 문제(위 Step 6의 1번)에 대한 대응으로 `omm cluster restart`(exo LaunchAgent만 `launchctl kickstart -k`)와 `status`의 안내 한 줄을 추가했다. 실기기에서 케이블을 뽑고 이 명령으로 복구되는지는 아직 확인하지 못했다. 근거는 2026-10-24에 한 번 관찰한 "exo만 재시작하니 복구됨"뿐이고, 원인은 모른다.

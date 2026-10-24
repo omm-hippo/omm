@@ -109,10 +109,9 @@ def test_await_instance_gives_up_when_nothing_changes_for_the_stall_window(monke
     assert client.await_instance("m", 12, sleep=lambda s: None, clock=lambda: next(clock)) is False
 
 
-# The download entries below follow exo 1.0.71's DownloadProgress classes
-# (src/exo/shared/types/worker/downloads.py) over the wire format the
-# captured state.json fixture already shows (camelCase, Memory -> {"inBytes"}).
-# DownloadOngoing was not captured from a live node.
+# downloads-live.json holds real Pending / Ongoing / Completed entries captured
+# from a live exo 1.0.71 (2026-10-24); the synthetic entries below follow the same
+# wire format (camelCase, Memory -> {"inBytes"}) for cases a live run never shows.
 MODEL = "mlx-community/Qwen3.5-122B-A10B-8bit"
 GIB = 1024**3
 
@@ -129,6 +128,20 @@ def _memory(n):
 def _ongoing(node, done, total, model_id=MODEL):
     progress = {"downloaded": _memory(done), "total": _memory(total), "completedFiles": 1, "totalFiles": 9}
     return _download("DownloadOngoing", node, model_id, downloadProgress=progress)
+
+
+LIVE_MODEL = "mlx-community/Llama-3.2-1B-Instruct-4bit"
+
+
+def test_load_progress_reads_entries_captured_from_a_live_exo():
+    live = _load("downloads-live.json")
+    node = next(iter(live["downloads"]))
+    pending = exo_client.load_progress(live, LIVE_MODEL)
+    assert (pending.phase, pending.downloaded_bytes, pending.total_bytes) == ("downloading", 0, 712593855)
+    ongoing = exo_client.load_progress({"downloads": {node: [live["ongoing"]]}}, LIVE_MODEL)
+    assert (ongoing.phase, ongoing.downloaded_bytes, ongoing.total_bytes) == ("downloading", 472708913, 712593855)
+    completed = exo_client.load_progress({"downloads": {node: [live["completed"]]}}, LIVE_MODEL)
+    assert completed.phase == "loading" and completed.transferred_bytes == 712593855
 
 
 def test_load_progress_reports_the_mac_furthest_behind():
