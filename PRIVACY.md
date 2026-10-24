@@ -230,3 +230,27 @@ configured to forward requests to a cloud service.
 Replacing or deleting a document clears saved document answers so old source
 quotations do not remain in the answer cache. Original uploaded files are not
 changed. Explicit OMM data removal includes the owned `documents` directory.
+
+## Local agent connection backups
+
+`omm setting agent local` saves a private local backup of the selected
+harness's routing settings under `OMM_HOME/agent-connections`. It may contain
+existing authentication values from those settings. Backups are not read by
+telemetry, crash reports, usage uploads or support bundles; do not share them
+in an issue. Model capability checks contact only the selected loopback Ollama
+endpoint and do not generate a prompt. A harness's own telemetry, tool network
+access and project/organization overrides remain that harness's settings.
+`omm setting agent cloud` removes the connection backup after restoring all
+files successfully. See [agent connections](docs/agent-connections.md).
+
+## Managed installation security checks
+
+Runner install/update uses mandatory source/integrity/native checks. Their
+timestamped outcomes are stored locally under `OMM_HOME/security-checks` and
+shown in the connections view and engine status JSON. These records contain
+engine/platform identifiers and named-check outcomes, not native error bodies,
+document contents or file paths. OMM upload channels do not read them.
+Native Gatekeeper/Defender/ClamAV checks remain subject to their own operating
+system/vendor policies; OMM does not change those settings. See
+[mandatory installation checks](docs/mandatory-install-safety.md) for scope and
+failure behavior. A successful check is not a universal vulnerability guarantee.

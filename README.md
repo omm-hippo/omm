@@ -434,7 +434,9 @@ omm doctor [--json]  # Read-only diagnostics plus safe next steps for installati
 omm bug-report [--include os|policies|checks|stages] [--save PATH]  # Preview and save local diagnostics and optional stage counts
 omm recommend [--json]  # Rank compatible models, mark installed ones, and offer a new one to install
 omm web [--port PORT] [--open] [--create-launchers DIRECTORY]  # Start the local interface or create personal click launchers
-omm setting web-autostart enable|disable|status  # Optionally start the local manager (no browser) at sign-in; off by default
+omm setting web-autostart enable  # Optionally start the local manager (no browser) at sign-in; off by default
+omm setting web-autostart disable  # Remove optional sign-in startup
+omm setting web-autostart status  # Inspect optional sign-in startup
 omm tune <name> [--json]  # Recommend context, GPU offload, threads, and batch size
 omm tune <name> --apply --save --engine ollama --yes  # Verify proposed settings locally, then save
 omm search <query> [--json] [--skip-unfit] [--skip-ms] [--limit N] [--provider curated|huggingface|modelscope]  # Search curated, Hugging Face, and ModelScope sources
@@ -473,6 +475,10 @@ through Ollama or LM Studio's local API, preserve a preloaded model's context,
 and release only its own test load. The response and compatibility outcome are
 shown separately from installation. See [local manager guidance](docs/local-web.md)
 for click launchers, description sources, memory checks and verification limits.
+
+The bundled [model wiki](docs/model-wiki-expansion.md) covers 114 exact
+checkpoints with publisher filtering and explicit unknown values. Descriptions
+do not imply a compatible GGUF or a verified runtime/quality result.
 
 Secondary screens show runner/API and explicit external connectivity checks,
 read-only diagnostics, storage and external-file previews, and sharing policies.
@@ -585,6 +591,9 @@ digest-pinned `docker pull`/`podman pull` command for the user to run explicitly
 ```sh
 omm update  # Update a canonical OMM Git-source install; package installs print their manager command
 omm setting  # Interactive menu for outbound data, version, theme, calibration, and catalog trust
+omm setting agent local <claude|codex|pi> --model <tag> [--base-url <origin>]  # Back up harness settings and route to local Ollama
+omm setting agent cloud <claude|codex|pi>  # Restore original routing and preserve unrelated settings edits
+omm setting agent status <claude|codex|pi>  # Inspect saved routing state without loading a model
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from
 omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
 omm setting upload  # Show all four outbound-data policies (benchmark / usage / crash / votes); see PRIVACY.md
@@ -599,6 +608,10 @@ omm setting catalog-trust --manifest-url <url> --public-key <key>  # Require sig
 omm setting catalog-status [--json]  # Show trust, rollback snapshots, and per-check evaluation evidence
 omm setting catalog-rollback  # Restore the most recent different recommendation snapshot
 ```
+
+See [local agent connections](docs/agent-connections.md) for backup, restoration,
+configuration precedence and verification limits. For reviewed Python runtime
+extensions, see the [runtime plugin contract](docs/runtime-plugins.md).
 
 ### Local logs and automatic import
 
@@ -822,6 +835,11 @@ community expectations. Report security issues per [SECURITY.md](SECURITY.md)
 rather than as a public issue.
 
 ## Security
+
+OMM-managed runner install/update uses [mandatory source, integrity and native
+security checks](docs/mandatory-install-safety.md). Failed or unavailable checks
+do not count as successful installation. These named checks are not a guarantee
+that software has no vulnerabilities.
 
 Do not open a public issue for a suspected vulnerability. Follow the private
 reporting instructions and supported-version policy in

@@ -1,3 +1,4 @@
+import {TaskProgress} from './TaskFlow';
 import DocumentPanel from './DocumentPanel';
 import React, {useEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
@@ -11,7 +12,7 @@ import {WikiExplorer,Connections,Diagnostics,Comparison,RuntimeSettings,FilesSet
 
 const profiles = [['balanced','다른 작업과 함께'],['dedicated','모델에 집중'],['minimal','가볍게 사용']];
 const purposes = {General:'일반',Coding:'코딩',Reasoning:'추론·수학',Writing:'글쓰기',Translation:'번역',Documents:'문서', '—':'정보 없음'};
-const operationLabels={install:'모델 설치',link:'실행 앱 연결',uninstall:'모델 삭제',verify:'모델 실행 확인',compare:'성능 비교',profile_save:'실행 설정 검증·저장',profile_restore:'실행 설정 복원',engine_install:'실행 앱 설치',import_scan:'외부 모델 검색',import:'모델 가져오기',cleanup:'불완전 다운로드 정리'};
+const operationLabels={start_chat:'대화 준비하고 시작',install:'모델 설치',link:'실행 앱 연결',uninstall:'모델 삭제',verify:'모델 실행 확인',compare:'성능 비교',profile_save:'실행 설정 검증·저장',profile_restore:'실행 설정 복원',engine_install:'실행 앱 설치',import_scan:'외부 모델 검색',import:'모델 가져오기',cleanup:'불완전 다운로드 정리'};
 const statuses = {queued:'대기 중',running:'진행 중',cancelling:'중단 요청됨',completed:'완료',failed:'실패',cancelled:'중단됨',interrupted:'결과 확인 필요'};
 const evidenceLabels = {static_rules:'메모리 규칙',insufficient:'실측 근거 부족',local_calibrated:'로컬 속도 보정',feature_support:'유사 특성 실측 있음',synthetic_prior:'합성 데이터 예측'};
 
@@ -32,26 +33,28 @@ function Hardware({machine, budget}) {
 }
 
 function ModelTable({rows, onSelect, onDetails}) {
-  return <div className="table-wrap"><table><thead><tr><th>모델</th><th>용도</th><th>예상 메모리</th><th>예측 근거</th><th><span className="sr-only">작업</span></th></tr></thead><tbody>{rows.map((model,index)=><tr key={model.id}><td><strong>{model.name}</strong><small>{model.quantization}</small><button className="text-button" onClick={()=>onDetails(model.wiki || {missing:true,name:model.name,ref:model.ref})}>모델 설명</button>{model.variant_warning && <small>{model.variant_warning}</small>}</td><td>{purposes[model.use_case] || model.use_case}</td><td>{gib(model.memory_required_gb)}</td><td><span>{evidenceLabels[model.evidence.status]}</span>{model.evidence.matching_feature_configurations && <small>같은 특성의 학습 구성 {model.evidence.matching_feature_configurations.training} · 검증 구성 {model.evidence.matching_feature_configurations.holdout}</small>}{typeof model.predicted_tokens_per_second==='number' && <small>약 {model.predicted_tokens_per_second.toFixed(1)} tok/s 예상 · Ollama</small>}</td><td><button className={index===0?'primary':''} onClick={()=>onSelect(model)}>{model.installed?'설치 정보':'설치'}</button></td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>모델</th><th>용도</th><th>예상 메모리</th><th>예측 근거</th><th><span className="sr-only">작업</span></th></tr></thead><tbody>{rows.map((model,index)=><tr key={model.id}><td><strong>{model.name}</strong><small>{model.quantization}</small><button className="text-button" onClick={()=>onDetails(model.wiki || {missing:true,name:model.name,ref:model.ref})}>모델 설명</button>{model.variant_warning && <small>{model.variant_warning}</small>}</td><td>{purposes[model.use_case] || model.use_case}</td><td>{gib(model.memory_required_gb)}</td><td><span>{evidenceLabels[model.evidence.status]}</span>{model.evidence.matching_feature_configurations && <small>같은 특성의 학습 구성 {model.evidence.matching_feature_configurations.training} · 검증 구성 {model.evidence.matching_feature_configurations.holdout}</small>}{typeof model.predicted_tokens_per_second==='number' && <small>약 {model.predicted_tokens_per_second.toFixed(1)} tok/s 예상 · Ollama</small>}</td><td>{!model.installed && <button className="primary" onClick={()=>onSelect({...model,operation:'start_chat'})}>이 모델로 대화 시작</button>}<button onClick={()=>onSelect(model)}>{model.installed?'설치 정보':'설치'}</button></td></tr>)}</tbody></table></div>;
 }
 
 function Installed({rows,onAction,onSettings,onChat}) {
   if (!rows.length) return <div className="empty"><h2>아직 설치한 모델이 없어요</h2><p>추천에서 모델을 선택하면 이곳에서 연결된 실행 앱과 저장 상태를 확인할 수 있어요.</p></div>;
-  return <div className="installed-list">{rows.map(model=><article key={model.id}><div><h2>{model.filename}</h2><p>{bytes(model.size_bytes)} · {model.engines.length ? model.engines.join(', ') : '연결된 실행 앱 없음'}{!model.exists && ' · 파일 없음'}</p><small>{Object.entries(model.compatibility || {}).map(([engine,result])=>`${engine}: ${result.status==='passed'?'실행 확인 통과':'실행 확인 실패'}`).join(' · ') || '아직 모델 실행을 확인하지 않았어요.'}</small></div><div className="row-actions"><button className="primary" onClick={()=>onChat(model)} disabled={!model.exists || !model.engines.some(e=>['ollama','lmstudio'].includes(e))}>대화</button><button onClick={()=>onSettings(model)} disabled={!model.exists || !model.engines.some(e=>['ollama','lmstudio'].includes(e))}>실행 설정</button><button onClick={()=>onAction({...model,operation:'verify'})} disabled={!model.exists || !model.engines.some(e=>['ollama','lmstudio'].includes(e))}>실행 확인</button><button onClick={()=>onAction({...model,operation:'link'})} disabled={!model.exists}>연결 확인</button><button className="danger" onClick={()=>onAction({...model,operation:'uninstall'})}>삭제</button></div></article>)}</div>;
+  return <div className="installed-list">{rows.map(model=><article key={model.id}><div><h2>{model.filename}</h2><p>{bytes(model.size_bytes)} · {model.engines.length ? model.engines.join(', ') : '연결된 실행 앱 없음'}{!model.exists && ' · 파일 없음'}</p><small>{Object.entries(model.compatibility || {}).map(([engine,result])=>`${engine}: ${result.status==='passed'?'실행 확인 통과':'실행 확인 실패'}`).join(' · ') || '아직 모델 실행을 확인하지 않았어요.'}</small></div><div className="row-actions"><button className="primary" onClick={()=>onAction({...model,operation:'start_chat'})} disabled={!model.exists}>대화 준비하고 시작</button><button onClick={()=>onChat(model)} disabled={!model.exists || !model.engines.some(e=>['ollama','lmstudio'].includes(e))}>대화</button><button onClick={()=>onSettings(model)} disabled={!model.exists || !model.engines.some(e=>['ollama','lmstudio'].includes(e))}>실행 설정</button><button onClick={()=>onAction({...model,operation:'verify'})} disabled={!model.exists || !model.engines.some(e=>['ollama','lmstudio'].includes(e))}>실행 확인</button><button onClick={()=>onAction({...model,operation:'link'})} disabled={!model.exists}>연결 확인</button><button className="danger" onClick={()=>onAction({...model,operation:'uninstall'})}>삭제</button></div></article>)}</div>;
 }
 
-function Jobs({jobs,onCancel}) {
+function Jobs({jobs,onCancel,onRetry,onChat}) {
   if (!jobs.length) return <div className="empty"><h2>진행한 작업이 없어요</h2><p>설치와 연결, 삭제 결과가 여기에 저장돼요.</p></div>;
-  return <div className="job-list">{jobs.map(job=><article key={job.id}><div><div className="job-title"><h2>{job.filename}</h2><strong className={`status ${job.status}`}>{statuses[job.status]||job.status}</strong></div><p>{operationLabels[job.operation] || job.operation}</p>{job.bytes_received>0 && <p>받은 데이터 {bytes(job.bytes_received)}{job.total_bytes ? ` / 파일 크기 ${bytes(job.total_bytes)}` : ''}</p>}{job.total_count>0 && <p>측정한 모델 {job.completed_count || 0}/{job.total_count}</p>}{job.result?.saved && <p>실제 설정과 응답을 확인하고 실행 설정을 저장했어요.</p>}{job.result?.restored && <p>이전 실행 설정으로 복원했어요.</p>}{job.result?.report_filename && <p>비교 결과 저장: {job.result.report_filename}</p>}{job.operation==='import_scan' && job.result && <p>외부 모델 {job.result.count}개를 찾았어요. 파일·설정에서 가져올 모델을 선택하세요.</p>}{job.result?.warnings?.map((text,index)=><p key={index}>{text}</p>)}{job.message && <p className="job-message">{job.message}</p>}{job.result?.linked && <p>연결된 앱: {Object.entries(job.result.linked).filter(([,ok])=>ok).map(([name])=>name).join(', ') || '없음 — 내 모델에서 연결 상태를 확인해 주세요.'}</p>}{job.operation==='install' && job.result?.runtime_verified===false && <small>파일 설치 결과를 확인했어요. 실제 모델 실행은 아직 확인하지 않았어요.</small>}{job.result?.response && <div className="probe-response"><strong>실제 응답</strong><pre>{job.result.response}</pre></div>}{job.result?.released_test_load && <small>응답 확인 후 검증용 모델의 메모리를 해제했어요.</small>}{job.result?.model_was_preloaded && <small>이미 로딩되어 있던 모델과 설정을 유지했어요.</small>}</div>{['install','compare'].includes(job.operation) && ['queued','running'].includes(job.status) && <button onClick={()=>onCancel(job.id)}>중단</button>}</article>)}</div>;
+  return <div className="job-list">{jobs.map(job=><article key={job.id}><div><div className="job-title"><h2>{job.filename}</h2><strong className={`status ${job.status}`}>{statuses[job.status]||job.status}</strong></div><p>{operationLabels[job.operation] || job.operation}</p>{job.bytes_received>0 && <p>받은 데이터 {bytes(job.bytes_received)}{job.total_bytes ? ` / 파일 크기 ${bytes(job.total_bytes)}` : ''}</p>}{job.total_count>0 && <p>측정한 모델 {job.completed_count || 0}/{job.total_count}</p>}{job.result?.saved && <p>실제 설정과 응답을 확인하고 실행 설정을 저장했어요.</p>}{job.result?.restored && <p>이전 실행 설정으로 복원했어요.</p>}{job.result?.report_filename && <p>비교 결과 저장: {job.result.report_filename}</p>}{job.operation==='import_scan' && job.result && <p>외부 모델 {job.result.count}개를 찾았어요. 파일·설정에서 가져올 모델을 선택하세요.</p>}{job.result?.warnings?.map((text,index)=><p key={index}>{text}</p>)}{job.operation==='start_chat' && <TaskProgress job={job}/>} {job.operation==='start_chat' && ['failed','cancelled','interrupted'].includes(job.status) && <button onClick={()=>onRetry(job)}>다시 시작</button>} {job.operation==='start_chat' && job.status==='completed' && job.result?.chat_ready && <button className="primary" onClick={()=>onChat(job)}>대화 열기</button>} {job.message && <p className="job-message">{job.message}</p>}{job.result?.linked && <p>연결된 앱: {Object.entries(job.result.linked).filter(([,ok])=>ok).map(([name])=>name).join(', ') || '없음 — 내 모델에서 연결 상태를 확인해 주세요.'}</p>}{job.operation==='install' && job.result?.runtime_verified===false && <small>파일 설치 결과를 확인했어요. 실제 모델 실행은 아직 확인하지 않았어요.</small>}{job.result?.response && <div className="probe-response"><strong>실제 응답</strong><pre>{job.result.response}</pre></div>}{job.result?.released_test_load && <small>응답 확인 후 검증용 모델의 메모리를 해제했어요.</small>}{job.result?.model_was_preloaded && <small>이미 로딩되어 있던 모델과 설정을 유지했어요.</small>}</div>{['install','compare','start_chat'].includes(job.operation) && ['queued','running'].includes(job.status) && <button onClick={()=>onCancel(job.id)}>중단</button>}</article>)}</div>;
 }
 
 function Confirmation({model,machine,onClose,onSubmit,busy,error}) {
   const operation=model.operation || 'install';
-  const needsEngine=['install','link','verify','profile_save','profile_restore'].includes(operation);
+  const needsEngine=['install','link','verify','profile_save','profile_restore','start_chat'].includes(operation);
   const runtimeOnly=['verify','profile_save','profile_restore'].includes(operation);
-  const engines=(machine?.engines || []).filter(x=>x.installed && (!runtimeOnly || ['ollama','lmstudio'].includes(x.key) && model.engines?.includes(x.key)));
-  const [engine,setEngine]=useState(model.engine || (runtimeOnly ? engines[0]?.key || '' : ''));
+  const taskFlow=operation==='start_chat';
+  const engines=(machine?.engines || []).filter(x=>(taskFlow ? ['ollama','lmstudio'].includes(x.key) : x.installed) && (!runtimeOnly || ['ollama','lmstudio'].includes(x.key) && model.engines?.includes(x.key)));
+  const [engine,setEngine]=useState(model.engine || (runtimeOnly || taskFlow ? engines.find(x=>x.installed)?.key || engines[0]?.key || '' : ''));
   const explanations={
+    start_chat:'실행 앱 설치·안전 검사, 모델 다운로드·연결, 짧은 실제 응답 검사를 한 번에 진행한 뒤 채팅을 열어요. 앱 설치·다운로드·모델 메모리 로딩에 동의해요. 앱의 로컬 서버가 켜져 있어야 하며, 준비되지 않았으면 다운로드 전에 중단해요. 파일은 재시도할 때 재사용하고 외부로 응답을 업로드하지 않아요.',
     install:'파일을 내려받고 선택한 실행 앱에 연결해요. 설치만으로 모델 실행을 확인하지는 않아요.',
     link:'기존 파일을 사용해 실행 앱 연결을 확인해요.',
     uninstall:'OMM이 관리하는 모델 파일과 기록된 연결을 삭제해요.',
@@ -65,15 +68,15 @@ function Confirmation({model,machine,onClose,onSubmit,busy,error}) {
     cleanup:'선택한 불완전 다운로드만 삭제해요. 해당 파일로 다운로드를 재개할 수 없게 돼요.'
   };
   const dialog=useRef(null);useEffect(()=>{dialog.current?.showModal();},[]);
-  return <dialog ref={dialog} onCancel={event=>{if(busy)event.preventDefault();else onClose();}}><form onSubmit={event=>{event.preventDefault();onSubmit(engine);}}><h2>{operationLabels[operation]} 진행</h2><p className="filename">{model.filename}</p><p>{explanations[operation]}</p>{error && <p role="alert" className="error">{error}</p>}{needsEngine && <label>실행 앱<select value={engine} onChange={event=>setEngine(event.target.value)}>{!runtimeOnly && <option value="">설치된 실행 앱 모두</option>}{engines.map(x=><option key={x.key} value={x.key}>{x.name}</option>)}</select></label>}<div className="dialog-actions"><button type="button" disabled={busy} onClick={onClose}>취소</button><button className={['uninstall','cleanup'].includes(operation)?'danger-fill':'primary'} disabled={busy || (runtimeOnly&&!engine)}>{busy?'요청 중…':'확인하고 시작'}</button></div></form></dialog>;
+  return <dialog ref={dialog} onCancel={event=>{if(busy)event.preventDefault();else onClose();}}><form onSubmit={event=>{event.preventDefault();onSubmit(engine);}}><h2>{taskFlow?'이 모델로 대화 시작':operationLabels[operation]} 진행</h2><p className="filename">{model.filename}</p><p>{explanations[operation]}</p>{error && <p role="alert" className="error">{error}</p>}{needsEngine && <label>실행 앱<select value={engine} onChange={event=>setEngine(event.target.value)}>{!runtimeOnly && !taskFlow && <option value="">설치된 실행 앱 모두</option>}{engines.map(x=><option key={x.key} value={x.key}>{x.name}</option>)}</select></label>}<div className="dialog-actions"><button type="button" disabled={busy} onClick={onClose}>취소</button><button className={['uninstall','cleanup'].includes(operation)?'danger-fill':'primary'} disabled={busy || ((runtimeOnly||taskFlow)&&!engine)}>{busy?'요청 중…':'확인하고 시작'}</button></div></form></dialog>;
 }
 
 function FirstUse({machine,onModels}) {
   const available=(machine?.engines || []).filter(e=>e.installed && ['ollama','lmstudio'].includes(e.key));
   return <section className="first-use"><h2>처음 시작할 때</h2>
     <p>1. Ollama 또는 LM Studio를 준비하고 앱의 로컬 서버를 켜세요.</p>
-    <p>2. 아래 추천에서 모델을 설치하고 연결할 실행 앱을 선택하세요.</p>
-    <p>3. 내 모델의 실행 확인에서 첫 응답을 확인하세요.</p>
+    <p>2. 추천 모델의 ‘이 모델로 대화 시작’을 누르고 실행 앱을 선택하세요.</p>
+    <p>3. 안전 검사·모델 준비·실제 응답 확인을 마치면 대화로 이어져요.</p>
     {available.length ? <small>설치된 실행 앱: {available.map(e=>e.name).join(', ')}</small> : <a href="https://github.com/omm-hippo/omm#installation" target="_blank" rel="noreferrer">설치 안내 보기</a>}
     <button className="text-button" onClick={onModels}>내 모델 확인</button>
   </section>;
@@ -83,7 +86,14 @@ function WikiDetail({model,onClose}) {
   const dialog=useRef(null);useEffect(()=>{dialog.current?.showModal();},[]);
   return <dialog className="wiki-dialog" ref={dialog} onCancel={onClose}><h2>{model.name}</h2>
     {model.missing ? <><p>이 설치 대상에 정확하게 연결된 위키 설명이 아직 없어요.</p><p className="filename">{model.ref}</p></> : <>
-      <p>{model.summary}</p><h3>선택할 때</h3><p>{model.chooseWhen}</p>
+      <p>{model.summary}</p>
+      <dl><dt>개발사 · 규모 표기</dt><dd>{model.publisher} · {model.sizeLabel || '미확인'}</dd>
+      <dt>구조</dt><dd>{model.architecture==='moe'?'MoE':model.architecture==='dense'?'Dense':'미확인'}</dd>
+      <dt>공개 문서·설정의 문맥 길이</dt><dd>{Number.isInteger(model.context?.tokens)?`${model.context.tokens.toLocaleString()} 토큰`:'미확인'}</dd>
+      <dt>확인된 입력</dt><dd>{(model.inputs || []).join(', ') || '미확인'}</dd>
+      <dt>도구 호출</dt><dd>{model.toolCalling===true?'개발사 지원 표기 · 실행 미검증':model.toolCalling===false?'개발사 미지원 표기':model.toolFormatDeclared?'공식 템플릿에 호출 형식 포함 · 작업 성공 미검증':'미확인'}</dd>
+      <dt>라이선스 표기</dt><dd><a href={model.license?.url} target="_blank" rel="noreferrer">{model.license?.label || '미확인'}</a></dd></dl>
+      <h3>선택할 때</h3><p>{model.chooseWhen}</p>
       <h3>특징과 주의점</h3>{[...model.strengths,...model.cautions].map((claim,index)=><p key={index}><small>{claim.basis==='publisher'?'개발사 설명':'편집 의견'}</small>{claim.text}</p>)}
       <h3>실행 조건</h3><p>{model.runtimeNote}</p>
       {['declared_base_repository','publisher_declared_base'].includes(model.match) && <p>원본 체크포인트 설명을 연결했어요. 변환본의 양자화·실행 앱 호환성은 따로 확인해야 해요.</p>}
@@ -148,6 +158,8 @@ function App() {
   const [description,setDescription]=useState(null);
   const [settingsModel,setSettingsModel]=useState(null);
   const [chatModel,setChatModel]=useState(null);
+  const [preparedTask,setPreparedTask]=useState(null);
+  const pendingTask=useRef(null);
   const [loading,setLoading] = useState(true);
   const [selected,setSelected] = useState(null);
   const [submitting,setSubmitting] = useState(false);
@@ -180,6 +192,8 @@ function App() {
         const history=await api('/api/jobs');
         if(!live) return;
         setJobs(history);
+        const prepared=history.find(job=>job.id===pendingTask.current && job.status==='completed' && job.result?.chat_ready);
+        if(prepared){pendingTask.current=null;openPreparedChat(prepared);}
         if(!history.some(j=>['queued','running','cancelling'].includes(j.status))) {
           setRefreshKey(key=>key+1);
           return;
@@ -198,7 +212,8 @@ function App() {
       if(selected.id)body.id=selected.id;
       if(selected.ids)body.ids=selected.ids;
       if(engine)body.engine=engine;
-      const job=await api('/api/jobs',body);
+      const job=await api(selected.retryJob?`/api/jobs/${selected.retryJob}/retry`:'/api/jobs',selected.retryJob?{confirmed:true,request_id:operationId.current}:body);
+      if(job.operation==='start_chat')pendingTask.current=job.id;
       setJobs(old=>[job,...old.filter(x=>x.id!==job.id)]);setSelected(null);operationId.current=null;setTab('jobs');
     } catch(e){setError(e.message);} finally {setSubmitting(false);}
   }
@@ -213,6 +228,7 @@ function App() {
   const subtitles={wiki:'모델 위키에서 용도와 특징을 살펴보고 설치할 파일을 선택하세요.',recommend:'현재 메모리 여유에 맞는 후보와 추천 근거를 확인하세요.',models:'설치된 모델의 연결, 실행과 설정을 관리하세요.',chat:'모델의 실제 응답을 받고 대화를 이어가세요.',documents:'등록한 문서를 로컬 모델에 질문하고 원문 출처를 확인해요.',comparison:'실제 로컬 응답으로 속도와 산술 점검 결과를 비교하세요.',jobs:'진행 상황과 저장된 작업 결과를 확인하세요.',connections:'실행 앱과 로컬 서버, 다운로드 서버의 연결을 확인하세요.',diagnostics:'문제가 있는 지점과 해결 방법을 확인하세요.',settings:'저장 공간과 기존 모델, 데이터 공유 설정을 관리하세요.'};
   const title=titles[tab],subtitle=subtitles[tab];
   const visible = catalog?.models || [];
+  function openPreparedChat(job){setPreparedTask({...job.result,id:crypto.randomUUID(),job_id:job.id});setChatModel({id:job.result.model_id,filename:job.result.filename,engines:[job.result.engine],exists:true});setRefreshKey(key=>key+1);setTab('chat');}
   function choose(model){
     setError('');
     setNotice('');
@@ -230,9 +246,9 @@ function App() {
     {tab==='wiki' && <WikiExplorer document={wiki} profile={profile} onOpen={setDescription} onSelect={choose}/>}
     {tab==='recommend' && <>{!models.length && <FirstUse machine={machine} onModels={()=>setTab('models')}/>}<div className="toolbar"><div className="profiles" aria-label="메모리 사용 방식">{profiles.map(([key,label])=><button key={key} aria-pressed={profile===key} onClick={()=>setProfile(key)}>{label}</button>)}</div><label className="search"><Icon name="search"/><input maxLength={160} value={query} onChange={event=>setQuery(event.target.value)} placeholder="모델 이름으로 찾기" aria-label="모델 이름으로 찾기"/></label></div>{loading?<div className="empty" role="status">컴퓨터와 추천 자료를 확인하고 있어요.</div>:visible.length?<ModelTable rows={visible} onSelect={choose} onDetails={setDescription}/>:<div className="empty"><h2>{query?'검색 결과가 없어요':'현재 예산에 맞는 모델이 없어요'}</h2><p>{query?'다른 이름으로 검색해 보세요.':'사용 방식을 바꾸거나 다른 앱을 닫은 뒤 다시 확인해 주세요.'}</p></div>}<p className="footnote">예상 속도는 실제 측정과 다를 수 있어요.</p><Evidence catalog={catalog} onUpdate={updateCatalog} busy={updating}/></>}
     {tab==='models' && <Installed rows={models} onAction={choose} onSettings={setSettingsModel} onChat={model=>{setChatModel(model);setTab('chat');}}/>}
-    {(visited.has('chat') || tab==='chat') && <div hidden={tab!=='chat'}><ChatPanel models={models} initialModel={chatModel} onModelStatusChange={()=>setRefreshKey(key=>key+1)} onModels={()=>setTab('models')}/></div>}
+    {(visited.has('chat') || tab==='chat') && <div hidden={tab!=='chat'}><ChatPanel models={models} initialModel={chatModel} preparedTask={preparedTask} onModelStatusChange={()=>setRefreshKey(key=>key+1)} onModels={()=>setTab('models')}/></div>}
     {(visited.has('documents') || tab==='documents') && <div hidden={tab!=='documents'}><DocumentPanel models={models} onJobs={setJobs}/></div>}
-    {tab==='jobs' && <Jobs jobs={jobs} onCancel={cancel}/>}
+    {tab==='jobs' && <Jobs jobs={jobs} onCancel={cancel} onChat={openPreparedChat} onRetry={job=>choose({operation:'start_chat',filename:job.filename,engine:job.task_request?.engine,retryJob:job.id})}/>}
     {tab==='connections' && <Connections refreshKey={refreshKey} onAction={choose}/>}
     {tab==='diagnostics' && <Diagnostics refreshKey={refreshKey}/>}
     {tab==='comparison' && <Comparison models={models} jobs={jobs} onAction={choose}/>}

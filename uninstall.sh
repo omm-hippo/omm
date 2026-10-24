@@ -51,6 +51,17 @@ if [ -d "$RESOLVED_HOME" ] && [ "$RESOLVED_HOME" != "$RESOLVED_DEFAULT" ] && [ !
     exit 1
 fi
 
+# Keep the only restoration copy until harness routing has been restored.
+# Check before removing the CLI or any data, even if a journal is malformed.
+if [ "$PURGE" = "1" ]; then
+    for agent_backup in "$RESOLVED_HOME/agent-connections/"*.json; do
+        if [ -e "$agent_backup" ] || [ -L "$agent_backup" ]; then
+            echo "Agent connection backups remain. Run 'omm setting agent cloud HARNESS' for each connection before --purge." >&2
+            exit 1
+        fi
+    done
+fi
+
 # --purge deletes the models/ hub directly; it never runs linker.py's
 # unlink logic, so a non-empty link-ownership.json means omm still has
 # models linked into local engines (Ollama manifests, KoboldCpp/text-gen-
@@ -96,7 +107,7 @@ uninstall_failed() {
 purge_owned_data() {
     # Delete only paths the application owns. Never recursively remove the
     # OMM_HOME container itself: a custom home may contain unrelated files.
-    for owned_dir in models evaluations runtime-sessions install-journal catalog-history model-archive session logs locks bin web-jobs web-chats documents arena; do
+    for owned_dir in models evaluations runtime-sessions install-journal catalog-history model-archive session logs locks bin web-jobs web-chats documents arena agent-connections security-checks; do
         rm -rf "${RESOLVED_HOME:?}/$owned_dir"
     done
     for owned_file in \

@@ -11,6 +11,24 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_purge_refuses_active_agent_backup_before_removing_anything(tmp_path):
+    managed, sentinel = _managed_home(tmp_path)
+    env, log, _ = _setup_fake_pipx(tmp_path, managed, ["omm-model"])
+    backup = managed / "agent-connections" / "claude.json"
+    backup.parent.mkdir()
+    backup.write_text("private-original-settings", encoding="utf-8")
+    command = (["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", str(ROOT / "uninstall.ps1"), "-Purge"] if sys.platform == "win32"
+               else ["sh", str(ROOT / "uninstall.sh"), "--purge"])
+    result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=30)
+    assert result.returncode != 0
+    assert "agent cloud" in result.stdout + result.stderr
+    assert backup.read_text(encoding="utf-8") == "private-original-settings"
+    assert sentinel.exists() and (managed / "sources").exists()
+    assert not log.exists() or not log.read_text(encoding="utf-8").strip()
+
+
 def _managed_home(tmp_path: Path) -> tuple[Path, Path]:
     managed = tmp_path / "custom-omm-home"
     source = managed / "sources" / ("a" * 40)
