@@ -85,7 +85,9 @@ def init(out: Out) -> settings.ClusterSettings:
     namespace = current.namespace if current else settings.new_namespace()
     # Saved before anything can be interrupted: the name is printed below and
     # may already be typed into `join` on other Macs, so a re-run must reuse it.
-    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, current.known_nodes if current else ())
+    # The remembered Macs start over: running init again is how a Mac that
+    # left for good stops being reported missing (status says so).
+    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT)
     settings.save(saved)
     _prepare_this_mac(namespace, out)
     firewall.apply(gateway_port=GATEWAY_PORT)
@@ -106,7 +108,7 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     current = settings.load()
     if current is not None and current.role == "head":
         raise UsageProblem("this Mac is the cluster head; run omm cluster leave first")
-    saved = settings.ClusterSettings("member", namespace, GATEWAY_PORT, current.known_nodes if current else ())
+    saved = settings.ClusterSettings("member", namespace, GATEWAY_PORT)
     settings.save(saved)
     _prepare_this_mac(namespace, out)
     firewall.apply(gateway_port=None)
@@ -164,6 +166,8 @@ def status() -> dict:
                 # After a cable is pulled, exo can stop seeing Macs that are still
                 # connected until it is restarted (seen once on 3 Mac minis, 2026-10-24).
                 problems.append("if those Macs are on, run omm cluster restart on each of them and on this Mac")
+                again = "init" if current.role == "head" else f"join {current.namespace}"
+                problems.append(f"if a Mac left the cluster for good, run omm cluster {again} again on this Mac to forget it")
         # RDMA needs the exact same build, not just the same version number
         # (a 26.5 beta and 26.5 share "26.5").
         versions = {n.name: f"{n.os_version} ({n.os_build})" if n.os_build else n.os_version

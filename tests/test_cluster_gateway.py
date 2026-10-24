@@ -313,7 +313,9 @@ def test_access_log_rotates_and_stays_out_of_the_run_log(gateway_server, token, 
 
         logs = isolated_omm_home / "logs"
         for _ in range(100):
-            if (logs / "cluster-gateway-access.jsonl.1").exists():
+            # Request lines are written after the reply, so wait for a finished
+            # rollover (the new base file is reopened right after the rename).
+            if all((logs / name).exists() for name in ("cluster-gateway-access.jsonl", "cluster-gateway-access.jsonl.1")):
                 break
             time.sleep(0.02)
         files = sorted(p.name for p in logs.glob("cluster-gateway-access.jsonl*"))

@@ -622,3 +622,24 @@ def test_cluster_commands_never_open_the_first_run_setup_wizard(cluster_fakes, m
     monkeypatch.setattr(cli, "_ask_setup_choice", lambda: pytest.fail("setup wizard opened"))
     result = runner.invoke(cli.app, ["cluster", "init"])
     assert result.exit_code == 0, result.output
+
+
+def test_a_mac_gone_for_good_is_forgotten_by_running_init_again(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _status()
+    cluster_fakes.drop_node("mac-d")
+    problems = _status()["problems"]
+    assert "node mac-d missing (seen before)" in problems
+    assert "if a Mac left the cluster for good, run omm cluster init again on this Mac to forget it" in problems
+    assert runner.invoke(cli.app, ["cluster", "init"]).exit_code == 0
+    problems = _status()["problems"]
+    assert not any("missing" in p or "for good" in p for p in problems)
+    assert settings.load().known_nodes == ("mac-a", "mac-b", "mac-c")
+
+
+def test_member_is_told_to_run_join_again_to_forget_a_mac(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    _status()
+    cluster_fakes.drop_node("mac-d")
+    assert ("if a Mac left the cluster for good, run omm cluster join omm-0a1b2c3d again on this Mac to forget it"
+            in _status()["problems"])
