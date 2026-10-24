@@ -8,7 +8,7 @@ const pollingStates=['starting','generating','cancelling','closing'];
 const names={ollama:'Ollama',lmstudio:'LM Studio'};
 const labels={starting:'모델 준비 중',ready:'대화 연결됨',generating:'응답 생성 중',cancelling:'응답 중단 중',closing:'연결 종료 중',closed:'대화 종료됨',failed:'연결 실패',interrupted:'다시 연결 필요',release_failed:'모델 상태 확인 필요'};
 
-export default function ChatPanel({models,initialModel,onModelStatusChange,onModels}) {
+export default function ChatPanel({models,initialModel,preparedTask,onModelStatusChange,onModels}) {
   const [history,setHistory]=useState([]);
   const [chat,setChat]=useState(null);
   const [modelId,setModelId]=useState(initialModel?.id || '');
@@ -18,6 +18,7 @@ export default function ChatPanel({models,initialModel,onModelStatusChange,onMod
   const [busy,setBusy]=useState(false);
   const [initializing,setInitializing]=useState(true);
   const [deleteConfirm,setDeleteConfirm]=useState(false);
+  const preparedId=useRef(null),pendingPrepared=useRef(null);
   const openId=useRef(null),messageId=useRef(null),sequence=useRef(0);
   const transcript=useRef(null),follow=useRef(true),composer=useRef(null),composing=useRef(false);
   const [sendMode,setSendMode]=useState('enter');
@@ -75,15 +76,29 @@ export default function ChatPanel({models,initialModel,onModelStatusChange,onMod
     if(element && follow.current)element.scrollTop=element.scrollHeight;
   },[lastTurn?.id,lastTurn?.assistant,chat?.status]);
 
-  async function start() {
-    if(!selected || busy || initializing)return;
+  async function start(prepared=null) {
+    let preparation=prepared?.model_id ? prepared : pendingPrepared.current;
+    if(!prepared?.model_id && preparation && (preparation.model_id!==modelId || preparation.engine!==engine)){preparation=null;openId.current=null;}
+    pendingPrepared.current=preparation;
+    const target=preparation ? {id:preparation.model_id} : selected;
+    if(!target || busy || initializing)return;
     setBusy(true);setError('');openId.current ||= crypto.randomUUID();
-    const existing=chat && !connected;
+    const existing=!preparation && chat && !connected;
     try {
-      const value=await api('/api/chats',{id:selected.id,engine,confirmed:true,request_id:openId.current,...(existing?{chat_id:chat.id}:{})});
-      setChat(value);openId.current=null;follow.current=true;await readHistory();
+      const value=await api('/api/chats',{id:target.id,engine:preparation?.engine || engine,confirmed:true,request_id:openId.current,...(existing?{chat_id:chat.id}:{})});
+      setChat(value);openId.current=null;pendingPrepared.current=null;follow.current=true;await readHistory();
     }catch(e){setError(e.message);}finally{setBusy(false);}
   }
+  useEffect(()=>{
+    if(!preparedTask || initializing || busy || preparedId.current===preparedTask.id)return;
+    if(connected){
+      preparedId.current=preparedTask.id;
+      if(chat.filename!==preparedTask.filename || chat.engine!==preparedTask.engine)setError('현재 대화를 종료한 뒤 준비된 모델을 열어 주세요.');
+      return;
+    }
+    preparedId.current=preparedTask.id;openId.current=preparedTask.id;
+    setModelId(preparedTask.model_id);setEngine(preparedTask.engine);start(preparedTask);
+  },[preparedTask?.id,initializing,busy,Boolean(connected)]);
   async function send(event) {
     event.preventDefault();if(!draft.trim() || !ready || busy)return;
     setBusy(true);setError('');messageId.current ||= crypto.randomUUID();follow.current=true;

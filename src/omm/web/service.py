@@ -200,7 +200,7 @@ class WebService:
         if not isinstance(body, dict) or set(body) - {"operation", "id", "ids", "engine", "confirmed", "request_id"}:
             raise ValueError("Unsupported operation fields")
         operation = body.get("operation")
-        if operation not in {"install", "link", "uninstall", "verify", "compare", "profile_save", "profile_restore", "engine_install", "import_scan", "import", "cleanup"}:
+        if operation not in {"install", "link", "uninstall", "verify", "compare", "profile_save", "profile_restore", "engine_install", "import_scan", "import", "cleanup", "start_chat"}:
             raise ValueError("Unsupported operation")
         if body.get("confirmed") is not True:
             raise ValueError("The operation must be explicitly confirmed")
@@ -240,6 +240,17 @@ class WebService:
             raise ValueError("Select a model from this session")
         if body.get("ids") is not None:
             raise ValueError("이 작업에는 단일 대상을 선택해 주세요.")
+        if operation == "start_chat":
+            if engine not in {"ollama", "lmstudio"}:
+                raise ValueError("대화에 사용할 Ollama 또는 LM Studio를 선택해 주세요.")
+            with self.lock:
+                candidate = self.candidates.get(key)
+            if candidate:
+                return {"operation": operation, **candidate, "engine": engine, "selection_id": key}
+            selected = next((x for x in self.models() if x["id"] == key and x["exists"]), None)
+            if not selected:
+                raise ValueError("모델 목록에서 대화할 모델을 다시 선택해 주세요.")
+            return {"operation": operation, "filename": selected["filename"], "engine": engine, "selection_id": key}
         if operation == "import":
             from omm.web.maintenance import read_import_preview
             selected = next((x for x in read_import_preview() if x["id"] == key), None)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import os
 import signal
@@ -85,6 +86,8 @@ class JobManager:
             job = {"id": request_id, "request_digest": digest, "operation": request["operation"],
                    "filename": request["filename"], "status": "queued", "created_at": time.time(),
                    "bytes_received": 0, "total_bytes": None, "message": "", "result": None}
+            if request["operation"] == "start_chat":
+                job["task_request"] = dict(request)
             self.jobs[request_id] = job
             self._save(job)
             worker = threading.Thread(target=self._run, args=(request_id, request), daemon=True)
@@ -127,14 +130,20 @@ class JobManager:
                     job = self.jobs[jid]
                     kind = event.get("event")
                     if kind == "progress":
+                        if job["operation"] == "start_chat":
+                            from omm.web.task_flow import STAGES
+                            stage, status = event.get("stage"), event.get("step_status")
+                            if stage in STAGES and status in {"running", "completed"}:
+                                job["stage"] = stage
+                                job.setdefault("steps", {})[stage] = status
                         for field in ("bytes_received", "total_bytes", "completed_count", "total_count"):
                             value = event.get(field)
-                            if value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
+                            if field in event and (value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)):
                                 job[field] = value
                     elif kind in {"completed", "failed", "cancelled"}:
                         job.update(status=kind, result=event.get("result"), message=str(event.get("message", ""))[:2000])
                     now = time.monotonic()
-                    if kind != "progress" or now - last_saved >= 0.5:
+                    if kind != "progress" or "stage" in event or now - last_saved >= 0.5:
                         self._save(job)
                         last_saved = now
             code = proc.wait()
@@ -158,15 +167,32 @@ class JobManager:
 
     def list(self):
         with self.lock:
-            return [dict(j) for j in sorted(self.jobs.values(), key=lambda j: j["created_at"], reverse=True)]
+            return copy.deepcopy(sorted(self.jobs.values(), key=lambda j: j["created_at"], reverse=True))
+
+    def retry_task(self, jid, request_id):
+        from omm import hub
+        with self.lock:
+            job = self.jobs.get(jid)
+            if not job or job["operation"] != "start_chat" or job["status"] not in {"failed", "cancelled", "interrupted"}:
+                raise JobConflict("중단되거나 실패한 대화 준비 작업만 다시 시작할 수 있어요.")
+            request = job.get("task_request")
+            if (not isinstance(request, dict) or set(request) - {"operation", "filename", "engine", "ref", "selection_id"}
+                    or request.get("operation") != "start_chat" or request.get("engine") not in {"ollama", "lmstudio"}
+                    or ("ref" in request and (not isinstance(request["ref"], str) or not 1 <= len(request["ref"]) <= 2048))):
+                raise ValueError("저장된 작업을 확인하지 못했어요. 모델 목록에서 다시 선택해 주세요.")
+            hub.validate_model_filename(request.get("filename"))
+            digest = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
+            if digest != job.get("request_digest"):
+                raise ValueError("저장된 작업 내용이 달라졌어요. 모델 목록에서 다시 선택해 주세요.")
+            return self.start(dict(request), request_id)
 
     def cancel(self, jid):
         with self.lock:
             job = self.jobs.get(jid)
             if not job:
                 raise ValueError("Unknown job")
-            if job["operation"] not in {"install", "compare"} or job["status"] not in {"queued", "running", "cancelling"}:
-                raise JobConflict("Only a running installation or comparison can be cancelled")
+            if job["operation"] not in {"install", "compare", "start_chat"} or job["status"] not in {"queued", "running", "cancelling"}:
+                raise JobConflict("Only a running installation, comparison or chat preparation can be cancelled")
             proc = self.processes.get(jid)
             if proc:
                 job["status"] = "cancelling"
@@ -189,7 +215,7 @@ class JobManager:
             workers = list(self.workers.values())
         for jid in ids:
             try:
-                if self.jobs[jid]["operation"] in {"install", "compare"}:
+                if self.jobs[jid]["operation"] in {"install", "compare", "start_chat"}:
                     self.cancel(jid)
             except (ValueError, OSError):
                 pass
@@ -198,7 +224,7 @@ class JobManager:
                 proc = self.processes.get(jid)
             if proc:
                 try:
-                    proc.wait(timeout=240 if self.jobs[jid]["operation"] in {"verify", "compare", "profile_save", "document_question"} else 5)
+                    proc.wait(timeout=300 if self.jobs[jid]["operation"] == "start_chat" else 240 if self.jobs[jid]["operation"] in {"verify", "compare", "profile_save", "document_question"} else 5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=5)
