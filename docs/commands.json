@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.7",
+  "omm_version": "0.4.9",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -1855,6 +1855,104 @@
     {
       "path": [
         "setting",
+        "agent"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Connect Claude Code, Codex or pi to local Ollama and restore original settings.",
+      "description": "",
+      "usage": "omm setting agent [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/setting#agent"
+    },
+    {
+      "path": [
+        "setting",
+        "agent",
+        "cloud"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Restore original routing while preserving unrelated settings edits.",
+      "description": "",
+      "usage": "omm setting agent cloud [OPTIONS] {harness}",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude, codex or pi.",
+          "required": true
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/setting#agent"
+    },
+    {
+      "path": [
+        "setting",
+        "agent",
+        "local"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Back up settings and connect a harness to a downloaded local Ollama model.",
+      "description": "",
+      "usage": "omm setting agent local [OPTIONS] {harness}",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude, codex or pi.",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--model"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Installed tool-capable Ollama model tag (32K+ context).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--base-url"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Local Ollama HTTP(S) loopback origin.",
+          "default": "http://127.0.0.1:11434",
+          "global": false
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#agent"
+    },
+    {
+      "path": [
+        "setting",
+        "agent",
+        "status"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show saved connection state without loading a model or exposing credentials.",
+      "description": "",
+      "usage": "omm setting agent status [OPTIONS] {harness}",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude, codex or pi.",
+          "required": true
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/setting#agent"
+    },
+    {
+      "path": [
+        "setting",
         "auto-import"
       ],
       "kind": "group",
@@ -1864,6 +1962,117 @@
       "usage": "omm setting auto-import [OPTIONS] COMMAND [ARGS]...",
       "arguments": [],
       "options": [],
+      "docs_url": "https://omm.run/commands/setting#auto-import"
+    },
+    {
+      "path": [
+        "setting",
+        "auto-import",
+        "disable"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Turn off background auto-import.",
+      "description": "",
+      "usage": "omm setting auto-import disable [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#auto-import"
+    },
+    {
+      "path": [
+        "setting",
+        "auto-import",
+        "enable"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Turn on background auto-import: watches Ollama/LM Studio/etc. and adopts new models into the omm hub without a prompt.",
+      "description": "",
+      "usage": "omm setting auto-import enable [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#auto-import"
+    },
+    {
+      "path": [
+        "setting",
+        "auto-import",
+        "status"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show whether background auto-import is enabled and registered with the OS.",
+      "description": "",
+      "usage": "omm setting auto-import status [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
       "docs_url": "https://omm.run/commands/setting#auto-import"
     },
     {
@@ -2295,6 +2504,274 @@
     {
       "path": [
         "setting",
+        "upload",
+        "benchmark"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Configure the benchmark-upload send policy; see `omm setting telemetry` for the destination.",
+      "description": "",
+      "usage": "omm setting upload benchmark [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--enable"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Always send benchmark results without asking.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--disable"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Never send benchmark results.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--ask"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Ask before sending (default); `omm install`/`omm benchmark` ask each time, `omm contribute` asks once per run.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#upload"
+    },
+    {
+      "path": [
+        "setting",
+        "upload",
+        "crash"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Configure the opt-in crash-report policy; see docs/crash-reports.md for exactly what is sent. Crash reports go to their own write-only channel, separate from benchmark telemetry and usage stats.",
+      "description": "",
+      "usage": "omm setting upload crash [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--enable"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Always send scrubbed crash reports without asking.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--disable"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Never send crash reports (the default).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--ask"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Ask once per `omm contribute` run before sending.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#upload"
+    },
+    {
+      "path": [
+        "setting",
+        "upload",
+        "usage"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Anonymous daily usage stats (opt-in, off by default). See PRIVACY.md for the exact fields. Run with no flags to print the current policy and the exact payload that would be sent next.",
+      "description": "",
+      "usage": "omm setting upload usage [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--enable"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Send the anonymous daily usage batch.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--disable"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Never send usage stats (the default).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--reset-id"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Generate a new random install id, unlinking future rows from past ones.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#upload"
+    },
+    {
+      "path": [
+        "setting",
+        "upload",
+        "votes"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Arena battle vote uploads (opt-in, asked after each session).",
+      "description": "The prompt you typed is never uploaded - only which model won, the two models' identities, and their measured speed and memory. See PRIVACY.md. Run with no flags to print the current policy and how many votes wait.",
+      "usage": "omm setting upload votes [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--enable"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Always upload battle votes.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--disable"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Never upload battle votes.",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--ask"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Ask after each battle session (the default).",
+          "default": null,
+          "global": false
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#upload"
+    },
+    {
+      "path": [
+        "setting",
         "version"
       ],
       "kind": "command",
@@ -2360,6 +2837,117 @@
       "usage": "omm setting web-autostart [OPTIONS] COMMAND [ARGS]...",
       "arguments": [],
       "options": [],
+      "docs_url": "https://omm.run/commands/setting#web-autostart"
+    },
+    {
+      "path": [
+        "setting",
+        "web-autostart",
+        "disable"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Stop starting the local web manager at sign-in. Models and settings are kept.",
+      "description": "",
+      "usage": "omm setting web-autostart disable [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#web-autostart"
+    },
+    {
+      "path": [
+        "setting",
+        "web-autostart",
+        "enable"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Start the local web manager at sign-in (and now), without opening a browser.",
+      "description": "",
+      "usage": "omm setting web-autostart enable [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/setting#web-autostart"
+    },
+    {
+      "path": [
+        "setting",
+        "web-autostart",
+        "status"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show whether the local web manager is registered to start at sign-in.",
+      "description": "",
+      "usage": "omm setting web-autostart status [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
       "docs_url": "https://omm.run/commands/setting#web-autostart"
     },
     {

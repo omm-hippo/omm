@@ -230,3 +230,15 @@ configured to forward requests to a cloud service.
 Replacing or deleting a document clears saved document answers so old source
 quotations do not remain in the answer cache. Original uploaded files are not
 changed. Explicit OMM data removal includes the owned `documents` directory.
+
+## Local agent connection backups
+
+`omm setting agent local` saves a private local backup of the selected
+harness's routing settings under `OMM_HOME/agent-connections`. It may contain
+existing authentication values from those settings. Backups are not read by
+telemetry, crash reports, usage uploads or support bundles; do not share them
+in an issue. Model capability checks contact only the selected loopback Ollama
+endpoint and do not generate a prompt. A harness's own telemetry, tool network
+access and project/organization overrides remain that harness's settings.
+`omm setting agent cloud` removes the connection backup after restoring all
+files successfully. See [agent connections](docs/agent-connections.md).
