@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.12",
+  "omm_version": "0.4.16",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -1529,7 +1529,7 @@
       ],
       "kind": "group",
       "aliases": [],
-      "summary": "Search local documents by meaning and words (hybrid). Text and questions stay on this computer; embeddings use local Ollama only.",
+      "summary": "Search local documents by meaning and words (hybrid), and serve them to coding agents over a local MCP server. Text and questions stay on this computer; embeddings use local Ollama only.",
       "description": "",
       "usage": "omm rag [OPTIONS] COMMAND [ARGS]...",
       "arguments": [],
@@ -1711,6 +1711,46 @@
     {
       "path": [
         "rag",
+        "connect"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Register OMM document search as an MCP server in a coding agent, backing up its settings.",
+      "description": "",
+      "usage": "omm rag connect [OPTIONS] {harness}",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude-code, codex, pi or cursor.",
+          "required": true
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#connect"
+    },
+    {
+      "path": [
+        "rag",
+        "disconnect"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Remove only the OMM MCP entry from a coding agent and keep other settings.",
+      "description": "",
+      "usage": "omm rag disconnect [OPTIONS] {harness}",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude-code, codex, pi or cursor.",
+          "required": true
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#disconnect"
+    },
+    {
+      "path": [
+        "rag",
         "embedding-model"
       ],
       "kind": "group",
@@ -1753,6 +1793,20 @@
         }
       ],
       "docs_url": "https://omm.run/commands/rag#embedding-model"
+    },
+    {
+      "path": [
+        "rag",
+        "mcp"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Run the local document search MCP server on stdin/stdout (started by a coding agent).",
+      "description": "",
+      "usage": "omm rag mcp [OPTIONS]",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#mcp"
     },
     {
       "path": [

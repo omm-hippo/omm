@@ -16,7 +16,8 @@ MAX_LIMIT = 10
 MAX_QUERY = 2000
 # DocumentStore.search accepts at most this many document ids per call.
 _SEARCH_BATCH = 20
-NO_DOCUMENTS = "등록된 문서가 없어요. omm web의 문서 탭에서 문서를 먼저 등록해 주세요."
+NO_DOCUMENTS = ("등록된 문서가 없어요. `omm rag add <컬렉션> <파일이나 폴더>` 또는 omm web의 문서 탭에서 "
+                "문서를 먼저 등록해 주세요.")
 
 
 class SearchError(ValueError):
@@ -83,6 +84,8 @@ def search(query, collection=None, limit=None, *, store=None) -> dict:
     store = store or _store()
     if collection is not None and not collections_supported(store):
         raise SearchError("This OMM version has no document collections yet; omit collection to search all registered documents.")
+    if collection is not None and collection not in {row.get("name") for row in store.collections()}:
+        raise SearchError(f"No document collection named {collection!r}; call list_collections to see the available names.")
     rows = store.list()
     if collection is not None:
         rows = [row for row in rows if row.get("collection") == collection]
@@ -96,10 +99,23 @@ def search(query, collection=None, limit=None, *, store=None) -> dict:
         return {**base, "found": False, "message": message, "results": []}
     ids = [row["id"] for row in current]
     kwargs = {"collection": collection} if collection is not None else {}
-    batches = []
+    batches, methods, notices = [], set(), []
     for offset in range(0, len(ids), _SEARCH_BATCH):
-        _, sources = store.search(query, ids[offset:offset + _SEARCH_BATCH], **kwargs)
+        chunk = ids[offset:offset + _SEARCH_BATCH]
+        if callable(getattr(store, "search_detailed", None)):
+            detail = store.search_detailed(query, chunk, limit=limit, **kwargs)
+            sources = detail["sources"]
+            methods.add(detail.get("method"))
+            if detail.get("notice") and detail["notice"] not in notices:
+                notices.append(detail["notice"])
+        else:
+            _, sources = store.search(query, chunk, **kwargs)
         batches.append(list(sources))
+    methods.discard(None)
+    if methods:
+        # One lexical batch means the answer as a whole was not fully semantic.
+        base["method"] = "hybrid" if methods == {"hybrid"} else "lexical"
+        base["notice"] = " ".join(notices) or None
     # Each batch is already ranked. Without comparable scores across batches,
     # interleave by in-batch rank; with scores, order by score.
     merged = [batch[depth] for depth in range(max(map(len, batches), default=0))

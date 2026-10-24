@@ -51,7 +51,7 @@ def test_stdio_round_trip_over_real_pipes(isolated_omm_home):
     hit = found["structuredContent"]["results"][0]
     assert hit["document"] == "전자기학.md" and hit["page"] == 1
     assert hit["quote"] == ORIGINAL[hit["start"]:hit["end"]] and "나침반" in hit["quote"]
-    assert hit["method"] == "local_lexical_v1"
+    assert hit["method"] == "lexical"  # conftest replaces the embedder, so search falls back to words only
     assert "전자기학.md p.1" in found["content"][0]["text"]
     missing = replies[3]["result"]
     assert missing["structuredContent"]["found"] is False and missing["structuredContent"]["results"] == []
@@ -69,7 +69,7 @@ def test_no_documents_is_explicit_not_empty_success(isolated_omm_home):
     assert reply["result"]["structuredContent"]["found"] is False
     assert "등록된 문서가 없어요" in reply["result"]["content"][0]["text"]
     listed = json.loads(server.handle_line(json.dumps(_call(3, "list_collections", {}))))["result"]
-    assert listed["structuredContent"]["collections_supported"] is False
+    assert listed["structuredContent"]["collections_supported"] is True  # collections exist since the hybrid store landed
 
 
 def test_protocol_errors_and_tool_errors(isolated_omm_home):
@@ -80,7 +80,7 @@ def test_protocol_errors_and_tool_errors(isolated_omm_home):
     bad = json.loads(server.handle_line(json.dumps(_call(3, "search_documents", {"query": ""}))))["result"]
     assert bad["isError"] is True
     with_collection = json.loads(server.handle_line(json.dumps(_call(4, "search_documents", {"query": "x y", "collection": "인사규정"}))))["result"]
-    assert with_collection["isError"] is True and "collections" in with_collection["content"][0]["text"]
+    assert with_collection["isError"] is True and "list_collections" in with_collection["content"][0]["text"]
     assert server.handle_line(json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {}})) is None
     # Older clients get their version back and no structuredContent.
     old = json.loads(server.handle_line(json.dumps({**INIT, "params": {"protocolVersion": "2024-11-05"}})))
@@ -254,3 +254,29 @@ def test_cli_rag_mcp_serves_stdio(isolated_omm_home):
     assert result.exit_code == 0, result.output
     replies = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
     assert [r["id"] for r in replies] == [1, 2]
+
+
+def test_adapter_reports_hybrid_or_lexical_method_from_detailed_search():
+    class DetailedStore:
+        def list(self):
+            return [{"id": "a", "name": "규정.pdf", "collection": "인사규정", "index_current": True}]
+
+        def collections(self):
+            return [{"name": "인사규정"}]
+
+        def search(self, question, ids, collection=None):
+            raise AssertionError("search_detailed must be preferred")
+
+        def search_detailed(self, question, ids=None, *, collection=None, limit=3):
+            row = {"document_id": "a", "name": "규정.pdf", "page": 1, "start": 0, "end": 4, "text": "연차 15일",
+                   "sha256": "x", "score": 0.03, "method": self.method, "collection": "인사규정"}
+            return {"revision": 1, "sources": [row], "method": self.method, "embedding_model": "bge-m3",
+                    "notice": None if self.method == "hybrid" else "Ollama에 연결하지 못해 단어 검색만 했어요."}
+
+    store = DetailedStore()
+    store.method = "hybrid"
+    result = rag_adapter.search("쉬는 날 며칠?", store=store)
+    assert result["found"] is True and result["method"] == "hybrid" and result["notice"] is None
+    store.method = "lexical"
+    result = rag_adapter.search("연차", store=store)
+    assert result["method"] == "lexical" and "단어 검색만" in result["notice"]
