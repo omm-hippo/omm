@@ -262,3 +262,17 @@
 - **해결:** 52416만 사내망에 연다. 이 포트는 exo의 사전 공유 키(클러스터 이름에서 만든 SHA3)가 있어야 연결이 성립하므로, 클러스터 이름을 128비트 무작위(`omm-` + 32자리)로 바꿨다. API(52415)와 모델 내부 포트(49153-65535)는 계속 막는다.
 - **실측(공식 코드, 새 이름):** join 직후와 동시·순차 재시작 6번, 모두 3대 발견(0~32초). 노트북에서 52415 closed, 52416 open, 52440 open, 60000 closed. 122B 모델은 Thunderbolt 주소로 링 연결(`169.254.x` ↔ 이웃의 Thunderbolt 주소), 초당 19.6토큰.
 - **미검증:** 다른 이름(키)을 가진 exo가 52416에 붙으려 할 때 실제로 거절되는지는 직접 시험하지 않았다(exo 소스의 pnet 설정 근거만 있음).
+
+## RDMA 효과 측정 (복구 모드 없이, 2026-10-25)
+
+exo는 같은 배치를 두 전송 방식으로 만들 수 있다: `MlxJacclInstance`(RDMA)와 `MlxRingInstance`(Thunderbolt 위 TCP). `rdma_ctl`을 끄지 않고 이 둘을 같은 Mac에서 바꿔 가며 쟀다. 모델 `Qwen3.5-9B-4bit`, 400토큰 생성, 2번 평균(예열 1번 제외), 삼각형 3대.
+
+| 배치 | RDMA (Jaccl) | TCP (Ring) |
+|---|---|---|
+| Tensor, 2대 | 초당 72.4토큰 | 초당 49.9토큰 |
+| Pipeline, 3대 | 초당 42.2토큰 | 초당 41.3토큰 |
+
+- RDMA는 Tensor에서 약 45% 빠르고 Pipeline에서는 차이가 거의 없다.
+- `recommend.choose_placement`는 늘 Pipeline 중 메모리를 가장 적게 쓰는 배치를 고르고 Jaccl/Ring을 구분하지 않는다. 그래서 지금 omm은 RDMA 이득을 쓰지 못한다.
+- 122B-8bit 모델은 Tensor 배치가 없다(3대로 나눌 수 있는 hidden size/KV head 조합이 아님). 9B는 Tensor가 2대까지만 된다.
+- `rdma_ctl disable` 상태 자체는 재지 않았다(미검증). 위 Ring 값이 RDMA 없이 Thunderbolt TCP로 도는 경우에 해당한다.
