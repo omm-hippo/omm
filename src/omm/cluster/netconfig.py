@@ -31,7 +31,10 @@ BACKUP_DIR = "/Library/Application Support/omm"
 # Run as root, no arguments. Safe to run again: every step checks first.
 APPLY_SCRIPT = f"""PREFS="{PREFS}"
 mkdir -p "{BACKUP_DIR}"
-[ -e "{BACKUP_DIR}/preferences.plist.pre-netconfig" ] || cp "$PREFS" "{BACKUP_DIR}/preferences.plist.pre-netconfig"
+# Snapshot the original: on a first run, or whenever a live bridge is about to
+# go (an init after `leave` put it back would otherwise keep a stale copy).
+# A re-run on a Mac already set up has no bridge and keeps the first copy.
+if [ ! -e "{BACKUP_DIR}/preferences.plist.pre-netconfig" ] || ifconfig bridge0 >/dev/null 2>&1; then cp "$PREFS" "{BACKUP_DIR}/preferences.plist.pre-netconfig"; fi
 if ifconfig bridge0 >/dev/null 2>&1; then
   for member in $(ifconfig bridge0 | awk '/member:/ {{print $2}}'); do ifconfig bridge0 deletem "$member" 2>/dev/null; done
   ifconfig bridge0 destroy 2>/dev/null

@@ -251,3 +251,78 @@ def test_upstream_timeout_has_its_own_message(token, monkeypatch):
         assert json.loads(resp.read())["error"]["message"] == "omm cluster: exo did not answer in time"
     finally:
         server.shutdown(); server.server_close(); slow.shutdown(); slow.server_close()
+
+
+def test_absolute_form_target_is_forwarded_as_the_checked_path(gateway_server, upstream, token):
+    resp = post(gateway_server, "http://elsewhere.example/v1/messages?beta=true",
+                headers={"Authorization": f"Bearer {token}"})
+    assert resp.status == 200
+    resp.read()
+    assert upstream.last_path == "/v1/messages?beta=true"
+
+
+def test_chunked_request_body_is_411_and_never_reaches_upstream(gateway_server, upstream, token):
+    conn = http.client.HTTPConnection("127.0.0.1", gateway_server.server_address[1], timeout=10)
+    conn.request("POST", "/v1/messages", body=iter([b'{"x":', b"1}"]),
+                 headers={"Authorization": f"Bearer {token}"}, encode_chunked=True)
+    resp = conn.getresponse()
+    assert resp.status == 411
+    assert json.loads(resp.read())["error"]["type"] == "invalid_request_error"
+    assert upstream.calls == 0
+
+
+def test_proxied_response_has_one_date_and_one_server_header(token, monkeypatch):
+    class _Dated(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            self.send_response(200)  # adds its own Date and Server, like exo's uvicorn
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+
+    upstream = _start(ThreadingHTTPServer(("127.0.0.1", 0), _Dated))
+    server = _start(gateway.GatewayServer("127.0.0.1", 0, upstream=f"http://127.0.0.1:{upstream.server_address[1]}"))
+    try:
+        resp = post(server, "/v1/messages", headers={"Authorization": f"Bearer {token}"})
+        assert resp.read() == b"{}"
+        names = [name.casefold() for name, _ in resp.getheaders()]
+        assert names.count("date") == 1 and names.count("server") == 1
+    finally:
+        server.shutdown(); server.server_close(); upstream.shutdown(); upstream.server_close()
+
+
+def test_idle_client_connection_is_closed_after_the_timeout(gateway_server, monkeypatch):
+    assert gateway._Handler.timeout == gateway.CLIENT_TIMEOUT == 60
+    monkeypatch.setattr(gateway._Handler, "timeout", 0.3)
+    with socket.create_connection(("127.0.0.1", gateway_server.server_address[1]), timeout=5) as sock:
+        assert sock.recv(1) == b""  # the gateway hung up instead of waiting forever
+
+
+def test_access_log_rotates_and_stays_out_of_the_run_log(gateway_server, token, monkeypatch, isolated_omm_home):
+    monkeypatch.setattr(gateway, "ACCESS_LOG_MAX_BYTES", 400)
+    handler = gateway.attach_access_log()
+    try:
+        assert gateway.log.propagate is False
+        for _ in range(20):
+            post(gateway_server, "/v1/messages", headers={"Authorization": f"Bearer {token}"}).read()
+        import time
+
+        logs = isolated_omm_home / "logs"
+        for _ in range(100):
+            # Request lines are written after the reply, so wait for a finished
+            # rollover (the new base file is reopened right after the rename).
+            if all((logs / name).exists() for name in ("cluster-gateway-access.jsonl", "cluster-gateway-access.jsonl.1")):
+                break
+            time.sleep(0.02)
+        files = sorted(p.name for p in logs.glob("cluster-gateway-access.jsonl*"))
+        assert files[0] == "cluster-gateway-access.jsonl" and len(files) <= 1 + gateway.ACCESS_LOG_BACKUPS
+        line = json.loads((logs / "cluster-gateway-access.jsonl.1").read_text(encoding="utf-8").splitlines()[0])
+        assert line["token_name"] == "kim" and line["status"] == 200 and line["path"] == "/v1/messages"
+        assert token not in "".join(p.read_text(encoding="utf-8") for p in logs.glob("cluster-gateway-access*"))
+    finally:
+        gateway.detach_access_log(handler)
+    assert gateway.log.propagate is True

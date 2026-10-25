@@ -15,6 +15,25 @@ Thunderbolt peers take 40 s or more to find each other, or never. A reset
 fails that dial at once and the port stays closed to the network. Real Mac
 minis 2026-10-23: 5 of 5 discoveries in about 10 s with `return`, 2 of 3 with
 `drop` (one never within 40 s).
+
+exo's libp2p port (52416) is open to the office network. exo dials a peer's
+addresses in sorted order and skips the rest while one dial is pending, so
+the office-network address always goes first; with it blocked, three Mac
+minis met only by luck (2 of 6 tries, 2026-10-25), with it open 10 of 10.
+Only a node holding the pnet key can finish that handshake, and the key is
+derived from the 128-bit cluster name (settings.py). The API and the MLX ring
+stay closed, and the ring still runs over Thunderbolt.
+
+TCP blocks match only a new connection's SYN (`flags S/SA`). Without that, a
+connection the Mac opened before the rules loaded has no pf state, so its
+replies to a high local port were blocked: a download stalled the moment the
+rules loaded, while with `flags S/SA` it ran to the end and a new connection
+to a high port from the network was still refused (real Mac mini 2026-10-24).
+
+`pfctl -E` adds one pf enable reference per call, and pf stays on until each is
+given back with `pfctl -X <token>`. The loader gives back its previous one
+before taking a new one, and `leave` gives back the last one; before that,
+three init/leave rounds left a Mac mini with three references and pf on.
 """
 
 from __future__ import annotations
@@ -29,11 +48,21 @@ from typing import Literal, Sequence
 from omm.cluster.errors import ClusterError
 
 EXO_PORTS: tuple[int, ...] = (52415, 52416)
+LIBP2P_PORT = 52416
 PF_ANCHOR = "com.apple/omm-cluster"
 RULES_PATH = Path("/Library/Application Support/omm/cluster-pf.conf")
 DAEMON_LABEL = "com.omm.cluster-pf"
 DAEMON_PLIST = Path("/Library/LaunchDaemons/com.omm.cluster-pf.plist")
+TOKEN_PATH = Path("/Library/Application Support/omm/cluster-pf.token")
 _HIGH_PORTS = "49153:65535"
+
+# A stale token (after a reboot) is simply refused by pfctl.
+RELEASE_TOKEN = (f'[ -s "{TOKEN_PATH}" ] && /sbin/pfctl -X "$(cat "{TOKEN_PATH}")" >/dev/null 2>&1; '
+                 f'rm -f "{TOKEN_PATH}"')
+# What the LaunchDaemon runs as root at boot and at every init/join.
+LOAD_SCRIPT = f"""{RELEASE_TOKEN}
+/sbin/pfctl -E -a {PF_ANCHOR} -f "{RULES_PATH}" 2>&1 | sed -n 's/^Token : //p' > "{TOKEN_PATH}"
+"""
 
 # Run as root with the rendered rules as $1 and the daemon plist as $2.
 SCRIPT = f"""set -e
@@ -51,6 +80,7 @@ exit 1
 REMOVE_SCRIPT = f"""launchctl bootout system/{DAEMON_LABEL} 2>/dev/null || true
 rm -f "{DAEMON_PLIST}" "{RULES_PATH}"
 /sbin/pfctl -a {PF_ANCHOR} -F all 2>/dev/null || true
+{RELEASE_TOKEN}
 """
 
 
@@ -98,9 +128,11 @@ def render_rules(exo_ports: Sequence[int], tb_ifaces: Sequence[str], *, gateway_
         lines.append(f"pass in quick on {{ {' '.join(tb_ifaces)} }} all")
     if gateway_port is not None:
         lines.append(f"pass in quick proto tcp to port {gateway_port}")
+    lines.append(f"pass in quick proto tcp to port {LIBP2P_PORT}")
     lines += [
-        "block return in quick proto { tcp udp } to port $exo_ports",
-        f"block return in quick proto tcp to port {_HIGH_PORTS}",
+        "block return in quick proto tcp to port $exo_ports flags S/SA",
+        "block return in quick proto udp to port $exo_ports",
+        f"block return in quick proto tcp to port {_HIGH_PORTS} flags S/SA",
     ]
     return "\n".join(lines) + "\n"
 
@@ -108,7 +140,7 @@ def render_rules(exo_ports: Sequence[int], tb_ifaces: Sequence[str], *, gateway_
 def _daemon_plist() -> bytes:
     return plistlib.dumps({
         "Label": DAEMON_LABEL,
-        "ProgramArguments": ["/sbin/pfctl", "-E", "-a", PF_ANCHOR, "-f", str(RULES_PATH)],
+        "ProgramArguments": ["/bin/sh", "-c", LOAD_SCRIPT],
         "RunAtLoad": True,
     })
 
@@ -134,7 +166,9 @@ def remove(*, run=subprocess.run) -> None:
         raise ClusterError("could not remove the cluster firewall rules (sudo failed); nothing else was changed")
 
 
-def status(*, gateway_port: int | None, run=subprocess.run) -> Literal["active", "missing", "drift"]:
+def status(*, gateway_port: int | None, run=subprocess.run) -> Literal["active", "unchecked", "missing", "drift"]:
+    """"unchecked": the rules file is right but pf could not be read (no cached
+    sudo ticket), so whether the rules are really loaded is unknown."""
     try:
         on_disk = RULES_PATH.read_text(encoding="utf-8")
     except OSError:
@@ -143,4 +177,6 @@ def status(*, gateway_port: int | None, run=subprocess.run) -> Literal["active",
     if loaded.returncode == 0 and "block " not in (loaded.stdout or ""):
         return "missing"
     expected = render_rules(EXO_PORTS, trusted_interfaces(run=run), gateway_port=gateway_port)
-    return "active" if on_disk == expected else "drift"
+    if on_disk != expected:
+        return "drift"
+    return "active" if loaded.returncode == 0 else "unchecked"

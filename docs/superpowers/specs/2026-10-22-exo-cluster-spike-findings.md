@@ -236,3 +236,43 @@
 ## `omm cluster restart` (미검증)
 
 케이블이 빠진 뒤 exo가 이웃을 놓치는 문제(위 Step 6의 1번)에 대한 대응으로 `omm cluster restart`(exo LaunchAgent만 `launchctl kickstart -k`)와 `status`의 안내 한 줄을 추가했다. 실기기에서 케이블을 뽑고 이 명령으로 복구되는지는 아직 확인하지 못했다. 근거는 2026-10-24에 한 번 관찰한 "exo만 재시작하니 복구됨"뿐이고, 원인은 모른다.
+
+## 원격 후속 확인 (node4 한 대, 2026-10-24 저녁)
+
+사람이 Mac 앞에 없어도 되는 항목만 SSH로 확인했다. node3–node4 케이블 1개가 꽂혀 있었고, node4 혼자 `init`한 1대 클러스터로 시험한 뒤 `leave`했다.
+
+| 항목 | 결과 |
+|---|---|
+| pf 활성화 참조 | 이전 코드는 `pfctl -E`를 부를 때마다 참조가 하나씩 쌓이고 `leave`가 돌려주지 않아, `leave` 뒤에도 pf가 켜져 있었다(node4 3개, node1 4개, node3 3개 남아 있었음). 새 코드는 토큰을 저장해 두고 다시 적용할 때와 `leave`할 때 돌려준다. node4 실측: 적용 두 번에 참조 3→4→4, 제거 뒤 3으로 원래대로. node4에 남아 있던 이전 참조 3개는 손으로 풀었다(pf Disabled). node1과 node3은 그대로다 |
+| 규칙을 올릴 때 기존 연결 | 이전 규칙은 규칙을 올리는 순간 이미 열려 있던 다운로드를 멈추게 했다(1.18MB에서 정지). TCP 차단을 `flags S/SA`(새 연결의 SYN만)로 바꾸자 끝까지 받았고(3.83MB, 제한 속도 그대로), 노트북에서 높은 포트로 새로 접속하는 것은 여전히 막혔다(규칙 없을 때 open, 있을 때 closed) |
+| `status`의 방화벽 표시 | sudo 없이는 pf를 읽을 수 없어서 이제 `unchecked`로 표시된다(전에는 파일만 보고 `active`) |
+| 다운로드 실패 | 모델 폴더를 쓰기 금지(`chmod 555`)로 만들자 exo가 `DownloadFailed`(`[Errno 13] Permission denied`)를 냈다. exo는 실패한 다운로드를 재시작 전까지 다시 시도하지 않는데(1.0.71 소스), 이전 omm은 15분 정체 제한까지 기다렸다. 이제 바로 멈추고 실패 인스턴스를 지운 뒤 "원인을 고치고 그 Mac에서 `omm cluster restart`, 그다음 다시 `model`"을 안내한다. 실측: 0초 만에 exit 1, 인스턴스 0개. 폴더 권한을 되돌리고 `restart` 후 다시 실행하니 27초 만에 `Serving` |
+| Codex / pi 하네스 | 노트북 scratch 폴더에 Codex 0.164.0과 pi 0.73.1을 설치하고 별도 설정 폴더(`CODEX_HOME`, `PI_CODING_AGENT_DIR`)로 게이트웨이에 연결했다. 모델은 `Qwen3.5-9B-4bit`. 두 하네스 모두 도구로 파일을 읽어 정답을 냈다. 게이트웨이 접근 로그에는 `/v1/responses` 200(Codex)과 `/v1/chat/completions` 200(pi)이 남았다. omm의 `omm setting agent`는 아직 로컬 Ollama만 지원해서, 클러스터 연결은 손으로 설정했다 |
+| 게이트웨이 접근 로그 | 요청 줄은 `logs/cluster-gateway-access.jsonl`(회전)에만 쌓이고, 실행 로그 파일에는 0줄이었다. 토큰과 본문은 남지 않는다 |
+| `leave` | pf 참조 0, pf Disabled, `exo-runtime` 삭제, Thunderbolt Bridge 10.0.0.4 복구, omm 서비스 0개 |
+
+미검증: 여러 대에서 `flags S/SA` 규칙으로 노드 발견과 MLX ring 연결(규칙 형태만 바뀌었고 Thunderbolt는 그대로 신뢰한다), 재부팅 뒤 LaunchDaemon이 토큰을 새로 잡는지(FileVault 때문에 원격 재부팅을 하지 않았다).
+
+## 3대 삼각형에서 서로 못 찾던 문제 (2026-10-24 밤 ~ 10-25)
+
+새 코드로 node4 `init`, node1·node3 `join` 뒤 케이블을 삼각형으로 꽂자 각 Mac이 자기만 보였다. 방화벽 규칙을 비우면 19초 만에 3대가 보였다.
+
+- **원인:** exo는 peer의 주소들을 정렬 순서대로 다시 연결하는데, 한 연결이 진행 중이면 나머지는 건너뛴다(exo 1.0.71 `rust/networking/src/discovery.rs`, libp2p `DisconnectedAndNotDialing`). 정렬하면 사내망 주소(10.80.x)가 Thunderbolt 주소(169.254.x)보다 앞이라 늘 사내망 주소만 시도된다. 그 포트(52416)가 막혀 있으면 Thunderbolt 연결은 시작할 때 운이 좋을 때만 생긴다. 52416이 막힌 규칙에서 6번 중 2번만 성공했다.
+- **헛짚은 것:** Thunderbolt 5 케이블은 Mac 쌍마다 USB 네트워크(한쪽 "Ethernet Adapter (enN)", 다른 쪽 USB 장치 "Mac"의 NCM)도 만든다. 이것을 신뢰하자 한 번 5초 만에 성공했지만 재현되지 않았다. 신뢰하면 모델 데이터가 USB 2.0 쪽으로 가서 오히려 손해다. 연결 추적을 끈 규칙, 밖으로 나가는 연결 거부 규칙도 효과가 없었다.
+- **해결:** 52416만 사내망에 연다. 이 포트는 exo의 사전 공유 키(클러스터 이름에서 만든 SHA3)가 있어야 연결이 성립하므로, 클러스터 이름을 128비트 무작위(`omm-` + 32자리)로 바꿨다. API(52415)와 모델 내부 포트(49153-65535)는 계속 막는다.
+- **실측(공식 코드, 새 이름):** join 직후와 동시·순차 재시작 6번, 모두 3대 발견(0~32초). 노트북에서 52415 closed, 52416 open, 52440 open, 60000 closed. 122B 모델은 Thunderbolt 주소로 링 연결(`169.254.x` ↔ 이웃의 Thunderbolt 주소), 초당 19.6토큰.
+- **미검증:** 다른 이름(키)을 가진 exo가 52416에 붙으려 할 때 실제로 거절되는지는 직접 시험하지 않았다(exo 소스의 pnet 설정 근거만 있음).
+
+## RDMA 효과 측정 (복구 모드 없이, 2026-10-25)
+
+exo는 같은 배치를 두 전송 방식으로 만들 수 있다: `MlxJacclInstance`(RDMA)와 `MlxRingInstance`(Thunderbolt 위 TCP). `rdma_ctl`을 끄지 않고 이 둘을 같은 Mac에서 바꿔 가며 쟀다. 모델 `Qwen3.5-9B-4bit`, 400토큰 생성, 2번 평균(예열 1번 제외), 삼각형 3대.
+
+| 배치 | RDMA (Jaccl) | TCP (Ring) |
+|---|---|---|
+| Tensor, 2대 | 초당 72.4토큰 | 초당 49.9토큰 |
+| Pipeline, 3대 | 초당 42.2토큰 | 초당 41.3토큰 |
+
+- RDMA는 Tensor에서 약 45% 빠르고 Pipeline에서는 차이가 거의 없다.
+- 그래서 `recommend.choose_placement`를 바꿨다: Tensor + RDMA(Jaccl, 2대 이상)가 들어가면 그것을, 아니면 전처럼 메모리를 가장 적게 쓰는 Pipeline을 고른다(같으면 RDMA 쪽). 실기기에서 `omm cluster model mlx-community/Qwen3.5-9B-4bit`가 Tensor·Jaccl 2대를 골랐고 초당 72.2~72.3토큰이 나왔다(이전 선택은 약 42).
+- 122B-8bit 모델은 Tensor 배치가 없다(3대로 나눌 수 있는 hidden size/KV head 조합이 아님). 9B는 Tensor가 2대까지만 된다.
+- `rdma_ctl disable` 상태 자체는 재지 않았다(미검증). 위 Ring 값이 RDMA 없이 Thunderbolt TCP로 도는 경우에 해당한다.

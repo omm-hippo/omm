@@ -74,3 +74,41 @@ def test_prefilter_skips_unknown_and_oversized_sizes():
 
 def test_empty_cluster_recommends_nothing():
     assert rank([m("a", 1)], {"a": [pl("Pipeline", {"a": 1})]}, st(available=[])) == []
+
+
+def _real_previews():
+    import json
+    from pathlib import Path
+
+    from omm.cluster.exo_client import parse_previews
+
+    data = json.loads((Path(__file__).parent / "fixtures" / "exo" / "previews-3node.json").read_text(encoding="utf-8"))
+    return parse_previews(data)
+
+
+def test_choose_placement_prefers_tensor_over_rdma_on_a_real_three_mac_preview():
+    # Qwen3.5-9B-4bit on three Mac minis, 2026-10-25: Tensor over RDMA (Jaccl)
+    # on 2 Macs ran 72.4 tok/s, the Pipeline placement omm used to pick 42.2.
+    chosen = choose_placement(_real_previews())
+    backend = next(iter(chosen.instance))
+    assert (chosen.sharding, backend) == ("Tensor", "MlxJacclInstance")
+    assert len(chosen.instance[backend]["shardAssignments"]["nodeToRunner"]) == 2
+
+
+def tensor(backend, deltas, error=None):
+    runners = {f"node{i}": f"r{i}" for i in range(len(deltas))}
+    return Placement(model_id="m", sharding="Tensor", memory_delta_by_node=deltas, error=error,
+                     instance={backend: {"shardAssignments": {"nodeToRunner": runners}}})
+
+
+def test_choose_placement_ignores_tensor_without_rdma_or_on_one_mac():
+    single = tensor("MlxJacclInstance", {"a": 10})
+    ring = tensor("MlxRingInstance", {"a": 5, "b": 5})
+    pipe = pl("Pipeline", {"a": 6, "b": 6})
+    assert choose_placement([single, ring, pipe]) == pipe
+
+
+def test_choose_placement_breaks_a_pipeline_tie_towards_rdma():
+    ring = Placement("m", "Pipeline", {"MlxRingInstance": {}}, {"a": 5, "b": 5})
+    rdma = Placement("m", "Pipeline", {"MlxJacclInstance": {}}, {"a": 5, "b": 5})
+    assert choose_placement([ring, rdma]) == rdma

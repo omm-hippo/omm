@@ -2426,7 +2426,10 @@ def cluster_status_cmd() -> None:
         for instance in exo["instances"]:
             console.print(f"  Serving {instance['model_id']} ({instance['sharding']}, "
                           f"{instance['node_count']} Mac(s))", markup=False)
-    console.print(f"Firewall: {report['firewall']}   Gateway: {report['gateway']}", markup=False)
+    firewall_text = report["firewall"]
+    if firewall_text == "unchecked":
+        firewall_text = "unchecked (rules file matches; checking what pf loaded needs sudo)"
+    console.print(f"Firewall: {firewall_text}   Gateway: {report['gateway']}", markup=False)
     if report["problems"]:
         console.print("Problems:", markup=False)
         for problem in report["problems"]:
@@ -2609,6 +2612,9 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
 _SKIP_ONBOARDING_SUBCOMMANDS = {
     "setup", "doctor", "help", "update", "web", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
     "_cluster-gateway-run",
+    # Cluster Macs are set up over SSH; the wizard's single-key prompt there
+    # blocked a headless `omm cluster init` (real Mac minis, 2026-10-23).
+    "cluster",
 }
 
 

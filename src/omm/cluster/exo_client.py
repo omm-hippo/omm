@@ -23,6 +23,7 @@ class ClusterNode:
     rdma: Literal["enabled", "disabled", "unknown"]
     os_version: str | None
     thunderbolt_bridge: bool | None = None
+    os_build: str | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,8 @@ class LoadProgress:
     # Summed over all Macs; only used to tell whether anything moved.
     transferred_bytes: int = 0
     failed: str | None = None
+    # The Mac whose download failed (its name, else its node id).
+    failed_on: str | None = None
 
 
 class ExoUnavailable(ClusterError):
@@ -133,6 +136,7 @@ def parse_state(data: dict) -> ClusterState:
         enabled = _dict(rdma.get(node_id)).get("enabled")
         name = identity.get("friendlyName")
         os_version = identity.get("osVersion")
+        os_build = identity.get("osBuildVersion")
         nodes.append(ClusterNode(
             node_id=node_id,
             name=name.replace(" ", " ") if isinstance(name, str) and name else node_id,
@@ -141,6 +145,7 @@ def parse_state(data: dict) -> ClusterState:
             rdma="enabled" if enabled is True else "disabled" if enabled is False else "unknown",
             os_version=os_version if isinstance(os_version, str) else None,
             thunderbolt_bridge=bridge if isinstance(bridge := _dict(bridges.get(node_id)).get("enabled"), bool) else None,
+            os_build=os_build if isinstance(os_build, str) and os_build else None,
         ))
     links = []
     for source, sinks in _dict(topology.get("connections")).items():
@@ -240,7 +245,9 @@ def load_progress(data: dict, model_id: str) -> LoadProgress:
     unfinished: list[tuple[int, int]] = []
     transferred = 0
     failure: str | None = None
-    for items in _dict(_dict(data).get("downloads")).values():
+    failed_on: str | None = None
+    identities = _dict(_dict(data).get("nodeIdentities"))
+    for node_id, items in _dict(_dict(data).get("downloads")).items():
         for wrapper in items if isinstance(items, list) else []:
             entry = _download_entry(wrapper, model_id)
             if entry is None:
@@ -250,7 +257,10 @@ def load_progress(data: dict, model_id: str) -> LoadProgress:
                 transferred += _bytes(body.get("total")) or 0
                 continue
             if kind == "DownloadFailed":
-                failure = failure or str(body.get("errorMessage") or "download failed")
+                if failure is None:
+                    failure = str(body.get("errorMessage") or "download failed")
+                    name = _dict(identities.get(node_id)).get("friendlyName")
+                    failed_on = name.replace("\u00a0", " ") if isinstance(name, str) and name else str(node_id)
                 unfinished.append((0, 0))
                 continue
             if kind == "DownloadOngoing":
@@ -264,7 +274,7 @@ def load_progress(data: dict, model_id: str) -> LoadProgress:
         return LoadProgress("loading", transferred_bytes=transferred)
     sized = [(done, total) for done, total in unfinished if total > 0]
     done, total = min(sized, key=lambda pair: pair[0] / pair[1]) if sized else (0, 0)
-    return LoadProgress("downloading", done, total, transferred, failure)
+    return LoadProgress("downloading", done, total, transferred, failure, failed_on)
 
 
 class ExoClient:
@@ -321,6 +331,9 @@ class ExoClient:
             progress = load_progress(data, model_id)
             if on_progress is not None:
                 on_progress(progress)
+            if progress.failed:
+                # exo does not try a failed download again until it restarts.
+                return False
             runners = tuple(sorted((str(k), tuple(_dict(v))) for k, v in _dict(_dict(data).get("runners")).items()))
             now = clock()
             if (progress.transferred_bytes, runners) != signature:

@@ -27,13 +27,36 @@ def _available(state: ClusterState) -> int:
     return sum(max(node.memory_available_bytes or 0, 0) for node in state.nodes)
 
 
+RDMA_BACKEND = "MlxJacclInstance"
+
+
+def _backend(placement: Placement) -> str:
+    return next(iter(placement.instance), "")
+
+
+def _node_count(placement: Placement) -> int:
+    body = placement.instance.get(_backend(placement))
+    runners = body.get("shardAssignments", {}).get("nodeToRunner") if isinstance(body, dict) else None
+    return len(runners) if isinstance(runners, dict) else 0
+
+
 def choose_placement(placements: Sequence[Placement]) -> Placement | None:
+    """Tensor over RDMA when it fits, else the Pipeline that needs the least memory per Mac.
+
+    Three Mac minis, Qwen3.5-9B-4bit, 2026-10-25: Tensor over RDMA (exo's
+    Jaccl backend) on 2 Macs ran 72.4 tok/s, the same over TCP 49.9, and
+    Pipeline on 3 Macs about 42 either way. A big model often has no Tensor
+    placement at all and gets the Pipeline one as before.
+    """
     usable = [p for p in placements if p.error is None]
     if not usable:
         return None
     peak = lambda p: max(p.memory_delta_by_node.values(), default=0)
+    tensor = [p for p in usable if p.sharding == "Tensor" and _backend(p) == RDMA_BACKEND and _node_count(p) >= 2]
+    if tensor:
+        return min(tensor, key=peak)
     pipeline = [p for p in usable if p.sharding == "Pipeline"]
-    return min(pipeline or usable, key=peak)
+    return min(pipeline or usable, key=lambda p: (peak(p), _backend(p) != RDMA_BACKEND))
 
 
 def prefilter(models: Sequence[ExoModel], state: ClusterState) -> list[ExoModel]:

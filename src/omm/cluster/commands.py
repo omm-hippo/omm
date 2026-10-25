@@ -82,10 +82,13 @@ def init(out: Out) -> settings.ClusterSettings:
     current = settings.load()
     if current is not None and current.role == "member":
         raise UsageProblem("this Mac already joined a cluster as a member; run omm cluster leave first")
-    namespace = current.namespace if current else settings.new_namespace()
+    reuse = current is not None and not settings.is_legacy(current.namespace)
+    namespace = current.namespace if reuse else settings.new_namespace()
     # Saved before anything can be interrupted: the name is printed below and
     # may already be typed into `join` on other Macs, so a re-run must reuse it.
-    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, current.known_nodes if current else ())
+    # The remembered Macs start over: running init again is how a Mac that
+    # left for good stops being reported missing (status says so).
+    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT)
     settings.save(saved)
     _prepare_this_mac(namespace, out)
     firewall.apply(gateway_port=GATEWAY_PORT)
@@ -94,19 +97,26 @@ def init(out: Out) -> settings.ClusterSettings:
     appfw.allow([appfw.exo_binary(), appfw.gateway_binary()])
     service.install()
     out(SCREEN_APPROVAL_HINT)
-    out(f"Run this on every other Mac: omm cluster join {namespace}")
+    # On a line of its own: the 128-bit name makes the sentence wrap in an
+    # 80-column terminal, and a wrapped command does not paste.
+    out("Run this on every other Mac:")
+    out(f"  omm cluster join {namespace}")
     out("Then give each employee a token: omm cluster token add <name>")
     return saved
 
 
 def join(namespace: str, out: Out) -> settings.ClusterSettings:
     require_macos()
+    if settings.is_legacy(namespace):
+        raise UsageProblem("this cluster name is from an older omm and too short to protect the cluster; "
+                           "run omm cluster init again on the head Mac and join with the new name")
     if not settings.NAMESPACE_RE.match(namespace):
-        raise UsageProblem("the cluster name looks like omm-1a2b3c4d; copy it from omm cluster init on the head Mac")
+        raise UsageProblem("the cluster name is omm- followed by 32 letters and digits; "
+                           "copy it from omm cluster init on the head Mac")
     current = settings.load()
     if current is not None and current.role == "head":
         raise UsageProblem("this Mac is the cluster head; run omm cluster leave first")
-    saved = settings.ClusterSettings("member", namespace, GATEWAY_PORT, current.known_nodes if current else ())
+    saved = settings.ClusterSettings("member", namespace, GATEWAY_PORT)
     settings.save(saved)
     _prepare_this_mac(namespace, out)
     firewall.apply(gateway_port=None)
@@ -132,7 +142,7 @@ def status() -> dict:
             "reachable": True,
             "nodes": [{"name": n.name, "memory_total_bytes": n.memory_total_bytes,
                        "memory_available_bytes": n.memory_available_bytes, "rdma": n.rdma,
-                       "os_version": n.os_version} for n in state.nodes],
+                       "os_version": n.os_version, "os_build": n.os_build} for n in state.nodes],
             "instances": [{"model_id": i.model_id, "sharding": i.sharding, "node_count": len(i.node_ids)}
                           for i in state.instances],
             "links": [],
@@ -164,7 +174,12 @@ def status() -> dict:
                 # After a cable is pulled, exo can stop seeing Macs that are still
                 # connected until it is restarted (seen once on 3 Mac minis, 2026-10-24).
                 problems.append("if those Macs are on, run omm cluster restart on each of them and on this Mac")
-        versions = {n.name: n.os_version for n in state.nodes if n.os_version}
+                again = "init" if current.role == "head" else f"join {current.namespace}"
+                problems.append(f"if a Mac left the cluster for good, run omm cluster {again} again on this Mac to forget it")
+        # RDMA needs the exact same build, not just the same version number
+        # (a 26.5 beta and 26.5 share "26.5").
+        versions = {n.name: f"{n.os_version} ({n.os_build})" if n.os_build else n.os_version
+                    for n in state.nodes if n.os_version}
         if len(set(versions.values())) > 1:
             problems.append("macOS versions differ: " + ", ".join(f"{k}={v}" for k, v in sorted(versions.items())))
         problems += [f"RDMA disabled on {n.name}" for n in state.nodes if n.rdma == "disabled"]
@@ -174,9 +189,12 @@ def status() -> dict:
                 settings.save(settings.ClusterSettings(current.role, current.namespace, current.gateway_port, merged))
     fw = "missing"
     gateway = "not_head"
+    if current is not None and settings.is_legacy(current.namespace):
+        problems.append("the cluster name is too short to protect exo's network port; run omm cluster init "
+                        "on the head Mac and omm cluster join <new name> on every other Mac")
     if current is not None:
         fw = firewall.status(gateway_port=current.gateway_port if current.role == "head" else None)
-        if fw != "active":
+        if fw not in ("active", "unchecked"):
             problems.append(f"firewall rules are {fw}; run omm cluster {'init' if current.role == 'head' else 'join'} again")
         idle = power.current_idle_sleep_minutes()
         if idle:
@@ -213,14 +231,19 @@ def candidates(client: ExoClient | None = None) -> list[recommend.Candidate]:
 def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
     require_macos()
     client = client or ExoClient()
-    placement = recommend.choose_placement(client.previews(model_id))
-    if placement is None:
-        raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
-    client.create_instance(placement)
-    out(f"Loading {model_id} ({placement.sharding}); the first load downloads the model...")
-    last: dict = {"key": None, "line": ""}
+    if any(i.model_id == model_id for i in client.state().instances):
+        # exo would place a second full copy next to the first one.
+        out(f"{model_id} is already loaded or loading on this cluster; waiting for it instead of starting another copy...")
+    else:
+        placement = recommend.choose_placement(client.previews(model_id))
+        if placement is None:
+            raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
+        client.create_instance(placement)
+        out(f"Loading {model_id} ({placement.sharding}); the first load downloads the model...")
+    last: dict = {"key": None, "line": "", "progress": None}
 
     def report(progress: exo_client.LoadProgress) -> None:
+        last["progress"] = progress
         if progress.phase == "loading":
             line, key = f"Every Mac has {model_id}; loading it into memory...", ("loading",)
         elif progress.total_bytes:
@@ -231,12 +254,20 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
         else:
             line, key = f"Waiting for exo to start downloading {model_id}...", ("downloading", None)
         if progress.failed:
-            line, key = f"A Mac could not download {model_id}: {progress.failed}", (*key, progress.failed)
+            line = f"{progress.failed_on or 'A Mac'} could not download {model_id}: {progress.failed}"
+            key = (*key, progress.failed)
         if key != last["key"]:
             last["key"], last["line"] = key, line
             out(line)
 
     if not client.await_instance(model_id, MODEL_STALL_TIMEOUT, on_progress=report):
+        failed = last["progress"].failed_on if last["progress"] and last["progress"].failed else None
+        if failed:
+            # Left in place, the broken instance would make the next run wait on it.
+            unload_model(model_id, client)
+            raise ClusterError(
+                f"exo does not try a failed download again until it restarts. Fix the cause, run omm cluster "
+                f"restart on {failed}, then run omm cluster model {model_id} again.")
         detail = f" Last status: {last['line']}" if last["line"] else ""
         raise ClusterError(f"{model_id} made no progress for {MODEL_STALL_TIMEOUT // 60} minutes.{detail}")
     current = settings.load()
@@ -270,6 +301,7 @@ def leave(out: Out) -> None:
     if current is None or current.role == "head":
         service.uninstall()
     exo_service.uninstall()
+    preflight.remove_runtime()
     settings.clear()
     out("This Mac left the cluster. Employee tokens were kept.")
     out("exo itself stays installed; remove it from its menu bar icon -> Advanced -> Uninstall")
