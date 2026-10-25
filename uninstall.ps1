@@ -137,7 +137,7 @@ function Remove-OmmOwnedData {
         "error_reports_pending.json", "error_reports_backoff.json",
         "usage-pending.json", "usage-state.json", "usage-backoff.json", "usage.log",
         "telemetry_last_failed.json", "telemetry_backoff.json",
-        "ollama_manifest_compat.json"
+        "ollama_manifest_compat.json", "rag-remote.json"
     )
     foreach ($name in $ownedFiles) {
         foreach ($candidate in @((Join-Path $resolvedHome $name), (Join-Path $resolvedHome ($name + ".lock")))) {

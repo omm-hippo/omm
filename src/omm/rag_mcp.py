@@ -8,8 +8,8 @@ diagnostics go to stderr and never include questions or document text.
 
 Run with ``python -m omm.rag_mcp`` (what ``omm rag connect`` registers for a
 Python install) or ``omm rag mcp``. Single user, this PC only: there is no
-network listener. A later gateway (issue #503) can reuse :class:`Server`
-with an access policy that filters collections per caller.
+network listener. The cluster gateway's ``/mcp`` route (``omm.rag_http``)
+reuses :class:`Server` with an adapter that only sees the caller's collections.
 """
 from __future__ import annotations
 
@@ -110,10 +110,11 @@ def _collections_text(result: dict) -> str:
 class Server:
     """Transport-independent MCP request handler."""
 
-    def __init__(self, adapter=None):
+    def __init__(self, adapter=None, *, instructions: str = INSTRUCTIONS):
         if adapter is None:
             from omm import rag_adapter as adapter
         self.adapter = adapter
+        self.instructions = instructions
         self.protocol_version = PROTOCOL_VERSIONS[0]
 
     # -- JSON-RPC envelope -------------------------------------------------
@@ -184,7 +185,7 @@ class Server:
             "protocolVersion": self.protocol_version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "title": "OMM local documents", "version": _version()},
-            "instructions": INSTRUCTIONS,
+            "instructions": self.instructions,
         }
 
     def _call(self, params: dict):

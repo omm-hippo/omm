@@ -23,6 +23,8 @@ from pathlib import Path
 DISTRIBUTION_NAME = "omm-model"
 EXECUTABLE_NAME = "omm.exe"
 LICENSE_NAME = "LICENSE.txt"
+THIRD_PARTY_LICENSES_NAME = "THIRD_PARTY_LICENSES.txt"
+WINDOWS_TARGET = "win32-x64"
 WEB_LAUNCHER_NAME = "Open-OMM.cmd"
 WEB_LAUNCHER_BYTES = b'@echo off\r\nsetlocal DisableDelayedExpansion\r\n"%~dp0omm.exe" web --open\r\nif errorlevel 1 pause\r\n'
 SUBPROCESS_TIMEOUT_SECONDS = 900
@@ -213,6 +215,23 @@ def build_windows_portable(version: str, output_dir: Path) -> Path:
     return executable
 
 
+def _bundled_licenses():
+    try:
+        from . import bundled_licenses
+    except ImportError:  # Direct execution from the scripts directory.
+        import bundled_licenses  # type: ignore[no-redef]
+    return bundled_licenses
+
+
+def third_party_licenses() -> bytes:
+    """Generate the portable command's license file from this build environment."""
+    bundled_licenses = _bundled_licenses()
+    try:
+        return bundled_licenses.generate(WINDOWS_TARGET).encode("utf-8")
+    except bundled_licenses.BundledLicensesError as error:
+        raise WindowsPortableError(str(error)) from error
+
+
 def _zip_info(name: str, mode: int) -> zipfile.ZipInfo:
     info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_DEFLATED
@@ -246,6 +265,7 @@ def package_windows_portable(
     license_bytes = license_file.read_bytes()
     if not license_bytes.strip():
         raise WindowsPortableError("license file is empty")
+    third_party_bytes = third_party_licenses()
 
     output_dir.mkdir(parents=True, exist_ok=True)
     archive = output_dir / f"omm-windows-x64-{version}.zip"
@@ -256,14 +276,23 @@ def package_windows_portable(
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         bundle.writestr(_zip_info(EXECUTABLE_NAME, 0o755), executable_bytes)
         bundle.writestr(_zip_info(LICENSE_NAME, 0o644), license_bytes)
+        bundle.writestr(_zip_info(THIRD_PARTY_LICENSES_NAME, 0o644), third_party_bytes)
         bundle.writestr(_zip_info(WEB_LAUNCHER_NAME, 0o644), WEB_LAUNCHER_BYTES)
 
     checksum.write_text(f"{sha256(archive)}  {archive.name}\n", encoding="ascii", newline="\n")
-    verify_windows_archive(archive, version)
+    verify_windows_archive(archive, version, require_third_party_licenses=True)
     return archive, checksum
 
 
-def verify_windows_archive(archive: Path, version: str) -> None:
+def verify_windows_archive(
+    archive: Path,
+    version: str,
+    *,
+    require_third_party_licenses: bool = False,
+) -> None:
+    """Check the archive layout. Archives published before the third-party
+    license file existed lack it, so it is only required when asked (new
+    builds always ask)."""
     _version_parts(version)
     expected_name = f"omm-windows-x64-{version}.zip"
     if archive.name != expected_name:
@@ -276,6 +305,8 @@ def verify_windows_archive(archive: Path, version: str) -> None:
     with zipfile.ZipFile(archive) as bundle:
         names = bundle.namelist()
         expected = [EXECUTABLE_NAME, LICENSE_NAME]
+        if require_third_party_licenses or THIRD_PARTY_LICENSES_NAME in names:
+            expected.append(THIRD_PARTY_LICENSES_NAME)
         if WEB_LAUNCHER_NAME in names:
             expected.append(WEB_LAUNCHER_NAME)
         if names != expected or len(set(names)) != len(names):
@@ -291,6 +322,12 @@ def verify_windows_archive(archive: Path, version: str) -> None:
             raise WindowsPortableError("archive executable has no Windows MZ header")
         if not bundle.read(LICENSE_NAME).strip():
             raise WindowsPortableError("archive license is empty")
+        if THIRD_PARTY_LICENSES_NAME in expected:
+            bundled_licenses = _bundled_licenses()
+            try:
+                bundled_licenses.validate_text(bundle.read(THIRD_PARTY_LICENSES_NAME))
+            except bundled_licenses.BundledLicensesError as error:
+                raise WindowsPortableError(f"archive {error}") from error
         if WEB_LAUNCHER_NAME in names and bundle.read(WEB_LAUNCHER_NAME) != WEB_LAUNCHER_BYTES:
             raise WindowsPortableError("archive click launcher differs from the verified template")
 
@@ -312,6 +349,7 @@ def _parser() -> argparse.ArgumentParser:
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("--version", required=True)
     verify_parser.add_argument("--archive", type=Path, required=True)
+    verify_parser.add_argument("--require-third-party-licenses", action="store_true")
 
     project_parser = subparsers.add_parser("project-version")
     project_parser.add_argument("--pyproject", type=Path, required=True)
@@ -333,7 +371,11 @@ def main() -> int:
             print(archive)
             print(checksum)
         elif args.command == "verify":
-            verify_windows_archive(args.archive, args.version)
+            verify_windows_archive(
+                args.archive,
+                args.version,
+                require_third_party_licenses=args.require_third_party_licenses,
+            )
         elif args.command == "project-version":
             print(project_version(args.pyproject))
     except (OSError, subprocess.SubprocessError, WindowsPortableError, zipfile.BadZipFile) as error:

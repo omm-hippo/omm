@@ -1,9 +1,16 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {api, bytes} from './api';
 import RichText from './RichText';
+import {documentProgress} from './document-progress.js';
 
 const METHOD_LABEL={hybrid:'의미+단어',lexical:'단어만'};
 function methodLabel(value){return METHOD_LABEL[value] || '단어만';}
+
+export function DocumentProgress({job}){
+  const step=documentProgress(job);
+  if(!step)return null;
+  return <div className="document-progress" role="status"><span>{step.label}</span>{step.max?<progress value={step.value} max={step.max} aria-label={step.label}/>:<progress aria-label={step.label}/>}</div>;
+}
 
 export default function DocumentPanel({models, onJobs}) {
   const [library,setLibrary]=useState({documents:[],answers:[],settings:null});
@@ -17,6 +24,7 @@ export default function DocumentPanel({models, onJobs}) {
   const [notice,setNotice]=useState('');
   const [busy,setBusy]=useState(false);
   const [job,setJob]=useState(null);
+  const [live,setLive]=useState(null);
   const request=useRef(null);
   const restored=useRef(false);
   const options=models.filter(x=>x.exists && x.engines.some(e=>['ollama','lmstudio'].includes(e)));
@@ -73,8 +81,9 @@ export default function DocumentPanel({models, onJobs}) {
         onJobs(history);
         const record=history.find(x=>x.id===job);
         if(!record)throw new Error('작업 기록을 찾지 못했어요. 작업 탭에서 확인해 주세요.');
+        setLive(record);
         if(['completed','failed','interrupted','cancelled'].includes(record.status)){
-          setJob(null);setBusy(false);request.current=null;
+          setJob(null);setLive(null);setBusy(false);request.current=null;
           if(record.status!=='completed'){
             setError(record.message || '작업을 완료하지 못했어요.');
             // A failed new model may have been rolled back to the previous one.
@@ -114,6 +123,7 @@ export default function DocumentPanel({models, onJobs}) {
     <section className="document-intro"><h2>내 자료에서 답을 찾아요</h2><p>문서와 질문은 이 컴퓨터에 저장되고 선택한 로컬 실행 앱에서 처리돼요.</p><p>텍스트 PDF · TXT · Markdown · HTML · HWPX, 파일당 6 MiB / PDF 100쪽. 스캔 PDF(OCR)와 HWP(한글 97 형식)는 아직 지원하지 않아요.</p></section>
     {error && <div className="error" role="alert">{error}</div>}{notice && <p className="notice" role="status">{notice}</p>}
     <form className="document-upload" onSubmit={upload}><label>문서 선택<input type="file" accept=".pdf,.txt,.md,.markdown,.html,.htm,.hwpx" disabled={busy} onChange={e=>setFile(e.target.files?.[0] || null)}/></label><label className="document-check"><input type="checkbox" checked={replace} disabled={busy} onChange={e=>setReplace(e.target.checked)}/>같은 이름의 문서 교체</label><button className="primary" disabled={!file || busy}>{busy?'처리 중…':'문서 등록'}</button></form>
+    <DocumentProgress job={live}/>
     <p className="footnote">교체·삭제하면 이전 문서 답변 기록을 지워요. 등록 실패 시 기존 문서는 보존돼요.</p>
     <section className="document-library"><h2>등록된 문서 <small>{library.documents.length}개 · 질문할 문서를 선택하세요</small></h2>
       {!library.documents.length && <p className="empty">아직 등록한 문서가 없어요. 위에서 파일을 선택해 주세요.</p>}
