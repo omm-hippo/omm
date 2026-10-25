@@ -5,7 +5,32 @@ same loopback origin. Starting without `--open` prints the URL and preserves
 the current browser focus. Choose a model, confirm installation and a runner,
 then inspect the installed file and link result under **My models**.
 
-## Prepare a model and start a conversation
+## Connect to a shared AI server
+
+Choose **공유 AI** and enter the private LAN or Tailscale gateway address and
+the employee token issued by its administrator. **연결 확인하고 저장** makes
+one authenticated model-list request and saves the connection only after a
+supported response. On the same address, leaving the token field blank reuses
+the saved token. A changed address requires a new token.
+
+Choose the model name confirmed by the administrator before sending a question.
+The returned catalog can include models that are not running; catalog access
+alone is not generation verification. The screen displays actual-response
+confirmation only after a successful question. No installation, restart or
+unload command is sent. Token, network, certificate, unsupported-response,
+model-request and quota problems have separate next steps; network failure
+does not establish that Tailscale itself is disabled.
+
+Enter sends a question, Shift+Enter inserts a newline, and IME composition Enter
+does not send. Up to 12 recent completed turns are sent within a bounded UTF-8
+request size; older context is omitted when necessary. Questions and
+answers stay in memory and disappear on reload; the address, private token,
+last catalog and last successfully used model persist locally. Reloading does
+not contact the shared server. **저장된 연결 지우기** deletes the local connection
+after confirmation, without revoking the server token. Existing local chat,
+RAG remote settings and agent settings are independent.
+
+## Prepare a local model and start a conversation
 
 Choose **이 모델로 대화 시작** in recommendations or a wiki package, or
 **대화 준비하고 시작** for an existing managed model. One confirmation covers

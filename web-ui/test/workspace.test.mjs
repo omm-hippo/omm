@@ -17,7 +17,8 @@ test('composition and multiline shortcuts never submit a message',()=>{
 
 test('menu search finds a task by intent without executing it',()=>{
   assert.equal(searchDestinations('근거 질문')[0].id,'documents');
-  assert.equal(searchDestinations('서버')[0].id,'connections');
+  assert.ok(searchDestinations('서버').some(item=>item.id==='connections'));
+  assert.equal(searchDestinations('공유 토큰')[0].id,'shared');
   assert.equal(searchDestinations('없는 메뉴').length,0);
 });
 

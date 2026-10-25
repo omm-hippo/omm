@@ -8,6 +8,7 @@ import './workspace.css';
 import {Sidebar,CommandPalette,WorkspaceIcon} from './Workspace.jsx';
 import {destinations,readAppearance,measurementSummary,wikiSummary} from './workspace-state.js';
 import ChatPanel from './ChatPanel';
+import SharedAI from './SharedAI';
 import {WikiExplorer,Connections,Diagnostics,Comparison,RuntimeSettings,FilesSettings} from './ManagementPanels';
 
 const profiles = [['balanced','다른 작업과 함께'],['dedicated','모델에 집중'],['minimal','가볍게 사용']];
@@ -226,8 +227,8 @@ function App() {
     catch(e){setError(e.message);}
     finally{setUpdating(false);}
   }
-  const titles={wiki:'모델 찾기',recommend:'내 컴퓨터에 맞는 추천',models:'내 모델',chat:'로컬 모델과 대화',documents:'내 문서',comparison:'성능 비교',jobs:'작업',connections:'연결 상태',diagnostics:'진단',settings:'파일·설정'};
-  const subtitles={wiki:'모델 위키에서 용도와 특징을 살펴보고 설치할 파일을 선택하세요.',recommend:'현재 메모리 여유에 맞는 후보와 추천 근거를 확인하세요.',models:'설치된 모델의 연결, 실행과 설정을 관리하세요.',chat:'모델의 실제 응답을 받고 대화를 이어가세요.',documents:'등록한 문서를 로컬 모델에 질문하고 원문 출처를 확인해요.',comparison:'실제 로컬 응답으로 속도와 산술 점검 결과를 비교하세요.',jobs:'진행 상황과 저장된 작업 결과를 확인하세요.',connections:'실행 앱과 로컬 서버, 다운로드 서버의 연결을 확인하세요.',diagnostics:'문제가 있는 지점과 해결 방법을 확인하세요.',settings:'저장 공간과 기존 모델, 데이터 공유 설정을 관리하세요.'};
+  const titles={wiki:'모델 찾기',recommend:'내 컴퓨터에 맞는 추천',models:'내 모델',chat:'로컬 모델과 대화',shared:'공유 AI',documents:'내 문서',comparison:'성능 비교',jobs:'작업',connections:'연결 상태',diagnostics:'진단',settings:'파일·설정'};
+  const subtitles={wiki:'모델 위키에서 용도와 특징을 살펴보고 설치할 파일을 선택하세요.',recommend:'현재 메모리 여유에 맞는 후보와 추천 근거를 확인하세요.',models:'설치된 모델의 연결, 실행과 설정을 관리하세요.',chat:'모델의 실제 응답을 받고 대화를 이어가세요.',shared:'팀의 공유 서버에 연결하고 모델의 실제 답변을 확인하세요.',documents:'등록한 문서를 로컬 모델에 질문하고 원문 출처를 확인해요.',comparison:'실제 로컬 응답으로 속도와 산술 점검 결과를 비교하세요.',jobs:'진행 상황과 저장된 작업 결과를 확인하세요.',connections:'실행 앱과 로컬 서버, 다운로드 서버의 연결을 확인하세요.',diagnostics:'문제가 있는 지점과 해결 방법을 확인하세요.',settings:'저장 공간과 기존 모델, 데이터 공유 설정을 관리하세요.'};
   const title=titles[tab],subtitle=subtitles[tab];
   const visible = catalog?.models || [];
   function openPreparedChat(job){setPreparedTask({...job.result,id:crypto.randomUUID(),job_id:job.id});setChatModel({id:job.result.model_id,filename:job.result.filename,engines:[job.result.engine],exists:true});setRefreshKey(key=>key+1);setTab('chat');}
@@ -244,11 +245,12 @@ function App() {
     {sidebar && <button className="sidebar-backdrop" aria-label="메뉴 닫기" onClick={()=>setSidebar(false)}/>}
     <aside id="workspace-sidebar" aria-label="OMM 작업 공간" hidden={!sidebar}>{mobile && <button className="icon-button sidebar-dismiss" aria-label="사이드바 닫기" onClick={()=>setSidebar(false)}><WorkspaceIcon name="close"/></button>}<Sidebar tab={tab} onNavigate={setTab} onSearch={()=>setPalette(true)} appearance={appearance} onAppearance={setAppearance} activeJobs={jobs.filter(j=>['queued','running','cancelling'].includes(j.status)).length}/></aside>
     <main id="workspace-main" inert={mobile && sidebar?true:undefined}><div className="workspace-topbar"><div className="workspace-location"><button className="icon-button" aria-label={sidebar?'사이드바 접기':'사이드바 펼치기'} aria-expanded={sidebar} aria-controls="workspace-sidebar" onClick={()=>setSidebar(value=>!value)}><WorkspaceIcon name="menu"/></button><span>내 작업 공간</span><span className="breadcrumb-separator">/</span><strong>{destinations.find(x=>x.id===tab)?.label}</strong></div><button className="icon-button" aria-label="메뉴 검색 열기" title="메뉴 검색 (⌘/Ctrl K)" onClick={()=>setPalette(true)}><WorkspaceIcon name="search"/></button></div>
-    <div className="workspace-content"><header><div><h1>{title}</h1><p>{subtitle}</p></div><button className="refresh-button" onClick={()=>setRefreshKey(key=>key+1)} disabled={loading}><WorkspaceIcon name="refresh" size={16}/>{loading?'확인 중…':'다시 확인'}</button></header>{error && <div role="alert" className="error">{error}</div>}{notice && <div role="status" className="notice">{notice}</div>}{['wiki','recommend','models'].includes(tab) && <Hardware machine={machine} budget={catalog?.budget_gb}/>}
+    <div className="workspace-content"><header><div><h1>{title}</h1><p>{subtitle}</p></div>{tab!=='shared'&&<button className="refresh-button" onClick={()=>setRefreshKey(key=>key+1)} disabled={loading}><WorkspaceIcon name="refresh" size={16}/>{loading?'확인 중…':'다시 확인'}</button>}</header>{error && <div role="alert" className="error">{error}</div>}{notice && <div role="status" className="notice">{notice}</div>}{['wiki','recommend','models'].includes(tab) && <Hardware machine={machine} budget={catalog?.budget_gb}/>}
     {tab==='wiki' && <WikiExplorer document={wiki} profile={profile} onOpen={setDescription} onSelect={choose}/>}
     {tab==='recommend' && <>{!models.length && <FirstUse machine={machine} onModels={()=>setTab('models')}/>}<div className="toolbar"><div className="profiles" aria-label="메모리 사용 방식">{profiles.map(([key,label])=><button key={key} aria-pressed={profile===key} onClick={()=>setProfile(key)}>{label}</button>)}</div><label className="search"><Icon name="search"/><input maxLength={160} value={query} onChange={event=>setQuery(event.target.value)} placeholder="모델 이름으로 찾기" aria-label="모델 이름으로 찾기"/></label></div>{loading?<div className="empty" role="status">컴퓨터와 추천 자료를 확인하고 있어요.</div>:visible.length?<ModelTable rows={visible} onSelect={choose} onDetails={setDescription}/>:<div className="empty"><h2>{query?'검색 결과가 없어요':'현재 예산에 맞는 모델이 없어요'}</h2><p>{query?'다른 이름으로 검색해 보세요.':'사용 방식을 바꾸거나 다른 앱을 닫은 뒤 다시 확인해 주세요.'}</p></div>}<p className="footnote">예상 속도는 실제 측정과 다를 수 있어요.</p><Evidence catalog={catalog} onUpdate={updateCatalog} busy={updating}/></>}
     {tab==='models' && <Installed rows={models} onAction={choose} onSettings={setSettingsModel} onChat={model=>{setChatModel(model);setTab('chat');}}/>}
     {(visited.has('chat') || tab==='chat') && <div hidden={tab!=='chat'}><ChatPanel models={models} initialModel={chatModel} preparedTask={preparedTask} onModelStatusChange={()=>setRefreshKey(key=>key+1)} onModels={()=>setTab('models')}/></div>}
+    {(visited.has('shared') || tab==='shared') && <div hidden={tab!=='shared'}><SharedAI/></div>}
     {(visited.has('documents') || tab==='documents') && <div hidden={tab!=='documents'}><DocumentPanel models={models} onJobs={setJobs}/></div>}
     {tab==='jobs' && <Jobs jobs={jobs} onCancel={cancel} onChat={openPreparedChat} onRetry={job=>choose({operation:'start_chat',filename:job.filename,engine:job.task_request?.engine,retryJob:job.id})}/>}
     {tab==='connections' && <Connections refreshKey={refreshKey} onAction={choose}/>}
