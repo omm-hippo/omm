@@ -218,7 +218,7 @@ curl -fsSL https://omm.run/uninstall.sh | sh     # macOS / Linux
 | `omm installer failed; see the messages above.` <!-- install.ps1:15 --> | 위쪽에 실제 원인이 따로 출력됨 | 바로 위 빨간 문장을 이 표에서 찾기 |
 | `omm` 명령을 찾을 수 없음 (`'omm' is not recognized...` / `command not found`) | 설치한 창이 아직 PATH를 모름 | 창을 닫고 새 창에서 다시 시도 |
 
-더 많은 경우는 README의 [Troubleshooting](../README.md#troubleshooting) 표에 있습니다.
+더 많은 경우는 설치 안내의 [Troubleshooting](install.md#troubleshooting) 표에 있습니다.
 
 ## 확인 범위
 
