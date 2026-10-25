@@ -299,7 +299,12 @@ head Mac's `gateway.py` (LaunchAgent `com.omm.cluster-gateway`, hidden
 `_cluster-gateway-run`, port 52440) is the only LAN-reachable entry. It verifies hashed
 tokens from `tokens.py` (fail closed) and forwards four inference routes. It also folds
 Claude Code's `role: "system"` messages into the top-level `system` field, because exo
-answers those with 422. Specs: `docs/superpowers/specs/2026-10-22-exo-cluster-design.md`
+answers those with 422. exo keeps instances only in memory, so the gateway process also runs
+`autoload.py`: every 30 s it reloads the model `omm cluster model` last loaded on the head
+(`cluster.json` `model`, cleared by `--unload`), after waiting up to 10 min for every known Mac.
+Employee PCs route a harness to the gateway with `omm setting agent cluster` (`agent_cluster.py`,
+head URL + token from `omm rag remote set`); it reuses `agent_connection.py`'s journal and field
+list unchanged, so `agent cloud` restores it. Specs: `docs/superpowers/specs/2026-10-22-exo-cluster-design.md`
 and `2026-10-22-exo-cluster-spike-findings.md`.
 
 **CLI shape.** `cli.py` is a ~9,300-line Typer monolith (entry `omm.cli:main`). Startup speed

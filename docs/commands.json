@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.31",
+  "omm_version": "0.4.43",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -969,7 +969,7 @@
       "arguments": [
         {
           "name": "engine",
-          "help": "ollama or lmstudio; omit for both",
+          "help": "ollama, lmstudio or cluster; omit for all that apply",
           "required": false
         }
       ],
@@ -3103,7 +3103,7 @@
       ],
       "kind": "group",
       "aliases": [],
-      "summary": "Connect Claude Code, Codex or pi to local Ollama and restore original settings.",
+      "summary": "Connect Claude Code, Codex or pi to local Ollama or the company cluster, and restore original settings.",
       "description": "",
       "usage": "omm setting agent [OPTIONS] COMMAND [ARGS]...",
       "arguments": [],
@@ -3129,6 +3129,38 @@
         }
       ],
       "options": [],
+      "docs_url": "https://omm.run/commands/setting#agent"
+    },
+    {
+      "path": [
+        "setting",
+        "agent",
+        "cluster"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Back up settings and connect a harness to the company cluster gateway.",
+      "description": "",
+      "usage": "omm setting agent cluster [OPTIONS] {harness}",
+      "arguments": [
+        {
+          "name": "harness",
+          "help": "claude, codex or pi.",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--model"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "exo model id the cluster serves (omm cluster status on the head).",
+          "default": null,
+          "global": false
+        }
+      ],
       "docs_url": "https://omm.run/commands/setting#agent"
     },
     {

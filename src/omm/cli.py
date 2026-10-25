@@ -754,7 +754,7 @@ web_autostart_app = typer.Typer(
 setting_app.add_typer(web_autostart_app)
 agent_app = typer.Typer(
     name="agent",
-    help="Connect Claude Code, Codex or pi to local Ollama and restore original settings.",
+    help="Connect Claude Code, Codex or pi to local Ollama or the company cluster, and restore original settings.",
     rich_markup_mode=None,
     cls=_DocsEpilogGroup,
 )
@@ -778,6 +778,24 @@ def agent_local(
     console.print(f"Saved local routing settings for {escape(harness)}. Start a new harness session.")
     console.print("Tool calling and context were checked from model metadata; the actual agent workflow is not verified.")
     console.print("Project, managed or shell settings may override this user configuration. 64K+ runtime context is recommended.")
+
+
+@agent_app.command(name="cluster")
+def agent_cluster_cmd(
+    harness: str = typer.Argument(..., help="claude, codex or pi."),
+    model: str = typer.Option(..., "--model", help="exo model id the cluster serves (omm cluster status on the head)."),
+) -> None:
+    """Back up settings and connect a harness to the company cluster gateway."""
+    from omm import agent_cluster
+    try:
+        metadata = agent_cluster.connect(harness, model)
+    except (agent_cluster.ConnectionError, OSError) as error:
+        message = str(error) if isinstance(error, agent_cluster.ConnectionError) else "Could not access configuration files. Check permissions."
+        err_console.print(f"[error]{escape(message)}[/error]")
+        raise typer.Exit(1)
+    console.print(f"Saved cluster routing settings for {escape(harness)} ({escape(metadata['base_url'])}). Start a new harness session.")
+    console.print("The settings file now holds your employee token and is readable only by you.")
+    console.print("The model must be loaded on the cluster (omm cluster model on the head); tool calling is not verified.")
 
 
 @agent_app.command(name="cloud")
@@ -2073,7 +2091,7 @@ def engine_doctor_cmd(
 @global_flags
 def engine_security_cmd(
     engine: str | None = typer.Argument(
-        None, autocompletion=complete_engine_key, help="ollama or lmstudio; omit for both"
+        None, autocompletion=complete_engine_key, help="ollama, lmstudio or cluster; omit for all that apply"
     ),
     fix_local_only: bool = typer.Option(
         False,
@@ -2084,22 +2102,35 @@ def engine_security_cmd(
     """Show whether local runtime servers accept connections from other devices."""
     from omm import engine_security
 
+    from omm.cluster import commands as cluster_commands
+
     if engine is not None:
         key = engine.strip().casefold()
-        if key not in {"ollama", "lmstudio"}:
-            err_console.print("engine must be ollama or lmstudio", markup=False)
+        if key not in {"ollama", "lmstudio", "cluster"}:
+            err_console.print("engine must be ollama, lmstudio or cluster", markup=False)
             raise typer.Exit(2)
         targets = [key]
     else:
-        targets = ["ollama", "lmstudio"]
+        targets = ["ollama", "lmstudio", "cluster"]
     if fix_local_only and len(targets) != 1:
         err_console.print("Name one engine when using --fix-local-only.")
         raise typer.Exit(2)
+    if fix_local_only and targets == ["cluster"]:
+        err_console.print("The cluster's exposure is set by its firewall; run omm cluster init (head) or join again.",
+                          markup=False)
+        raise typer.Exit(2)
     try:
-        items = [engine_security.inspect(key) for key in targets]
+        items = [engine_security.inspect(key) for key in targets if key != "cluster"]
     except engine_security.EngineSecurityError as error:
         err_console.print(str(error), markup=False)
         raise typer.Exit(1) from error
+    if "cluster" in targets:
+        cluster_item = _cluster_call(cluster_commands.exposure)
+        if cluster_item is not None:
+            items.append(cluster_item)
+        elif engine is not None:
+            err_console.print("This Mac is not in an omm cluster.", markup=False)
+            raise typer.Exit(1)
 
     if fix_local_only:
         item = items[0]
@@ -2130,6 +2161,7 @@ def engine_security_cmd(
         "external_allowed": "External connections allowed",
         "not_running": "Not running (no connections possible)",
         "unknown": "Could not determine",
+        "gateway_only": "Gateway only (token required)",
     }
     table = _table(title="Engine server security")
     table.add_column("Engine")
@@ -2476,6 +2508,8 @@ def cluster_status_cmd() -> None:
         for instance in exo["instances"]:
             console.print(f"  Serving {instance['model_id']} ({instance['sharding']}, "
                           f"{instance['node_count']} Mac(s))", markup=False)
+    if report["kept_model"]:
+        console.print(f"Kept loaded: {report['kept_model']} (this Mac loads it again after exo restarts)", markup=False)
     firewall_text = report["firewall"]
     if firewall_text == "unchecked":
         firewall_text = "unchecked (rules file matches; checking what pf loaded needs sudo)"
