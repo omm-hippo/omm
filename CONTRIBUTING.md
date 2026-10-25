@@ -31,7 +31,7 @@ payload. Usage statistics and crash reports have separate controls.
 
 Runs on varied hardware help broaden the dataset. Before starting, review
 [PRIVACY.md](PRIVACY.md#1-benchmark-telemetry--omm-setting-upload-benchmark)
-and the [disk-space and daemon behavior](README.md#scripting). The command
+and the [disk-space and daemon behavior](docs/command-notes.md#omm-contribute). The command
 downloads models and performs sustained local computation. Use
 `omm setting upload benchmark --ask` to request consent for each contribution
 session, or `--disable` to prevent benchmark uploads.

@@ -42,7 +42,7 @@ affected scope, prepare and verify a fix, and coordinate disclosure timing. If
 you are unsure whether a report is security-sensitive, use either private
 reporting channel.
 
-For ordinary troubleshooting, see [README.md](README.md#troubleshooting).
+For ordinary troubleshooting, see the [install guide](docs/install.md#troubleshooting).
 For harassment or other community concerns, use the separate
 [Code of Conduct process](CODE_OF_CONDUCT.md#reporting-an-issue).
 
