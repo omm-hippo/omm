@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import functools
 import inspect
@@ -331,6 +332,8 @@ _JSON_CAPABLE = {
     "rag status",
     "rag collection list",
     "rag search",
+    "rag add",
+    "rag reindex",
     # Only `omm arena --leaderboard`; a battle refuses --json in arena_cmd.
     "arena",
 }
@@ -836,6 +839,26 @@ def _rag_fail(error: Exception) -> None:
     raise typer.Exit(1)
 
 
+@contextlib.contextmanager
+def _rag_progress():
+    """Yield ``progress(name, stage, done, total)`` that shows one live status line.
+
+    Embedding on a CPU-only PC takes about a second per chunk, so a silent
+    `omm rag add` looks frozen. The line is transient and drawn only on a
+    terminal; --json and --quiet turn it off.
+    """
+    opts = _global_opts()
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), TimeElapsedColumn(),
+                  console=console, transient=True, disable=opts.quiet or opts.json) as bar:
+        task_id = bar.add_task("", total=None)
+
+        def progress(name: str, stage: str, done: int, total: int) -> None:
+            label = "텍스트 추출 중" if stage == "extract" else f"의미 색인 만드는 중 {done}/{total} 조각"
+            bar.update(task_id, description=escape(f"{name}: {label}"))
+
+        yield progress
+
+
 def _rag_confirm(message: str) -> None:
     if _global_opts().yes:
         return
@@ -865,7 +888,8 @@ def rag_status_cmd() -> None:
         return
     embedding = result["embedding"]
     state = "사용 가능" if embedding["available"] else "사용 불가"
-    console.print(f"임베딩 모델: {escape(embedding['model'])} ({escape(embedding['base_url'])}) - {state}")
+    console.print(f"임베딩 모델: {escape(embedding['model'])} ({escape(embedding['base_url'])}) - {state} · "
+                  f"메모리 유지 {escape(_rag_keep_alive_label(embedding['keep_alive']))}")
     if embedding["notice"]:
         console.print(f"  {escape(embedding['notice'])}")
     console.print(f"문서 {result['documents']}개 · 의미 색인 완료 {result['semantic_ready']}개 · "
@@ -924,6 +948,7 @@ def rag_collection_delete_cmd(name: str = typer.Argument(..., help="Collection t
 
 
 @rag_app.command(name="add")
+@global_flags
 def rag_add_cmd(
     collection: str = typer.Argument(..., help="Existing collection name."),
     paths: list[Path] = typer.Argument(..., help="Files or directories (searched recursively)."),
@@ -932,9 +957,15 @@ def rag_add_cmd(
     """Add text PDF, TXT, Markdown, HTML, or HWPX files to a collection."""
     from omm.documents import import_paths
     try:
-        report = import_paths(collection, paths, replace=replace)
+        with _rag_progress() as progress:
+            report = import_paths(collection, paths, replace=replace, progress=progress)
     except ValueError as error:
         _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data=report)
+        if any("error" in row for row in report["results"]):
+            raise typer.Exit(1)
+        return
     failed = 0
     notices = set()
     for row in report["results"]:
@@ -1000,6 +1031,7 @@ def rag_search_cmd(
 
 
 @rag_app.command(name="reindex")
+@global_flags
 def rag_reindex_cmd(
     collection: str | None = typer.Option(None, "--collection", help="Reindex only this collection."),
     everything: bool = typer.Option(False, "--all", help="Rebuild vectors even for documents that are current."),
@@ -1007,9 +1039,15 @@ def rag_reindex_cmd(
     """Rebuild semantic vectors with the current embedding model from stored text."""
     from omm.documents import DocumentStore
     try:
-        result = DocumentStore().reindex(collection, everything=everything)
+        with _rag_progress() as progress:
+            result = DocumentStore().reindex(collection, everything=everything, progress=progress)
     except ValueError as error:
         _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data=result)
+        if result["failed"]:
+            raise typer.Exit(1)
+        return
     for name in result["reindexed"]:
         console.print(f"재색인: {escape(name)}")
     console.print(f"{escape(result['model'])}로 {len(result['reindexed'])}개 문서를 색인했어요. 이미 최신 {result['already_current']}개.")
@@ -1018,6 +1056,10 @@ def rag_reindex_cmd(
     if result["failed"]:
         err_console.print(f"[error]{escape(result['failed']['name'])}: {escape(result['failed']['notice'])}[/error]")
         raise typer.Exit(1)
+
+
+def _rag_keep_alive_label(value: str) -> str:
+    return "없음 (바로 내림)" if str(value) == "0" else str(value)
 
 
 def _rag_model_hint(store) -> None:
@@ -1035,7 +1077,8 @@ def rag_embedding_show(ctx: typer.Context) -> None:
     store = DocumentStore()
     try:
         settings = store.embedding_settings()
-        console.print(f"임베딩 모델: {escape(settings['model'])} ({escape(settings['base_url'])})")
+        console.print(f"임베딩 모델: {escape(settings['model'])} ({escape(settings['base_url'])}) · "
+                      f"메모리 유지 {escape(_rag_keep_alive_label(settings['keep_alive']))}")
         _rag_model_hint(store)
     except ValueError as error:
         _rag_fail(error)
@@ -1045,16 +1088,20 @@ def rag_embedding_show(ctx: typer.Context) -> None:
 def rag_embedding_set_cmd(
     model: str = typer.Argument(..., help="Ollama embedding model tag, e.g. bge-m3."),
     base_url: str | None = typer.Option(None, "--base-url", help="Local Ollama loopback origin (default http://127.0.0.1:11434)."),
+    keep_alive: str | None = typer.Option(
+        None, "--keep-alive",
+        help="How long Ollama keeps the embedding model in memory after a search or import, e.g. 30s, 5m (default), 1h; 0 unloads at once."),
 ) -> None:
     """Change the embedding model; documents then need `omm rag reindex`."""
     from omm.documents import DocumentStore
     store = DocumentStore()
     try:
-        settings = store.set_embedding_model(model, base_url)
+        settings = store.set_embedding_model(model, base_url, keep_alive)
         status = store.status()
     except ValueError as error:
         _rag_fail(error)
-    console.print(f"임베딩 모델을 {escape(settings['model'])}로 정했어요. 등록한 문서와 단어 색인은 그대로예요.")
+    console.print(f"임베딩 모델을 {escape(settings['model'])}로 정했어요 (메모리 유지 {escape(_rag_keep_alive_label(settings['keep_alive']))}). "
+                  "등록한 문서와 단어 색인은 그대로예요.")
     _rag_model_hint(store)
     if status["reindex_needed"]:
         console.print(f"문서 {status['reindex_needed']}개는 재색인이 필요해요. `omm rag reindex`를 실행해 주세요.")

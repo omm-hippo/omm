@@ -51,6 +51,9 @@ def prepare(request, stop, progress):
         if not adapter.health().reachable:
             raise ValueError("실행 앱의 로컬 서버를 켠 뒤 이 작업을 다시 시작해 주세요. 모델 다운로드는 시작하지 않았어요.")
         models = adapter.list_models()
+        # A warm document-search embedding model is not another chat task.
+        from omm.documents import without_embedding_model
+        models = without_embedding_model(models, engine)
         if not any(model.loaded for model in models):
             return
         entry = registry.load_registry().get(filename)
