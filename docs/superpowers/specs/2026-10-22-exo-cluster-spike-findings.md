@@ -273,6 +273,6 @@ exo는 같은 배치를 두 전송 방식으로 만들 수 있다: `MlxJacclInst
 | Pipeline, 3대 | 초당 42.2토큰 | 초당 41.3토큰 |
 
 - RDMA는 Tensor에서 약 45% 빠르고 Pipeline에서는 차이가 거의 없다.
-- `recommend.choose_placement`는 늘 Pipeline 중 메모리를 가장 적게 쓰는 배치를 고르고 Jaccl/Ring을 구분하지 않는다. 그래서 지금 omm은 RDMA 이득을 쓰지 못한다.
+- 그래서 `recommend.choose_placement`를 바꿨다: Tensor + RDMA(Jaccl, 2대 이상)가 들어가면 그것을, 아니면 전처럼 메모리를 가장 적게 쓰는 Pipeline을 고른다(같으면 RDMA 쪽). 실기기에서 `omm cluster model mlx-community/Qwen3.5-9B-4bit`가 Tensor·Jaccl 2대를 골랐고 초당 72.2~72.3토큰이 나왔다(이전 선택은 약 42).
 - 122B-8bit 모델은 Tensor 배치가 없다(3대로 나눌 수 있는 hidden size/KV head 조합이 아님). 9B는 Tensor가 2대까지만 된다.
 - `rdma_ctl disable` 상태 자체는 재지 않았다(미검증). 위 Ring 값이 RDMA 없이 Thunderbolt TCP로 도는 경우에 해당한다.
