@@ -50,7 +50,7 @@ export function WikiExplorer({document,onOpen,onSelect,profile}) {
   </>;
 }
 
-function PackageDialog({model,profile,onClose,onSelect}) {
+export function PackageDialog({model,profile,onClose,onSelect}) {
   const dialog=useRef(null);
   const resource=useResource(`/api/wiki/packages?id=${encodeURIComponent(model.id)}&profile=${profile}`);
   const [remote,setRemote]=useState(null);
@@ -80,7 +80,7 @@ export function Connections({refreshKey,onAction}) {
     try {setNetwork(await api('/api/connections/check',{}));}
     catch(e){setError(e.message);}finally{setBusy(false);}
   }
-  return <><LoadState resource={resource}/><section className="manager-section"><h2>실행 앱과 로컬 연결</h2><p>앱 설치와 로컬 서버 응답은 따로 확인해요. 서버 응답만으로 모델 실행 성공을 판단하지 않아요.</p><div className="connection-list">{resource.data?.engines.map(row=><article key={row.key}><div><h3>{row.name}</h3><p>{row.installed?'설치됨':'미설치'} · {row.api_status==='ready'?'로컬 서버 연결됨':row.api_status==='unreachable'?'로컬 서버에 연결할 수 없음':'로컬 응답 확인 API 미지원'}</p>{row.version && <small>서버 버전 {row.version}</small>}<small>{row.installer_check?`최근 설치 검사: ${row.installer_check.status==='named_checks_passed'?'필수 항목 통과':'검사 실패 · 실행 전 확인 필요'} · ${new Date(row.installer_check.checked_at).toLocaleString('ko-KR')}`:'OMM 설치 검사 기록 없음'}</small>{row.installer_check && <small>검사 시점의 기록이며, 모든 취약점이나 현재 안전을 보증하지 않아요.</small>}{row.api_status==='unreachable' && <small>실행 앱에서 로컬 서버를 켜고 다시 확인하세요.</small>}</div>{!row.installed && <button onClick={()=>onAction({operation:'engine_install',engine:row.key,filename:row.name})}>설치</button>}</article>)}</div></section>
+  return <><LoadState resource={resource}/><section className="manager-section"><h2>실행 앱과 로컬 연결</h2><p>앱 설치와 로컬 서버 응답은 따로 확인해요. 서버 응답만으로 모델 실행 성공을 판단하지 않아요.</p><div className="connection-list">{resource.data?.engines.map(row=><article key={row.key}><div><h3>{row.name}</h3><p>{row.installed?'설치됨':'미설치'} · {row.api_status==='ready'?'로컬 서버 연결됨':row.api_status==='unreachable'?'로컬 서버에 연결할 수 없음':'로컬 응답 확인 API 미지원'}</p>{row.version && <small>서버 버전 {row.version}</small>}<small>{row.installer_check?`최근 설치 검사: ${row.installer_check.status==='named_checks_passed'?'필수 항목 통과':'검사 실패 · 실행 전 확인 필요'} · ${new Date(row.installer_check.checked_at).toLocaleString('ko-KR')}`:'OMM 설치 검사 기록 없음'}</small>{row.installer_check && <small>검사 시점의 기록이며, 모든 취약점이나 현재 안전을 보증하지 않아요.</small>}{row.api_status==='unreachable' && <small>{row.key==='ollama'?'서버 시작 도우미를 사용할 수 있어요.':'실행 앱에서 로컬 서버를 켜고 다시 확인하세요.'}</small>}</div>{row.key==='ollama' && row.installed && <button onClick={()=>onAction({operation:'engine_start',engine:'ollama',filename:'Ollama 로컬 서버'})}>{row.api_status==='ready'?'Ollama 서버 확인':'Ollama 서버 켜기'}</button>}{!row.installed && <button onClick={()=>onAction({operation:'engine_install',engine:row.key,filename:row.name})}>설치</button>}</article>)}</div></section>
     <section className="manager-section"><h2>다운로드·추천 자료 연결</h2><p>필요할 때 외부 서버 연결을 확인해요. 자동으로 반복 검사하지 않아요.</p><button onClick={check} disabled={busy}>{busy?'연결 확인 중…':'네트워크 연결 확인'}</button>{error && <p className="error" role="alert">{error}</p>}{network?.targets.map(row=><p key={row.name}>{row.name} · <strong>{row.status==='ready'?'응답 확인':'연결 확인 실패'}</strong>{row.http_status && ` (HTTP ${row.http_status})`}</p>)}{network && <small>확인 {new Date(network.checked_at).toLocaleTimeString('ko-KR')} · 인터넷 전체 상태나 모델 다운로드 성공을 뜻하지 않아요.</small>}</section>
   </>;
 }

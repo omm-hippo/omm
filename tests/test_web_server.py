@@ -36,6 +36,27 @@ def session(server):
     return client
 
 
+def test_usability_routes_preserve_session_confirmation_and_input_boundaries(server, monkeypatch):
+    assert requests.get(server.url + 'api/guide?purpose=coding', timeout=5).status_code == 401
+    client = session(server)
+    headers = {'X-OMM-Web': '1'}
+    monkeypatch.setattr(server.service, 'guide', lambda purpose, profile: {'purpose': purpose, 'profile': profile})
+    assert client.get(server.url + 'api/guide?purpose=coding&profile=minimal', timeout=5).json() == {'purpose': 'coding', 'profile': 'minimal'}
+    assert client.get(server.url + 'api/guide?purpose=coding&purpose=korean', timeout=5).status_code == 400
+    assert client.get(server.url + 'api/guide?purpose=coding&url=http://evil.example', timeout=5).status_code == 400
+    body = {'operation': 'engine_start', 'engine': 'ollama', 'confirmed': True, 'request_id': str(uuid.uuid4())}
+    assert client.post(server.url + 'api/jobs', json=body, timeout=5).status_code == 403
+    assert client.post(server.url + 'api/jobs', json={**body, 'confirmed': False}, headers=headers, timeout=5).status_code == 400
+    assert client.post(server.url + 'api/jobs', json=body, headers={**headers, 'Origin': 'https://evil.example'}, timeout=5).status_code == 403
+    monkeypatch.setattr(server.runtimes, 'start', lambda: {'server_ready': True, 'reused': True})
+    result = client.post(server.url + 'api/jobs', json=body, headers=headers, timeout=5)
+    assert result.status_code == 202
+    worker = server.jobs.workers.get(body['request_id'])
+    if worker:
+        worker.join(5)
+    assert server.jobs.list()[0]['result']['server_ready'] is True
+
+
 def test_management_routes_keep_session_and_confirmation_boundaries(server, monkeypatch):
     from omm.web import management
     for route in ("connections", "diagnostics", "settings", "files", "imports", "wiki/packages?id=qwen3-8b"):

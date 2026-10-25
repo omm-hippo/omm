@@ -15,7 +15,7 @@ def discover(model: dict) -> list[dict]:
                    if item["repository"].casefold() == repository.casefold())
     with requests.Session() as client:
         response = client.get("https://huggingface.co/api/models", params={
-            "search": repository.rsplit("/", 1)[-1], "filter": "gguf", "limit": 8, "full": "true"},
+            "search": repository.rsplit("/", 1)[-1], "filter": "gguf", "limit": 8, "full": "true", "cardData": "true"},
             timeout=8, allow_redirects=False)
         response.raise_for_status()
         results = response.json()
