@@ -19,6 +19,18 @@ import npm_package
 import npm_release
 
 
+FAKE_THIRD_PARTY_LICENSES = (
+    b"OMM standalone binary: third-party software licenses\n\n"
+    b"== CPython 3.0.0 ==\nPSF\n\n== OpenSSL ==\nApache\n"
+)
+
+
+@pytest.fixture(autouse=True)
+def _fake_third_party_licenses(monkeypatch):
+    """Staging reads the real build environment; tests use a fixed text."""
+    monkeypatch.setattr(npm_package, "third_party_licenses", lambda _target: FAKE_THIRD_PARTY_LICENSES)
+
+
 def _magic(target: str) -> bytes:
     """A minimal executable header carrying the target's real machine field."""
     value = npm_package.targets()[target]
@@ -105,6 +117,20 @@ def test_bundle_rejects_unexpected_file_and_private_tarball(tmp_path):
     private_tarball = next(private_pack.glob("*.tgz"))
     with pytest.raises(npm_release.NpmReleaseError, match="not explicitly publishable"):
         npm_release.inspect_tarball(private_tarball)
+
+
+def test_platform_tarball_must_carry_generated_third_party_licenses(tmp_path):
+    stage = tmp_path / "stage"
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    binary = tmp_path / "binary"
+    binary.write_bytes(_magic("linux-x64-gnu") + b" OMM standalone")
+    staged = npm_package.stage_platform_package("linux-x64-gnu", binary, stage, publishable=True)
+    (staged / "THIRD_PARTY_LICENSES.txt").write_bytes(b"licenses: see website\n")
+    _pack(staged, pack)
+
+    with pytest.raises(npm_release.NpmReleaseError, match="generated header"):
+        npm_release.inspect_tarball(next(pack.glob("*.tgz")))
 
 
 def test_launcher_tarball_must_match_reviewed_source(tmp_path):

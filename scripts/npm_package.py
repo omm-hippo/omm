@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import shutil
+import sys
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -22,6 +23,7 @@ PYPROJECT = ROOT / "pyproject.toml"
 LAUNCHER_SOURCE = ROOT / "packaging" / "npm" / "launcher"
 TARGETS_FILE = LAUNCHER_SOURCE / "targets.json"
 LICENSE_FILE = ROOT / "LICENSE"
+THIRD_PARTY_LICENSES_NAME = "THIRD_PARTY_LICENSES.txt"
 LAUNCHER_NAME = "@omm-hippo/omm"
 LIFECYCLE_SCRIPTS = {"preinstall", "install", "postinstall", "prepare"}
 VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
@@ -337,6 +339,36 @@ def validate_binary_format(binary: Path | bytes, target: Mapping[str, str]) -> N
         )
 
 
+def _bundled_licenses():
+    scripts = str(Path(__file__).resolve().parent)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import bundled_licenses
+
+    return bundled_licenses
+
+
+def third_party_licenses(target_name: str) -> bytes:
+    """Generate the standalone binary's license file from this build environment."""
+    bundled_licenses = _bundled_licenses()
+    try:
+        return bundled_licenses.generate(target_name).encode("utf-8")
+    except bundled_licenses.BundledLicensesError as error:
+        raise NpmPackageError(str(error)) from error
+
+
+def validate_third_party_licenses(data: bytes) -> None:
+    bundled_licenses = _bundled_licenses()
+    try:
+        bundled_licenses.validate_text(data)
+    except bundled_licenses.BundledLicensesError as error:
+        raise NpmPackageError(str(error)) from error
+
+
+def platform_files_field(target: Mapping[str, str]) -> list[str]:
+    return [target["binary"], "LICENSE", THIRD_PARTY_LICENSES_NAME]
+
+
 def _validate_binary(binary: Path, target: Mapping[str, str]) -> None:
     if not binary.is_file() or binary.is_symlink():
         raise NpmPackageError(f"binary must be a regular non-symlink file: {binary}")
@@ -364,6 +396,7 @@ def stage_platform_package(
     shutil.copyfile(binary, packaged_binary)
     packaged_binary.chmod(0o755)
     _copy_text_lf(LICENSE_FILE, destination / "LICENSE")
+    (destination / THIRD_PARTY_LICENSES_NAME).write_bytes(third_party_licenses(target_name))
 
     manifest: dict[str, Any] = {
         "name": target["package"],
@@ -378,7 +411,7 @@ def stage_platform_package(
         },
         "os": [target["os"]],
         "cpu": [target["cpu"]],
-        "files": [target["binary"], "LICENSE"],
+        "files": platform_files_field(target),
         "publishConfig": {"access": "public", "provenance": True},
         "omm": {
             "binary": target["binary"],
@@ -411,10 +444,10 @@ def validate_platform_package(
     version = project_version()
     binary = root / target["binary"]
     expected_private = not publishable
-    expected_files = {"LICENSE", "package.json", target["binary"]}
+    expected_files = {"LICENSE", THIRD_PARTY_LICENSES_NAME, "package.json", target["binary"]}
     if _file_allowlist(root) != expected_files:
         raise NpmPackageError("platform package contains files outside its allowlist")
-    for relative in ("LICENSE", "package.json"):
+    for relative in ("LICENSE", THIRD_PARTY_LICENSES_NAME, "package.json"):
         path = root / relative
         if not path.is_file() or path.is_symlink():
             raise NpmPackageError(
@@ -428,7 +461,7 @@ def validate_platform_package(
         or manifest.get("private") is not expected_private
         or manifest.get("os") != [target["os"]]
         or manifest.get("cpu") != [target["cpu"]]
-        or manifest.get("files") != [target["binary"], "LICENSE"]
+        or manifest.get("files") != platform_files_field(target)
         or manifest.get("publishConfig") != {"access": "public", "provenance": True}
     ):
         raise NpmPackageError("platform package identity is invalid")
@@ -452,6 +485,7 @@ def validate_platform_package(
         raise NpmPackageError("platform package LICENSE is empty")
     if (root / "LICENSE").read_bytes() != canonical_license_bytes():
         raise NpmPackageError("platform package LICENSE must match the repository license")
+    validate_third_party_licenses((root / THIRD_PARTY_LICENSES_NAME).read_bytes())
     if manifest.get("repository") != {
         "type": "git",
         "url": "git+https://github.com/omm-hippo/omm.git",

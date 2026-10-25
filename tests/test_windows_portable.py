@@ -12,6 +12,18 @@ import pytest
 from scripts import windows_portable
 
 
+FAKE_THIRD_PARTY_LICENSES = (
+    b"OMM standalone binary: third-party software licenses\n\n"
+    b"== CPython 3.0.0 ==\nPSF\n\n== OpenSSL ==\nApache\n"
+)
+
+
+@pytest.fixture(autouse=True)
+def _fake_third_party_licenses(monkeypatch):
+    """Staging reads the real build environment; tests use a fixed text."""
+    monkeypatch.setattr(windows_portable, "third_party_licenses", lambda: FAKE_THIRD_PARTY_LICENSES)
+
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -114,7 +126,13 @@ def test_package_is_deterministic_and_has_an_exact_allowlist(tmp_path):
         encoding="ascii"
     )
     with zipfile.ZipFile(first) as archive:
-        assert archive.namelist() == ["omm.exe", "LICENSE.txt", "Open-OMM.cmd"]
+        assert archive.namelist() == [
+            "omm.exe",
+            "LICENSE.txt",
+            "THIRD_PARTY_LICENSES.txt",
+            "Open-OMM.cmd",
+        ]
+        assert archive.read("THIRD_PARTY_LICENSES.txt") == FAKE_THIRD_PARTY_LICENSES
         assert archive.read("Open-OMM.cmd") == windows_portable.WEB_LAUNCHER_BYTES
         assert archive.read("omm.exe").startswith(b"MZ")
 
@@ -132,6 +150,49 @@ def test_archive_verifier_rejects_extra_files(tmp_path):
 
     with pytest.raises(windows_portable.WindowsPortableError, match="expected exactly"):
         windows_portable.verify_windows_archive(archive, "1.2.3")
+
+
+def _archive(tmp_path, third_party: bytes | None) -> Path:
+    archive = tmp_path / "omm-windows-x64-1.2.3.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("omm.exe", b"MZ executable")
+        bundle.writestr("LICENSE.txt", b"MIT")
+        if third_party is not None:
+            bundle.writestr("THIRD_PARTY_LICENSES.txt", third_party)
+    return archive
+
+
+def test_archive_verifier_requires_third_party_licenses_for_new_builds(tmp_path):
+    # Archives published before the file existed still verify on reruns.
+    old = _archive(tmp_path, None)
+    windows_portable.verify_windows_archive(old, "1.2.3")
+    with pytest.raises(windows_portable.WindowsPortableError, match="expected exactly"):
+        windows_portable.verify_windows_archive(old, "1.2.3", require_third_party_licenses=True)
+
+    old.unlink()
+    new = _archive(tmp_path, FAKE_THIRD_PARTY_LICENSES)
+    windows_portable.verify_windows_archive(new, "1.2.3", require_third_party_licenses=True)
+
+
+def test_archive_verifier_rejects_a_hand_written_third_party_file(tmp_path):
+    archive = _archive(tmp_path, b"see https://example.invalid for licenses\n")
+    with pytest.raises(windows_portable.WindowsPortableError, match="generated header"):
+        windows_portable.verify_windows_archive(archive, "1.2.3")
+
+
+def test_package_fails_when_license_texts_cannot_be_generated(tmp_path, monkeypatch):
+    executable = tmp_path / "input.exe"
+    executable.write_bytes(b"MZ" + b"portable executable")
+    license_file = tmp_path / "LICENSE"
+    license_file.write_text("MIT License\n", encoding="utf-8")
+
+    def missing():
+        raise windows_portable.WindowsPortableError("example ships no license file")
+
+    monkeypatch.setattr(windows_portable, "third_party_licenses", missing)
+    with pytest.raises(windows_portable.WindowsPortableError, match="no license file"):
+        windows_portable.package_windows_portable(executable, license_file, "1.2.3", tmp_path / "out")
+    assert not (tmp_path / "out" / "omm-windows-x64-1.2.3.zip").exists()
 
 
 def test_executable_probe_checks_version_and_help(tmp_path, monkeypatch):

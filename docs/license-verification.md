@@ -16,8 +16,9 @@ CI 잡 `Third-party licenses`가 모든 PR에서 같은 검사를 돌린다.
 | 정책 파일 (분류표·예외·외부 실행 앱 목록) | `scripts/license_policy.json` |
 | 배포용 고지 파일 (스크립트가 생성) | `THIRD_PARTY_NOTICES.md` |
 | 웹 화면에 들어간 npm 패키지의 라이선스 전문 | `src/omm/web/static/third-party-licenses.txt` (`web-ui/scripts/licenses.mjs`가 생성) |
+| 단독 실행 파일(npm·Windows ZIP)의 라이선스 전문 | `THIRD_PARTY_LICENSES.txt` (`scripts/bundled_licenses.py`가 빌드 때 생성) |
 | CI | `.github/workflows/ci.yml`의 `licenses` 잡 (Linux, 1분 안팎) |
-| 테스트 | `tests/test_check_licenses.py` |
+| 테스트 | `tests/test_check_licenses.py`, `tests/test_bundled_licenses.py` |
 
 ## 6단계 검증 절차
 
@@ -109,14 +110,38 @@ omm 자체는 MIT다. MIT 코드와 섞어서 배포했을 때 문제가 되는 
 | PyPI wheel (`omm-model`) | 없음. 의존성은 pip이 따로 설치하고, 각 패키지가 자기 라이선스 파일을 함께 설치한다 | 문제 없음 |
 | PyPI sdist | 없음 (`THIRD_PARTY_NOTICES.md` 포함) | 문제 없음 |
 | 웹 화면 자산 (`src/omm/web/static`) | React 등 npm 105개 | `third-party-licenses.txt`에 전문 포함, CI가 최신인지 확인 |
-| npm 단독 실행 파일 `@omm-hippo/omm-*` | Python 패키지 45개 + CPython + OpenSSL | **부족함**: 패키지에 omm `LICENSE`만 들어 있다 |
-| Windows 포터블 ZIP | 위와 같음 | **부족함**: ZIP에 `LICENSE.txt`만 들어 있다 |
+| npm 단독 실행 파일 `@omm-hippo/omm-*` | Python 패키지 45개 + CPython + OpenSSL | `LICENSE` + `THIRD_PARTY_LICENSES.txt`(전문·NOTICE 포함) |
+| Windows 포터블 ZIP | 위와 같음 | `LICENSE.txt` + `THIRD_PARTY_LICENSES.txt` |
 
-**남은 일(후속 작업 제안)**: 단독 실행 파일 두 종류에 `THIRD_PARTY_NOTICES.md`와 함께 각
-Python 패키지의 라이선스 전문(특히 Apache-2.0 패키지 중 `NOTICE` 파일이 있는 `requests`,
-`questionary`)을 넣어야 한다. `scripts/npm_package.py`와 `scripts/windows_portable.py`가
-"들어갈 파일 목록"을 엄격하게 검사하므로, 그 검사와 테스트를 같이 바꾸는 별도 PR로 하는 것이
-안전하다. 이번 변경에서는 손대지 않았다.
+단독 실행 파일 두 종류에 라이선스 전문을 넣는 방법은 아래 절에 있다.
+
+## 단독 실행 파일의 라이선스 전문 (`THIRD_PARTY_LICENSES.txt`)
+
+npm 플랫폼 패키지와 Windows 포터블 ZIP은 PyInstaller로 만든 실행 파일 하나에 CPython,
+OpenSSL, Python 패키지를 모두 담는다. 그래서 두 배포물에는 `THIRD_PARTY_LICENSES.txt`를 같이
+넣는다. 이 파일은 빌드하는 그 컴퓨터에서 `scripts/bundled_licenses.py`가 만든다.
+
+- **패키지 목록**: `requirements-npm-binary.txt`(Windows는 `requirements-windows-portable.txt`)에서
+  빌드 도구를 뺀 의존성 전체 + 실행 파일에 들어가는 빌드 도구(PyInstaller 부트로더, 런타임 훅).
+  라이선스 이름과 예외 판단은 `check_licenses.py`와 같은 정책 파일을 쓴다.
+- **전문**: 설치된 각 패키지의 `.dist-info`에서 `LICENSE`, `COPYING`, `NOTICE`, `AUTHORS`
+  파일과 `licenses/` 폴더를 그대로 옮긴다. `requests`, `questionary`의 `NOTICE`도 여기서 들어간다.
+- **CPython**: 빌드에 쓴 Python의 `LICENSE.txt`. **OpenSSL**: 저장소에 넣어 둔
+  `packaging/licenses/OpenSSL-LICENSE.txt`(출처 주소 포함).
+- **웹 화면**: 설치된 omm의 `web/static/third-party-licenses.txt`도 마지막에 붙인다. 이 파일은
+  `--collect-data omm` 때문에 실행 파일 안에도 이미 들어 있지만, 밖에서 읽을 수 있게 한 번 더 넣는다.
+- **실패 조건**: 라이선스 파일이 없는 패키지가 있으면 빌드가 멈춘다. 정말 파일이 없는 패키지라면
+  원문을 `packaging/licenses/`에 넣고 정책 파일 `python.license_texts`에
+  `{"path": ..., "reason": ...}`로 이유와 함께 적는다.
+- **검사**: `npm_package.py`, `npm_release.py`, `windows_portable.py`가 파일 목록에 이 파일이 있는지,
+  생성된 머리말과 CPython·OpenSSL 절이 있는지 확인한다. 이 파일이 생기기 전에 올린 Windows ZIP을
+  재실행 때 다시 검사하는 경로만 예외로 이 파일 없이도 통과한다.
+
+직접 만들어 보려면 (배포 의존성이 설치된 환경에서):
+
+```sh
+python scripts/bundled_licenses.py --target linux-x64-gnu --output THIRD_PARTY_LICENSES.txt
+```
 
 ## 실행 방법
 
