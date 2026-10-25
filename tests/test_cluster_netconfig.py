@@ -70,7 +70,30 @@ def test_apply_script_removes_the_bridge_before_it_creates_the_port_services():
 
 def test_apply_script_keeps_one_backup_of_the_preferences_it_edits():
     assert "preferences.plist.pre-netconfig" in netconfig.APPLY_SCRIPT
-    assert "[ -e" in netconfig.APPLY_SCRIPT
+    assert "[ ! -e" in netconfig.APPLY_SCRIPT
+
+
+@pytest.mark.skipif(not __import__("shutil").which("sh"), reason="needs a POSIX shell")
+@pytest.mark.parametrize("bridge_up,had_backup,expected", [
+    (True, False, "live"),     # first init: snapshot the original
+    (False, True, "old"),      # init run again on a Mac already set up: keep the original
+    (True, True, "live"),      # init after leave put the bridge back: the old copy is stale
+    (False, False, "live"),    # a Mac that never had a bridge still gets one copy
+])
+def test_apply_snapshots_the_preferences_whenever_a_live_bridge_is_about_to_go(tmp_path, bridge_up, had_backup, expected):
+    line = next(l for l in netconfig.APPLY_SCRIPT.splitlines() if "pre-netconfig" in l and "cp " in l)
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "ifconfig").write_text(f"#!/bin/sh\nexit {0 if bridge_up else 1}\n", encoding="utf-8")
+    (stub / "ifconfig").chmod(0o755)
+    prefs, backup_dir = tmp_path / "preferences.plist", tmp_path / "backup"
+    backup_dir.mkdir()
+    prefs.write_text("live", encoding="utf-8")
+    if had_backup:
+        (backup_dir / "preferences.plist.pre-netconfig").write_text("old", encoding="utf-8")
+    script = 'PREFS="%s"\n%s\n' % (prefs, line.replace(netconfig.BACKUP_DIR, str(backup_dir)))
+    subprocess.run(["sh", "-c", script], check=True, env={"PATH": f"{stub}:/bin:/usr/bin"})
+    assert (backup_dir / "preferences.plist.pre-netconfig").read_text(encoding="utf-8") == expected
 
 
 def test_apply_failure_is_a_cluster_error():

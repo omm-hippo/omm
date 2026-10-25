@@ -87,7 +87,7 @@ def runtime_dir() -> Path:
     return config.OMM_HOME / "cluster" / "exo-runtime"
 
 
-def _stamp_path() -> Path:
+def runtime_stamp_path() -> Path:
     return config.OMM_HOME / "cluster" / "exo-runtime.version"
 
 
@@ -95,7 +95,7 @@ def stage_runtime(*, run=subprocess.run) -> Path:
     """Copy the bundled exo runtime out of the app, once per exo version."""
     target = runtime_dir()
     version = exo_version() or "unknown"
-    stamp = _stamp_path()
+    stamp = runtime_stamp_path()
     if target.is_dir():
         try:
             if stamp.read_text(encoding="utf-8").strip() == version:
@@ -110,6 +110,12 @@ def stage_runtime(*, run=subprocess.run) -> Path:
         raise ClusterError(f"could not copy the exo runtime: {(result.stderr or '').strip()}")
     stamp.write_text(version + "\n", encoding="utf-8")
     return target
+
+
+def remove_runtime() -> None:
+    """Delete the staged copy (`leave`); exo itself stays in /Applications."""
+    shutil.rmtree(runtime_dir(), ignore_errors=True)
+    runtime_stamp_path().unlink(missing_ok=True)
 
 
 def rdma_status(*, run=subprocess.run) -> Literal["enabled", "disabled", "unavailable"]:
