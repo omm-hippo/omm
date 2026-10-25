@@ -17,6 +17,11 @@ from filelock import FileLock, Timeout
 from omm import config
 from omm.atomic import atomic_write_text
 
+# Seconds a document import may stay silent in each stage before its worker is
+# killed. Extraction keeps the original 60-second bound; the embedder's own HTTP
+# timeout per batch is 300 seconds.
+DOCUMENT_STAGE_SECONDS = {"extract": 60, "embed": 300}
+
 
 class JobConflict(ValueError):
     pass
@@ -110,10 +115,18 @@ class JobManager:
                 self.processes[jid] = proc
                 job["status"] = "running"
                 self._save(job)
-            if request["operation"] == "document_import":
-                timer = threading.Timer(60, proc.kill)
+            def watchdog(seconds):
+                # Each document stage must keep reporting: extraction is
+                # bounded as before, and every embedding batch restarts a
+                # longer budget so a slow CPU embed is not killed mid-way.
+                nonlocal timer
+                if timer is not None:
+                    timer.cancel()
+                timer = threading.Timer(seconds, proc.kill)
                 timer.daemon = True
                 timer.start()
+            if request["operation"] == "document_import":
+                watchdog(DOCUMENT_STAGE_SECONDS["extract"])
             proc.stdin.write(json.dumps(request).encode())
             proc.stdin.close()
             last_saved = 0.0
@@ -129,6 +142,13 @@ class JobManager:
                 with self.lock:
                     job = self.jobs[jid]
                     kind = event.get("event")
+                    stage_changed = False
+                    if kind == "progress" and job["operation"] == "document_import":
+                        stage = event.get("document_stage")
+                        if stage in DOCUMENT_STAGE_SECONDS:
+                            stage_changed = job.get("document_stage") != stage
+                            job["document_stage"] = stage
+                            watchdog(DOCUMENT_STAGE_SECONDS[stage])
                     if kind == "progress":
                         if job["operation"] == "start_chat":
                             from omm.web.task_flow import STAGES
@@ -143,7 +163,7 @@ class JobManager:
                     elif kind in {"completed", "failed", "cancelled"}:
                         job.update(status=kind, result=event.get("result"), message=str(event.get("message", ""))[:2000])
                     now = time.monotonic()
-                    if kind != "progress" or "stage" in event or now - last_saved >= 0.5:
+                    if kind != "progress" or "stage" in event or stage_changed or now - last_saved >= 0.5:
                         self._save(job)
                         last_saved = now
             code = proc.wait()
