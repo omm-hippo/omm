@@ -804,6 +804,27 @@ def import_paths(collection, paths, *, replace=False, progress=None):
     store = DocumentStore()
     with store.connection() as db:
         store._collection(db, collection)
+    files, skipped = collect_files(paths)
+    results = []
+    for path, problem in files:
+        if problem is None:
+            try:
+                if path.stat().st_size > MAX_UPLOAD:
+                    raise ValueError("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.")
+                results.append({"path": str(path), **store.import_document(path.name, path.read_bytes(), replace=replace, collection=collection,
+                                                                          progress=_named(progress, path.name))})
+                continue
+            except (ValueError, OSError) as error:
+                problem = str(error) if isinstance(error, ValueError) else "파일을 읽지 못했어요. 권한을 확인해 주세요."
+        results.append({"path": str(path), "name": path.name, "error": problem})
+    return {"collection": collection, "results": results, "skipped": skipped}
+
+
+def collect_files(paths):
+    """([(path, problem or None)], skipped count) for files and directories (recursive).
+
+    Shared by local import and upload to a remote cluster head.
+    """
     files, skipped = [], 0
     for raw in paths:
         path = Path(raw)
@@ -821,16 +842,4 @@ def import_paths(collection, paths, *, replace=False, progress=None):
             files.append((path, None))
         else:
             files.append((path, "파일이나 폴더를 찾지 못했어요."))
-    results = []
-    for path, problem in files:
-        if problem is None:
-            try:
-                if path.stat().st_size > MAX_UPLOAD:
-                    raise ValueError("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.")
-                results.append({"path": str(path), **store.import_document(path.name, path.read_bytes(), replace=replace, collection=collection,
-                                                                          progress=_named(progress, path.name))})
-                continue
-            except (ValueError, OSError) as error:
-                problem = str(error) if isinstance(error, ValueError) else "파일을 읽지 못했어요. 권한을 확인해 주세요."
-        results.append({"path": str(path), "name": path.name, "error": problem})
-    return {"collection": collection, "results": results, "skipped": skipped}
+    return files, skipped

@@ -132,7 +132,9 @@ class _Handler(BaseHTTPRequestHandler):
         if name is None:
             self._reply_error(401, "authentication_error", "omm cluster: missing or invalid token")
             return 401, None
-        if (self.command, path) not in ALLOWED_ROUTES:
+        # Shared document search (#504) is answered here, not by exo.
+        documents = path == "/mcp" or path.startswith("/rag/")
+        if not documents and (self.command, path) not in ALLOWED_ROUTES:
             self._reply_error(404, "not_found_error", "omm cluster: this path is not served by the gateway")
             return 404, name
         try:
@@ -143,6 +145,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply_error(413, "invalid_request_error", "omm cluster: request body is larger than 16 MiB")
             return 413, name
         body = self.rfile.read(length) if length else None
+        if documents:
+            from omm import rag_http
+            status, headers, payload = rag_http.handle(self.command, self.path, self.headers, body or b"", name)
+            self._replied = True
+            self.send_response(status)
+            for key, value in headers.items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return status, name
         if body and path == "/v1/messages":
             body = normalize_claude_messages(body)
         headers = {k: v for k, v in self.headers.items() if k.casefold() not in _HOP_BY_HOP}
