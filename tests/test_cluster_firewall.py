@@ -46,6 +46,7 @@ def test_render_rules_exact_text_for_head_mac():
         "pass in quick on lo0 all\n"
         "pass in quick on { en5 en6 } all\n"
         "pass in quick proto tcp to port 52440\n"
+        "pass in quick proto tcp to port 52416\n"
         "block return in quick proto tcp to port $exo_ports flags S/SA\n"
         "block return in quick proto udp to port $exo_ports\n"
         "block return in quick proto tcp to port 49153:65535 flags S/SA\n"
@@ -197,3 +198,13 @@ def test_removing_gives_back_the_last_pf_enable_reference(tmp_path):
     # After a reboot the saved token is stale; releasing it must not fail the script.
     token.write_text("999\n", encoding="utf-8")
     subprocess.run(["sh", "-c", _local(firewall.RELEASE_TOKEN, fake, token)], check=True)
+
+
+def test_exo_peer_port_is_reachable_from_the_office_network():
+    # exo dials a peer's office-network address before its Thunderbolt one and
+    # skips the rest while that dial is pending, so with 52416 blocked three
+    # Mac minis met only by luck (2 of 6 tries); with it open, 10 of 10. The
+    # pnet key behind that port is derived from the cluster name.
+    text = firewall.render_rules(firewall.EXO_PORTS, ("en2",), gateway_port=None)
+    assert text.index("pass in quick proto tcp to port 52416\n") < text.index("block return in quick proto tcp")
+    assert "pass in quick proto tcp to port 52415" not in text

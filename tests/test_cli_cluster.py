@@ -153,7 +153,7 @@ def test_init_twice_reuses_namespace_and_reapplies(cluster_fakes):
     loaded = settings.load()
     assert loaded.role == "head" and settings.NAMESPACE_RE.match(loaded.namespace)
     for result in (first, second):
-        assert f"omm cluster join {loaded.namespace}" in result.output
+        assert f"  omm cluster join {loaded.namespace}\n" in result.output
         assert "omm cluster token add <name>" in result.output
     assert cluster_fakes.firewall_apply_calls == [52440, 52440]
     assert cluster_fakes.service_install_calls == 2
@@ -174,12 +174,12 @@ def test_join_rejects_bad_namespace(cluster_fakes):
 
 
 def test_join_sets_member_without_gateway(cluster_fakes):
-    result = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    result = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     assert result.exit_code == 0, result.output
-    assert settings.load().role == "member" and settings.load().namespace == "omm-0a1b2c3d"
+    assert settings.load().role == "member" and settings.load().namespace == "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"
     assert cluster_fakes.firewall_apply_calls == [None]
     assert cluster_fakes.service_install_calls == 0
-    assert cluster_fakes.exo_service_installs == ["omm-0a1b2c3d"]
+    assert cluster_fakes.exo_service_installs == ["omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"]
 
 
 def test_init_and_join_tell_the_user_about_the_on_screen_allow_prompt(cluster_fakes):
@@ -188,7 +188,7 @@ def test_init_and_join_tell_the_user_about_the_on_screen_allow_prompt(cluster_fa
     assert "click Allow" in head.output
     left = runner.invoke(cli.app, ["cluster", "leave", "--yes"])
     assert left.exit_code == 0, left.output
-    member = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    member = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     assert member.exit_code == 0, member.output
     assert "click Allow" in member.output
 
@@ -210,7 +210,7 @@ def test_init_and_join_set_up_the_thunderbolt_network_before_exo_and_the_firewal
 
 
 def test_join_sets_up_the_thunderbolt_network_too(cluster_fakes):
-    result = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    result = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     assert result.exit_code == 0, result.output
     assert cluster_fakes.netconfig_calls == ["apply", "wait"]
 
@@ -224,7 +224,7 @@ def test_leave_puts_the_thunderbolt_bridge_back(cluster_fakes):
 
 
 def test_init_on_member_is_refused(cluster_fakes):
-    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     result = runner.invoke(cli.app, ["cluster", "init"])
     assert result.exit_code == 2 and "omm cluster leave" in result.output
 
@@ -260,7 +260,7 @@ def test_status_tells_what_to_do_when_known_nodes_are_missing(cluster_fakes):
 
 
 def test_restart_restarts_exo_on_this_mac(cluster_fakes):
-    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     result = runner.invoke(cli.app, ["cluster", "restart"])
     assert result.exit_code == 0, result.output
     assert cluster_fakes.exo_restarts == 1
@@ -406,7 +406,7 @@ def test_token_add_list_revoke_on_head(cluster_fakes):
 
 
 def test_token_commands_refused_on_member(cluster_fakes):
-    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     result = runner.invoke(cli.app, ["cluster", "token", "add", "kim"])
     assert result.exit_code == 2 and "tokens are managed on the head Mac" in result.output
 
@@ -432,7 +432,7 @@ def test_leave_on_head_removes_everything_but_tokens(cluster_fakes):
 
 
 def test_leave_on_member_keeps_gateway_untouched(cluster_fakes):
-    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
     assert cluster_fakes.service_uninstall_calls == 0
 
@@ -505,7 +505,7 @@ def test_init_and_join_turn_idle_sleep_off(cluster_fakes):
     assert runner.invoke(cli.app, ["cluster", "init"]).exit_code == 0
     assert cluster_fakes.keep_awake_calls == 1
     runner.invoke(cli.app, ["cluster", "leave", "--yes"])
-    assert runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"]).exit_code == 0
+    assert runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"]).exit_code == 0
     assert cluster_fakes.keep_awake_calls == 2
 
 
@@ -525,7 +525,7 @@ def test_status_flags_idle_sleep(cluster_fakes):
 def test_init_lets_exo_and_gateway_through_the_macos_firewall_join_only_exo(cluster_fakes):
     assert runner.invoke(cli.app, ["cluster", "init"]).exit_code == 0
     runner.invoke(cli.app, ["cluster", "leave", "--yes"])
-    assert runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"]).exit_code == 0
+    assert runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"]).exit_code == 0
     assert cluster_fakes.appfw_allowed == [["exo", "Python"], ["exo"]]
     assert cluster_fakes.appfw_removes == 1
 
@@ -581,7 +581,7 @@ def test_cluster_errors_are_written_to_the_omm_log(cluster_fakes, caplog):
     with caplog.at_level("ERROR", logger="omm.cluster"):
         result = runner.invoke(cli.app, ["cluster", "join", "not-a-namespace"])
     assert result.exit_code == 2
-    assert "the cluster name looks like" in caplog.text
+    assert "the cluster name is omm- followed by 32" in caplog.text
 
 
 def test_status_flags_macs_on_the_same_version_but_different_builds(cluster_fakes):
@@ -648,8 +648,44 @@ def test_a_mac_gone_for_good_is_forgotten_by_running_init_again(cluster_fakes):
 
 
 def test_member_is_told_to_run_join_again_to_forget_a_mac(cluster_fakes):
-    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d"])
+    runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
     _status()
     cluster_fakes.drop_node("mac-d")
-    assert ("if a Mac left the cluster for good, run omm cluster join omm-0a1b2c3d again on this Mac to forget it"
+    assert ("if a Mac left the cluster for good, run omm cluster join omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d again on this Mac to forget it"
             in _status()["problems"])
+
+
+LEGACY = "omm-85dc2a50"
+
+
+def test_a_new_cluster_name_carries_128_random_bits():
+    # The name is exo's network key (pnet PSK = SHA3 of it), and that port is
+    # reachable from the office network, so 32 bits were too few.
+    name = settings.new_namespace()
+    assert settings.NAMESPACE_RE.match(name) and len(name) == len("omm-") + 32
+    assert settings.new_namespace() != name
+
+
+def test_join_refuses_a_short_cluster_name_from_an_older_omm(cluster_fakes):
+    result = runner.invoke(cli.app, ["cluster", "join", LEGACY])
+    assert result.exit_code == 2
+    assert "omm cluster init again on the head Mac" in " ".join(result.output.split())
+    assert cluster_fakes.exo_service_installs == []
+
+
+def test_init_on_a_head_with_a_short_name_picks_a_new_one(cluster_fakes):
+    settings.save(settings.ClusterSettings("head", LEGACY, 52440))
+    result = runner.invoke(cli.app, ["cluster", "init"])
+    assert result.exit_code == 0, result.output
+    name = settings.load().namespace
+    assert name != LEGACY and settings.NAMESPACE_RE.match(name)
+    assert f"  omm cluster join {name}\n" in result.output
+
+
+def test_status_and_leave_still_work_with_a_short_name(cluster_fakes):
+    settings.save(settings.ClusterSettings("member", LEGACY, 52440))
+    data = _status()
+    assert data["namespace"] == LEGACY
+    assert any("too short" in p for p in data["problems"])
+    assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
+    assert settings.load() is None

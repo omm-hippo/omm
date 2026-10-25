@@ -26,12 +26,12 @@ def _plist(home: Path) -> dict:
 
 def test_exo_agent_runs_staged_runtime_with_namespace_and_fixed_libp2p_port(isolated_omm_home, tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    exo_service.install("omm-0a1b2c3d", run=_ok)
+    exo_service.install("omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d", run=_ok)
     data = _plist(tmp_path)
     runtime = str(preflight.runtime_dir())
     assert data["ProgramArguments"] == [f"{runtime}/exo", "--libp2p-port", "52416"]
     env = data["EnvironmentVariables"]
-    assert env["EXO_LIBP2P_NAMESPACE"] == env["EXO_ZENOH_NAMESPACE"] == "omm-0a1b2c3d"
+    assert env["EXO_LIBP2P_NAMESPACE"] == env["EXO_ZENOH_NAMESPACE"] == "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"
     assert env["EXO_RUNTIME_DIR"] == runtime
     assert {"/usr/sbin", "/sbin", runtime, f"{runtime}/_internal"} <= set(env["PATH"].split(":"))
     assert data["RunAtLoad"] is True and data["KeepAlive"] is True
@@ -43,14 +43,14 @@ def test_exo_agent_reinstall_boots_out_first(isolated_omm_home, tmp_path, monkey
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     calls = []
     run = lambda argv, **k: calls.append(argv) or _ok(argv)
-    exo_service.install("omm-0a1b2c3d", run=run)
-    exo_service.install("omm-0a1b2c3d", run=run)
+    exo_service.install("omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d", run=run)
+    exo_service.install("omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d", run=run)
     assert [c[1] for c in calls if c[0] == "launchctl"] == ["bootout", "bootstrap", "bootout", "bootstrap"]
 
 
 def test_exo_agent_uninstall(isolated_omm_home, tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    exo_service.install("omm-0a1b2c3d", run=_ok)
+    exo_service.install("omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d", run=_ok)
     exo_service.uninstall(run=_ok)
     assert not (tmp_path / "Library/LaunchAgents/com.omm.cluster-exo.plist").exists()
 

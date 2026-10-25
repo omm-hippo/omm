@@ -82,7 +82,8 @@ def init(out: Out) -> settings.ClusterSettings:
     current = settings.load()
     if current is not None and current.role == "member":
         raise UsageProblem("this Mac already joined a cluster as a member; run omm cluster leave first")
-    namespace = current.namespace if current else settings.new_namespace()
+    reuse = current is not None and not settings.is_legacy(current.namespace)
+    namespace = current.namespace if reuse else settings.new_namespace()
     # Saved before anything can be interrupted: the name is printed below and
     # may already be typed into `join` on other Macs, so a re-run must reuse it.
     # The remembered Macs start over: running init again is how a Mac that
@@ -96,15 +97,22 @@ def init(out: Out) -> settings.ClusterSettings:
     appfw.allow([appfw.exo_binary(), appfw.gateway_binary()])
     service.install()
     out(SCREEN_APPROVAL_HINT)
-    out(f"Run this on every other Mac: omm cluster join {namespace}")
+    # On a line of its own: the 128-bit name makes the sentence wrap in an
+    # 80-column terminal, and a wrapped command does not paste.
+    out("Run this on every other Mac:")
+    out(f"  omm cluster join {namespace}")
     out("Then give each employee a token: omm cluster token add <name>")
     return saved
 
 
 def join(namespace: str, out: Out) -> settings.ClusterSettings:
     require_macos()
+    if settings.is_legacy(namespace):
+        raise UsageProblem("this cluster name is from an older omm and too short to protect the cluster; "
+                           "run omm cluster init again on the head Mac and join with the new name")
     if not settings.NAMESPACE_RE.match(namespace):
-        raise UsageProblem("the cluster name looks like omm-1a2b3c4d; copy it from omm cluster init on the head Mac")
+        raise UsageProblem("the cluster name is omm- followed by 32 letters and digits; "
+                           "copy it from omm cluster init on the head Mac")
     current = settings.load()
     if current is not None and current.role == "head":
         raise UsageProblem("this Mac is the cluster head; run omm cluster leave first")
@@ -181,6 +189,9 @@ def status() -> dict:
                 settings.save(settings.ClusterSettings(current.role, current.namespace, current.gateway_port, merged))
     fw = "missing"
     gateway = "not_head"
+    if current is not None and settings.is_legacy(current.namespace):
+        problems.append("the cluster name is too short to protect exo's network port; run omm cluster init "
+                        "on the head Mac and omm cluster join <new name> on every other Mac")
     if current is not None:
         fw = firewall.status(gateway_port=current.gateway_port if current.role == "head" else None)
         if fw not in ("active", "unchecked"):

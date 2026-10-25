@@ -275,9 +275,14 @@ inside `EXO.app`, so `preflight.stage_runtime` copies `Contents/Resources/exo` t
 `com.omm.cluster-exo`. The agent sets both `EXO_LIBP2P_NAMESPACE` and
 `EXO_ZENOH_NAMESPACE`, passes `--libp2p-port 52416`, and puts `/usr/sbin` in PATH.
 `firewall.py` loads pf sub-anchor `com.apple/omm-cluster` through root LaunchDaemon
-`com.omm.cluster-pf`. The anchor trusts lo0 and Thunderbolt and blocks exo's ports plus
+`com.omm.cluster-pf`. The anchor trusts lo0 and Thunderbolt and blocks exo's API (52415) plus
 every TCP port in 49153-65535 from elsewhere, because the MLX ring binds a random high port
-on 0.0.0.0. The blocks are `block return` (RST), never `block drop`: exo's libp2p dials
+on 0.0.0.0. exo's libp2p port 52416 is deliberately open to the office network: exo dials a
+peer's addresses in sorted order and skips the rest while one is pending, so the office-network
+address always goes first, and with it blocked Macs met only by luck. Only a node with the pnet
+key can finish that handshake, and exo derives the key from the cluster name, so
+`settings.new_namespace()` makes it 128 random bits (`omm-` + 32 hex); 32-bit names from older
+omm still load but `join` refuses them and `init` replaces them. The blocks are `block return` (RST), never `block drop`: exo's libp2p dials
 every address a peer advertises, and a silently dropped SYN on a blocked address stalled
 Thunderbolt peer discovery for 40 s or forever. TCP blocks match only a SYN (`flags S/SA`) so
 connections the Mac opened before the rules loaded keep working, and the loader saves its
