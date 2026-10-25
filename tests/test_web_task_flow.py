@@ -113,6 +113,18 @@ def test_existing_unrelated_runtime_load_stops_before_download(flow, monkeypatch
     assert calls == ["safety"]
 
 
+def test_warm_document_embedding_model_does_not_block_chat_preparation(flow, monkeypatch):
+    from omm.engines.base import RuntimeModel
+    _, calls = flow
+    monkeypatch.setattr(probe, "adapter_for", lambda engine: SimpleNamespace(
+        health=lambda: SimpleNamespace(reachable=True),
+        list_models=lambda: [RuntimeModel("bge-m3:latest", "bge-m3:latest", True, "bge-m3:latest")]))
+    task_flow.prepare(request(ref="test/tiny:tiny.gguf"), threading.Event(), lambda *args: None)
+    assert "verify" in calls
+    # The search store was only read, never created by chat preparation.
+    assert not (config.OMM_HOME / "documents").exists()
+
+
 def test_cancellation_after_link_never_runs_generation(flow):
     _, calls = flow
     stop = threading.Event()

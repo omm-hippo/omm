@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import functools
 import inspect
@@ -309,6 +310,7 @@ class GlobalOptions:
 # Commands whose output --json actually restructures. Other combinations fail
 # before execution, rather than running mutations with misleading plain output.
 _JSON_CAPABLE = {
+    "cluster status",
     "search",
     "list",
     "info",
@@ -327,6 +329,11 @@ _JSON_CAPABLE = {
     "engine uninstall",
     "bug-report",
     "setting runtime-profile",
+    "rag status",
+    "rag collection list",
+    "rag search",
+    "rag add",
+    "rag reindex",
     # Only `omm arena --leaderboard`; a battle refuses --json in arena_cmd.
     "arena",
 }
@@ -334,6 +341,7 @@ _JSON_CAPABLE = {
 # Commands with a confirmation prompt --yes/-y can skip. Every other
 # command has nothing for it to do.
 _YES_CAPABLE = {
+    "cluster leave",
     "arena",
     "install",
     "import",
@@ -350,6 +358,8 @@ _YES_CAPABLE = {
     "engine security",
     "bug-report",
     "tune",
+    "rag collection delete",
+    "rag remove",
 }
 
 
@@ -796,6 +806,360 @@ def agent_status(harness: str = typer.Argument(..., help="claude, codex or pi.")
     console.print(f"{escape(harness)}: {result['state']}; installed: {result['installed']}")
 
 
+rag_app = typer.Typer(
+    name="rag",
+    help="Search local documents by meaning and words (hybrid), and serve them to coding agents over a local MCP server. Text and questions stay on this computer; embeddings use local Ollama only. After `omm rag remote set`, the same commands use collections shared on the company cluster head instead.",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+app.add_typer(rag_app)
+rag_collection_app = typer.Typer(
+    name="collection",
+    help="Create, list, or delete named document collections.",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+rag_app.add_typer(rag_collection_app)
+rag_embedding_app = typer.Typer(
+    name="embedding-model",
+    help="Show or change the local Ollama embedding model used for semantic search.",
+    invoke_without_command=True,
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+rag_app.add_typer(rag_embedding_app)
+
+_RAG_METHOD_LABEL = {"hybrid": "의미+단어", "lexical": "단어만"}
+_RAG_SEMANTIC_LABEL = {"ready": "의미 색인 있음", "missing": "의미 색인 없음 (재색인 필요)",
+                       "stale": "임베딩 모델 바뀜 (재색인 필요)", "reregister": "원본 다시 등록 필요"}
+
+
+def _rag_fail(error: Exception) -> None:
+    err_console.print(f"[error]{escape(str(error))}[/error]")
+    raise typer.Exit(1)
+
+
+@contextlib.contextmanager
+def _rag_progress():
+    """Yield ``progress(name, stage, done, total)`` that shows one live status line.
+
+    Embedding on a CPU-only PC takes about a second per chunk, so a silent
+    `omm rag add` looks frozen. The line is transient and drawn only on a
+    terminal; --json and --quiet turn it off.
+    """
+    opts = _global_opts()
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), TimeElapsedColumn(),
+                  console=console, transient=True, disable=opts.quiet or opts.json) as bar:
+        task_id = bar.add_task("", total=None)
+
+        def progress(name: str, stage: str, done: int, total: int) -> None:
+            label = {"extract": "텍스트 추출 중", "upload": "헤드로 보내고 색인하는 중"}.get(
+                stage, f"의미 색인 만드는 중 {done}/{total} 조각")
+            bar.update(task_id, description=escape(f"{name}: {label}"))
+
+        yield progress
+
+
+def _rag_confirm(message: str) -> None:
+    if _global_opts().yes:
+        return
+    if not _stdin_is_tty():
+        err_console.print("확인이 필요해요. 다시 실행할 때 --yes를 붙여 주세요.")
+        raise typer.Exit(1)
+    if not _ask_confirm(message):
+        err_console.print("취소했어요.")
+        raise typer.Exit(0)
+
+
+@rag_app.command(name="status")
+@global_flags
+def rag_status_cmd() -> None:
+    """Show collections, the embedding model, and which documents need reindexing."""
+    from omm.documents import DocumentStore
+    try:
+        store = DocumentStore()
+        result = store.status(check_embedding=True)
+        documents = store.list()
+    except ValueError as error:
+        _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data={**result, "documents_detail": [
+            {k: d[k] for k in ("name", "collection", "pages", "chunks", "semantic", "reindex_needed", "embedding_model", "embedding_dim")}
+            for d in documents]})
+        return
+    embedding = result["embedding"]
+    state = "사용 가능" if embedding["available"] else "사용 불가"
+    console.print(f"임베딩 모델: {escape(embedding['model'])} ({escape(embedding['base_url'])}) - {state} · "
+                  f"메모리 유지 {escape(_rag_keep_alive_label(embedding['keep_alive']))}")
+    if embedding["notice"]:
+        console.print(f"  {escape(embedding['notice'])}")
+    console.print(f"문서 {result['documents']}개 · 의미 색인 완료 {result['semantic_ready']}개 · "
+                  f"재색인 필요 {result['reindex_needed']}개 · 원본 다시 등록 필요 {result['reregister_needed']}개")
+    for collection in result["collections"]:
+        console.print(f"\n[{escape(collection['name'])}] 문서 {collection['documents']}개")
+        for document in (d for d in documents if d["collection_id"] == collection["id"]):
+            console.print(f"  - {escape(document['name'])} · {document['pages']}쪽 · 구간 {document['chunks']}개 · "
+                          f"{_RAG_SEMANTIC_LABEL[document['semantic']]}")
+    if result["reindex_needed"]:
+        console.print("\n`omm rag reindex`로 의미 색인을 다시 만들 수 있어요.")
+
+
+@rag_collection_app.command(name="create")
+def rag_collection_create_cmd(name: str = typer.Argument(..., help="Collection name, e.g. 인사규정.")) -> None:
+    """Create an empty named collection (on the cluster head when `omm rag remote` is set)."""
+    from omm import rag_acl
+    remote = _rag_cli.remote_client()
+    try:
+        remote.create_collection(name) if remote else rag_acl.create_collection(rag_acl.ADMIN, name)
+    except ValueError as error:
+        _rag_fail(error)
+    console.print(f"'{escape(name)}' 컬렉션을 만들었어요. `omm rag add {escape(name)} <파일 또는 폴더>`로 문서를 넣어 주세요.")
+    if remote:
+        console.print("지금은 나만 검색할 수 있어요. `omm rag share <컬렉션> <직원>` 또는 `--team <팀>`으로 공유해요.")
+
+
+def _rag_share_label(shares) -> str:
+    if shares is None:
+        return ""
+    if not shares:
+        return " · 공유 없음"
+    return " · 공유: " + ", ".join(f"팀 {s['target']}" if s["kind"] == "team" else s["target"] for s in shares)
+
+
+@rag_collection_app.command(name="list")
+@global_flags
+def rag_collection_list_cmd() -> None:
+    """List collections you can search with document counts, owner and shares."""
+    from omm import rag_acl
+    remote = _rag_cli.remote_client()
+    try:
+        rows = remote.collections() if remote else rag_acl.collections(rag_acl.ADMIN)
+    except ValueError as error:
+        _rag_fail(error)
+    keys = ("name", "documents", "created_at", "owner", "shares")
+    if _global_opts().json:
+        _print_json(data={"collections": [{k: row.get(k) for k in keys} for row in rows]})
+        return
+    if remote and not rows:
+        console.print("검색할 수 있는 컬렉션이 없어요. `omm rag collection create <이름>`으로 만들거나 공유를 받아 주세요.")
+    for row in rows:
+        console.print(f"{escape(row['name'])}  문서 {row['documents']}개 · 만든 사람 {escape(rag_acl.owner_label(row['owner']))}"
+                      f"{escape(_rag_share_label(row.get('shares')))}")
+
+
+@rag_collection_app.command(name="delete")
+@global_flags
+def rag_collection_delete_cmd(name: str = typer.Argument(..., help="Collection to delete.")) -> None:
+    """Delete a collection with its stored text and index. Original files are kept."""
+    from omm import rag_acl
+    remote = _rag_cli.remote_client()
+    try:
+        rows = remote.collections() if remote else rag_acl.collections(rag_acl.ADMIN)
+        count = next((row["documents"] for row in rows if row["name"] == name), None)
+        if count is None:
+            raise ValueError(f"'{name}' 컬렉션을 찾지 못했어요. `omm rag collection list`로 이름을 확인해 주세요.")
+        _rag_confirm(f"'{name}' 컬렉션과 문서 {count}개의 저장된 텍스트·색인을 지울까요? 원본 파일은 그대로예요.")
+        result = remote.delete_collection(name) if remote else rag_acl.delete_collection(rag_acl.ADMIN, name)
+    except ValueError as error:
+        _rag_fail(error)
+    console.print(f"'{escape(name)}' 컬렉션을 지웠어요 (문서 {result['documents']}개). 이전 문서 답변 기록도 지웠어요.")
+
+
+@rag_app.command(name="add")
+@global_flags
+def rag_add_cmd(
+    collection: str = typer.Argument(..., help="Existing collection name."),
+    paths: list[Path] = typer.Argument(..., help="Files or directories (searched recursively)."),
+    replace: bool = typer.Option(False, "--replace", help="Replace a document that has the same file name."),
+) -> None:
+    """Add text PDF, TXT, Markdown, HTML, or HWPX files to a collection."""
+    from omm.documents import import_paths
+    remote = _rag_cli.remote_client()
+    try:
+        with _rag_progress() as progress:
+            if remote:
+                from omm.rag_remote import upload_paths
+                report = upload_paths(remote, collection, paths, replace=replace, progress=progress)
+            else:
+                report = import_paths(collection, paths, replace=replace, progress=progress)
+    except ValueError as error:
+        _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data=report)
+        if any("error" in row for row in report["results"]):
+            raise typer.Exit(1)
+        return
+    failed = 0
+    notices = set()
+    for row in report["results"]:
+        if "error" in row:
+            failed += 1
+            err_console.print(f"실패: {escape(row['path'])} - {escape(row['error'])}")
+            continue
+        label = "변경 없음" if row.get("unchanged") else f"구간 {row['chunks']}개"
+        mode = "의미+단어 색인" if row["semantic"] else "단어 색인만"
+        console.print(f"등록: {escape(row['name'])} ({label}, {mode})")
+        if row.get("semantic_notice"):
+            notices.add(row["semantic_notice"])
+    for notice in notices:
+        console.print(escape(notice))
+    if report["skipped"]:
+        console.print(f"지원하지 않는 형식 {report['skipped']}개는 건너뛰었어요.")
+    if failed:
+        raise typer.Exit(1)
+
+
+@rag_app.command(name="remove")
+@global_flags
+def rag_remove_cmd(
+    collection: str = typer.Argument(..., help="Collection name."),
+    name: str = typer.Argument(..., help="Document file name inside the collection."),
+) -> None:
+    """Remove one document's stored text and index. The original file is kept."""
+    from omm.documents import DocumentStore
+    remote = _rag_cli.remote_client()
+    _rag_confirm(f"'{collection}' 컬렉션의 '{name}' 문서와 색인을 지울까요? 원본 파일은 그대로예요.")
+    try:
+        remote.remove_document(collection, name) if remote else DocumentStore().remove_document(collection, name)
+    except ValueError as error:
+        _rag_fail(error)
+    console.print(f"'{escape(name)}' 문서를 지웠어요. 이전 문서 답변 기록도 지웠어요.")
+
+
+@rag_app.command(name="search")
+@global_flags
+def rag_search_cmd(
+    question: str = typer.Argument(..., help="Question or keywords."),
+    collection: str | None = typer.Option(None, "--collection", help="Search only this collection."),
+    limit: int = typer.Option(3, "--limit", min=1, max=10, help="Maximum passages to show (1-10)."),
+) -> None:
+    """Find source passages with hybrid search; falls back to words only and says why."""
+    from omm.documents import DocumentStore, NO_EVIDENCE
+    remote = _rag_cli.remote_client()
+    if remote:
+        _rag_remote_search(remote, question, collection, limit)
+        return
+    try:
+        result = DocumentStore().search_detailed(question, None, collection=collection, limit=limit)
+    except ValueError as error:
+        _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data=result)
+        return
+    console.print(f"검색 방식: {_RAG_METHOD_LABEL[result['method']]}")
+    if result["notice"]:
+        console.print(escape(result["notice"]))
+    if not result["sources"]:
+        console.print(NO_EVIDENCE)
+        return
+    for source in result["sources"]:
+        console.print(f"\n[{source['citation']}] {escape(source['name'])} ({escape(source['collection'])}) · "
+                      f"{source['page']}쪽 · {source['start']}-{source['end']}자", markup=False)
+        console.print(source["text"].strip(), markup=False, highlight=False)
+
+
+def _rag_remote_search(remote, question: str, collection: str | None, limit: int) -> None:
+    """Search the collections the cluster head lets this employee see."""
+    try:
+        result = remote.search(question, collection, limit)
+    except ValueError as error:
+        _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data=result)
+        return
+    if result.get("method"):
+        console.print(f"검색 방식: {_RAG_METHOD_LABEL.get(result['method'], result['method'])} (헤드)")
+    if result.get("notice"):
+        console.print(escape(result["notice"]))
+    console.print(escape(result["message"]))
+    for item in result["results"]:
+        console.print(f"\n[{item['rank']}] {item['document']} ({item['collection']}) · {item['page']}쪽 · "
+                      f"{item['start']}-{item['end']}자", markup=False)
+        console.print(item["quote"].strip(), markup=False, highlight=False)
+    if result.get("skipped_stale"):
+        console.print("색인을 다시 만들어야 해서 검색하지 않은 문서: " + escape(", ".join(result["skipped_stale"])))
+
+
+@rag_app.command(name="reindex")
+@global_flags
+def rag_reindex_cmd(
+    collection: str | None = typer.Option(None, "--collection", help="Reindex only this collection."),
+    everything: bool = typer.Option(False, "--all", help="Rebuild vectors even for documents that are current."),
+) -> None:
+    """Rebuild semantic vectors with the current embedding model from stored text."""
+    from omm.documents import DocumentStore
+    try:
+        with _rag_progress() as progress:
+            result = DocumentStore().reindex(collection, everything=everything, progress=progress)
+    except ValueError as error:
+        _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data=result)
+        if result["failed"]:
+            raise typer.Exit(1)
+        return
+    for name in result["reindexed"]:
+        console.print(f"재색인: {escape(name)}")
+    console.print(f"{escape(result['model'])}로 {len(result['reindexed'])}개 문서를 색인했어요. 이미 최신 {result['already_current']}개.")
+    if result["reregister"]:
+        console.print("단어 색인 방식이 바뀌어 원본을 다시 등록해야 하는 문서: " + escape(", ".join(result["reregister"])))
+    if result["failed"]:
+        err_console.print(f"[error]{escape(result['failed']['name'])}: {escape(result['failed']['notice'])}[/error]")
+        raise typer.Exit(1)
+
+
+def _rag_keep_alive_label(value: str) -> str:
+    return "없음 (바로 내림)" if str(value) == "0" else str(value)
+
+
+def _rag_model_hint(store) -> None:
+    status = store.status(check_embedding=True)["embedding"]
+    if status["notice"]:
+        console.print(escape(status["notice"]))
+
+
+@rag_embedding_app.callback()
+def rag_embedding_show(ctx: typer.Context) -> None:
+    """Show the embedding model and whether local Ollama has it."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from omm.documents import DocumentStore
+    store = DocumentStore()
+    try:
+        settings = store.embedding_settings()
+        console.print(f"임베딩 모델: {escape(settings['model'])} ({escape(settings['base_url'])}) · "
+                      f"메모리 유지 {escape(_rag_keep_alive_label(settings['keep_alive']))}")
+        _rag_model_hint(store)
+    except ValueError as error:
+        _rag_fail(error)
+
+
+@rag_embedding_app.command(name="set")
+def rag_embedding_set_cmd(
+    model: str = typer.Argument(..., help="Ollama embedding model tag, e.g. bge-m3."),
+    base_url: str | None = typer.Option(None, "--base-url", help="Local Ollama loopback origin (default http://127.0.0.1:11434)."),
+    keep_alive: str | None = typer.Option(
+        None, "--keep-alive",
+        help="How long Ollama keeps the embedding model in memory after a search or import, e.g. 30s, 5m (default), 1h; 0 unloads at once."),
+) -> None:
+    """Change the embedding model; documents then need `omm rag reindex`."""
+    from omm.documents import DocumentStore
+    store = DocumentStore()
+    try:
+        settings = store.set_embedding_model(model, base_url, keep_alive)
+        status = store.status()
+    except ValueError as error:
+        _rag_fail(error)
+    console.print(f"임베딩 모델을 {escape(settings['model'])}로 정했어요 (메모리 유지 {escape(_rag_keep_alive_label(settings['keep_alive']))}). "
+                  "등록한 문서와 단어 색인은 그대로예요.")
+    _rag_model_hint(store)
+    if status["reindex_needed"]:
+        console.print(f"문서 {status['reindex_needed']}개는 재색인이 필요해요. `omm rag reindex`를 실행해 주세요.")
+from omm import rag_cli as _rag_cli  # noqa: E402  (agent bridge commands live in their own module)
+
+_rag_cli.register(rag_app)
+
+
 engine_app = typer.Typer(
     name="engine",
     help="Inspect, install, update, and remove local AI runner programs.",
@@ -803,6 +1167,20 @@ engine_app = typer.Typer(
     cls=_DocsEpilogGroup,
 )
 app.add_typer(engine_app)
+cluster_app = typer.Typer(
+    name="cluster",
+    help="Join Thunderbolt-linked Macs into one exo cluster that employees reach through a token-checked gateway (macOS 26.2+).",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+app.add_typer(cluster_app)
+cluster_token_app = typer.Typer(
+    name="token",
+    help="Create, list, and revoke employee access tokens for the cluster gateway (head Mac only).",
+    rich_markup_mode=None,
+    cls=_DocsEpilogGroup,
+)
+cluster_app.add_typer(cluster_token_app)
 if platform.system() == "Windows":
     # Legacy cp949/cp1252 consoles cannot encode every model name or symbol.
     # Preserve their configured encoding but replace unsupported glyphs rather
@@ -1082,6 +1460,7 @@ def _root(
 
 _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
     ("Core", ["search", "install", "run", "fit", "verify", "list", "recommend", "uninstall", "info", "compare", "upgrade", "pin", "unpin", "rollback", "web"]),
+    ("Documents", ["rag"]),
     ("Tuning & quality", ["tune", "benchmark", "evaluate", "arena", "contribute"]),
     (
         "Maintenance",
@@ -1090,6 +1469,7 @@ _HELP_ALL_GROUPS: list[tuple[str, list[str]]] = [
             "doctor",
             "setup",
             "engine",
+            "cluster",
             "import",
             "cleanup",
             "link",
@@ -2003,6 +2383,7 @@ def _remote_head_commit(ref: str = "main") -> str | None:
 
 _SKIP_UPDATE_CHECK_SUBCOMMANDS = {
     "update", "doctor", "help", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+    "_cluster-gateway-run",
 }
 
 
@@ -2022,6 +2403,193 @@ def _bg_version_check_cmd() -> None:
     version_check.cached_remote_head(
         _remote_head_commit, _channel_branch(), ttl_seconds=0, installed=_installed_commit()
     )
+
+
+def _cluster_call(func, *args):
+    """Run one cluster step, mapping its errors to exit codes (2 = usage)."""
+    from omm.cluster import commands as cluster_commands
+
+    import logging
+
+    # The run log only sees the `omm` logger, so an error printed to stderr
+    # alone leaves `exit_code 1` with no cause behind (a real first `init`
+    # failed that way, 2026-10-23).
+    log = logging.getLogger("omm.cluster")
+    try:
+        return func(*args)
+    except cluster_commands.UsageProblem as error:
+        log.error(str(error), extra={"event": "usage_error", "step": getattr(func, "__name__", "?")})
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(2) from error
+    except cluster_commands.ClusterError as error:
+        log.error(str(error), extra={"event": "cluster_error", "step": getattr(func, "__name__", "?")})
+        err_console.print(str(error), markup=False)
+        raise typer.Exit(1) from error
+
+
+def _cluster_out(line: str) -> None:
+    console.print(line, markup=False)
+
+
+@cluster_app.command(name="init")
+@global_flags
+def cluster_init_cmd() -> None:
+    """Make this Mac the cluster head: exo, firewall, and the employee gateway."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.init, _cluster_out)
+
+
+@cluster_app.command(name="join")
+@global_flags
+def cluster_join_cmd(
+    namespace: str = typer.Argument(..., help="Cluster name printed by omm cluster init on the head Mac"),
+) -> None:
+    """Add this Mac to the cluster the head Mac created."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.join, namespace, _cluster_out)
+
+
+@cluster_app.command(name="status")
+@global_flags
+def cluster_status_cmd() -> None:
+    """Show nodes, memory, RDMA, firewall and gateway, and list any problems."""
+    from omm.cluster import commands as cluster_commands
+
+    report = _cluster_call(cluster_commands.status)
+    if _global_opts().json:
+        _print_json(data=report)
+        return
+    console.print(f"Role: {report['role'] or 'not in a cluster'}"
+                  + (f"  (cluster {report['namespace']})" if report["namespace"] else ""), markup=False)
+    exo = report["exo"]
+    if exo["reachable"]:
+        for node in exo["nodes"]:
+            if node["memory_total_bytes"] is None or node["memory_available_bytes"] is None:
+                memory = "memory not reported yet"
+            else:
+                memory = (f"{node['memory_available_bytes'] / 1024 ** 3:.0f}/"
+                          f"{node['memory_total_bytes'] / 1024 ** 3:.0f} GiB free")
+            console.print(f"  {node['name']}: {memory}, RDMA {node['rdma']}, "
+                          f"macOS {node['os_version'] or '?'}", markup=False)
+        for instance in exo["instances"]:
+            console.print(f"  Serving {instance['model_id']} ({instance['sharding']}, "
+                          f"{instance['node_count']} Mac(s))", markup=False)
+    firewall_text = report["firewall"]
+    if firewall_text == "unchecked":
+        firewall_text = "unchecked (rules file matches; checking what pf loaded needs sudo)"
+    console.print(f"Firewall: {firewall_text}   Gateway: {report['gateway']}", markup=False)
+    if report["problems"]:
+        console.print("Problems:", markup=False)
+        for problem in report["problems"]:
+            console.print(f"  - {problem}", markup=False)
+    else:
+        console.print("No problems found.", markup=False)
+
+
+@cluster_app.command(name="restart")
+@global_flags
+def cluster_restart_cmd() -> None:
+    """Restart exo on this Mac when status lists Macs that are on but missing."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.restart, _cluster_out)
+
+
+@cluster_app.command(name="model")
+@global_flags
+def cluster_model_cmd(
+    model: str | None = typer.Argument(None, help="exo model id to load; omit to see what fits"),
+    unload: bool = typer.Option(False, "--unload", help="Stop serving this model instead of loading it."),
+) -> None:
+    """Recommend models that fit the cluster, or load or unload one."""
+    from omm.cluster import commands as cluster_commands
+
+    if model is None:
+        if unload:
+            err_console.print("Name the model to unload.", markup=False)
+            raise typer.Exit(2)
+        ranked = _cluster_call(cluster_commands.candidates)
+        if not ranked:
+            console.print("No exo model fits this cluster's free memory right now.", markup=False)
+            return
+        for index, item in enumerate(ranked, 1):
+            console.print(f"{index}. {item.model_id}  {item.size_bytes / 1024 ** 3:.1f} GiB  "
+                          f"uses {item.memory_used_fraction:.0%} of free memory", markup=False)
+        console.print("Load one with: omm cluster model <model>", markup=False)
+        return
+    if unload:
+        count = _cluster_call(cluster_commands.unload_model, model)
+        console.print(f"Stopped {count} running copy(ies) of {model}.", markup=False)
+        return
+    console.print(_cluster_call(cluster_commands.load_model, model, _cluster_out), markup=False)
+
+
+@cluster_token_app.command(name="add")
+@global_flags
+def cluster_token_add_cmd(name: str = typer.Argument(..., help="Who the token is for, e.g. kim")) -> None:
+    """Create a token for one employee and show it once."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.require_head)
+    token = _cluster_call(cluster_commands.tokens.add_token, name)
+    console.print(f"Token for {name}: {token}", markup=False)
+    console.print("Store it now - omm cannot show it again.", markup=False)
+
+
+@cluster_token_app.command(name="list")
+@global_flags
+def cluster_token_list_cmd() -> None:
+    """List employee tokens by name and creation time."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.require_head)
+    records = _cluster_call(cluster_commands.tokens.list_tokens)
+    if not records:
+        console.print("No tokens yet. Create one with: omm cluster token add <name>", markup=False)
+    for record in records:
+        console.print(f"{record.name}  created {record.created_at}", markup=False)
+
+
+@cluster_token_app.command(name="revoke")
+@global_flags
+def cluster_token_revoke_cmd(name: str = typer.Argument(..., help="Token name to revoke")) -> None:
+    """Revoke one employee token; the gateway rejects it at once."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.require_head)
+    if not _cluster_call(cluster_commands.tokens.revoke_token, name):
+        err_console.print(f"No token named {name}.", markup=False)
+        raise typer.Exit(1)
+    console.print(f"Revoked the token for {name}.", markup=False)
+
+
+@cluster_app.command(name="leave")
+@global_flags
+def cluster_leave_cmd() -> None:
+    """Remove this Mac's cluster firewall, services and settings."""
+    from omm.cluster import commands as cluster_commands
+
+    _cluster_call(cluster_commands.require_macos)
+    if not _global_opts().yes:
+        if not _stdin_is_tty():
+            err_console.print("Pass --yes to remove this Mac's cluster setup.", markup=False)
+            raise typer.Exit(1)
+        if not _ask_confirm("Remove this Mac's cluster firewall, exo service and settings?"):
+            err_console.print("Cancelled.", markup=False)
+            raise typer.Exit(0)
+    _cluster_call(cluster_commands.leave, _cluster_out)
+
+
+@app.command(name="_cluster-gateway-run", hidden=True)
+def _cluster_gateway_run_cmd() -> None:
+    """Internal. Started by the LaunchAgent `omm cluster init` registers
+    (cluster/service.py); serves the token-checked gateway in front of exo
+    until the service is stopped."""
+    from omm.cluster import gateway
+
+    raise typer.Exit(gateway.run_gateway())
 
 
 @app.command(name="_auto-import-run", hidden=True)
@@ -2093,6 +2661,10 @@ def _update_notice_is_wanted(opts: GlobalOptions) -> bool:
 
 _SKIP_ONBOARDING_SUBCOMMANDS = {
     "setup", "doctor", "help", "update", "web", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+    "_cluster-gateway-run",
+    # Cluster Macs are set up over SSH; the wizard's single-key prompt there
+    # blocked a headless `omm cluster init` (real Mac minis, 2026-10-23).
+    "cluster",
 }
 
 
@@ -2219,12 +2791,14 @@ _SKIP_AUTO_IMPORT_SUBCOMMANDS = {
     "_bg-version-check",
     "_auto-import-run",
     "_provider-facts-refresh-run",
+    "_cluster-gateway-run",
 }
 
 # Hidden background children/services are not a user-issued command, so they
 # must not flush the queued-upload channels (telemetry/error_report/usage).
 _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
     "setting", "_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run",
+    "_cluster-gateway-run",
 }
 
 # omm's own hidden background commands. Not something a user typed, so they
@@ -2232,7 +2806,8 @@ _SKIP_QUEUED_UPLOAD_SUBCOMMANDS = {
 # as a count of <command> <outcome> the user ran. Local runlog files are not
 # uploaded, so those stay untouched.
 _INTERNAL_SUBCOMMANDS = frozenset(
-    {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run", "_web-worker"}
+    {"_bg-version-check", "_auto-import-run", "_provider-facts-refresh-run", "_web-worker",
+     "_cluster-gateway-run"}
 )
 
 
@@ -4199,10 +4774,11 @@ def _build_recommend_json_rows(
             "eligible_package_count": eligible_count,
             "memory_estimate_basis": predictor.memory_estimate_basis(row.candidate),
             "quantization": recommend_ui.quantization_label(row.candidate),
-            "evidence": row.candidate.get("recommendation_evidence", {"status": "insufficient", "matching_environment_samples": None, "calibrated_interval": False}),
-            "wiki": model_wiki.describe(row.candidate),
+            "evidence": row.candidate.get("recommendation_evidence", {"status": "insufficient", "basis": "insufficient_evidence", "matching_environment_samples": None, "calibrated_interval": False}),
+            "wiki": wiki,
+            "wiki_status": "matched" if wiki else "missing",
         }
-        for index, row in enumerate(rows)
+        for index, row, wiki in ((i, r, model_wiki.describe(r.candidate)) for i, r in enumerate(rows))
     ]
 
 
@@ -13611,6 +14187,10 @@ def _queue_crash_report(error: BaseException) -> None:
     an `always` policy, at the next `omm contribute` for `ask`).
     """
     try:
+        # An exception raised while extracting or searching documents may
+        # quote document text in its message; `omm rag` never queues one.
+        if _crash_subcommand() == "rag":
+            return
         error_report.queue_report(error, trigger="crash", subcommand=_crash_subcommand())
     except Exception:
         pass

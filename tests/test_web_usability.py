@@ -46,7 +46,7 @@ def test_start_scans_before_launch_and_owns_only_its_handle(startup):
     assert result['server_ready'] and result['owned'] and not result['reused']
     assert calls[0] == 'scan'
     argv, kwargs = calls[1]
-    assert argv == ['/reviewed/ollama', 'serve']
+    assert argv == [str(Path('/reviewed/ollama')), 'serve']
     assert kwargs['env']['OLLAMA_HOST'] == f'127.0.0.1:{port}'
     assert 'shell' not in kwargs
     assert manager.start()['reused'] is True

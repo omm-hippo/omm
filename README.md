@@ -67,6 +67,7 @@ verification checks the selected model on your machine.
   - [Install & manage models](#install--manage-models)
   - [Verify & benchmark](#verify--benchmark)
   - [Update & configuration](#update--configuration)
+  - [Documents for coding agents](#documents-for-coding-agents)
   - [Local logs and automatic import](#local-logs-and-automatic-import)
   - [Scripting](#scripting)
 - [Self-hosted benchmark data](#self-hosted-benchmark-data)
@@ -429,6 +430,15 @@ omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
 omm engine security [ENGINE] [--fix-local-only] [--json] [--yes]  # Show whether Ollama/LM Studio accept connections from other devices
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
+omm cluster init  # Make this Mac the head of a Thunderbolt-linked exo cluster (macOS 26.2+)
+omm cluster join <namespace>  # Add this Mac to the cluster the head Mac created
+omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, and any problems
+omm cluster restart  # Restart exo on this Mac when status lists Macs that are on but missing
+omm cluster model [MODEL] [--unload]  # Recommend exo models that fit, or load/unload one
+omm cluster token add <name>  # Create an employee access token for the cluster gateway (head Mac; shown once)
+omm cluster token list  # List employee tokens by name (head Mac)
+omm cluster token revoke <name>  # Revoke an employee token (head Mac)
+omm cluster leave [--yes]  # Remove this Mac's cluster firewall, services, and settings
 omm scan [--json]  # Memory, storage, installed runners, and models
 omm doctor [--json]  # Read-only diagnostics plus safe next steps for installation and Ollama findings
 omm bug-report [--include os|policies|checks|stages] [--save PATH]  # Preview and save local diagnostics and optional stage counts
@@ -613,6 +623,39 @@ See [local agent connections](docs/agent-connections.md) for backup, restoration
 configuration precedence and verification limits. For reviewed Python runtime
 extensions, see the [runtime plugin contract](docs/runtime-plugins.md).
 
+### Documents for coding agents
+
+```sh
+omm rag mcp  # Run the local document search MCP server on stdin/stdout (started by a coding agent)
+omm rag connect <claude-code|codex|pi|cursor>  # Register OMM document search as an MCP server in a coding agent
+omm rag disconnect <claude-code|codex|pi|cursor>  # Remove only the OMM MCP entry and keep other settings
+```
+
+Coding agents search documents registered in OMM through a local stdio MCP
+server; documents and questions never leave this computer. See
+[document search for coding agents](docs/rag-mcp.md).
+
+### Shared company documents (cluster head)
+
+```sh
+omm rag remote set <head address> [--token TOKEN]  # On an employee PC: use the cluster head's shared collections (token typed hidden when omitted)
+omm rag remote  # Show which head `omm rag` uses (the token is never printed)
+omm rag remote clear  # Forget the head and its token; `omm rag` uses this PC again
+omm rag share <collection> <person> | --team <team>  # Let an employee (token name) or a team search a collection (owner or head administrator)
+omm rag unshare <collection> <person> | --team <team>  # Withdraw that share
+omm rag team create <team>  # On the head: create a team for sharing
+omm rag team add <team> <person>  # On the head: add an employee (token name) to a team
+omm rag team remove <team> <person>  # On the head: remove an employee from a team
+omm rag team list  # On the head: list teams and members
+omm rag team delete <team>  # On the head: delete a team and every share made to it
+omm rag connect <harness> --remote  # Register the head's MCP endpoint (HTTP, employee token in the harness config)
+```
+
+With a head set, `omm rag collection create|list|delete`, `add`, `remove`, `search`,
+`share` and `unshare` work on the head through the token-checked cluster gateway
+(port 52440). A collection is searchable only by its creator and the head administrator
+until it is shared. See [document search for coding agents](docs/rag-mcp.md#사내-공유).
+
 ### Local logs and automatic import
 
 ```sh
@@ -638,6 +681,27 @@ Saved runtime profiles are tied to the exact model file and engine. `omm verify`
 and supported `omm run` paths use them on the next owned load; running models
 keep their current settings. See [runtime profiles](docs/runtime-profiles.md)
 for engine capabilities, memory checks, cleanup, and verification limits.
+
+### Local document search (RAG)
+
+```sh
+omm rag status [--json]  # Collections, embedding model, and documents that need reindexing
+omm rag collection create <name>  # Create a named collection, e.g. 인사규정
+omm rag collection list [--json]  # List collections with document counts, owner and shares
+omm rag collection delete <name> [--yes]  # Delete a collection's stored text and index (original files stay)
+omm rag add <collection> <paths...> [--replace] [--json]  # Add files or folders (recursive) to a collection, showing extraction and embedding progress
+omm rag remove <collection> <name> [--yes]  # Remove one document's stored text and index
+omm rag search <question> [--collection NAME] [--limit N] [--json]  # Hybrid (meaning + words) search with source passages
+omm rag reindex [--collection NAME] [--all] [--json]  # Rebuild semantic vectors after an embedding-model change
+omm rag embedding-model  # Show the embedding model and whether local Ollama has it
+omm rag embedding-model set <model> [--base-url URL] [--keep-alive 5m]  # Change the local Ollama embedding model (default bge-m3) and how long it stays in memory (0 unloads at once)
+```
+
+Semantic search uses a local Ollama embedding model (default `bge-m3`, MIT
+license; get it with `ollama pull bge-m3`). Results say which method answered:
+`hybrid` (meaning + words, fused by reciprocal rank) or `lexical` (words only,
+with the reason, for example Ollama is off or documents need `omm rag reindex`).
+Only loopback Ollama is contacted; see [PRIVACY.md](PRIVACY.md).
 
 ### Scripting
 

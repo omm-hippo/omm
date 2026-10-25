@@ -20,7 +20,9 @@ def test_utf8_registration_search_exact_quotes_and_restart(isolated_omm_home):
     assert sources[0]['text'] == original[sources[0]['start']:sources[0]['end']]
     assert sources[0]['name'] == '전자기학.md'
     assert DocumentStore().list()[0]['sha256'] == saved['sha256']
-    assert DocumentStore().search('자기장 준비물', [saved['id']])[1] == sources
+    # Ranking scores depend on the question; the cited passage does not.
+    same=lambda rows:[{k:v for k,v in s.items() if k!='score'} for s in rows]
+    assert same(DocumentStore().search('자기장 준비물', [saved['id']])[1]) == same(sources)
 
 
 def test_no_evidence_returns_no_sources(isolated_omm_home):
@@ -324,3 +326,11 @@ def test_hwpx_paragraphs_and_table_cells_are_extracted_in_order(isolated_omm_hom
 def test_hwpx_without_body_text_is_not_success(isolated_omm_home,content):
     with pytest.raises(ValueError):DocumentStore().import_document('empty.hwpx',content())
     assert DocumentStore().list()==[]
+
+
+def test_resident_embedding_model_does_not_block_answer(runtime_question):
+    from types import SimpleNamespace as NS
+    q,adapter,request=runtime_question
+    # Ollama may still list the embedding model that just encoded the question.
+    adapter.list_models=lambda:[NS(key='bge-m3:latest',loaded=True),NS(key='test',loaded=False)]
+    assert q.answer(request,threading.Event())['status']=='answered' and adapter.released

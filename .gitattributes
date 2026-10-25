@@ -1,0 +1,5 @@
+# cmd.exe mis-parses labels in LF-only batch files, and users download this
+# file straight from GitHub, so keep its committed bytes CRLF.
+packaging/web-launchers/Install-OMM.cmd -text
+# Shell entry points must stay LF for /bin/sh on macOS.
+packaging/web-launchers/Install-OMM.command text eol=lf

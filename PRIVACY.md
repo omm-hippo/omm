@@ -216,20 +216,66 @@ answers stay visible locally but are not used in later inference context.
 The GUI provides JSON export and confirmed deletion of closed conversations.
 Explicit data removal also removes `web-chats`; ordinary updates retain it.
 
-### Local document questions
+### Local document questions and `omm rag`
 
-The loopback web manager stores imported document text, content hashes, a lexical
-search index, questions, answers and quotations only in `OMM_HOME/documents`.
-Only browser-selected PDF/TXT/Markdown bytes are read; a request cannot name an
-arbitrary server filesystem path. Extraction and search make no network calls.
-Questions send the selected quotations to the explicitly selected loopback local
-runner, never to OMM telemetry, usage or crash senders. No cloud embedding API is
-used. The local runner is a separate program: use a local model, not a runner
-configured to forward requests to a cloud service.
+The loopback web manager and `omm rag` store imported document text, content
+hashes, collection names, a lexical search index, semantic vectors (embeddings),
+questions, answers and quotations only in `OMM_HOME/documents`.
+The web page reads only browser-selected files; a web request cannot name an
+arbitrary server filesystem path. `omm rag add` reads only the files and folders
+you name on the command line.
 
-Replacing or deleting a document clears saved document answers so old source
-quotations do not remain in the answer cache. Original uploaded files are not
-changed. Explicit OMM data removal includes the owned `documents` directory.
+Extraction and lexical search make no network calls. Semantic search sends
+document chunks (when indexing) and your question (when searching) only to the
+loopback Ollama origin configured with `omm rag embedding-model set`
+(default `http://127.0.0.1:11434`; non-loopback addresses are refused), and asks
+Ollama to unload the embedding model afterwards. If Ollama or the embedding
+model is unavailable, search falls back to lexical matching and says so; nothing
+is sent elsewhere instead. Questions for an answer send the selected quotations
+to the explicitly selected loopback local runner. Document text, questions,
+quotations and answers are never sent to OMM telemetry, usage, crash or vote
+uploads (an unexpected error inside `omm rag` is never queued as a crash
+report), and are not written to run logs (`OMM_HOME/logs` records only the
+local Ollama URL path and HTTP status). No cloud embedding API is used. Ollama
+is a separate program: use a local model, not a runner configured to forward
+requests to a cloud service.
+
+Replacing or deleting a document (or a collection) removes its text, vectors and
+saved document answers so old source quotations do not remain in the answer
+cache. Original files are not changed. Explicit OMM data removal includes the
+owned `documents` directory.
+
+### Document search for coding agents (MCP)
+
+`omm rag mcp` answers a coding agent's search requests over stdin/stdout only;
+it opens no network port and makes no network calls. Questions and returned
+quotations are not written to run logs, telemetry, usage counts or crash
+reports; its stderr diagnostics are fixed status lines. The quotations it
+returns go to the coding agent, which sends them to whatever model that agent
+is configured to use: a cloud model receives them unless the agent is routed to
+a local model. `omm rag connect` keeps a private copy of the agent's original
+configuration file under `OMM_HOME/rag-connections`; that copy may contain the
+agent's own settings and is not read by any upload channel. See
+[document search for coding agents](docs/rag-mcp.md).
+
+### Shared company documents on the cluster head
+
+When an employee PC runs `omm rag remote set <head>`, `omm rag` collection, add, remove,
+search, share and unshare commands send their data to the office cluster head instead of
+storing it on that PC: uploaded files (whole file bytes, at most 6 MiB each), collection
+and document names, questions, and share targets go to the head's gateway (port 52440,
+plain HTTP inside the office network, the same channel and caveat as the cluster
+inference routes below). Original text, chunks and vectors are kept only in the head's
+`OMM_HOME/documents`, and embeddings run on the head's own loopback Ollama. The employee
+PC keeps only the head address and the employee token in `OMM_HOME/rag-remote.json`
+(mode 0600 on macOS/Linux); the token is never printed. These requests ignore
+`HTTP(S)_PROXY`. `omm rag connect <harness> --remote` writes the token into the
+harness's own configuration file as an `Authorization` header (tightened to mode 0600
+on macOS/Linux) and into the private copy under `OMM_HOME/rag-connections`; do not
+share those files. The gateway's request log records the path (for example
+`/rag/v1/search`) but never collection or document names, questions, quotations or
+document text, which travel only in the query string, headers or body. Who may see
+which collection (owner, shares, teams) is stored next to the documents on the head.
 
 ## Local agent connection backups
 
@@ -254,3 +300,27 @@ Native Gatekeeper/Defender/ClamAV checks remain subject to their own operating
 system/vendor policies; OMM does not change those settings. See
 [mandatory installation checks](docs/mandatory-install-safety.md) for scope and
 failure behavior. A successful check is not a universal vulnerability guarantee.
+
+## Office cluster (`omm cluster`)
+
+`omm cluster` joins your own Macs into one exo cluster inside your office. It adds no
+upload channel: prompts, responses, and model output stay on the cluster Macs and the
+employee PCs that send them.
+
+- **The gateway** (`omm cluster init`, head Mac, port 52440) checks a per-employee token,
+  then forwards only the inference routes to exo on loopback (and answers the shared
+  document routes `/mcp` and `/rag/v1/...` itself, see above). It logs only the method,
+  path, status, token name, and duration of each request. It never logs a request or
+  response body or the token itself. The connection is plain HTTP inside the office
+  network. Anyone who can capture that network's traffic can read the requests and the
+  token.
+- **Tokens** (`omm cluster token add`) are shown once. Only their SHA-256 digests are
+  stored, in `OMM_HOME/cluster/tokens.json` (mode 0600). Revoking a token takes effect on
+  the gateway's next request.
+- **Firewall.** Each cluster Mac gets a pf anchor (`com.apple/omm-cluster`) and a boot-time
+  loader (`/Library/LaunchDaemons/com.omm.cluster-pf.plist`). Together they keep exo's
+  unauthenticated ports, and every TCP port from 49153 to 65535, unreachable except over
+  loopback and Thunderbolt. `omm cluster leave` removes both.
+- **exo** downloads models from Hugging Face by itself. omm stages a copy of exo's runtime
+  in `OMM_HOME/cluster/exo-runtime` and runs it as a LaunchAgent. omm does not read or
+  send exo's model files.

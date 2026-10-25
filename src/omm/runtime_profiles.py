@@ -260,7 +260,9 @@ def launch_with_profile(path: Path, adapter, model: RuntimeModelRef, options: Lo
     selected = find_runtime_model(models, model)
     if selected is not None and selected.loaded:
         return launch(model.key), False
-    if any(item.loaded for item in models):
+    # A warm document-search embedding model is not other chat work.
+    from omm.documents import without_embedding_model
+    if any(item.loaded for item in without_embedding_model(models, adapter.key)):
         raise ProfileError("Other models are loaded. Retry when the runtime is idle; nothing was unloaded.")
     ensure_memory(path, options, hardware_supplier())
     if adapter.key == "ollama":

@@ -60,8 +60,17 @@ def execute(request: dict, stop: threading.Event) -> dict:
                 return maintenance.adopt(request["group"])
             return management.cleanup_selected(request["files"])
         if operation == "document_import":
-            from omm.documents import import_request
-            return import_request(request)
+            import base64
+            from omm.documents import DocumentStore
+            try:
+                content = base64.b64decode(request["content"], validate=True)
+            except (ValueError, TypeError):
+                raise ValueError("파일 전송 내용을 확인하지 못했어요.") from None
+            # Only the stage and piece counts leave the worker, never text.
+            return DocumentStore().import_document(
+                request["filename"], content, replace=request.get("replace") is True,
+                progress=lambda stage, done, total: emit(
+                    "progress", document_stage=stage, completed_count=done, total_count=total))
         if operation == "document_delete":
             from omm.documents import DocumentStore
             return DocumentStore().delete(request["document_id"])

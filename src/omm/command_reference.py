@@ -30,7 +30,7 @@ DOCS_BASE_URL = "https://omm.run/commands"
 
 # Top-level groups whose subcommands are part of the documented surface.
 # Include descendants too, so nested commands retain arguments and flags.
-NESTED_GROUPS = ("engine", "setting")
+NESTED_GROUPS = ("cluster", "engine", "rag", "setting")
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # `Alias: ls` trailer inside a command docstring. The authoritative alias

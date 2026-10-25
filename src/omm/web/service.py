@@ -221,6 +221,7 @@ class WebService:
                 "catalog_source": source, "evidence": evidence,
                 "catalog": {"trained_at": artifact.get("trained_at") if artifact else None,
                             "real_configuration_count": _count(artifact.get("real_row_count")) if artifact else None,
+                            "measurements": recommend_evidence.catalog_measurements(artifact),
                             "holdout_rows": _count(artifact.get("evaluation", {}).get("holdout_rows"))
                                             if artifact and isinstance(artifact.get("evaluation"), dict) else None}}
 

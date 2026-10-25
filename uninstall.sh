@@ -60,6 +60,12 @@ if [ "$PURGE" = "1" ]; then
             exit 1
         fi
     done
+    for rag_backup in "$RESOLVED_HOME/rag-connections/"*.json; do
+        if [ -e "$rag_backup" ] || [ -L "$rag_backup" ]; then
+            echo "Document search connections remain. Run 'omm rag disconnect HARNESS' for each connection before --purge." >&2
+            exit 1
+        fi
+    done
 fi
 
 # --purge deletes the models/ hub directly; it never runs linker.py's
@@ -76,6 +82,15 @@ if [ "$PURGE" = "1" ] && [ -f "$RESOLVED_HOME/link-ownership.json" ]; then
         echo "omm still has models linked into your engines. Run 'omm uninstall all' first, then re-run with --purge." >&2
         exit 1
     fi
+fi
+
+# `omm cluster` installs per-user LaunchAgents and a root pf LaunchDaemon that
+# --purge cannot remove (it only deletes files under OMM_HOME). Purging
+# underneath them would leave KeepAlive jobs restarting forever and the
+# boot-time firewall still blocking high TCP ports.
+if [ "$PURGE" = "1" ] && { [ -f "$RESOLVED_HOME/cluster/cluster.json" ] || [ -f /Library/LaunchDaemons/com.omm.cluster-pf.plist ]; }; then
+    echo "This Mac is still set up as part of an omm cluster. Run 'omm cluster leave' first, then re-run with --purge." >&2
+    exit 1
 fi
 
 PIPX_AVAILABLE=0
@@ -107,7 +122,7 @@ uninstall_failed() {
 purge_owned_data() {
     # Delete only paths the application owns. Never recursively remove the
     # OMM_HOME container itself: a custom home may contain unrelated files.
-    for owned_dir in models evaluations runtime-sessions install-journal catalog-history model-archive session logs locks bin web-jobs web-chats documents arena agent-connections security-checks; do
+    for owned_dir in models evaluations runtime-sessions install-journal catalog-history model-archive session logs locks bin web-jobs web-chats documents arena agent-connections rag-connections security-checks cluster; do
         rm -rf "${RESOLVED_HOME:?}/$owned_dir"
     done
     for owned_file in \
@@ -118,7 +133,7 @@ purge_owned_data() {
         error_reports_pending.json error_reports_backoff.json \
         usage-pending.json usage-state.json usage-backoff.json usage.log \
         telemetry_last_failed.json telemetry_backoff.json \
-        ollama_manifest_compat.json; do
+        ollama_manifest_compat.json rag-remote.json; do
         rm -f "$RESOLVED_HOME/$owned_file" "$RESOLVED_HOME/$owned_file.lock"
     done
     # Flush locks held around a pending-upload file's rewrite; see

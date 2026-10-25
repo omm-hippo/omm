@@ -84,3 +84,15 @@ def test_korean_models_and_local_reasoning_models_are_in_catalog():
     for repo in ('LGAI-EXAONE/EXAONE-4.0-1.2B', 'LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct',
                  'openai/gpt-oss-20b', 'HuggingFaceTB/SmolLM2-135M-Instruct', 'ibm-granite/granite-3.3-8b-instruct'):
         assert model_wiki.describe({'repo_id':repo})['repository'] == repo
+
+
+def test_recommend_detail_shows_use_cases_limits_source_or_missing():
+    from omm import recommend_ui
+    lines=[text for text,_ in recommend_ui.wiki_detail_lines(model_wiki.describe({'repo_id':'Qwen/Qwen3-8B-GGUF'},'en'))]
+    joined='\n'.join(lines)
+    assert any(line.startswith('Use cases: ') for line in lines)
+    assert any(line.startswith('Limits: ') for line in lines)
+    assert 'reviewed ' in joined and 'https://' in joined
+    assert 'base checkpoint Qwen/Qwen3-8B' in joined
+    missing=recommend_ui.wiki_detail_lines(model_wiki.describe({'repo_id':'other/Qwen3-8B-GGUF'},'en'))
+    assert len(missing)==1 and '정보 없음' in missing[0][0]

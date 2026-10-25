@@ -1,6 +1,16 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {api, bytes} from './api';
 import RichText from './RichText';
+import {documentProgress} from './document-progress.js';
+
+const METHOD_LABEL={hybrid:'의미+단어',lexical:'단어만'};
+function methodLabel(value){return METHOD_LABEL[value] || '단어만';}
+
+export function DocumentProgress({job}){
+  const step=documentProgress(job);
+  if(!step)return null;
+  return <div className="document-progress" role="status"><span>{step.label}</span>{step.max?<progress value={step.value} max={step.max} aria-label={step.label}/>:<progress aria-label={step.label}/>}</div>;
+}
 
 export default function DocumentPanel({models, onJobs}) {
   const [library,setLibrary]=useState({documents:[],answers:[],settings:null});
@@ -14,10 +24,12 @@ export default function DocumentPanel({models, onJobs}) {
   const [notice,setNotice]=useState('');
   const [busy,setBusy]=useState(false);
   const [job,setJob]=useState(null);
+  const [live,setLive]=useState(null);
   const request=useRef(null);
   const restored=useRef(false);
   const options=models.filter(x=>x.exists && x.engines.some(e=>['ollama','lmstudio'].includes(e)));
   const chosen=options.find(x=>x.id===model);
+  const embedding=library.settings?.index?.embedding_model || 'bge-m3';
   async function refresh(){
     const value=await api('/api/documents');setLibrary(value);
     setSelected(old=>old.filter(id=>value.documents.some(x=>x.id===id)));
@@ -69,8 +81,9 @@ export default function DocumentPanel({models, onJobs}) {
         onJobs(history);
         const record=history.find(x=>x.id===job);
         if(!record)throw new Error('작업 기록을 찾지 못했어요. 작업 탭에서 확인해 주세요.');
+        setLive(record);
         if(['completed','failed','interrupted','cancelled'].includes(record.status)){
-          setJob(null);setBusy(false);request.current=null;
+          setJob(null);setLive(null);setBusy(false);request.current=null;
           if(record.status!=='completed'){
             setError(record.message || '작업을 완료하지 못했어요.');
             // A failed new model may have been rolled back to the previous one.
@@ -110,21 +123,22 @@ export default function DocumentPanel({models, onJobs}) {
     <section className="document-intro"><h2>내 자료에서 답을 찾아요</h2><p>문서와 질문은 이 컴퓨터에 저장되고 선택한 로컬 실행 앱에서 처리돼요.</p><p>텍스트 PDF · TXT · Markdown · HTML · HWPX, 파일당 6 MiB / PDF 100쪽. 스캔 PDF(OCR)와 HWP(한글 97 형식)는 아직 지원하지 않아요.</p></section>
     {error && <div className="error" role="alert">{error}</div>}{notice && <p className="notice" role="status">{notice}</p>}
     <form className="document-upload" onSubmit={upload}><label>문서 선택<input type="file" accept=".pdf,.txt,.md,.markdown,.html,.htm,.hwpx" disabled={busy} onChange={e=>setFile(e.target.files?.[0] || null)}/></label><label className="document-check"><input type="checkbox" checked={replace} disabled={busy} onChange={e=>setReplace(e.target.checked)}/>같은 이름의 문서 교체</label><button className="primary" disabled={!file || busy}>{busy?'처리 중…':'문서 등록'}</button></form>
+    <DocumentProgress job={live}/>
     <p className="footnote">교체·삭제하면 이전 문서 답변 기록을 지워요. 등록 실패 시 기존 문서는 보존돼요.</p>
     <section className="document-library"><h2>등록된 문서 <small>{library.documents.length}개 · 질문할 문서를 선택하세요</small></h2>
       {!library.documents.length && <p className="empty">아직 등록한 문서가 없어요. 위에서 파일을 선택해 주세요.</p>}
-      {library.documents.map(d=><article key={d.id}><label className="document-check"><input type="checkbox" checked={selected.includes(d.id)} disabled={busy} onChange={e=>toggleDocument(d.id,e.target.checked)}/><span><strong>{d.name}</strong><small>{bytes(d.size_bytes)} · {d.pages}쪽 · 검색 구간 {d.chunks}개</small>{d.index_current===false && <small className="warning">검색 색인 방식이 바뀌었어요. 원본 파일을 '같은 이름의 문서 교체'로 다시 등록해 주세요.</small>}</span></label><button className="danger" disabled={busy} onClick={()=>remove(d)}>삭제</button></article>)}
+      {library.documents.map(d=><article key={d.id}><label className="document-check"><input type="checkbox" checked={selected.includes(d.id)} disabled={busy} onChange={e=>toggleDocument(d.id,e.target.checked)}/><span><strong>{d.name}</strong><small>{bytes(d.size_bytes)} · {d.pages}쪽 · 검색 구간 {d.chunks}개</small>{d.collection && d.collection!=='기본' && <small>컬렉션: {d.collection}</small>}{d.index_current===false && <small className="warning">검색 색인 방식이 바뀌었어요. 원본 파일을 '같은 이름의 문서 교체'로 다시 등록해 주세요.</small>}{d.semantic==='missing' && <small className="warning">의미 색인이 없어 단어 검색만 해요. Ollama에 {embedding} 모델을 받은 뒤 omm rag reindex를 실행해 주세요.</small>}{d.semantic==='stale' && <small className="warning">임베딩 모델이 바뀌어 재색인이 필요해요. omm rag reindex를 실행해 주세요.</small>}</span></label><button className="danger" disabled={busy} onClick={()=>remove(d)}>삭제</button></article>)}
     </section>
     <form className="document-question" onSubmit={e=>{e.preventDefault();run('/api/documents/question',{question,document_ids:selected,model_id:model,engine});}}>
       <h2>문서에 질문하기</h2><div className="document-model"><label>답변할 모델<select value={model} disabled={busy} onChange={e=>chooseModel(e.target.value)}><option value="">내 모델에서 선택</option>{options.map(m=><option key={m.id} value={m.id}>{m.filename}</option>)}</select></label><label>실행 앱<select value={engine} disabled={busy} onChange={e=>chooseEngine(e.target.value)}>{(chosen?.engines || ['ollama']).filter(e=>['ollama','lmstudio'].includes(e)).map(e=><option key={e} value={e}>{e==='ollama'?'Ollama':'LM Studio'}</option>)}</select></label></div>
       {!options.length && <p>연결된 모델이 없어요. 내 모델에서 Ollama 또는 LM Studio 연결을 먼저 확인해 주세요.</p>}
       <label>질문<textarea rows={3} maxLength={600} value={question} disabled={busy} onChange={e=>setQuestion(e.target.value)} placeholder="예: 이 문서에서 안내하는 준비물은 무엇인가요?"/></label>
-      <p className="footnote">선택한 문서의 단어를 검색해 근거를 찾아요. 이미 로딩된 모델이 있으면 기존 작업을 보존하고 중단해요.</p>
+      <p className="footnote">선택한 문서에서 의미와 단어로 근거를 찾아요(로컬 Ollama 임베딩 모델 {embedding}). 임베딩 모델을 쓸 수 없으면 단어 검색만 하고 답변 기록에 알려 줘요. 이미 로딩된 모델이 있으면 기존 작업을 보존하고 중단해요.</p>
       <p className="footnote">고른 모델·실행 앱·문서는 다음에 열 때도 기억해요. 모델을 바꿔도 등록한 문서와 검색 색인은 그대로 쓰고, 새 모델이 첫 질문에서 실패하면 이전에 답변했던 모델로 선택을 되돌려요.</p>
       <button className="primary" disabled={busy || !model || !selected.length || question.trim().length<2}>{busy?'처리 중…':'근거를 찾아 질문하기'}</button>
     </form>
     <section className="document-answers" aria-live="polite"><h2>문서 답변 기록</h2><p className="footnote">검색 구간과 모델 답변을 함께 확인하세요. 출처 번호가 있어도 답변의 정확도를 보장하지 않아요.</p>
-    {library.answers.map(a=><article key={a.id}><h3>{a.question}</h3><div className="document-answer"><RichText text={a.answer}/></div><small>{a.status==='answered'?'로컬 모델 답변':a.status==='no_evidence'?'근거 없음':'출처 검증 필요'} · {a.filename} · {new Date(a.created_at).toLocaleString('ko-KR')}</small>{a.sources.map(s=><details key={s.citation} open><summary>[{s.citation}] {s.name} · {s.page}쪽 · {s.start}–{s.end}자</summary><blockquote>{s.text}</blockquote></details>)}</article>)}
+    {library.answers.map(a=><article key={a.id}><h3>{a.question}</h3><div className="document-answer"><RichText text={a.answer}/></div><small>{a.status==='answered'?'로컬 모델 답변':a.status==='no_evidence'?'근거 없음':'출처 검증 필요'} · 검색: {methodLabel(a.retrieval)} · {a.filename} · {new Date(a.created_at).toLocaleString('ko-KR')}</small>{a.retrieval_notice && <small className="warning">{a.retrieval_notice}</small>}{a.sources.map(s=><details key={s.citation} open><summary>[{s.citation}] {s.name} · {s.page}쪽 · {s.start}–{s.end}자</summary><blockquote>{s.text}</blockquote></details>)}</article>)}
     </section>
   </div>;
 }

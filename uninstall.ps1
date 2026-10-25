@@ -45,6 +45,12 @@ if ($Purge -and (Test-Path -LiteralPath $agentBackupRoot -PathType Container)) {
         throw "Agent connection backups remain. Run 'omm setting agent cloud HARNESS' for each connection before -Purge."
     }
 }
+$ragBackupRoot = Join-Path $resolvedHome "rag-connections"
+if ($Purge -and (Test-Path -LiteralPath $ragBackupRoot -PathType Container)) {
+    if (Get-ChildItem -LiteralPath $ragBackupRoot -Filter "*.json" -Force -ErrorAction Stop | Select-Object -First 1) {
+        throw "Document search connections remain. Run 'omm rag disconnect HARNESS' for each connection before -Purge."
+    }
+}
 
 # -Purge deletes the models/ hub directly; it never runs linker.py's unlink
 # logic, so a non-empty link-ownership.json means omm still has models
@@ -117,7 +123,7 @@ function Stop-UninstallPreservingSources {
 function Remove-OmmOwnedData {
     # Delete only paths the application owns. A custom OMM_HOME may contain
     # unrelated files, so never recursively delete the container itself.
-    foreach ($name in @("models", "evaluations", "runtime-sessions", "install-journal", "catalog-history", "model-archive", "session", "logs", "locks", "bin", "web-jobs", "web-chats", "documents", "arena", "agent-connections", "security-checks")) {
+    foreach ($name in @("models", "evaluations", "runtime-sessions", "install-journal", "catalog-history", "model-archive", "session", "logs", "locks", "bin", "web-jobs", "web-chats", "documents", "arena", "agent-connections", "rag-connections", "security-checks", "cluster")) {
         $target = Join-Path $resolvedHome $name
         if (Test-Path -LiteralPath $target) {
             Remove-Item -LiteralPath $target -Recurse -Force
@@ -131,7 +137,7 @@ function Remove-OmmOwnedData {
         "error_reports_pending.json", "error_reports_backoff.json",
         "usage-pending.json", "usage-state.json", "usage-backoff.json", "usage.log",
         "telemetry_last_failed.json", "telemetry_backoff.json",
-        "ollama_manifest_compat.json"
+        "ollama_manifest_compat.json", "rag-remote.json"
     )
     foreach ($name in $ownedFiles) {
         foreach ($candidate in @((Join-Path $resolvedHome $name), (Join-Path $resolvedHome ($name + ".lock")))) {

@@ -902,3 +902,32 @@ Write-Host "Done. If 'omm' isn't found, open a new PowerShell window (pipx just 
 Write-Host "Try:  omm scan"
 Write-Host 'Local web manager:  omm web --open   (opens the model manager in your browser; Ctrl+C stops it)'
 Write-Host 'Click launchers:     omm web --create-launchers "$HOME\Desktop"   (then double-click Open-OMM.cmd)'
+
+# Opt-in only: the double-click entry (packaging/web-launchers/Install-OMM.cmd)
+# sets OMM_INSTALL_OPEN_WEB=1 so a beginner lands in the browser manager right
+# after installing. `irm | iex`, CI and every other caller leave it unset and
+# keep the old "print next steps and stop" behavior. This never enables login
+# autostart; that stays an explicit `omm setting web-autostart enable`.
+if ($env:OMM_INSTALL_OPEN_WEB -eq "1") {
+    $ommApp = Join-Path $PipxBinDir "omm.exe"
+    Write-Host ""
+    Write-Host "Opening the local web manager in your browser. Keep this window open while you use it; Ctrl+C stops it."
+    $webOk = $false
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousNativePref = $PSNativeCommandUseErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        & $ommApp web --open
+        $webOk = $LASTEXITCODE -eq 0
+    } catch {
+        $webOk = $false
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $previousNativePref
+    }
+    if (-not $webOk) {
+        # omm itself is installed and verified above; only the web step failed.
+        Write-Warning "omm is installed, but the local web manager did not start. Open a new PowerShell window and run: omm web --open"
+    }
+}
