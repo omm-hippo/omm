@@ -262,9 +262,13 @@ def test_absolute_form_target_is_forwarded_as_the_checked_path(gateway_server, u
 
 
 def test_chunked_request_body_is_411_and_never_reaches_upstream(gateway_server, upstream, token):
+    # Headers only: the gateway answers and closes without reading a chunked
+    # body, so a client still writing chunks gets a broken pipe (Linux CI).
     conn = http.client.HTTPConnection("127.0.0.1", gateway_server.server_address[1], timeout=10)
-    conn.request("POST", "/v1/messages", body=iter([b'{"x":', b"1}"]),
-                 headers={"Authorization": f"Bearer {token}"}, encode_chunked=True)
+    conn.putrequest("POST", "/v1/messages")
+    conn.putheader("Authorization", f"Bearer {token}")
+    conn.putheader("Transfer-Encoding", "chunked")
+    conn.endheaders()
     resp = conn.getresponse()
     assert resp.status == 411
     assert json.loads(resp.read())["error"]["type"] == "invalid_request_error"
