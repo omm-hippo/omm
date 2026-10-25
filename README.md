@@ -427,7 +427,7 @@ omm setup  # First-run setup wizard: hardware scan + engine checklist (re-runnab
 omm engine install [ENGINE]  # Install one supported local runner, or choose interactively
 omm engine status [ENGINE] [--json]  # Separate application, package version, and local API state
 omm engine doctor [ENGINE]  # Read-only diagnostics and next steps
-omm engine security [ENGINE] [--fix-local-only] [--json] [--yes]  # Show whether Ollama/LM Studio accept connections from other devices
+omm engine security [ENGINE] [--fix-local-only] [--json] [--yes]  # Show whether Ollama/LM Studio (and this Mac's omm cluster) accept connections from other devices
 omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manager
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm cluster init  # Make this Mac the head of a Thunderbolt-linked exo cluster (macOS 26.2+)
@@ -602,6 +602,7 @@ digest-pinned `docker pull`/`podman pull` command for the user to run explicitly
 omm update  # Update a canonical OMM Git-source install; package installs print their manager command
 omm setting  # Interactive menu for outbound data, version, theme, calibration, and catalog trust
 omm setting agent local <claude|codex|pi> --model <tag> [--base-url <origin>]  # Back up harness settings and route to local Ollama
+omm setting agent cluster <claude|codex|pi> --model <exo-model-id>  # Back up harness settings and route to the company cluster gateway
 omm setting agent cloud <claude|codex|pi>  # Restore original routing and preserve unrelated settings edits
 omm setting agent status <claude|codex|pi>  # Inspect saved routing state without loading a model
 omm setting version [--stable|--beta]  # Show or switch the update channel `omm update` pulls from

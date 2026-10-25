@@ -232,7 +232,7 @@ def test_init_on_member_is_refused(cluster_fakes):
 def test_status_json_healthy_shape(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     data = _status()
-    assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "problems"}
+    assert set(data) == {"role", "namespace", "exo", "firewall", "gateway", "kept_model", "problems"}
     assert data["role"] == "head" and data["firewall"] == "active" and data["gateway"] == "running"
     assert data["exo"]["reachable"] is True and len(data["exo"]["nodes"]) == 4
     assert set(data["exo"]["nodes"][0]) == {"name", "memory_total_bytes", "memory_available_bytes", "rdma", "os_version",
@@ -689,3 +689,195 @@ def test_status_and_leave_still_work_with_a_short_name(cluster_fakes):
     assert any("too short" in p for p in data["problems"])
     assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
     assert settings.load() is None
+
+
+MODEL = "mlx-community/Llama-3.2-1B-Instruct-4bit"
+
+
+def _node_names(fakes):
+    return tuple(v["friendlyName"] for v in fakes.state["nodeIdentities"].values())
+
+
+def test_head_remembers_the_loaded_model_and_unload_forgets_it(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    result = runner.invoke(cli.app, ["cluster", "model", MODEL])
+    assert result.exit_code == 0, result.output
+    assert settings.load().model == MODEL
+    status = runner.invoke(cli.app, ["cluster", "status"])
+    assert f"Kept loaded: {MODEL}" in status.output
+    assert _status()["kept_model"] == MODEL
+    # Re-running init restarts exo; the model must still come back afterwards.
+    runner.invoke(cli.app, ["cluster", "init"])
+    assert settings.load().model == MODEL
+    runner.invoke(cli.app, ["cluster", "model", MODEL, "--unload"])
+    assert settings.load().model is None
+
+
+def test_member_does_not_remember_a_model(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "join", "omm-" + "a" * 32])
+    result = runner.invoke(cli.app, ["cluster", "model", MODEL])
+    assert result.exit_code == 0, result.output
+    assert settings.load().model is None
+    assert _status()["kept_model"] is None
+
+
+def test_status_keeps_the_remembered_model_when_it_records_nodes(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    runner.invoke(cli.app, ["cluster", "model", MODEL])
+    _status()
+    assert settings.load().known_nodes and settings.load().model == MODEL
+
+
+@pytest.fixture
+def autoload_head(cluster_fakes, monkeypatch):
+    from omm.cluster import autoload
+
+    monkeypatch.setattr(autoload, "ExoClient", _FakeExoClient)
+    settings.save(settings.ClusterSettings("head", "omm-" + "b" * 32, 52440, _node_names(cluster_fakes), MODEL))
+    cluster_fakes.state["instances"] = {}
+    return autoload
+
+
+def test_autoload_reloads_the_model_once_every_mac_is_back(cluster_fakes, autoload_head):
+    tracker = autoload_head.Tracker()
+    assert autoload_head.check_once(tracker, now=0) == "requested"
+    assert [p.model_id for p in cluster_fakes.created] == [MODEL]
+    # A request is in flight; exo has not listed the instance yet.
+    assert autoload_head.check_once(tracker, now=30) == "requested recently"
+    assert len(cluster_fakes.created) == 1
+
+
+def test_autoload_waits_for_a_rebooting_mac_but_not_forever(cluster_fakes, autoload_head):
+    name = _node_names(cluster_fakes)[-1]
+    cluster_fakes.drop_node(name)
+    tracker = autoload_head.Tracker()
+    assert autoload_head.check_once(tracker, now=0) == f"waiting for {name}"
+    assert autoload_head.check_once(tracker, now=599) == f"waiting for {name}"
+    assert not cluster_fakes.created
+    assert autoload_head.check_once(tracker, now=600) == "requested"
+
+
+def test_autoload_leaves_a_served_model_alone(cluster_fakes, autoload_head):
+    one = json.loads((FIX / "state-1node.json").read_text(encoding="utf-8"))
+    cluster_fakes.state["instances"] = one["instances"]
+    assert autoload_head.check_once(autoload_head.Tracker(), now=0) == "serving"
+    assert not cluster_fakes.created
+
+
+def test_autoload_does_nothing_without_a_kept_model_or_off_the_head(cluster_fakes, autoload_head):
+    current = settings.load()
+    settings.save(settings.ClusterSettings("head", current.namespace, 52440, current.known_nodes))
+    assert autoload_head.check_once(autoload_head.Tracker(), now=0) == "nothing to keep"
+    settings.save(settings.ClusterSettings("member", current.namespace, 52440, current.known_nodes, MODEL))
+    assert autoload_head.check_once(autoload_head.Tracker(), now=0) == "nothing to keep"
+    assert not cluster_fakes.created
+
+
+def test_autoload_retries_when_the_model_does_not_fit_yet(cluster_fakes, autoload_head, caplog):
+    rows = copy.deepcopy(cluster_fakes.previews)
+    cluster_fakes.previews_all_error()
+    tracker = autoload_head.Tracker()
+    with caplog.at_level("WARNING", logger="omm.cluster.autoload"):
+        assert autoload_head.check_once(tracker, now=0) == "does not fit"
+        assert autoload_head.check_once(tracker, now=30) == "does not fit"
+    assert len([r for r in caplog.records if r.name == "omm.cluster.autoload"]) == 1
+    cluster_fakes.previews = rows
+    assert autoload_head.check_once(tracker, now=60) == "requested"
+
+
+def test_autoload_survives_exo_being_down(cluster_fakes, autoload_head):
+    cluster_fakes.exo_down()
+    assert autoload_head.check_once(autoload_head.Tracker(), now=0) == "exo not reachable"
+
+
+def test_gateway_service_runs_the_autoload_thread(monkeypatch, isolated_omm_home):
+    from omm.cluster import autoload, gateway
+
+    started = []
+
+    class _Server:
+        def __init__(self, *a, **k):
+            pass
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            pass
+
+    stop = __import__("threading").Event()
+    monkeypatch.setattr(gateway, "GatewayServer", _Server)
+    monkeypatch.setattr(autoload, "start", lambda: started.append(True) or stop)
+    assert gateway.run_gateway() == 0
+    assert started == [True] and stop.is_set()
+
+
+@pytest.fixture
+def no_engines(monkeypatch):
+    from omm import engine_security
+
+    listening = {}
+    monkeypatch.setattr(engine_security, "inspect", lambda key: {
+        "engine": key, "status": "not_running", "reason": "stopped", "port": None, "listeners": [],
+        "owned_by_omm": False})
+    monkeypatch.setattr(engine_security, "_listener_rows",
+                        lambda port: ([{"address": "0.0.0.0", "port": port, "pid": 1}] if port in listening else [], None))
+    return listening
+
+
+def _security(*args):
+    return runner.invoke(cli.app, ["engine", "security", *args, "--json"])
+
+
+def test_engine_security_adds_the_cluster_on_a_cluster_mac(cluster_fakes, no_engines):
+    runner.invoke(cli.app, ["cluster", "init"])
+    no_engines.update({52415: 1, 52416: 1, 52440: 1})
+    result = _security()
+    assert result.exit_code == 0, result.output
+    items = json.loads(result.output)
+    assert [i["engine"] for i in items] == ["ollama", "lmstudio", "cluster"]
+    row = items[-1]
+    assert row["status"] == "gateway_only" and row["owned_by_omm"] is True
+    assert {l["port"] for l in row["listeners"]} == {52415, 52416, 52440}
+    assert set(row) == set(items[0])
+    plain = runner.invoke(cli.app, ["engine", "security", "cluster"])
+    assert plain.exit_code == 0 and "Gateway only" in plain.output  # the column wraps the rest
+
+
+def test_engine_security_member_has_no_gateway_port(cluster_fakes, no_engines):
+    runner.invoke(cli.app, ["cluster", "join", "omm-" + "c" * 32])
+    no_engines.update({52415: 1, 52416: 1, 52440: 1})
+    row = json.loads(_security("cluster").output)[0]
+    assert {l["port"] for l in row["listeners"]} == {52415, 52416}
+    assert "gateway" not in row["reason"]
+
+
+@pytest.mark.parametrize("firewall_state, listening, expected", [
+    ("unchecked", True, "unknown"),
+    ("missing", True, "external_allowed"),
+    ("drift", True, "external_allowed"),
+    ("missing", False, "not_running"),
+])
+def test_engine_security_reports_the_cluster_firewall_honestly(cluster_fakes, no_engines, firewall_state,
+                                                                listening, expected):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.firewall_state = firewall_state
+    if listening:
+        no_engines.update({52415: 1})
+    row = json.loads(_security("cluster").output)[0]
+    assert row["status"] == expected
+    if expected != "unknown":
+        assert "omm cluster init again" in row["reason"]
+
+
+def test_engine_security_without_a_cluster(cluster_fakes, no_engines):
+    items = json.loads(_security().output)
+    assert [i["engine"] for i in items] == ["ollama", "lmstudio"]
+    result = _security("cluster")
+    assert result.exit_code == 1 and "not in an omm cluster" in result.output
+
+
+def test_engine_security_cannot_fix_the_cluster(cluster_fakes, no_engines):
+    runner.invoke(cli.app, ["cluster", "init"])
+    result = runner.invoke(cli.app, ["engine", "security", "cluster", "--fix-local-only", "--yes"])
+    assert result.exit_code == 2 and "omm cluster init" in result.output

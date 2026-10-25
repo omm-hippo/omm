@@ -241,13 +241,19 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def run_gateway() -> int:
+    from omm.cluster import autoload
+
     handler = attach_access_log()
     server = GatewayServer()
+    # This service is the head's one always-running process, so it also puts
+    # the model back after exo restarts.
+    stop_autoload = autoload.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        stop_autoload.set()
         server.server_close()
         detach_access_log(handler)
     return 0

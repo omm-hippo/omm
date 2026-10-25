@@ -26,6 +26,10 @@ class ClusterSettings:
     namespace: str
     gateway_port: int
     known_nodes: tuple[str, ...] = ()
+    # The model `omm cluster model` last loaded from the head. exo forgets its
+    # instances when it restarts (a reboot, a restart), so the head's gateway
+    # service loads this one again (autoload.py); unloading it clears it.
+    model: str | None = None
 
 
 def settings_path() -> Path:
@@ -52,8 +56,10 @@ def load() -> ClusterSettings | None:
             or not isinstance(port, int)):
         return None
     nodes = data.get("known_nodes") or []
+    model = data.get("model")
     return ClusterSettings(data["role"], namespace, port,
-                           tuple(n for n in nodes if isinstance(n, str)) if isinstance(nodes, list) else ())
+                           tuple(n for n in nodes if isinstance(n, str)) if isinstance(nodes, list) else (),
+                           model if isinstance(model, str) and model else None)
 
 
 def save(value: ClusterSettings) -> None:

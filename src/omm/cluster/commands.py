@@ -7,6 +7,7 @@ exit codes and renders output.
 
 from __future__ import annotations
 
+import dataclasses
 import platform
 import socket
 from typing import Callable
@@ -88,7 +89,8 @@ def init(out: Out) -> settings.ClusterSettings:
     # may already be typed into `join` on other Macs, so a re-run must reuse it.
     # The remembered Macs start over: running init again is how a Mac that
     # left for good stops being reported missing (status says so).
-    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT)
+    # The model to serve survives a re-run, which restarts exo and so drops it.
+    saved = settings.ClusterSettings("head", namespace, GATEWAY_PORT, model=current.model if current else None)
     settings.save(saved)
     _prepare_this_mac(namespace, out)
     firewall.apply(gateway_port=GATEWAY_PORT)
@@ -186,7 +188,7 @@ def status() -> dict:
         if current is not None:
             merged = tuple(dict.fromkeys([*current.known_nodes, *seen]))
             if merged != current.known_nodes:
-                settings.save(settings.ClusterSettings(current.role, current.namespace, current.gateway_port, merged))
+                settings.save(dataclasses.replace(current, known_nodes=merged))
     fw = "missing"
     gateway = "not_head"
     if current is not None and settings.is_legacy(current.namespace):
@@ -207,7 +209,44 @@ def status() -> dict:
             if gateway == "stopped":
                 problems.append("gateway is not running")
     return {"role": current.role if current else None, "namespace": current.namespace if current else None,
-            "exo": exo, "firewall": fw, "gateway": gateway, "problems": problems}
+            "exo": exo, "firewall": fw, "gateway": gateway,
+            "kept_model": current.model if current is not None and current.role == "head" else None,
+            "problems": problems}
+
+
+def exposure() -> dict | None:
+    """The cluster's row for `omm engine security`; None when this Mac is not in a cluster."""
+    if platform.system() != "Darwin":
+        return None
+    current = settings.load()
+    if current is None:
+        return None
+    from omm import engine_security
+
+    head = current.role == "head"
+    ports = [*firewall.EXO_PORTS, *([current.gateway_port] if head else [])]
+    listeners = []
+    for port in ports:
+        rows, _error = engine_security._listener_rows(port)
+        listeners += [{"address": row["address"], "port": port} for row in rows]
+    fw = firewall.status(gateway_port=current.gateway_port if head else None)
+    again = "init" if head else f"join {current.namespace}"
+    if fw == "active":
+        status = "gateway_only"
+        reason = ("pf blocks exo's API and model ports from other devices; "
+                  + (f"the gateway (port {current.gateway_port}) needs an employee token and " if head else "")
+                  + f"exo's peer port {firewall.LIBP2P_PORT} needs the cluster key")
+    elif fw == "unchecked":
+        status = "unknown"
+        reason = "the cluster firewall rules file is in place, but reading what pf loaded needs sudo; run sudo -v, then this again"
+    elif not listeners:
+        status = "not_running"
+        reason = f"exo is not listening and the cluster firewall rules are {fw}; run omm cluster {again} again"
+    else:
+        status = "external_allowed"
+        reason = f"the cluster firewall rules are {fw}, so other devices can reach exo directly; run omm cluster {again} again"
+    return {"engine": "cluster", "status": status, "reason": reason, "port": None,
+            "listeners": listeners, "owned_by_omm": True}
 
 
 def restart(out: Out) -> None:
@@ -272,6 +311,8 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
         raise ClusterError(f"{model_id} made no progress for {MODEL_STALL_TIMEOUT // 60} minutes.{detail}")
     current = settings.load()
     port = current.gateway_port if current else GATEWAY_PORT
+    if current is not None and current.role == "head" and current.model != model_id:
+        settings.save(dataclasses.replace(current, model=model_id))
     return f"Serving {model_id} at http://{lan_ipv4()}:{port}"
 
 
@@ -281,6 +322,10 @@ def unload_model(model_id: str, client: ExoClient | None = None) -> int:
     matching = [i.instance_id for i in client.state().instances if i.model_id == model_id]
     for instance_id in matching:
         client.delete_instance(instance_id)
+    current = settings.load()
+    if current is not None and current.model == model_id:
+        # Otherwise the head would load it again within a minute.
+        settings.save(dataclasses.replace(current, model=None))
     return len(matching)
 
 
