@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import sys
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -80,11 +80,13 @@ def test_cluster_connection_restores_with_agent_cloud(harness, home, remote):
     assert TOKEN not in json.dumps(metadata)
     written = b"".join(p.read_bytes() for p in paths)
     assert TOKEN.encode() in written and remote.encode() in written
-    assert all(p.stat().st_mode & 0o777 == 0o600 for p in paths)
+    if os.name != "nt":  # POSIX file permissions
+        assert all(p.stat().st_mode & 0o777 == 0o600 for p in paths)
     assert agent.status(harness)["state"] == "local"
     assert agent.restore(harness)
     assert [p.read_bytes() for p in paths] == original
-    assert all(p.stat().st_mode & 0o777 == 0o644 for p in paths)
+    if os.name != "nt":
+        assert all(p.stat().st_mode & 0o777 == 0o644 for p in paths)
 
 
 def test_each_harness_gets_the_gateway_and_token(home, remote):
@@ -92,15 +94,15 @@ def test_each_harness_gets_the_gateway_and_token(home, remote):
     agent_cluster.connect("codex", "mlx-community/Qwen3.5-9B-4bit")
     agent_cluster.connect("pi", "mlx-community/Qwen3.5-9B-4bit")
 
-    claude = json.loads(agent._paths("claude")[0].read_text())
+    claude = json.loads(agent._paths("claude")[0].read_text(encoding="utf-8"))
     assert claude["env"]["ANTHROPIC_BASE_URL"] == remote
     assert claude["env"]["ANTHROPIC_AUTH_TOKEN"] == TOKEN
     assert claude["model"] == "mlx-community/Qwen3.5-9B-4bit"
-    codex = agent._paths("codex")[0].read_text()
+    codex = agent._paths("codex")[0].read_text(encoding="utf-8")
     assert f'base_url = "{remote}/v1"' in codex
     assert f'experimental_bearer_token = "{TOKEN}"' in codex
     assert 'wire_api = "responses"' in codex
-    models = json.loads(agent._paths("pi")[0].read_text())
+    models = json.loads(agent._paths("pi")[0].read_text(encoding="utf-8"))
     assert models["providers"]["omm-local"]["baseUrl"] == remote + "/v1"
     assert models["providers"]["omm-local"]["apiKey"] == TOKEN
     assert models["providers"]["omm-local"]["models"][0]["contextWindow"] == 262144
