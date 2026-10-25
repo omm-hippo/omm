@@ -258,6 +258,25 @@ configuration file under `OMM_HOME/rag-connections`; that copy may contain the
 agent's own settings and is not read by any upload channel. See
 [document search for coding agents](docs/rag-mcp.md).
 
+### Shared company documents on the cluster head
+
+When an employee PC runs `omm rag remote set <head>`, `omm rag` collection, add, remove,
+search, share and unshare commands send their data to the office cluster head instead of
+storing it on that PC: uploaded files (whole file bytes, at most 6 MiB each), collection
+and document names, questions, and share targets go to the head's gateway (port 52440,
+plain HTTP inside the office network, the same channel and caveat as the cluster
+inference routes below). Original text, chunks and vectors are kept only in the head's
+`OMM_HOME/documents`, and embeddings run on the head's own loopback Ollama. The employee
+PC keeps only the head address and the employee token in `OMM_HOME/rag-remote.json`
+(mode 0600 on macOS/Linux); the token is never printed. These requests ignore
+`HTTP(S)_PROXY`. `omm rag connect <harness> --remote` writes the token into the
+harness's own configuration file as an `Authorization` header (tightened to mode 0600
+on macOS/Linux) and into the private copy under `OMM_HOME/rag-connections`; do not
+share those files. The gateway's request log records the path (for example
+`/rag/v1/search`) but never collection or document names, questions, quotations or
+document text, which travel only in the query string, headers or body. Who may see
+which collection (owner, shares, teams) is stored next to the documents on the head.
+
 ## Local agent connection backups
 
 `omm setting agent local` saves a private local backup of the selected
@@ -289,7 +308,8 @@ upload channel: prompts, responses, and model output stay on the cluster Macs an
 employee PCs that send them.
 
 - **The gateway** (`omm cluster init`, head Mac, port 52440) checks a per-employee token,
-  then forwards only the inference routes to exo on loopback. It logs only the method,
+  then forwards only the inference routes to exo on loopback (and answers the shared
+  document routes `/mcp` and `/rag/v1/...` itself, see above). It logs only the method,
   path, status, token name, and duration of each request. It never logs a request or
   response body or the token itself. The connection is plain HTTP inside the office
   network. Anyone who can capture that network's traffic can read the requests and the

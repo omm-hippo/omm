@@ -808,7 +808,7 @@ def agent_status(harness: str = typer.Argument(..., help="claude, codex or pi.")
 
 rag_app = typer.Typer(
     name="rag",
-    help="Search local documents by meaning and words (hybrid), and serve them to coding agents over a local MCP server. Text and questions stay on this computer; embeddings use local Ollama only.",
+    help="Search local documents by meaning and words (hybrid), and serve them to coding agents over a local MCP server. Text and questions stay on this computer; embeddings use local Ollama only. After `omm rag remote set`, the same commands use collections shared on the company cluster head instead.",
     rich_markup_mode=None,
     cls=_DocsEpilogGroup,
 )
@@ -853,7 +853,8 @@ def _rag_progress():
         task_id = bar.add_task("", total=None)
 
         def progress(name: str, stage: str, done: int, total: int) -> None:
-            label = "텍스트 추출 중" if stage == "extract" else f"의미 색인 만드는 중 {done}/{total} 조각"
+            label = {"extract": "텍스트 추출 중", "upload": "헤드로 보내고 색인하는 중"}.get(
+                stage, f"의미 색인 만드는 중 {done}/{total} 조각")
             bar.update(task_id, description=escape(f"{name}: {label}"))
 
         yield progress
@@ -905,43 +906,60 @@ def rag_status_cmd() -> None:
 
 @rag_collection_app.command(name="create")
 def rag_collection_create_cmd(name: str = typer.Argument(..., help="Collection name, e.g. 인사규정.")) -> None:
-    """Create an empty named collection."""
-    from omm.documents import DocumentStore
+    """Create an empty named collection (on the cluster head when `omm rag remote` is set)."""
+    from omm import rag_acl
+    remote = _rag_cli.remote_client()
     try:
-        DocumentStore().create_collection(name)
+        remote.create_collection(name) if remote else rag_acl.create_collection(rag_acl.ADMIN, name)
     except ValueError as error:
         _rag_fail(error)
     console.print(f"'{escape(name)}' 컬렉션을 만들었어요. `omm rag add {escape(name)} <파일 또는 폴더>`로 문서를 넣어 주세요.")
+    if remote:
+        console.print("지금은 나만 검색할 수 있어요. `omm rag share <컬렉션> <직원>` 또는 `--team <팀>`으로 공유해요.")
+
+
+def _rag_share_label(shares) -> str:
+    if shares is None:
+        return ""
+    if not shares:
+        return " · 공유 없음"
+    return " · 공유: " + ", ".join(f"팀 {s['target']}" if s["kind"] == "team" else s["target"] for s in shares)
 
 
 @rag_collection_app.command(name="list")
 @global_flags
 def rag_collection_list_cmd() -> None:
-    """List collections and their document counts."""
-    from omm.documents import DocumentStore
+    """List collections you can search with document counts, owner and shares."""
+    from omm import rag_acl
+    remote = _rag_cli.remote_client()
     try:
-        rows = DocumentStore().collections()
+        rows = remote.collections() if remote else rag_acl.collections(rag_acl.ADMIN)
     except ValueError as error:
         _rag_fail(error)
+    keys = ("name", "documents", "created_at", "owner", "shares")
     if _global_opts().json:
-        _print_json(data={"collections": [{k: row[k] for k in ("name", "documents", "created_at")} for row in rows]})
+        _print_json(data={"collections": [{k: row.get(k) for k in keys} for row in rows]})
         return
+    if remote and not rows:
+        console.print("검색할 수 있는 컬렉션이 없어요. `omm rag collection create <이름>`으로 만들거나 공유를 받아 주세요.")
     for row in rows:
-        console.print(f"{escape(row['name'])}  문서 {row['documents']}개")
+        console.print(f"{escape(row['name'])}  문서 {row['documents']}개 · 만든 사람 {escape(rag_acl.owner_label(row['owner']))}"
+                      f"{escape(_rag_share_label(row.get('shares')))}")
 
 
 @rag_collection_app.command(name="delete")
 @global_flags
 def rag_collection_delete_cmd(name: str = typer.Argument(..., help="Collection to delete.")) -> None:
     """Delete a collection with its stored text and index. Original files are kept."""
-    from omm.documents import DocumentStore
-    store = DocumentStore()
+    from omm import rag_acl
+    remote = _rag_cli.remote_client()
     try:
-        count = next((row["documents"] for row in store.collections() if row["name"] == name), None)
+        rows = remote.collections() if remote else rag_acl.collections(rag_acl.ADMIN)
+        count = next((row["documents"] for row in rows if row["name"] == name), None)
         if count is None:
-            store.delete_collection(name)  # raises the not-found message
+            raise ValueError(f"'{name}' 컬렉션을 찾지 못했어요. `omm rag collection list`로 이름을 확인해 주세요.")
         _rag_confirm(f"'{name}' 컬렉션과 문서 {count}개의 저장된 텍스트·색인을 지울까요? 원본 파일은 그대로예요.")
-        result = store.delete_collection(name)
+        result = remote.delete_collection(name) if remote else rag_acl.delete_collection(rag_acl.ADMIN, name)
     except ValueError as error:
         _rag_fail(error)
     console.print(f"'{escape(name)}' 컬렉션을 지웠어요 (문서 {result['documents']}개). 이전 문서 답변 기록도 지웠어요.")
@@ -956,9 +974,14 @@ def rag_add_cmd(
 ) -> None:
     """Add text PDF, TXT, Markdown, HTML, or HWPX files to a collection."""
     from omm.documents import import_paths
+    remote = _rag_cli.remote_client()
     try:
         with _rag_progress() as progress:
-            report = import_paths(collection, paths, replace=replace, progress=progress)
+            if remote:
+                from omm.rag_remote import upload_paths
+                report = upload_paths(remote, collection, paths, replace=replace, progress=progress)
+            else:
+                report = import_paths(collection, paths, replace=replace, progress=progress)
     except ValueError as error:
         _rag_fail(error)
     if _global_opts().json:
@@ -994,9 +1017,10 @@ def rag_remove_cmd(
 ) -> None:
     """Remove one document's stored text and index. The original file is kept."""
     from omm.documents import DocumentStore
+    remote = _rag_cli.remote_client()
     _rag_confirm(f"'{collection}' 컬렉션의 '{name}' 문서와 색인을 지울까요? 원본 파일은 그대로예요.")
     try:
-        DocumentStore().remove_document(collection, name)
+        remote.remove_document(collection, name) if remote else DocumentStore().remove_document(collection, name)
     except ValueError as error:
         _rag_fail(error)
     console.print(f"'{escape(name)}' 문서를 지웠어요. 이전 문서 답변 기록도 지웠어요.")
@@ -1011,6 +1035,10 @@ def rag_search_cmd(
 ) -> None:
     """Find source passages with hybrid search; falls back to words only and says why."""
     from omm.documents import DocumentStore, NO_EVIDENCE
+    remote = _rag_cli.remote_client()
+    if remote:
+        _rag_remote_search(remote, question, collection, limit)
+        return
     try:
         result = DocumentStore().search_detailed(question, None, collection=collection, limit=limit)
     except ValueError as error:
@@ -1028,6 +1056,28 @@ def rag_search_cmd(
         console.print(f"\n[{source['citation']}] {escape(source['name'])} ({escape(source['collection'])}) · "
                       f"{source['page']}쪽 · {source['start']}-{source['end']}자", markup=False)
         console.print(source["text"].strip(), markup=False, highlight=False)
+
+
+def _rag_remote_search(remote, question: str, collection: str | None, limit: int) -> None:
+    """Search the collections the cluster head lets this employee see."""
+    try:
+        result = remote.search(question, collection, limit)
+    except ValueError as error:
+        _rag_fail(error)
+    if _global_opts().json:
+        _print_json(data=result)
+        return
+    if result.get("method"):
+        console.print(f"검색 방식: {_RAG_METHOD_LABEL.get(result['method'], result['method'])} (헤드)")
+    if result.get("notice"):
+        console.print(escape(result["notice"]))
+    console.print(escape(result["message"]))
+    for item in result["results"]:
+        console.print(f"\n[{item['rank']}] {item['document']} ({item['collection']}) · {item['page']}쪽 · "
+                      f"{item['start']}-{item['end']}자", markup=False)
+        console.print(item["quote"].strip(), markup=False, highlight=False)
+    if result.get("skipped_stale"):
+        console.print("색인을 다시 만들어야 해서 검색하지 않은 문서: " + escape(", ".join(result["skipped_stale"])))
 
 
 @rag_app.command(name="reindex")
