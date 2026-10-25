@@ -22,6 +22,11 @@ name: Build Windows portable release
       - "requirements-windows-portable.txt"
       - "scripts/winget_manifest.py"
       - "scripts/windows_portable.py"
+      - "packaging/licenses/**"
+      - "scripts/bundled_licenses.py"
+      - "scripts/check_licenses.py"
+      - "scripts/license_policy.json"
+      - "tests/test_bundled_licenses.py"
       - "scripts/release_artifacts.py"
       - "scripts/dependency_parity.py"
       - "tests/test_dependency_parity.py"
@@ -123,7 +128,8 @@ jobs:
           $archive = "release-assets/omm-windows-x64-${{ steps.identity.outputs.version }}.zip"
           python tooling/scripts/windows_portable.py verify `
             --version "${{ steps.identity.outputs.version }}" `
-            --archive $archive
+            --archive $archive `
+            --require-third-party-licenses
           if ($LASTEXITCODE -ne 0) { throw "portable archive verification failed" }
       - name: Reuse a verified immutable release asset on reruns
         if: github.event_name != 'pull_request'

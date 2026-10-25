@@ -124,6 +124,7 @@
         "reason": "Installed only on Python < 3.11; upstream LICENSE is MIT."
       }
     },
+    "license_texts": {},
     "allow": {
       "certifi": {
         "license": "MPL-2.0",
@@ -156,14 +157,19 @@
   },
   "bundled_runtime_components": [
     {
+      "id": "cpython",
       "name": "CPython interpreter and standard library",
       "license": "PSF-2.0",
-      "where": "standalone npm and Windows portable binaries (PyInstaller)"
+      "where": "standalone npm and Windows portable binaries (PyInstaller)",
+      "text": "interpreter LICENSE.txt"
     },
     {
-      "name": "OpenSSL (inside the cryptography wheel)",
+      "id": "openssl",
+      "name": "OpenSSL (Python ssl module and the cryptography wheel)",
       "license": "Apache-2.0",
-      "where": "standalone npm and Windows portable binaries"
+      "where": "standalone npm and Windows portable binaries",
+      "text": "packaging/licenses/OpenSSL-LICENSE.txt",
+      "source": "https://github.com/openssl/openssl/blob/master/LICENSE.txt"
     }
   ],
   "external_tools": [

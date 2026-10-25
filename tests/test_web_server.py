@@ -503,3 +503,73 @@ def test_wiki_route_serves_the_same_bundled_catalog_as_cli(server):
     value = session(server).get(server.url+'api/wiki',timeout=5).json()
     assert value == json.loads(json.dumps(model_wiki.catalog()))
     assert value['contentVersion'] == model_wiki.load()['contentVersion']
+
+
+def test_real_worker_reports_document_import_stages_and_piece_counts(monkeypatch, isolated_omm_home):
+    import base64
+    from omm import document_embeddings
+    from omm.documents import DocumentStore
+    from tests.test_documents_hybrid import LONG, FakeOllama
+    fake = FakeOllama()
+    DocumentStore().set_embedding_model('bge-m3', base_url=fake.url)
+    saved = []
+    original = JobManager._save
+    monkeypatch.setattr(JobManager, '_save', lambda self, job: (saved.append(dict(job)), original(self, job))[1])
+    manager = JobManager()
+    try:
+        jid = str(uuid.uuid4())
+        manager.start({'operation':'document_import','filename':'긴규정.txt',
+                       'content':base64.b64encode(LONG.encode()).decode()}, jid)
+        job = _wait_job(manager, jid)
+        assert job['status']=='completed', job
+        chunks = job['result']['chunks']
+        assert chunks > document_embeddings.BATCH and job['result']['semantic'] is True
+        assert job['document_stage']=='embed' and job['completed_count']==job['total_count']==chunks
+        stages = [row.get('document_stage') for row in saved if row.get('document_stage')]
+        assert stages[0]=='extract' and 'embed' in stages
+        # Progress carries only stage names and counts, never document text.
+        assert all('가나다' not in json.dumps(row, ensure_ascii=False) for row in saved if row['status']=='running')
+    finally:
+        manager.close()
+        fake.close()
+
+
+def _fake_document_worker(monkeypatch, script):
+    import sys
+    from omm.web import jobs
+    monkeypatch.setattr(jobs, 'DOCUMENT_STAGE_SECONDS', {'extract': .6, 'embed': 3})
+    code = ("import sys,json,time;json.load(sys.stdin)\n"
+            "def say(**f): print(json.dumps(f),flush=True)\n" + script)
+    monkeypatch.setattr(jobs, 'worker_argv', lambda: [sys.executable, '-c', code])
+
+
+def test_document_import_watchdog_restarts_on_each_embedding_batch(monkeypatch, isolated_omm_home):
+    # Total runtime outlives the extraction budget, but each stage keeps reporting.
+    _fake_document_worker(monkeypatch,
+        "say(event='progress',document_stage='extract',completed_count=0,total_count=0);time.sleep(.3)\n"
+        "say(event='progress',document_stage='embed',completed_count=0,total_count=2);time.sleep(1.2)\n"
+        "say(event='progress',document_stage='embed',completed_count=2,total_count=2)\n"
+        "say(event='completed',result={'name':'a.txt'})\n")
+    manager = JobManager()
+    try:
+        jid = str(uuid.uuid4())
+        manager.start({'operation':'document_import','filename':'a.txt','content':''}, jid)
+        job = _wait_job(manager, jid)
+        assert job['status']=='completed', job
+        assert job['completed_count']==job['total_count']==2
+    finally:
+        manager.close()
+
+
+def test_document_import_watchdog_still_bounds_silent_extraction(monkeypatch, isolated_omm_home):
+    _fake_document_worker(monkeypatch,
+        "say(event='progress',document_stage='extract',completed_count=0,total_count=0);time.sleep(5)\n"
+        "say(event='completed',result={'name':'a.txt'})\n")
+    manager = JobManager()
+    try:
+        jid = str(uuid.uuid4())
+        manager.start({'operation':'document_import','filename':'a.txt','content':''}, jid)
+        job = _wait_job(manager, jid)
+        assert job['status']=='failed', job
+    finally:
+        manager.close()

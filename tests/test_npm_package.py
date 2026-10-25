@@ -21,6 +21,18 @@ npm_package = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(npm_package)
 
 
+FAKE_THIRD_PARTY_LICENSES = (
+    b"OMM standalone binary: third-party software licenses\n\n"
+    b"== CPython 3.0.0 ==\nPSF\n\n== OpenSSL ==\nApache\n"
+)
+
+
+@pytest.fixture(autouse=True)
+def _fake_third_party_licenses(monkeypatch):
+    """Staging reads the real build environment; tests use a fixed text."""
+    monkeypatch.setattr(npm_package, "third_party_licenses", lambda _target: FAKE_THIRD_PARTY_LICENSES)
+
+
 def test_launcher_contract_matches_project_and_python_install_detection():
     npm_package.validate_launcher_source()
     target_map = npm_package.targets()
@@ -118,6 +130,12 @@ def test_stage_platform_package_is_private_and_exact(tmp_path, target):
     npm_package.validate_platform_package(staged, target)
     manifest = json.loads((staged / "package.json").read_text(encoding="utf-8"))
     assert manifest["private"] is True
+    assert manifest["files"] == [
+        manifest["omm"]["binary"],
+        "LICENSE",
+        "THIRD_PARTY_LICENSES.txt",
+    ]
+    assert (staged / "THIRD_PARTY_LICENSES.txt").read_bytes() == FAKE_THIRD_PARTY_LICENSES
     assert manifest["omm"]["sha256"] == npm_package._sha256(
         staged / manifest["omm"]["binary"]
     )
@@ -145,6 +163,33 @@ def test_publishable_platform_is_explicit_and_still_exact(tmp_path):
 
 
 LIFECYCLE_SCRIPTS = {"preinstall", "install", "postinstall", "prepare"}
+
+
+def test_platform_package_requires_generated_third_party_licenses(tmp_path):
+    binary = tmp_path / "omm"
+    binary.write_bytes(_binary("linux-x64-gnu") + b" standalone OMM")
+    staged = npm_package.stage_platform_package("linux-x64-gnu", binary, tmp_path / "out")
+
+    licenses = staged / "THIRD_PARTY_LICENSES.txt"
+    licenses.write_bytes(b"OMM standalone binary: third-party software licenses\n")
+    with pytest.raises(npm_package.NpmPackageError, match="CPython"):
+        npm_package.validate_platform_package(staged, "linux-x64-gnu")
+
+    licenses.unlink()
+    with pytest.raises(npm_package.NpmPackageError, match="allowlist"):
+        npm_package.validate_platform_package(staged, "linux-x64-gnu")
+
+
+def test_stage_platform_stops_when_license_texts_cannot_be_generated(tmp_path, monkeypatch):
+    binary = tmp_path / "omm"
+    binary.write_bytes(_binary("linux-x64-gnu") + b" standalone OMM")
+
+    def missing(_target):
+        raise npm_package.NpmPackageError("example ships no license file")
+
+    monkeypatch.setattr(npm_package, "third_party_licenses", missing)
+    with pytest.raises(npm_package.NpmPackageError, match="no license file"):
+        npm_package.stage_platform_package("linux-x64-gnu", binary, tmp_path / "out")
 
 
 def test_stage_platform_rejects_wrong_format_symlink_and_overwrite(tmp_path):

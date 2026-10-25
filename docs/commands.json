@@ -1938,7 +1938,7 @@
       ],
       "kind": "group",
       "aliases": [],
-      "summary": "Search local documents by meaning and words (hybrid), and serve them to coding agents over a local MCP server. Text and questions stay on this computer; embeddings use local Ollama only.",
+      "summary": "Search local documents by meaning and words (hybrid), and serve them to coding agents over a local MCP server. Text and questions stay on this computer; embeddings use local Ollama only. After `omm rag remote set`, the same commands use collections shared on the company cluster head instead.",
       "description": "",
       "usage": "omm rag [OPTIONS] COMMAND [ARGS]...",
       "arguments": [],
@@ -2034,7 +2034,7 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Create an empty named collection.",
+      "summary": "Create an empty named collection (on the cluster head when `omm rag remote` is set).",
       "description": "",
       "usage": "omm rag collection create [OPTIONS] {name}",
       "arguments": [
@@ -2109,7 +2109,7 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "List collections and their document counts.",
+      "summary": "List collections you can search with document counts, owner and shares.",
       "description": "",
       "usage": "omm rag collection list [OPTIONS]",
       "arguments": [],
@@ -2165,7 +2165,18 @@
           "required": true
         }
       ],
-      "options": [],
+      "options": [
+        {
+          "flags": [
+            "--remote"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Register the cluster head's shared document search (set with `omm rag remote set`) instead of this PC's.",
+          "default": null,
+          "global": false
+        }
+      ],
       "docs_url": "https://omm.run/commands/rag#connect"
     },
     {
@@ -2327,6 +2338,67 @@
     {
       "path": [
         "rag",
+        "remote"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Use shared collections on the cluster head from this PC.",
+      "description": "",
+      "usage": "omm rag remote [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#remote"
+    },
+    {
+      "path": [
+        "rag",
+        "remote",
+        "clear"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Forget the cluster head; `omm rag` uses this PC's documents again.",
+      "description": "",
+      "usage": "omm rag remote clear [OPTIONS]",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#remote"
+    },
+    {
+      "path": [
+        "rag",
+        "remote",
+        "set"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Point `omm rag` at the cluster head after checking the employee token.",
+      "description": "",
+      "usage": "omm rag remote set [OPTIONS] {url}",
+      "arguments": [
+        {
+          "name": "url",
+          "help": "Cluster head address, e.g. 192.168.0.10 or http://head.local:52440.",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--token"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Employee token. Omit it to type the token hidden (or pipe it on stdin) so it stays out of shell history.",
+          "default": null,
+          "global": false
+        }
+      ],
+      "docs_url": "https://omm.run/commands/rag#remote"
+    },
+    {
+      "path": [
+        "rag",
         "remove"
       ],
       "kind": "command",
@@ -2457,6 +2529,42 @@
     {
       "path": [
         "rag",
+        "share"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Let an employee or a team search a collection (its owner or the head administrator).",
+      "description": "",
+      "usage": "omm rag share [OPTIONS] {collection} [person]",
+      "arguments": [
+        {
+          "name": "collection",
+          "help": "Collection name.",
+          "required": true
+        },
+        {
+          "name": "person",
+          "help": "Employee token name (see `omm cluster token list` on the head).",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--team"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Share with a team instead of one person.",
+          "default": null,
+          "global": false
+        }
+      ],
+      "docs_url": "https://omm.run/commands/rag#share"
+    },
+    {
+      "path": [
+        "rag",
         "status"
       ],
       "kind": "command",
@@ -2499,6 +2607,165 @@
         }
       ],
       "docs_url": "https://omm.run/commands/rag#status"
+    },
+    {
+      "path": [
+        "rag",
+        "team"
+      ],
+      "kind": "group",
+      "aliases": [],
+      "summary": "Manage employee teams for sharing collections (on the cluster head).",
+      "description": "",
+      "usage": "omm rag team [OPTIONS] COMMAND [ARGS]...",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#team"
+    },
+    {
+      "path": [
+        "rag",
+        "team",
+        "add"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Add an employee (token name) to a team.",
+      "description": "",
+      "usage": "omm rag team add [OPTIONS] {team} {member}",
+      "arguments": [
+        {
+          "name": "team",
+          "help": "Team name.",
+          "required": true
+        },
+        {
+          "name": "member",
+          "help": "Employee token name.",
+          "required": true
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#team"
+    },
+    {
+      "path": [
+        "rag",
+        "team",
+        "create"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Create an empty team.",
+      "description": "",
+      "usage": "omm rag team create [OPTIONS] {name}",
+      "arguments": [
+        {
+          "name": "name",
+          "help": "Team name, e.g. sales.",
+          "required": true
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#team"
+    },
+    {
+      "path": [
+        "rag",
+        "team",
+        "delete"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Delete a team and every collection share made to it.",
+      "description": "",
+      "usage": "omm rag team delete [OPTIONS] {name}",
+      "arguments": [
+        {
+          "name": "name",
+          "help": "Team to delete.",
+          "required": true
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#team"
+    },
+    {
+      "path": [
+        "rag",
+        "team",
+        "list"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "List teams and their members.",
+      "description": "",
+      "usage": "omm rag team list [OPTIONS]",
+      "arguments": [],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#team"
+    },
+    {
+      "path": [
+        "rag",
+        "team",
+        "remove"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Remove an employee from a team.",
+      "description": "",
+      "usage": "omm rag team remove [OPTIONS] {team} {member}",
+      "arguments": [
+        {
+          "name": "team",
+          "help": "Team name.",
+          "required": true
+        },
+        {
+          "name": "member",
+          "help": "Employee token name.",
+          "required": true
+        }
+      ],
+      "options": [],
+      "docs_url": "https://omm.run/commands/rag#team"
+    },
+    {
+      "path": [
+        "rag",
+        "unshare"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Stop sharing a collection with an employee or a team (its owner or the head administrator).",
+      "description": "",
+      "usage": "omm rag unshare [OPTIONS] {collection} [person]",
+      "arguments": [
+        {
+          "name": "collection",
+          "help": "Collection name.",
+          "required": true
+        },
+        {
+          "name": "person",
+          "help": "Employee token name.",
+          "required": false
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--team"
+          ],
+          "metavar": "<str>",
+          "is_flag": false,
+          "help": "Withdraw a team share instead of a person's.",
+          "default": null,
+          "global": false
+        }
+      ],
+      "docs_url": "https://omm.run/commands/rag#unshare"
     },
     {
       "path": [

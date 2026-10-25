@@ -635,6 +635,27 @@ Coding agents search documents registered in OMM through a local stdio MCP
 server; documents and questions never leave this computer. See
 [document search for coding agents](docs/rag-mcp.md).
 
+### Shared company documents (cluster head)
+
+```sh
+omm rag remote set <head address> [--token TOKEN]  # On an employee PC: use the cluster head's shared collections (token typed hidden when omitted)
+omm rag remote  # Show which head `omm rag` uses (the token is never printed)
+omm rag remote clear  # Forget the head and its token; `omm rag` uses this PC again
+omm rag share <collection> <person> | --team <team>  # Let an employee (token name) or a team search a collection (owner or head administrator)
+omm rag unshare <collection> <person> | --team <team>  # Withdraw that share
+omm rag team create <team>  # On the head: create a team for sharing
+omm rag team add <team> <person>  # On the head: add an employee (token name) to a team
+omm rag team remove <team> <person>  # On the head: remove an employee from a team
+omm rag team list  # On the head: list teams and members
+omm rag team delete <team>  # On the head: delete a team and every share made to it
+omm rag connect <harness> --remote  # Register the head's MCP endpoint (HTTP, employee token in the harness config)
+```
+
+With a head set, `omm rag collection create|list|delete`, `add`, `remove`, `search`,
+`share` and `unshare` work on the head through the token-checked cluster gateway
+(port 52440). A collection is searchable only by its creator and the head administrator
+until it is shared. See [document search for coding agents](docs/rag-mcp.md#사내-공유).
+
 ### Local logs and automatic import
 
 ```sh
@@ -666,7 +687,7 @@ for engine capabilities, memory checks, cleanup, and verification limits.
 ```sh
 omm rag status [--json]  # Collections, embedding model, and documents that need reindexing
 omm rag collection create <name>  # Create a named collection, e.g. 인사규정
-omm rag collection list [--json]  # List collections and document counts
+omm rag collection list [--json]  # List collections with document counts, owner and shares
 omm rag collection delete <name> [--yes]  # Delete a collection's stored text and index (original files stay)
 omm rag add <collection> <paths...> [--replace] [--json]  # Add files or folders (recursive) to a collection, showing extraction and embedding progress
 omm rag remove <collection> <name> [--yes]  # Remove one document's stored text and index

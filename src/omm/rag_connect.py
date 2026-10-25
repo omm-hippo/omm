@@ -15,6 +15,14 @@ Formats (checked against each harness's documentation, 2026-10):
 * pi: ``mcpServers`` in ``~/.pi/agent/mcp.json`` (``$PI_CODING_AGENT_DIR``);
   native MCP since pi 0.99.
 * Cursor: ``mcpServers`` in ``~/.cursor/mcp.json``.
+
+``connect(harness, remote=True)`` registers the cluster head's ``/mcp``
+endpoint (MCP Streamable HTTP) instead, with the employee token from
+``omm rag remote set`` as a static ``Authorization`` header: Claude Code
+``type: "http"`` + ``url`` + ``headers``; Codex ``url`` + ``http_headers``;
+Cursor ``url`` + ``headers``; pi ``type: "http"`` + ``url`` + ``headers``.
+The token is therefore stored in the harness configuration file (and in the
+private connection record), which is tightened to owner-only on POSIX.
 """
 from __future__ import annotations
 
@@ -86,6 +94,24 @@ def server_command() -> list[str]:
     return [executable, "-m", "omm.rag_mcp"]
 
 
+def remote_entry(harness, remote=None) -> dict:
+    """Entry for the head's shared document search over HTTP."""
+    from omm import rag_remote
+    remote = remote or rag_remote.load()
+    if remote is None:
+        raise RagConnectionError("No cluster head is set. Run `omm rag remote set <head address>` first.")
+    headers = {"Authorization": f"Bearer {remote.token}"}
+    url = rag_remote.mcp_url(remote)
+    if harness == "codex":
+        return {"url": url, "http_headers": headers, "startup_timeout_sec": 30}
+    if harness == "cursor":
+        return {"url": url, "headers": headers}
+    entry = {"type": "http", "url": url, "headers": headers}
+    if harness == "pi":
+        entry["description"] = "Search company documents shared with you on the OMM cluster head, with exact quotes and pages."
+    return entry
+
+
 def server_entry(harness) -> dict:
     command, *args = server_command()
     entry = {"command": command, "args": args}
@@ -135,9 +161,13 @@ def _entry_of(document, container):
     return (SERVER_NAME in servers), (_plain(servers[SERVER_NAME]) if SERVER_NAME in servers else None)
 
 
-def connect(harness) -> dict:
-    """Add or refresh our entry. Returns {"path", "state": added|updated|unchanged}."""
+def connect(harness, remote=False) -> dict:
+    """Add or refresh our entry. Returns {"path", "state": added|updated|unchanged}.
+
+    ``remote=True`` points the entry at the cluster head instead of this PC.
+    """
     _check(harness)
+    entry = remote_entry(harness) if remote else server_entry(harness)
     if not installed(harness):
         raise RagConnectionError(f"{harness} was not found (no command on PATH and no configuration folder). Install it first.")
     journal = _journal(harness)
@@ -150,7 +180,6 @@ def connect(harness) -> dict:
         document = _parse(raw, is_toml)
         container = _container(harness)
         present, existing = _entry_of(document, container)
-        entry = server_entry(harness)
         if present and existing == entry:
             return {"path": str(path), "state": "unchanged"}
         if present and record is None:
@@ -174,6 +203,8 @@ def connect(harness) -> dict:
             raise RagConnectionError("The configuration changed while connecting; run the command again.")
         try:
             _write(path, applied)
+            if remote and os.name != "nt":
+                path.chmod(0o600)  # The file now holds the employee token.
         except OSError as error:
             raise RagConnectionError("Could not write the harness configuration; nothing else changed.") from error
     return {"path": str(path), "state": "updated" if present else "added"}
@@ -234,4 +265,5 @@ def status(harness) -> dict:
     document = _parse(_read(path, max_bytes=MAX_CONFIG_BYTES), path.suffix == ".toml")
     present, existing = _entry_of(document, _container(harness))
     return {"harness": harness, "path": str(path), "installed": installed(harness), "managed": record is not None,
-            "registered": present, "current_command": present and existing == server_entry(harness)}
+            "registered": present, "current_command": present and existing == server_entry(harness),
+            "remote": present and isinstance(existing, dict) and "url" in existing}

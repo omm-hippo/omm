@@ -171,13 +171,18 @@ def inspect_tarball(path: Path) -> PackageInfo:
         raise NpmReleaseError(f"unexpected npm package: {name!r}")
     target_name, target = target_by_package[name]
     binary_name = f"package/{target['binary']}"
-    expected_files = {"package/LICENSE", "package/package.json", binary_name}
+    licenses_name = f"package/{npm_package.THIRD_PARTY_LICENSES_NAME}"
+    expected_files = {"package/LICENSE", licenses_name, "package/package.json", binary_name}
     if set(files) != expected_files:
         raise NpmReleaseError(f"npm platform tarball {name!r} has unexpected files")
     if files["package/LICENSE"] != npm_package.canonical_license_bytes():
         raise NpmReleaseError(
             f"npm platform tarball {name!r} license does not match the repository"
         )
+    try:
+        npm_package.validate_third_party_licenses(files[licenses_name])
+    except npm_package.NpmPackageError as error:
+        raise NpmReleaseError(f"npm platform tarball {name!r}: {error}") from error
     binary = files[binary_name]
     try:
         npm_package.validate_binary_format(binary, target)

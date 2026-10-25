@@ -8,6 +8,19 @@ import pytest
 from scripts import winget_manifest
 
 
+@pytest.fixture(autouse=True)
+def _fake_third_party_licenses(monkeypatch):
+    """Packaging reads the real build environment; tests use a fixed text."""
+    monkeypatch.setattr(
+        winget_manifest.windows_portable,
+        "third_party_licenses",
+        lambda: (
+            b"OMM standalone binary: third-party software licenses\n\n"
+            b"== CPython 3.0.0 ==\n\n== OpenSSL ==\n"
+        ),
+    )
+
+
 def _archive(tmp_path: Path, version: str = "1.2.3") -> Path:
     executable = tmp_path / "input.exe"
     executable.write_bytes(b"MZ portable")
