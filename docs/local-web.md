@@ -30,6 +30,35 @@ not contact the shared server. **저장된 연결 지우기** deletes the local 
 after confirmation, without revoking the server token. Existing local chat,
 RAG remote settings and agent settings are independent.
 
+## Start a local server, recover, and choose by purpose
+
+**연결 상태 → Ollama 서버 켜기** checks the existing API first. If it is off,
+confirmation authorizes the mandatory native app safety checks and background
+`ollama serve` on an explicit IPv4 loopback address. A running server is reused;
+other processes and loaded models are never stopped. The manager tracks the
+process it creates and stops only that process when the manager server exits.
+Closing a browser tab does not stop the manager. LM Studio still needs its own
+local server switch. No native window is foregrounded and no safety bypass is
+available. Server readiness is separate from verified model generation.
+
+Failed jobs and chat loads expose typed recovery actions: a stopped server
+opens the start helper or connections, memory shortage opens the minimal-memory
+recommendations, and insufficient disk space opens **파일·설정** to preview
+cleanup targets. Files are deleted only after selecting targets and confirming
+the existing cleanup action. Unknown errors open diagnostics. After recovery,
+retry the failed preparation explicitly; the helper does not replay it silently.
+
+In **추천**, choose **한국어 대화**, **코딩**, or **문서 질문**. The guide filters
+hardware-eligible recommendations by sourced wiki tasks before shortlisting
+at most three packages. It preserves the existing memory and recommendation
+rules, explains the match, and links to sources/cautions. Multilingual support
+is not measured Korean quality. Document candidates consume text excerpts from
+**내 문서**; this does not imply native PDF/image support. No match is shown as
+an empty state rather than an unsupported recommendation. When the local
+recommendation cache lacks exact wiki matches, up to three wiki entries are
+offered for explicit package lookup instead. They are clearly labeled as
+unverified for package identity and memory fit until that lookup succeeds.
+
 ## Prepare a local model and start a conversation
 
 Choose **이 모델로 대화 시작** in recommendations or a wiki package, or
