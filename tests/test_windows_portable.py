@@ -154,11 +154,16 @@ def test_archive_verifier_rejects_extra_files(tmp_path):
 
 def _archive(tmp_path, third_party: bytes | None) -> Path:
     archive = tmp_path / "omm-windows-x64-1.2.3.zip"
+    entries = [("omm.exe", b"MZ executable"), ("LICENSE.txt", b"MIT")]
+    if third_party is not None:
+        entries.append(("THIRD_PARTY_LICENSES.txt", third_party))
     with zipfile.ZipFile(archive, "w") as bundle:
-        bundle.writestr("omm.exe", b"MZ executable")
-        bundle.writestr("LICENSE.txt", b"MIT")
-        if third_party is not None:
-            bundle.writestr("THIRD_PARTY_LICENSES.txt", third_party)
+        for name, data in entries:
+            # writestr(str) leaves no file mode, which the verifier rejects as
+            # a non-regular entry when the archive is written on POSIX.
+            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+            info.create_system = 0
+            bundle.writestr(info, data)
     return archive
 
 

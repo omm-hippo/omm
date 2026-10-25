@@ -133,7 +133,7 @@ purge_owned_data() {
         error_reports_pending.json error_reports_backoff.json \
         usage-pending.json usage-state.json usage-backoff.json usage.log \
         telemetry_last_failed.json telemetry_backoff.json \
-        ollama_manifest_compat.json; do
+        ollama_manifest_compat.json rag-remote.json; do
         rm -f "$RESOLVED_HOME/$owned_file" "$RESOLVED_HOME/$owned_file.lock"
     done
     # Flush locks held around a pending-upload file's rewrite; see
