@@ -1306,3 +1306,34 @@ def test_benchmark_refused_on_member(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "join", "omm-" + "a" * 32])
     result = runner.invoke(cli.app, ["cluster", "benchmark", LIVE_MODEL])
     assert result.exit_code == 2 and "runs on the head Mac" in " ".join(result.output.split())
+
+
+def test_run_of_an_unknown_name_says_it_is_not_installed_locally(isolated_omm_home, monkeypatch):
+    from omm import rag_remote
+    from omm.cluster import chat
+
+    rag_remote.save(rag_remote.Remote("http://192.0.2.20:52440", "omm_x"))
+    seen = {}
+
+    def unreachable(point, timeout=None):
+        seen["timeout"] = timeout
+        raise chat.ClusterError("could not reach the cluster head at http://192.0.2.20:52440")
+
+    monkeypatch.setattr(chat, "loaded_rows", unreachable)
+    result = runner.invoke(cli.app, ["run", "typo-model"])
+    assert result.exit_code == 1
+    text = " ".join(result.output.split())
+    assert "typo-model is not installed via omm" in text
+    assert "could not reach the cluster head" in text
+    assert seen["timeout"] == 2
+
+
+def test_run_of_a_name_the_cluster_does_not_serve_says_both(isolated_omm_home, monkeypatch):
+    from omm import rag_remote
+    from omm.cluster import chat
+
+    rag_remote.save(rag_remote.Remote("http://192.0.2.20:52440", "omm_x"))
+    monkeypatch.setattr(chat, "loaded_rows", lambda point, timeout=None: [])
+    result = runner.invoke(cli.app, ["run", "typo-model"])
+    assert result.exit_code == 1
+    assert "typo-model is not installed via omm" in " ".join(result.output.split())

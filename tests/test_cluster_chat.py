@@ -226,3 +226,14 @@ def test_employee_cluster_list_shows_loaded_rows(head, monkeypatch):
     result = CliRunner().invoke(cli.app, ["cluster", "list"])
     assert result.exit_code == 0, result.output
     assert LOADED in result.output
+
+
+def test_gateway_keeps_bare_ids_for_older_employee_clients(head):
+    # omm on beta reads only string entries of "models"; rows go under a new key.
+    import urllib.request
+
+    req = urllib.request.Request(head.url + chat.LOADED_MODELS_PATH, headers={"Authorization": f"Bearer {head.token}"})
+    body = json.loads(urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=5).read())
+    assert body["models"] == [LOADED]
+    assert body["rows"][0]["model"] == LOADED and set(body["rows"][0]) == {
+        "model", "size_bytes", "nodes_installed", "nodes_total", "state"}

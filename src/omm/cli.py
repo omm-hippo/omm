@@ -2768,6 +2768,23 @@ def cluster_benchmark_cmd(model: str = typer.Argument(..., help="exo model id (s
                   markup=False)
 
 
+def _cluster_lacks(model: str) -> str | None:
+    """Why the cluster cannot serve `model` to `omm run`, or None when it can."""
+    from omm.cluster import chat, models as cluster_models, settings as cluster_settings
+    from omm.cluster.errors import ClusterError
+
+    try:
+        if cluster_settings.load() is not None:
+            rows = cluster_models.inventory()
+        else:
+            rows = chat.loaded_rows(chat.endpoint(), timeout=CLUSTER_LIST_TIMEOUT)
+    except ClusterError as error:
+        return str(error)
+    if any(row.model == model and (row.state == "loaded" or row.nodes_installed) for row in rows):
+        return None
+    return f"{model} is not on the cluster either (see omm cluster list)"
+
+
 def _cluster_configured() -> bool:
     from omm.cluster import chat
 
@@ -9328,9 +9345,14 @@ def run(
     filename, entry = _lookup_entry(model_name, reg)
     if entry is None:
         if engine is None and _cluster_configured():
-            # Not a local GGUF: try it as a cluster model.
-            _cluster_chat(model_name)
-            return
+            # Not a local GGUF: hand it to the cluster only when the cluster has it.
+            reason = _cluster_lacks(model_name)
+            if reason is None:
+                _cluster_chat(model_name)
+                return
+            _print_not_installed_error(model_name)
+            err_console.print(f"Cluster: {reason}", markup=False)
+            raise typer.Exit(1)
         _print_not_installed_error(model_name)
         raise typer.Exit(1)
 

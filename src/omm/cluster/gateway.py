@@ -42,7 +42,7 @@ ALLOWED_ROUTES = frozenset({
 })
 # Answered by the gateway itself: exo's /v1/models lists every model it knows
 # (120 on exo 1.0.71), so `omm cluster run` on an employee PC asks here which
-# ones are actually loaded. Only the model ids leave /state.
+# ones are actually loaded. Only model ids, sizes, Mac counts and load state leave /state.
 LOADED_MODELS_ROUTE = ("GET", "/omm/loaded-models")
 _HOP_BY_HOP = frozenset({
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
@@ -316,9 +316,10 @@ class _Handler(BaseHTTPRequestHandler):
             return 502
         from omm.cluster.models import inventory_from
 
-        # Rows, not bare ids, so an employee's omm cluster list shows the same columns.
         rows = [row.as_dict() for row in inventory_from(raw) if row.state in ("loaded", "loading")]
-        body = json.dumps({"models": rows}).encode()
+        # "models" stays bare ids for employees on an older omm; "rows" carry the
+        # size and Mac count `omm cluster list` shows.
+        body = json.dumps({"models": [row["model"] for row in rows], "rows": rows}).encode()
         self._replied = True
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

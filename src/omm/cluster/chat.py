@@ -103,7 +103,8 @@ def loaded_rows(point: Endpoint, timeout: float | None = None):
         return [row for row in inventory_from(ExoClient(point.url).raw_state()) if row.state in ("loaded", "loading")]
     with _open(point, "GET", LOADED_MODELS_PATH, None, timeout or LIST_TIMEOUT) as response:
         try:
-            models = json.loads(response.read()).get("models")
+            data = json.loads(response.read())
+            models = data.get("rows") if isinstance(data.get("rows"), list) else data.get("models")
         except (ValueError, AttributeError) as error:
             raise ClusterError(f"{point.where} sent an unreadable model list") from error
     rows = []
