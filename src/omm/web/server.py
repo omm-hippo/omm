@@ -36,6 +36,8 @@ class WebServer(ThreadingHTTPServer):
         self.runtimes = RuntimeManager()
         self.jobs.runtime_manager = self.runtimes
         try:
+            from omm.web.shared_ai import SharedAI
+            self.shared_ai = SharedAI()
             self.chats = ChatManager(self.jobs)
             self.jobs.operation_guard = self.chats.guard_jobs
             super().__init__(("127.0.0.1", port), Handler)
@@ -131,6 +133,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/identity":
                 return self._json(200, {"kind": "omm-local-manager", "instance": self.server.instance})
+            if parsed.path == "/api/shared-ai":
+                return self._json(200, self.server.shared_ai.state())
             if parsed.path == "/api/hardware":
                 return self._json(200, self.server.service.machine())
             if parsed.path == "/api/connections":
@@ -192,6 +196,9 @@ class Handler(BaseHTTPRequestHandler):
             content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             return self._send(200, path.read_bytes(), content_type, bootstrap=is_root)
         except ValueError as error:
+            from omm.web.shared_ai import SharedError
+            if isinstance(error, SharedError):
+                return self._json(error.status, error.public())
             self._json(400, {"error": str(error)})
         except Exception:
             self._json(500, {"error": "Could not read the local OMM state. Retry after checking the model files."})
@@ -210,6 +217,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(413, {"error": "Request body is too large or has no length"})
             body = json.loads(self.rfile.read(length))
             path = urlsplit(self.path).path
+            if path == "/api/shared-ai/connect":
+                return self._json(200, self.server.shared_ai.connect(body))
+            if path == "/api/shared-ai/clear":
+                if body != {"confirmed": True}:
+                    raise ValueError("저장된 연결 삭제를 확인해 주세요.")
+                return self._json(200, self.server.shared_ai.clear())
+            if path == "/api/shared-ai/messages":
+                return self._json(200, self.server.shared_ai.ask(body))
             if path == "/api/chats":
                 request = self.server.service.chat_request(body)
                 return self._json(202, self.server.chats.start(request, body.get("request_id"), body.get("chat_id")))
@@ -266,6 +281,9 @@ class Handler(BaseHTTPRequestHandler):
         except JobConflict as error:
             self._json(409, {"error": str(error)})
         except (ValueError, TypeError, UnicodeError) as error:
+            from omm.web.shared_ai import SharedError
+            if isinstance(error, SharedError):
+                return self._json(error.status, error.public())
             self._json(400, {"error": str(error)[:500]})
         except Exception:
             self._json(500, {"error": "The operation could not be started. Check the model and job lists before retrying."})
@@ -307,7 +325,7 @@ def serve(port=0, *, open_browser=False):
             webbrowser.open(url)
         return
     print(f"OMM local manager: {server.url}", flush=True)
-    print("Press Ctrl+C to stop. Model operations and files stay on this computer.", flush=True)
+    print("Press Ctrl+C to stop. Shared AI questions go only to the server you explicitly connect.", flush=True)
     if open_browser:
         import webbrowser
         webbrowser.open(server.url)

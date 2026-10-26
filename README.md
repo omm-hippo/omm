@@ -143,6 +143,11 @@ omm help [command]  # Show help, same as --help
 chatting with, and comparing models. See [command notes](docs/command-notes.md#omm-recommend)
 and the [local manager guide](docs/local-web.md).
 
+The **공유 AI** screen connects to an administrator-provided private gateway:
+enter its address and employee token, check the connection, select the model
+confirmed by the administrator, and send a first question. The token stays in
+the local OMM settings; no SSH login is needed for normal use.
+
 ### Install & manage models
 
 ```sh
