@@ -5,7 +5,61 @@ same loopback origin. Starting without `--open` prints the URL and preserves
 the current browser focus. Choose a model, confirm installation and a runner,
 then inspect the installed file and link result under **My models**.
 
-## Prepare a model and start a conversation
+## Connect to a shared AI server
+
+Choose **공유 AI** and enter the private LAN or Tailscale gateway address and
+the employee token issued by its administrator. **연결 확인하고 저장** makes
+one authenticated model-list request and saves the connection only after a
+supported response. On the same address, leaving the token field blank reuses
+the saved token. A changed address requires a new token.
+
+Choose the model name confirmed by the administrator before sending a question.
+The returned catalog can include models that are not running; catalog access
+alone is not generation verification. The screen displays actual-response
+confirmation only after a successful question. No installation, restart or
+unload command is sent. Token, network, certificate, unsupported-response,
+model-request and quota problems have separate next steps; network failure
+does not establish that Tailscale itself is disabled.
+
+Enter sends a question, Shift+Enter inserts a newline, and IME composition Enter
+does not send. Up to 12 recent completed turns are sent within a bounded UTF-8
+request size; older context is omitted when necessary. Questions and
+answers stay in memory and disappear on reload; the address, private token,
+last catalog and last successfully used model persist locally. Reloading does
+not contact the shared server. **저장된 연결 지우기** deletes the local connection
+after confirmation, without revoking the server token. Existing local chat,
+RAG remote settings and agent settings are independent.
+
+## Start a local server, recover, and choose by purpose
+
+**연결 상태 → Ollama 서버 켜기** checks the existing API first. If it is off,
+confirmation authorizes the mandatory native app safety checks and background
+`ollama serve` on an explicit IPv4 loopback address. A running server is reused;
+other processes and loaded models are never stopped. The manager tracks the
+process it creates and stops only that process when the manager server exits.
+Closing a browser tab does not stop the manager. LM Studio still needs its own
+local server switch. No native window is foregrounded and no safety bypass is
+available. Server readiness is separate from verified model generation.
+
+Failed jobs and chat loads expose typed recovery actions: a stopped server
+opens the start helper or connections, memory shortage opens the minimal-memory
+recommendations, and insufficient disk space opens **파일·설정** to preview
+cleanup targets. Files are deleted only after selecting targets and confirming
+the existing cleanup action. Unknown errors open diagnostics. After recovery,
+retry the failed preparation explicitly; the helper does not replay it silently.
+
+In **추천**, choose **한국어 대화**, **코딩**, or **문서 질문**. The guide filters
+hardware-eligible recommendations by sourced wiki tasks before shortlisting
+at most three packages. It preserves the existing memory and recommendation
+rules, explains the match, and links to sources/cautions. Multilingual support
+is not measured Korean quality. Document candidates consume text excerpts from
+**내 문서**; this does not imply native PDF/image support. No match is shown as
+an empty state rather than an unsupported recommendation. When the local
+recommendation cache lacks exact wiki matches, up to three wiki entries are
+offered for explicit package lookup instead. They are clearly labeled as
+unverified for package identity and memory fit until that lookup succeeds.
+
+## Prepare a local model and start a conversation
 
 Choose **이 모델로 대화 시작** in recommendations or a wiki package, or
 **대화 준비하고 시작** for an existing managed model. One confirmation covers
@@ -227,3 +281,19 @@ bounded-input checks. There is no automatic startup/reload of saved chats.
 답변 모델·실행 앱·선택한 문서는 문서와 별도의 작은 설정(`OMM_HOME/documents/question-settings.json`)으로 기억해 다음에 열 때 복원합니다. 생성 모델을 바꾸면 무엇이 바뀌는지(모델, 실행 앱)와 문서·색인은 그대로라는 설명을 표시합니다. 새 모델이 첫 질문에서 실패하면 마지막으로 답변했던 모델로 선택만 되돌리며 문서·색인·모델 파일은 건드리지 않습니다. 새 모델이 더 좋은 답변을 낸다고 보장하지 않습니다.
 
 모델은 질문 때마다 명시적으로 선택하며 생성 모델을 바꿔도 문서 색인을 다시 만들지 않습니다. 기존 로딩이 있으면 그 작업을 보존하고 질문을 거절합니다. 메모리 여유를 확인한 뒤 이 질문이 로딩한 모델만 해제합니다. 근거가 없으면 모델에 질문을 보내지 않습니다. 문서의 명령문은 지시가 아닌 인용 자료로 취급합니다. 모델이 올바른 출처 번호를 반환하지 않으면 답변 대신 원문을 확인하라는 안내를 표시합니다.
+
+## 웹에서 공유하기 (내 문서 탭)
+
+‘내 문서’ 탭은 `omm rag` 컬렉션·공유 명령을 화면으로 옮긴 것입니다. 권한 규칙과 오류 문장은 CLI와 같습니다([사내 공유](rag-mcp.md#사내-공유)).
+
+- **📍 지금 보는 곳** — `이 PC`(이 PC의 문서 저장소, 관리자) 또는 `회사 head (<주소>) · 나: <출입증 이름>`. [회사에 연결]은 head 주소와 직원 출입증(토큰)을 받아 `omm rag remote set`과 똑같이 head에 토큰을 보여 이름을 확인한 뒤에만 저장합니다. [이 PC로 돌아가기]는 `omm rag remote clear`와 같습니다.
+- **컬렉션** — 왼쪽 목록에 이름, 문서 수, 만든 사람, 내 역할(관리자 / 주인 / 공유받음)이 보입니다. [+ 새 컬렉션]으로 만들고, 주인·관리자는 확인 후 지울 수 있습니다(기본 컬렉션은 지울 수 없음).
+- **문서** — 주인·관리자는 파일을 올리고(같은 이름 교체 가능) 지웁니다. 올리기는 작업(worker)으로 돌고 진행 막대를 보여 줍니다. head로 올릴 때는 “회사 head로 보내고 색인 만드는 중”으로 표시되고, head가 텍스트 추출과 색인을 마칠 때까지 최대 15분 기다립니다.
+- **공유** — 주인·관리자에게만 보입니다. 👤 사람(출입증 이름)과 👥 팀 칩이 있고 ✕로 공유를 거둡니다. [사람 추가]·[팀 추가]는 CLI처럼 있는 출입증 이름과 팀만 받습니다.
+- **질문하기** — 이 PC 모드에서는 지금처럼 고른 로컬 모델이 고른 문서로 답하고 출처를 보여 줍니다. [답변 없이 근거만 찾기]는 모델 없이 그 컬렉션의 원문 구간만 찾습니다. 회사 head 모드에서는 답변을 만들지 않고 head가 찾은 근거 구간을 원문 그대로 보여 줍니다.
+- **AI 연결** — Claude Code·Codex·Cursor·pi마다 연결 상태(이 PC 문서 / 회사 head 문서)와 [연결]·[해제]가 있습니다. `omm rag connect`(회사 head 모드에서는 `--remote`)·`disconnect`와 같은 백업·복원 방식입니다. 연결한 뒤에는 그 도구를 다시 시작해야 합니다.
+- **팀 관리** — 이 PC 모드(회사 head를 정하지 않은 관리자)에서만 보입니다. 팀 만들기·지우기, 사람 넣기·빼기.
+- **직원 출입증 (토큰)** — 이 PC가 클러스터 head(`cluster.json`의 role이 head)이거나 이미 `OMM_HOME/cluster/tokens.json`이 있을 때만 보입니다. 새 출입증은 만들 때 한 번만 보여 주고(복사 버튼, “다시 볼 수 없어요”), 목록에는 이름과 만든 때만 나옵니다. 취소는 확인 후 바로 적용됩니다.
+
+직원 토큰은 `OMM_HOME/rag-remote.json`에만 있고 브라우저로 보내지 않습니다. API 응답, 작업 기록(`web-jobs`), 오류 문장 어디에도 들어가지 않습니다. 예외는 관리자가 새 출입증을 만들 때의 그 한 번 응답뿐입니다. 모든 변경 요청은 다른 관리 기능과 같은 세션 쿠키·같은 출처 머리글 검사를 받고, 지우기·공유 거두기·해제·연결 끊기는 확인을 거칩니다.
+

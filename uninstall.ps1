@@ -123,7 +123,7 @@ function Stop-UninstallPreservingSources {
 function Remove-OmmOwnedData {
     # Delete only paths the application owns. A custom OMM_HOME may contain
     # unrelated files, so never recursively delete the container itself.
-    foreach ($name in @("models", "evaluations", "runtime-sessions", "install-journal", "catalog-history", "model-archive", "session", "logs", "locks", "bin", "web-jobs", "web-chats", "documents", "arena", "agent-connections", "rag-connections", "security-checks", "cluster")) {
+    foreach ($name in @("models", "evaluations", "runtime-sessions", "install-journal", "catalog-history", "model-archive", "session", "logs", "locks", "bin", "web-jobs", "web-chats", "documents", "arena", "agent-connections", "rag-connections", "security-checks", "cluster", "shared-ai")) {
         $target = Join-Path $resolvedHome $name
         if (Test-Path -LiteralPath $target) {
             Remove-Item -LiteralPath $target -Recurse -Force

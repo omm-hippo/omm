@@ -17,6 +17,7 @@ from omm.hashutil import sha256_file
 from omm.web.chat_stream import ChatCancelled, stream_reply
 from omm.web.jobs import JobConflict
 from omm.web.probe import adapter_for
+from omm.web.recovery import ActionError, failure
 
 ACTIVE = {"starting", "ready", "generating", "cancelling", "closing", "release_failed"}
 
@@ -120,6 +121,7 @@ class ChatManager:
             record = {**(existing or {}), "id": key, "filename": request["filename"], "engine": request["engine"],
                       "model_id": hashlib.sha256(request["filename"].encode()).hexdigest(),
                       "open_request_id": request_id, "status": "starting", "notice": "모델을 준비하고 있어요.",
+                      "failure": None,
                       "updated_at": time.time(), "turns": (existing or {}).get("turns", [])}
             self.records[key] = record
             self.active = key
@@ -156,16 +158,16 @@ class ChatManager:
                     raise ValueError("모델 연결 상태가 바뀌었어요. 내 모델에서 확인하세요.")
                 adapter = adapter_for(engine)
                 if not adapter.health().reachable:
-                    raise ValueError("실행 앱의 로컬 서버를 먼저 켜 주세요.")
+                    raise ActionError("server_unavailable", "실행 앱의 로컬 서버를 먼저 켜 주세요.")
                 reference = cli._compatibility_model_ref(filename, entry, engine)
                 models = adapter.list_models()
                 visible = find_runtime_model(models, reference)
                 if visible is None:
-                    raise ValueError("실행 앱에서 모델을 찾지 못했어요. 연결을 확인하세요.")
+                    raise ActionError("model_not_visible", "실행 앱에서 모델을 찾지 못했어요. 연결을 확인하세요.")
                 options = LoadOptions()
                 if not visible.loaded:
                     if any(model.loaded for model in models):
-                        raise ValueError("다른 모델이 사용 중이에요. 기존 작업을 유지하고 새 로딩을 중단했어요.")
+                        raise ActionError("model_busy", "다른 모델이 사용 중이에요. 기존 작업을 유지하고 새 로딩을 중단했어요.")
                     saved = runtime_profiles.saved_options_for_file(filename, engine, path)
                     if saved:
                         options = saved
@@ -193,7 +195,7 @@ class ChatManager:
         except Exception as error:
             with self.lock:
                 self.adapter, self.receipt = adapter, receipt
-                self.records[key].update(status="failed", notice=str(error)[:500], updated_at=time.time())
+                self.records[key].update(status="failed", notice=str(error)[:500], failure=failure(error), updated_at=time.time())
                 if receipt is None:
                     self.active = None
                     self.release_finished.set()
@@ -296,15 +298,15 @@ class ChatManager:
         except ChatCancelled:
             turn["status"] = "cancelled"
         except Exception as error:
-            turn.update(status="cancelled" if self.stop.is_set() else "failed", error="" if self.stop.is_set() else str(error)[:500])
+            turn.update(status="cancelled" if self.stop.is_set() else "failed", error="" if self.stop.is_set() else str(error)[:500], failure=failure(error))
         finally:
             with self.lock:
                 record = self.records[key]
                 record.update(status="closing" if self.closing else "ready", updated_at=time.time())
                 try:
                     self._save(record)
-                except (OSError, ValueError):
-                    turn.update(status="failed", error="대화 기록을 저장하지 못했어요. 대화 JSON을 저장한 뒤 저장 공간을 확인하세요.")
+                except (OSError, ValueError) as error:
+                    turn.update(status="failed", error="대화 기록을 저장하지 못했어요. 대화 JSON을 저장한 뒤 저장 공간을 확인하세요.", failure=failure(error))
                     record["notice"] = turn["error"]
             if self.closing:
                 self._release(key)

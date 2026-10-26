@@ -216,6 +216,30 @@ answers stay visible locally but are not used in later inference context.
 The GUI provides JSON export and confirmed deletion of closed conversations.
 Explicit data removal also removes `web-chats`; ordinary updates retain it.
 
+### Shared AI in the local web manager
+
+The **공유 AI** screen is an explicit connection to a private office or Tailscale
+gateway, separate from local chat and `omm rag remote`. The local browser sends
+the address and employee token to OMM's same-origin, loopback-only API. Only an
+explicit connection check sends `GET /v1/models`; only sending a question sends
+`POST /v1/chat/completions` with the selected model and recent conversation turns.
+An entry in the model catalog is not proof that a model is running. OMM does not
+call model installation, restart, unload, or cluster administration routes.
+
+The address, token, last catalog and last successfully used model are stored in
+`OMM_HOME/shared-ai/connection.json` (mode 0600, directory 0700 on POSIX). The
+token is never returned by the local API or stored in browser localStorage.
+Chat text and bounded duplicate-request results stay in process/browser memory;
+refreshing clears the visible conversation. These values are not added to run
+logs, telemetry or crash reports. Removing the saved connection deletes the
+local credentials; it does not revoke the server's token.
+
+Gateway requests bypass proxy environment variables, reject redirects, validate
+and pin private destination addresses, and keep normal HTTPS certificate
+verification. No cloud fallback or automatic retry is used. Plain HTTP relies
+on the office network or Tailscale for transport protection. OMM never enables
+Tailscale or changes network/firewall settings from this screen.
+
 ### Local document questions and `omm rag`
 
 The loopback web manager and `omm rag` store imported document text, content
@@ -276,6 +300,17 @@ share those files. The gateway's request log records the path (for example
 `/rag/v1/search`) but never collection or document names, questions, quotations or
 document text, which travel only in the query string, headers or body. Who may see
 which collection (owner, shares, teams) is stored next to the documents on the head.
+
+The **내 문서** tab of `omm web` does the same through the loopback web server: the
+browser sends the head address and the token once to `127.0.0.1` when you press
+회사에 연결, and the server keeps the token only in `OMM_HOME/rag-remote.json`. No
+page, API response, error message or job record under `OMM_HOME/web-jobs` contains it.
+A file uploaded to the head passes from the browser to the local server and its worker
+process only in memory (job records keep the file name, collection and head address,
+not the content) and then goes to the head as above. On a cluster head, the tab's
+employee-token panel uses the same `OMM_HOME/cluster/tokens.json` as
+`omm cluster token`; a new token is shown once in the browser and only its digest is
+stored.
 
 ## Local agent connection backups
 

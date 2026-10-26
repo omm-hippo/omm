@@ -1,5 +1,6 @@
 """Compose existing managed operations after one explicit task confirmation."""
 from __future__ import annotations
+from omm.web.recovery import ActionError
 
 STAGES = {"engine": "실행 앱 확인", "safety": "앱 안전 검사", "runtime": "로컬 서버 확인",
           "install": "모델 파일 준비", "link": "실행 앱 연결", "verify": "실제 응답 확인"}
@@ -49,7 +50,7 @@ def prepare(request, stop, progress):
     def reachable():
         adapter = adapter_for(engine)
         if not adapter.health().reachable:
-            raise ValueError("실행 앱의 로컬 서버를 켠 뒤 이 작업을 다시 시작해 주세요. 모델 다운로드는 시작하지 않았어요.")
+            raise ActionError("server_unavailable", "실행 앱의 로컬 서버를 켠 뒤 이 작업을 다시 시작해 주세요. 모델 다운로드는 시작하지 않았어요.")
         models = adapter.list_models()
         # A warm document-search embedding model is not another chat task.
         from omm.documents import without_embedding_model
@@ -60,7 +61,7 @@ def prepare(request, stop, progress):
         selected = (find_runtime_model(models, cli._compatibility_model_ref(filename, entry, engine))
                     if entry and (config.MODELS_DIR / filename).is_file() else None)
         if (selected is None or not selected.loaded) and any(model.loaded for model in models):
-            raise ValueError("다른 모델이 이미 로딩되어 있어요. 그 모델을 직접 종료한 뒤 다시 시작해 주세요. 기존 로딩은 바꾸지 않았어요.")
+            raise ActionError("model_busy", "다른 모델이 이미 로딩되어 있어요. 그 모델을 직접 종료한 뒤 다시 시작해 주세요. 기존 로딩은 바꾸지 않았어요.")
     step("runtime", reachable)
 
     def model_file():
@@ -87,7 +88,8 @@ def prepare(request, stop, progress):
     def check_response():
         value = execute({"operation": "verify", "filename": filename, "engine": engine}, stop)
         if value.get("runtime_verified") is not True:
-            raise ValueError(value.get("message") or "실제 응답을 확인하지 못했어요. 실패 단계를 확인한 뒤 다시 시도해 주세요.")
+            reason = value.get("compatibility", {}).get("failure_reason", "unknown")
+            raise ActionError(reason, value.get("message") or "실제 응답을 확인하지 못했어요. 실패 단계를 확인한 뒤 다시 시도해 주세요.")
         return value
     verified = step("verify", check_response)
     return {**verified, "model_id": identifier(filename), "linked": linked["linked"],

@@ -32,7 +32,12 @@ class WebServer(ThreadingHTTPServer):
         self.session = secrets.token_urlsafe(32)
         self.instance = secrets.token_urlsafe(16)
         self.chats = None
+        from omm.web.runtime import RuntimeManager
+        self.runtimes = RuntimeManager()
+        self.jobs.runtime_manager = self.runtimes
         try:
+            from omm.web.shared_ai import SharedAI
+            self.shared_ai = SharedAI()
             self.chats = ChatManager(self.jobs)
             self.jobs.operation_guard = self.chats.guard_jobs
             super().__init__(("127.0.0.1", port), Handler)
@@ -62,6 +67,7 @@ class WebServer(ThreadingHTTPServer):
             except (OSError, ValueError):
                 pass
         self.jobs.close()
+        self.runtimes.close()
         super().server_close()
 
 
@@ -116,6 +122,23 @@ class Handler(BaseHTTPRequestHandler):
                 return False
         return True
 
+    def _rag_value(self, call):
+        """Run one 내 문서 sharing call; answer its own errors with their HTTP status."""
+        from omm import rag_acl, rag_connect, rag_remote
+        from omm.web.rag_sharing import Problem, web_message
+        try:
+            return call()
+        except (Problem, rag_acl.AccessError) as error:
+            self._json(error.status, {"error": str(error)[:500]})
+        except (rag_remote.RemoteError, rag_connect.RagConnectionError) as error:
+            self._json(400, {"error": web_message(str(error))[:500]})
+        return None
+
+    def _rag(self, call):
+        value = self._rag_value(call)
+        if value is not None:
+            self._json(200, value)
+
     def do_OPTIONS(self):
         self._json(403, {"error": "Cross-origin API access is disabled"})
 
@@ -127,6 +150,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/identity":
                 return self._json(200, {"kind": "omm-local-manager", "instance": self.server.instance})
+            if parsed.path == "/api/shared-ai":
+                return self._json(200, self.server.shared_ai.state())
             if parsed.path == "/api/hardware":
                 return self._json(200, self.server.service.machine())
             if parsed.path == "/api/connections":
@@ -161,11 +186,19 @@ class Handler(BaseHTTPRequestHandler):
                 if set(query) - {"profile", "q"} or any(len(values) != 1 for values in query.values()):
                     raise ValueError("Unsupported query parameters")
                 return self._json(200, self.server.service.recommendations(query.get("profile", ["balanced"])[0], query.get("q", [""])[0]))
+            if parsed.path == "/api/guide":
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                if set(query) - {"purpose", "profile"} or any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Unsupported query parameters")
+                return self._json(200, self.server.service.guide(query.get("purpose", [""])[0], query.get("profile", ["balanced"])[0]))
             if parsed.path == "/api/documents":
                 from omm.documents import DocumentStore
                 from omm.web import document_settings
                 return self._json(200, {"documents": DocumentStore().list(), "answers": DocumentStore().answers(),
                                         "settings": document_settings.load()})
+            if parsed.path.startswith("/api/rag/"):
+                from omm.web.rag_sharing import get as rag_get
+                return self._rag(lambda: rag_get(parsed.path, parse_qs(parsed.query, keep_blank_values=True)))
             if parsed.path == "/api/jobs":
                 return self._json(200, self.server.jobs.list())
             if parsed.path == "/api/chats":
@@ -183,6 +216,9 @@ class Handler(BaseHTTPRequestHandler):
             content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             return self._send(200, path.read_bytes(), content_type, bootstrap=is_root)
         except ValueError as error:
+            from omm.web.shared_ai import SharedError
+            if isinstance(error, SharedError):
+                return self._json(error.status, error.public())
             self._json(400, {"error": str(error)})
         except Exception:
             self._json(500, {"error": "Could not read the local OMM state. Retry after checking the model files."})
@@ -196,11 +232,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(415, {"error": "Use a bounded JSON request"})
         try:
             length = int(self.headers.get("Content-Length", "-1"))
-            limit = 9 * 1024 * 1024 if self.path == "/api/documents" else MAX_BODY
+            limit = 9 * 1024 * 1024 if urlsplit(self.path).path in {"/api/documents", "/api/rag/upload"} else MAX_BODY
             if not 0 <= length <= limit:
                 return self._json(413, {"error": "Request body is too large or has no length"})
             body = json.loads(self.rfile.read(length))
             path = urlsplit(self.path).path
+            if path == "/api/shared-ai/connect":
+                return self._json(200, self.server.shared_ai.connect(body))
+            if path == "/api/shared-ai/clear":
+                if body != {"confirmed": True}:
+                    raise ValueError("저장된 연결 삭제를 확인해 주세요.")
+                return self._json(200, self.server.shared_ai.clear())
+            if path == "/api/shared-ai/messages":
+                return self._json(200, self.server.shared_ai.ask(body))
             if path == "/api/chats":
                 request = self.server.service.chat_request(body)
                 return self._json(202, self.server.chats.start(request, body.get("request_id"), body.get("chat_id")))
@@ -236,6 +280,15 @@ class Handler(BaseHTTPRequestHandler):
                 from omm.web.document_requests import validate
                 request = validate(path, body, self.server.service)
                 return self._json(202, self.server.jobs.start(request, body.get("request_id")))
+            if path == "/api/rag/upload":
+                from omm.web.rag_sharing import upload_request
+                request = self._rag_value(lambda: upload_request(body))
+                if request is not None:
+                    return self._json(202, self.server.jobs.start(request, body.get("request_id")))
+                return
+            if path.startswith("/api/rag/"):
+                from omm.web.rag_sharing import post
+                return self._rag(lambda: post(path, body))
             if path == "/api/catalog/refresh":
                 if body != {}:
                     raise ValueError("Catalog refresh accepts no additional fields")
@@ -257,6 +310,9 @@ class Handler(BaseHTTPRequestHandler):
         except JobConflict as error:
             self._json(409, {"error": str(error)})
         except (ValueError, TypeError, UnicodeError) as error:
+            from omm.web.shared_ai import SharedError
+            if isinstance(error, SharedError):
+                return self._json(error.status, error.public())
             self._json(400, {"error": str(error)[:500]})
         except Exception:
             self._json(500, {"error": "The operation could not be started. Check the model and job lists before retrying."})
@@ -298,7 +354,7 @@ def serve(port=0, *, open_browser=False):
             webbrowser.open(url)
         return
     print(f"OMM local manager: {server.url}", flush=True)
-    print("Press Ctrl+C to stop. Model operations and files stay on this computer.", flush=True)
+    print("Press Ctrl+C to stop. Shared AI questions go only to the server you explicitly connect.", flush=True)
     if open_browser:
         import webbrowser
         webbrowser.open(server.url)
