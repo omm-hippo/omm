@@ -118,18 +118,18 @@ omm engine update ENGINE [--dry-run] [--yes]  # Use the identified package manag
 omm engine uninstall ENGINE [--dry-run] [--yes]  # Remove the engine package, keep OMM models
 omm cluster init  # Make this Mac the head of a Thunderbolt-linked exo cluster (macOS 26.2+)
 omm cluster join <namespace>  # Add this Mac to the cluster the head Mac created
-omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, and any problems
+omm cluster status [--json]  # Nodes, memory, RDMA, firewall, gateway, and any problems (employee PCs: Macs connected, memory, loaded models)
 omm cluster restart  # Restart exo on this Mac when status lists Macs that are on but missing
 omm cluster recommend [--json]  # Show the biggest exo models that fit the cluster's free memory
 omm cluster search TEXT [--json]  # Search Hugging Face for MLX models exo can run
 omm cluster install MODEL  # Download a model to every Mac without loading it (head Mac)
 omm cluster uninstall MODEL [--yes]  # Delete a model from every Mac, unloading it first (head Mac)
 omm cluster list [--json]  # Models on the cluster and whether each is loaded (employee PCs: loaded ones)
-omm cluster info MODEL [--json]  # A model's details, which Macs have it, and whether it fits now
+omm cluster info MODEL [--json]  # A model's details, which Macs have it, and whether it fits now (also from employee PCs)
 omm cluster load MODEL  # Load a model into memory for employees; obeys omm setting memory-guard (head Mac)
 omm cluster unload MODEL  # Free a loaded model's memory; its files stay (head Mac)
 omm cluster run [MODEL]  # Chat in the terminal, loading an installed model first (any PC with omm rag remote set)
-omm cluster benchmark MODEL [--json]  # First-token time and tok/s of one answer on the cluster (head Mac; never uploaded)
+omm cluster benchmark MODEL [--json]  # First-token time and tok/s of one answer on the cluster (employee PCs: loaded models; never uploaded)
 omm cluster token add <name>  # Create an employee access token for the cluster gateway (head Mac; shown once)
 omm cluster token list  # List employee tokens by name (head Mac)
 omm cluster token revoke <name>  # Revoke an employee token (head Mac)

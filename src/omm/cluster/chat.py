@@ -67,7 +67,9 @@ def _open(point: Endpoint, method: str, path: str, body: dict | None, timeout: f
     except urlerror.HTTPError as error:
         if error.code == 401:
             raise ClusterError(BAD_TOKEN) from error
-        if error.code == 404 and path == LOADED_MODELS_PATH:
+        if error.code == 400:
+            raise ClusterError(_error_message(error) or f"{point.where} refused the request") from error
+        if error.code == 404 and path.startswith("/omm/"):
             raise ClusterError(f"{point.where} runs an older omm; on the head Mac run omm update, "
                                "then omm cluster init") from error
         if error.code == 502:
@@ -79,6 +81,31 @@ def _open(point: Endpoint, method: str, path: str, body: dict | None, timeout: f
             raise ClusterError("exo is not running on this Mac; check it with omm cluster status") from error
         raise ClusterError(f"could not reach the cluster head at {point.url}; check the address "
                            "(omm rag remote) and that you are on the office network") from error
+
+
+def _error_message(error) -> str | None:
+    # The gateway's own refusals carry {"error": {"message": "omm cluster: ..."}}.
+    try:
+        message = json.loads(error.read()).get("error", {}).get("message")
+    except (ValueError, AttributeError, OSError):
+        return None
+    return message.removeprefix("omm cluster: ") if isinstance(message, str) and message else None
+
+
+# The head previews every candidate before it can rank them (up to a minute each).
+VIEW_TIMEOUT = 300
+
+
+def view(point: Endpoint, path: str, timeout: float = VIEW_TIMEOUT, **query: str):
+    """One of the head gateway's read-only views (gateway.VIEW_ROUTES) as parsed JSON."""
+    from urllib.parse import urlencode
+
+    target = f"{path}?{urlencode(query)}" if query else path
+    with _open(point, "GET", target, None, timeout) as response:
+        try:
+            return json.loads(response.read())
+        except ValueError as error:
+            raise ClusterError(f"{point.where} sent an unreadable answer") from error
 
 
 def cluster_configured() -> bool:

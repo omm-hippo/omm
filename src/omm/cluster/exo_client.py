@@ -352,6 +352,10 @@ class ExoClient:
         self._base_url = base_url.rstrip("/")
         self._http = LoopbackJsonClient(base_url)
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
     def _call(self, method: str, path: str, **kwargs) -> dict:
         from omm.engines.base import RuntimeAdapterError
 
