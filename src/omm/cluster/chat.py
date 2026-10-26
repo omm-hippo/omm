@@ -81,17 +81,34 @@ def _open(point: Endpoint, method: str, path: str, body: dict | None, timeout: f
                            "(omm rag remote) and that you are on the office network") from error
 
 
-def loaded_models(point: Endpoint) -> list[str]:
+def loaded_rows(point: Endpoint):
+    """The loaded models as models.ModelRow, from this Mac's exo or the head's gateway."""
+    from omm.cluster.models import ModelRow, inventory_from
+
     if point.token is None:
         from omm.cluster.exo_client import ExoClient
 
-        return list(dict.fromkeys(i.model_id for i in ExoClient(point.url).state().instances))
+        return [row for row in inventory_from(ExoClient(point.url).raw_state()) if row.state in ("loaded", "loading")]
     with _open(point, "GET", LOADED_MODELS_PATH, None, LIST_TIMEOUT) as response:
         try:
             models = json.loads(response.read()).get("models")
         except (ValueError, AttributeError) as error:
             raise ClusterError(f"{point.where} sent an unreadable model list") from error
-    return [m for m in models if isinstance(m, str)] if isinstance(models, list) else []
+    rows = []
+    for item in models if isinstance(models, list) else []:
+        if isinstance(item, str):
+            # A head on an older omm sends bare ids.
+            rows.append(ModelRow(item, None, 0, 0, "loaded"))
+        elif isinstance(item, dict) and isinstance(item.get("model"), str):
+            size, have, total = (item.get(key) for key in ("size_bytes", "nodes_installed", "nodes_total"))
+            rows.append(ModelRow(item["model"], size if isinstance(size, int) else None,
+                                 have if isinstance(have, int) else 0, total if isinstance(total, int) else 0,
+                                 str(item.get("state") or "loaded")))
+    return rows
+
+
+def loaded_models(point: Endpoint) -> list[str]:
+    return list(dict.fromkeys(row.model for row in loaded_rows(point)))
 
 
 def pick_model(requested: str | None, loaded: list[str]) -> str:

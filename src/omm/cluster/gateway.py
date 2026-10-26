@@ -310,12 +310,15 @@ class _Handler(BaseHTTPRequestHandler):
         from omm.cluster.exo_client import ExoClient
 
         try:
-            state = ExoClient(f"http://{self.server.upstream_host}:{self.server.upstream_port}").state()
+            raw = ExoClient(f"http://{self.server.upstream_host}:{self.server.upstream_port}").raw_state()
         except ClusterError:
             self._reply_error(502, "api_error", "omm cluster: exo is not running on this Mac")
             return 502
-        models = list(dict.fromkeys(instance.model_id for instance in state.instances))
-        body = json.dumps({"models": models}).encode()
+        from omm.cluster.models import inventory_from
+
+        # Rows, not bare ids, so an employee's omm cluster list shows the same columns.
+        rows = [row.as_dict() for row in inventory_from(raw) if row.state in ("loaded", "loading")]
+        body = json.dumps({"models": rows}).encode()
         self._replied = True
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

@@ -46,7 +46,10 @@ def inventory(client: ExoClient | None = None) -> list[ModelRow]:
     """Every model at least one Mac has (or is fetching), plus loaded ones."""
     commands.require_macos()
     client = client or ExoClient()
-    raw = client.raw_state()
+    return inventory_from(client.raw_state())
+
+
+def inventory_from(raw: dict) -> list[ModelRow]:
     state = exo_client.parse_state(raw)
     downloads = [row for row in exo_client.parse_downloads(raw) if row.kind != "Pending"]
     loaded = {instance.model_id for instance in state.instances}

@@ -2640,21 +2640,28 @@ def cluster_uninstall_cmd(
 @global_flags
 def cluster_list_cmd() -> None:
     """List the models on the cluster and whether each one is loaded."""
-    from omm.cluster import models as cluster_models
+    from omm.cluster import chat, models as cluster_models, settings as cluster_settings
 
-    rows = _cluster_call(cluster_models.inventory)
+    if cluster_settings.load() is None:
+        # An employee PC: the loaded models, through the head's gateway.
+        rows = _cluster_call(chat.loaded_rows, _cluster_call(chat.endpoint))
+    else:
+        rows = _cluster_call(cluster_models.inventory)
     if _global_opts().json:
         _print_json(data=[row.as_dict() for row in rows])
         return
     if not rows:
-        console.print("No models on this cluster yet. Find one with: omm cluster recommend", markup=False)
+        console.print("No model is loaded on the cluster right now." if cluster_settings.load() is None
+                      else "No models on this cluster yet. Find one with: omm cluster recommend", markup=False)
         return
     for line in _cluster_rows_text(rows):
         console.print(line, markup=False)
 
 
 def _cluster_rows_text(rows) -> list[str]:
-    return [f"{row.model}  {_cluster_gib(row.size_bytes)}  {row.nodes_installed}/{row.nodes_total} Macs  {row.state}"
+    # An older head sends bare ids: no size or Mac count to show.
+    return [f"{row.model}  {_cluster_gib(row.size_bytes)}  "
+            + (f"{row.nodes_installed}/{row.nodes_total} Macs  " if row.nodes_total else "") + row.state
             for row in rows]
 
 

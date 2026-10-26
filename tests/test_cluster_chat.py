@@ -195,3 +195,34 @@ def test_cli_run_keeps_chatting_after_a_failed_turn(monkeypatch, isolated_omm_ho
     assert result.exit_code == 0
     assert "boom" in result.output
     assert calls[1] == [{"role": "user", "content": "two"}]
+
+
+def test_gateway_sends_rows_for_employee_lists(head):
+    rows = chat.loaded_rows(head)
+    assert [row.model for row in rows] == [LOADED]
+    assert rows[0].state in ("loaded", "loading") and rows[0].nodes_total == 1
+
+
+def test_chat_accepts_an_older_gateway_that_sends_only_ids(monkeypatch):
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"models": [LOADED]}).encode()
+
+    monkeypatch.setattr(chat, "_open", lambda *a, **k: _Response())
+    point = chat.Endpoint("http://head:52440", "omm_x")
+    assert chat.loaded_models(point) == [LOADED]
+    rows = chat.loaded_rows(point)
+    assert [(row.model, row.state, row.size_bytes) for row in rows] == [(LOADED, "loaded", None)]
+
+
+def test_employee_cluster_list_shows_loaded_rows(head, monkeypatch):
+    monkeypatch.setattr(chat, "endpoint", lambda: head)
+    result = CliRunner().invoke(cli.app, ["cluster", "list"])
+    assert result.exit_code == 0, result.output
+    assert LOADED in result.output
