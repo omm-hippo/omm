@@ -2560,6 +2560,59 @@ def cluster_model_cmd(
     console.print(_cluster_call(cluster_commands.load_model, model, _cluster_out), markup=False)
 
 
+@cluster_app.command(name="run")
+@global_flags
+def cluster_run_cmd(
+    model: str | None = typer.Argument(None, help="Loaded exo model id; omit when the cluster serves one"),
+) -> None:
+    """Chat in the terminal with the model the cluster serves (any PC with omm rag remote set)."""
+    from omm.cluster import chat
+
+    try:
+        import readline  # noqa: F401  (line editing and history for input())
+    except ImportError:
+        pass
+    point = _cluster_call(chat.endpoint)
+    chosen = _cluster_call(chat.pick_model, model, _cluster_call(chat.loaded_models, point))
+    console.print(f"{chosen} on {point.where}", markup=False)
+    console.print("[muted]Type /bye to leave the chat.[/muted]")
+    messages: list[dict] = []
+    while True:
+        try:
+            text = input(">>> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return
+        if not text:
+            continue
+        if text == "/bye":
+            return
+        messages.append({"role": "user", "content": text})
+        shown = {"kind": None}
+
+        def show(kind: str, piece: str) -> None:
+            if shown["kind"] == "reasoning" and kind == "content":
+                console.print("\n")
+            shown["kind"] = kind
+            # soft_wrap: rich would otherwise wrap every streamed piece on its own.
+            console.print(piece, style="muted" if kind == "reasoning" else None, end="",
+                          markup=False, highlight=False, soft_wrap=True)
+
+        try:
+            answer = chat.reply(point, chosen, messages, show)
+        except KeyboardInterrupt:
+            console.print("\n[muted](stopped)[/muted]")
+            messages.pop()
+            continue
+        except chat.ClusterError as error:
+            console.print()
+            err_console.print(str(error), markup=False)
+            messages.pop()
+            continue
+        console.print()
+        messages.append({"role": "assistant", "content": answer})
+
+
 @cluster_token_app.command(name="add")
 @global_flags
 def cluster_token_add_cmd(name: str = typer.Argument(..., help="Who the token is for, e.g. kim")) -> None:
