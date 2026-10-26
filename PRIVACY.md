@@ -277,6 +277,17 @@ share those files. The gateway's request log records the path (for example
 document text, which travel only in the query string, headers or body. Who may see
 which collection (owner, shares, teams) is stored next to the documents on the head.
 
+The **내 문서** tab of `omm web` does the same through the loopback web server: the
+browser sends the head address and the token once to `127.0.0.1` when you press
+회사에 연결, and the server keeps the token only in `OMM_HOME/rag-remote.json`. No
+page, API response, error message or job record under `OMM_HOME/web-jobs` contains it.
+A file uploaded to the head passes from the browser to the local server and its worker
+process only in memory (job records keep the file name, collection and head address,
+not the content) and then goes to the head as above. On a cluster head, the tab's
+employee-token panel uses the same `OMM_HOME/cluster/tokens.json` as
+`omm cluster token`; a new token is shown once in the browser and only its digest is
+stored.
+
 ## Local agent connection backups
 
 `omm setting agent local` saves a private local backup of the selected
