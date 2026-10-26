@@ -3,7 +3,8 @@
 exo's API listens on every interface with no authentication, and the pf
 anchor keeps it off the office network. This server sits on the head Mac,
 checks a per-employee token, and forwards only the inference routes to
-exo on loopback. Bodies are streamed straight through and never logged.
+exo on loopback. Bodies are streamed straight through and never logged;
+only the model list and exo's "No instance found" answer are rewritten.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import time
 from urllib.parse import urlsplit, urlunsplit
 
 from omm import config
+from omm.cluster import exo_client
 from omm.cluster.tokens import TokenStore
 
 GATEWAY_PORT = 52440
@@ -51,6 +53,31 @@ log = logging.getLogger("omm.cluster.gateway")
 
 def _error_body(kind: str, message: str) -> bytes:
     return json.dumps({"type": "error", "error": {"type": kind, "message": message}}).encode()
+
+
+def _not_loaded_message(body: bytes | None) -> str:
+    try:
+        model = json.loads(body or b"").get("model")
+    except (ValueError, AttributeError):
+        model = None
+    named = isinstance(model, str) and model
+    return (f"omm cluster: {model if named else 'the requested model'} is not loaded on the cluster. "
+            f"The admin loads it on the head Mac with: omm cluster model {model if named else '<model id>'}")
+
+
+def loaded_models(catalog: bytes, state: bytes) -> bytes:
+    """exo's /v1/models body cut down to the models with a ready instance.
+
+    exo lists its whole catalog there (about 120 models on exo 1.0.71), and a
+    harness that picks an unloaded one gets "No instance found" (#531).
+    """
+    data = json.loads(catalog)
+    state = json.loads(state)
+    rows = data.get("data") if isinstance(data, dict) else None
+    if isinstance(rows, list):
+        data["data"] = [row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)
+                        and exo_client.instance_ready(state, row["id"])]
+    return json.dumps(data).encode()
 
 
 def _text_blocks(content) -> list:
@@ -151,6 +178,16 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.close_connection = True
 
+    def _reply_buffered(self, status: int, upstream_headers, body: bytes) -> None:
+        self._replied = True
+        self.send_response(status)
+        for key, value in upstream_headers:
+            if key.casefold() not in _HOP_BY_HOP and key.casefold() not in _SET_BY_GATEWAY:
+                self.send_header(key, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle(self) -> None:
         started = time.monotonic()
         path = urlsplit(self.path).path
@@ -216,12 +253,37 @@ class _Handler(BaseHTTPRequestHandler):
                 target = urlunsplit(("", "", path, urlsplit(self.path).query, ""))
                 upstream.request(self.command, target, body=body, headers=headers)
                 response = upstream.getresponse()
+                if path == "/v1/models" and response.status == 200:
+                    catalog = response.read()
+                    upstream.request("GET", "/state", headers={"Accept": "application/json"})
+                    state = upstream.getresponse()
+                    state_status, state_body = state.status, state.read()
             except TimeoutError:
                 self._reply_error(504, "api_error", "omm cluster: exo did not answer in time")
                 return 504, name
             except OSError:
                 self._reply_error(502, "api_error", "omm cluster: exo is not running on this Mac")
                 return 502, name
+            if path == "/v1/models" and response.status == 200:
+                try:
+                    if state_status != 200:
+                        raise ValueError(state_status)
+                    listed = loaded_models(catalog, state_body)
+                except ValueError:
+                    self._reply_error(502, "api_error", "omm cluster: could not tell which models exo has loaded")
+                    return 502, name
+                self._reply_buffered(200, response.getheaders(), listed)
+                return 200, name
+            if response.status == 404:
+                # exo answers a catalog model nobody loaded with "No instance
+                # found", which does not tell an employee who can fix it (#531).
+                # Its 404 bodies are short JSON, so reading one whole is cheap.
+                missing = response.read()
+                if b"No instance found" in missing:
+                    self._reply_error(404, "not_found_error", _not_loaded_message(body))
+                else:
+                    self._reply_buffered(404, response.getheaders(), missing)
+                return 404, name
             self._replied = True
             self.send_response(response.status)
             for key, value in response.getheaders():
