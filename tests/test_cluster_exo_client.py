@@ -258,3 +258,70 @@ def test_node_in_topology_but_not_yet_in_node_memory_has_unknown_memory():
     (node,) = exo_client.parse_state(data).nodes
     assert node.memory_total_bytes is None
     assert node.memory_available_bytes is None
+
+
+def test_parse_downloads_reads_every_kind():
+    rows = exo_client.parse_downloads(_load("downloads-mixed.json"))
+    by_model = {row.model_id: row for row in rows}
+    done = by_model["mlx-community/Llama-3.2-1B-Instruct-4bit"]
+    assert done.kind == "Completed"
+    assert done.done_bytes == done.total_bytes == 712593855
+    pending = by_model["mlx-community/Qwen3-0.6B-4bit"]
+    assert pending.kind == "Pending"
+    assert pending.node_id.startswith("12D3KooWNode")
+    assert pending.shard_metadata["PipelineShardMetadata"]["startLayer"] == 0
+    assert pending.shard_metadata["PipelineShardMetadata"]["endLayer"] == 28
+
+
+def test_parse_downloads_reads_ongoing_progress():
+    ongoing = _load("downloads-live.json")["ongoing"]
+    rows = exo_client.parse_downloads({"downloads": {"n1": [ongoing]}})
+    assert [(r.kind, r.done_bytes > 0, r.total_bytes > 0) for r in rows] == [("Ongoing", True, True)]
+
+
+def test_parse_search_reads_ids_downloads_and_tags():
+    hits = exo_client.parse_search(_load("search.json"))
+    assert hits[1].model_id == "mlx-community/Qwen3-0.6B-8bit"
+    assert hits[1].downloads > 0
+    assert "text-generation" in hits[1].tags
+
+
+def _recording_client(monkeypatch, reply=None):
+    client = exo_client.ExoClient()
+    calls = []
+
+    def call(method, path, **kwargs):
+        calls.append((method, path, kwargs.get("payload")))
+        return reply if reply is not None else {}
+
+    monkeypatch.setattr(client, "_call", call)
+    return client, calls
+
+
+def test_start_download_posts_target_node_and_shard(monkeypatch):
+    client, calls = _recording_client(monkeypatch)
+    client.start_download("n1", {"PipelineShardMetadata": {"startLayer": 0}})
+    assert calls == [("POST", "/download/start",
+                      {"targetNodeId": "n1", "shardMetadata": {"PipelineShardMetadata": {"startLayer": 0}}})]
+
+
+def test_delete_download_quotes_the_model_id(monkeypatch):
+    client, calls = _recording_client(monkeypatch)
+    client.delete_download("n1", "mlx-community/Llama-3.2-1B-Instruct-4bit")
+    assert calls == [("DELETE", "/download/n1/mlx-community%2FLlama-3.2-1B-Instruct-4bit", None)]
+
+
+def test_add_model_posts_the_id(monkeypatch):
+    client, calls = _recording_client(monkeypatch)
+    client.add_model("someone/Some-Model-4bit")
+    assert calls == [("POST", "/models/add", {"model_id": "someone/Some-Model-4bit"})]
+
+
+def test_parse_models_keeps_the_raw_card():
+    models = exo_client.parse_models(_load("models.json"))
+    assert models[0].card["quantization"] == "4bit"
+
+
+def test_no_memory_text_matches_the_live_refusal():
+    rows = exo_client.parse_previews(_load("previews-nomem.json"))
+    assert rows and all(exo_client.NO_MEMORY in row.error for row in rows)

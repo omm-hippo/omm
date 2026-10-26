@@ -126,7 +126,7 @@ def test_parse_stream_raises_on_an_error_event():
 def test_pick_model():
     assert chat.pick_model(None, ["a"]) == "a"
     assert chat.pick_model("b", ["a", "b"]) == "b"
-    with pytest.raises(ClusterError, match="omm cluster model"):
+    with pytest.raises(ClusterError, match="omm cluster load"):
         chat.pick_model(None, [])
     with pytest.raises(UsageProblem, match="omm cluster run b"):
         chat.pick_model(None, ["a", "b"])
@@ -195,3 +195,45 @@ def test_cli_run_keeps_chatting_after_a_failed_turn(monkeypatch, isolated_omm_ho
     assert result.exit_code == 0
     assert "boom" in result.output
     assert calls[1] == [{"role": "user", "content": "two"}]
+
+
+def test_gateway_sends_rows_for_employee_lists(head):
+    rows = chat.loaded_rows(head)
+    assert [row.model for row in rows] == [LOADED]
+    assert rows[0].state in ("loaded", "loading") and rows[0].nodes_total == 1
+
+
+def test_chat_accepts_an_older_gateway_that_sends_only_ids(monkeypatch):
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"models": [LOADED]}).encode()
+
+    monkeypatch.setattr(chat, "_open", lambda *a, **k: _Response())
+    point = chat.Endpoint("http://head:52440", "omm_x")
+    assert chat.loaded_models(point) == [LOADED]
+    rows = chat.loaded_rows(point)
+    assert [(row.model, row.state, row.size_bytes) for row in rows] == [(LOADED, "loaded", None)]
+
+
+def test_employee_cluster_list_shows_loaded_rows(head, monkeypatch):
+    monkeypatch.setattr(chat, "endpoint", lambda: head)
+    result = CliRunner().invoke(cli.app, ["cluster", "list"])
+    assert result.exit_code == 0, result.output
+    assert LOADED in result.output
+
+
+def test_gateway_keeps_bare_ids_for_older_employee_clients(head):
+    # omm on beta reads only string entries of "models"; rows go under a new key.
+    import urllib.request
+
+    req = urllib.request.Request(head.url + chat.LOADED_MODELS_PATH, headers={"Authorization": f"Bearer {head.token}"})
+    body = json.loads(urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=5).read())
+    assert body["models"] == [LOADED]
+    assert body["rows"][0]["model"] == LOADED and set(body["rows"][0]) == {
+        "model", "size_bytes", "nodes_installed", "nodes_total", "state"}

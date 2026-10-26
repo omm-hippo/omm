@@ -42,7 +42,7 @@ ALLOWED_ROUTES = frozenset({
 })
 # Answered by the gateway itself: exo's /v1/models lists every model it knows
 # (120 on exo 1.0.71), so `omm cluster run` on an employee PC asks here which
-# ones are actually loaded. Only the model ids leave /state.
+# ones are actually loaded. Only model ids, sizes, Mac counts and load state leave /state.
 LOADED_MODELS_ROUTE = ("GET", "/omm/loaded-models")
 _HOP_BY_HOP = frozenset({
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
@@ -66,7 +66,7 @@ def _not_loaded_message(body: bytes | None) -> str:
         model = None
     named = isinstance(model, str) and model
     return (f"omm cluster: {model if named else 'the requested model'} is not loaded on the cluster. "
-            f"The admin loads it on the head Mac with: omm cluster model {model if named else '<model id>'}")
+            f"The admin loads it on the head Mac with: omm cluster load {model if named else '<model id>'}")
 
 
 def loaded_models(catalog: bytes, state: bytes) -> bytes:
@@ -310,12 +310,16 @@ class _Handler(BaseHTTPRequestHandler):
         from omm.cluster.exo_client import ExoClient
 
         try:
-            state = ExoClient(f"http://{self.server.upstream_host}:{self.server.upstream_port}").state()
+            raw = ExoClient(f"http://{self.server.upstream_host}:{self.server.upstream_port}").raw_state()
         except ClusterError:
             self._reply_error(502, "api_error", "omm cluster: exo is not running on this Mac")
             return 502
-        models = list(dict.fromkeys(instance.model_id for instance in state.instances))
-        body = json.dumps({"models": models}).encode()
+        from omm.cluster.models import inventory_from
+
+        rows = [row.as_dict() for row in inventory_from(raw) if row.state in ("loaded", "loading")]
+        # "models" stays bare ids for employees on an older omm; "rows" carry the
+        # size and Mac count `omm cluster list` shows.
+        body = json.dumps({"models": [row["model"] for row in rows], "rows": rows}).encode()
         self._replied = True
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

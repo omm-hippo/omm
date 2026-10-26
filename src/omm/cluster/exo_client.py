@@ -57,6 +57,33 @@ class ClusterState:
 class ExoModel:
     model_id: str
     size_bytes: int | None
+    # The raw /models row (family, quantization, context_length, ...) for `omm cluster info`.
+    card: dict = field(default_factory=dict, hash=False, compare=False)
+
+
+@dataclass(frozen=True)
+class NodeDownload:
+    """One Mac's copy of one model, from `/state` `downloads`.
+
+    exo lists a Pending entry for every catalog model on every Mac, so a model
+    is on a Mac only when its entry is Completed. A Pending entry carries the
+    full-range shardMetadata that `/download/start` takes (rig, 2026-10-26).
+    """
+
+    node_id: str
+    model_id: str
+    kind: Literal["Pending", "Ongoing", "Completed", "Failed"]
+    done_bytes: int
+    total_bytes: int
+    shard_metadata: dict = field(hash=False, compare=False)
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class SearchHit:
+    model_id: str
+    downloads: int
+    tags: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -90,6 +117,9 @@ class ExoUnavailable(ClusterError):
 
 
 _MIB = 1024 * 1024
+# What exo puts in every preview row of a model that does not fit the Macs'
+# free memory (exo 1.0.71, 3 Mac minis, 2026-10-26).
+NO_MEMORY = "No cycles found with sufficient memory"
 
 
 def _dict(value) -> dict:
@@ -188,8 +218,21 @@ def parse_models(data: object) -> list[ExoModel]:
         if not isinstance(model_id, str) or not model_id:
             continue
         size = row.get("storage_size_megabytes")
-        models.append(ExoModel(model_id, _int(size) * _MIB if _int(size) > 0 else None))
+        models.append(ExoModel(model_id, _int(size) * _MIB if _int(size) > 0 else None, row))
     return models
+
+
+def parse_search(data: object) -> list[SearchHit]:
+    hits = []
+    for row in data if isinstance(data, list) else []:
+        row = _dict(row)
+        model_id = row.get("id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        tags = row.get("tags")
+        hits.append(SearchHit(model_id, _int(row.get("downloads")),
+                              tuple(t for t in tags if isinstance(t, str)) if isinstance(tags, list) else ()))
+    return hits
 
 
 def parse_previews(data: dict) -> list[Placement]:
@@ -233,6 +276,31 @@ def _download_entry(wrapper, model_id: str) -> tuple[str, dict] | None:
     if _dict(shard.get("modelCard")).get("modelId") != model_id:
         return None
     return kind, body
+
+
+def parse_downloads(data: dict) -> list[NodeDownload]:
+    rows = []
+    for node_id, items in _dict(_dict(data).get("downloads")).items():
+        for wrapper in items if isinstance(items, list) else []:
+            wrapper = _dict(wrapper)
+            if len(wrapper) != 1:
+                continue
+            tag, body = next(iter(wrapper.items()))
+            kind = str(tag).removeprefix("Download")
+            if kind not in ("Pending", "Ongoing", "Completed", "Failed"):
+                continue
+            body = _dict(body)
+            metadata = _dict(body.get("shardMetadata"))
+            model_id = _dict(_dict(next(iter(metadata.values()), {})).get("modelCard")).get("modelId")
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            sizes = _dict(body.get("downloadProgress")) if kind == "Ongoing" else body
+            total = _bytes(sizes.get("total")) or 0
+            done = total if kind == "Completed" else _bytes(sizes.get("downloaded")) or 0
+            error = body.get("errorMessage") if kind == "Failed" else None
+            rows.append(NodeDownload(str(node_id), model_id, kind, done, total, metadata,
+                                     str(error or "download failed") if kind == "Failed" else None))
+    return rows
 
 
 def load_progress(data: dict, model_id: str) -> LoadProgress:
@@ -281,6 +349,7 @@ class ExoClient:
     def __init__(self, base_url: str = "http://127.0.0.1:52415") -> None:
         from omm.engines.base import LoopbackJsonClient
 
+        self._base_url = base_url.rstrip("/")
         self._http = LoopbackJsonClient(base_url)
 
     def _call(self, method: str, path: str, **kwargs) -> dict:
@@ -347,6 +416,38 @@ class ExoClient:
             elif now - last_change >= stall_seconds:
                 return False
             sleep(2)
+
+    def start_download(self, node_id: str, shard_metadata: dict) -> None:
+        self._call("POST", "/download/start",
+                   payload={"targetNodeId": node_id, "shardMetadata": shard_metadata}, timeout=30)
+
+    def delete_download(self, node_id: str, model_id: str) -> None:
+        from urllib.parse import quote
+
+        self._call("DELETE", f"/download/{quote(node_id, safe='')}/{quote(model_id, safe='')}",
+                   timeout=60, allow_empty=True)
+
+    def add_model(self, model_id: str) -> None:
+        self._call("POST", "/models/add", payload={"model_id": model_id}, timeout=60)
+
+    def search(self, query: str, limit: int = 20) -> list[SearchHit]:
+        # The only exo route that answers with a bare JSON list, which the
+        # shared loopback client refuses; same loopback origin, no proxy.
+        import json
+        from urllib import error as urlerror, request as urlrequest
+        from urllib.parse import urlencode
+
+        url = f"{self._base_url}/models/search?{urlencode({'query': query, 'limit': limit})}"
+        opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
+        try:
+            with opener.open(urlrequest.Request(url, headers={"Accept": "application/json"}), timeout=30) as response:
+                return parse_search(json.loads(response.read()))
+        except urlerror.HTTPError as error:
+            raise ClusterError(f"exo request GET /models/search failed: HTTP {error.code}") from error
+        except (urlerror.URLError, OSError) as error:
+            raise ExoUnavailable() from error
+        except ValueError as error:
+            raise ClusterError("exo sent an unreadable search result") from error
 
     def delete_instance(self, instance_id: str) -> None:
         from urllib.parse import quote

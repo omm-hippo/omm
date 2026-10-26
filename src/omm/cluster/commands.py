@@ -173,7 +173,7 @@ def status() -> dict:
                 problems.append(
                     f"{load['failed_on']} could not download {i.model_id}; exo does not try a failed download "
                     f"again until it restarts. Fix the cause, run omm cluster restart on {load['failed_on']}, "
-                    f"then run omm cluster model {i.model_id} again.")
+                    f"then run omm cluster load {i.model_id} again.")
         exo = {
             "reachable": True,
             "nodes": [{"name": n.name, "memory_total_bytes": n.memory_total_bytes,
@@ -308,14 +308,14 @@ def candidates(client: ExoClient | None = None) -> list[recommend.Candidate]:
     return recommend.rank(models, previews, state)
 
 
-def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
+def load_model(model_id: str, out: Out, client: ExoClient | None = None, placement=None) -> str:
     require_macos()
     client = client or ExoClient()
     if any(i.model_id == model_id for i in client.state().instances):
         # exo would place a second full copy next to the first one.
         out(f"{model_id} is already loaded or loading on this cluster; waiting for it instead of starting another copy...")
     else:
-        placement = recommend.choose_placement(client.previews(model_id))
+        placement = placement or recommend.choose_placement(client.previews(model_id))
         if placement is None:
             raise ClusterError(f"{model_id} does not fit in this cluster's free memory")
         client.create_instance(placement)
@@ -347,7 +347,7 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
             unload_model(model_id, client)
             raise ClusterError(
                 f"exo does not try a failed download again until it restarts. Fix the cause, run omm cluster "
-                f"restart on {failed}, then run omm cluster model {model_id} again.")
+                f"restart on {failed}, then run omm cluster load {model_id} again.")
         detail = f" Last status: {last['line']}" if last["line"] else ""
         raise ClusterError(f"{model_id} made no progress for {MODEL_STALL_TIMEOUT // 60} minutes.{detail}")
     current = settings.load()
@@ -379,6 +379,17 @@ def require_head() -> None:
     current = settings.load()
     if current is None or current.role != "head":
         raise UsageProblem("tokens are managed on the head Mac")
+
+
+def require_head_for(action: str) -> None:
+    # The head keeps the model it reloads after a restart (cluster.json
+    # `model`); a change made on a member would be undone by that reload.
+    require_macos()
+    current = settings.load()
+    if current is None:
+        raise UsageProblem("this Mac is not in a cluster; run omm cluster init or join first")
+    if current.role != "head":
+        raise UsageProblem(f"{action} runs on the head Mac; this Mac is a member of the cluster")
 
 
 def leave(out: Out) -> None:

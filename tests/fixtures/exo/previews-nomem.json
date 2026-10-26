@@ -1,0 +1,36 @@
+{
+ "previews": [
+  {
+   "model_id": "mlx-community/Step-3.5-Flash-6bit",
+   "sharding": "Pipeline",
+   "instance_meta": "MlxRing",
+   "instance": null,
+   "memory_delta_by_node": null,
+   "error": "No cycles found with sufficient memory"
+  },
+  {
+   "model_id": "mlx-community/Step-3.5-Flash-6bit",
+   "sharding": "Pipeline",
+   "instance_meta": "MlxJaccl",
+   "instance": null,
+   "memory_delta_by_node": null,
+   "error": "No cycles found with sufficient memory"
+  },
+  {
+   "model_id": "mlx-community/Step-3.5-Flash-6bit",
+   "sharding": "Tensor",
+   "instance_meta": "MlxRing",
+   "instance": null,
+   "memory_delta_by_node": null,
+   "error": "No cycles found with sufficient memory"
+  },
+  {
+   "model_id": "mlx-community/Step-3.5-Flash-6bit",
+   "sharding": "Tensor",
+   "instance_meta": "MlxJaccl",
+   "instance": null,
+   "memory_delta_by_node": null,
+   "error": "No cycles found with sufficient memory"
+  }
+ ]
+}
