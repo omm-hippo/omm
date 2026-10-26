@@ -55,7 +55,9 @@ def preflight(model: str, remote: rag_remote.Remote) -> dict:
     entries = data.get("data") if isinstance(data, dict) else None
     entry = next((m for m in entries or [] if isinstance(m, dict) and m.get("id") == model), None)
     if entry is None:
-        raise ConnectionError(f"The cluster does not know {model}. Ask the admin which model omm cluster status shows as serving.")
+        # The gateway lists only models with a ready instance (#531).
+        raise ConnectionError(f"{model} is not loaded on the cluster. Ask the admin which model "
+                              "omm cluster status shows as serving.")
     context = entry.get("context_length")
     context = context if type(context) is int else 0
     if context < MIN_CONTEXT:

@@ -7,6 +7,7 @@ exit codes and renders output.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 import platform
 import socket
@@ -25,6 +26,9 @@ NOT_MACOS = ("omm cluster runs on the Macs that form the cluster (macOS 26.2 or 
 # 130 GB model on a 25 MB/s link), so loading is judged by progress, not by a
 # deadline: give up only when nothing has moved for this long.
 MODEL_STALL_TIMEOUT = 900
+# Each preview can take up to a minute; a handful at once keeps `omm cluster
+# model` short without flooding exo's loopback API.
+PREVIEW_WORKERS = 8
 _GIB = 1024**3
 
 
@@ -76,6 +80,12 @@ SCREEN_APPROVAL_HINT = (
     "The first time exo starts, macOS may show an Allow prompt on this Mac's screen. "
     "If omm cluster status says exo is not running, click Allow there."
 )
+# The MLX ring listens on a random port in this range, so pf closes all of it
+# to the office network, which also closes it for any other server on the Mac.
+HIGH_PORTS_HINT = (
+    "The cluster firewall blocks TCP ports 49153-65535 from the office network, for every app "
+    "on this Mac, not only exo. Keep other servers that employees use off this Mac."
+)
 
 
 def init(out: Out) -> settings.ClusterSettings:
@@ -99,6 +109,7 @@ def init(out: Out) -> settings.ClusterSettings:
     appfw.allow([appfw.exo_binary(), appfw.gateway_binary()])
     service.install()
     out(SCREEN_APPROVAL_HINT)
+    out(HIGH_PORTS_HINT)
     # On a line of its own: the 128-bit name makes the sentence wrap in an
     # 80-column terminal, and a wrapped command does not paste.
     out("Run this on every other Mac:")
@@ -125,8 +136,21 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     power.keep_awake()
     appfw.allow([appfw.exo_binary()])
     out(SCREEN_APPROVAL_HINT)
+    out(HIGH_PORTS_HINT)
     out("This Mac joined the cluster. Check it from the head Mac with: omm cluster status")
     return saved
+
+
+def _instance_load(raw: dict, model_id: str) -> dict:
+    # exo lists an instance as soon as it is placed, long before it serves: a
+    # first load downloads the whole model on every Mac (over an hour for a big
+    # one), then loads it into memory.
+    if exo_client.instance_ready(raw, model_id):
+        return {"state": "ready", "downloaded_bytes": 0, "total_bytes": 0, "failed_on": None, "error": None}
+    progress = exo_client.load_progress(raw, model_id)
+    state = "failed" if progress.failed else progress.phase
+    return {"state": state, "downloaded_bytes": progress.downloaded_bytes, "total_bytes": progress.total_bytes,
+            "failed_on": progress.failed_on, "error": progress.failed}
 
 
 def status() -> dict:
@@ -135,18 +159,27 @@ def status() -> dict:
     problems: list[str] = []
     exo = {"reachable": False, "nodes": [], "instances": [], "links": []}
     try:
-        state = ExoClient().state()
+        raw = ExoClient().raw_state()
     except ClusterError as error:
         problems.append(str(error))
-        state = None
+        raw = None
+    state = None if raw is None else exo_client.parse_state(raw)
     if state is not None:
+        instances = []
+        for i in state.instances:
+            load = _instance_load(raw, i.model_id)
+            instances.append({"model_id": i.model_id, "sharding": i.sharding, "node_count": len(i.node_ids), **load})
+            if load["state"] == "failed":
+                problems.append(
+                    f"{load['failed_on']} could not download {i.model_id}; exo does not try a failed download "
+                    f"again until it restarts. Fix the cause, run omm cluster restart on {load['failed_on']}, "
+                    f"then run omm cluster model {i.model_id} again.")
         exo = {
             "reachable": True,
             "nodes": [{"name": n.name, "memory_total_bytes": n.memory_total_bytes,
                        "memory_available_bytes": n.memory_available_bytes, "rdma": n.rdma,
                        "os_version": n.os_version, "os_build": n.os_build} for n in state.nodes],
-            "instances": [{"model_id": i.model_id, "sharding": i.sharding, "node_count": len(i.node_ids)}
-                          for i in state.instances],
+            "instances": instances,
             "links": [],
         }
         names = {n.node_id: n.name for n in state.nodes}
@@ -263,7 +296,15 @@ def candidates(client: ExoClient | None = None) -> list[recommend.Candidate]:
     client = client or ExoClient()
     state = client.state()
     models = recommend.prefilter(client.models(), state)
-    previews = {m.model_id: client.previews(m.model_id) for m in models}
+    ids = [m.model_id for m in models]
+    # A client per call: requests.Session (inside every ExoClient) is not
+    # documented as thread-safe.
+    pool = ThreadPoolExecutor(max_workers=PREVIEW_WORKERS)
+    try:
+        previews = dict(zip(ids, pool.map(lambda model_id: ExoClient().previews(model_id), ids)))
+    finally:
+        # After a failed preview, do not wait for the ones still queued.
+        pool.shutdown(cancel_futures=True)
     return recommend.rank(models, previews, state)
 
 
@@ -310,10 +351,14 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None) -> str:
         detail = f" Last status: {last['line']}" if last["line"] else ""
         raise ClusterError(f"{model_id} made no progress for {MODEL_STALL_TIMEOUT // 60} minutes.{detail}")
     current = settings.load()
-    port = current.gateway_port if current else GATEWAY_PORT
-    if current is not None and current.role == "head" and current.model != model_id:
+    if current is None:
+        return f"Serving {model_id}"
+    if current.role != "head":
+        # Only the head runs the gateway; this Mac's own address serves nothing.
+        return f"Serving {model_id}; employees reach it through the head Mac's gateway"
+    if current.model != model_id:
         settings.save(dataclasses.replace(current, model=model_id))
-    return f"Serving {model_id} at http://{lan_ipv4()}:{port}"
+    return f"Serving {model_id} at http://{lan_ipv4()}:{current.gateway_port}"
 
 
 def unload_model(model_id: str, client: ExoClient | None = None) -> int:
@@ -339,14 +384,23 @@ def require_head() -> None:
 def leave(out: Out) -> None:
     require_macos()
     current = settings.load()
-    firewall.remove()
-    netconfig.restore()
-    power.restore()
-    appfw.remove()
+    steps = [firewall.remove, netconfig.restore, power.restore, appfw.remove]
     if current is None or current.role == "head":
-        service.uninstall()
-    exo_service.uninstall()
-    preflight.remove_runtime()
+        steps.append(service.uninstall)
+    steps += [exo_service.uninstall, preflight.remove_runtime]
+    # Every step is safe to repeat, so one failure (usually a declined sudo
+    # prompt) must not leave the rest of this Mac half dismantled.
+    failures = []
+    for step in steps:
+        try:
+            step()
+        except ClusterError as error:
+            failures.append(str(error))
+    if failures:
+        # Settings stay so the re-run still knows whether to remove the gateway.
+        raise ClusterError("This Mac did not fully leave the cluster:\n"
+                           + "".join(f"  {failure}\n" for failure in failures)
+                           + "Everything else was undone. Run omm cluster leave again to finish.")
     settings.clear()
     out("This Mac left the cluster. Employee tokens were kept.")
     out("exo itself stays installed; remove it from its menu bar icon -> Advanced -> Uninstall")

@@ -116,7 +116,7 @@ def test_without_a_saved_head_nothing_is_written(home):
 
 
 @pytest.mark.parametrize("model, message", [
-    ("mlx-community/Unknown-4bit", "does not know"),
+    ("mlx-community/Unknown-4bit", "is not loaded on the cluster"),
     ("mlx-community/Tiny-4bit", "32768"),
     ("../etc", "exo model id"),
 ])
