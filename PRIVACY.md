@@ -216,6 +216,30 @@ answers stay visible locally but are not used in later inference context.
 The GUI provides JSON export and confirmed deletion of closed conversations.
 Explicit data removal also removes `web-chats`; ordinary updates retain it.
 
+### Shared AI in the local web manager
+
+The **공유 AI** screen is an explicit connection to a private office or Tailscale
+gateway, separate from local chat and `omm rag remote`. The local browser sends
+the address and employee token to OMM's same-origin, loopback-only API. Only an
+explicit connection check sends `GET /v1/models`; only sending a question sends
+`POST /v1/chat/completions` with the selected model and recent conversation turns.
+An entry in the model catalog is not proof that a model is running. OMM does not
+call model installation, restart, unload, or cluster administration routes.
+
+The address, token, last catalog and last successfully used model are stored in
+`OMM_HOME/shared-ai/connection.json` (mode 0600, directory 0700 on POSIX). The
+token is never returned by the local API or stored in browser localStorage.
+Chat text and bounded duplicate-request results stay in process/browser memory;
+refreshing clears the visible conversation. These values are not added to run
+logs, telemetry or crash reports. Removing the saved connection deletes the
+local credentials; it does not revoke the server's token.
+
+Gateway requests bypass proxy environment variables, reject redirects, validate
+and pin private destination addresses, and keep normal HTTPS certificate
+verification. No cloud fallback or automatic retry is used. Plain HTTP relies
+on the office network or Tailscale for transport protection. OMM never enables
+Tailscale or changes network/firewall settings from this screen.
+
 ### Local document questions and `omm rag`
 
 The loopback web manager and `omm rag` store imported document text, content

@@ -3,6 +3,7 @@ export const destinations = [
   {id:'recommend', label:'추천', detail:'내 컴퓨터에 맞는 모델 고르기', icon:'recommend'},
   {id:'models', label:'내 모델', detail:'설치·연결·실행 관리', icon:'models'},
   {id:'chat', label:'채팅', detail:'로컬 모델과 대화', icon:'chat'},
+  {id:'shared', label:'공유 AI', detail:'팀 서버 연결·이용 토큰·모델 대화', icon:'shared'},
   {id:'documents', label:'내 문서', detail:'자료를 등록하고 근거를 찾아 질문', icon:'documents'},
   {id:'comparison', label:'성능 비교', detail:'속도와 산술 점검 결과', icon:'comparison'},
   {id:'jobs', label:'작업', detail:'진행 상황과 저장된 결과', icon:'jobs'},
