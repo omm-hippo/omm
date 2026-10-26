@@ -19,8 +19,9 @@ from omm.atomic import atomic_write_text
 
 # Seconds a document import may stay silent in each stage before its worker is
 # killed. Extraction keeps the original 60-second bound; the embedder's own HTTP
-# timeout per batch is 300 seconds.
-DOCUMENT_STAGE_SECONDS = {"extract": 60, "embed": 300}
+# timeout per batch is 300 seconds. An upload to the company cluster head waits
+# for the head to extract and embed (its client timeout is 900 seconds).
+DOCUMENT_STAGE_SECONDS = {"extract": 60, "embed": 300, "upload": 960}
 
 
 class JobConflict(ValueError):

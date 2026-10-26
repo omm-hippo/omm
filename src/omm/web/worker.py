@@ -59,6 +59,11 @@ def execute(request: dict, stop: threading.Event) -> dict:
             if operation == "import":
                 return maintenance.adopt(request["group"])
             return management.cleanup_selected(request["files"])
+        if operation == "document_import" and "collection" in request:
+            from omm.web.rag_sharing import run_upload
+            # Only the stage and piece counts leave the worker, never text or the token.
+            return run_upload(request, lambda stage, done, total: emit(
+                "progress", document_stage=stage, completed_count=done, total_count=total))
         if operation == "document_import":
             import base64
             from omm.documents import DocumentStore
