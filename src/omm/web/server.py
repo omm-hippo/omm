@@ -120,6 +120,23 @@ class Handler(BaseHTTPRequestHandler):
                 return False
         return True
 
+    def _rag_value(self, call):
+        """Run one 내 문서 sharing call; answer its own errors with their HTTP status."""
+        from omm import rag_acl, rag_connect, rag_remote
+        from omm.web.rag_sharing import Problem
+        try:
+            return call()
+        except (Problem, rag_acl.AccessError) as error:
+            self._json(error.status, {"error": str(error)[:500]})
+        except (rag_remote.RemoteError, rag_connect.RagConnectionError) as error:
+            self._json(400, {"error": str(error)[:500]})
+        return None
+
+    def _rag(self, call):
+        value = self._rag_value(call)
+        if value is not None:
+            self._json(200, value)
+
     def do_OPTIONS(self):
         self._json(403, {"error": "Cross-origin API access is disabled"})
 
@@ -175,6 +192,9 @@ class Handler(BaseHTTPRequestHandler):
                 from omm.web import document_settings
                 return self._json(200, {"documents": DocumentStore().list(), "answers": DocumentStore().answers(),
                                         "settings": document_settings.load()})
+            if parsed.path.startswith("/api/rag/"):
+                from omm.web.rag_sharing import get as rag_get
+                return self._rag(lambda: rag_get(parsed.path, parse_qs(parsed.query, keep_blank_values=True)))
             if parsed.path == "/api/jobs":
                 return self._json(200, self.server.jobs.list())
             if parsed.path == "/api/chats":
@@ -205,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(415, {"error": "Use a bounded JSON request"})
         try:
             length = int(self.headers.get("Content-Length", "-1"))
-            limit = 9 * 1024 * 1024 if self.path == "/api/documents" else MAX_BODY
+            limit = 9 * 1024 * 1024 if urlsplit(self.path).path in {"/api/documents", "/api/rag/upload"} else MAX_BODY
             if not 0 <= length <= limit:
                 return self._json(413, {"error": "Request body is too large or has no length"})
             body = json.loads(self.rfile.read(length))
@@ -245,6 +265,15 @@ class Handler(BaseHTTPRequestHandler):
                 from omm.web.document_requests import validate
                 request = validate(path, body, self.server.service)
                 return self._json(202, self.server.jobs.start(request, body.get("request_id")))
+            if path == "/api/rag/upload":
+                from omm.web.rag_sharing import upload_request
+                request = self._rag_value(lambda: upload_request(body))
+                if request is not None:
+                    return self._json(202, self.server.jobs.start(request, body.get("request_id")))
+                return
+            if path.startswith("/api/rag/"):
+                from omm.web.rag_sharing import post
+                return self._rag(lambda: post(path, body))
             if path == "/api/catalog/refresh":
                 if body != {}:
                     raise ValueError("Catalog refresh accepts no additional fields")
