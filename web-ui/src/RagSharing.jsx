@@ -14,7 +14,7 @@ export function LocationBar({rag,onConnect,onLocal,busy}){
       {remote && rag.remote?.name && <small>나: {rag.remote.name}</small>}
       {!remote && rag && <small>이 PC의 문서 저장소 · 관리자</small>}
     </div>
-    <div className="row-actions"><button disabled={busy} onClick={onConnect}>{remote?'다른 출입증으로 연결':'회사에 연결'}</button>{remote && <button disabled={busy} onClick={onLocal}>이 PC로 돌아가기</button>}</div>
+    {rag && <div className="row-actions"><button disabled={busy} onClick={onConnect}>{remote?'다른 출입증으로 연결':'회사에 연결'}</button>{remote && <button disabled={busy} onClick={onLocal}>이 PC로 돌아가기</button>}</div>}
   </section>;
 }
 
@@ -97,11 +97,11 @@ export function AgentSection({rag,onRefresh}){
     <div className="connection-list">{(rag?.harnesses||[]).map(row=>{
       const where=row.registered?(row.remote?'회사 head 문서':'이 PC 문서'):null;
       return <article key={row.harness}><div><h3>{row.label}</h3>
-        <p>{row.error?row.error:!row.installed && !row.registered?'설치되지 않았어요':row.registered?`연결됨 · ${where}`:'연결 안 됨'}</p>
+        <p>{row.error?row.error:!row.installed && !row.registered?'이 PC에서 찾지 못했어요(설치되지 않음)':row.registered?`연결됨 · ${where}`:'연결 안 됨'}</p>
         {row.registered && where && ((row.remote && !remote) || (!row.remote && remote)) && <small className="warning">지금 보는 곳과 다른 곳에 연결돼 있어요. 다시 [연결]하면 지금 보는 곳으로 바꿔요.</small>}
         {row.registered && !row.managed && <small>OMM이 만든 항목이 아니에요. 직접 넣은 설정은 건드리지 않아요.</small>}
       </div><div className="row-actions">
-        {(!row.registered || (row.managed && ((row.remote && !remote) || (!row.remote && remote) || (!row.remote && !row.current)))) && <button className="primary" disabled={!!busy || !!row.error || (!row.installed && !row.registered)} onClick={()=>act(row,false)}>{busy===row.harness?'연결 중…':'연결'}</button>}
+        {(row.installed || row.registered) && !row.error && (!row.registered || (row.managed && ((row.remote && !remote) || (!row.remote && remote) || (!row.remote && !row.current)))) && <button className="primary" disabled={!!busy} onClick={()=>act(row,false)}>{busy===row.harness?'연결 중…':'연결'}</button>}
         {row.registered && row.managed && <button disabled={!!busy} onClick={()=>act(row,true)}>{busy===row.harness?'해제 중…':'해제'}</button>}
       </div></article>;})}</div>
   </section>;
@@ -168,6 +168,6 @@ export function TokenSection({onChanged}){
     <form className="rag-inline-form" onSubmit={issue}><input className="rag-input" aria-label="출입증을 받을 직원 이름" value={name} disabled={busy} onChange={e=>setName(e.target.value)} placeholder="직원 이름 (예: kim)"/><button className="primary" disabled={busy || !name.trim()}>출입증 만들기</button></form>
     {issued && <div className="rag-issued" role="status"><strong>{issued.name}의 출입증</strong><code>{issued.token}</code><div className="row-actions"><CopyButton text={issued.token} label="출입증 복사"/><button onClick={()=>setIssued(null)}>다 옮겨 적었어요</button></div><small className="warning">다시 볼 수 없어요. 지금 복사해서 직원에게 안전하게 전해 주세요. 잃어버리면 취소하고 새로 만들어요.</small></div>}
     {!rows.length && <p className="footnote">아직 만든 출입증이 없어요.</p>}
-    <div className="connection-list">{rows.map(row=><article key={row.name}><div><h3>👤 {row.name}</h3><p>만든 때 {new Date(row.created_at).toLocaleString('ko-KR')}</p></div><div className="row-actions"><button className="danger" disabled={busy} onClick={()=>revoke(row)}>취소</button></div></article>)}</div>
+    <div className="connection-list">{rows.map(row=><article key={row.name}><div><h3>👤 {row.name}</h3><p>만든 때 {new Date(row.created_at).toLocaleString('ko-KR')}</p></div><div className="row-actions"><button className="danger" disabled={busy} onClick={()=>revoke(row)}>출입증 취소</button></div></article>)}</div>
   </section>;
 }

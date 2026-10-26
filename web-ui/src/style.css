@@ -61,3 +61,5 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
 @media(max-width:860px){.rag-layout{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:680px){.rag-location{padding:12px}.rag-detail-heading{flex-direction:column}.connection-list article{flex-direction:column;gap:10px}}
 .rag-issued .copy-button{border:1px solid var(--line);border-radius:6px;padding:10px 19px;font-size:14px;font-weight:600;color:var(--ink)}
+.rag-ask-actions{margin-top:16px;flex-wrap:wrap}.rag-ask-actions button{margin-top:0}
+.rag-detail h3 small{display:inline;margin-left:6px;font-weight:400}

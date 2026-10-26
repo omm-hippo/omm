@@ -123,13 +123,13 @@ class Handler(BaseHTTPRequestHandler):
     def _rag_value(self, call):
         """Run one 내 문서 sharing call; answer its own errors with their HTTP status."""
         from omm import rag_acl, rag_connect, rag_remote
-        from omm.web.rag_sharing import Problem
+        from omm.web.rag_sharing import Problem, web_message
         try:
             return call()
         except (Problem, rag_acl.AccessError) as error:
             self._json(error.status, {"error": str(error)[:500]})
         except (rag_remote.RemoteError, rag_connect.RagConnectionError) as error:
-            self._json(400, {"error": str(error)[:500]})
+            self._json(400, {"error": web_message(str(error))[:500]})
         return None
 
     def _rag(self, call):

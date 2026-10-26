@@ -184,14 +184,15 @@ export default function DocumentPanel({models, onJobs}) {
     if(!window.confirm('회사 head 연결과 저장한 출입증(토큰)을 이 PC에서 지우고 이 PC의 문서로 돌아갈까요?'))return;
     if(await direct('/api/rag/remote/clear',{confirmed:true},()=>'회사 연결과 토큰을 지웠어요. 이제 이 PC의 문서를 보여 줘요. AI 도구를 회사 head로 연결해 두었다면 아래 AI 연결에서 해제하거나 다시 연결해 주세요.'))await reloadAll('');
   }
+  async function findSources(){
+    setHits(null);
+    const value=await direct('/api/rag/search',{collection:current,query:question});
+    if(value)setHits(value);
+  }
   async function ask(event){
     event.preventDefault();
-    if(remote){
-      setHits(null);
-      const value=await direct('/api/rag/search',{collection:current,query:question});
-      if(value)setHits(value);
-      return;
-    }
+    if(remote)return findSources();
+    setHits(null);
     run('/api/documents/question',{question,document_ids:askable,model_id:model,engine});
   }
   const answers=library.answers.filter(a=>!a.sources?.length || a.sources.some(s=>!s.collection || s.collection===current));
@@ -220,9 +221,9 @@ export default function DocumentPanel({models, onJobs}) {
             {!options.length && <p>연결된 모델이 없어요. 내 모델에서 Ollama 또는 LM Studio 연결을 먼저 확인해 주세요.</p>}</>}
           <label>질문<textarea rows={3} maxLength={600} value={question} disabled={busy} onChange={e=>setQuestion(e.target.value)} placeholder="예: 이 문서에서 안내하는 준비물은 무엇인가요?"/></label>
           {!remote && <p className="footnote">선택한 문서에서 의미와 단어로 근거를 찾아요(로컬 Ollama 임베딩 모델 {embedding}). 임베딩 모델을 쓸 수 없으면 단어 검색만 하고 답변 기록에 알려 줘요. 이미 로딩된 모델이 있으면 기존 작업을 보존하고 중단해요. 고른 모델·실행 앱·문서는 다음에 열 때도 기억해요.</p>}
-          <button className="primary" disabled={busy || question.trim().length<2 || (remote?!docs.length:(!model || !askable.length))}>{busy?'처리 중…':remote?'근거 찾기':'근거를 찾아 질문하기'}</button>
+          <div className="row-actions rag-ask-actions"><button className="primary" disabled={busy || question.trim().length<2 || (remote?!docs.length:(!model || !askable.length))}>{busy?'처리 중…':remote?'근거 찾기':'근거를 찾아 질문하기'}</button>{!remote && <button type="button" disabled={busy || question.trim().length<2 || !docs.length} onClick={findSources}>답변 없이 근거만 찾기</button>}</div>
         </form>
-        {remote && hits && <section className="document-answers" aria-live="polite"><h3>찾은 근거</h3><p className="footnote">{hits.message}{hits.method?` · 검색: ${methodLabel(hits.method)} (회사 head)`:''}</p>{hits.notice && <small className="warning">{hits.notice}</small>}
+        {hits && <section className="document-answers" aria-live="polite"><h3>찾은 근거</h3><p className="footnote">{hits.message}{hits.method?` · 검색: ${methodLabel(hits.method)}${remote?' (회사 head)':''}`:''} · 모델 답변 없이 '{collection.name}' 컬렉션 전체에서 찾은 원문 구간이에요.</p>{hits.notice && <small className="warning">{hits.notice}</small>}
           {hits.results.map(r=><details key={r.rank} open><summary>[{r.rank}] {r.document} · {r.page}쪽 · {r.start}–{r.end}자</summary><blockquote>{r.quote}</blockquote></details>)}
           {hits.skipped_stale?.length>0 && <small className="warning">색인을 다시 만들어야 해서 검색하지 않은 문서: {hits.skipped_stale.join(', ')}</small>}
         </section>}

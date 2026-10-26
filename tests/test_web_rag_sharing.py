@@ -262,7 +262,8 @@ def test_remote_mode_through_real_gateway(employee, web, monkeypatch):
     url, people, pc_home = employee
     kim = Browser(web)
     status, body = kim.post("/api/rag/remote/set", {"url": url, "token": "omm_wrong"})
-    assert status == 400 and "토큰" in body["error"]
+    assert status == 400 and "토큰" in body["error"] and "[회사에 연결]" in body["error"]
+    assert "omm rag remote set" not in body["error"]
     assert not (pc_home / "rag-remote.json").exists()
     assert kim.post("/api/rag/remote/set", {"url": url, "token": " " + people["kim"] + " "}) == (200, {"url": url, "name": "kim"})
     status, state = kim.get("/api/rag/state")

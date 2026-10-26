@@ -25,6 +25,11 @@ TEAMS_ON_HEAD = "팀은 헤드 Mac에서만 관리해요. 이 PC는 원격 헤�
 TOKENS_ON_HEAD = "직원 출입증(토큰)은 클러스터 헤드에서만 관리해요. 이 PC는 헤드로 설정돼 있지 않아요."
 
 
+def web_message(text: str) -> str:
+    """Head messages written for the CLI, pointed at the matching button here."""
+    return text.replace("`omm rag remote set`을 다시 실행해 주세요", "[회사에 연결]을 다시 해 주세요")
+
+
 class Problem(ValueError):
     def __init__(self, message: str, status: int = 400):
         super().__init__(message)
@@ -88,7 +93,7 @@ def state() -> dict:
     try:
         name = rag_remote.Client(remote).call("GET", "/rag/v1/whoami", timeout=8)["name"]
     except rag_remote.RemoteError as failure:
-        error = str(failure)
+        error = web_message(str(failure))
     except (KeyError, TypeError):
         error = "헤드의 응답을 읽지 못했어요. 헤드의 omm 버전을 확인해 주세요."
     return {"mode": "remote", "remote": {"url": remote.url, "name": name}, "error": error, "admin": False,
@@ -189,7 +194,10 @@ def run_upload(request, progress) -> dict:
         raise ValueError("비어 있거나 6 MiB를 넘는 문서는 등록할 수 없어요.")
     # The head extracts and embeds before it answers; one stage covers both.
     progress("upload", 0, 0)
-    result = client.upload(request["collection"], request["filename"], content, replace=replace)
+    try:
+        result = client.upload(request["collection"], request["filename"], content, replace=replace)
+    except rag_remote.RemoteError as error:
+        raise ValueError(web_message(str(error))) from None
     keep = ("name", "collection", "chunks", "unchanged", "semantic", "semantic_notice")
     return {key: result[key] for key in keep if key in result}
 
