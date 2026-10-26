@@ -46,6 +46,7 @@ class _Fakes:
         self.deleted = []
         self.load_progress = []
         self.model_ready = True
+        self.raw_state_calls = 0
 
     def _node_id(self, name):
         return next(k for k, v in self.state["nodeIdentities"].items() if v["friendlyName"] == name)
@@ -80,6 +81,11 @@ class _FakeExoClient:
     def state(self):
         self._guard()
         return exo_client.parse_state(copy.deepcopy(self.fakes.state))
+
+    def raw_state(self):
+        self._guard()
+        self.fakes.raw_state_calls += 1
+        return copy.deepcopy(self.fakes.state)
 
     def models(self):
         self._guard()
@@ -306,6 +312,91 @@ def test_status_plain_output_mentions_nodes(cluster_fakes):
     assert result.exit_code == 0 and "mac-a" in result.output and "No problems found" in result.output
 
 
+LIVE_MODEL = "mlx-community/Llama-3.2-1B-Instruct-4bit"
+
+
+def _place_live_model(fakes, runner_state, *downloads):
+    """Put the real single-node instance of LIVE_MODEL on mac-a, its runner in
+    `runner_state` and mac-a's download entries set to `downloads`."""
+    one = json.loads((FIX / "state-1node.json").read_text(encoding="utf-8"))
+    fakes.state["instances"] = one["instances"]
+    fakes.state["runners"] = {runner: {runner_state: {}} for runner in one["runners"]}
+    fakes.state["downloads"] = {fakes._node_id("mac-a"): list(downloads)}
+
+
+def _live_download(kind, **body):
+    # Same wire shape as the entries captured from a live exo (downloads-live.json).
+    ongoing = json.loads((FIX / "downloads-live.json").read_text(encoding="utf-8"))["ongoing"]["DownloadOngoing"]
+    if kind == "DownloadOngoing":
+        return {kind: ongoing}
+    return {kind: {"nodeId": ongoing["nodeId"], "shardMetadata": ongoing["shardMetadata"], **body}}
+
+
+def _plain_status():
+    # rich wraps long lines at the terminal width.
+    return " ".join(runner.invoke(cli.app, ["cluster", "status"]).output.split())
+
+
+def test_status_reads_exo_state_once(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _place_live_model(cluster_fakes, "RunnerReady")
+    _status()
+    assert cluster_fakes.raw_state_calls == 1
+
+
+def test_status_says_serving_only_for_a_ready_instance(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _place_live_model(cluster_fakes, "RunnerReady", _live_download("DownloadCompleted", total={"inBytes": 712593855}))
+    (instance,) = _status()["exo"]["instances"]
+    assert instance == {"model_id": LIVE_MODEL, "sharding": "Pipeline", "node_count": 1, "state": "ready",
+                        "downloaded_bytes": 0, "total_bytes": 0, "failed_on": None, "error": None}
+    plain = _plain_status()
+    assert f"Serving {LIVE_MODEL} (Pipeline, 1 Mac(s))" in plain
+
+
+def test_status_shows_download_progress_instead_of_serving(cluster_fakes):
+    # A first load of a big model downloads for over an hour; status is the only
+    # way back to that progress once omm cluster model was interrupted.
+    runner.invoke(cli.app, ["cluster", "init"])
+    _place_live_model(cluster_fakes, "RunnerIdle", _live_download("DownloadOngoing"))
+    data = _status()
+    (instance,) = data["exo"]["instances"]
+    assert (instance["state"], instance["downloaded_bytes"], instance["total_bytes"]) == ("downloading", 472708913, 712593855)
+    assert data["problems"] == []
+    plain = _plain_status()
+    assert "Serving" not in plain
+    assert f"Downloading {LIVE_MODEL}: 66% (0.4 of 0.7 GiB on the slowest Mac)" in plain
+
+
+def test_status_says_when_exo_has_not_sized_the_download_yet(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _place_live_model(cluster_fakes, "RunnerIdle",
+                      _live_download("DownloadPending", downloaded={"inBytes": 0}, total={"inBytes": 0}))
+    plain = _plain_status()
+    assert f"Waiting for exo to start downloading {LIVE_MODEL}" in plain
+
+
+def test_status_shows_an_instance_loading_into_memory(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _place_live_model(cluster_fakes, "RunnerLoading", _live_download("DownloadCompleted", total={"inBytes": 712593855}))
+    assert _status()["exo"]["instances"][0]["state"] == "loading"
+    plain = _plain_status()
+    assert f"Loading {LIVE_MODEL} into memory" in plain
+
+
+def test_status_reports_a_failed_download_and_how_to_retry(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _place_live_model(cluster_fakes, "RunnerIdle", _live_download("DownloadFailed", errorMessage="disk full"))
+    data = _status()
+    (instance,) = data["exo"]["instances"]
+    assert (instance["state"], instance["failed_on"], instance["error"]) == ("failed", "mac-a", "disk full")
+    problem = " ".join(p for p in data["problems"] if LIVE_MODEL in p)
+    assert "run omm cluster restart on mac-a" in problem
+    assert f"then run omm cluster model {LIVE_MODEL} again" in problem
+    plain = _plain_status()
+    assert f"mac-a could not download {LIVE_MODEL}: disk full" in plain
+
+
 def test_model_without_argument_lists_candidates(cluster_fakes):
     runner.invoke(cli.app, ["cluster", "init"])
     result = runner.invoke(cli.app, ["cluster", "model"])
@@ -475,7 +566,7 @@ def test_status_reports_other_exo_errors_as_problems(cluster_fakes, monkeypatch)
     from omm.cluster.errors import ClusterError
 
     runner.invoke(cli.app, ["cluster", "init"])
-    monkeypatch.setattr(_FakeExoClient, "state", lambda self: (_ for _ in ()).throw(ClusterError("exo request GET /state failed: HTTP 500")))
+    monkeypatch.setattr(_FakeExoClient, "raw_state", lambda self: (_ for _ in ()).throw(ClusterError("exo request GET /state failed: HTTP 500")))
     data = _status()
     assert data["exo"]["reachable"] is False
     assert "exo request GET /state failed: HTTP 500" in data["problems"]

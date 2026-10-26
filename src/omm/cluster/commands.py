@@ -129,24 +129,45 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     return saved
 
 
+def _instance_load(raw: dict, model_id: str) -> dict:
+    # exo lists an instance as soon as it is placed, long before it serves: a
+    # first load downloads the whole model on every Mac (over an hour for a big
+    # one), then loads it into memory.
+    if exo_client.instance_ready(raw, model_id):
+        return {"state": "ready", "downloaded_bytes": 0, "total_bytes": 0, "failed_on": None, "error": None}
+    progress = exo_client.load_progress(raw, model_id)
+    state = "failed" if progress.failed else progress.phase
+    return {"state": state, "downloaded_bytes": progress.downloaded_bytes, "total_bytes": progress.total_bytes,
+            "failed_on": progress.failed_on, "error": progress.failed}
+
+
 def status() -> dict:
     require_macos()
     current = settings.load()
     problems: list[str] = []
     exo = {"reachable": False, "nodes": [], "instances": [], "links": []}
     try:
-        state = ExoClient().state()
+        raw = ExoClient().raw_state()
     except ClusterError as error:
         problems.append(str(error))
-        state = None
+        raw = None
+    state = None if raw is None else exo_client.parse_state(raw)
     if state is not None:
+        instances = []
+        for i in state.instances:
+            load = _instance_load(raw, i.model_id)
+            instances.append({"model_id": i.model_id, "sharding": i.sharding, "node_count": len(i.node_ids), **load})
+            if load["state"] == "failed":
+                problems.append(
+                    f"{load['failed_on']} could not download {i.model_id}; exo does not try a failed download "
+                    f"again until it restarts. Fix the cause, run omm cluster restart on {load['failed_on']}, "
+                    f"then run omm cluster model {i.model_id} again.")
         exo = {
             "reachable": True,
             "nodes": [{"name": n.name, "memory_total_bytes": n.memory_total_bytes,
                        "memory_available_bytes": n.memory_available_bytes, "rdma": n.rdma,
                        "os_version": n.os_version, "os_build": n.os_build} for n in state.nodes],
-            "instances": [{"model_id": i.model_id, "sharding": i.sharding, "node_count": len(i.node_ids)}
-                          for i in state.instances],
+            "instances": instances,
             "links": [],
         }
         names = {n.node_id: n.name for n in state.nodes}

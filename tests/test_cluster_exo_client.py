@@ -80,6 +80,16 @@ def test_ready_instance_detection_reads_runner_state():
     assert exo_client.instance_ready(data, "mlx-community/Llama-3.2-1B-Instruct-4bit") is False
 
 
+def test_raw_state_is_the_unparsed_state_that_state_parses(monkeypatch):
+    client = exo_client.ExoClient()
+    data = _load("state-1node.json")
+    paths = []
+    monkeypatch.setattr(client, "_get", lambda path, **k: paths.append(path) or data)
+    assert client.raw_state() is data
+    assert client.state() == exo_client.parse_state(data)
+    assert paths == ["/state", "/state"]
+
+
 def test_client_raises_exo_unavailable_when_nothing_listens():
     client = exo_client.ExoClient("http://127.0.0.1:9")
     with pytest.raises(exo_client.ExoUnavailable, match="exo is not running on this Mac"):
