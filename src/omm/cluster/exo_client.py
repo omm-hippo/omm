@@ -296,8 +296,13 @@ class ExoClient:
     def _get(self, path: str, **kwargs) -> dict:
         return self._call("GET", path, **kwargs)
 
+    def raw_state(self) -> dict:
+        # For callers that need both parse_state and the load helpers
+        # (instance_ready, load_progress) from one consistent snapshot.
+        return self._get("/state")
+
     def state(self) -> ClusterState:
-        return parse_state(self._get("/state"))
+        return parse_state(self.raw_state())
 
     def models(self) -> list[ExoModel]:
         return parse_models(self._get("/models"))
