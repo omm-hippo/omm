@@ -135,7 +135,25 @@ class WebService:
                                                   settings.get("catalog_public_key"))
         return {"updated": artifact != previous}
 
-    def recommendations(self, profile: str = "balanced", query: str = "") -> dict:
+    def guide(self, purpose: str, profile: str = "balanced") -> dict:
+        from omm.web import guide
+        if purpose not in guide.PURPOSES:
+            raise ValueError("한국어 대화, 코딩 또는 문서 질문을 선택해 주세요.")
+        value = self.recommendations(profile, purpose=purpose)
+        rows, seen = [], set()
+        for row in value["models"]:
+            key = row["wiki"]["id"]
+            if key not in seen:
+                rows.append(row)
+                seen.add(key)
+            if len(rows) == 3:
+                break
+        return {**value, "models": [{**row, "reasons": guide.reasons(row, purpose)} for row in rows],
+                "wiki_options": [] if rows else guide.wiki_options(purpose),
+                "purpose": purpose,
+                "limitation": "위키의 용도 분류로 고른 후보예요. 설치 파일이 확인된 경우에만 메모리 조건을 비교해요. 답변 품질 순위가 아니며, 개발사 설명과 내 컴퓨터의 실측은 구별해요."}
+
+    def recommendations(self, profile: str = "balanced", query: str = "", *, purpose: str | None = None) -> dict:
         if profile not in predictor.RECOMMEND_PROFILES:
             raise ValueError("Unknown memory profile")
         if not isinstance(query, str) or len(query) > 160:
@@ -153,6 +171,11 @@ class WebService:
                 if coordinates:
                     repo, filename = coordinates
                     candidates.append({**rule, "repo_id": repo, "filename": filename, "provider": "huggingface"})
+        if purpose is not None:
+            with self.lock:
+                extra = [c for group in self.discovered.values() for c in group]
+            seen = {(c.get("repo_id"), c.get("filename")) for c in candidates}
+            candidates = [*candidates, *(c for c in extra if (c.get("repo_id"), c.get("filename")) not in seen)]
         if query.strip():
             terms = query.casefold().split()
             candidates = [c for c in candidates if all(t in (str(c.get("name", "")) + " " + c["repo_id"] + " " + c["filename"]).casefold() for t in terms)]
@@ -164,6 +187,11 @@ class WebService:
         ranked = [(c, speed) for c, speed in ranked if predictor.candidate_fits_memory(info, c) is True
                   and (predictor.estimate_required_memory_gb(c) or float("inf")) <= budget]
         ranked.sort(key=lambda pair: predictor.estimate_required_memory_gb(pair[0]) or 0, reverse=True)
+        if purpose is not None:
+            from omm.web import guide
+            if purpose not in guide.PURPOSES:
+                raise ValueError("Unknown model purpose")
+            ranked = [(c, speed) for c, speed in ranked if guide.matches({"wiki": c.get("wiki") or model_wiki.describe(c)}, purpose)]
         eligible = len(ranked)
         ranked = recommend_selection.shortlist(ranked)
         statuses = recommend_status.detect_installation_statuses([c for c, _ in ranked])
@@ -183,7 +211,7 @@ class WebService:
                              "installed": status.installed, "installed_engines": list(status.engines),
                              "managed_by_omm": status.managed_by_omm, "installation_match": status.match_kind,
                              "variant_warning": recommend_selection.variant_warning(candidate),
-                             "wiki": model_wiki.describe(candidate),
+                             "wiki": candidate.get("wiki") or model_wiki.describe(candidate),
                              "evidence": {**recommend_evidence.describe(artifact, info, candidate), "memory_basis": predictor.memory_estimate_basis(candidate)}})
             if len(self.candidates) > 4096:
                 self.candidates = {row["id"]: self.candidates[row["id"]] for row in rows}
@@ -201,16 +229,20 @@ class WebService:
         if not isinstance(body, dict) or set(body) - {"operation", "id", "ids", "engine", "confirmed", "request_id"}:
             raise ValueError("Unsupported operation fields")
         operation = body.get("operation")
-        if operation not in {"install", "link", "uninstall", "verify", "compare", "profile_save", "profile_restore", "engine_install", "import_scan", "import", "cleanup", "start_chat"}:
+        if operation not in {"install", "link", "uninstall", "verify", "compare", "profile_save", "profile_restore", "engine_install", "engine_start", "import_scan", "import", "cleanup", "start_chat"}:
             raise ValueError("Unsupported operation")
         if body.get("confirmed") is not True:
             raise ValueError("The operation must be explicitly confirmed")
         engine = body.get("engine") or None
         if engine is not None and engine not in {s.key for s in linker.ENGINES}:
             raise ValueError("Unknown local runner")
-        if operation in {"import_scan", "cleanup", "engine_install", "compare"}:
+        if operation in {"import_scan", "cleanup", "engine_install", "engine_start", "compare"}:
             if body.get("id") is not None:
                 raise ValueError("이 작업에는 단일 모델 ID를 사용하지 않아요.")
+            if operation == "engine_start":
+                if engine != "ollama" or body.get("ids") is not None:
+                    raise ValueError("서버 시작 도우미는 Ollama만 지원해요.")
+                return {"operation": operation, "filename": "Ollama 로컬 서버", "engine": engine}
             if operation == "engine_install":
                 if engine is None or body.get("ids") is not None:
                     raise ValueError("설치할 실행 앱을 선택해 주세요.")

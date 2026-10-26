@@ -59,6 +59,11 @@ def execute(request: dict, stop: threading.Event) -> dict:
             if operation == "import":
                 return maintenance.adopt(request["group"])
             return management.cleanup_selected(request["files"])
+        if operation == "document_import" and "collection" in request:
+            from omm.web.rag_sharing import run_upload
+            # Only the stage and piece counts leave the worker, never text or the token.
+            return run_upload(request, lambda stage, done, total: emit(
+                "progress", document_stage=stage, completed_count=done, total_count=total))
         if operation == "document_import":
             import base64
             from omm.documents import DocumentStore
@@ -102,8 +107,11 @@ def execute(request: dict, stop: threading.Event) -> dict:
                         link_only_engine=request.get("engine"), stop_event=stop,
                         downloaded_state=download_state,
                     )
-                if outcome.skipped_unfit or outcome.skipped_low_disk:
-                    raise ValueError("Installation was skipped because of memory or disk constraints")
+                from omm.web.recovery import ActionError
+                if outcome.skipped_unfit:
+                    raise ActionError("out_of_memory", "현재 메모리 예산에 맞지 않아 설치를 중단했어요. 더 작은 모델을 선택해 주세요.")
+                if outcome.skipped_low_disk:
+                    raise ActionError("disk_full", "모델을 저장할 공간이 부족해 설치를 중단했어요. 저장 공간을 확인해 주세요.")
                 entry = registry.load_registry().get(filename)
                 if not entry or not (config.MODELS_DIR / filename).is_file():
                     raise ValueError("The installed file and registry could not be confirmed")
@@ -155,14 +163,17 @@ def main():
         emit("started")
         result = execute(request, stop)
         if request.get("operation") == "verify" and not result["runtime_verified"]:
-            emit("failed", result=result, message=result["message"])
+            from omm.web.recovery import ActionError, failure
+            emit("failed", result=result, message=result["message"],
+                 failure=failure(ActionError(result.get("compatibility", {}).get("failure_reason", "unknown"), "")))
             return 1
         emit("completed", result=result)
     except BaseException as error:
         if stop.is_set() or isinstance(error, KeyboardInterrupt):
             emit("cancelled", message="작업을 중단했어요. 파일과 실행 앱 상태를 확인한 뒤 다시 진행해 주세요.")
             return 2
-        emit("failed", message=str(error)[:2000] or type(error).__name__)
+        from omm.web.recovery import failure
+        emit("failed", message=str(error)[:2000] or type(error).__name__, failure=failure(error))
         return 1
     return 0
 

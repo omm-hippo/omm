@@ -7,6 +7,7 @@ export function WorkspaceIcon({name,size=18}) {
     recommend:<><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></>,
     models:<><path d="m12 3 9 5-9 5-9-5ZM3 8v10l9 5 9-5V8M12 13v10"/></>,
     chat:<path d="M21 14a4 4 0 0 1-4 4H8l-5 4V6a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/>,
+    shared:<><rect x="8" y="2" width="8" height="6" rx="1"/><rect x="2" y="16" width="8" height="6" rx="1"/><rect x="14" y="16" width="8" height="6" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/></>,
     documents:<><path d="M14 2H5v20h14V7ZM14 2v5h5M8 12h8M8 16h6"/></>,
     comparison:<><path d="M4 3v18h17M9 17v-6M14 17V7M19 17V4"/></>,
     jobs:<><path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/></>,

@@ -112,6 +112,7 @@ def test_package_discovery_rejects_name_only_and_split_shards(monkeypatch):
         def get(self,url,**kwargs):
             assert kwargs["allow_redirects"] is False
             if url.endswith('/api/models'):
+                assert kwargs['params']['cardData'] == 'true'  # full=true alone omits base_model metadata.
                 data=[{"id":"vendor/phi-4-mini-instruct-wrong","cardData":{"base_model":"other/model"}},
                       {"id":"vendor/phi-4-mini-instruct-GGUF","cardData":{"base_model":model["repository"]}}]
             else:

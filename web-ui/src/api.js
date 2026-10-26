@@ -5,7 +5,7 @@ export async function api(path, body, signal) {
     credentials: 'same-origin',
     headers: body === undefined ? {} : {'Content-Type': 'application/json', 'X-OMM-Web': '1'},
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: signal ? AbortSignal.any([signal,AbortSignal.timeout(90000)]) : AbortSignal.timeout(path === '/api/wiki/discover' ? 90000 : path === '/api/diagnostics' ? 60000 : path === '/api/catalog/refresh' ? 40000 : 15000)
+    signal: signal ? AbortSignal.any([signal,AbortSignal.timeout(90000)]) : AbortSignal.timeout(path === '/api/wiki/discover' ? 90000 : path.startsWith('/api/rag/') ? 45000 : path === '/api/diagnostics' ? 60000 : path === '/api/catalog/refresh' ? 40000 : 15000)
   }); } catch {
     throw new Error('서버와 연결하지 못했어요. 작업이 접수됐을 수 있으니 작업 목록을 먼저 확인해 주세요.');
   }
