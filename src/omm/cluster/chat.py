@@ -81,7 +81,19 @@ def _open(point: Endpoint, method: str, path: str, body: dict | None, timeout: f
                            "(omm rag remote) and that you are on the office network") from error
 
 
-def loaded_rows(point: Endpoint):
+def cluster_configured() -> bool:
+    """True on a cluster Mac or a PC with `omm rag remote set`; reads local files only."""
+    if settings.load() is not None:
+        return True
+    from omm import rag_remote
+
+    try:
+        return rag_remote.load() is not None
+    except rag_remote.RemoteError:
+        return False
+
+
+def loaded_rows(point: Endpoint, timeout: float | None = None):
     """The loaded models as models.ModelRow, from this Mac's exo or the head's gateway."""
     from omm.cluster.models import ModelRow, inventory_from
 
@@ -89,7 +101,7 @@ def loaded_rows(point: Endpoint):
         from omm.cluster.exo_client import ExoClient
 
         return [row for row in inventory_from(ExoClient(point.url).raw_state()) if row.state in ("loaded", "loading")]
-    with _open(point, "GET", LOADED_MODELS_PATH, None, LIST_TIMEOUT) as response:
+    with _open(point, "GET", LOADED_MODELS_PATH, None, timeout or LIST_TIMEOUT) as response:
         try:
             models = json.loads(response.read()).get("models")
         except (ValueError, AttributeError) as error:

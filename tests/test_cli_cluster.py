@@ -1208,3 +1208,78 @@ def test_run_refuses_a_model_that_is_not_installed(cluster_fakes):
     assert result.exit_code == 1
     assert f"run: omm cluster install {LIVE_MODEL}" in " ".join(result.output.split())
     assert cluster_fakes.created == []
+
+
+def test_list_json_is_unchanged_on_a_cluster_mac(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _on_every_mac(cluster_fakes)
+    result = runner.invoke(cli.app, ["--json", "list"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == []
+
+
+def test_list_shows_a_cluster_section(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _on_every_mac(cluster_fakes)
+    result = runner.invoke(cli.app, ["list"])
+    assert result.exit_code == 0, result.output
+    assert "Cluster" in result.output and f"{LIVE_MODEL}" in result.output and "4/4 Macs" in result.output
+
+
+def test_list_survives_an_unreachable_cluster(cluster_fakes):
+    runner.invoke(cli.app, ["cluster", "init"])
+    cluster_fakes.exo_down()
+    result = runner.invoke(cli.app, ["list"])
+    assert result.exit_code == 0, result.output
+    assert "Cluster: unreachable" in " ".join(result.output.split())
+
+
+def test_list_makes_no_cluster_call_without_a_cluster(isolated_omm_home, monkeypatch):
+    from omm.cluster import chat, models as cluster_models
+
+    def boom(*a, **k):
+        raise AssertionError("cluster contacted")
+
+    monkeypatch.setattr(chat, "loaded_rows", boom)
+    monkeypatch.setattr(cluster_models, "inventory", boom)
+    result = runner.invoke(cli.app, ["list"])
+    assert result.exit_code == 0, result.output
+    assert "Cluster" not in result.output
+
+
+def test_list_on_an_employee_pc_uses_the_gateway_with_a_short_timeout(isolated_omm_home, monkeypatch):
+    from omm import rag_remote
+    from omm.cluster import chat, models as cluster_models
+
+    rag_remote.save(rag_remote.Remote("http://192.0.2.20:52440", "omm_x"))
+    seen = {}
+
+    def rows(point, timeout=None):
+        seen["timeout"] = timeout
+        return [cluster_models.ModelRow(LIVE_MODEL, 712593855, 3, 3, "loaded")]
+
+    monkeypatch.setattr(chat, "loaded_rows", rows)
+    result = runner.invoke(cli.app, ["list"])
+    assert result.exit_code == 0, result.output
+    assert LIVE_MODEL in result.output and seen["timeout"] == 2
+
+
+def test_run_falls_through_to_a_cluster_model(cluster_fakes, monkeypatch):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _place_live_model(cluster_fakes, "RunnerReady")
+    _on_every_mac(cluster_fakes)
+    seen = []
+    _chat_stub(monkeypatch, seen)
+    result = runner.invoke(cli.app, ["run", LIVE_MODEL], input="hello\n/bye\n")
+    assert result.exit_code == 0, result.output
+    assert seen == [LIVE_MODEL]
+
+
+def test_run_without_a_name_and_no_local_model_uses_the_cluster(cluster_fakes, monkeypatch):
+    runner.invoke(cli.app, ["cluster", "init"])
+    _place_live_model(cluster_fakes, "RunnerReady")
+    seen = []
+    _chat_stub(monkeypatch, seen)
+    result = runner.invoke(cli.app, ["run"], input="hello\n/bye\n")
+    assert result.exit_code == 0, result.output
+    assert seen == [LIVE_MODEL]

@@ -2731,6 +2731,12 @@ def cluster_run_cmd(
     _cluster_chat(model)
 
 
+def _cluster_configured() -> bool:
+    from omm.cluster import chat
+
+    return chat.cluster_configured()
+
+
 def _cluster_chat(model: str | None) -> None:
     from omm.cluster import chat, models as cluster_models, settings as cluster_settings
 
@@ -9282,10 +9288,17 @@ def run(
     KoboldCpp/text-generation-webui start with the model loaded, GUI apps are opened."""
     reg = registry.load_registry()
     if model_name is None:
+        if not reg and engine is None and _cluster_configured():
+            _cluster_chat(None)
+            return
         model_name = _pick_run_model(reg)
     model_name = _resolve_ref(model_name)
     filename, entry = _lookup_entry(model_name, reg)
     if entry is None:
+        if engine is None and _cluster_configured():
+            # Not a local GGUF: try it as a cluster model.
+            _cluster_chat(model_name)
+            return
         _print_not_installed_error(model_name)
         raise typer.Exit(1)
 
@@ -9847,6 +9860,8 @@ def list_models(
             )
         else:
             console.print("No models installed via omm yet. Try `omm recommend` or `omm install`.")
+        if not json_output and engine is None:
+            _print_cluster_section()
         raise typer.Exit(0)
 
     if json_output:
@@ -9883,6 +9898,35 @@ def list_models(
         table.add_row(str(idx), label, size_label, ", ".join(programs) or "none")
     console.print(table)
     session_cache.record_results(list(reg.keys()))
+    if engine is None:
+        _print_cluster_section()
+
+
+# `omm list` must stay quick on an employee PC whose head is off or away.
+CLUSTER_LIST_TIMEOUT = 2
+
+
+def _print_cluster_section() -> None:
+    """`omm list`'s cluster models, only on a cluster Mac or a PC with `omm rag remote set`."""
+    from omm.cluster import chat, models as cluster_models, settings as cluster_settings
+    from omm.cluster.errors import ClusterError
+
+    if not chat.cluster_configured():
+        return
+    try:
+        if cluster_settings.load() is not None:
+            rows = cluster_models.inventory()
+        else:
+            rows = chat.loaded_rows(chat.endpoint(), timeout=CLUSTER_LIST_TIMEOUT)
+    except ClusterError as error:
+        console.print(f"[muted]Cluster: unreachable ({escape(str(error))})[/muted]")
+        return
+    console.print()
+    console.print("Cluster", style="bold")
+    if not rows:
+        console.print("[muted]  No models on the cluster.[/muted]")
+    for line in _cluster_rows_text(rows):
+        console.print(f"  {line}", markup=False)
 
 
 @app.command(name="log")
