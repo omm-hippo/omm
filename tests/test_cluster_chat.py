@@ -126,7 +126,7 @@ def test_parse_stream_raises_on_an_error_event():
 def test_pick_model():
     assert chat.pick_model(None, ["a"]) == "a"
     assert chat.pick_model("b", ["a", "b"]) == "b"
-    with pytest.raises(ClusterError, match="omm cluster model"):
+    with pytest.raises(ClusterError, match="omm cluster load"):
         chat.pick_model(None, [])
     with pytest.raises(UsageProblem, match="omm cluster run b"):
         chat.pick_model(None, ["a", "b"])

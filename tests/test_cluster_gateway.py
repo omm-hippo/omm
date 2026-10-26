@@ -430,7 +430,7 @@ def test_unloaded_model_404_says_how_to_load_it(exo_gateway, token):
     error = json.loads(resp.read())["error"]
     assert error["type"] == "not_found_error"
     assert "mlx-community/MiniMax-M2.7-4bit is not loaded on the cluster" in error["message"]
-    assert "omm cluster model mlx-community/MiniMax-M2.7-4bit" in error["message"]
+    assert "omm cluster load mlx-community/MiniMax-M2.7-4bit" in error["message"]
 
 
 def test_other_upstream_404_passes_through_unchanged(exo_gateway, token):

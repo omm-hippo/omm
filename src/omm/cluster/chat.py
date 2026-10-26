@@ -96,7 +96,7 @@ def loaded_models(point: Endpoint) -> list[str]:
 
 def pick_model(requested: str | None, loaded: list[str]) -> str:
     if not loaded:
-        raise ClusterError("No model is loaded on the cluster. On the head Mac run: omm cluster model <model>")
+        raise ClusterError("No model is loaded on the cluster. On the head Mac run: omm cluster load <model>")
     if requested is None:
         if len(loaded) == 1:
             return loaded[0]

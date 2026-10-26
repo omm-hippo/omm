@@ -311,6 +311,11 @@ class GlobalOptions:
 # before execution, rather than running mutations with misleading plain output.
 _JSON_CAPABLE = {
     "cluster status",
+    "cluster recommend",
+    "cluster search",
+    "cluster list",
+    "cluster info",
+    "cluster benchmark",
     "search",
     "list",
     "info",
@@ -342,6 +347,7 @@ _JSON_CAPABLE = {
 # command has nothing for it to do.
 _YES_CAPABLE = {
     "cluster leave",
+    "cluster uninstall",
     "arena",
     "install",
     "import",
@@ -795,7 +801,7 @@ def agent_cluster_cmd(
         raise typer.Exit(1)
     console.print(f"Saved cluster routing settings for {escape(harness)} ({escape(metadata['base_url'])}). Start a new harness session.")
     console.print("The settings file now holds your employee token and is readable only by you.")
-    console.print("The model must be loaded on the cluster (omm cluster model on the head); tool calling is not verified.")
+    console.print("The model must be loaded on the cluster (omm cluster load on the head); tool calling is not verified.")
 
 
 @agent_app.command(name="cloud")
@@ -2542,49 +2548,200 @@ def cluster_restart_cmd() -> None:
     _cluster_call(cluster_commands.restart, _cluster_out)
 
 
-@cluster_app.command(name="model")
+def _cluster_gib(size: int | None) -> str:
+    return f"{size / 1024 ** 3:.1f} GiB" if size else "size unknown"
+
+
+def _cluster_guard() -> dict:
+    """The memory-guard policy and a confirm callback (None without a terminal)."""
+    policy = memory_guard_mod.normalize_policy(load_config().get("memory_guard_policy", "ask"))
+    return {"policy": policy, "confirm": _ask_confirm if _stdin_is_tty() else None}
+
+
+@cluster_app.command(name="recommend")
 @global_flags
-def cluster_model_cmd(
-    model: str | None = typer.Argument(None, help="exo model id to load; omit to see what fits"),
-    unload: bool = typer.Option(False, "--unload", help="Stop serving this model instead of loading it."),
+def cluster_recommend_cmd() -> None:
+    """Show the biggest exo models that fit the cluster's free memory."""
+    from omm.cluster import commands as cluster_commands, models as cluster_models
+
+    ranked = _cluster_call(cluster_commands.candidates)
+    states = {row.model: row.state for row in _cluster_call(cluster_models.inventory)}
+    if _global_opts().json:
+        _print_json(data=[{"model": item.model_id, "size_bytes": item.size_bytes,
+                           "memory_used_fraction": item.memory_used_fraction,
+                           "state": states.get(item.model_id, "not installed")} for item in ranked])
+        return
+    if not ranked:
+        console.print("No exo model fits this cluster's free memory right now.", markup=False)
+        return
+    for index, item in enumerate(ranked, 1):
+        console.print(f"{index}. {item.model_id}  {_cluster_gib(item.size_bytes)}  "
+                      f"uses {item.memory_used_fraction:.0%} of free memory  "
+                      f"[{states.get(item.model_id, 'not installed')}]", markup=False)
+    console.print("Install one with: omm cluster install <model>", markup=False)
+
+
+@cluster_app.command(name="search")
+@global_flags
+def cluster_search_cmd(text: str = typer.Argument(..., help="Words to look for in MLX model names")) -> None:
+    """Search Hugging Face for MLX models exo can run."""
+    from omm.cluster import models as cluster_models
+
+    rows = _cluster_call(cluster_models.search, text)
+    if _global_opts().json:
+        _print_json(data=rows)
+        return
+    if not rows:
+        console.print(f"No MLX model matches {text}.", markup=False)
+        return
+    for row in rows:
+        fit = {True: "fits", False: "does not fit", None: "fit unknown"}[row["fits"]]
+        where = "" if row["in_catalog"] else "  (not in exo's list; install adds it)"
+        console.print(f"{row['model']}  {_cluster_gib(row['size_bytes'])}  {fit}  "
+                      f"{row['downloads']} downloads{where}", markup=False)
+    console.print("Install one with: omm cluster install <model>", markup=False)
+
+
+@cluster_app.command(name="install")
+@global_flags
+def cluster_install_cmd(model: str = typer.Argument(..., help="exo model id, from omm cluster recommend or search")) -> None:
+    """Download a model to every Mac in the cluster without loading it (head Mac only)."""
+    from omm.cluster import models as cluster_models
+
+    started = _cluster_call(cluster_models.install, model, _cluster_out)
+    if started:
+        console.print(f"Installed {model} on {started} more Mac(s).", markup=False)
+    console.print(f"Chat with it: omm cluster run {model}", markup=False)
+
+
+@cluster_app.command(name="uninstall")
+@global_flags
+def cluster_uninstall_cmd(
+    model: str = typer.Argument(..., help="exo model id (see omm cluster list)"),
 ) -> None:
-    """Recommend models that fit the cluster, or load or unload one."""
+    """Delete a model's files from every Mac, unloading it first (head Mac only)."""
+    from omm.cluster import commands as cluster_commands, models as cluster_models
+
+    _cluster_call(cluster_commands.require_head_for, "omm cluster uninstall")
+    rows = {row.model: row for row in _cluster_call(cluster_models.inventory)}
+    if model in rows and rows[model].state in ("loaded", "loading") and not _global_opts().yes:
+        question = f"{model} is loaded and may be in use by other people. Unload and delete it?"
+        if not _stdin_is_tty():
+            err_console.print(f"{model} is loaded and may be in use; run again with --yes to unload and delete it.",
+                              markup=False)
+            raise typer.Exit(2)
+        if not _ask_confirm(question):
+            raise typer.Exit(1)
+    removed = _cluster_call(cluster_models.uninstall, model, _cluster_out)
+    console.print(f"Removed {model} from {removed} Mac(s).", markup=False)
+
+
+@cluster_app.command(name="list")
+@global_flags
+def cluster_list_cmd() -> None:
+    """List the models on the cluster and whether each one is loaded."""
+    from omm.cluster import models as cluster_models
+
+    rows = _cluster_call(cluster_models.inventory)
+    if _global_opts().json:
+        _print_json(data=[row.as_dict() for row in rows])
+        return
+    if not rows:
+        console.print("No models on this cluster yet. Find one with: omm cluster recommend", markup=False)
+        return
+    for line in _cluster_rows_text(rows):
+        console.print(line, markup=False)
+
+
+def _cluster_rows_text(rows) -> list[str]:
+    return [f"{row.model}  {_cluster_gib(row.size_bytes)}  {row.nodes_installed}/{row.nodes_total} Macs  {row.state}"
+            for row in rows]
+
+
+@cluster_app.command(name="info")
+@global_flags
+def cluster_info_cmd(model: str = typer.Argument(..., help="exo model id")) -> None:
+    """Show a model's details, which Macs have it, and whether it fits now."""
+    from omm.cluster import models as cluster_models
+
+    data = _cluster_call(cluster_models.info, model)
+    if _global_opts().json:
+        _print_json(data=data)
+        return
+    card = data["card"]
+    console.print(data["model"], markup=False)
+    for label, key in (("Family", "family"), ("Base model", "base_model"), ("Quantization", "quantization"),
+                       ("Context", "context_length")):
+        if card.get(key):
+            console.print(f"  {label}: {card[key]}", markup=False)
+    if card.get("capabilities"):
+        console.print(f"  Capabilities: {', '.join(map(str, card['capabilities']))}", markup=False)
+    console.print(f"  Size: {_cluster_gib(data['size_bytes'])}", markup=False)
+    console.print("  Macs: " + ", ".join(f"{node['name']} {node['state']}" for node in data["nodes"]), markup=False)
+    if data["loaded"]:
+        console.print(f"  Loaded ({data['sharding']})", markup=False)
+    elif data["fits"]:
+        console.print(f"  Not loaded; fits now ({_cluster_gib(data['peak_node_bytes'])} on the busiest Mac)", markup=False)
+    else:
+        console.print("  Not loaded; does not fit the cluster's free memory now", markup=False)
+
+
+@cluster_app.command(name="load")
+@global_flags
+def cluster_load_cmd(model: str = typer.Argument(..., help="exo model id (see omm cluster list)")) -> None:
+    """Load a model into the cluster's memory so employees can use it (head Mac only)."""
+    from omm.cluster import commands as cluster_commands, models as cluster_models
+
+    _cluster_call(cluster_commands.require_head_for, "omm cluster load")
+    rows = {row.model for row in _cluster_call(cluster_models.inventory)}
+    if model not in rows:
+        console.print(f"{model} is not installed yet; exo downloads it first "
+                      f"(omm cluster install {model} downloads without loading).", markup=False)
+    console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard())),
+                  markup=False)
+
+
+@cluster_app.command(name="unload")
+@global_flags
+def cluster_unload_cmd(model: str = typer.Argument(..., help="exo model id (see omm cluster list)")) -> None:
+    """Free a loaded model's memory; its files stay installed (head Mac only)."""
     from omm.cluster import commands as cluster_commands
 
-    if model is None:
-        if unload:
-            err_console.print("Name the model to unload.", markup=False)
-            raise typer.Exit(2)
-        ranked = _cluster_call(cluster_commands.candidates)
-        if not ranked:
-            console.print("No exo model fits this cluster's free memory right now.", markup=False)
-            return
-        for index, item in enumerate(ranked, 1):
-            console.print(f"{index}. {item.model_id}  {item.size_bytes / 1024 ** 3:.1f} GiB  "
-                          f"uses {item.memory_used_fraction:.0%} of free memory", markup=False)
-        console.print("Load one with: omm cluster model <model>", markup=False)
-        return
-    if unload:
-        count = _cluster_call(cluster_commands.unload_model, model)
-        console.print(f"Stopped {count} running copy(ies) of {model}.", markup=False)
-        return
-    console.print(_cluster_call(cluster_commands.load_model, model, _cluster_out), markup=False)
+    _cluster_call(cluster_commands.require_head_for, "omm cluster unload")
+    count = _cluster_call(cluster_commands.unload_model, model)
+    if not count:
+        err_console.print(f"{model} is not loaded (see omm cluster list).", markup=False)
+        raise typer.Exit(1)
+    console.print(f"Unloaded {model}.", markup=False)
 
 
 @cluster_app.command(name="run")
 @global_flags
 def cluster_run_cmd(
-    model: str | None = typer.Argument(None, help="Loaded exo model id; omit when the cluster serves one"),
+    model: str | None = typer.Argument(None, help="exo model id; omit when the cluster serves one"),
 ) -> None:
-    """Chat in the terminal with the model the cluster serves (any PC with omm rag remote set)."""
-    from omm.cluster import chat
+    """Chat in the terminal with a cluster model, loading it first when it is installed."""
+    _cluster_chat(model)
+
+
+def _cluster_chat(model: str | None) -> None:
+    from omm.cluster import chat, models as cluster_models, settings as cluster_settings
 
     try:
         import readline  # noqa: F401  (line editing and history for input())
     except ImportError:
         pass
     point = _cluster_call(chat.endpoint)
-    chosen = _cluster_call(chat.pick_model, model, _cluster_call(chat.loaded_models, point))
+    loaded = _cluster_call(chat.loaded_models, point)
+    if model is not None and model not in loaded and cluster_settings.load() is not None:
+        rows = {row.model: row for row in _cluster_call(cluster_models.inventory)}
+        if model not in rows or not rows[model].nodes_installed:
+            err_console.print(f"{model} is not installed; run: omm cluster install {model}", markup=False)
+            raise typer.Exit(1)
+        console.print(_cluster_call(lambda: cluster_models.ensure_loaded(model, _cluster_out, **_cluster_guard())),
+                      markup=False)
+        loaded = _cluster_call(chat.loaded_models, point)
+    chosen = _cluster_call(chat.pick_model, model, loaded)
     console.print(f"{chosen} on {point.where}", markup=False)
     console.print("[muted]Type /bye to leave the chat.[/muted]")
     messages: list[dict] = []

@@ -26,7 +26,7 @@ class ClusterSettings:
     namespace: str
     gateway_port: int
     known_nodes: tuple[str, ...] = ()
-    # The model `omm cluster model` last loaded from the head. exo forgets its
+    # The model `omm cluster load` (or `run`) last loaded from the head. exo forgets its
     # instances when it restarts (a reboot, a restart), so the head's gateway
     # service loads this one again (autoload.py); unloading it clears it.
     model: str | None = None

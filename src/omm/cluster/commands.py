@@ -173,7 +173,7 @@ def status() -> dict:
                 problems.append(
                     f"{load['failed_on']} could not download {i.model_id}; exo does not try a failed download "
                     f"again until it restarts. Fix the cause, run omm cluster restart on {load['failed_on']}, "
-                    f"then run omm cluster model {i.model_id} again.")
+                    f"then run omm cluster load {i.model_id} again.")
         exo = {
             "reachable": True,
             "nodes": [{"name": n.name, "memory_total_bytes": n.memory_total_bytes,
@@ -347,7 +347,7 @@ def load_model(model_id: str, out: Out, client: ExoClient | None = None, placeme
             unload_model(model_id, client)
             raise ClusterError(
                 f"exo does not try a failed download again until it restarts. Fix the cause, run omm cluster "
-                f"restart on {failed}, then run omm cluster model {model_id} again.")
+                f"restart on {failed}, then run omm cluster load {model_id} again.")
         detail = f" Last status: {last['line']}" if last["line"] else ""
         raise ClusterError(f"{model_id} made no progress for {MODEL_STALL_TIMEOUT // 60} minutes.{detail}")
     current = settings.load()

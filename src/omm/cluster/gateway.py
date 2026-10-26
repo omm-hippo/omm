@@ -66,7 +66,7 @@ def _not_loaded_message(body: bytes | None) -> str:
         model = None
     named = isinstance(model, str) and model
     return (f"omm cluster: {model if named else 'the requested model'} is not loaded on the cluster. "
-            f"The admin loads it on the head Mac with: omm cluster model {model if named else '<model id>'}")
+            f"The admin loads it on the head Mac with: omm cluster load {model if named else '<model id>'}")
 
 
 def loaded_models(catalog: bytes, state: bytes) -> bytes:
