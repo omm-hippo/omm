@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_by": "scripts/export_command_reference.py",
-  "omm_version": "0.4.43",
+  "omm_version": "0.4.53",
   "docs_base_url": "https://omm.run/commands",
   "commands": [
     {
@@ -325,6 +325,110 @@
     {
       "path": [
         "cluster",
+        "benchmark"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Measure first-token time and tokens/sec of one answer on the cluster (head Mac only, never uploaded).",
+      "description": "",
+      "usage": "omm cluster benchmark [OPTIONS] {model}",
+      "arguments": [
+        {
+          "name": "model",
+          "help": "exo model id (see omm cluster list)",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#benchmark"
+    },
+    {
+      "path": [
+        "cluster",
+        "info"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show a model's details, which Macs have it, and whether it fits now.",
+      "description": "",
+      "usage": "omm cluster info [OPTIONS] {model}",
+      "arguments": [
+        {
+          "name": "model",
+          "help": "exo model id",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#info"
+    },
+    {
+      "path": [
+        "cluster",
         "init"
       ],
       "kind": "command",
@@ -357,6 +461,48 @@
         }
       ],
       "docs_url": "https://omm.run/commands/cluster#init"
+    },
+    {
+      "path": [
+        "cluster",
+        "install"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Download a model to every Mac in the cluster without loading it (head Mac only).",
+      "description": "",
+      "usage": "omm cluster install [OPTIONS] {model}",
+      "arguments": [
+        {
+          "name": "model",
+          "help": "exo model id, from omm cluster recommend or search",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#install"
     },
     {
       "path": [
@@ -450,30 +596,24 @@
     {
       "path": [
         "cluster",
-        "model"
+        "list"
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Recommend models that fit the cluster, or load or unload one.",
+      "summary": "List the models on the cluster and whether each one is loaded.",
       "description": "",
-      "usage": "omm cluster model [OPTIONS] [model]",
-      "arguments": [
-        {
-          "name": "model",
-          "help": "exo model id to load; omit to see what fits",
-          "required": false
-        }
-      ],
+      "usage": "omm cluster list [OPTIONS]",
+      "arguments": [],
       "options": [
         {
           "flags": [
-            "--unload"
+            "--json"
           ],
           "metavar": null,
           "is_flag": true,
-          "help": "Stop serving this model instead of loading it.",
+          "help": "Print output as JSON where supported.",
           "default": null,
-          "global": false
+          "global": true
         },
         {
           "flags": [
@@ -497,7 +637,95 @@
           "global": true
         }
       ],
-      "docs_url": "https://omm.run/commands/cluster#model"
+      "docs_url": "https://omm.run/commands/cluster#list"
+    },
+    {
+      "path": [
+        "cluster",
+        "load"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Load a model into the cluster's memory so employees can use it (head Mac only).",
+      "description": "",
+      "usage": "omm cluster load [OPTIONS] {model}",
+      "arguments": [
+        {
+          "name": "model",
+          "help": "exo model id (see omm cluster list)",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#load"
+    },
+    {
+      "path": [
+        "cluster",
+        "recommend"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Show the biggest exo models that fit the cluster's free memory.",
+      "description": "",
+      "usage": "omm cluster recommend [OPTIONS]",
+      "arguments": [],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#recommend"
     },
     {
       "path": [
@@ -542,13 +770,13 @@
       ],
       "kind": "command",
       "aliases": [],
-      "summary": "Chat in the terminal with the model the cluster serves (any PC with omm rag remote set).",
+      "summary": "Chat in the terminal with a cluster model, loading it first when it is installed.",
       "description": "",
       "usage": "omm cluster run [OPTIONS] [model]",
       "arguments": [
         {
           "name": "model",
-          "help": "Loaded exo model id; omit when the cluster serves one",
+          "help": "exo model id; omit when the cluster serves one",
           "required": false
         }
       ],
@@ -576,6 +804,58 @@
         }
       ],
       "docs_url": "https://omm.run/commands/cluster#run"
+    },
+    {
+      "path": [
+        "cluster",
+        "search"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Search Hugging Face for MLX models exo can run.",
+      "description": "",
+      "usage": "omm cluster search [OPTIONS] {text}",
+      "arguments": [
+        {
+          "name": "text",
+          "help": "Words to look for in MLX model names",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--json"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Print output as JSON where supported.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#search"
     },
     {
       "path": [
@@ -759,6 +1039,101 @@
         }
       ],
       "docs_url": "https://omm.run/commands/cluster#token"
+    },
+    {
+      "path": [
+        "cluster",
+        "uninstall"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Delete a model's files from every Mac, unloading it first (head Mac only).",
+      "description": "",
+      "usage": "omm cluster uninstall [OPTIONS] {model}",
+      "arguments": [
+        {
+          "name": "model",
+          "help": "exo model id (see omm cluster list)",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--yes",
+            "-y"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Skip confirmation prompts. For scripting.",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#uninstall"
+    },
+    {
+      "path": [
+        "cluster",
+        "unload"
+      ],
+      "kind": "command",
+      "aliases": [],
+      "summary": "Free a loaded model's memory; its files stay installed (head Mac only).",
+      "description": "",
+      "usage": "omm cluster unload [OPTIONS] {model}",
+      "arguments": [
+        {
+          "name": "model",
+          "help": "exo model id (see omm cluster list)",
+          "required": true
+        }
+      ],
+      "options": [
+        {
+          "flags": [
+            "--quiet",
+            "-q"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Suppress progress bars and background status/hint lines (errors and results still print).",
+          "default": null,
+          "global": true
+        },
+        {
+          "flags": [
+            "--no-color"
+          ],
+          "metavar": null,
+          "is_flag": true,
+          "help": "Disable colored output.",
+          "default": null,
+          "global": true
+        }
+      ],
+      "docs_url": "https://omm.run/commands/cluster#unload"
     },
     {
       "path": [

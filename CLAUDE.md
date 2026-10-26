@@ -302,8 +302,14 @@ tokens from `tokens.py` (fail closed) and forwards four inference routes; it ans
 ones), which `omm cluster run` (`chat.py`) uses on an employee PC. It also folds
 Claude Code's `role: "system"` messages into the top-level `system` field, because exo
 answers those with 422. exo keeps instances only in memory, so the gateway process also runs
-`autoload.py`: every 30 s it reloads the model `omm cluster model` last loaded on the head
-(`cluster.json` `model`, cleared by `--unload`), after waiting up to 10 min for every known Mac.
+`autoload.py`: every 30 s it reloads the model `omm cluster load`/`run` last loaded on the head
+(`cluster.json` `model`, cleared by `unload`/`uninstall`), after waiting up to 10 min for every known Mac.
+Model verbs mirror top-level omm (`cluster/models.py`): `install` downloads to every Mac with exo's
+`/download/start` (each Mac's Pending entry carries the whole-model shard) without loading, `uninstall`
+uses `DELETE /download/{node}/{model}`, `load`/`run` apply `memory_guard_policy` (exo marks a
+non-fitting preview with `No cycles found with sufficient memory`). Mutating ones are head-only
+(`commands.require_head_for`). `omm list`/`omm run` also reach cluster models (`chat.cluster_configured`;
+`omm list --json` stays local-only). Spec: `docs/superpowers/specs/2026-10-26-cluster-cli-redesign-design.md`.
 Employee PCs route a harness to the gateway with `omm setting agent cluster` (`agent_cluster.py`,
 head URL + token from `omm rag remote set`); it reuses `agent_connection.py`'s journal and field
 list unchanged, so `agent cloud` restores it. Specs: `docs/superpowers/specs/2026-10-22-exo-cluster-design.md`
