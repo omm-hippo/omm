@@ -80,6 +80,12 @@ SCREEN_APPROVAL_HINT = (
     "The first time exo starts, macOS may show an Allow prompt on this Mac's screen. "
     "If omm cluster status says exo is not running, click Allow there."
 )
+# The MLX ring listens on a random port in this range, so pf closes all of it
+# to the office network, which also closes it for any other server on the Mac.
+HIGH_PORTS_HINT = (
+    "The cluster firewall blocks TCP ports 49153-65535 from the office network, for every app "
+    "on this Mac, not only exo. Keep other servers that employees use off this Mac."
+)
 
 
 def init(out: Out) -> settings.ClusterSettings:
@@ -103,6 +109,7 @@ def init(out: Out) -> settings.ClusterSettings:
     appfw.allow([appfw.exo_binary(), appfw.gateway_binary()])
     service.install()
     out(SCREEN_APPROVAL_HINT)
+    out(HIGH_PORTS_HINT)
     # On a line of its own: the 128-bit name makes the sentence wrap in an
     # 80-column terminal, and a wrapped command does not paste.
     out("Run this on every other Mac:")
@@ -129,6 +136,7 @@ def join(namespace: str, out: Out) -> settings.ClusterSettings:
     power.keep_awake()
     appfw.allow([appfw.exo_binary()])
     out(SCREEN_APPROVAL_HINT)
+    out(HIGH_PORTS_HINT)
     out("This Mac joined the cluster. Check it from the head Mac with: omm cluster status")
     return saved
 

@@ -199,6 +199,16 @@ def test_init_and_join_tell_the_user_about_the_on_screen_allow_prompt(cluster_fa
     assert "click Allow" in member.output
 
 
+def test_init_and_join_say_other_servers_on_high_ports_are_blocked_too(cluster_fakes):
+    head = runner.invoke(cli.app, ["cluster", "init"])
+    assert head.exit_code == 0, head.output
+    assert "49153-65535" in " ".join(head.output.split())
+    assert runner.invoke(cli.app, ["cluster", "leave", "--yes"]).exit_code == 0
+    member = runner.invoke(cli.app, ["cluster", "join", "omm-0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d"])
+    assert member.exit_code == 0, member.output
+    assert "49153-65535" in " ".join(member.output.split())
+
+
 def test_init_and_join_set_up_the_thunderbolt_network_before_exo_and_the_firewall(cluster_fakes, monkeypatch):
     from omm.cluster import exo_service, firewall
     from omm.cluster import netconfig as netconfig_module

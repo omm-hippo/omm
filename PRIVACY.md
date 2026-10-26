@@ -320,7 +320,9 @@ employee PCs that send them.
 - **Firewall.** Each cluster Mac gets a pf anchor (`com.apple/omm-cluster`) and a boot-time
   loader (`/Library/LaunchDaemons/com.omm.cluster-pf.plist`). Together they keep exo's
   unauthenticated ports, and every TCP port from 49153 to 65535, unreachable except over
-  loopback and Thunderbolt. `omm cluster leave` removes both.
+  loopback and Thunderbolt. That port range is closed to the office network for every
+  app on the Mac, not only exo, so a cluster Mac should not also run servers employees
+  reach on those ports. `omm cluster leave` removes both.
 - **exo** downloads models from Hugging Face by itself. omm stages a copy of exo's runtime
   in `OMM_HOME/cluster/exo-runtime` and runs it as a LaunchAgent. omm does not read or
   send exo's model files.
